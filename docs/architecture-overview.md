@@ -8,6 +8,7 @@ Updated: 2026-03-23
 - `src/core/`: training/backtest orchestration
 - `src/data/`: data adapters and contracts
 - `src/contracts/`: validation and status payload contracts
+- `research/factor_lab/`: research-only factor discovery and evaluation, clearly separated from production and canonical runtime
 - `tests/`: regression coverage for logic + governance boundaries
 
 ## Core Flow (Target)

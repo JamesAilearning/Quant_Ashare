@@ -1,7 +1,7 @@
 # v2-foundation-governance-bootstrap Specification
 
 ## Purpose
-TBD - created by archiving change bootstrap-v2-foundation-and-governance. Update Purpose after archive.
+Establish the V2 governance, architecture, and workflow baseline before any runtime trading implementation begins.
 ## Requirements
 ### Requirement: V2 repository SHALL start with explicit governance baseline
 
@@ -29,4 +29,3 @@ Bootstrap change scope SHALL remain foundation-only and SHALL NOT introduce trad
 - **WHEN** bootstrap tasks are completed
 - **THEN** runtime trading logic remains unimplemented or unchanged
 - **AND** all outputs are governance/docs/spec artifacts only
-

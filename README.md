@@ -1,6 +1,7 @@
 # qlib_trading_system_v2
 
 This is a clean-slate V2 quantitative trading system built with Qlib and managed with OpenSpec.
+V1 is used as a source of lessons and migration principles, not as an implementation template.
 
 ## Principles
 
