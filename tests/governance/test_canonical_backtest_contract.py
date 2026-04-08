@@ -12,12 +12,41 @@ from src.contracts.canonical_boundaries import (
     RESEARCH_FACTOR_LAB_LAYER,
 )
 from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_POST,
+    ADJUST_MODE_PRE,
+    CANONICAL_INPUT_REQUIRED_FIELDS,
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     CANONICAL_OUTPUT_FIELDS,
+    COMMISSION_RATE_MAX,
+    EXECUTION_PRICE_CLOSE,
+    CanonicalAccountConfig,
     CanonicalBacktestContract,
     CanonicalBacktestContractError,
     CanonicalBacktestInput,
+    CanonicalExchangeConfig,
+    CanonicalExchangeCostModel,
 )
+
+
+def _valid_cost_model(**overrides) -> CanonicalExchangeCostModel:
+    payload = {
+        "commission_rate": 0.0003,
+        "stamp_tax_bps": 10.0,
+        "slippage_bps": 5.0,
+        "min_cost": 5.0,
+    }
+    payload.update(overrides)
+    return CanonicalExchangeCostModel(**payload)
+
+
+def _valid_exchange_config(**overrides) -> CanonicalExchangeConfig:
+    payload = {
+        "freq": "day",
+        "execution_price_kind": EXECUTION_PRICE_CLOSE,
+        "cost_model": _valid_cost_model(),
+    }
+    payload.update(overrides)
+    return CanonicalExchangeConfig(**payload)
 
 
 def _valid_request(**overrides) -> CanonicalBacktestInput:
@@ -25,8 +54,10 @@ def _valid_request(**overrides) -> CanonicalBacktestInput:
         "predictions_ref": "predictions://run-001",
         "evaluation_start": "2025-01-01",
         "evaluation_end": "2025-12-31",
-        "account_config": {"init_cash": 1_000_000},
-        "exchange_config": {"freq": "day"},
+        "account_config": CanonicalAccountConfig(init_cash=1_000_000.0),
+        "exchange_config": _valid_exchange_config(),
+        "adjust_mode": ADJUST_MODE_PRE,
+        "signal_to_execution_lag": 1,
     }
     payload.update(overrides)
     return CanonicalBacktestInput(**payload)
@@ -44,6 +75,10 @@ class CanonicalBacktestContractTests(unittest.TestCase):
             CanonicalBacktestContract.output_schema(),
             CANONICAL_OUTPUT_FIELDS,
         )
+
+    def test_valid_request_passes_validation(self):
+        # Positive-path sanity check: a well-formed strict request must not raise.
+        CanonicalBacktestContract.validate_input(_valid_request())
 
     def test_no_implicit_fallback_allowed(self):
         req = _valid_request(allow_implicit_fallback=True)
@@ -74,6 +109,82 @@ class CanonicalBacktestContractTests(unittest.TestCase):
         req = _valid_request()
         with self.assertRaisesRegex(NotImplementedError, "intentionally unimplemented"):
             CanonicalBacktestContract.run_placeholder(req)
+
+
+class CanonicalBacktestStrictInputTests(unittest.TestCase):
+    """Quant-risk tightening: typed inputs, bounds, adjust_mode, lag."""
+
+    def test_required_fields_include_new_quant_risk_fields(self):
+        required = CanonicalBacktestContract.input_boundary()["required"]
+        self.assertIn("adjust_mode", required)
+        self.assertIn("signal_to_execution_lag", required)
+        self.assertEqual(required, CANONICAL_INPUT_REQUIRED_FIELDS)
+
+    def test_dict_account_config_is_rejected(self):
+        req = _valid_request(account_config={"init_cash": 1_000_000})  # type: ignore[arg-type]
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "account_config must be a CanonicalAccountConfig"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_dict_exchange_config_is_rejected(self):
+        req = _valid_request(exchange_config={"freq": "day"})  # type: ignore[arg-type]
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "exchange_config must be a CanonicalExchangeConfig"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_unknown_adjust_mode_is_rejected(self):
+        req = _valid_request(adjust_mode="auto")
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "adjust_mode must be one of"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_post_adjusted_is_accepted(self):
+        CanonicalBacktestContract.validate_input(_valid_request(adjust_mode=ADJUST_MODE_POST))
+
+    def test_zero_signal_to_execution_lag_is_rejected(self):
+        req = _valid_request(signal_to_execution_lag=0)
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "look-ahead"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_negative_signal_to_execution_lag_is_rejected(self):
+        req = _valid_request(signal_to_execution_lag=-1)
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "look-ahead"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_bool_signal_to_execution_lag_is_rejected(self):
+        # Python bools are ints; the contract must still reject them.
+        req = _valid_request(signal_to_execution_lag=True)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "must be an int"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_commission_rate_above_cap_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "commission_rate"):
+            _valid_cost_model(commission_rate=COMMISSION_RATE_MAX + 0.01)
+
+    def test_negative_min_cost_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "min_cost"):
+            _valid_cost_model(min_cost=-1.0)
+
+    def test_negative_init_cash_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "init_cash"):
+            CanonicalAccountConfig(init_cash=-1.0)
+
+    def test_zero_init_cash_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "init_cash"):
+            CanonicalAccountConfig(init_cash=0)
+
+    def test_unknown_execution_price_kind_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "execution_price_kind"):
+            _valid_exchange_config(execution_price_kind="limit")
+
+    def test_unknown_freq_is_rejected_at_construction(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "freq"):
+            _valid_exchange_config(freq="minute")
+
+    def test_cost_model_type_check(self):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "cost_model"):
+            CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=EXECUTION_PRICE_CLOSE,
+                cost_model={"commission_rate": 0.0003},  # type: ignore[arg-type]
+            )
 
 
 if __name__ == "__main__":
