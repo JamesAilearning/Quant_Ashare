@@ -1,0 +1,7 @@
+{
+  "benchmark_code": "SH000300",
+  "source_name": "fixture-local",
+  "source_uri": "file://tests/fixtures/benchmark/SH000300.csv",
+  "snapshot_at": "2026-02-27",
+  "schema_version": "v1"
+}

@@ -1,9 +1,21 @@
-"""Canonical backtest contract interfaces for V2 (foundation-only placeholder)."""
+"""Canonical backtest contract interfaces for V2 (foundation-only placeholder).
+
+The canonical official-metrics path is anchored to a concrete qlib callable
+via import, so that any attempt to introduce a competing path (for example
+a legacy ``contrib``-level evaluate helper) is statically visible at import
+time instead of only in documentation. The list of forbidden alternative
+paths is enforced by ``tests/governance/test_no_alt_backtest_path.py``.
+
+If qlib is not installed in the current environment, the anchor falls back
+to the expected path string so that contract-only tests can still run;
+governance regression tests explicitly verify the live anchor when qlib
+is importable.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from src.contracts.canonical_boundaries import (
     CANONICAL_RUNTIME_LAYER,
@@ -11,7 +23,20 @@ from src.contracts.canonical_boundaries import (
     assert_canonical_runtime_layer,
 )
 
-CANONICAL_OFFICIAL_BACKTEST_PATH = "qlib-native backtest_daily"
+_EXPECTED_CANONICAL_BACKTEST_PATH = "qlib.backtest.backtest"
+
+try:
+    from qlib.backtest import backtest as _qlib_backtest_callable  # type: ignore[import-not-found]
+
+    CANONICAL_OFFICIAL_BACKTEST_CALLABLE: Optional[Callable[..., Any]] = _qlib_backtest_callable
+    CANONICAL_OFFICIAL_BACKTEST_PATH = (
+        f"{_qlib_backtest_callable.__module__}.{_qlib_backtest_callable.__name__}"
+    )
+    _QLIB_BACKTEST_ANCHOR_AVAILABLE = True
+except ImportError:  # pragma: no cover - environment-dependent
+    CANONICAL_OFFICIAL_BACKTEST_CALLABLE = None
+    CANONICAL_OFFICIAL_BACKTEST_PATH = _EXPECTED_CANONICAL_BACKTEST_PATH
+    _QLIB_BACKTEST_ANCHOR_AVAILABLE = False
 OFFICIAL_METRIC_STATUS = "official"
 CANONICAL_INPUT_REQUIRED_FIELDS = (
     "predictions_ref",
@@ -19,8 +44,38 @@ CANONICAL_INPUT_REQUIRED_FIELDS = (
     "evaluation_end",
     "account_config",
     "exchange_config",
+    "adjust_mode",
+    "signal_to_execution_lag",
 )
 CANONICAL_INPUT_OPTIONAL_FIELDS = ("benchmark_code",)
+
+ADJUST_MODE_PRE = "pre_adjusted"
+ADJUST_MODE_POST = "post_adjusted"
+ADJUST_MODE_NONE = "unadjusted"
+SUPPORTED_ADJUST_MODES: tuple[str, ...] = (
+    ADJUST_MODE_PRE,
+    ADJUST_MODE_POST,
+    ADJUST_MODE_NONE,
+)
+
+EXECUTION_PRICE_OPEN = "open"
+EXECUTION_PRICE_CLOSE = "close"
+EXECUTION_PRICE_VWAP = "vwap"
+SUPPORTED_EXECUTION_PRICE_KINDS: tuple[str, ...] = (
+    EXECUTION_PRICE_OPEN,
+    EXECUTION_PRICE_CLOSE,
+    EXECUTION_PRICE_VWAP,
+)
+
+SUPPORTED_EXCHANGE_FREQUENCIES: tuple[str, ...] = ("day",)
+
+# Opinionated bounds on cost-model fields. Relaxing these is change-controlled
+# via a dedicated spec change. See
+# openspec/changes/archive/2026-04-08-harden-canonical-backtest-input-for-quant-risks/design.md
+# for rationale.
+COMMISSION_RATE_MAX = 0.01          # 100 bps per side, one-way
+STAMP_TAX_BPS_MAX = 100.0           # 100 bps sell-side
+SLIPPAGE_BPS_MAX = 200.0            # 200 bps symmetric
 CANONICAL_INPUT_EXPLICITLY_REJECTED_FIELDS = (
     "experimental_controls",
     "research_artifact_refs",
@@ -41,14 +96,107 @@ class CanonicalBacktestContractError(ValueError):
 
 
 @dataclass(frozen=True)
+class CanonicalAccountConfig:
+    """Frozen account configuration for the canonical backtest path."""
+
+    init_cash: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.init_cash, (int, float)) or isinstance(self.init_cash, bool):
+            raise CanonicalBacktestContractError(
+                f"CanonicalAccountConfig.init_cash must be a real number, got {type(self.init_cash).__name__}."
+            )
+        if self.init_cash <= 0:
+            raise CanonicalBacktestContractError(
+                f"CanonicalAccountConfig.init_cash must be > 0, got {self.init_cash}."
+            )
+
+
+@dataclass(frozen=True)
+class CanonicalExchangeCostModel:
+    """Frozen, bound-checked cost model for the canonical exchange.
+
+    Fields
+    ------
+    commission_rate:
+        Per-side commission as a fraction of trade notional (e.g. 0.0003 = 3 bps).
+        Must be in ``[0, COMMISSION_RATE_MAX]``.
+    stamp_tax_bps:
+        CN-market stamp tax, sell-side only, in basis points.
+        Must be in ``[0, STAMP_TAX_BPS_MAX]``.
+    slippage_bps:
+        Symmetric slippage assumption, applied to both buy and sell fills.
+        Must be in ``[0, SLIPPAGE_BPS_MAX]``.
+    min_cost:
+        Per-trade minimum commission in account currency. Must be ``>= 0``.
+    """
+
+    commission_rate: float
+    stamp_tax_bps: float
+    slippage_bps: float
+    min_cost: float
+
+    def __post_init__(self) -> None:
+        self._check_numeric("commission_rate", self.commission_rate, 0.0, COMMISSION_RATE_MAX)
+        self._check_numeric("stamp_tax_bps", self.stamp_tax_bps, 0.0, STAMP_TAX_BPS_MAX)
+        self._check_numeric("slippage_bps", self.slippage_bps, 0.0, SLIPPAGE_BPS_MAX)
+        if not isinstance(self.min_cost, (int, float)) or isinstance(self.min_cost, bool):
+            raise CanonicalBacktestContractError(
+                f"CanonicalExchangeCostModel.min_cost must be a real number, got {type(self.min_cost).__name__}."
+            )
+        if self.min_cost < 0:
+            raise CanonicalBacktestContractError(
+                f"CanonicalExchangeCostModel.min_cost must be >= 0, got {self.min_cost}."
+            )
+
+    @staticmethod
+    def _check_numeric(field_name: str, value: Any, lo: float, hi: float) -> None:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise CanonicalBacktestContractError(
+                f"CanonicalExchangeCostModel.{field_name} must be a real number, got {type(value).__name__}."
+            )
+        if value < lo or value > hi:
+            raise CanonicalBacktestContractError(
+                f"CanonicalExchangeCostModel.{field_name} must be in [{lo}, {hi}], got {value}."
+            )
+
+
+@dataclass(frozen=True)
+class CanonicalExchangeConfig:
+    """Frozen exchange configuration for the canonical backtest path."""
+
+    freq: str
+    execution_price_kind: str
+    cost_model: CanonicalExchangeCostModel
+
+    def __post_init__(self) -> None:
+        if self.freq not in SUPPORTED_EXCHANGE_FREQUENCIES:
+            raise CanonicalBacktestContractError(
+                f"CanonicalExchangeConfig.freq must be one of {SUPPORTED_EXCHANGE_FREQUENCIES}, "
+                f"got '{self.freq}'."
+            )
+        if self.execution_price_kind not in SUPPORTED_EXECUTION_PRICE_KINDS:
+            raise CanonicalBacktestContractError(
+                f"CanonicalExchangeConfig.execution_price_kind must be one of "
+                f"{SUPPORTED_EXECUTION_PRICE_KINDS}, got '{self.execution_price_kind}'."
+            )
+        if not isinstance(self.cost_model, CanonicalExchangeCostModel):
+            raise CanonicalBacktestContractError(
+                "CanonicalExchangeConfig.cost_model must be a CanonicalExchangeCostModel instance."
+            )
+
+
+@dataclass(frozen=True)
 class CanonicalBacktestInput:
     """Input boundary for the canonical official-metrics path."""
 
     predictions_ref: str
     evaluation_start: str
     evaluation_end: str
-    account_config: Mapping[str, Any]
-    exchange_config: Mapping[str, Any]
+    account_config: CanonicalAccountConfig
+    exchange_config: CanonicalExchangeConfig
+    adjust_mode: str
+    signal_to_execution_lag: int
     benchmark_code: Optional[str] = None
     source_layer: str = CANONICAL_RUNTIME_LAYER
     allow_implicit_fallback: bool = False
@@ -97,10 +245,31 @@ class CanonicalBacktestContract:
             raise CanonicalBacktestContractError("predictions_ref is required for canonical backtest contract.")
         if not str(request.evaluation_start or "").strip() or not str(request.evaluation_end or "").strip():
             raise CanonicalBacktestContractError("evaluation_start and evaluation_end are required.")
-        if not request.account_config:
-            raise CanonicalBacktestContractError("account_config is required.")
-        if not request.exchange_config:
-            raise CanonicalBacktestContractError("exchange_config is required.")
+        if not isinstance(request.account_config, CanonicalAccountConfig):
+            raise CanonicalBacktestContractError(
+                "account_config must be a CanonicalAccountConfig instance; "
+                "free-form dicts are not accepted by the canonical contract."
+            )
+        if not isinstance(request.exchange_config, CanonicalExchangeConfig):
+            raise CanonicalBacktestContractError(
+                "exchange_config must be a CanonicalExchangeConfig instance; "
+                "free-form dicts are not accepted by the canonical contract."
+            )
+
+        if request.adjust_mode not in SUPPORTED_ADJUST_MODES:
+            raise CanonicalBacktestContractError(
+                f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}, got '{request.adjust_mode}'."
+            )
+
+        if not isinstance(request.signal_to_execution_lag, int) or isinstance(request.signal_to_execution_lag, bool):
+            raise CanonicalBacktestContractError(
+                f"signal_to_execution_lag must be an int, got {type(request.signal_to_execution_lag).__name__}."
+            )
+        if request.signal_to_execution_lag < 1:
+            raise CanonicalBacktestContractError(
+                "signal_to_execution_lag must be >= 1 to avoid look-ahead bias; "
+                f"got {request.signal_to_execution_lag}."
+            )
 
         if request.allow_implicit_fallback:
             raise CanonicalBacktestContractError(
