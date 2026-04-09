@@ -1,0 +1,6 @@
+change_id: wire-trading-calendar-into-coverage
+status: proposed
+owner: quant-infra
+target_specs:
+  - v2-trading-calendar
+  - v2-benchmark-artifact-loader

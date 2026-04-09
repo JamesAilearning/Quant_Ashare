@@ -37,6 +37,7 @@ from typing import Any, Mapping, Optional
 from src.contracts.benchmark_data_contract import BenchmarkArtifactProfile
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 from src.data.benchmark_artifact_loader import BenchmarkArtifactLoader
+from src.data.trading_calendar import QlibTradingCalendar
 
 BENCHMARK_PUBLISHER_SCHEMA_VERSION = "v1"
 BENCHMARK_PUBLISHER_SOURCE_NAME_DEFAULT = "qlib-provider"
@@ -89,8 +90,18 @@ class BenchmarkArtifactPublisher:
         manifest_path:
             Destination manifest json path.
         source_name, source_uri, snapshot_at:
-            Provenance fields written into the manifest. ``snapshot_at``
-            defaults to ``end_time`` for determinism.
+            Provenance fields written into the manifest.
+
+            ``snapshot_at`` defaults to the **actual maximum row date**
+            present in the published csv, NOT to ``end_time``. The
+            request parameter ``end_time`` is an upper bound on the
+            qlib query window; the actual max date is determined by
+            what the qlib provider returned. If the caller explicitly
+            supplies ``snapshot_at``, it MUST equal the actual max row
+            date, otherwise the publisher raises
+            :class:`BenchmarkArtifactPublisherError` at the boundary
+            (rather than letting the loader's strict-equality check
+            reject the artifact later, far from the cause).
         reference_date:
             Optional ISO date forwarded to the loader for stale/future checks
             on the round-trip profile.
@@ -126,6 +137,27 @@ class BenchmarkArtifactPublisher:
                 f"benchmark_code={benchmark_code}, start_time={start_time}, end_time={end_time}."
             )
 
+        # Derive snapshot_at from the actual data, not from the request
+        # parameter end_time. end_time is an upper bound; the qlib
+        # provider returns whatever trading days exist inside that
+        # window, which is generally a subset. Treating end_time as the
+        # snapshot date violates change-4's strict-equality invariant
+        # whenever end_time falls on a non-trading day.
+        actual_max_date = max(row[0] for row in rows)
+        if snapshot_at is None:
+            effective_snapshot_at = actual_max_date
+        else:
+            requested = str(snapshot_at).strip()
+            if requested != actual_max_date:
+                raise BenchmarkArtifactPublisherError(
+                    "Explicit snapshot_at does not match the actual max "
+                    f"row date in the published qlib data: snapshot_at='{requested}', "
+                    f"actual_max_row_date='{actual_max_date}'. "
+                    "snapshot_at must equal the real maximum row date so "
+                    "downstream loaders can trust the manifest."
+                )
+            effective_snapshot_at = requested
+
         artifact_file = Path(artifact_path)
         manifest_file = Path(manifest_path)
         artifact_file.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +165,6 @@ class BenchmarkArtifactPublisher:
 
         cls._write_csv(artifact_file, rows)
 
-        effective_snapshot_at = snapshot_at or end_time
         effective_source_uri = source_uri or f"qlib-provider://{benchmark_code}"
         manifest_payload: Mapping[str, Any] = {
             "benchmark_code": benchmark_code,
@@ -144,10 +175,15 @@ class BenchmarkArtifactPublisher:
         }
         cls._write_manifest(manifest_file, manifest_payload)
 
+        # Inject a real trading calendar so the round-trip profile's
+        # coverage_ratio uses the actual qlib calendar rather than the
+        # 0.63 fallback. Publisher already hard-requires canonical qlib
+        # init, so QlibTradingCalendar is a legitimate peer dependency.
         profile = BenchmarkArtifactLoader.load(
             artifact_path=str(artifact_file),
             manifest_path=str(manifest_file),
             reference_date=reference_date,
+            calendar=QlibTradingCalendar(),
         )
 
         return BenchmarkPublishResult(
@@ -185,13 +221,21 @@ class BenchmarkArtifactPublisher:
         try:
             if hasattr(frame, "empty") and frame.empty:
                 return []
-        except Exception:
+        except (AttributeError, TypeError):
+            # ``.empty`` may exist as a descriptor that raises in
+            # exotic pandas-like wrappers. Treat such cases as empty,
+            # but do NOT swallow programmer errors (NameError,
+            # ImportError, etc.) which would surface as a misleading
+            # "qlib returned no rows" message later.
             return []
 
         working = frame
         try:
             working = working.reset_index()
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
+            # AttributeError: input is not a DataFrame.
+            # TypeError: reset_index argument shape mismatch in older pandas.
+            # ValueError: index level conflict.
             return []
 
         # Identify datetime column.

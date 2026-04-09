@@ -32,3 +32,61 @@ The loader SHALL only materialize profile data from explicit paths. It SHALL NOT
 - **WHEN** maintainers read the loader source
 - **THEN** the loader exposes only explicit path-based load functions
 - **AND** no implicit benchmark selection or default-resolution logic is present
+
+### Requirement: Benchmark loader SHALL detect snapshot_at vs csv max-row-date mismatch
+
+The benchmark artifact loader SHALL compute a strict equality comparison between
+the manifest's `snapshot_at` field and the maximum row date observed in the csv,
+and SHALL expose the result as `BenchmarkArtifactProfile.has_snapshot_at_mismatch`.
+The comparison only fires when both values are present and parseable; missing
+values are handled by independent schema/missing-file error codes.
+
+#### Scenario: manifest snapshot_at strictly greater than csv max date
+- **WHEN** a manifest declares `snapshot_at = 2026-02-27` and the csv's last row date is `2026-02-20`
+- **THEN** `BenchmarkArtifactLoader.load` returns a profile with `has_snapshot_at_mismatch=True`
+
+#### Scenario: manifest snapshot_at strictly less than csv max date
+- **WHEN** a manifest declares `snapshot_at = 2026-02-20` and the csv's last row date is `2026-02-27`
+- **THEN** `BenchmarkArtifactLoader.load` returns a profile with `has_snapshot_at_mismatch=True`
+
+#### Scenario: manifest snapshot_at equals csv max date
+- **WHEN** manifest `snapshot_at` exactly equals csv max row date
+- **THEN** `BenchmarkArtifactLoader.load` returns a profile with `has_snapshot_at_mismatch=False`
+
+#### Scenario: manifest is missing snapshot_at field
+- **WHEN** the manifest does not contain `snapshot_at`
+- **THEN** `has_snapshot_at_mismatch` remains `False`
+- **AND** the missing field is reported by the contract via `schema_mismatch`, not by this check
+
+### Requirement: Benchmark loader SHALL accept an optional TradingCalendar for accurate coverage accounting
+
+`BenchmarkArtifactLoader.load` SHALL accept an optional
+`calendar: TradingCalendar` keyword argument. When supplied, the loader
+SHALL compute `coverage_ratio` using
+`calendar.count_trading_days(snapshot_start, snapshot_end)` as the
+denominator. When `calendar` is `None`, the loader SHALL fall back to
+the existing calendar-free approximation
+(`expected_rows ≈ span_days × 0.63`) and SHALL preserve the prior
+behavior so that all existing callers and tests remain valid without
+modification.
+
+#### Scenario: calendar injection drives accurate coverage
+- **WHEN** `BenchmarkArtifactLoader.load(..., calendar=cal)` is called
+  with a `StaticTradingCalendar` whose dates exactly match the csv rows
+- **THEN** the produced profile has `coverage_ratio == 1.0`
+- **AND** feeding the profile into `BenchmarkDataContract` yields
+  `contract_health == "ok"` for an otherwise healthy artifact
+
+#### Scenario: calendar with extra trading days surfaces incomplete coverage
+- **WHEN** the injected `StaticTradingCalendar` reports more trading
+  days inside `[snapshot_start, snapshot_end]` than the csv contains
+- **THEN** `coverage_ratio` is strictly less than `1.0`
+- **AND** when the ratio falls below `min_coverage_ratio`, the contract
+  surfaces `incomplete_coverage`
+
+#### Scenario: omitting calendar preserves legacy fallback
+- **WHEN** `BenchmarkArtifactLoader.load(...)` is called without a
+  `calendar` argument
+- **THEN** `coverage_ratio` is computed using the legacy
+  `span_days × 0.63` approximation
+- **AND** existing tests continue to pass unchanged

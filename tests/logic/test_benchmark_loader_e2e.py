@@ -32,6 +32,7 @@ from src.data.benchmark_artifact_loader import (  # noqa: E402
     BenchmarkArtifactLoader,
     BenchmarkArtifactLoaderError,
 )
+from src.data.trading_calendar import StaticTradingCalendar  # noqa: E402
 
 FIXTURES = PROJECT_ROOT / "tests" / "fixtures" / "benchmark"
 
@@ -163,6 +164,97 @@ class BenchmarkLoaderFailurePathTests(unittest.TestCase):
         self.assertIn(ISSUE_TEMPORAL_ISSUE, status.errors)
         self.assertEqual(status.contract_health, "error")
 
+    def _build_temp_pair(
+        self,
+        tmp_dir: Path,
+        manifest_snapshot_at: str,
+    ) -> tuple[Path, Path]:
+        """Materialize a tiny csv (Feb 2 - Feb 4) plus a manifest with the
+        caller-supplied snapshot_at, to exercise snapshot_at-vs-data checks.
+        """
+        csv_path = tmp_dir / "snap.csv"
+        csv_path.write_text(
+            "date,close\n2026-02-02,3800.12\n2026-02-03,3812.55\n2026-02-04,3820.77\n",
+            encoding="utf-8",
+        )
+        manifest_path = tmp_dir / "snap.csv.manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "benchmark_code": "SH000300",
+                    "source_name": "fixture-local",
+                    "source_uri": "file://snap.csv",
+                    "snapshot_at": manifest_snapshot_at,
+                    "schema_version": "v1",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return csv_path, manifest_path
+
+    def test_manifest_snapshot_at_newer_than_csv_max_yields_temporal_issue(self) -> None:
+        # Manifest claims snapshot_at = Feb 5 but csv max row date is Feb 4.
+        # This is the classic "manifest lies about freshness" leak.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path, manifest_path = self._build_temp_pair(tmp_dir, "2026-02-05")
+            profile = BenchmarkArtifactLoader.load(
+                artifact_path=str(csv_path),
+                manifest_path=str(manifest_path),
+                reference_date="2026-02-05",
+            )
+        self.assertTrue(
+            profile.has_snapshot_at_mismatch,
+            msg="loader must flag snapshot_at > csv max date as a mismatch",
+        )
+        status = BenchmarkDataContract.validate_and_build_status(
+            BenchmarkContractInput(
+                benchmark_code="SH000300",
+                profile=profile,
+                reference_date="2026-02-05",
+            )
+        )
+        self.assertEqual(status.contract_health, "error")
+        self.assertIn(ISSUE_TEMPORAL_ISSUE, status.errors)
+
+    def test_manifest_snapshot_at_older_than_csv_max_yields_temporal_issue(self) -> None:
+        # Manifest claims snapshot_at = Feb 3 but csv max row date is Feb 4.
+        # Means the csv was appended after the manifest was written, or two
+        # files were not produced by the same publisher run. Either way the
+        # provenance chain is broken.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path, manifest_path = self._build_temp_pair(tmp_dir, "2026-02-03")
+            profile = BenchmarkArtifactLoader.load(
+                artifact_path=str(csv_path),
+                manifest_path=str(manifest_path),
+                reference_date="2026-02-04",
+            )
+        self.assertTrue(
+            profile.has_snapshot_at_mismatch,
+            msg="loader must flag snapshot_at < csv max date as a mismatch",
+        )
+        status = BenchmarkDataContract.validate_and_build_status(
+            BenchmarkContractInput(
+                benchmark_code="SH000300",
+                profile=profile,
+                reference_date="2026-02-04",
+            )
+        )
+        self.assertEqual(status.contract_health, "error")
+        self.assertIn(ISSUE_TEMPORAL_ISSUE, status.errors)
+
+    def test_manifest_snapshot_at_equal_to_csv_max_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path, manifest_path = self._build_temp_pair(tmp_dir, "2026-02-04")
+            profile = BenchmarkArtifactLoader.load(
+                artifact_path=str(csv_path),
+                manifest_path=str(manifest_path),
+                reference_date="2026-02-04",
+            )
+        self.assertFalse(profile.has_snapshot_at_mismatch)
+
     def test_structural_misuse_raises(self) -> None:
         with self.assertRaises(BenchmarkArtifactLoaderError):
             BenchmarkArtifactLoader.load(
@@ -201,6 +293,87 @@ class BenchmarkLoaderCoverageSmokeTests(unittest.TestCase):
                 reference_date="2026-02-27",
             )
         )
+        self.assertNotIn(ISSUE_INCOMPLETE_COVERAGE, status.warnings)
+
+
+class BenchmarkLoaderCalendarInjectionTests(unittest.TestCase):
+    """Validate that injecting a TradingCalendar drives accurate coverage."""
+
+    def setUp(self) -> None:
+        self.artifact_path = FIXTURES / "SH000300.csv"
+        self.manifest_path = FIXTURES / "SH000300.csv.manifest.json"
+        # The fixture csv contains exactly these 20 trading days.
+        from datetime import date as _date
+        self.fixture_trading_days = [
+            _date(2026, 2, 2), _date(2026, 2, 3), _date(2026, 2, 4),
+            _date(2026, 2, 5), _date(2026, 2, 6),
+            _date(2026, 2, 9), _date(2026, 2, 10), _date(2026, 2, 11),
+            _date(2026, 2, 12), _date(2026, 2, 13),
+            _date(2026, 2, 16), _date(2026, 2, 17), _date(2026, 2, 18),
+            _date(2026, 2, 19), _date(2026, 2, 20),
+            _date(2026, 2, 23), _date(2026, 2, 24), _date(2026, 2, 25),
+            _date(2026, 2, 26), _date(2026, 2, 27),
+        ]
+
+    def _validate(self, profile, *, min_coverage_ratio: float = 0.95):
+        return BenchmarkDataContract.validate_and_build_status(
+            BenchmarkContractInput(
+                benchmark_code="SH000300",
+                profile=profile,
+                reference_date="2026-02-27",
+                min_coverage_ratio=min_coverage_ratio,
+            )
+        )
+
+    def test_calendar_matching_fixture_yields_full_coverage(self) -> None:
+        cal = StaticTradingCalendar(self.fixture_trading_days)
+        profile = BenchmarkArtifactLoader.load(
+            artifact_path=str(self.artifact_path),
+            manifest_path=str(self.manifest_path),
+            reference_date="2026-02-27",
+            calendar=cal,
+        )
+        self.assertEqual(profile.coverage_ratio, 1.0)
+        status = self._validate(profile)
+        self.assertEqual(
+            status.contract_health,
+            "ok",
+            msg=f"errors={status.errors} warnings={status.warnings}",
+        )
+        self.assertNotIn(ISSUE_INCOMPLETE_COVERAGE, status.warnings)
+
+    def test_inflated_calendar_triggers_incomplete_coverage(self) -> None:
+        # Pretend that EVERY calendar day in the window is a trading day.
+        # The fixture covers 26 calendar days (Feb 2 - Feb 27), so the
+        # ratio becomes 20/26 ≈ 0.769, well below the 0.95 default.
+        from datetime import date as _date, timedelta as _td
+        inflated = [
+            _date(2026, 2, 2) + _td(days=i)
+            for i in range(((_date(2026, 2, 27) - _date(2026, 2, 2)).days) + 1)
+        ]
+        cal = StaticTradingCalendar(inflated)
+        profile = BenchmarkArtifactLoader.load(
+            artifact_path=str(self.artifact_path),
+            manifest_path=str(self.manifest_path),
+            reference_date="2026-02-27",
+            calendar=cal,
+        )
+        assert profile.coverage_ratio is not None  # for type-checkers
+        self.assertLess(profile.coverage_ratio, 0.95)
+        status = self._validate(profile)
+        self.assertIn(ISSUE_INCOMPLETE_COVERAGE, status.warnings)
+        self.assertEqual(status.contract_health, "warning")
+
+    def test_omitting_calendar_preserves_legacy_fallback(self) -> None:
+        # Sanity: omitting the calendar must reproduce the legacy 0.63
+        # approximation path. The healthy fixture must remain "ok".
+        profile = BenchmarkArtifactLoader.load(
+            artifact_path=str(self.artifact_path),
+            manifest_path=str(self.manifest_path),
+            reference_date="2026-02-27",
+        )
+        status = self._validate(profile)
+        self.assertEqual(status.contract_health, "ok")
         self.assertNotIn(ISSUE_INCOMPLETE_COVERAGE, status.warnings)
 
 

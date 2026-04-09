@@ -1,0 +1,8 @@
+change_id: enforce-snapshot-at-matches-artifact-data
+status: proposed
+owner: quant-infra
+target_specs:
+  - v2-benchmark-data-contract
+  - v2-universe-data-contract
+  - v2-taxonomy-data-contract
+  - v2-benchmark-artifact-loader

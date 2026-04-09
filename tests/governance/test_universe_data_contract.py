@@ -143,6 +143,31 @@ class UniverseDataContractTests(unittest.TestCase):
         self.assertEqual(status.contract_health, "error")
         self.assertIn(ISSUE_TEMPORAL_LEAKAGE, status.errors)
 
+    def test_snapshot_at_mismatch_reports_temporal_leakage(self):
+        # Loaders for trade_date / range modes are responsible for setting
+        # has_snapshot_at_mismatch when manifest snapshot_at != actual max
+        # effective date in the artifact. The contract must surface this
+        # as a temporal-leakage error.
+        req = _valid_request(
+            temporal_mode=UNIVERSE_MODE_TRADE_DATE,
+            profile=_valid_profile(
+                metadata={**_valid_profile().metadata, "temporal_mode": UNIVERSE_MODE_TRADE_DATE},
+                columns_present=("instrument", "in_universe", "trade_date"),
+                has_snapshot_at_mismatch=True,
+            ),
+        )
+        status = UniverseDataContract.validate_and_build_status(req)
+        self.assertEqual(status.contract_health, "error")
+        self.assertIn(ISSUE_TEMPORAL_LEAKAGE, status.errors)
+
+    def test_static_mode_does_not_invent_snapshot_at_mismatch(self):
+        # Static mode artifacts have no date column at all; loaders MUST
+        # leave has_snapshot_at_mismatch=False. We assert here that the
+        # default valid profile (which is static) is healthy and is not
+        # inventing a temporal_leakage error from the new field.
+        status = UniverseDataContract.validate_and_build_status(_valid_request())
+        self.assertNotIn(ISSUE_TEMPORAL_LEAKAGE, status.errors)
+
     def test_status_is_informational_and_not_runtime_selection_semantics(self):
         req = _valid_request()
         status = UniverseDataContract.validate_and_build_status(req)
