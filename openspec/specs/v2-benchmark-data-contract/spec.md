@@ -49,3 +49,44 @@ Benchmark contract validation SHALL remain separate from canonical official-metr
 - **THEN** canonical official-metrics path remains unchanged
 - **AND** benchmark contract changes do not silently alter trading semantics
 
+### Requirement: Benchmark contract SHALL detect snapshot_at vs artifact data mismatch
+
+The benchmark data contract SHALL surface a `temporal_issue` error whenever the
+manifest-declared `snapshot_at` does not equal the actual maximum row date in the
+benchmark artifact. This protects downstream consumers from silently trusting a
+manifest that lies about the freshness of the underlying data, in either direction
+(claiming newer than reality, or claiming older than reality).
+
+#### Scenario: manifest snapshot_at is newer than artifact max row date
+- **WHEN** a `BenchmarkArtifactProfile` is supplied with `has_snapshot_at_mismatch=True`
+- **THEN** `BenchmarkDataContract.validate_and_build_status` returns `contract_health="error"`
+- **AND** the `errors` tuple contains `temporal_issue`
+
+#### Scenario: manifest snapshot_at is older than artifact max row date
+- **WHEN** a `BenchmarkArtifactProfile` is supplied with `has_snapshot_at_mismatch=True`
+- **THEN** `BenchmarkDataContract.validate_and_build_status` returns `contract_health="error"`
+- **AND** the `errors` tuple contains `temporal_issue`
+
+#### Scenario: manifest snapshot_at exactly equals artifact max row date
+- **WHEN** a `BenchmarkArtifactProfile` is supplied with `has_snapshot_at_mismatch=False`
+- **AND** all other validations pass
+- **THEN** `BenchmarkDataContract.validate_and_build_status` returns `contract_health="ok"`
+
+
+### Requirement: Benchmark contract SHALL reuse shared validator helpers
+
+Benchmark contract implementation SHALL delegate presence, metadata, required-
+column, staleness, coverage, temporal, and snapshot_at-mismatch checks to the
+shared validator helpers in `src/contracts/_shared_validators.py`, and SHALL
+NOT duplicate those patterns inline. Benchmark-specific error codes SHALL
+remain the sole truth source for their own strings.
+
+#### Scenario: refactor keeps public error-code constants stable
+- **WHEN** maintainers grep for `ISSUE_MISSING_ARTIFACT`, `ISSUE_MISSING_MANIFEST`, `ISSUE_SCHEMA_MISMATCH`, `ISSUE_STALE_DATA`, `ISSUE_INCOMPLETE_COVERAGE`, `ISSUE_TEMPORAL_ISSUE` in `src/contracts/benchmark_data_contract.py`
+- **THEN** each constant is still defined and exported from the benchmark contract module
+- **AND** the shared validator module does not redefine them
+
+#### Scenario: inline duplication is eliminated
+- **WHEN** maintainers read `BenchmarkDataContract.validate_and_build_status`
+- **THEN** presence, metadata, columns, staleness, coverage and snapshot_at-mismatch checks are delegated to shared helpers
+- **AND** no copy-paste of those checks exists between benchmark, universe, and taxonomy contracts

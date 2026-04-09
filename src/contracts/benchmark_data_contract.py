@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping, Optional
 
+from src.contracts import _shared_validators as _sv
+
 BENCHMARK_CONTRACT_NAME = "v2-benchmark-data-contract"
 BENCHMARK_SOURCE_OF_TRUTH = "explicit_artifact_with_manifest"
 BENCHMARK_ALLOWED_SOURCES = (BENCHMARK_SOURCE_OF_TRUTH,)
@@ -75,6 +77,7 @@ class BenchmarkArtifactProfile:
     coverage_ratio: Optional[float] = None
     has_future_data: bool = False
     has_future_known_metadata: bool = False
+    has_snapshot_at_mismatch: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,15 +149,8 @@ class BenchmarkDataContract:
 
     @staticmethod
     def _as_date(value: Optional[str]) -> Optional[date]:
-        if value is None:
-            return None
-        text = str(value).strip()
-        if not text:
-            return None
-        try:
-            return date.fromisoformat(text)
-        except ValueError as exc:
-            raise BenchmarkDataContractError(f"Invalid ISO date value: '{text}'.") from exc
+        """Thin wrapper kept for backward compatibility with validate_input_boundary."""
+        return _sv.parse_iso_date(value, error_cls=BenchmarkDataContractError)
 
     @classmethod
     def validate_input_boundary(cls, request: BenchmarkContractInput) -> None:
@@ -191,48 +187,63 @@ class BenchmarkDataContract:
         cls.validate_input_boundary(request)
         profile = request.profile
 
-        warnings: list[str] = []
         errors: list[str] = []
+        warnings: list[str] = []
 
-        if not profile.artifact_present:
-            errors.append(ISSUE_MISSING_ARTIFACT)
-        if not profile.manifest_present:
-            errors.append(ISSUE_MISSING_MANIFEST)
-
-        metadata = profile.metadata or {}
-        present_fields = tuple(
-            key for key in BENCHMARK_REQUIRED_METADATA_FIELDS if str(metadata.get(key, "")).strip()
+        errors.extend(
+            _sv.check_presence(
+                profile,
+                missing_artifact_code=ISSUE_MISSING_ARTIFACT,
+                missing_manifest_code=ISSUE_MISSING_MANIFEST,
+            )
         )
-        missing_fields = tuple(key for key in BENCHMARK_REQUIRED_METADATA_FIELDS if key not in present_fields)
-        if missing_fields:
-            errors.append(ISSUE_SCHEMA_MISMATCH)
 
-        columns_present = tuple(str(column).strip().lower() for column in profile.columns_present if str(column).strip())
-        missing_columns = [col for col in BENCHMARK_REQUIRED_DATA_COLUMNS if col not in columns_present]
-        if missing_columns:
-            errors.append(ISSUE_SCHEMA_MISMATCH)
+        present_fields, missing_fields, metadata_errors = _sv.check_metadata_fields(
+            profile,
+            BENCHMARK_REQUIRED_METADATA_FIELDS,
+            schema_mismatch_code=ISSUE_SCHEMA_MISMATCH,
+        )
+        errors.extend(metadata_errors)
 
-        if profile.stale_days is not None and profile.stale_days > request.stale_days_warn_threshold:
-            warnings.append(ISSUE_STALE_DATA)
+        columns_present = _sv.normalize_columns(profile.columns_present)
+        errors.extend(
+            _sv.check_required_columns(
+                columns_present,
+                BENCHMARK_REQUIRED_DATA_COLUMNS,
+                schema_mismatch_code=ISSUE_SCHEMA_MISMATCH,
+            )
+        )
 
-        if profile.coverage_ratio is not None and profile.coverage_ratio < request.min_coverage_ratio:
-            warnings.append(ISSUE_INCOMPLETE_COVERAGE)
+        warnings.extend(
+            _sv.check_staleness(profile, request.stale_days_warn_threshold, stale_code=ISSUE_STALE_DATA)
+        )
+        warnings.extend(
+            _sv.check_coverage(
+                profile,
+                request.min_coverage_ratio,
+                incomplete_coverage_code=ISSUE_INCOMPLETE_COVERAGE,
+            )
+        )
 
-        reference = cls._as_date(request.reference_date)
-        end_date = cls._as_date(profile.snapshot_end)
-        if profile.has_future_data or profile.has_future_known_metadata:
-            errors.append(ISSUE_TEMPORAL_ISSUE)
-        elif reference is not None and end_date is not None and end_date > reference:
-            errors.append(ISSUE_TEMPORAL_ISSUE)
+        errors.extend(
+            _sv.check_temporal_basic(
+                snapshot_end=profile.snapshot_end,
+                reference_date=request.reference_date,
+                has_future_data_flags=(
+                    profile.has_future_data,
+                    profile.has_future_known_metadata,
+                ),
+                temporal_code=ISSUE_TEMPORAL_ISSUE,
+                error_cls=BenchmarkDataContractError,
+            )
+        )
+        errors.extend(
+            _sv.check_snapshot_at_mismatch(profile, temporal_code=ISSUE_TEMPORAL_ISSUE)
+        )
 
-        unique_warnings = tuple(dict.fromkeys(warnings))
-        unique_errors = tuple(dict.fromkeys(errors))
-        if unique_errors:
-            health = "error"
-        elif unique_warnings:
-            health = "warning"
-        else:
-            health = "ok"
+        unique_errors = _sv.dedupe(errors)
+        unique_warnings = _sv.dedupe(warnings)
+        health = _sv.aggregate_health(unique_errors, unique_warnings)
 
         return BenchmarkContractStatus(
             contract_name=BENCHMARK_CONTRACT_NAME,

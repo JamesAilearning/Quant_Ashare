@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping, Optional
 
+from src.contracts import _shared_validators as _sv
+
 TAXONOMY_CONTRACT_NAME = "v2-taxonomy-data-contract"
 TAXONOMY_SOURCE_OF_TRUTH = "explicit_taxonomy_artifact_with_manifest"
 TAXONOMY_ALLOWED_SOURCES = (TAXONOMY_SOURCE_OF_TRUTH,)
@@ -95,6 +97,7 @@ class TaxonomyArtifactProfile:
     has_inconsistent_mappings: bool = False
     has_future_effective_data: bool = False
     has_future_known_metadata: bool = False
+    has_snapshot_at_mismatch: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,15 +177,8 @@ class TaxonomyDataContract:
 
     @staticmethod
     def _as_date(value: Optional[str]) -> Optional[date]:
-        if value is None:
-            return None
-        text = str(value or "").strip()
-        if not text:
-            return None
-        try:
-            return date.fromisoformat(text)
-        except ValueError as exc:
-            raise TaxonomyDataContractError(f"Invalid ISO date value: '{text}'.") from exc
+        """Thin wrapper kept for backward compatibility with validate_input_boundary."""
+        return _sv.parse_iso_date(value, error_cls=TaxonomyDataContractError)
 
     @classmethod
     def validate_input_boundary(cls, request: TaxonomyContractInput) -> None:
@@ -225,59 +221,78 @@ class TaxonomyDataContract:
         cls.validate_input_boundary(request)
         profile = request.profile
 
-        warnings: list[str] = []
         errors: list[str] = []
+        warnings: list[str] = []
 
-        if not profile.artifact_present:
-            errors.append(ISSUE_MISSING_ARTIFACT)
-        if not profile.manifest_present:
-            errors.append(ISSUE_MISSING_MANIFEST)
-
-        metadata = profile.metadata or {}
-        present_fields = tuple(
-            key for key in TAXONOMY_REQUIRED_METADATA_FIELDS if str(metadata.get(key, "")).strip()
+        errors.extend(
+            _sv.check_presence(
+                profile,
+                missing_artifact_code=ISSUE_MISSING_ARTIFACT,
+                missing_manifest_code=ISSUE_MISSING_MANIFEST,
+            )
         )
-        missing_fields = tuple(key for key in TAXONOMY_REQUIRED_METADATA_FIELDS if key not in present_fields)
-        if missing_fields:
-            errors.append(ISSUE_SCHEMA_MISMATCH)
 
+        present_fields, missing_fields, metadata_errors = _sv.check_metadata_fields(
+            profile,
+            TAXONOMY_REQUIRED_METADATA_FIELDS,
+            schema_mismatch_code=ISSUE_SCHEMA_MISMATCH,
+        )
+        errors.extend(metadata_errors)
+
+        # Taxonomy-specific: declared temporal_mode must match metadata
+        # (not shared because it reads Input.temporal_mode).
+        metadata = profile.metadata or {}
         mode_from_metadata = str(metadata.get("temporal_mode", "")).strip().lower()
         if mode_from_metadata and mode_from_metadata != request.temporal_mode:
             errors.append(ISSUE_SCHEMA_MISMATCH)
 
-        normalized_columns = tuple(str(column).strip().lower() for column in profile.columns_present if str(column).strip())
+        normalized_columns = _sv.normalize_columns(profile.columns_present)
         required_columns = TAXONOMY_REQUIRED_BASE_COLUMNS + TAXONOMY_REQUIRED_MODE_COLUMNS[request.temporal_mode]
-        missing_columns = [col for col in required_columns if col not in normalized_columns]
-        if missing_columns:
-            errors.append(ISSUE_SCHEMA_MISMATCH)
+        errors.extend(
+            _sv.check_required_columns(
+                normalized_columns,
+                required_columns,
+                schema_mismatch_code=ISSUE_SCHEMA_MISMATCH,
+            )
+        )
 
-        if profile.stale_days is not None and profile.stale_days > request.stale_days_warn_threshold:
-            warnings.append(ISSUE_STALE_DATA)
+        warnings.extend(
+            _sv.check_staleness(profile, request.stale_days_warn_threshold, stale_code=ISSUE_STALE_DATA)
+        )
+        warnings.extend(
+            _sv.check_coverage(
+                profile,
+                request.min_coverage_ratio,
+                incomplete_coverage_code=ISSUE_INCOMPLETE_COVERAGE,
+            )
+        )
 
-        if profile.coverage_ratio is not None and profile.coverage_ratio < request.min_coverage_ratio:
-            warnings.append(ISSUE_INCOMPLETE_COVERAGE)
-
+        # Taxonomy-specific: mapping-consistency check.
         if profile.has_inconsistent_mappings:
             errors.append(ISSUE_INCONSISTENT_MAPPINGS)
             mapping_consistency_status = "inconsistent"
         else:
             mapping_consistency_status = "consistent"
 
-        reference = cls._as_date(request.reference_date)
-        end_date = cls._as_date(profile.snapshot_end)
-        if profile.has_future_effective_data or profile.has_future_known_metadata:
-            errors.append(ISSUE_TEMPORAL_LEAKAGE)
-        elif reference is not None and end_date is not None and end_date > reference:
-            errors.append(ISSUE_TEMPORAL_LEAKAGE)
+        errors.extend(
+            _sv.check_temporal_basic(
+                snapshot_end=profile.snapshot_end,
+                reference_date=request.reference_date,
+                has_future_data_flags=(
+                    profile.has_future_effective_data,
+                    profile.has_future_known_metadata,
+                ),
+                temporal_code=ISSUE_TEMPORAL_LEAKAGE,
+                error_cls=TaxonomyDataContractError,
+            )
+        )
+        errors.extend(
+            _sv.check_snapshot_at_mismatch(profile, temporal_code=ISSUE_TEMPORAL_LEAKAGE)
+        )
 
-        unique_warnings = tuple(dict.fromkeys(warnings))
-        unique_errors = tuple(dict.fromkeys(errors))
-        if unique_errors:
-            health = "error"
-        elif unique_warnings:
-            health = "warning"
-        else:
-            health = "ok"
+        unique_errors = _sv.dedupe(errors)
+        unique_warnings = _sv.dedupe(warnings)
+        health = _sv.aggregate_health(unique_errors, unique_warnings)
 
         return TaxonomyContractStatus(
             contract_name=TAXONOMY_CONTRACT_NAME,

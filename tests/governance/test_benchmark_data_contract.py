@@ -106,6 +106,16 @@ class BenchmarkDataContractTests(unittest.TestCase):
         self.assertEqual(status.contract_health, "error")
         self.assertIn(ISSUE_TEMPORAL_ISSUE, status.errors)
 
+    def test_snapshot_at_mismatch_is_reported_as_error(self):
+        # The loader is responsible for computing has_snapshot_at_mismatch
+        # by comparing manifest snapshot_at against the artifact's true max
+        # row date. Here we simulate that the loader has already detected
+        # the mismatch and the contract must surface it as a temporal error.
+        req = _valid_request(profile=_valid_profile(has_snapshot_at_mismatch=True))
+        status = BenchmarkDataContract.validate_and_build_status(req)
+        self.assertEqual(status.contract_health, "error")
+        self.assertIn(ISSUE_TEMPORAL_ISSUE, status.errors)
+
     def test_status_is_informational_and_not_runtime_selection(self):
         req = _valid_request()
         status = BenchmarkDataContract.validate_and_build_status(req)

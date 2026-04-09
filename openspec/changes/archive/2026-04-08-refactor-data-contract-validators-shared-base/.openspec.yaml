@@ -1,0 +1,7 @@
+change_id: refactor-data-contract-validators-shared-base
+status: proposed
+owner: quant-infra
+target_specs:
+  - v2-benchmark-data-contract
+  - v2-universe-data-contract
+  - v2-taxonomy-data-contract

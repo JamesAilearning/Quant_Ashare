@@ -143,6 +143,30 @@ class TaxonomyDataContractTests(unittest.TestCase):
         self.assertEqual(status.contract_health, "error")
         self.assertIn(ISSUE_TEMPORAL_LEAKAGE, status.errors)
 
+    def test_snapshot_at_mismatch_reports_temporal_leakage(self):
+        # trade_date and range modes carry a real date column, so the loader
+        # is responsible for cross-checking manifest snapshot_at against the
+        # max effective date and setting has_snapshot_at_mismatch on a
+        # mismatch. The contract surfaces it as a temporal-leakage error.
+        req = _valid_request(
+            temporal_mode=TAXONOMY_MODE_TRADE_DATE,
+            profile=_valid_profile(
+                metadata={**_valid_profile().metadata, "temporal_mode": TAXONOMY_MODE_TRADE_DATE},
+                columns_present=("instrument", "industry_code", "trade_date"),
+                has_snapshot_at_mismatch=True,
+            ),
+        )
+        status = TaxonomyDataContract.validate_and_build_status(req)
+        self.assertEqual(status.contract_health, "error")
+        self.assertIn(ISSUE_TEMPORAL_LEAKAGE, status.errors)
+
+    def test_static_mode_does_not_invent_snapshot_at_mismatch(self):
+        # Static mode taxonomy artifacts have no date column; loaders must
+        # leave has_snapshot_at_mismatch=False. The default valid profile
+        # is static and must remain healthy.
+        status = TaxonomyDataContract.validate_and_build_status(_valid_request())
+        self.assertNotIn(ISSUE_TEMPORAL_LEAKAGE, status.errors)
+
     def test_status_is_informational_and_not_runtime_industry_semantics(self):
         req = _valid_request()
         status = TaxonomyDataContract.validate_and_build_status(req)
