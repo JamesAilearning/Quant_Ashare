@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
+from src.contracts import _shared_validators as _sv
 from src.contracts.canonical_boundaries import (
     CANONICAL_RUNTIME_LAYER,
     CanonicalBoundaryError,
@@ -245,6 +246,17 @@ class CanonicalBacktestContract:
             raise CanonicalBacktestContractError("predictions_ref is required for canonical backtest contract.")
         if not str(request.evaluation_start or "").strip() or not str(request.evaluation_end or "").strip():
             raise CanonicalBacktestContractError("evaluation_start and evaluation_end are required.")
+        start_d = _sv.parse_iso_date(
+            request.evaluation_start, error_cls=CanonicalBacktestContractError
+        )
+        end_d = _sv.parse_iso_date(
+            request.evaluation_end, error_cls=CanonicalBacktestContractError
+        )
+        if start_d is not None and end_d is not None and start_d > end_d:
+            raise CanonicalBacktestContractError(
+                f"evaluation_start ({request.evaluation_start}) must be <= "
+                f"evaluation_end ({request.evaluation_end})."
+            )
         if not isinstance(request.account_config, CanonicalAccountConfig):
             raise CanonicalBacktestContractError(
                 "account_config must be a CanonicalAccountConfig instance; "

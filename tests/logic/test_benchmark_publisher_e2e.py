@@ -230,6 +230,76 @@ class BenchmarkPublisherInitGuardTests(unittest.TestCase):
                 )
             self.assertIn("Canonical qlib runtime is not initialized", str(ctx.exception))
 
+    def _force_canonical_init_state(self) -> None:
+        """Inject canonical init state without needing a real qlib bundle.
+
+        ISO validation runs after the init guard but before any qlib
+        call, so these tests do not need to stub qlib.data at all.
+        """
+        from src.core import qlib_runtime as _rt
+        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(provider_uri="fake://x", region="cn")
+        _rt._CANONICAL_QLIB_INITIALIZED = True
+
+    def test_publish_bad_start_time_raises(self) -> None:
+        self._force_canonical_init_state()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            artifact_path = tmp_dir / "x.csv"
+            manifest_path = tmp_dir / "x.manifest.json"
+            with self.assertRaises(BenchmarkArtifactPublisherError) as ctx:
+                BenchmarkArtifactPublisher.publish(
+                    benchmark_code=TEST_BENCHMARK_CODE,
+                    start_time="banana",
+                    end_time=TEST_END,
+                    artifact_path=str(artifact_path),
+                    manifest_path=str(manifest_path),
+                )
+            message = str(ctx.exception)
+            self.assertIn("start_time", message)
+            self.assertIn("banana", message)
+            self.assertFalse(artifact_path.exists())
+            self.assertFalse(manifest_path.exists())
+
+    def test_publish_bad_end_time_raises(self) -> None:
+        self._force_canonical_init_state()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            artifact_path = tmp_dir / "x.csv"
+            manifest_path = tmp_dir / "x.manifest.json"
+            with self.assertRaises(BenchmarkArtifactPublisherError) as ctx:
+                BenchmarkArtifactPublisher.publish(
+                    benchmark_code=TEST_BENCHMARK_CODE,
+                    start_time=TEST_START,
+                    end_time="2026/02/27",
+                    artifact_path=str(artifact_path),
+                    manifest_path=str(manifest_path),
+                )
+            message = str(ctx.exception)
+            self.assertIn("end_time", message)
+            self.assertIn("2026/02/27", message)
+            self.assertFalse(artifact_path.exists())
+            self.assertFalse(manifest_path.exists())
+
+    def test_publish_start_after_end_raises(self) -> None:
+        self._force_canonical_init_state()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            artifact_path = tmp_dir / "x.csv"
+            manifest_path = tmp_dir / "x.manifest.json"
+            with self.assertRaises(BenchmarkArtifactPublisherError) as ctx:
+                BenchmarkArtifactPublisher.publish(
+                    benchmark_code=TEST_BENCHMARK_CODE,
+                    start_time="2026-02-27",
+                    end_time="2026-02-01",
+                    artifact_path=str(artifact_path),
+                    manifest_path=str(manifest_path),
+                )
+            message = str(ctx.exception)
+            self.assertIn("2026-02-27", message)
+            self.assertIn("2026-02-01", message)
+            self.assertFalse(artifact_path.exists())
+            self.assertFalse(manifest_path.exists())
+
     def test_structural_misuse_raises(self) -> None:
         _reset_canonical_qlib_runtime_for_tests()
         # Even with empty arg, the init guard fires first; that's acceptable
@@ -275,13 +345,21 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
     def tearDown(self) -> None:
         _reset_canonical_qlib_runtime_for_tests()
 
+    # Sentinel for "this sys.modules key did not exist before the patch".
+    _MODULE_ABSENT = object()
+
     def _patch_publisher(self, fake_rows):
         """Replace _flatten_close_frame and the qlib import with stubs."""
         import src.data.benchmark_artifact_publisher as pub_mod
         # Inject a fake qlib.data module via sys.modules so the
         # `from qlib.data import D` inside publish() resolves to our stub
-        # without requiring a real qlib install.
+        # without requiring a real qlib install. Snapshot any pre-existing
+        # entries so teardown can restore the exact prior state instead of
+        # leaking the fakes (or, worse, deleting a real module that was
+        # imported by some earlier test in the same process).
         import types
+        self._prior_qlib = sys.modules.get("qlib", self._MODULE_ABSENT)
+        self._prior_qlib_data = sys.modules.get("qlib.data", self._MODULE_ABSENT)
         fake_qlib_data = types.ModuleType("qlib.data")
         fake_qlib = types.ModuleType("qlib")
 
@@ -307,7 +385,9 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
                 return days
 
         fake_qlib_data.D = _FakeD
-        sys.modules.setdefault("qlib", fake_qlib)
+        # Force-set both keys so the publish() call resolves to our fakes
+        # even if a real qlib was already imported by some earlier test.
+        sys.modules["qlib"] = fake_qlib
         sys.modules["qlib.data"] = fake_qlib_data
 
         original_flatten = pub_mod.BenchmarkArtifactPublisher._flatten_close_frame
@@ -319,9 +399,18 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
     def _restore_publisher(self, original_flatten) -> None:
         import src.data.benchmark_artifact_publisher as pub_mod
         pub_mod.BenchmarkArtifactPublisher._flatten_close_frame = original_flatten  # type: ignore[assignment]
-        sys.modules.pop("qlib.data", None)
-        # Leave fake "qlib" placeholder in sys.modules harmless; it has
-        # no submodules and no other test imports it directly.
+        # Restore the exact prior state of sys.modules: if a key was
+        # absent before the patch, remove it; if it held a real module,
+        # put that module back. Never blindly delete -- doing so would
+        # break any subsequent test that depends on a real qlib import.
+        for key, prior in (
+            ("qlib.data", self._prior_qlib_data),
+            ("qlib", self._prior_qlib),
+        ):
+            if prior is self._MODULE_ABSENT:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = prior
 
     def test_default_snapshot_at_uses_actual_max_row(self) -> None:
         rows = [("2026-02-26", 100.0), ("2026-02-27", 101.0)]
@@ -391,6 +480,28 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
         finally:
             pub_mod.BenchmarkArtifactLoader.load = original_load  # type: ignore[assignment]
             self._restore_publisher(original_flatten)
+
+    def test_patch_restore_preserves_sys_modules_state(self) -> None:
+        # The mock setup must not leak fake `qlib` / `qlib.data` modules
+        # into sys.modules after teardown. Capture the absent-or-present
+        # state before patching, run a normal patch+restore, and verify
+        # sys.modules is exactly back where it started.
+        prior_qlib = sys.modules.get("qlib", self._MODULE_ABSENT)
+        prior_qlib_data = sys.modules.get("qlib.data", self._MODULE_ABSENT)
+
+        rows = [("2026-02-26", 100.0), ("2026-02-27", 101.0)]
+        original = self._patch_publisher(rows)
+        self.assertIn("qlib.data", sys.modules)  # patch installed it
+        self._restore_publisher(original)
+
+        if prior_qlib is self._MODULE_ABSENT:
+            self.assertNotIn("qlib", sys.modules)
+        else:
+            self.assertIs(sys.modules.get("qlib"), prior_qlib)
+        if prior_qlib_data is self._MODULE_ABSENT:
+            self.assertNotIn("qlib.data", sys.modules)
+        else:
+            self.assertIs(sys.modules.get("qlib.data"), prior_qlib_data)
 
     def test_explicit_snapshot_at_mismatch_raises_at_boundary(self) -> None:
         rows = [("2026-02-26", 100.0), ("2026-02-27", 101.0)]
