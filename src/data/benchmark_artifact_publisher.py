@@ -31,6 +31,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -112,6 +113,16 @@ class BenchmarkArtifactPublisher:
         cls._require_non_empty_str(end_time, "end_time")
         cls._require_non_empty_str(artifact_path, "artifact_path")
         cls._require_non_empty_str(manifest_path, "manifest_path")
+
+        # Strict ISO + ordering check BEFORE any qlib call. Garbage dates
+        # forwarded to D.features surface as opaque qlib errors that
+        # have nothing to do with "you passed a bad date string".
+        start_d = cls._parse_iso_strict(start_time, "start_time")
+        end_d = cls._parse_iso_strict(end_time, "end_time")
+        if start_d > end_d:
+            raise BenchmarkArtifactPublisherError(
+                f"start_time '{start_time}' must be <= end_time '{end_time}'."
+            )
 
         # Lazy import qlib.data here. Module-load time import would force
         # every test that touches src/data/* to depend on qlib being fully
@@ -207,6 +218,16 @@ class BenchmarkArtifactPublisher:
     def _require_non_empty_str(value: Any, field_name: str) -> None:
         if not str(value or "").strip():
             raise BenchmarkArtifactPublisherError(f"{field_name} is required.")
+
+    @staticmethod
+    def _parse_iso_strict(value: str, field_name: str) -> date:
+        """Parse a strict ISO ``YYYY-MM-DD`` date or raise at the boundary."""
+        try:
+            return date.fromisoformat(str(value).strip())
+        except ValueError as exc:
+            raise BenchmarkArtifactPublisherError(
+                f"{field_name} must be ISO date YYYY-MM-DD, got '{value}'."
+            ) from exc
 
     @staticmethod
     def _flatten_close_frame(frame: Any) -> list[tuple[str, float]]:

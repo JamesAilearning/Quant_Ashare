@@ -187,5 +187,39 @@ class CanonicalBacktestStrictInputTests(unittest.TestCase):
             )
 
 
+class CanonicalBacktestEvaluationDateBoundaryTests(unittest.TestCase):
+    """ISO date format + ordering checks at the validate_input boundary."""
+
+    def test_evaluation_start_bad_format_raises(self):
+        req = _valid_request(evaluation_start="banana")
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "banana"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_evaluation_end_bad_format_raises(self):
+        req = _valid_request(evaluation_end="2026/02/27")
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "2026/02/27"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_evaluation_start_after_end_raises(self):
+        req = _valid_request(
+            evaluation_start="2026-02-27",
+            evaluation_end="2026-02-01",
+        )
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError,
+            r"evaluation_start.*<= evaluation_end",
+        ):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_evaluation_start_equal_end_passes(self):
+        # Single-day window is a legitimate use case.
+        CanonicalBacktestContract.validate_input(
+            _valid_request(
+                evaluation_start="2026-02-27",
+                evaluation_end="2026-02-27",
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

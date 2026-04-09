@@ -1,0 +1,6 @@
+change_id: validate-iso-date-boundaries
+status: archived
+owner: quant-infra
+target_specs:
+  - v2-canonical-backtest-contract
+  - v2-benchmark-artifact-publisher
