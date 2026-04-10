@@ -1,0 +1,8 @@
+change_id: add-universe-and-taxonomy-artifact-loader-and-publisher
+status: proposed
+owner: quant-infra
+target_specs:
+  - v2-universe-artifact-loader
+  - v2-universe-artifact-publisher
+  - v2-taxonomy-artifact-loader
+  - v2-taxonomy-artifact-publisher
