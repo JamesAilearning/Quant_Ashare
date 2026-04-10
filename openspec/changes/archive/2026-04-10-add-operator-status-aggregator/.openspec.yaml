@@ -1,0 +1,5 @@
+change_id: add-operator-status-aggregator
+status: proposed
+owner: quant-infra
+target_specs:
+  - v2-operator-status-aggregator
