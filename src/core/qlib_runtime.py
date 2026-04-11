@@ -99,12 +99,20 @@ def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
         ) from exc
 
     region_constant = REG_CN if config.region.lower() == "cn" else REG_US
-    qlib.init(
-        provider_uri=config.provider_uri,
-        region=region_constant,
-        expression_cache=config.expression_cache,
-        dataset_cache=config.dataset_cache,
-    )
+
+    # Guard: qlib may already be initialized at the process level (e.g.
+    # test-runner resets our singleton but qlib's internal state persists).
+    # Calling qlib.init() again raises RecorderInitializationError.
+    from qlib.config import C as _qlib_C  # type: ignore[import-not-found]
+
+    if not getattr(_qlib_C, "registered", False):
+        qlib.init(
+            provider_uri=config.provider_uri,
+            region=region_constant,
+            expression_cache=config.expression_cache,
+            dataset_cache=config.dataset_cache,
+        )
+
     _CANONICAL_CONFIG = config
     _CANONICAL_QLIB_INITIALIZED = True
 

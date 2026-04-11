@@ -143,7 +143,7 @@ def _coerce_to_date(value: object) -> Optional[date]:
     also occur in older versions; this helper accepts all three shapes
     and returns ``None`` for anything else so we never crash mid-fetch.
     """
-    if isinstance(value, date):
+    if type(value) is date:
         return value
     to_date = getattr(value, "date", None)
     if callable(to_date):
