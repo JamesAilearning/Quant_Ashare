@@ -185,7 +185,8 @@ class WalkForwardEngine:
                 if test_s >= test_e:
                     break
                 # Reject folds with test period too short to be meaningful
-                if (test_e - test_s).days < 10:
+                # +1 because both start and end dates are inclusive
+                if (test_e - test_s).days + 1 < 10:
                     break
 
             windows.append((
