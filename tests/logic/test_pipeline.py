@@ -27,6 +27,9 @@ class PipelineStructuralTests(unittest.TestCase):
         self.assertEqual(config.model_type, "LGBModel")
 
 
+from tests.e2e_guard import skip_unless_e2e
+
+@skip_unless_e2e
 @unittest.skipUnless(_HAS_QLIB_DATA, "qlib data bundle not available")
 class PipelineE2ETests(unittest.TestCase):
     """End-to-end pipeline test. Runs the full workflow."""

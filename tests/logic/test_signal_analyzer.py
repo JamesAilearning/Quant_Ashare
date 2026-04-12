@@ -72,6 +72,9 @@ def _qlib_available():
         return False
 
 
+from tests.e2e_guard import skip_unless_e2e
+
+@skip_unless_e2e
 @unittest.skipUnless(_qlib_available(), "requires qlib + local data bundle")
 class SignalAnalyzerE2ETests(unittest.TestCase):
     """E2E tests using real qlib data."""

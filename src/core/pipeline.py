@@ -1,6 +1,6 @@
 """V2 Quantitative Trading Pipeline — orchestrates the full workflow.
 
-init → features → model → backtest → report
+init → features → model → signal → backtest → factor analysis → attribution → report
 
 All steps are wired through V2's contract and governance system.
 """
@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.core.logger import get_logger
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -22,7 +23,9 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
 )
+from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
 from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
+from src.core.performance_attribution import AttributionConfig, AttributionResult, PerformanceAttribution
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
@@ -72,6 +75,15 @@ class PipelineConfig:
     topk: int = 50
     n_drop: int = 5
 
+    # factor analysis
+    run_factor_analysis: bool = True
+    factor_forward_period: int = 5
+    factor_top_n: int = 20
+    factor_max_decay_lag: int = 20
+
+    # performance attribution
+    run_attribution: bool = True
+
     # output
     output_dir: str = "output"
 
@@ -84,6 +96,8 @@ class PipelineResult:
     model_result: ModelTrainResult
     signal_analysis: SignalAnalysisResult
     backtest_output: CanonicalBacktestOutput
+    factor_analysis: FactorAnalysisResult | None
+    attribution: AttributionResult | None
     report_path: str
 
 
@@ -177,15 +191,48 @@ class Pipeline:
             n_drop=config.n_drop,
         )
 
-        # Step 6: Write report
+        # Step 6: Factor analysis (optional)
+        factor_result: FactorAnalysisResult | None = None
+        if config.run_factor_analysis:
+            cls._log("Running factor analysis...")
+            factor_result = FactorAnalyzer.analyze(FactorAnalysisConfig(
+                instruments=config.instruments,
+                feature_handler=config.feature_handler,
+                test_start=config.test_start,
+                test_end=config.test_end,
+                forward_period=config.factor_forward_period,
+                top_n_factors=config.factor_top_n,
+                max_decay_lag=config.factor_max_decay_lag,
+            ))
+            FactorAnalyzer.print_report(factor_result)
+
+        # Step 7: Performance attribution (optional)
+        attribution_result: AttributionResult | None = None
+        if config.run_attribution:
+            cls._log("Running performance attribution...")
+            attribution_result = PerformanceAttribution.analyze(
+                return_series=backtest_output.return_series,
+                predictions=model_result.predictions,
+                config=AttributionConfig(
+                    start_date=config.test_start,
+                    end_date=config.test_end,
+                    benchmark_code=config.benchmark_code,
+                ),
+            )
+            PerformanceAttribution.print_report(attribution_result)
+
+        # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")
-        cls._write_report(report_path, config, feature_result, model_result, signal_result, backtest_output)
+        cls._write_report(
+            report_path, config, feature_result, model_result,
+            signal_result, backtest_output, factor_result, attribution_result,
+        )
         cls._log(f"  Report: {report_path}")
 
-        # Step 7: Print summary
+        # Step 9: Print summary
         cls._print_summary(backtest_output)
 
-        # Step 8: Generate charts
+        # Step 10: Generate charts
         cls._log("Generating performance charts...")
         charts_dir = str(output_dir / "charts")
         ResultVisualizer.generate(
@@ -198,12 +245,16 @@ class Pipeline:
             model_result=model_result,
             signal_analysis=signal_result,
             backtest_output=backtest_output,
+            factor_analysis=factor_result,
+            attribution=attribution_result,
             report_path=report_path,
         )
 
-    @staticmethod
-    def _log(msg: str) -> None:
-        print(f"[Pipeline] {msg}")
+    _logger = get_logger("src.core.pipeline")
+
+    @classmethod
+    def _log(cls, msg: str) -> None:
+        cls._logger.info(msg)
 
     @staticmethod
     def _write_report(
@@ -213,8 +264,10 @@ class Pipeline:
         model_result: ModelTrainResult,
         signal_result: SignalAnalysisResult,
         backtest_output: CanonicalBacktestOutput,
+        factor_result: FactorAnalysisResult | None = None,
+        attribution_result: AttributionResult | None = None,
     ) -> None:
-        report = {
+        report: dict[str, Any] = {
             "generated_at": datetime.now().isoformat(),
             "metric_status": backtest_output.metric_status,
             "official_backtest_path": backtest_output.official_backtest_path,
@@ -249,29 +302,74 @@ class Pipeline:
             },
             "risk_analysis": dict(backtest_output.risk_analysis),
         }
+
+        if factor_result is not None:
+            report["factor_analysis"] = {
+                "total_factors": factor_result.total_factors,
+                "top_factors": [
+                    {
+                        "name": s.factor_name, "mean_ic": s.mean_ic,
+                        "std_ic": s.std_ic, "ir": s.ir,
+                        "ic_positive_ratio": s.ic_positive_ratio,
+                    }
+                    for s in factor_result.factor_ic_stats[:20]
+                ],
+                "ic_decay": dict(factor_result.ic_decay),
+            }
+
+        if attribution_result is not None:
+            report["attribution"] = {
+                "total_portfolio_return": attribution_result.total_portfolio_return,
+                "total_benchmark_return": attribution_result.total_benchmark_return,
+                "total_excess_return": attribution_result.total_excess_return,
+                "allocation_effect": attribution_result.total_allocation_effect,
+                "selection_effect": attribution_result.total_selection_effect,
+                "interaction_effect": attribution_result.total_interaction_effect,
+                "sector_attribution": [
+                    {
+                        "sector": s.sector,
+                        "portfolio_weight": s.portfolio_weight,
+                        "benchmark_weight": s.benchmark_weight,
+                        "allocation_effect": s.allocation_effect,
+                        "selection_effect": s.selection_effect,
+                        "total_effect": s.total_effect,
+                    }
+                    for s in attribution_result.sector_attribution
+                ],
+                "monthly_returns": [
+                    {
+                        "month": f"{m.year}-{m.month:02d}",
+                        "portfolio": m.portfolio_return,
+                        "benchmark": m.benchmark_return,
+                        "excess": m.excess_return,
+                    }
+                    for m in attribution_result.monthly_returns
+                ],
+            }
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)
 
-    @staticmethod
-    def _print_summary(output: CanonicalBacktestOutput) -> None:
-        print("\n" + "=" * 60)
-        print("  V2 Pipeline Results")
-        print("=" * 60)
-        print(f"  Metric Status: {output.metric_status}")
-        print(f"  Backtest Path: {output.official_backtest_path}")
-        print(f"  Trading Days:  {output.report.get('total_days', 'N/A')}")
-        print(f"  Period:        {output.report.get('start_date')} ~ {output.report.get('end_date')}")
+    @classmethod
+    def _print_summary(cls, output: CanonicalBacktestOutput) -> None:
+        log = cls._logger.info
+        log("=" * 60)
+        log("  V2 Pipeline Results")
+        log("=" * 60)
+        log(f"  Metric Status: {output.metric_status}")
+        log(f"  Backtest Path: {output.official_backtest_path}")
+        log(f"  Trading Days:  {output.report.get('total_days', 'N/A')}")
+        log(f"  Period:        {output.report.get('start_date')} ~ {output.report.get('end_date')}")
 
         risk = output.risk_analysis
         for label in ("excess_return_without_cost", "excess_return_with_cost"):
-            # risk_analysis is now a flat {metric: value} dict per section
             section = risk.get(label, {})
             if section:
-                print(f"\n  [{label}]")
+                log(f"  [{label}]")
                 for key in ("annualized_return", "information_ratio", "max_drawdown"):
                     val = section.get(key, "N/A")
                     if isinstance(val, float):
-                        print(f"    {key}: {val:.4f}")
+                        log(f"    {key}: {val:.4f}")
                     else:
-                        print(f"    {key}: {val}")
-        print("=" * 60)
+                        log(f"    {key}: {val}")
+        log("=" * 60)
