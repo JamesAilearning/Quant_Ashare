@@ -217,14 +217,39 @@ class SignalAnalyzer:
     def _compute_ic_decay(
         cls, predictions: Any, returns_data: Any, max_lag: int, method: str
     ) -> list[float]:
-        """Compute IC at each lag from 1 to max_lag (IC decay curve)."""
+        """Compute IC at each lag from 1 to max_lag (IC decay curve).
+
+        Pre-computes the close price matrix once and derives all forward
+        returns from it, avoiding redundant unstack/shift per lag.
+        """
         import pandas as pd
+        import numpy as np
+
+        close = returns_data["close"].unstack(level="instrument")
+        pred_df = predictions.to_frame("pred")
+        pred_df.index.names = ["datetime", "instrument"]
 
         decay = []
         for lag in range(1, max_lag + 1):
-            daily_ic = cls._compute_daily_ic(predictions, returns_data, lag, method)
-            valid_ic = daily_ic.dropna()
-            decay.append(float(valid_ic.mean()) if len(valid_ic) > 0 else 0.0)
+            forward_ret = close.shift(-lag) / close - 1
+            forward_ret_stacked = forward_ret.stack(dropna=False)
+            forward_ret_stacked.name = "forward_ret"
+            forward_ret_stacked.index.names = ["datetime", "instrument"]
+
+            merged = pred_df.join(forward_ret_stacked, how="inner").dropna()
+            if merged.empty:
+                decay.append(0.0)
+                continue
+
+            def _ic_func(group: Any) -> float:
+                if len(group) < 3:
+                    return np.nan
+                if method == "rank":
+                    return group["pred"].rank().corr(group["forward_ret"].rank())
+                return group["pred"].corr(group["forward_ret"])
+
+            daily_ic = merged.groupby(level=0).apply(_ic_func).dropna()
+            decay.append(float(daily_ic.mean()) if len(daily_ic) > 0 else 0.0)
         return decay
 
     @classmethod

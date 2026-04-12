@@ -148,6 +148,8 @@ class Pipeline:
 
         # Step 5: Run canonical backtest
         cls._log("Running canonical backtest...")
+        # predictions_ref is a provenance marker (where the model artifact lives),
+        # not consumed by BacktestRunner — predictions are passed directly below.
         backtest_request = CanonicalBacktestInput(
             predictions_ref=model_artifact_path,
             evaluation_start=config.test_start,

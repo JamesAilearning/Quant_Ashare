@@ -227,8 +227,14 @@ class RiskConstraintEngine:
         - 600xxx, 601xxx, 603xxx: Shanghai main board
         - 000xxx, 001xxx: Shenzhen main board
         - 002xxx: SME board
-        - 300xxx: ChiNext (GEM)
+        - 300xxx, 301xxx: ChiNext (GEM)
         - 688xxx: STAR market
+
+        **Limitation**: stocks that don't match any prefix are bucketed as
+        "Other".  When many stocks fall into "Other" the per-industry limit
+        effectively becomes a single-bucket cap, which may *increase*
+        concentration rather than reduce it.  For production use, prefer
+        passing a proper industry taxonomy via ``RiskConstraintConfig.industry_map``.
         """
         sector_map = {}
         for inst in instruments:
