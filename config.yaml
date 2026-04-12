@@ -1,0 +1,38 @@
+# V2 Quantitative Trading Pipeline Configuration
+# Copy this file and modify for your strategy experiments.
+
+# qlib runtime
+provider_uri: "D:/qlib_data/my_cn_data"
+region: "cn"
+
+# features
+instruments: "csi300"
+feature_handler: "Alpha158"
+train_start: "2022-01-01"
+train_end: "2024-12-31"
+valid_start: "2025-01-01"
+valid_end: "2025-06-30"
+test_start: "2025-07-01"
+test_end: "2025-12-31"
+
+# model
+model_type: "LGBModel"
+num_boost_round: 1000
+early_stopping_rounds: 50
+learning_rate: 0.0421
+max_depth: 8
+num_leaves: 210
+
+# backtest
+benchmark_code: "SH600000"
+init_cash: 100000000
+commission_rate: 0.0005
+stamp_tax_bps: 10.0
+slippage_bps: 5.0
+min_cost: 5.0
+execution_price_kind: "close"
+topk: 50
+n_drop: 5
+
+# output
+output_dir: "output"

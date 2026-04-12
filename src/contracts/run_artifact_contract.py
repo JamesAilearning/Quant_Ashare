@@ -172,7 +172,6 @@ class RunArtifactContract:
         cls.validate_input_boundary(request)
         profile = request.profile
 
-        warnings: list[str] = []
         errors: list[str] = []
 
         if not profile.artifact_present:
@@ -209,14 +208,8 @@ class RunArtifactContract:
         elif reference is not None and produced_date is not None and produced_date > reference:
             errors.append(ISSUE_TEMPORAL_PROVENANCE_ANOMALY)
 
-        unique_warnings = tuple(dict.fromkeys(warnings))
         unique_errors = tuple(dict.fromkeys(errors))
-        if unique_errors:
-            health = "error"
-        elif unique_warnings:
-            health = "warning"
-        else:
-            health = "ok"
+        health = "error" if unique_errors else "ok"
 
         return RunArtifactContractStatus(
             contract_name=RUN_ARTIFACT_CONTRACT_NAME,
@@ -232,6 +225,6 @@ class RunArtifactContract:
             produced_at=produced_at,
             reference_date=request.reference_date,
             lineage_consistency_status=lineage_status,
-            warnings=unique_warnings,
+            warnings=(),
             errors=unique_errors,
         )

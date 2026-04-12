@@ -1,52 +1,47 @@
 """V2 Quantitative Trading Pipeline — end-to-end entry point.
 
 Usage:
-    python main.py
+    python main.py                     # uses config.yaml
+    python main.py config.yaml         # explicit config file
+    python main.py my_strategy.yaml    # custom config
 """
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+import yaml
+
 from src.core.pipeline import Pipeline, PipelineConfig
 
 
+def _load_config(path: str) -> PipelineConfig:
+    """Load a PipelineConfig from a YAML file."""
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with open(config_path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config file must be a YAML mapping, got {type(raw).__name__}")
+
+    # Only pass keys that PipelineConfig accepts
+    valid_fields = {f.name for f in PipelineConfig.__dataclass_fields__.values()}
+    unknown = set(raw) - valid_fields
+    if unknown:
+        print(f"[Warning] Unknown config keys ignored: {sorted(unknown)}")
+
+    filtered = {k: v for k, v in raw.items() if k in valid_fields}
+    return PipelineConfig(**filtered)
+
+
 def main() -> None:
-    config = PipelineConfig(
-        # qlib runtime
-        provider_uri=r"D:/qlib_data/my_cn_data",
-        region="cn",
-
-        # features
-        instruments="csi300",
-        feature_handler="Alpha158",
-        train_start="2022-01-01",
-        train_end="2024-12-31",
-        valid_start="2025-01-01",
-        valid_end="2025-06-30",
-        test_start="2025-07-01",
-        test_end="2025-12-31",
-
-        # model
-        model_type="LGBModel",
-        num_boost_round=1000,
-        learning_rate=0.0421,
-        max_depth=8,
-        num_leaves=210,
-
-        # backtest
-        benchmark_code="SH600000",  # Use a stock if index data unavailable
-        init_cash=100_000_000,
-        commission_rate=0.0005,
-        stamp_tax_bps=10.0,
-        slippage_bps=5.0,
-        min_cost=5.0,
-        execution_price_kind="close",
-        topk=50,
-        n_drop=5,
-
-        # output
-        output_dir="output",
-    )
-
+    config_file = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    print(f"[Pipeline] Loading config from {config_file}")
+    config = _load_config(config_file)
     Pipeline.run(config)
 
 
