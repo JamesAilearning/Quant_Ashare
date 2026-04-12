@@ -54,6 +54,12 @@ class BacktestRunner:
     ) -> CanonicalBacktestOutput:
         CanonicalBacktestContract.validate_input(request)
 
+        if not request.benchmark_code:
+            raise BacktestRunnerError(
+                "benchmark_code is required. Pass an explicit benchmark "
+                "(e.g. 'SH000300' or 'SH600000')."
+            )
+
         if predictions is None or (hasattr(predictions, "empty") and predictions.empty):
             raise BacktestRunnerError("predictions must be non-empty.")
 
@@ -71,11 +77,12 @@ class BacktestRunner:
         # Map CanonicalExchangeConfig → qlib exchange_kwargs
         cost = request.exchange_config.cost_model
         stamp_tax_fraction = cost.stamp_tax_bps / 10000.0
+        slippage_fraction = cost.slippage_bps / 10000.0
         exchange_kwargs = {
             "freq": request.exchange_config.freq,
             "deal_price": request.exchange_config.execution_price_kind,
-            "open_cost": cost.commission_rate,
-            "close_cost": cost.commission_rate + stamp_tax_fraction,
+            "open_cost": cost.commission_rate + slippage_fraction,
+            "close_cost": cost.commission_rate + stamp_tax_fraction + slippage_fraction,
             "min_cost": cost.min_cost,
             "limit_threshold": 0.095,
         }
@@ -101,7 +108,7 @@ class BacktestRunner:
                 strategy=strategy,
                 executor=executor,
                 account=request.account_config.init_cash,
-                benchmark=request.benchmark_code or "SH000300",
+                benchmark=request.benchmark_code,
                 exchange_kwargs=exchange_kwargs,
             )
         except Exception as exc:

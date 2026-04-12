@@ -201,8 +201,8 @@ class PerformanceAttribution:
         sectors = sorted(set(sector_map.values()))
         results = []
 
-        # Overall benchmark return for BF model
-        total_bench_ret = float(bench_returns.sum()) if len(bench_returns) > 0 else 0.0
+        # Overall benchmark return for BF model (compound, consistent with portfolio)
+        total_bench_ret = float((1 + bench_returns).prod() - 1) if len(bench_returns) > 0 else 0.0
 
         for sector in sectors:
             sector_instruments = [i for i in instruments if sector_map.get(i) == sector]
