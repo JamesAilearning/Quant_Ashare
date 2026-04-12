@@ -223,29 +223,63 @@ class BacktestRunner:
 def _risk_analysis_to_flat_dict(df: Any) -> dict:
     """Normalize a qlib risk_analysis DataFrame to a flat {metric: value} dict.
 
-    qlib's ``risk_analysis`` returns a DataFrame shaped like::
+    qlib's ``risk_analysis`` can return a DataFrame in two orientations:
 
-        index        annualized_return  information_ratio  max_drawdown  ...
-        risk         -0.27              -1.05              -0.15         ...
+    Column-oriented (metric as columns, index row = "risk")::
 
-    We flatten to ``{"annualized_return": -0.27, "information_ratio": -1.05, ...}``
-    so callers never need to guess the nesting depth.
+        index  annualized_return  information_ratio  max_drawdown
+        risk   -0.27              -1.05              -0.15
+
+        df.to_dict() → {"annualized_return": {"risk": -0.27},
+                         "information_ratio": {"risk": -1.05}, ...}
+
+    Row-oriented (index = metric names, single column "risk")::
+
+        index              risk
+        annualized_return  -0.27
+        information_ratio  -1.05
+        max_drawdown       -0.15
+
+        df.to_dict() → {"risk": {"annualized_return": -0.27,
+                                  "information_ratio": -1.05, ...}}
+
+    Both are normalized to ``{"annualized_return": -0.27, ...}``.
     """
     try:
-        nested = {
-            str(k): {str(kk): float(vv) if hasattr(vv, "__float__") else str(vv) for kk, vv in v.items()}
-            for k, v in df.to_dict().items()
-        }
-        # qlib produces {metric_name: {"risk": value}} — flatten to {metric_name: value}
+        raw = df.to_dict()
+        if not raw:
+            return {}
+
+        first_val = next(iter(raw.values()))
+
+        if not isinstance(first_val, dict):
+            # Already flat scalars.
+            return {str(k): (float(v) if hasattr(v, "__float__") else str(v))
+                    for k, v in raw.items()}
+
+        # Detect row-oriented shape: single outer key "risk" whose value
+        # is a dict of {metric_name: scalar}.
+        if len(raw) == 1 and "risk" in raw and isinstance(raw["risk"], dict):
+            inner = raw["risk"]
+            return {str(k): (float(v) if hasattr(v, "__float__") else str(v))
+                    for k, v in inner.items()}
+
+        # Column-oriented shape: outer keys are metric names, inner dicts
+        # have index labels as keys (typically a single "risk" entry).
         flat: dict = {}
-        for metric, sub in nested.items():
-            if isinstance(sub, dict) and len(sub) == 1:
-                flat[metric] = next(iter(sub.values()))
-            elif isinstance(sub, dict):
-                # Multiple rows: take the "risk" row if present, else first
-                flat[metric] = sub.get("risk", next(iter(sub.values())))
-            else:
-                flat[metric] = sub
+        for metric, sub in raw.items():
+            if not isinstance(sub, dict):
+                try:
+                    flat[str(metric)] = float(sub)
+                except (TypeError, ValueError):
+                    flat[str(metric)] = str(sub)
+                continue
+            # Prefer the "risk" index label; fall back to first value.
+            val = sub.get("risk", next(iter(sub.values())))
+            try:
+                flat[str(metric)] = float(val)
+            except (TypeError, ValueError):
+                flat[str(metric)] = str(val)
         return flat
     except Exception:
         return {"raw": str(df)}
