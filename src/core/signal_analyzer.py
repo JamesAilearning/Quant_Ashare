@@ -186,7 +186,7 @@ class SignalAnalyzer:
         close = returns_data["close"].unstack(level="instrument")
         forward_ret = close.shift(-period) / close - 1
         # Stack back to (datetime, instrument)
-        forward_ret_stacked = forward_ret.stack(future_stack=True)
+        forward_ret_stacked = forward_ret.stack(dropna=False)
         forward_ret_stacked.name = "forward_ret"
         forward_ret_stacked.index.names = ["datetime", "instrument"]
 

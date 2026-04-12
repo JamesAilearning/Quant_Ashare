@@ -223,8 +223,12 @@ class TemporalArtifactLoaderBase:
                                 if reference is not None and parsed > reference:
                                     has_future_effective_data = True
 
-        except OSError:
+        except FileNotFoundError:
             return _CsvReadOutcome(0, (), None, None, False, None, 0)
+        except OSError as exc:
+            raise cls._ERROR_CLASS(
+                f"Cannot read artifact CSV at '{artifact_path}': {exc}"
+            ) from exc
 
         # Build columns_present restricted to columns the contract cares about
         recognised: list[str] = []
