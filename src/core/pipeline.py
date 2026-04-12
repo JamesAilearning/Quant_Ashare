@@ -25,6 +25,7 @@ from src.core.canonical_backtest_contract import (
 from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
+from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
 
 
@@ -181,6 +182,14 @@ class Pipeline:
 
         # Step 7: Print summary
         cls._print_summary(backtest_output)
+
+        # Step 8: Generate charts
+        cls._log("Generating performance charts...")
+        charts_dir = str(output_dir / "charts")
+        ResultVisualizer.generate(
+            return_series=backtest_output.return_series,
+            config=VisualizerConfig(output_dir=charts_dir),
+        )
 
         return PipelineResult(
             feature_result=feature_result,
