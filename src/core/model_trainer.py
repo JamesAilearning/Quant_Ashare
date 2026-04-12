@@ -1,4 +1,4 @@
-"""Model trainer — thin wrapper around qlib LGBModel for training and prediction.
+"""Model trainer — supports LGBModel, XGBModel, and CatBoostModel.
 
 Provides a contract-friendly interface that accepts a DatasetH from
 ``FeatureDatasetBuilder`` and produces predictions + a serialized model
@@ -25,7 +25,7 @@ class ModelTrainerError(RuntimeError):
     """Raised on structural misuse or training failures."""
 
 
-SUPPORTED_MODEL_TYPES = ("LGBModel",)
+SUPPORTED_MODEL_TYPES = ("LGBModel", "XGBModel", "CatBoostModel")
 
 
 @dataclass(frozen=True)
@@ -74,26 +74,7 @@ class ModelTrainer:
     ) -> ModelTrainResult:
         cls._validate(config, model_artifact_path)
 
-        try:
-            from qlib.contrib.model.gbdt import LGBModel  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise ModelTrainerError(
-                "qlib is not importable; cannot train model."
-            ) from exc
-
-        if config.model_type == "LGBModel":
-            model = LGBModel(
-                loss="mse",
-                num_boost_round=config.num_boost_round,
-                early_stopping_rounds=config.early_stopping_rounds,
-                learning_rate=config.learning_rate,
-                max_depth=config.max_depth,
-                num_leaves=config.num_leaves,
-            )
-        else:
-            raise ModelTrainerError(
-                f"Unsupported model_type '{config.model_type}'."
-            )
+        model = cls._create_model(config)
 
         evals_result: dict = {}
         model.fit(
@@ -121,6 +102,56 @@ class ModelTrainer:
             train_metrics=dict(evals_result),
             prediction_shape=tuple(predictions.shape),
         )
+
+    @classmethod
+    def _create_model(cls, config: ModelTrainConfig) -> Any:
+        """Create the appropriate qlib model instance."""
+        try:
+            from qlib.contrib.model.gbdt import LGBModel  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ModelTrainerError(
+                "qlib is not importable; cannot train model."
+            ) from exc
+
+        if config.model_type == "LGBModel":
+            return LGBModel(
+                loss="mse",
+                num_boost_round=config.num_boost_round,
+                early_stopping_rounds=config.early_stopping_rounds,
+                learning_rate=config.learning_rate,
+                max_depth=config.max_depth,
+                num_leaves=config.num_leaves,
+            )
+        elif config.model_type == "XGBModel":
+            try:
+                from qlib.contrib.model.xgboost import XGBModel  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise ModelTrainerError(
+                    "xgboost is not installed. Run: pip install xgboost"
+                ) from exc
+            return XGBModel(
+                n_estimators=config.num_boost_round,
+                early_stopping_rounds=config.early_stopping_rounds,
+                learning_rate=config.learning_rate,
+                max_depth=config.max_depth,
+            )
+        elif config.model_type == "CatBoostModel":
+            try:
+                from qlib.contrib.model.catboost_model import CatBoostModel  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise ModelTrainerError(
+                    "catboost is not installed. Run: pip install catboost"
+                ) from exc
+            return CatBoostModel(
+                loss="RMSE",
+                iterations=config.num_boost_round,
+                learning_rate=config.learning_rate,
+                depth=config.max_depth,
+            )
+        else:
+            raise ModelTrainerError(
+                f"Unsupported model_type '{config.model_type}'."
+            )
 
     @classmethod
     def _validate(cls, config: ModelTrainConfig, model_artifact_path: str) -> None:
