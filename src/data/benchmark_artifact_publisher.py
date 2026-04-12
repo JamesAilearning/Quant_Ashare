@@ -245,16 +245,22 @@ class BenchmarkArtifactPublisher:
         if frame is None:
             return []
 
-        # Check emptiness. Only catch exceptions produced by the .empty
-        # attribute itself (exotic pandas-like wrappers may raise TypeError
-        # on property access); programmer errors must propagate.
-        if hasattr(frame, "empty"):
-            try:
-                is_empty = bool(frame.empty)
-            except TypeError:
-                is_empty = True
-            if is_empty:
-                return []
+        # Check emptiness via direct try/except rather than hasattr + try,
+        # because hasattr only suppresses AttributeError — a descriptor-based
+        # .empty that raises TypeError or ValueError would bypass the hasattr
+        # guard and crash the caller.  Wrapping the whole probe handles all
+        # non-programmer-error exception types in one place.
+        try:
+            is_empty = bool(frame.empty)
+        except AttributeError:
+            # frame has no .empty — treat as non-empty and continue to
+            # reset_index / column detection below.
+            is_empty = False
+        except (TypeError, ValueError):
+            # .empty exists but its accessor raised — treat as empty input.
+            is_empty = True
+        if is_empty:
+            return []
 
         if not hasattr(frame, "reset_index"):
             # Input is not a DataFrame-like object.
