@@ -59,6 +59,9 @@ def _local_bundle_available() -> bool:
     return LOCAL_QLIB_DATA.is_dir() and (LOCAL_QLIB_DATA / "calendars").is_dir()
 
 
+from tests.e2e_guard import skip_unless_e2e
+
+@skip_unless_e2e
 @unittest.skipUnless(_qlib_importable(), "qlib not installed in this environment")
 @unittest.skipUnless(
     _local_bundle_available(),

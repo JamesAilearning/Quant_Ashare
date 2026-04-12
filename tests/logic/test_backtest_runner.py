@@ -83,6 +83,9 @@ _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")
 _HAS_QLIB_DATA = _QLIB_DATA_DIR.exists() and (_QLIB_DATA_DIR / "calendars").exists()
 
 
+from tests.e2e_guard import skip_unless_e2e
+
+@skip_unless_e2e
 @unittest.skipUnless(_HAS_QLIB_DATA, "qlib data bundle not available")
 class BacktestRunnerE2ETests(unittest.TestCase):
     """E2E tests that require real qlib data + trained model."""

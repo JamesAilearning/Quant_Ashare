@@ -15,7 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+
+_logger = get_logger(__name__)
 
 
 class SignalAnalyzerError(RuntimeError):
@@ -292,16 +295,17 @@ class SignalAnalyzer:
 
     @classmethod
     def print_report(cls, result: SignalAnalysisResult) -> None:
-        """Print a formatted signal analysis report to stdout."""
-        print("\n" + "=" * 60)
-        print("SIGNAL QUALITY ANALYSIS REPORT")
-        print("=" * 60)
+        """Log a formatted signal analysis report."""
+        log = _logger.info
+        log("=" * 60)
+        log("SIGNAL QUALITY ANALYSIS REPORT")
+        log("=" * 60)
 
-        print("\n[IC Summary]")
-        print(f"{'Period':>8} {'Mean IC':>10} {'Std IC':>10} {'IR':>8} {'IC>0%':>8} {'Days':>6}")
-        print("-" * 56)
+        log("[IC Summary]")
+        log(f"{'Period':>8} {'Mean IC':>10} {'Std IC':>10} {'IR':>8} {'IC>0%':>8} {'Days':>6}")
+        log("-" * 56)
         for period, stats in sorted(result.ic_summary.items()):
-            print(
+            log(
                 f"{period:>6}d "
                 f"{stats['mean_ic']:>10.4f} "
                 f"{stats['std_ic']:>10.4f} "
@@ -310,13 +314,13 @@ class SignalAnalyzer:
                 f"{stats['num_days']:>6}"
             )
 
-        print("\n[IC Decay Curve]")
-        print("Lag(d): " + " ".join(f"{i+1:>5}" for i in range(len(result.ic_decay))))
-        print("IC:     " + " ".join(f"{v:>5.3f}" for v in result.ic_decay))
+        log("[IC Decay Curve]")
+        log("Lag(d): " + " ".join(f"{i+1:>5}" for i in range(len(result.ic_decay))))
+        log("IC:     " + " ".join(f"{v:>5.3f}" for v in result.ic_decay))
 
         if result.turnover_stats:
-            print("\n[Turnover]")
-            print(f"  Mean daily turnover: {result.turnover_stats['mean_turnover']:.2%}")
-            print(f"  Std daily turnover:  {result.turnover_stats['std_turnover']:.2%}")
+            log("[Turnover]")
+            log(f"  Mean daily turnover: {result.turnover_stats['mean_turnover']:.2%}")
+            log(f"  Std daily turnover:  {result.turnover_stats['std_turnover']:.2%}")
 
-        print("=" * 60)
+        log("=" * 60)

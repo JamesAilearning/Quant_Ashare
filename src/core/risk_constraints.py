@@ -20,7 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+
+_logger = get_logger(__name__)
 
 
 class RiskConstraintError(RuntimeError):
@@ -255,11 +258,11 @@ class RiskConstraintEngine:
 
     @classmethod
     def print_report(cls, result: RiskConstraintResult) -> None:
-        """Print constraint application summary."""
-        print("\n[Risk Constraints]")
-        print(f"  Original predictions: {result.original_count}")
-        print(f"  After constraints:    {result.constrained_count}")
-        print(f"  Stocks removed:       {result.stocks_removed}")
-        print(f"  Industry violations:  {result.industry_violations_fixed}")
+        """Log constraint application summary."""
+        _logger.info("Risk Constraints")
+        _logger.info("  Original predictions: %d", result.original_count)
+        _logger.info("  After constraints:    %d", result.constrained_count)
+        _logger.info("  Stocks removed:       %d", result.stocks_removed)
+        _logger.info("  Industry violations:  %d", result.industry_violations_fixed)
         for line in result.constraint_log:
-            print(f"  {line}")
+            _logger.info("  %s", line)

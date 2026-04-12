@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.core.logger import get_logger
+
+_logger = get_logger(__name__)
+
 
 class VisualizerError(RuntimeError):
     """Raised on visualization failures."""
@@ -113,10 +117,10 @@ class ResultVisualizer:
 
         plt.close("all")
 
-        print(f"\n[Visualizer] Charts saved to {output_dir}/")
-        print(f"  - equity_curve.png")
-        print(f"  - drawdown.png")
-        print(f"  - monthly_heatmap.png")
+        _logger.info("Charts saved to %s/", output_dir)
+        _logger.info("  - equity_curve.png")
+        _logger.info("  - drawdown.png")
+        _logger.info("  - monthly_heatmap.png")
 
         return VisualizerResult(
             equity_curve_path=eq_path,

@@ -13,7 +13,10 @@ from pathlib import Path
 
 import yaml
 
+from src.core.logger import get_logger, setup_logging
 from src.core.pipeline import Pipeline, PipelineConfig
+
+_logger = get_logger(__name__)
 
 
 def _load_config(path: str) -> PipelineConfig:
@@ -32,15 +35,16 @@ def _load_config(path: str) -> PipelineConfig:
     valid_fields = {f.name for f in PipelineConfig.__dataclass_fields__.values()}
     unknown = set(raw) - valid_fields
     if unknown:
-        print(f"[Warning] Unknown config keys ignored: {sorted(unknown)}")
+        _logger.warning("Unknown config keys ignored: %s", sorted(unknown))
 
     filtered = {k: v for k, v in raw.items() if k in valid_fields}
     return PipelineConfig(**filtered)
 
 
 def main() -> None:
+    setup_logging()
     config_file = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
-    print(f"[Pipeline] Loading config from {config_file}")
+    _logger.info("Loading config from %s", config_file)
     config = _load_config(config_file)
     Pipeline.run(config)
 

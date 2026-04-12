@@ -34,5 +34,14 @@ execution_price_kind: "close"
 topk: 50
 n_drop: 5
 
+# factor analysis (set to false to skip)
+run_factor_analysis: true
+factor_forward_period: 5
+factor_top_n: 20
+factor_max_decay_lag: 20
+
+# performance attribution (set to false to skip)
+run_attribution: true
+
 # output
 output_dir: "output"

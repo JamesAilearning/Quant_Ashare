@@ -15,7 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+
+_logger = get_logger(__name__)
 
 
 class HyperparamOptimizerError(RuntimeError):
@@ -95,7 +98,7 @@ class HyperparamOptimizer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Build dataset once (shared across trials)
-        print("[HyperOpt] Building feature dataset (shared across trials)...")
+        _logger.info("Building feature dataset (shared across trials)...")
         dataset = cls._build_dataset(config)
 
         trial_results: list[HyperparamTrialResult] = []
@@ -127,12 +130,14 @@ class HyperparamOptimizer:
             study_name="lgb_hyperparam_search",
         )
 
-        print(f"[HyperOpt] Starting {config.n_trials} trials...")
+        _logger.info("Starting %d trials...", config.n_trials)
         study.optimize(objective, n_trials=config.n_trials)
 
         best = study.best_trial
-        print(f"\n[HyperOpt] Best trial #{best.number}: "
-              f"IC={best.value:.4f}, params={best.params}")
+        _logger.info(
+            "Best trial #%d: IC=%.4f, params=%s",
+            best.number, best.value, best.params,
+        )
 
         return HyperparamOptResult(
             best_params=dict(best.params),

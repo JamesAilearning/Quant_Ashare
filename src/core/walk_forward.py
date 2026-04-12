@@ -21,7 +21,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping, Sequence
 
+from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+
+_logger = get_logger(__name__)
 
 
 class WalkForwardError(RuntimeError):
@@ -118,14 +121,14 @@ class WalkForwardEngine:
             )
 
         folds: list[WalkForwardFold] = []
-        print(f"\n[WalkForward] Starting {len(windows)} folds")
-        print("=" * 60)
+        _logger.info("Starting %d folds", len(windows))
+        _logger.info("=" * 60)
 
         for i, (train_s, train_e, valid_s, valid_e, test_s, test_e) in enumerate(windows):
-            print(f"\n[Fold {i+1}/{len(windows)}] "
-                  f"Train: {train_s}~{train_e} | "
-                  f"Valid: {valid_s}~{valid_e} | "
-                  f"Test: {test_s}~{test_e}")
+            _logger.info(
+                "Fold %d/%d  Train: %s~%s | Valid: %s~%s | Test: %s~%s",
+                i + 1, len(windows), train_s, train_e, valid_s, valid_e, test_s, test_e,
+            )
 
             fold = cls._run_single_fold(
                 config=config,
@@ -136,19 +139,20 @@ class WalkForwardEngine:
                 output_dir=output_dir,
             )
             folds.append(fold)
-            print(f"  IC(1d)={fold.ic_1d:.4f} | "
-                  f"Return={fold.annualized_return:.2%} | "
-                  f"MaxDD={fold.max_drawdown:.2%}")
+            _logger.info(
+                "  IC(1d)=%.4f | Return=%.2f%% | MaxDD=%.2f%%",
+                fold.ic_1d, fold.annualized_return * 100, fold.max_drawdown * 100,
+            )
 
         # Aggregate
         aggregate = cls._compute_aggregate(folds)
 
-        print("\n" + "=" * 60)
-        print("[WalkForward] AGGREGATE RESULTS")
-        print("=" * 60)
+        _logger.info("=" * 60)
+        _logger.info("AGGREGATE RESULTS")
+        _logger.info("=" * 60)
         for key, val in aggregate.items():
-            print(f"  {key}: {val:.4f}")
-        print("=" * 60)
+            _logger.info("  %s: %.4f", key, val)
+        _logger.info("=" * 60)
 
         return WalkForwardResult(
             folds=folds,
