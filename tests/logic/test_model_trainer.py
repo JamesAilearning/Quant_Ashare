@@ -142,6 +142,34 @@ class ModelTrainerE2ETests(unittest.TestCase):
                 loaded = pickle.load(f)
             self.assertIsNotNone(loaded)
 
+    def test_xgb_train_and_predict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ModelTrainer.train_and_predict(
+                config=ModelTrainConfig(
+                    model_type="XGBModel",
+                    num_boost_round=30,
+                    early_stopping_rounds=10,
+                ),
+                dataset=self._dataset,
+                model_artifact_path=str(Path(tmp) / "xgb_model.pkl"),
+            )
+            self.assertGreater(result.prediction_shape[0], 0)
+            self.assertTrue(Path(result.model_artifact_path).exists())
+
+    def test_catboost_train_and_predict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ModelTrainer.train_and_predict(
+                config=ModelTrainConfig(
+                    model_type="CatBoostModel",
+                    num_boost_round=30,
+                    early_stopping_rounds=10,
+                ),
+                dataset=self._dataset,
+                model_artifact_path=str(Path(tmp) / "cat_model.pkl"),
+            )
+            self.assertGreater(result.prediction_shape[0], 0)
+            self.assertTrue(Path(result.model_artifact_path).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
