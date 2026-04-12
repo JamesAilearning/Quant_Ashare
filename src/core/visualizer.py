@@ -86,6 +86,12 @@ class ResultVisualizer:
             {pd.Timestamp(k): float(v) for k, v in ret_dict.items()}
         ).sort_index()
 
+        if returns.empty:
+            raise VisualizerError(
+                "return_series['return'] is empty after parsing. "
+                "Cannot generate charts with no data."
+            )
+
         benchmark = pd.Series(
             {pd.Timestamp(k): float(v) for k, v in bench_dict.items()}
         ).sort_index() if bench_dict else None

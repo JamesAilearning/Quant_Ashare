@@ -109,6 +109,16 @@ class FeatureDatasetBuilder:
             raise FeatureDatasetBuilderError(
                 "Train segment is empty. Check instruments and date ranges."
             )
+        if valid_df.empty:
+            raise FeatureDatasetBuilderError(
+                "Valid segment is empty. Check instruments and date ranges "
+                f"(valid_start={config.valid_start}, valid_end={config.valid_end})."
+            )
+        if test_df.empty:
+            raise FeatureDatasetBuilderError(
+                "Test segment is empty. Check instruments and date ranges "
+                f"(test_start={config.test_start}, test_end={config.test_end})."
+            )
 
         return FeatureDatasetResult(
             dataset=dataset,
@@ -155,3 +165,15 @@ class FeatureDatasetBuilder:
             raise FeatureDatasetBuilderError("valid_start must be <= valid_end.")
         if parsed["test_start"] > parsed["test_end"]:
             raise FeatureDatasetBuilderError("test_start must be <= test_end.")
+
+        # Enforce chronological ordering: train < valid < test
+        if parsed["train_end"] >= parsed["valid_start"]:
+            raise FeatureDatasetBuilderError(
+                f"train_end ({config.train_end}) must be before valid_start ({config.valid_start}). "
+                "Overlapping train/valid ranges cause data leakage."
+            )
+        if parsed["valid_end"] >= parsed["test_start"]:
+            raise FeatureDatasetBuilderError(
+                f"valid_end ({config.valid_end}) must be before test_start ({config.test_start}). "
+                "Overlapping valid/test ranges cause data leakage."
+            )

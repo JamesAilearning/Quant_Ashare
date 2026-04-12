@@ -180,6 +180,9 @@ class WalkForwardEngine:
                 test_e = end
                 if test_s >= test_e:
                     break
+                # Reject folds with test period too short to be meaningful
+                if (test_e - test_s).days < 10:
+                    break
 
             windows.append((
                 train_s.isoformat(), train_e.isoformat(),

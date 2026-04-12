@@ -66,6 +66,28 @@ class FeatureDatasetBuilderStructuralTests(unittest.TestCase):
                     test_start="2025-07-01", test_end="2025-12-31",
                 ))
 
+    def test_overlapping_train_valid_rejected(self) -> None:
+        with patch("src.data.feature_dataset_builder.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(FeatureDatasetBuilderError, "data leakage"):
+                FeatureDatasetBuilder.build(FeatureDatasetConfig(
+                    instruments="csi300",
+                    feature_handler="Alpha158",
+                    train_start="2024-01-01", train_end="2024-12-31",
+                    valid_start="2024-06-01", valid_end="2025-06-30",
+                    test_start="2025-07-01", test_end="2025-12-31",
+                ))
+
+    def test_overlapping_valid_test_rejected(self) -> None:
+        with patch("src.data.feature_dataset_builder.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(FeatureDatasetBuilderError, "data leakage"):
+                FeatureDatasetBuilder.build(FeatureDatasetConfig(
+                    instruments="csi300",
+                    feature_handler="Alpha158",
+                    train_start="2024-01-01", train_end="2024-06-30",
+                    valid_start="2024-07-01", valid_end="2025-06-30",
+                    test_start="2025-01-01", test_end="2025-12-31",
+                ))
+
     def test_qlib_not_initialized_rejected(self) -> None:
         with patch("src.data.feature_dataset_builder.is_canonical_qlib_initialized", return_value=False):
             with self.assertRaisesRegex(FeatureDatasetBuilderError, "not initialized"):
