@@ -240,8 +240,11 @@ class ResultVisualizer:
             "return": monthly.values,
         })
         pivot = monthly_df.pivot(index="year", columns="month", values="return")
-        pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][:len(pivot.columns)]
+        month_labels = {
+            1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+            7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+        }
+        pivot.columns = [month_labels.get(m, str(m)) for m in pivot.columns]
 
         fig, ax = plt.subplots(figsize=(config.figsize[0], max(3, len(pivot) * 0.8)))
 

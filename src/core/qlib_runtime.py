@@ -55,11 +55,16 @@ class QlibRuntimeConfig:
     def __post_init__(self) -> None:
         if not self.provider_uri.strip():
             raise QlibRuntimeInitError("provider_uri is required for canonical qlib init.")
-        normalized = self.region.strip().lower()
-        if normalized not in ("cn", "us"):
+        normalized_region = self.region.strip().lower()
+        if normalized_region not in ("cn", "us"):
             raise QlibRuntimeInitError(
-                f"Unsupported region '{normalized}'. Canonical runtime accepts 'cn' or 'us'."
+                f"Unsupported region '{normalized_region}'. Canonical runtime accepts 'cn' or 'us'."
             )
+        # Normalize provider_uri and region so that dataclass __eq__
+        # is not fooled by D:\\data vs D:/data or "CN" vs "cn".
+        import os
+        object.__setattr__(self, "provider_uri", os.path.normpath(self.provider_uri.strip()))
+        object.__setattr__(self, "region", normalized_region)
 
 
 _CANONICAL_CONFIG: Optional[QlibRuntimeConfig] = None

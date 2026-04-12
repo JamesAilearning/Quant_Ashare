@@ -109,13 +109,14 @@ class Pipeline:
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Step 1: Initialize qlib
+        # Step 1: Initialize qlib (or validate config matches existing init)
         cls._log("Initializing qlib runtime...")
-        if not is_canonical_qlib_initialized():
-            init_qlib_canonical(QlibRuntimeConfig(
-                provider_uri=config.provider_uri,
-                region=config.region,
-            ))
+        requested_config = QlibRuntimeConfig(
+            provider_uri=config.provider_uri,
+            region=config.region,
+        )
+        # init_qlib_canonical is idempotent for same config, raises on mismatch
+        init_qlib_canonical(requested_config)
 
         # Step 2: Build feature dataset
         cls._log("Building feature dataset...")
