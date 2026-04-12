@@ -283,13 +283,13 @@ class WalkForwardEngine:
             n_drop=config.n_drop,
         )
 
-        # Extract metrics from nested dict structure
-        # risk_analysis["excess_return_with_cost"] is {metric_name: {row_key: value}}
+        # risk_analysis["excess_return_with_cost"] is now a flat {metric: value} dict
+        # (normalized by backtest_runner._risk_analysis_to_flat_dict)
         risk = backtest_output.risk_analysis
         cost_metrics = risk.get("excess_return_with_cost", {})
-        ann_ret = cls._extract_metric(cost_metrics, "annualized_return")
-        max_dd = cls._extract_metric(cost_metrics, "max_drawdown")
-        ir = cls._extract_metric(cost_metrics, "information_ratio")
+        ann_ret = float(cost_metrics.get("annualized_return", 0.0))
+        max_dd = float(cost_metrics.get("max_drawdown", 0.0))
+        ir = float(cost_metrics.get("information_ratio", 0.0))
 
         return WalkForwardFold(
             fold_index=fold_index,
@@ -303,34 +303,6 @@ class WalkForwardEngine:
             information_ratio=ir,
             prediction_shape=model_result.prediction_shape,
         )
-
-    @staticmethod
-    def _extract_metric(metrics_dict: dict, metric_name: str) -> float:
-        """Extract a scalar from the nested risk_analysis structure.
-
-        Structure is: {"risk": {"annualized_return": -0.5, ...}}
-        or sometimes: {"annualized_return": {"risk": -0.5}}
-        """
-        # Try direct access: metrics_dict["risk"][metric_name]
-        if "risk" in metrics_dict and isinstance(metrics_dict["risk"], dict):
-            val = metrics_dict["risk"].get(metric_name)
-            if val is not None:
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    pass
-        # Try: metrics_dict[metric_name]["risk"]
-        sub = metrics_dict.get(metric_name, {})
-        if isinstance(sub, dict):
-            for v in sub.values():
-                try:
-                    return float(v)
-                except (ValueError, TypeError):
-                    continue
-        try:
-            return float(sub)
-        except (ValueError, TypeError):
-            return 0.0
 
     @classmethod
     def _compute_aggregate(cls, folds: list[WalkForwardFold]) -> dict[str, float]:

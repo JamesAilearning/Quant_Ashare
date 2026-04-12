@@ -114,11 +114,17 @@ class BenchmarkLoaderFailurePathTests(unittest.TestCase):
         self.assertIn(ISSUE_SCHEMA_MISMATCH, status.errors)  # metadata gone -> schema mismatch
 
     def test_nan_close_yields_schema_mismatch(self) -> None:
+        # Write a file where the majority (>50%) of close values are NaN/invalid,
+        # which triggers the corrupt-column threshold and drops 'close' from
+        # columns_present. A single isolated NaN is tolerated (see loader docs).
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
             bad_csv = tmp_dir / "bad.csv"
             bad_csv.write_text(
-                "date,close\n2026-02-02,3800.12\n2026-02-03,NaN\n2026-02-04,3820.77\n",
+                "date,close\n"
+                "2026-02-02,NaN\n"
+                "2026-02-03,NaN\n"
+                "2026-02-04,3820.77\n",
                 encoding="utf-8",
             )
             manifest = tmp_dir / "bad.csv.manifest.json"

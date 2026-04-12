@@ -164,7 +164,11 @@ class UniverseArtifactPublisher:
 
         # Resolve snapshot_at per mode.
         if temporal_mode == UNIVERSE_MODE_TRADE_DATE:
-            assert max_trade_date is not None  # guaranteed by non-empty rows
+            if max_trade_date is None:
+                raise UniverseArtifactPublisherError(
+                    "Internal error: max_trade_date is None after validating non-empty rows. "
+                    "This indicates a bug in the publisher's row-parsing logic."
+                )
             if snapshot_at is None:
                 effective_snapshot_at = max_trade_date
             else:
@@ -194,8 +198,13 @@ class UniverseArtifactPublisher:
         # All validation passed. Now do IO.
         artifact_file = Path(artifact_path)
         manifest_file = Path(manifest_path)
-        artifact_file.parent.mkdir(parents=True, exist_ok=True)
-        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            artifact_file.parent.mkdir(parents=True, exist_ok=True)
+            manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise UniverseArtifactPublisherError(
+                f"Cannot create output directories for artifact '{artifact_path}': {exc}"
+            ) from exc
 
         cls._write_csv(artifact_file, temporal_mode, rows)
 

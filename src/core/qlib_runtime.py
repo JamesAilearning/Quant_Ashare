@@ -29,10 +29,14 @@ Re-initialization rules:
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
 CANONICAL_QLIB_INIT_OWNER = "src.core.qlib_runtime"
+
+# Module-level lock guards all reads and writes to the singleton state.
+_INIT_LOCK = threading.Lock()
 
 
 class QlibRuntimeInitError(RuntimeError):
@@ -49,12 +53,12 @@ class QlibRuntimeConfig:
     dataset_cache: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not str(self.provider_uri or "").strip():
+        if not self.provider_uri.strip():
             raise QlibRuntimeInitError("provider_uri is required for canonical qlib init.")
-        normalized_region = str(self.region or "").strip().lower()
-        if normalized_region not in ("cn", "us"):
+        normalized = self.region.strip().lower()
+        if normalized not in ("cn", "us"):
             raise QlibRuntimeInitError(
-                f"Unsupported region '{self.region}'. Canonical runtime accepts 'cn' or 'us'."
+                f"Unsupported region '{normalized}'. Canonical runtime accepts 'cn' or 'us'."
             )
 
 
@@ -65,8 +69,8 @@ _CANONICAL_QLIB_INITIALIZED: bool = False
 def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
     """Initialize qlib for the canonical runtime layer.
 
-    Idempotent with respect to the exact same config. Raises
-    :class:`QlibRuntimeInitError` on re-init with a different config.
+    Thread-safe. Idempotent with respect to the exact same config.
+    Raises :class:`QlibRuntimeInitError` on re-init with a different config.
     """
     global _CANONICAL_CONFIG, _CANONICAL_QLIB_INITIALIZED
 
@@ -75,56 +79,57 @@ def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
             "init_qlib_canonical requires a QlibRuntimeConfig instance."
         )
 
-    if _CANONICAL_CONFIG is not None:
-        if _CANONICAL_CONFIG != config:
+    with _INIT_LOCK:
+        if _CANONICAL_CONFIG is not None:
+            if _CANONICAL_CONFIG != config:
+                raise QlibRuntimeInitError(
+                    "Canonical qlib runtime already initialized with a different config. "
+                    f"existing={_CANONICAL_CONFIG}, requested={config}"
+                )
+            # Idempotent no-op — same config, already initialized.
+            return
+
+        # Lazy import so that modules importing this file do not hard-require
+        # qlib at collection time.
+        try:
+            import qlib  # type: ignore[import-not-found]
+            from qlib.constant import REG_CN, REG_US  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover - environment-dependent
             raise QlibRuntimeInitError(
-                "Canonical qlib runtime already initialized with a different config. "
-                f"existing={_CANONICAL_CONFIG}, requested={config}"
+                "qlib is not importable from the current Python environment. "
+                "Install the pinned local qlib (see docs/qlib-pin.md) before "
+                "initializing canonical runtime."
+            ) from exc
+
+        region_constant = REG_CN if config.region.strip().lower() == "cn" else REG_US
+
+        # Guard: qlib may already be initialized at the process level (e.g.
+        # test-runner resets our singleton but qlib's internal state persists).
+        # Calling qlib.init() again raises RecorderInitializationError.
+        from qlib.config import C as _qlib_C  # type: ignore[import-not-found]
+
+        if not getattr(_qlib_C, "registered", False):
+            qlib.init(
+                provider_uri=config.provider_uri,
+                region=region_constant,
+                expression_cache=config.expression_cache,
+                dataset_cache=config.dataset_cache,
             )
-        # Idempotent no-op.
-        return
 
-    # Lazy import so that modules importing this file do not hard-require qlib
-    # at collection time. Governance tests that need a real qlib will fail
-    # explicitly if qlib is not installed; contract-only tests do not trigger
-    # this import path.
-    try:
-        import qlib  # type: ignore[import-not-found]
-        from qlib.constant import REG_CN, REG_US  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover - environment-dependent
-        raise QlibRuntimeInitError(
-            "qlib is not importable from the current Python environment. "
-            "Install the pinned local qlib (see docs/qlib-pin.md) before "
-            "initializing canonical runtime."
-        ) from exc
-
-    region_constant = REG_CN if config.region.lower() == "cn" else REG_US
-
-    # Guard: qlib may already be initialized at the process level (e.g.
-    # test-runner resets our singleton but qlib's internal state persists).
-    # Calling qlib.init() again raises RecorderInitializationError.
-    from qlib.config import C as _qlib_C  # type: ignore[import-not-found]
-
-    if not getattr(_qlib_C, "registered", False):
-        qlib.init(
-            provider_uri=config.provider_uri,
-            region=region_constant,
-            expression_cache=config.expression_cache,
-            dataset_cache=config.dataset_cache,
-        )
-
-    _CANONICAL_CONFIG = config
-    _CANONICAL_QLIB_INITIALIZED = True
+        _CANONICAL_CONFIG = config
+        _CANONICAL_QLIB_INITIALIZED = True
 
 
 def get_canonical_qlib_config() -> Optional[QlibRuntimeConfig]:
     """Return the config that initialized qlib, or None if not initialized."""
-    return _CANONICAL_CONFIG
+    with _INIT_LOCK:
+        return _CANONICAL_CONFIG
 
 
 def is_canonical_qlib_initialized() -> bool:
     """Return True if canonical qlib runtime init has completed."""
-    return _CANONICAL_QLIB_INITIALIZED
+    with _INIT_LOCK:
+        return _CANONICAL_QLIB_INITIALIZED
 
 
 def _reset_canonical_qlib_runtime_for_tests() -> None:
@@ -134,5 +139,6 @@ def _reset_canonical_qlib_runtime_for_tests() -> None:
     regression test asserts no non-test caller imports this symbol.
     """
     global _CANONICAL_CONFIG, _CANONICAL_QLIB_INITIALIZED
-    _CANONICAL_CONFIG = None
-    _CANONICAL_QLIB_INITIALIZED = False
+    with _INIT_LOCK:
+        _CANONICAL_CONFIG = None
+        _CANONICAL_QLIB_INITIALIZED = False

@@ -171,8 +171,13 @@ class BenchmarkArtifactPublisher:
 
         artifact_file = Path(artifact_path)
         manifest_file = Path(manifest_path)
-        artifact_file.parent.mkdir(parents=True, exist_ok=True)
-        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            artifact_file.parent.mkdir(parents=True, exist_ok=True)
+            manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise BenchmarkArtifactPublisherError(
+                f"Cannot create output directories for artifact '{artifact_path}': {exc}"
+            ) from exc
 
         cls._write_csv(artifact_file, rows)
 
@@ -239,24 +244,30 @@ class BenchmarkArtifactPublisher:
         """
         if frame is None:
             return []
-        try:
-            if hasattr(frame, "empty") and frame.empty:
+
+        # Check emptiness. Only catch exceptions produced by the .empty
+        # attribute itself (exotic pandas-like wrappers may raise TypeError
+        # on property access); programmer errors must propagate.
+        if hasattr(frame, "empty"):
+            try:
+                is_empty = bool(frame.empty)
+            except TypeError:
+                is_empty = True
+            if is_empty:
                 return []
-        except (AttributeError, TypeError):
-            # ``.empty`` may exist as a descriptor that raises in
-            # exotic pandas-like wrappers. Treat such cases as empty,
-            # but do NOT swallow programmer errors (NameError,
-            # ImportError, etc.) which would surface as a misleading
-            # "qlib returned no rows" message later.
+
+        if not hasattr(frame, "reset_index"):
+            # Input is not a DataFrame-like object.
             return []
 
         working = frame
         try:
             working = working.reset_index()
-        except (AttributeError, TypeError, ValueError):
-            # AttributeError: input is not a DataFrame.
+        except (TypeError, ValueError):
             # TypeError: reset_index argument shape mismatch in older pandas.
-            # ValueError: index level conflict.
+            # ValueError: index level conflict (duplicate level names).
+            # AttributeError is intentionally NOT caught; it would mean
+            # reset_index disappeared, which is a programmer error.
             return []
 
         # Identify datetime column.
