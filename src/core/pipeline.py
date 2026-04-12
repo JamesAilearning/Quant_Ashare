@@ -24,6 +24,7 @@ from src.core.canonical_backtest_contract import (
 )
 from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized
+from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
 
 
@@ -80,6 +81,7 @@ class PipelineResult:
 
     feature_result: FeatureDatasetResult
     model_result: ModelTrainResult
+    signal_analysis: SignalAnalysisResult
     backtest_output: CanonicalBacktestOutput
     report_path: str
 
@@ -135,7 +137,15 @@ class Pipeline:
         )
         cls._log(f"  Predictions: {model_result.prediction_shape}")
 
-        # Step 4: Run canonical backtest
+        # Step 4: Signal quality analysis
+        cls._log("Analyzing signal quality...")
+        signal_result = SignalAnalyzer.analyze(
+            predictions=model_result.predictions,
+            config=SignalAnalysisConfig(topk=config.topk),
+        )
+        SignalAnalyzer.print_report(signal_result)
+
+        # Step 5: Run canonical backtest
         cls._log("Running canonical backtest...")
         backtest_request = CanonicalBacktestInput(
             predictions_ref=model_artifact_path,
@@ -164,17 +174,18 @@ class Pipeline:
             n_drop=config.n_drop,
         )
 
-        # Step 5: Write report
+        # Step 6: Write report
         report_path = str(output_dir / "pipeline_report.json")
-        cls._write_report(report_path, config, feature_result, model_result, backtest_output)
+        cls._write_report(report_path, config, feature_result, model_result, signal_result, backtest_output)
         cls._log(f"  Report: {report_path}")
 
-        # Step 6: Print summary
+        # Step 7: Print summary
         cls._print_summary(backtest_output)
 
         return PipelineResult(
             feature_result=feature_result,
             model_result=model_result,
+            signal_analysis=signal_result,
             backtest_output=backtest_output,
             report_path=report_path,
         )
@@ -189,6 +200,7 @@ class Pipeline:
         config: PipelineConfig,
         feature_result: FeatureDatasetResult,
         model_result: ModelTrainResult,
+        signal_result: SignalAnalysisResult,
         backtest_output: CanonicalBacktestOutput,
     ) -> None:
         report = {
@@ -214,6 +226,11 @@ class Pipeline:
             "model": {
                 "prediction_shape": list(model_result.prediction_shape),
                 "model_artifact_path": model_result.model_artifact_path,
+            },
+            "signal_analysis": {
+                "ic_summary": dict(signal_result.ic_summary),
+                "ic_decay": list(signal_result.ic_decay),
+                "turnover": dict(signal_result.turnover_stats),
             },
             "backtest": {
                 "report": backtest_output.report,
