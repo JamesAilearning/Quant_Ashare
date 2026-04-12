@@ -149,7 +149,13 @@ def _coerce_to_date(value: object) -> Optional[date]:
     if callable(to_date):
         try:
             result = to_date()
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
+            # Only catch errors specific to the .date() call:
+            # TypeError  — unexpected argument in some pandas Timestamp variants
+            # ValueError — out-of-range date value
+            # OverflowError — date value overflows Python's date range
+            # Everything else (AttributeError, NameError, …) is a programmer
+            # error and must propagate so it isn't silently swallowed.
             return None
         if isinstance(result, date):
             return result

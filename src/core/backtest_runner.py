@@ -140,8 +140,8 @@ class BacktestRunner:
             ) from exc
 
         risk_dict = {
-            "excess_return_without_cost": _dataframe_to_dict(excess_return_without_cost),
-            "excess_return_with_cost": _dataframe_to_dict(excess_return_with_cost),
+            "excess_return_without_cost": _risk_analysis_to_flat_dict(excess_return_without_cost),
+            "excess_return_with_cost": _risk_analysis_to_flat_dict(excess_return_with_cost),
         }
 
         return_series = {
@@ -218,6 +218,37 @@ class BacktestRunner:
             "config_fingerprint": fingerprint,
             "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         }
+
+
+def _risk_analysis_to_flat_dict(df: Any) -> dict:
+    """Normalize a qlib risk_analysis DataFrame to a flat {metric: value} dict.
+
+    qlib's ``risk_analysis`` returns a DataFrame shaped like::
+
+        index        annualized_return  information_ratio  max_drawdown  ...
+        risk         -0.27              -1.05              -0.15         ...
+
+    We flatten to ``{"annualized_return": -0.27, "information_ratio": -1.05, ...}``
+    so callers never need to guess the nesting depth.
+    """
+    try:
+        nested = {
+            str(k): {str(kk): float(vv) if hasattr(vv, "__float__") else str(vv) for kk, vv in v.items()}
+            for k, v in df.to_dict().items()
+        }
+        # qlib produces {metric_name: {"risk": value}} — flatten to {metric_name: value}
+        flat: dict = {}
+        for metric, sub in nested.items():
+            if isinstance(sub, dict) and len(sub) == 1:
+                flat[metric] = next(iter(sub.values()))
+            elif isinstance(sub, dict):
+                # Multiple rows: take the "risk" row if present, else first
+                flat[metric] = sub.get("risk", next(iter(sub.values())))
+            else:
+                flat[metric] = sub
+        return flat
+    except Exception:
+        return {"raw": str(df)}
 
 
 def _dataframe_to_dict(df: Any) -> dict:

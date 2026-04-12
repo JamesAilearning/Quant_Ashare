@@ -207,11 +207,17 @@ class BenchmarkArtifactLoader:
             return {}
         return payload
 
+    # Fraction of close values that may be NaN/invalid before the column
+    # is considered corrupt. Isolated corrupt rows (e.g. delisted stocks)
+    # are common; only treat the column as missing if the majority is bad.
+    _CLOSE_NAN_RATIO_THRESHOLD: float = 0.5
+
     @classmethod
     def _read_csv(cls, artifact_file: Path, reference: Optional[date]) -> _CsvReadOutcome:
         rows = 0
         has_future_data = False
-        close_has_nan = False
+        close_nan_count = 0
+        close_total_count = 0
         header_normalized: tuple[str, ...] = ()
         min_date: Optional[date] = None
         max_date: Optional[date] = None
@@ -240,16 +246,17 @@ class BenchmarkArtifactLoader:
                     rows += 1
 
                     if close_idx >= 0 and close_idx < len(record):
+                        close_total_count += 1
                         close_text = str(record[close_idx]).strip()
                         if not close_text or close_text.lower() in ("nan", "null", "none"):
-                            close_has_nan = True
+                            close_nan_count += 1
                         else:
                             try:
                                 close_value = float(close_text)
                                 if math.isnan(close_value):
-                                    close_has_nan = True
+                                    close_nan_count += 1
                             except ValueError:
-                                close_has_nan = True
+                                close_nan_count += 1
 
                     if date_idx >= 0 and date_idx < len(record):
                         date_text = str(record[date_idx]).strip()
@@ -264,14 +271,17 @@ class BenchmarkArtifactLoader:
         except OSError:
             return _CsvReadOutcome(0, (), None, None, False)
 
-        # Emit ``close`` in columns_present only if it is both declared in the
-        # header and free of NaN-like values. This lets the benchmark data
-        # contract surface ``schema_mismatch`` for NaN-contaminated files
-        # without the loader needing to raise.
+        # Emit ``close`` in columns_present only if it is declared in the
+        # header AND the NaN ratio is below the threshold. Isolated corrupt
+        # rows (e.g. delisted stocks on a single day) are tolerated; only
+        # reject the column when the majority of values are bad.
+        close_nan_ratio = (
+            close_nan_count / close_total_count if close_total_count > 0 else 0.0
+        )
         effective_columns: list[str] = []
         if "date" in header_normalized:
             effective_columns.append("date")
-        if "close" in header_normalized and not close_has_nan:
+        if "close" in header_normalized and close_nan_ratio < cls._CLOSE_NAN_RATIO_THRESHOLD:
             effective_columns.append("close")
 
         return _CsvReadOutcome(

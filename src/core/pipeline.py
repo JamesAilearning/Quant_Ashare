@@ -262,12 +262,12 @@ class Pipeline:
 
         risk = output.risk_analysis
         for label in ("excess_return_without_cost", "excess_return_with_cost"):
+            # risk_analysis is now a flat {metric: value} dict per section
             section = risk.get(label, {})
-            risk_metrics = section.get("risk", {})
-            if risk_metrics:
+            if section:
                 print(f"\n  [{label}]")
                 for key in ("annualized_return", "information_ratio", "max_drawdown"):
-                    val = risk_metrics.get(key, "N/A")
+                    val = section.get(key, "N/A")
                     if isinstance(val, float):
                         print(f"    {key}: {val:.4f}")
                     else:
