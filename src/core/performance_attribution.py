@@ -96,6 +96,7 @@ class PerformanceAttribution:
         return_series: Mapping[str, Any],
         predictions: Any,
         config: AttributionConfig | None = None,
+        positions: Mapping[str, Mapping[str, float]] | None = None,
     ) -> AttributionResult:
         """Run complete performance attribution.
 
@@ -108,6 +109,12 @@ class PerformanceAttribution:
             Model predictions with ``(datetime, instrument)`` MultiIndex.
         config : AttributionConfig, optional
             Attribution configuration.
+        positions : mapping, optional
+            From ``CanonicalBacktestOutput.positions`` — authoritative per-day
+            portfolio weights ``{date: {instrument: weight}}``. When supplied,
+            Brinson weighting reflects the real topk-dropout selection rather
+            than a predictions-score proxy. Pass ``None`` to fall back to
+            prediction-score weighting (looser but works without a backtest).
         """
         if config is None:
             config = AttributionConfig()
@@ -132,7 +139,9 @@ class PerformanceAttribution:
 
         # Step 1: Brinson sector attribution
         _logger.info("Computing Brinson sector attribution...")
-        sector_attr = cls._brinson_attribution(predictions, port_returns, bench_returns, config)
+        sector_attr = cls._brinson_attribution(
+            predictions, port_returns, bench_returns, config, positions,
+        )
 
         total_alloc = sum(s.allocation_effect for s in sector_attr)
         total_select = sum(s.selection_effect for s in sector_attr)
@@ -175,20 +184,53 @@ class PerformanceAttribution:
         port_returns: Any,
         bench_returns: Any,
         config: AttributionConfig,
+        positions: Mapping[str, Mapping[str, float]] | None = None,
     ) -> list[SectorAttribution]:
-        """Brinson-Fachler single-period attribution by sector."""
+        """Brinson-Fachler single-period attribution by sector.
+
+        Portfolio weights are derived from ``positions`` (time-averaged real
+        holdings) when available — this matches the actual topk-dropout
+        selection. Otherwise we fall back to a prediction-score proxy,
+        clipping negatives to zero so ranked-low names do not leak weight.
+        """
         import pandas as pd
         import numpy as np
 
-        # Get sector map for all instruments in predictions
-        instruments = predictions.index.get_level_values("instrument").unique().tolist()
+        # Instruments universe: union of predictions and held positions
+        pred_instruments = predictions.index.get_level_values("instrument").unique().tolist()
+        held_instruments: list[str] = []
+        if positions:
+            seen: set[str] = set()
+            for day_map in positions.values():
+                for inst in day_map:
+                    if inst not in seen:
+                        seen.add(inst)
+                        held_instruments.append(inst)
+        instruments = sorted(set(pred_instruments) | set(held_instruments))
         sector_map = cls._get_sector_map(instruments, config)
 
-        # Compute average prediction score per instrument (proxy for portfolio weight)
-        avg_pred = predictions.groupby(level="instrument").mean()
-        # Normalize to weights (proportional to prediction score)
-        pred_shifted = avg_pred - avg_pred.min() + 1e-8  # make all positive
-        port_weights = pred_shifted / pred_shifted.sum()
+        # Portfolio weights: prefer real positions, fall back to prediction scores.
+        if positions:
+            # Time-average the actual per-day weights
+            weight_sum: dict[str, float] = {}
+            day_count = 0
+            for day_map in positions.values():
+                if not day_map:
+                    continue
+                day_count += 1
+                for inst, w in day_map.items():
+                    try:
+                        weight_sum[inst] = weight_sum.get(inst, 0.0) + float(w)
+                    except (TypeError, ValueError):
+                        continue
+            if day_count > 0 and weight_sum:
+                raw = pd.Series({k: v / day_count for k, v in weight_sum.items()})
+                total = float(raw.sum())
+                port_weights = raw / total if total > 0 else raw
+            else:
+                port_weights = cls._predictions_to_weights(predictions)
+        else:
+            port_weights = cls._predictions_to_weights(predictions)
 
         # Benchmark weights: equal weight across all instruments
         n_instruments = len(instruments)
@@ -253,6 +295,25 @@ class PerformanceAttribution:
         # Sort by absolute total effect
         results.sort(key=lambda s: abs(s.total_effect), reverse=True)
         return results
+
+    @staticmethod
+    def _predictions_to_weights(predictions: Any) -> Any:
+        """Fallback: convert prediction scores to long-only weights.
+
+        Clips negative scores to zero so that names the model ranks poorly
+        do not absorb portfolio weight. Only if all scores are non-positive
+        do we fall back to a small epsilon to keep the weights finite.
+        """
+        import pandas as pd
+
+        avg_pred = predictions.groupby(level="instrument").mean()
+        clipped = avg_pred.clip(lower=0.0)
+        total = float(clipped.sum())
+        if total > 0:
+            return clipped / total
+        # All non-positive: fall back to uniform so downstream math stays sane
+        n = len(avg_pred)
+        return pd.Series(1.0 / n, index=avg_pred.index) if n > 0 else pd.Series(dtype=float)
 
     @classmethod
     def _get_sector_map(cls, instruments: list[str], config: AttributionConfig) -> dict[str, str]:

@@ -157,10 +157,13 @@ class BacktestRunner:
             "cost": _series_to_dict(report_normal["cost"]),
         }
 
+        positions_map = _positions_to_weight_map(positions_normal)
+
         report = {
             "total_days": len(report_normal),
             "start_date": str(report_normal.index.min().date()),
             "end_date": str(report_normal.index.max().date()),
+            "positions_days": len(positions_map),
         }
 
         provenance = cls._build_provenance(request, topk, n_drop)
@@ -172,6 +175,7 @@ class BacktestRunner:
             risk_analysis=risk_dict,
             report=report,
             provenance=provenance,
+            positions=positions_map,
         )
 
     @staticmethod
@@ -309,3 +313,72 @@ def _series_to_dict(series: Any) -> dict:
         return {str(k.date()) if hasattr(k, "date") else str(k): float(v) for k, v in series.items()}
     except Exception:
         return {"raw": str(series)}
+
+
+def _positions_to_weight_map(positions_normal: Any) -> dict:
+    """Serialize qlib positions into ``{date_str: {instrument: weight}}``.
+
+    qlib's ``positions_normal`` comes out of ``generate_portfolio_metrics`` as
+    either a ``pd.Series`` indexed by timestamp whose values are ``Position``
+    objects, or a plain ``dict`` with the same shape. Either way, each
+    ``Position`` exposes ``position`` — a dict of ``{instrument: {amount, price, weight, ...}}``
+    plus bookkeeping keys like ``"cash"``, ``"now_account_value"``.
+
+    We extract the ``weight`` field per instrument and skip bookkeeping keys.
+    If the position dict lacks explicit weights (older qlib), we fall back to
+    ``amount * price / total_value``. On any error, we return an empty dict
+    rather than poison the backtest output.
+    """
+    if positions_normal is None:
+        return {}
+
+    try:
+        items = positions_normal.items() if hasattr(positions_normal, "items") else []
+    except Exception:
+        return {}
+
+    result: dict[str, dict[str, float]] = {}
+    bookkeeping_keys = {"cash", "now_account_value"}
+
+    for ts, pos in items:
+        try:
+            date_str = str(ts.date()) if hasattr(ts, "date") else str(ts)
+            raw = getattr(pos, "position", pos)
+            if not isinstance(raw, dict):
+                continue
+
+            # Compute total value for fallback weighting
+            total_value: float = 0.0
+            for inst, info in raw.items():
+                if inst in bookkeeping_keys or not isinstance(info, dict):
+                    continue
+                amt = float(info.get("amount", 0.0) or 0.0)
+                price = float(info.get("price", 0.0) or 0.0)
+                total_value += amt * price
+            # Include cash in denominator so weights reflect NAV share
+            cash = raw.get("cash")
+            if isinstance(cash, (int, float)):
+                total_value += float(cash)
+
+            day_weights: dict[str, float] = {}
+            for inst, info in raw.items():
+                if inst in bookkeeping_keys or not isinstance(info, dict):
+                    continue
+                w = info.get("weight")
+                if w is None and total_value > 0:
+                    amt = float(info.get("amount", 0.0) or 0.0)
+                    price = float(info.get("price", 0.0) or 0.0)
+                    w = (amt * price) / total_value
+                if w is None:
+                    continue
+                try:
+                    day_weights[str(inst)] = float(w)
+                except (TypeError, ValueError):
+                    continue
+
+            if day_weights:
+                result[date_str] = day_weights
+        except Exception:
+            continue
+
+    return result
