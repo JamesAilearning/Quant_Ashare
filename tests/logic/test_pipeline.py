@@ -26,6 +26,34 @@ class PipelineStructuralTests(unittest.TestCase):
         self.assertEqual(config.instruments, "csi300")
         self.assertEqual(config.model_type, "LGBModel")
 
+    def test_make_run_dir_has_timestamp_and_fingerprint(self) -> None:
+        config = PipelineConfig(provider_uri="/tmp/fake")
+        root = Path("/tmp/any_root")
+        run_dir = Pipeline._make_run_dir(root, config)
+        # Must live under runs/ and have two underscore-separated segments
+        self.assertEqual(run_dir.parent, root / "runs")
+        name = run_dir.name
+        parts = name.split("_")
+        # Format: YYYYMMDD_HHMMSS_<12hex>  →  3 parts
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(len(parts[0]), 8)
+        self.assertEqual(len(parts[1]), 6)
+        self.assertEqual(len(parts[2]), 12)
+
+    def test_make_run_dir_fingerprint_is_stable_for_same_config(self) -> None:
+        config1 = PipelineConfig(provider_uri="/tmp/fake", topk=50)
+        config2 = PipelineConfig(provider_uri="/tmp/fake", topk=50)
+        fp1 = Pipeline._make_run_dir(Path("/tmp"), config1).name.split("_")[-1]
+        fp2 = Pipeline._make_run_dir(Path("/tmp"), config2).name.split("_")[-1]
+        self.assertEqual(fp1, fp2)
+
+    def test_make_run_dir_fingerprint_changes_with_config(self) -> None:
+        config1 = PipelineConfig(provider_uri="/tmp/fake", topk=50)
+        config2 = PipelineConfig(provider_uri="/tmp/fake", topk=100)
+        fp1 = Pipeline._make_run_dir(Path("/tmp"), config1).name.split("_")[-1]
+        fp2 = Pipeline._make_run_dir(Path("/tmp"), config2).name.split("_")[-1]
+        self.assertNotEqual(fp1, fp2)
+
 
 from tests.e2e_guard import skip_unless_e2e
 

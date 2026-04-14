@@ -89,6 +89,7 @@ CANONICAL_OUTPUT_FIELDS = (
     "risk_analysis",
     "report",
     "provenance",
+    "positions",
 )
 
 
@@ -207,7 +208,14 @@ class CanonicalBacktestInput:
 
 @dataclass(frozen=True)
 class CanonicalBacktestOutput:
-    """Output boundary for canonical official metrics payload."""
+    """Output boundary for canonical official metrics payload.
+
+    ``positions`` is the authoritative per-day portfolio weight map
+    ``{date_str: {instrument: weight}}`` where ``weight`` sums to ~1.0
+    (long-only portfolios). Downstream consumers (performance attribution,
+    turnover analysis) must prefer this over reconstructing weights from
+    predictions, which would diverge from the actual topk-dropout selection.
+    """
 
     metric_status: str
     official_backtest_path: str
@@ -215,6 +223,7 @@ class CanonicalBacktestOutput:
     risk_analysis: Mapping[str, Any]
     report: Mapping[str, Any]
     provenance: Mapping[str, Any]
+    positions: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
 
 class CanonicalBacktestContract:

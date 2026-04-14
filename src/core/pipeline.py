@@ -106,8 +106,15 @@ class Pipeline:
 
     @classmethod
     def run(cls, config: PipelineConfig) -> PipelineResult:
-        output_dir = Path(config.output_dir)
+        # Per-run output directory: output/runs/{timestamp}_{fingerprint}/
+        # Prevents successive runs from silently overwriting each other.
+        # The fingerprint is computed from the config so re-running with
+        # identical settings is visible in the directory name.
+        root_dir = Path(config.output_dir)
+        run_dir = cls._make_run_dir(root_dir, config)
+        output_dir = run_dir
         output_dir.mkdir(parents=True, exist_ok=True)
+        cls._log(f"Run directory: {output_dir}")
 
         # Step 1: Initialize qlib (or validate config matches existing init)
         cls._log("Initializing qlib runtime...")
@@ -219,8 +226,16 @@ class Pipeline:
                     end_date=config.test_end,
                     benchmark_code=config.benchmark_code,
                 ),
+                positions=backtest_output.positions,
             )
             PerformanceAttribution.print_report(attribution_result)
+
+        # Step 7b: Persist positions artifact (authoritative portfolio weights)
+        if backtest_output.positions:
+            positions_path = output_dir / "positions.json"
+            with open(positions_path, "w", encoding="utf-8") as f:
+                json.dump(dict(backtest_output.positions), f, indent=2, default=str)
+            cls._log(f"  Positions: {positions_path} ({len(backtest_output.positions)} days)")
 
         # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")
@@ -256,6 +271,23 @@ class Pipeline:
     @classmethod
     def _log(cls, msg: str) -> None:
         cls._logger.info(msg)
+
+    @staticmethod
+    def _make_run_dir(root_dir: Path, config: PipelineConfig) -> Path:
+        """Return ``root_dir / runs / {timestamp}_{fingerprint}``.
+
+        The fingerprint hashes the config dict so identical re-runs produce a
+        stable suffix; the timestamp prefix guarantees directory uniqueness
+        even across rapid-fire runs.
+        """
+        import hashlib
+        import json
+        from dataclasses import asdict
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        config_json = json.dumps(asdict(config), sort_keys=True, default=str)
+        fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:12]
+        return root_dir / "runs" / f"{timestamp}_{fingerprint}"
 
     @staticmethod
     def _write_report(

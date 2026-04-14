@@ -20,7 +20,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeCostModel,
     EXECUTION_PRICE_CLOSE,
 )
-from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
+from src.core.backtest_runner import BacktestRunner, BacktestRunnerError, _positions_to_weight_map
 
 
 def _make_request(**overrides) -> CanonicalBacktestInput:
@@ -77,6 +77,58 @@ class BacktestRunnerStructuralTests(unittest.TestCase):
                 request=_make_request(experimental_controls={"key": "val"}),
                 predictions="dummy",
             )
+
+
+class PositionsSerializationTests(unittest.TestCase):
+    """Unit tests for the ``_positions_to_weight_map`` helper."""
+
+    def test_empty_input_returns_empty_dict(self) -> None:
+        self.assertEqual(_positions_to_weight_map(None), {})
+        self.assertEqual(_positions_to_weight_map({}), {})
+
+    def test_extracts_explicit_weight_field(self) -> None:
+        import pandas as pd
+
+        class _Pos:
+            def __init__(self, d):
+                self.position = d
+
+        positions = pd.Series({
+            pd.Timestamp("2025-10-01"): _Pos({
+                "SH600000": {"amount": 100, "price": 10.0, "weight": 0.4},
+                "SH600001": {"amount": 200, "price": 20.0, "weight": 0.6},
+                "cash": 0.0,
+            }),
+        })
+        result = _positions_to_weight_map(positions)
+        self.assertIn("2025-10-01", result)
+        self.assertAlmostEqual(result["2025-10-01"]["SH600000"], 0.4)
+        self.assertAlmostEqual(result["2025-10-01"]["SH600001"], 0.6)
+        self.assertNotIn("cash", result["2025-10-01"])
+
+    def test_falls_back_to_amount_times_price(self) -> None:
+        import pandas as pd
+
+        class _Pos:
+            def __init__(self, d):
+                self.position = d
+
+        # No 'weight' key — must compute from amount * price / total_value
+        positions = pd.Series({
+            pd.Timestamp("2025-10-02"): _Pos({
+                "SH600000": {"amount": 100, "price": 10.0},  # value = 1000
+                "SH600001": {"amount": 100, "price": 30.0},  # value = 3000
+                "cash": 0.0,
+            }),
+        })
+        result = _positions_to_weight_map(positions)
+        self.assertAlmostEqual(result["2025-10-02"]["SH600000"], 0.25)
+        self.assertAlmostEqual(result["2025-10-02"]["SH600001"], 0.75)
+
+    def test_malformed_input_does_not_raise(self) -> None:
+        # Garbage input must be swallowed, not crash the backtest output.
+        self.assertEqual(_positions_to_weight_map("not-a-dict"), {})
+        self.assertEqual(_positions_to_weight_map(42), {})
 
 
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")

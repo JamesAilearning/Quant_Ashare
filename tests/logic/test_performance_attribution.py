@@ -72,6 +72,69 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         )
         self.assertEqual(result, [])
 
+    def test_predictions_to_weights_clips_negatives(self) -> None:
+        # Names with negative scores must not leak weight.
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000"),
+             (pd.Timestamp("2025-10-01"), "SH600001"),
+             (pd.Timestamp("2025-10-01"), "SH600002")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([1.0, 0.5, -2.0], index=idx)
+        weights = PerformanceAttribution._predictions_to_weights(predictions)
+        self.assertAlmostEqual(weights["SH600000"], 1.0 / 1.5)
+        self.assertAlmostEqual(weights["SH600001"], 0.5 / 1.5)
+        self.assertAlmostEqual(weights["SH600002"], 0.0)
+
+    def test_predictions_to_weights_all_negative_falls_back_uniform(self) -> None:
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "A"),
+             (pd.Timestamp("2025-10-01"), "B")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([-0.5, -1.0], index=idx)
+        weights = PerformanceAttribution._predictions_to_weights(predictions)
+        self.assertAlmostEqual(weights["A"], 0.5)
+        self.assertAlmostEqual(weights["B"], 0.5)
+
+    def test_positions_override_predictions_in_brinson(self) -> None:
+        # When positions are supplied, Brinson weighting must come from
+        # the real holdings, not the prediction scores.
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000"),
+             (pd.Timestamp("2025-10-01"), "SZ300001")],
+            names=["datetime", "instrument"],
+        )
+        # Predictions would give SH600000 almost all weight
+        predictions = pd.Series([10.0, 0.01], index=idx)
+        # But actual positions hold SZ300001 heavily
+        positions = {
+            "2025-10-01": {"SH600000": 0.1, "SZ300001": 0.9},
+            "2025-10-02": {"SH600000": 0.1, "SZ300001": 0.9},
+        }
+        port_returns = pd.Series([0.01, -0.01],
+                                 index=[pd.Timestamp("2025-10-01"), pd.Timestamp("2025-10-02")])
+        bench_returns = pd.Series([0.005, 0.002],
+                                  index=[pd.Timestamp("2025-10-01"), pd.Timestamp("2025-10-02")])
+        cfg = AttributionConfig(start_date="2025-10-01", end_date="2025-10-02")
+
+        # Mock _get_instrument_returns to avoid qlib dependency
+        with patch.object(PerformanceAttribution, "_get_instrument_returns",
+                          return_value=pd.Series({"SH600000": 0.05, "SZ300001": -0.03})):
+            results = PerformanceAttribution._brinson_attribution(
+                predictions, port_returns, bench_returns, cfg, positions,
+            )
+
+        # SH_Main sector (SH600000) should have portfolio_weight ≈ 0.1
+        # ChiNext sector (SZ300001) should have portfolio_weight ≈ 0.9
+        by_sector = {s.sector: s for s in results}
+        self.assertIn("SH_Main", by_sector)
+        self.assertIn("ChiNext", by_sector)
+        self.assertAlmostEqual(by_sector["SH_Main"].portfolio_weight, 0.1, places=2)
+        self.assertAlmostEqual(by_sector["ChiNext"].portfolio_weight, 0.9, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
