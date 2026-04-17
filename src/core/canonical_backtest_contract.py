@@ -166,11 +166,20 @@ class CanonicalExchangeCostModel:
 
 @dataclass(frozen=True)
 class CanonicalExchangeConfig:
-    """Frozen exchange configuration for the canonical backtest path."""
+    """Frozen exchange configuration for the canonical backtest path.
+
+    ``limit_threshold`` is the daily price-move bound within which trades are
+    simulated as executed. 0.095 matches A-share main-board ±10% (set slightly
+    under the regulatory cap to avoid hitting the hard limit). ChiNext / STAR
+    boards use ±20% and ST names use ±5% — callers must pass the correct value
+    for the dominant universe; a per-instrument threshold is out of scope for
+    the canonical boundary.
+    """
 
     freq: str
     execution_price_kind: str
     cost_model: CanonicalExchangeCostModel
+    limit_threshold: float = 0.095
 
     def __post_init__(self) -> None:
         if self.freq not in SUPPORTED_EXCHANGE_FREQUENCIES:
@@ -186,6 +195,20 @@ class CanonicalExchangeConfig:
         if not isinstance(self.cost_model, CanonicalExchangeCostModel):
             raise CanonicalBacktestContractError(
                 "CanonicalExchangeConfig.cost_model must be a CanonicalExchangeCostModel instance."
+            )
+        if (
+            not isinstance(self.limit_threshold, (int, float))
+            or isinstance(self.limit_threshold, bool)
+        ):
+            raise CanonicalBacktestContractError(
+                "CanonicalExchangeConfig.limit_threshold must be a real number, "
+                f"got {type(self.limit_threshold).__name__}."
+            )
+        if not (0.0 < float(self.limit_threshold) <= 0.25):
+            raise CanonicalBacktestContractError(
+                "CanonicalExchangeConfig.limit_threshold must be in (0, 0.25]; "
+                f"got {self.limit_threshold}. Use 0.095 for A-share main board, "
+                "0.195 for ChiNext/STAR, 0.045 for ST."
             )
 
 

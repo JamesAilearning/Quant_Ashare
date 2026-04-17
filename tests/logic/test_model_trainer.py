@@ -76,6 +76,140 @@ class ModelTrainerStructuralTests(unittest.TestCase):
                     model_artifact_path="/tmp/model.pkl",
                 )
 
+    def test_non_int_seed_rejected(self) -> None:
+        with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(ModelTrainerError, "seed"):
+                ModelTrainer.train_and_predict(
+                    config=ModelTrainConfig(model_type="LGBModel", seed=3.14),  # type: ignore[arg-type]
+                    dataset=None,
+                    model_artifact_path="/tmp/model.pkl",
+                )
+
+    def test_bool_seed_rejected(self) -> None:
+        # bool is subtype of int; must be explicitly rejected.
+        with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(ModelTrainerError, "seed"):
+                ModelTrainer.train_and_predict(
+                    config=ModelTrainConfig(model_type="LGBModel", seed=True),  # type: ignore[arg-type]
+                    dataset=None,
+                    model_artifact_path="/tmp/model.pkl",
+                )
+
+
+class FitDispatchTests(unittest.TestCase):
+    """_fit_dispatch must pass LGB-only kwargs only to LGBModel."""
+
+    def _make_model(self):
+        class _M:
+            def __init__(self):
+                self.fit_calls = []
+            def fit(self, dataset, **kwargs):
+                self.fit_calls.append((dataset, kwargs))
+        return _M()
+
+    def test_lgb_receives_extra_kwargs(self) -> None:
+        model = self._make_model()
+        evals: dict = {}
+        ModelTrainer._fit_dispatch(
+            model, dataset="DS",
+            config=ModelTrainConfig(model_type="LGBModel", num_boost_round=7, early_stopping_rounds=3),
+            evals_result=evals,
+        )
+        self.assertEqual(len(model.fit_calls), 1)
+        dataset_arg, kwargs = model.fit_calls[0]
+        self.assertEqual(dataset_arg, "DS")
+        self.assertEqual(kwargs["num_boost_round"], 7)
+        self.assertEqual(kwargs["early_stopping_rounds"], 3)
+        self.assertIs(kwargs["evals_result"], evals)
+
+    def test_xgb_receives_only_dataset(self) -> None:
+        model = self._make_model()
+        ModelTrainer._fit_dispatch(
+            model, dataset="DS",
+            config=ModelTrainConfig(model_type="XGBModel"),
+            evals_result={},
+        )
+        _, kwargs = model.fit_calls[0]
+        self.assertEqual(kwargs, {})  # no extra kwargs forwarded
+
+    def test_catboost_receives_only_dataset(self) -> None:
+        model = self._make_model()
+        ModelTrainer._fit_dispatch(
+            model, dataset="DS",
+            config=ModelTrainConfig(model_type="CatBoostModel"),
+            evals_result={},
+        )
+        _, kwargs = model.fit_calls[0]
+        self.assertEqual(kwargs, {})
+
+
+class TrainingDiagnosticsTests(unittest.TestCase):
+    """_extract_training_diagnostics best-effort extraction."""
+
+    def test_lgb_best_iteration_from_inner_model(self) -> None:
+        class _Inner: best_iteration = 42
+        class _M: model = _Inner()
+        best_iter, _ = ModelTrainer._extract_training_diagnostics(_M(), "LGBModel", {})
+        self.assertEqual(best_iter, 42)
+
+    def test_xgb_best_iteration_from_inner_model(self) -> None:
+        class _Inner: best_iteration = 17
+        class _M: model = _Inner()
+        best_iter, _ = ModelTrainer._extract_training_diagnostics(_M(), "XGBModel", {})
+        self.assertEqual(best_iter, 17)
+
+    def test_catboost_best_iteration_via_getter(self) -> None:
+        class _Inner:
+            def get_best_iteration(self): return 99
+        class _M: model = _Inner()
+        best_iter, _ = ModelTrainer._extract_training_diagnostics(_M(), "CatBoostModel", {})
+        self.assertEqual(best_iter, 99)
+
+    def test_missing_inner_returns_none(self) -> None:
+        class _M: model = None
+        best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "LGBModel", {})
+        self.assertIsNone(best_iter)
+        self.assertIsNone(final_val)
+
+    def test_final_valid_loss_from_evals_result(self) -> None:
+        class _Inner: best_iteration = 3
+        class _M: model = _Inner()
+        evals = {"valid": {"l2": [0.5, 0.4, 0.3, 0.35]}}
+        best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "LGBModel", evals)
+        self.assertEqual(best_iter, 3)
+        # best_iter=3 → values[2] = 0.3
+        self.assertAlmostEqual(final_val, 0.3)
+
+    def test_diagnostic_extraction_never_raises(self) -> None:
+        # Malformed evals_result must not poison the output.
+        class _M: model = None
+        best_iter, final_val = ModelTrainer._extract_training_diagnostics(
+            _M(), "LGBModel", {"valid": "not a dict"},
+        )
+        self.assertIsNone(best_iter)
+        self.assertIsNone(final_val)
+
+
+class SeedEverythingTests(unittest.TestCase):
+    def test_seed_sets_python_and_numpy(self) -> None:
+        import random as _random
+        from src.core.model_trainer import _seed_everything
+        _seed_everything(1234)
+        a1 = _random.random()
+        _seed_everything(1234)
+        a2 = _random.random()
+        self.assertEqual(a1, a2)
+
+        try:
+            import numpy as np
+        except ImportError:
+            return
+        _seed_everything(1234)
+        n1 = np.random.rand(3).tolist()
+        _seed_everything(1234)
+        n2 = np.random.rand(3).tolist()
+        self.assertEqual(n1, n2)
+
 
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")
 _HAS_QLIB_DATA = _QLIB_DATA_DIR.exists() and (_QLIB_DATA_DIR / "calendars").exists()

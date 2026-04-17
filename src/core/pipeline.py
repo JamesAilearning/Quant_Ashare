@@ -74,6 +74,13 @@ class PipelineConfig:
     signal_to_execution_lag: int = 1
     topk: int = 50
     n_drop: int = 5
+    # A-share price-move bound: 0.095 = main board ±10%,
+    # 0.195 = ChiNext/STAR ±20%, 0.045 = ST ±5%. Must match the
+    # dominant board of the universe; canonical contract bounds check.
+    limit_threshold: float = 0.095
+
+    # reproducibility — seed for numpy/python random/LGB/XGB/CatBoost
+    seed: int = 42
 
     # factor analysis
     run_factor_analysis: bool = True
@@ -156,6 +163,7 @@ class Pipeline:
                 learning_rate=config.learning_rate,
                 max_depth=config.max_depth,
                 num_leaves=config.num_leaves,
+                seed=config.seed,
             ),
             dataset=feature_result.dataset,
             model_artifact_path=model_artifact_path,
@@ -188,6 +196,7 @@ class Pipeline:
                     slippage_bps=config.slippage_bps,
                     min_cost=config.min_cost,
                 ),
+                limit_threshold=config.limit_threshold,
             ),
             adjust_mode=config.adjust_mode,
             signal_to_execution_lag=config.signal_to_execution_lag,
