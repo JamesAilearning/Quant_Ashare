@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.core.logger import get_logger
+
+_logger = get_logger(__name__)
+
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -123,10 +126,10 @@ class Pipeline:
         # (extreme race on very coarse clocks), fail loud rather than clobber
         # an earlier run's artifacts.
         output_dir.mkdir(parents=True, exist_ok=False)
-        cls._log(f"Run directory: {output_dir}")
+        _logger.info("Run directory: %s", output_dir)
 
         # Step 1: Initialize qlib (or validate config matches existing init)
-        cls._log("Initializing qlib runtime...")
+        _logger.info("Initializing qlib runtime...")
         requested_config = QlibRuntimeConfig(
             provider_uri=config.provider_uri,
             region=config.region,
@@ -135,7 +138,7 @@ class Pipeline:
         init_qlib_canonical(requested_config)
 
         # Step 2: Build feature dataset
-        cls._log("Building feature dataset...")
+        _logger.info("Building feature dataset...")
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
             instruments=config.instruments,
             feature_handler=config.feature_handler,
@@ -146,14 +149,13 @@ class Pipeline:
             test_start=config.test_start,
             test_end=config.test_end,
         ))
-        cls._log(
-            f"  Train: {feature_result.train_shape}, "
-            f"Valid: {feature_result.valid_shape}, "
-            f"Test: {feature_result.test_shape}"
+        _logger.info(
+            "  Train: %s, Valid: %s, Test: %s",
+            feature_result.train_shape, feature_result.valid_shape, feature_result.test_shape,
         )
 
         # Step 3: Train model
-        cls._log("Training model...")
+        _logger.info("Training model...")
         model_artifact_path = str(output_dir / "model.pkl")
         model_result = ModelTrainer.train_and_predict(
             config=ModelTrainConfig(
@@ -168,10 +170,10 @@ class Pipeline:
             dataset=feature_result.dataset,
             model_artifact_path=model_artifact_path,
         )
-        cls._log(f"  Predictions: {model_result.prediction_shape}")
+        _logger.info("  Predictions: %s", model_result.prediction_shape)
 
         # Step 4: Signal quality analysis
-        cls._log("Analyzing signal quality...")
+        _logger.info("Analyzing signal quality...")
         signal_result = SignalAnalyzer.analyze(
             predictions=model_result.predictions,
             config=SignalAnalysisConfig(topk=config.topk),
@@ -179,7 +181,7 @@ class Pipeline:
         SignalAnalyzer.print_report(signal_result)
 
         # Step 5: Run canonical backtest
-        cls._log("Running canonical backtest...")
+        _logger.info("Running canonical backtest...")
         # predictions_ref is a provenance marker (where the model artifact lives),
         # not consumed by BacktestRunner — predictions are passed directly below.
         backtest_request = CanonicalBacktestInput(
@@ -213,22 +215,27 @@ class Pipeline:
         # Step 6: Factor analysis (optional)
         factor_result: FactorAnalysisResult | None = None
         if config.run_factor_analysis:
-            cls._log("Running factor analysis...")
-            factor_result = FactorAnalyzer.analyze(FactorAnalysisConfig(
-                instruments=config.instruments,
-                feature_handler=config.feature_handler,
-                test_start=config.test_start,
-                test_end=config.test_end,
-                forward_period=config.factor_forward_period,
-                top_n_factors=config.factor_top_n,
-                max_decay_lag=config.factor_max_decay_lag,
-            ))
+            _logger.info("Running factor analysis...")
+            # Reuse the Alpha158 dataset already built in step 2 — otherwise
+            # FactorAnalyzer would rebuild the (expensive) handler from zero.
+            factor_result = FactorAnalyzer.analyze(
+                FactorAnalysisConfig(
+                    instruments=config.instruments,
+                    feature_handler=config.feature_handler,
+                    test_start=config.test_start,
+                    test_end=config.test_end,
+                    forward_period=config.factor_forward_period,
+                    top_n_factors=config.factor_top_n,
+                    max_decay_lag=config.factor_max_decay_lag,
+                ),
+                dataset=feature_result.dataset,
+            )
             FactorAnalyzer.print_report(factor_result)
 
         # Step 7: Performance attribution (optional)
         attribution_result: AttributionResult | None = None
         if config.run_attribution:
-            cls._log("Running performance attribution...")
+            _logger.info("Running performance attribution...")
             # Pass positions only when non-empty; empty dict is an explicit
             # error per attribution contract ("no implicit fallback" rule).
             positions_for_attribution = backtest_output.positions if backtest_output.positions else None
@@ -249,7 +256,10 @@ class Pipeline:
             positions_path = output_dir / "positions.json"
             with open(positions_path, "w", encoding="utf-8") as f:
                 json.dump(dict(backtest_output.positions), f, indent=2, default=str)
-            cls._log(f"  Positions: {positions_path} ({len(backtest_output.positions)} days)")
+            _logger.info(
+                "  Positions: %s (%d days)",
+                positions_path, len(backtest_output.positions),
+            )
 
         # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")
@@ -257,13 +267,13 @@ class Pipeline:
             report_path, config, feature_result, model_result,
             signal_result, backtest_output, factor_result, attribution_result,
         )
-        cls._log(f"  Report: {report_path}")
+        _logger.info("  Report: %s", report_path)
 
         # Step 9: Print summary
         cls._print_summary(backtest_output)
 
         # Step 10: Generate charts
-        cls._log("Generating performance charts...")
+        _logger.info("Generating performance charts...")
         charts_dir = str(output_dir / "charts")
         ResultVisualizer.generate(
             return_series=backtest_output.return_series,
@@ -279,12 +289,6 @@ class Pipeline:
             attribution=attribution_result,
             report_path=report_path,
         )
-
-    _logger = get_logger("src.core.pipeline")
-
-    @classmethod
-    def _log(cls, msg: str) -> None:
-        cls._logger.info(msg)
 
     @staticmethod
     def _make_run_dir(root_dir: Path, config: PipelineConfig) -> Path:
@@ -404,9 +408,9 @@ class Pipeline:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)
 
-    @classmethod
-    def _print_summary(cls, output: CanonicalBacktestOutput) -> None:
-        log = cls._logger.info
+    @staticmethod
+    def _print_summary(output: CanonicalBacktestOutput) -> None:
+        log = _logger.info
         log("=" * 60)
         log("  V2 Pipeline Results")
         log("=" * 60)
