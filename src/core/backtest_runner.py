@@ -80,7 +80,9 @@ class BacktestRunner:
             "open_cost": cost.commission_rate + slippage_fraction,
             "close_cost": cost.commission_rate + stamp_tax_fraction + slippage_fraction,
             "min_cost": cost.min_cost,
-            "limit_threshold": 0.095,
+            # Use contract-provided limit_threshold so callers pick the right
+            # A-share regime (main board / ChiNext / ST) rather than baking it in.
+            "limit_threshold": float(request.exchange_config.limit_threshold),
         }
 
         # Apply signal_to_execution_lag by shifting predictions
