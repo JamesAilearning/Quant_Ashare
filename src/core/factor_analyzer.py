@@ -109,6 +109,13 @@ class FactorAnalyzer:
         if dataset is not None:
             _logger.info("Reusing pre-built dataset (skipping Alpha158 rebuild)...")
             factor_df = cls._prepare_from_dataset(dataset)
+            # Governance: when callers hand us a pre-built dataset, the
+            # FactorAnalysisConfig's data-source fields (instruments /
+            # test_start / test_end) stop exerting any constraint on what
+            # gets analyzed. Validate the prepared DataFrame's date range
+            # lines up with the config, so a handler/segment drift in the
+            # pipeline doesn't silently shift factor-analysis results.
+            cls._validate_dataset_matches_config(factor_df, config)
         else:
             _logger.info("Building factor dataset for %s ~ %s...", config.test_start, config.test_end)
             factor_df = cls._get_factor_values(config)
@@ -117,10 +124,13 @@ class FactorAnalyzer:
 
         # Step 2: Fetch close-price matrix once, derive all forward-return
         # matrices from it. Shared by per-factor IC (lag=forward_period) and
-        # decay analysis (lags 1..max_decay_lag). Previously we re-fetched
-        # and re-unstacked inside _compute_factor_decay.
-        _logger.info("Fetching close prices + building forward-return cache...")
-        close_unstacked = cls._fetch_close_unstacked(factor_df, config.max_decay_lag)
+        # decay analysis (lags 1..max_decay_lag). Extension window covers
+        # the LARGER of forward_period and max_decay_lag — otherwise with
+        # forward_period > max_decay_lag the IC lag's forward return gets
+        # truncated and IC goes NaN. (P1 regression fix.)
+        max_lag = max(config.forward_period, config.max_decay_lag)
+        _logger.info("Fetching close prices + building forward-return cache (max_lag=%d)...", max_lag)
+        close_unstacked = cls._fetch_close_unstacked(factor_df, max_lag)
         forward_ret_cache = cls._build_forward_ret_cache(
             close_unstacked, factor_df.index,
             lags=sorted({config.forward_period, *range(1, config.max_decay_lag + 1)}),
@@ -154,6 +164,39 @@ class FactorAnalyzer:
             ic_decay=decay,
             total_factors=len(factor_names),
         )
+
+    @staticmethod
+    def _validate_dataset_matches_config(
+        factor_df: Any, config: FactorAnalysisConfig,
+    ) -> None:
+        """Raise if the prepared DataFrame's date range drifts from config.
+
+        When a caller passes a pre-built ``dataset``, the ``instruments``,
+        ``test_start`` and ``test_end`` fields in ``FactorAnalysisConfig``
+        become annotations rather than constraints. That's fine as long as
+        they *agree* with reality — if the upstream pipeline quietly shifts
+        the test segment (bug, wrong handler, cache replay), factor analysis
+        would silently analyze the wrong period. We check that the actual
+        datetime range falls within the declared window.
+        """
+        import pandas as pd
+
+        if factor_df.empty:
+            raise FactorAnalyzerError(
+                "Provided dataset yielded an empty 'test' segment."
+            )
+        actual_start = pd.Timestamp(factor_df.index.get_level_values("datetime").min()).date()
+        actual_end = pd.Timestamp(factor_df.index.get_level_values("datetime").max()).date()
+        declared_start = pd.Timestamp(config.test_start).date()
+        declared_end = pd.Timestamp(config.test_end).date()
+
+        if actual_start < declared_start or actual_end > declared_end:
+            raise FactorAnalyzerError(
+                "Dataset test-segment date range escapes FactorAnalysisConfig: "
+                f"actual [{actual_start} .. {actual_end}] vs config "
+                f"[{declared_start} .. {declared_end}]. "
+                "Config and dataset must agree on the analysis window."
+            )
 
     @staticmethod
     def _prepare_from_dataset(dataset: Any) -> Any:
@@ -228,9 +271,12 @@ class FactorAnalyzer:
     def _extend_end_trading_days(end_dt: Any, max_lag: int) -> Any:
         """Extend ``end_dt`` by ``max_lag`` trading days via ``D.calendar``.
 
-        Mirrors :meth:`SignalAnalyzer._extend_end_trading_days`; kept local
-        to avoid a cross-module import and to keep the fallback tunable
-        independently (factor analysis uses larger lags than signal IC).
+        Falls back to ``max_lag * 3`` calendar days if the calendar call
+        raises or returns fewer forward days than requested — but logs a
+        **WARNING** in either case so the degradation is visible. A silent
+        fallback would mask provider mis-configuration, broken calendar
+        APIs, or data-tail truncation behind an apparently-normal
+        completion with quietly-shrunken results.
         """
         import pandas as pd
         from qlib.data import D
@@ -243,8 +289,21 @@ class FactorAnalyzer:
             cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
             if len(cal_after) >= max_lag:
                 return cal_after[max_lag - 1]
+            _logger.warning(
+                "FactorAnalyzer: qlib calendar returned only %d trading day(s) "
+                "after %s; need %d. Falling back to calendar-day padding "
+                "(%s). This typically means the data bundle ends near "
+                "end_dt — forward returns near the tail will be NaN.",
+                len(cal_after), end_ts, max_lag, fallback,
+            )
             return fallback
-        except Exception:
+        except Exception as exc:
+            _logger.warning(
+                "FactorAnalyzer: qlib D.calendar lookup failed (%s: %s). "
+                "Falling back to %d calendar-day padding (%s). "
+                "Check qlib provider_uri and data bundle integrity.",
+                type(exc).__name__, exc, max_lag * 3, fallback,
+            )
             return fallback
 
     @classmethod
@@ -262,7 +321,11 @@ class FactorAnalyzer:
         cache: dict[int, Any] = {}
         for lag in lags:
             fwd = close_unstacked.shift(-lag) / close_unstacked - 1
-            fwd_stacked = fwd.stack(dropna=False)
+            # pandas 2.1+: stack(dropna=...) is deprecated in favor of
+            # future_stack=True, which preserves NaN rows and has the
+            # desired index behavior. reindex() below aligns to factor_df
+            # anyway, so NaN rows are harmless.
+            fwd_stacked = fwd.stack(future_stack=True)
             fwd_stacked.name = "forward_ret"
             fwd_stacked.index.names = ["datetime", "instrument"]
             cache[lag] = fwd_stacked.reindex(factor_index)
@@ -361,11 +424,21 @@ class FactorAnalyzer:
             if name in factor_names:
                 col_map[name] = col
 
+        # Any factor we were asked to analyze that isn't in the DataFrame
+        # is a bug (names came from factor_df itself upstream) or a config
+        # drift — either way, silently skipping produces a "looks complete,
+        # actually missing" report. Fail loud instead.
+        missing = [n for n in factor_names if n not in col_map]
+        if missing:
+            raise FactorAnalyzerError(
+                f"Requested factor decay for {len(missing)} name(s) not "
+                f"present in factor_df columns: {missing[:5]}"
+                + ("..." if len(missing) > 5 else "")
+            )
+
         result: dict[str, list[float]] = {}
 
         for fname in factor_names:
-            if fname not in col_map:
-                continue
             factor_col = factor_df[col_map[fname]]
             decay_values: list[float] = []
 

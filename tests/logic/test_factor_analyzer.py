@@ -126,6 +126,64 @@ class PrepareFromDatasetTests(unittest.TestCase):
             FactorAnalyzer._prepare_from_dataset(_BadDataset())
 
 
+class DatasetConfigConsistencyTests(unittest.TestCase):
+    """_validate_dataset_matches_config blocks silent config/dataset drift."""
+
+    def _make_factor_df(self, start: str, end: str):
+        import pandas as pd
+        dates = pd.date_range(start, end, freq="D")
+        idx = pd.MultiIndex.from_product(
+            [dates, ["A", "B"]], names=["datetime", "instrument"],
+        )
+        return pd.DataFrame({"f1": range(len(idx))}, index=idx)
+
+    def test_accepts_matching_range(self) -> None:
+        df = self._make_factor_df("2025-07-05", "2025-09-30")
+        cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
+        # Must not raise.
+        FactorAnalyzer._validate_dataset_matches_config(df, cfg)
+
+    def test_rejects_date_escape_above(self) -> None:
+        df = self._make_factor_df("2025-07-01", "2026-02-01")
+        cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
+        with self.assertRaisesRegex(FactorAnalyzerError, "escapes"):
+            FactorAnalyzer._validate_dataset_matches_config(df, cfg)
+
+    def test_rejects_date_escape_below(self) -> None:
+        df = self._make_factor_df("2024-01-01", "2025-09-30")
+        cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
+        with self.assertRaisesRegex(FactorAnalyzerError, "escapes"):
+            FactorAnalyzer._validate_dataset_matches_config(df, cfg)
+
+    def test_rejects_empty_dataset(self) -> None:
+        import pandas as pd
+        empty = pd.DataFrame(
+            index=pd.MultiIndex.from_tuples([], names=["datetime", "instrument"]),
+        )
+        cfg = FactorAnalysisConfig()
+        with self.assertRaisesRegex(FactorAnalyzerError, "empty"):
+            FactorAnalyzer._validate_dataset_matches_config(empty, cfg)
+
+
+class MissingFactorColumnTests(unittest.TestCase):
+    """_compute_factor_decay_cached must fail loud on missing factors."""
+
+    def test_raises_on_missing_factor(self) -> None:
+        import pandas as pd
+        dates = pd.date_range("2025-07-01", periods=5, freq="D")
+        idx = pd.MultiIndex.from_product(
+            [dates, ["A"]], names=["datetime", "instrument"],
+        )
+        factor_df = pd.DataFrame({"known": range(len(idx))}, index=idx)
+        # Empty cache is fine — we should raise *before* touching it.
+        with self.assertRaisesRegex(FactorAnalyzerError, "not present"):
+            FactorAnalyzer._compute_factor_decay_cached(
+                factor_df, forward_ret_cache={1: None},
+                factor_names=["known", "UNKNOWN_X"],
+                config=FactorAnalysisConfig(max_decay_lag=1),
+            )
+
+
 # ----- E2E tests (only run when qlib data is available) -----
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
