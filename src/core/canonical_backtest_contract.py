@@ -47,8 +47,9 @@ CANONICAL_INPUT_REQUIRED_FIELDS = (
     "exchange_config",
     "adjust_mode",
     "signal_to_execution_lag",
+    "benchmark_code",
 )
-CANONICAL_INPUT_OPTIONAL_FIELDS = ("benchmark_code",)
+CANONICAL_INPUT_OPTIONAL_FIELDS: tuple[()] = ()
 
 ADJUST_MODE_PRE = "pre_adjusted"
 ADJUST_MODE_POST = "post_adjusted"
@@ -290,6 +291,12 @@ class CanonicalBacktestContract:
             raise CanonicalBacktestContractError(
                 "signal_to_execution_lag must be >= 1 to avoid look-ahead bias; "
                 f"got {request.signal_to_execution_lag}."
+            )
+
+        if not str(request.benchmark_code or "").strip():
+            raise CanonicalBacktestContractError(
+                "benchmark_code is required for canonical backtest; "
+                "pass an explicit benchmark (e.g. 'SH000300')."
             )
 
         if request.allow_implicit_fallback:

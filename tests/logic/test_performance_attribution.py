@@ -136,5 +136,57 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         self.assertAlmostEqual(by_sector["ChiNext"].portfolio_weight, 0.9, places=2)
 
 
+    # ------------------------------------------------------------------
+    # P1.2: empty / corrupted positions — explicit error, not silent fallback
+    # ------------------------------------------------------------------
+
+    def test_rejects_empty_positions_dict(self) -> None:
+        """Passing positions={} must raise, not silently fall back to predictions."""
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "empty dict"):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {"2025-01-02": 0.01}},
+                    predictions=pd.Series(dtype=float),
+                    positions={},
+                )
+
+    def test_none_positions_uses_predictions_fallback(self) -> None:
+        """positions=None must explicitly allow the prediction-score fallback."""
+        # We don't need a full run — just verify _validate doesn't raise.
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            # Should not raise — None is the explicit opt-in for predictions fallback.
+            try:
+                PerformanceAttribution._validate(
+                    config=AttributionConfig(),
+                    return_series={"return": {}},
+                    positions=None,
+                )
+            except PerformanceAttributionError:
+                self.fail("_validate raised unexpectedly for positions=None")
+
+    def test_rejects_positions_that_deserialize_to_all_zeros(self) -> None:
+        """positions with all-zero weights must raise, not silently fallback."""
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([1.0], index=idx)
+        # All weights are zero-like strings / None — deserialization yields nothing usable
+        positions = {"2025-10-01": {}}  # non-empty outer dict, empty inner
+
+        port_returns = pd.Series([0.01], index=[pd.Timestamp("2025-10-01")])
+        bench_returns = pd.Series([0.005], index=[pd.Timestamp("2025-10-01")])
+        cfg = AttributionConfig(start_date="2025-10-01", end_date="2025-10-01")
+
+        with patch.object(PerformanceAttribution, "_get_instrument_returns",
+                          return_value=pd.Series({"SH600000": 0.05})):
+            with self.assertRaisesRegex(PerformanceAttributionError, "zero usable weights"):
+                PerformanceAttribution._brinson_attribution(
+                    predictions, port_returns, bench_returns, cfg, positions,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

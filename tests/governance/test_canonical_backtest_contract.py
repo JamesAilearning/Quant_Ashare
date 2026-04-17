@@ -58,6 +58,7 @@ def _valid_request(**overrides) -> CanonicalBacktestInput:
         "exchange_config": _valid_exchange_config(),
         "adjust_mode": ADJUST_MODE_PRE,
         "signal_to_execution_lag": 1,
+        "benchmark_code": "SH000300",
     }
     payload.update(overrides)
     return CanonicalBacktestInput(**payload)
@@ -219,6 +220,32 @@ class CanonicalBacktestEvaluationDateBoundaryTests(unittest.TestCase):
                 evaluation_end="2026-02-27",
             )
         )
+
+
+class BenchmarkCodeContractTests(unittest.TestCase):
+    """P1 alignment: benchmark_code is now required at the contract level."""
+
+    def test_benchmark_code_in_required_fields(self) -> None:
+        required = CanonicalBacktestContract.input_boundary()["required"]
+        self.assertIn("benchmark_code", required)
+
+    def test_benchmark_code_not_in_optional_fields(self) -> None:
+        optional = CanonicalBacktestContract.input_boundary()["optional"]
+        self.assertNotIn("benchmark_code", optional)
+
+    def test_none_benchmark_code_rejected_by_validate_input(self) -> None:
+        req = _valid_request(benchmark_code=None)
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "benchmark_code is required"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_empty_benchmark_code_rejected_by_validate_input(self) -> None:
+        req = _valid_request(benchmark_code="   ")
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "benchmark_code is required"):
+            CanonicalBacktestContract.validate_input(req)
+
+    def test_valid_benchmark_code_passes(self) -> None:
+        req = _valid_request(benchmark_code="SH000300")
+        CanonicalBacktestContract.validate_input(req)
 
 
 if __name__ == "__main__":

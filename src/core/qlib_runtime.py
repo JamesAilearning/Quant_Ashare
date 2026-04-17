@@ -109,11 +109,24 @@ def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
         region_constant = REG_CN if config.region.strip().lower() == "cn" else REG_US
 
         # Guard: qlib may already be initialized at the process level (e.g.
-        # test-runner resets our singleton but qlib's internal state persists).
-        # Calling qlib.init() again raises RecorderInitializationError.
+        # test-runner resets our singleton but qlib's internal state persists,
+        # or some other library grabbed qlib first with a different config).
+        # Calling qlib.init() again raises RecorderInitializationError, but
+        # simply skipping it would leave our canonical state lying about what
+        # provider/region qlib actually resolved against. Compare against
+        # qlib's live config and refuse to adopt a foreign session.
         from qlib.config import C as _qlib_C  # type: ignore[import-not-found]
 
-        if not getattr(_qlib_C, "registered", False):
+        if getattr(_qlib_C, "registered", False):
+            mismatch = _qlib_session_mismatch(_qlib_C, config, region_constant)
+            if mismatch is not None:
+                raise QlibRuntimeInitError(
+                    "qlib is already initialized in this process with a different "
+                    f"configuration: {mismatch}. Canonical runtime refuses to "
+                    "adopt a foreign qlib session. Restart the process or align "
+                    "the upstream qlib.init() call with the canonical config."
+                )
+        else:
             qlib.init(
                 provider_uri=config.provider_uri,
                 region=region_constant,
@@ -135,6 +148,47 @@ def is_canonical_qlib_initialized() -> bool:
     """Return True if canonical qlib runtime init has completed."""
     with _INIT_LOCK:
         return _CANONICAL_QLIB_INITIALIZED
+
+
+def _qlib_session_mismatch(qlib_C: object, config: QlibRuntimeConfig, region_constant: object) -> Optional[str]:
+    """Return a human-readable mismatch description, or None if aligned.
+
+    Checks provider_uri (after path normalization) and region against the
+    live qlib.config.C state. Returns None only when both match the incoming
+    canonical config.
+    """
+    import os as _os
+
+    # qlib stores provider_uri as either a single string or a dict keyed by
+    # freq; normalize to a string we can compare.
+    live_provider_raw = getattr(qlib_C, "provider_uri", None)
+    if isinstance(live_provider_raw, dict):
+        # Pick the "day" entry first, then any value
+        live_provider = live_provider_raw.get("day") or next(
+            iter(live_provider_raw.values()), None
+        )
+    else:
+        live_provider = live_provider_raw
+
+    if live_provider is None:
+        return "qlib.config.C.provider_uri is unset"
+
+    try:
+        live_provider_norm = _os.path.normpath(str(live_provider).strip())
+    except (TypeError, ValueError):
+        live_provider_norm = str(live_provider)
+
+    if live_provider_norm != config.provider_uri:
+        return (
+            f"provider_uri mismatch (live={live_provider_norm!r}, "
+            f"requested={config.provider_uri!r})"
+        )
+
+    live_region = getattr(qlib_C, "region", None)
+    if live_region is not None and live_region != region_constant:
+        return f"region mismatch (live={live_region!r}, requested={region_constant!r})"
+
+    return None
 
 
 def _reset_canonical_qlib_runtime_for_tests() -> None:

@@ -21,6 +21,7 @@ from src.core import qlib_runtime  # noqa: E402
 from src.core.qlib_runtime import (  # noqa: E402
     QlibRuntimeConfig,
     QlibRuntimeInitError,
+    _qlib_session_mismatch,
     _reset_canonical_qlib_runtime_for_tests,
     get_canonical_qlib_config,
     init_qlib_canonical,
@@ -79,6 +80,63 @@ class QlibRuntimeInitGuardTests(unittest.TestCase):
             init_qlib_canonical(cfg2)
         # State must still reflect the first successful config.
         self.assertEqual(get_canonical_qlib_config(), cfg1)
+
+
+class QlibSessionMismatchTests(unittest.TestCase):
+    """Unit tests for _qlib_session_mismatch — no qlib import needed."""
+
+    class _FakeC:
+        """Minimal stand-in for qlib.config.C."""
+        def __init__(self, provider_uri, region=None):
+            self.provider_uri = provider_uri
+            self.region = region
+
+    def _cfg(self, path: str, region: str = "cn") -> QlibRuntimeConfig:
+        return QlibRuntimeConfig(provider_uri=path, region=region)
+
+    def test_matching_config_returns_none(self) -> None:
+        import os
+        cfg = self._cfg(r"D:/qlib_data/my_cn_data")
+        fake_c = self._FakeC(os.path.normpath(r"D:/qlib_data/my_cn_data"))
+        from qlib.constant import REG_CN  # type: ignore[import-not-found]
+        result = _qlib_session_mismatch(fake_c, cfg, REG_CN)
+        self.assertIsNone(result)
+
+    def test_provider_uri_mismatch_detected(self) -> None:
+        cfg = self._cfg(r"D:/qlib_data/my_cn_data")
+        fake_c = self._FakeC(r"D:/qlib_data/other_data")
+        result = _qlib_session_mismatch(fake_c, cfg, object())
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("provider_uri mismatch", result)
+
+    def test_dict_provider_uri_uses_day_key(self) -> None:
+        import os
+        cfg = self._cfg(r"D:/qlib_data/my_cn_data")
+        # qlib sometimes stores provider_uri as {"day": path, "1min": ...}
+        fake_c = self._FakeC({
+            "day": os.path.normpath(r"D:/qlib_data/my_cn_data"),
+            "1min": r"D:/qlib_data/1min_data",
+        })
+        from qlib.constant import REG_CN  # type: ignore[import-not-found]
+        result = _qlib_session_mismatch(fake_c, cfg, REG_CN)
+        self.assertIsNone(result)
+
+    def test_none_provider_uri_returns_description(self) -> None:
+        cfg = self._cfg(r"D:/qlib_data/my_cn_data")
+        fake_c = self._FakeC(None)
+        result = _qlib_session_mismatch(fake_c, cfg, object())
+        self.assertIsNotNone(result)
+
+    def test_region_mismatch_detected(self) -> None:
+        import os
+        from qlib.constant import REG_CN, REG_US  # type: ignore[import-not-found]
+        cfg = self._cfg(r"D:/qlib_data/my_cn_data", region="us")
+        fake_c = self._FakeC(os.path.normpath(r"D:/qlib_data/my_cn_data"), region=REG_CN)
+        result = _qlib_session_mismatch(fake_c, cfg, REG_US)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("region mismatch", result)
 
 
 class QlibRuntimeResetHelperBoundaryTests(unittest.TestCase):
