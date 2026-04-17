@@ -245,7 +245,9 @@ class Pipeline:
                 config=AttributionConfig(
                     start_date=config.test_start,
                     end_date=config.test_end,
-                    benchmark_code=config.benchmark_code,
+                    # benchmark_code intentionally omitted — attribution uses
+                    # return_series["bench"] from CanonicalBacktestOutput,
+                    # which already embeds the correct benchmark data.
                 ),
                 positions=positions_for_attribution,
             )

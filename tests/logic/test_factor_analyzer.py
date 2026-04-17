@@ -138,7 +138,8 @@ class DatasetConfigConsistencyTests(unittest.TestCase):
         return pd.DataFrame({"f1": range(len(idx))}, index=idx)
 
     def test_accepts_matching_range(self) -> None:
-        df = self._make_factor_df("2025-07-05", "2025-09-30")
+        # Within 14-day tolerance on both ends.
+        df = self._make_factor_df("2025-07-05", "2025-12-28")
         cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
         # Must not raise.
         FactorAnalyzer._validate_dataset_matches_config(df, cfg)
@@ -153,6 +154,20 @@ class DatasetConfigConsistencyTests(unittest.TestCase):
         df = self._make_factor_df("2024-01-01", "2025-09-30")
         cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
         with self.assertRaisesRegex(FactorAnalyzerError, "escapes"):
+            FactorAnalyzer._validate_dataset_matches_config(df, cfg)
+
+    def test_rejects_narrowed_end(self) -> None:
+        # actual_end is >14 days before declared_end → narrowing detected.
+        df = self._make_factor_df("2025-07-05", "2025-09-30")
+        cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
+        with self.assertRaisesRegex(FactorAnalyzerError, "narrowed|ends significantly"):
+            FactorAnalyzer._validate_dataset_matches_config(df, cfg)
+
+    def test_rejects_narrowed_start(self) -> None:
+        # actual_start is >14 days after declared_start → narrowing detected.
+        df = self._make_factor_df("2025-08-01", "2025-12-28")
+        cfg = FactorAnalysisConfig(test_start="2025-07-01", test_end="2025-12-31")
+        with self.assertRaisesRegex(FactorAnalyzerError, "narrowed|starts significantly"):
             FactorAnalyzer._validate_dataset_matches_config(df, cfg)
 
     def test_rejects_empty_dataset(self) -> None:

@@ -60,10 +60,13 @@ class QlibRuntimeConfig:
             raise QlibRuntimeInitError(
                 f"Unsupported region '{normalized_region}'. Canonical runtime accepts 'cn' or 'us'."
             )
-        # Normalize provider_uri and region so that dataclass __eq__
-        # is not fooled by D:\\data vs D:/data or "CN" vs "cn".
+        # Normalize provider_uri so that semantically identical paths
+        # (D:\\data vs D:/data, ~/qlib vs /home/user/qlib) compare equal.
+        # expanduser resolves ~, abspath resolves relative paths and
+        # normalizes slashes/case on Windows.
         import os
-        object.__setattr__(self, "provider_uri", os.path.normpath(self.provider_uri.strip()))
+        uri_norm = os.path.abspath(os.path.expanduser(self.provider_uri.strip()))
+        object.__setattr__(self, "provider_uri", uri_norm)
         object.__setattr__(self, "region", normalized_region)
 
 
@@ -174,7 +177,9 @@ def _qlib_session_mismatch(qlib_C: object, config: QlibRuntimeConfig, region_con
         return "qlib.config.C.provider_uri is unset"
 
     try:
-        live_provider_norm = _os.path.normpath(str(live_provider).strip())
+        live_provider_norm = _os.path.abspath(
+            _os.path.expanduser(str(live_provider).strip())
+        )
     except (TypeError, ValueError):
         live_provider_norm = str(live_provider)
 

@@ -35,11 +35,11 @@ class AttributionConfig:
     start_date: str = "2025-07-01"
     end_date: str = "2025-12-31"
 
-    # Benchmark for Brinson attribution
-    benchmark_code: str = "SH000300"
-
-    # Use code-based sector classification if no industry data available
-    use_code_based_sectors: bool = True
+    # NOTE: benchmark_code is intentionally absent here. The attribution
+    # engine operates on ``return_series["bench"]`` produced by
+    # CanonicalBacktestOutput, which already embeds the correct benchmark
+    # data. Duplicating it as a config field would create an unvalidated
+    # second entry point for benchmark selection with no enforcement.
 
 
 @dataclass(frozen=True)
@@ -337,23 +337,16 @@ class PerformanceAttribution:
 
     @classmethod
     def _get_sector_map(cls, instruments: list[str], config: AttributionConfig) -> dict[str, str]:
-        """Get instrument → sector mapping."""
-        if config.use_code_based_sectors:
-            return cls._code_based_sector_map(instruments)
+        """Get instrument → sector mapping via A-share code heuristic.
 
-        # Try qlib industry data
-        try:
-            from qlib.data import D
-            industry = D.features(instruments, ["$industry"], start_time=config.start_date, end_time=config.end_date)
-            if industry is not None and not industry.empty:
-                return {
-                    inst: str(industry.xs(inst, level="instrument").iloc[-1, 0])
-                    for inst in instruments
-                    if inst in industry.index.get_level_values("instrument")
-                }
-        except Exception:
-            pass
-
+        Previously this had a ``use_code_based_sectors=False`` branch that
+        attempted to load ``$industry`` from qlib, but qlib's standard CN
+        data bundle does not include an industry provider — the branch was
+        dead code that could only silently fall back to the code-based path
+        anyway. Removed to avoid confusion and maintenance burden. A real
+        industry loader should be added as a separate feature when an
+        industry data source is confirmed available.
+        """
         return cls._code_based_sector_map(instruments)
 
     @staticmethod

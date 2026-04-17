@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from src.core._ic_utils import compute_ic_for_group
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -190,12 +191,38 @@ class FactorAnalyzer:
         declared_start = pd.Timestamp(config.test_start).date()
         declared_end = pd.Timestamp(config.test_end).date()
 
+        # 1. Bounds check — dataset must not escape the declared window.
         if actual_start < declared_start or actual_end > declared_end:
             raise FactorAnalyzerError(
                 "Dataset test-segment date range escapes FactorAnalysisConfig: "
                 f"actual [{actual_start} .. {actual_end}] vs config "
                 f"[{declared_start} .. {declared_end}]. "
                 "Config and dataset must agree on the analysis window."
+            )
+
+        # 2. Narrowing check — dataset must not be silently shorter than
+        # declared. A dataset that ends (declared_end - 14 days) or more
+        # early indicates an upstream handler/segment/cache change that
+        # would silently analyze the wrong period. We use 14 calendar days
+        # as the tolerance to allow for weekends, holidays, and minor
+        # data-tail differences. Raise rather than produce a quietly-
+        # truncated factor report.
+        tolerance = pd.Timedelta(days=14)
+        if pd.Timestamp(actual_end) < pd.Timestamp(declared_end) - tolerance:
+            raise FactorAnalyzerError(
+                "Dataset test-segment ends significantly before declared "
+                f"FactorAnalysisConfig.test_end: actual_end={actual_end}, "
+                f"declared_end={declared_end} (tolerance=14 days). "
+                "The upstream dataset may have been narrowed by a handler, "
+                "segment, or cache change. Align the dataset or update config."
+            )
+        if pd.Timestamp(actual_start) > pd.Timestamp(declared_start) + tolerance:
+            raise FactorAnalyzerError(
+                "Dataset test-segment starts significantly after declared "
+                f"FactorAnalysisConfig.test_start: actual_start={actual_start}, "
+                f"declared_start={declared_start} (tolerance=14 days). "
+                "The upstream dataset may have been narrowed by a handler, "
+                "segment, or cache change. Align the dataset or update config."
             )
 
     @staticmethod
@@ -336,10 +363,10 @@ class FactorAnalyzer:
         cls, factor_df: Any, forward_ret: Any, config: FactorAnalysisConfig
     ) -> list[FactorICStats]:
         """Compute IC stats for every factor column."""
-        import numpy as np
         import pandas as pd
 
         results = []
+        ic_method = config.ic_method
         for col in factor_df.columns:
             factor_col = factor_df[col]
             merged = pd.DataFrame({"factor": factor_col, "ret": forward_ret}).dropna()
@@ -347,15 +374,9 @@ class FactorAnalyzer:
             if len(merged) < 10:
                 continue
 
-            # Cross-sectional IC per day
-            def _ic_func(group: Any) -> float:
-                if len(group) < 3:
-                    return np.nan
-                if config.ic_method == "rank":
-                    return group["factor"].rank().corr(group["ret"].rank())
-                return group["factor"].corr(group["ret"])
-
-            daily_ic = merged.groupby(level="datetime").apply(_ic_func).dropna()
+            daily_ic = merged.groupby(level="datetime").apply(
+                lambda g: compute_ic_for_group(g, ic_method)
+            ).dropna()
 
             if len(daily_ic) == 0:
                 continue
@@ -413,7 +434,6 @@ class FactorAnalyzer:
         :meth:`_build_forward_ret_cache`; this routine only does the
         per-factor join + groupby.
         """
-        import numpy as np
         import pandas as pd
 
         # Build column map once (factor_names are the human-readable last
@@ -450,14 +470,9 @@ class FactorAnalyzer:
                     decay_values.append(0.0)
                     continue
 
-                def _ic(g: Any) -> float:
-                    if len(g) < 3:
-                        return np.nan
-                    if config.ic_method == "rank":
-                        return g["factor"].rank().corr(g["ret"].rank())
-                    return g["factor"].corr(g["ret"])
-
-                daily_ic = merged.groupby(level="datetime").apply(_ic).dropna()
+                daily_ic = merged.groupby(level="datetime").apply(
+                    lambda g: compute_ic_for_group(g, config.ic_method)
+                ).dropna()
                 decay_values.append(float(daily_ic.mean()) if len(daily_ic) > 0 else 0.0)
 
             result[fname] = decay_values
