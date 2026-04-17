@@ -30,15 +30,24 @@ class PipelineStructuralTests(unittest.TestCase):
         config = PipelineConfig(provider_uri="/tmp/fake")
         root = Path("/tmp/any_root")
         run_dir = Pipeline._make_run_dir(root, config)
-        # Must live under runs/ and have two underscore-separated segments
+        # Must live under runs/ and follow: YYYYMMDD_HHMMSS_<microsec>_<12hex>
         self.assertEqual(run_dir.parent, root / "runs")
         name = run_dir.name
         parts = name.split("_")
-        # Format: YYYYMMDD_HHMMSS_<12hex>  →  3 parts
-        self.assertEqual(len(parts), 3)
-        self.assertEqual(len(parts[0]), 8)
-        self.assertEqual(len(parts[1]), 6)
-        self.assertEqual(len(parts[2]), 12)
+        # Format: YYYYMMDD_HHMMSS_<microsec><ns_tail>_<12hex> → 4 parts
+        self.assertEqual(len(parts), 4)
+        self.assertEqual(len(parts[0]), 8)    # date
+        self.assertEqual(len(parts[1]), 6)    # time
+        self.assertEqual(len(parts[2]), 12)   # microseconds (6) + ns_tail (6)
+        self.assertEqual(len(parts[3]), 12)   # sha256 prefix
+
+    def test_make_run_dir_distinguishes_same_second_calls(self) -> None:
+        # Two back-to-back calls with the same config must not collide.
+        config = PipelineConfig(provider_uri="/tmp/fake")
+        root = Path("/tmp/any_root")
+        d1 = Pipeline._make_run_dir(root, config)
+        d2 = Pipeline._make_run_dir(root, config)
+        self.assertNotEqual(d1, d2)
 
     def test_make_run_dir_fingerprint_is_stable_for_same_config(self) -> None:
         config1 = PipelineConfig(provider_uri="/tmp/fake", topk=50)

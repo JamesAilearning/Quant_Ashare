@@ -111,9 +111,11 @@ class Pipeline:
         # The fingerprint is computed from the config so re-running with
         # identical settings is visible in the directory name.
         root_dir = Path(config.output_dir)
-        run_dir = cls._make_run_dir(root_dir, config)
-        output_dir = run_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = cls._make_run_dir(root_dir, config)
+        # exist_ok=False: if our microsecond timestamp somehow still collides
+        # (extreme race on very coarse clocks), fail loud rather than clobber
+        # an earlier run's artifacts.
+        output_dir.mkdir(parents=True, exist_ok=False)
         cls._log(f"Run directory: {output_dir}")
 
         # Step 1: Initialize qlib (or validate config matches existing init)
@@ -218,6 +220,9 @@ class Pipeline:
         attribution_result: AttributionResult | None = None
         if config.run_attribution:
             cls._log("Running performance attribution...")
+            # Pass positions only when non-empty; empty dict is an explicit
+            # error per attribution contract ("no implicit fallback" rule).
+            positions_for_attribution = backtest_output.positions if backtest_output.positions else None
             attribution_result = PerformanceAttribution.analyze(
                 return_series=backtest_output.return_series,
                 predictions=model_result.predictions,
@@ -226,7 +231,7 @@ class Pipeline:
                     end_date=config.test_end,
                     benchmark_code=config.benchmark_code,
                 ),
-                positions=backtest_output.positions,
+                positions=positions_for_attribution,
             )
             PerformanceAttribution.print_report(attribution_result)
 
@@ -277,14 +282,21 @@ class Pipeline:
         """Return ``root_dir / runs / {timestamp}_{fingerprint}``.
 
         The fingerprint hashes the config dict so identical re-runs produce a
-        stable suffix; the timestamp prefix guarantees directory uniqueness
-        even across rapid-fire runs.
+        stable suffix; the timestamp prefix (microsecond resolution) guarantees
+        uniqueness under rapid-fire runs. Callers must create the directory
+        with ``exist_ok=False`` so an unexpected collision surfaces as an
+        error rather than silently overwriting a prior run's artifacts.
         """
         import hashlib
         import json
         from dataclasses import asdict
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Microsecond resolution plus a nanosecond counter suffix prevents
+        # collisions even when datetime.now() resolves identically across two
+        # rapid calls on coarse OS clocks (common on Windows).
+        import time as _time
+        ns_tail = _time.perf_counter_ns() % 1_000_000  # 6-digit ns jitter
+        timestamp = datetime.now().strftime(f"%Y%m%d_%H%M%S_%f") + f"{ns_tail:06d}"
         config_json = json.dumps(asdict(config), sort_keys=True, default=str)
         fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:12]
         return root_dir / "runs" / f"{timestamp}_{fingerprint}"

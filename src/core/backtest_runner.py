@@ -52,13 +52,9 @@ class BacktestRunner:
         topk: int = 50,
         n_drop: int = 5,
     ) -> CanonicalBacktestOutput:
+        # validate_input() enforces benchmark_code is non-empty as of the
+        # contract level — no redundant check needed here.
         CanonicalBacktestContract.validate_input(request)
-
-        if not request.benchmark_code:
-            raise BacktestRunnerError(
-                "benchmark_code is required. Pass an explicit benchmark "
-                "(e.g. 'SH000300' or 'SH600000')."
-            )
 
         if predictions is None or (hasattr(predictions, "empty") and predictions.empty):
             raise BacktestRunnerError("predictions must be non-empty.")

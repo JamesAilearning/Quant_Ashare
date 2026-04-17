@@ -119,7 +119,7 @@ class PerformanceAttribution:
         if config is None:
             config = AttributionConfig()
 
-        cls._validate(config, return_series)
+        cls._validate(config, return_series, positions)
 
         import pandas as pd
 
@@ -167,7 +167,12 @@ class PerformanceAttribution:
         )
 
     @classmethod
-    def _validate(cls, config: AttributionConfig, return_series: Mapping[str, Any]) -> None:
+    def _validate(
+        cls,
+        config: AttributionConfig,
+        return_series: Mapping[str, Any],
+        positions: Mapping[str, Mapping[str, float]] | None,
+    ) -> None:
         if not is_canonical_qlib_initialized():
             raise PerformanceAttributionError(
                 "Canonical qlib runtime is not initialized."
@@ -175,6 +180,16 @@ class PerformanceAttribution:
         if "return" not in return_series:
             raise PerformanceAttributionError(
                 "return_series must contain 'return' key."
+            )
+        # Explicit empty positions dict is a caller error, not a signal to fall
+        # back silently to prediction-score weights.  Pass None to opt into the
+        # predictions fallback intentionally; pass a non-empty dict for real
+        # positions.  This upholds the project's "no implicit fallback" rule.
+        if positions is not None and len(positions) == 0:
+            raise PerformanceAttributionError(
+                "positions was supplied as an empty dict. "
+                "Pass positions=None to use the predictions-score fallback, "
+                "or supply the non-empty positions map from CanonicalBacktestOutput."
             )
 
     @classmethod
@@ -223,12 +238,17 @@ class PerformanceAttribution:
                         weight_sum[inst] = weight_sum.get(inst, 0.0) + float(w)
                     except (TypeError, ValueError):
                         continue
-            if day_count > 0 and weight_sum:
-                raw = pd.Series({k: v / day_count for k, v in weight_sum.items()})
-                total = float(raw.sum())
-                port_weights = raw / total if total > 0 else raw
-            else:
-                port_weights = cls._predictions_to_weights(predictions)
+            if day_count == 0 or not weight_sum:
+                # positions was non-empty at validation time but every day
+                # deserialized to zero weights — treat as corrupted input.
+                raise PerformanceAttributionError(
+                    "positions was provided but all entries yielded zero usable "
+                    "weights after deserialization. Check the positions map from "
+                    "CanonicalBacktestOutput for corruption."
+                )
+            raw = pd.Series({k: v / day_count for k, v in weight_sum.items()})
+            total = float(raw.sum())
+            port_weights = raw / total if total > 0 else raw
         else:
             port_weights = cls._predictions_to_weights(predictions)
 
