@@ -38,8 +38,10 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
 
     def test_config_defaults(self) -> None:
         cfg = AttributionConfig()
-        self.assertTrue(cfg.use_code_based_sectors)
-        self.assertEqual(cfg.benchmark_code, "SH000300")
+        # benchmark_code and use_code_based_sectors removed as dead fields —
+        # attribution uses return_series["bench"] from CanonicalBacktestOutput.
+        self.assertIsInstance(cfg.start_date, str)
+        self.assertIsInstance(cfg.end_date, str)
 
     def test_sector_attribution_dataclass(self) -> None:
         sa = SectorAttribution(

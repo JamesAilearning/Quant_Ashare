@@ -204,26 +204,27 @@ class BacktestRunner:
         topk: int,
         n_drop: int,
     ) -> Mapping[str, Any]:
+        """Build a provenance record covering the full request + strategy params.
+
+        Previously only ``topk`` and ``n_drop`` were captured, which meant
+        any new strategy hyperparameter (selection filter, risk constraints,
+        etc.) added later would silently escape the fingerprint. We now hash
+        the complete serialised ``request`` together with the strategy params
+        so the fingerprint reflects every input that can affect results.
+        """
+        # Strategy params not captured by CanonicalBacktestInput.
+        strategy_dict = {"topk": topk, "n_drop": n_drop}
+        # Full request serialised via dataclass asdict — captures every field
+        # including nested cost model and exchange config.
+        request_dict = asdict(request)
         config_dict = {
-            "evaluation_start": request.evaluation_start,
-            "evaluation_end": request.evaluation_end,
-            "init_cash": request.account_config.init_cash,
-            "freq": request.exchange_config.freq,
-            "execution_price_kind": request.exchange_config.execution_price_kind,
-            "commission_rate": request.exchange_config.cost_model.commission_rate,
-            "stamp_tax_bps": request.exchange_config.cost_model.stamp_tax_bps,
-            "slippage_bps": request.exchange_config.cost_model.slippage_bps,
-            "min_cost": request.exchange_config.cost_model.min_cost,
-            "adjust_mode": request.adjust_mode,
-            "signal_to_execution_lag": request.signal_to_execution_lag,
-            "benchmark_code": request.benchmark_code,
-            "topk": topk,
-            "n_drop": n_drop,
+            "request": request_dict,
+            "strategy": strategy_dict,
         }
         config_json = json.dumps(config_dict, sort_keys=True, default=str)
         fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:16]
         return {
-            "config": config_dict,
+            "config": {**request_dict, **strategy_dict},  # flat for human readability
             "config_fingerprint": fingerprint,
             "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         }

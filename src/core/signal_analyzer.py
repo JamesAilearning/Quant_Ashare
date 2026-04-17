@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from src.core._ic_utils import compute_ic_for_group
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -228,7 +229,6 @@ class SignalAnalyzer:
     ) -> Any:
         """Compute daily cross-sectional IC for a given forward period."""
         import pandas as pd
-        import numpy as np
 
         # returns_data has (datetime, instrument) MultiIndex, 'close' column
         # Unstack instrument to get date x instrument matrix
@@ -251,16 +251,12 @@ class SignalAnalyzer:
         if merged.empty:
             return pd.Series(dtype=float)
 
-        # Cross-sectional IC per day
-        def _ic_func(group):
-            if len(group) < 3:
-                return np.nan
-            if method == "rank":
-                return group["pred"].rank().corr(group["forward_ret"].rank())
-            else:
-                return group["pred"].corr(group["forward_ret"])
-
-        daily_ic = merged.groupby(level=0).apply(_ic_func)
+        # Rename "forward_ret" → "ret" so compute_ic_for_group's column
+        # detection ("pred" + "ret") works without branching.
+        merged = merged.rename(columns={"forward_ret": "ret"})
+        daily_ic = merged.groupby(level=0).apply(
+            lambda g: compute_ic_for_group(g, method)
+        )
         daily_ic.name = f"IC_{period}d"
         return daily_ic
 
@@ -274,7 +270,6 @@ class SignalAnalyzer:
         returns from it, avoiding redundant unstack/shift per lag.
         """
         import pandas as pd
-        import numpy as np
 
         close = returns_data["close"].unstack(level="instrument")
         pred_df = predictions.to_frame("pred")
@@ -294,14 +289,10 @@ class SignalAnalyzer:
                 decay.append(0.0)
                 continue
 
-            def _ic_func(group: Any) -> float:
-                if len(group) < 3:
-                    return np.nan
-                if method == "rank":
-                    return group["pred"].rank().corr(group["forward_ret"].rank())
-                return group["pred"].corr(group["forward_ret"])
-
-            daily_ic = merged.groupby(level=0).apply(_ic_func).dropna()
+            merged = merged.rename(columns={"forward_ret": "ret"})
+            daily_ic = merged.groupby(level=0).apply(
+                lambda g: compute_ic_for_group(g, method)
+            ).dropna()
             decay.append(float(daily_ic.mean()) if len(daily_ic) > 0 else 0.0)
         return decay
 
