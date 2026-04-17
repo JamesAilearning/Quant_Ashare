@@ -76,11 +76,26 @@ class FactorAnalyzer:
     """Analyzes individual factor quality from Alpha158 features."""
 
     @classmethod
-    def analyze(cls, config: FactorAnalysisConfig | None = None) -> FactorAnalysisResult:
+    def analyze(
+        cls,
+        config: FactorAnalysisConfig | None = None,
+        *,
+        dataset: Any | None = None,
+    ) -> FactorAnalysisResult:
         """Run complete factor analysis.
 
+        Parameters
+        ----------
+        config : FactorAnalysisConfig, optional
+            Analysis configuration. Uses defaults if None.
+        dataset : qlib DatasetH, optional
+            Pre-built dataset to reuse (typically from FeatureDatasetBuilder).
+            When provided, we skip the expensive Alpha158 rebuild.  The
+            "test" segment is prepared from this dataset.  When None, a new
+            handler+dataset is built from ``config``.
+
         Steps:
-          1. Build test-period dataset to get per-factor values
+          1. Get factor values (from provided dataset or fresh build)
           2. Fetch forward returns for the test period
           3. Compute per-factor cross-sectional IC
           4. Build correlation matrix of top factors
@@ -91,22 +106,29 @@ class FactorAnalyzer:
 
         cls._validate(config)
 
-        import numpy as np
-        import pandas as pd
-
-        _logger.info("Building factor dataset for %s ~ %s...", config.test_start, config.test_end)
-
-        # Step 1: Get factor values
-        factor_df = cls._get_factor_values(config)
+        if dataset is not None:
+            _logger.info("Reusing pre-built dataset (skipping Alpha158 rebuild)...")
+            factor_df = cls._prepare_from_dataset(dataset)
+        else:
+            _logger.info("Building factor dataset for %s ~ %s...", config.test_start, config.test_end)
+            factor_df = cls._get_factor_values(config)
         factor_names = list(factor_df.columns)
         _logger.info("Loaded %d factors, %d rows", len(factor_names), len(factor_df))
 
-        # Step 2: Get forward returns
-        _logger.info("Computing %d-day forward returns...", config.forward_period)
-        forward_ret = cls._get_forward_returns(factor_df, config.forward_period)
+        # Step 2: Fetch close-price matrix once, derive all forward-return
+        # matrices from it. Shared by per-factor IC (lag=forward_period) and
+        # decay analysis (lags 1..max_decay_lag). Previously we re-fetched
+        # and re-unstacked inside _compute_factor_decay.
+        _logger.info("Fetching close prices + building forward-return cache...")
+        close_unstacked = cls._fetch_close_unstacked(factor_df, config.max_decay_lag)
+        forward_ret_cache = cls._build_forward_ret_cache(
+            close_unstacked, factor_df.index,
+            lags=sorted({config.forward_period, *range(1, config.max_decay_lag + 1)}),
+        )
+        forward_ret = forward_ret_cache[config.forward_period]
 
         # Step 3: Per-factor IC
-        _logger.info("Computing per-factor IC (%s)...", config.ic_method)
+        _logger.info("Computing per-factor IC (%s) at lag=%d...", config.ic_method, config.forward_period)
         all_stats = cls._compute_all_factor_ic(factor_df, forward_ret, config)
 
         # Sort by absolute mean IC
@@ -118,8 +140,13 @@ class FactorAnalyzer:
         _logger.info("Computing correlation matrix for top %d factors...", len(top_names))
         corr_matrix = cls._compute_correlation_matrix(factor_df, top_names)
 
-        _logger.info("Computing IC decay (max lag %d) for top factors...", config.max_decay_lag)
-        decay = cls._compute_factor_decay(factor_df, forward_ret, top_names, config)
+        _logger.info(
+            "Computing IC decay (max lag %d) for top %d factors using cached forward returns...",
+            config.max_decay_lag, len(top_names),
+        )
+        decay = cls._compute_factor_decay_cached(
+            factor_df, forward_ret_cache, top_names, config,
+        )
 
         return FactorAnalysisResult(
             factor_ic_stats=tuple(all_stats),
@@ -127,6 +154,22 @@ class FactorAnalyzer:
             ic_decay=decay,
             total_factors=len(factor_names),
         )
+
+    @staticmethod
+    def _prepare_from_dataset(dataset: Any) -> Any:
+        """Extract the test-segment feature DataFrame from a DatasetH.
+
+        Mirrors the shape returned by ``_get_factor_values`` so downstream
+        code (column indexing, IC computation) is invariant to the source.
+        """
+        try:
+            df = dataset.prepare("test", col_set="feature")
+        except Exception as exc:  # pragma: no cover - defensive
+            raise FactorAnalyzerError(
+                "Provided dataset does not expose a 'test' segment with "
+                f"'feature' col_set: {exc}"
+            ) from exc
+        return df
 
     @classmethod
     def _validate(cls, config: FactorAnalysisConfig) -> None:
@@ -159,33 +202,71 @@ class FactorAnalyzer:
         return df
 
     @classmethod
-    def _get_forward_returns(cls, factor_df: Any, period: int) -> Any:
-        """Compute forward returns aligned with factor_df's index."""
+    def _fetch_close_unstacked(cls, factor_df: Any, max_lag: int) -> Any:
+        """Fetch $close for all instruments and return a date × instrument matrix.
+
+        End date is extended by ``max_lag`` *trading* days (via D.calendar),
+        falling back to ``max_lag * 3`` calendar days if the calendar lookup
+        fails. This prevents holiday clusters (Spring Festival etc.) from
+        starving the forward-return computation.
+        """
         import pandas as pd
         from qlib.data import D
 
         instruments = factor_df.index.get_level_values("instrument").unique().tolist()
         start = str(factor_df.index.get_level_values("datetime").min().date())
-        # Need extra days beyond end for forward return computation
         end_dt = factor_df.index.get_level_values("datetime").max()
-        from datetime import timedelta
-        end_extended = str((end_dt + timedelta(days=period * 2)).date())
+        end_extended = cls._extend_end_trading_days(end_dt, max_lag)
 
         close = D.features(
             instruments, ["$close"], start_time=start, end_time=end_extended
         )
         close.columns = ["close"]
+        return close["close"].unstack(level="instrument")
 
-        # Unstack → compute forward return → stack back
-        close_unstacked = close["close"].unstack(level="instrument")
-        fwd = close_unstacked.shift(-period) / close_unstacked - 1
-        fwd_stacked = fwd.stack(dropna=False)
-        fwd_stacked.name = "forward_ret"
-        fwd_stacked.index.names = ["datetime", "instrument"]
+    @staticmethod
+    def _extend_end_trading_days(end_dt: Any, max_lag: int) -> Any:
+        """Extend ``end_dt`` by ``max_lag`` trading days via ``D.calendar``.
 
-        # Align with factor_df index
-        aligned = fwd_stacked.reindex(factor_df.index)
-        return aligned
+        Mirrors :meth:`SignalAnalyzer._extend_end_trading_days`; kept local
+        to avoid a cross-module import and to keep the fallback tunable
+        independently (factor analysis uses larger lags than signal IC).
+        """
+        import pandas as pd
+        from qlib.data import D
+
+        end_ts = pd.Timestamp(end_dt)
+        fallback = end_ts + pd.Timedelta(days=max_lag * 3)
+        try:
+            future_end = end_ts + pd.Timedelta(days=max_lag * 4 + 30)
+            cal = D.calendar(start_time=end_ts, end_time=future_end, freq="day")
+            cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
+            if len(cal_after) >= max_lag:
+                return cal_after[max_lag - 1]
+            return fallback
+        except Exception:
+            return fallback
+
+    @classmethod
+    def _build_forward_ret_cache(
+        cls, close_unstacked: Any, factor_index: Any, lags: list[int],
+    ) -> dict[int, Any]:
+        """Precompute reindexed forward returns for each requested lag.
+
+        Why this exists: previously ``_compute_factor_decay`` did
+        ``close.shift(-lag) / close - 1`` → ``stack`` → ``reindex`` inside
+        an inner loop. With 158 factors × 20 lags that's 3160 redundant
+        stack+reindex passes. Here we do 20 stack+reindex passes total and
+        the inner factor loop just reads from the dict.
+        """
+        cache: dict[int, Any] = {}
+        for lag in lags:
+            fwd = close_unstacked.shift(-lag) / close_unstacked - 1
+            fwd_stacked = fwd.stack(dropna=False)
+            fwd_stacked.name = "forward_ret"
+            fwd_stacked.index.names = ["datetime", "instrument"]
+            cache[lag] = fwd_stacked.reindex(factor_index)
+        return cache
 
     @classmethod
     def _compute_all_factor_ic(
@@ -259,27 +340,22 @@ class FactorAnalyzer:
         return result
 
     @classmethod
-    def _compute_factor_decay(
-        cls, factor_df: Any, forward_ret: Any, factor_names: list[str],
-        config: FactorAnalysisConfig,
+    def _compute_factor_decay_cached(
+        cls, factor_df: Any, forward_ret_cache: dict[int, Any],
+        factor_names: list[str], config: FactorAnalysisConfig,
     ) -> dict[str, list[float]]:
-        """Compute IC decay for each top factor across lags 1..max_decay_lag."""
+        """Compute IC decay for each top factor using the precomputed cache.
+
+        The expensive ``shift/stack/reindex`` is done once per lag in
+        :meth:`_build_forward_ret_cache`; this routine only does the
+        per-factor join + groupby.
+        """
         import numpy as np
         import pandas as pd
-        from qlib.data import D
-        from datetime import timedelta
 
-        instruments = factor_df.index.get_level_values("instrument").unique().tolist()
-        start = str(factor_df.index.get_level_values("datetime").min().date())
-        end_dt = factor_df.index.get_level_values("datetime").max()
-        end_extended = str((end_dt + timedelta(days=config.max_decay_lag * 2)).date())
-
-        close = D.features(instruments, ["$close"], start_time=start, end_time=end_extended)
-        close.columns = ["close"]
-        close_unstacked = close["close"].unstack(level="instrument")
-
-        # Build column map
-        col_map = {}
+        # Build column map once (factor_names are the human-readable last
+        # elements of possibly-tuple Alpha158 columns).
+        col_map: dict[str, Any] = {}
         for col in factor_df.columns:
             name = str(col) if not isinstance(col, tuple) else str(col[-1])
             if name in factor_names:
@@ -291,18 +367,11 @@ class FactorAnalyzer:
             if fname not in col_map:
                 continue
             factor_col = factor_df[col_map[fname]]
-            decay_values = []
+            decay_values: list[float] = []
 
             for lag in range(1, config.max_decay_lag + 1):
-                fwd = close_unstacked.shift(-lag) / close_unstacked - 1
-                fwd_stacked = fwd.stack(dropna=False)
-                fwd_stacked.name = "ret"
-                fwd_stacked.index.names = ["datetime", "instrument"]
-
-                merged = pd.DataFrame({
-                    "factor": factor_col,
-                    "ret": fwd_stacked.reindex(factor_df.index),
-                }).dropna()
+                fwd = forward_ret_cache[lag]
+                merged = pd.DataFrame({"factor": factor_col, "ret": fwd}).dropna()
 
                 if len(merged) < 10:
                     decay_values.append(0.0)

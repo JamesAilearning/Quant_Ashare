@@ -162,12 +162,16 @@ class SignalAnalyzer:
         start_date = dates.min()
         end_date = dates.max()
 
-        # Fetch $close; extend end_date to cover forward returns
+        # Fetch $close; extend end_date using the *trading* calendar so
+        # long holidays (Spring Festival, NDG) don't starve us of forward
+        # returns. Fallback: if the calendar lookup fails for any reason,
+        # pad by 3× calendar days (safer than the old 2×).
+        extended_end = cls._extend_end_trading_days(end_date, max_period)
         close_df = D.features(
             instruments,
             ["$close"],
             start_time=start_date,
-            end_time=pd.Timestamp(end_date) + pd.Timedelta(days=max_period * 2),
+            end_time=extended_end,
             freq="day",
         )
         close_df.columns = ["close"]
@@ -175,6 +179,33 @@ class SignalAnalyzer:
         close_df = close_df.swaplevel()
         close_df = close_df.sort_index()
         return close_df
+
+    @staticmethod
+    def _extend_end_trading_days(end_date: Any, max_period: int) -> Any:
+        """Extend ``end_date`` by ``max_period`` *trading* days via D.calendar.
+
+        Falls back to ``max_period * 3`` calendar days if the qlib calendar
+        lookup fails or returns fewer rows than needed.
+        """
+        import pandas as pd
+        from qlib.data import D  # type: ignore[import-not-found]
+
+        end_ts = pd.Timestamp(end_date)
+        fallback = end_ts + pd.Timedelta(days=max_period * 3)
+        try:
+            # Grab a generous calendar window (4× should always exceed
+            # max_period trading days even across Spring Festival).
+            future_end = end_ts + pd.Timedelta(days=max_period * 4 + 30)
+            cal = D.calendar(start_time=end_ts, end_time=future_end, freq="day")
+            # cal is a np.ndarray of np.datetime64 / pd.Timestamp.
+            # We want the max_period-th trading day strictly after end_ts.
+            cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
+            if len(cal_after) >= max_period:
+                return cal_after[max_period - 1]
+            # Calendar shorter than needed (end of data) — use fallback.
+            return fallback
+        except Exception:
+            return fallback
 
     @classmethod
     def _compute_daily_ic(
