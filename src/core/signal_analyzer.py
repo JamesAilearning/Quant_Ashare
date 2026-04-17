@@ -185,7 +185,11 @@ class SignalAnalyzer:
         """Extend ``end_date`` by ``max_period`` *trading* days via D.calendar.
 
         Falls back to ``max_period * 3`` calendar days if the qlib calendar
-        lookup fails or returns fewer rows than needed.
+        lookup fails or returns fewer rows than needed — but logs a
+        **WARNING** in either case so the degradation surfaces in logs
+        instead of masquerading as a successful run with quietly-shrunken
+        results (provider mis-configuration, broken calendar API, or data
+        tail truncation would otherwise be invisible).
         """
         import pandas as pd
         from qlib.data import D  # type: ignore[import-not-found]
@@ -202,9 +206,20 @@ class SignalAnalyzer:
             cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
             if len(cal_after) >= max_period:
                 return cal_after[max_period - 1]
-            # Calendar shorter than needed (end of data) — use fallback.
+            _logger.warning(
+                "SignalAnalyzer: qlib calendar returned only %d trading "
+                "day(s) after %s; need %d. Falling back to calendar-day "
+                "padding (%s). Forward returns near the tail will be NaN.",
+                len(cal_after), end_ts, max_period, fallback,
+            )
             return fallback
-        except Exception:
+        except Exception as exc:
+            _logger.warning(
+                "SignalAnalyzer: qlib D.calendar lookup failed (%s: %s). "
+                "Falling back to %d calendar-day padding (%s). "
+                "Check qlib provider_uri and data bundle integrity.",
+                type(exc).__name__, exc, max_period * 3, fallback,
+            )
             return fallback
 
     @classmethod
@@ -220,7 +235,9 @@ class SignalAnalyzer:
         close = returns_data["close"].unstack(level="instrument")
         forward_ret = close.shift(-period) / close - 1
         # Stack back to (datetime, instrument)
-        forward_ret_stacked = forward_ret.stack(dropna=False)
+        # pandas 2.1+: stack(dropna=...) is deprecated; future_stack=True
+        # preserves NaN and is the forward-compatible API.
+        forward_ret_stacked = forward_ret.stack(future_stack=True)
         forward_ret_stacked.name = "forward_ret"
         forward_ret_stacked.index.names = ["datetime", "instrument"]
 
@@ -266,7 +283,9 @@ class SignalAnalyzer:
         decay = []
         for lag in range(1, max_lag + 1):
             forward_ret = close.shift(-lag) / close - 1
-            forward_ret_stacked = forward_ret.stack(dropna=False)
+            # pandas 2.1+: stack(dropna=...) is deprecated; future_stack=True
+            # preserves NaN and is the forward-compatible API.
+            forward_ret_stacked = forward_ret.stack(future_stack=True)
             forward_ret_stacked.name = "forward_ret"
             forward_ret_stacked.index.names = ["datetime", "instrument"]
 
