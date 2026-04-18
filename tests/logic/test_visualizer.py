@@ -43,14 +43,33 @@ class VisualizerTests(unittest.TestCase):
             self.assertTrue(Path(result.monthly_heatmap_path).exists())
 
     def test_works_without_benchmark(self):
+        """Caller opts out of benchmark curve by passing an empty dict.
+
+        Silent fallback on a missing ``bench`` key would hide common
+        misspellings (``"benchmark"`` etc.) — the opt-out is explicit.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             return_series = _make_return_series()
-            del return_series["bench"]
+            return_series["bench"] = {}
             result = ResultVisualizer.generate(
                 return_series=return_series,
                 config=VisualizerConfig(output_dir=tmpdir, dpi=72),
             )
             self.assertTrue(Path(result.equity_curve_path).exists())
+
+    def test_rejects_missing_bench_key(self):
+        """A missing ``bench`` key must raise — not silently drop benchmark.
+
+        Regression guard: if the caller spells it ``"benchmark"`` by
+        mistake, ``.get("bench", {})`` used to shrug and draw a lonely
+        equity curve without the benchmark overlay.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(VisualizerError):
+                ResultVisualizer.generate(
+                    return_series={"return": {"2024-10-01": 0.01}},
+                    config=VisualizerConfig(output_dir=tmpdir, dpi=72),
+                )
 
     def test_rejects_missing_return_key(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -199,6 +199,49 @@ class MissingFactorColumnTests(unittest.TestCase):
             )
 
 
+class FactorDecayNaNBehaviorTests(unittest.TestCase):
+    """Regression guard for P2c: below-threshold sample size → NaN, not 0.0.
+
+    A zero stood for "no data" *and* "factor is genuinely useless" — those
+    two things must be visually distinct on the decay curve.
+    """
+
+    def test_decay_returns_nan_below_min_observations(self) -> None:
+        """Only 5 merged rows per lag → below the 10-observation threshold
+        → all decay values must be NaN."""
+        import math
+        import pandas as pd
+
+        dates = pd.date_range("2025-07-01", periods=5, freq="D")
+        idx = pd.MultiIndex.from_product(
+            [dates, ["A"]], names=["datetime", "instrument"],
+        )
+        factor_df = pd.DataFrame({"factor1": range(5)}, index=idx)
+
+        # Forward returns: same 5 rows per lag → merged is exactly 5 rows,
+        # which is below _MIN_IC_OBSERVATIONS_PER_LAG (=10).
+        fwd = pd.Series([0.01, 0.02, 0.03, 0.04, 0.05], index=idx)
+        forward_ret_cache = {lag: fwd for lag in (1, 2, 3)}
+
+        result = FactorAnalyzer._compute_factor_decay_cached(
+            factor_df, forward_ret_cache=forward_ret_cache,
+            factor_names=["factor1"],
+            config=FactorAnalysisConfig(max_decay_lag=3),
+        )
+
+        self.assertIn("factor1", result)
+        self.assertEqual(len(result["factor1"]), 3)
+        self.assertTrue(
+            all(math.isnan(v) for v in result["factor1"]),
+            f"expected all NaN below threshold; got {result['factor1']}",
+        )
+
+    def test_min_observations_constant_is_ten(self) -> None:
+        """Anchor the threshold so it can't drift silently."""
+        from src.core.factor_analyzer import _MIN_IC_OBSERVATIONS_PER_LAG
+        self.assertEqual(_MIN_IC_OBSERVATIONS_PER_LAG, 10)
+
+
 # ----- E2E tests (only run when qlib data is available) -----
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")

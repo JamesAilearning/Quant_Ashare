@@ -113,6 +113,96 @@ class SignalAnalyzerValidationTests(unittest.TestCase):
         self.assertEqual(cfg.topk, 50)
 
 
+class NaNPropagationTests(unittest.TestCase):
+    """Regression guards for P1c / P2c: no more silent 0.0 when data missing.
+
+    Silent zeros used to make ic_summary and ic_decay indistinguishable
+    between "noisy model" and "no data at all", poisoning Optuna and
+    walk-forward aggregates downstream.
+    """
+
+    def test_ic_decay_returns_nan_when_merge_empty(self):
+        """No (date, instrument) overlap between predictions and returns
+        → ``merged.empty`` at every lag → decay curve must be all-NaN, not
+        all-zero."""
+        import math
+        import pandas as pd
+
+        dates = pd.date_range("2025-01-01", periods=4, freq="D")
+        predictions = pd.Series(
+            [1.0, 2.0, 3.0, 4.0],
+            index=pd.MultiIndex.from_tuples(
+                [(d, "A") for d in dates], names=["datetime", "instrument"],
+            ),
+        )
+        # Returns are for a different instrument → inner-join ends up empty.
+        returns_data = pd.DataFrame(
+            {"close": [10.0, 11.0, 12.0, 13.0]},
+            index=pd.MultiIndex.from_tuples(
+                [(d, "B") for d in dates], names=["datetime", "instrument"],
+            ),
+        )
+
+        decay = SignalAnalyzer._compute_ic_decay(
+            predictions, returns_data, max_lag=3, method="rank",
+        )
+        self.assertEqual(len(decay), 3)
+        self.assertTrue(
+            all(math.isnan(v) for v in decay),
+            f"expected all NaN (missing data); got {decay}",
+        )
+
+    def test_ic_summary_returns_nan_when_no_valid_cross_section(self):
+        """Single-instrument universe → rank IC is NaN on every day →
+        ic_summary[period]['mean_ic'] must be NaN, not 0.0.
+
+        ``_fetch_returns`` is the only reason we'd need qlib here, so we
+        stub it. Everything downstream is pure pandas.
+        """
+        import math
+        import pandas as pd
+        from unittest.mock import patch
+
+        # 6 dates, *only one instrument* per date → every date's group has
+        # < 3 rows → compute_ic_for_group returns NaN for every day.
+        dates = pd.date_range("2025-01-01", periods=6, freq="D")
+        predictions = pd.Series(
+            [float(i) for i in range(6)],
+            index=pd.MultiIndex.from_tuples(
+                [(d, "A") for d in dates], names=["datetime", "instrument"],
+            ),
+        )
+        fake_returns = pd.DataFrame(
+            {"close": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0]},
+            index=pd.MultiIndex.from_tuples(
+                [(d, "A") for d in dates], names=["datetime", "instrument"],
+            ),
+        )
+
+        with patch(
+            "src.core.signal_analyzer.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            SignalAnalyzer, "_fetch_returns", return_value=fake_returns,
+        ):
+            result = SignalAnalyzer.analyze(
+                predictions,
+                config=SignalAnalysisConfig(
+                    forward_periods=(1,), compute_turnover=False,
+                ),
+            )
+
+        self.assertIn(1, result.ic_summary)
+        self.assertTrue(
+            math.isnan(result.ic_summary[1]["mean_ic"]),
+            f"mean_ic should be NaN; got {result.ic_summary[1]['mean_ic']!r}",
+        )
+        self.assertTrue(math.isnan(result.ic_summary[1]["ir"]))
+        self.assertTrue(math.isnan(result.ic_summary[1]["std_ic"]))
+        self.assertTrue(math.isnan(result.ic_summary[1]["ic_positive_ratio"]))
+        self.assertEqual(result.ic_summary[1]["num_days"], 0)
+
+
 class CalendarWarningTests(unittest.TestCase):
     """_extend_end_trading_days must log WARNING (not silently fallback).
 
