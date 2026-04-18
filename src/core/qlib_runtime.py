@@ -60,14 +60,50 @@ class QlibRuntimeConfig:
             raise QlibRuntimeInitError(
                 f"Unsupported region '{normalized_region}'. Canonical runtime accepts 'cn' or 'us'."
             )
-        # Normalize provider_uri so that semantically identical paths
-        # (D:\\data vs D:/data, ~/qlib vs /home/user/qlib) compare equal.
-        # expanduser resolves ~, abspath resolves relative paths and
-        # normalizes slashes/case on Windows.
-        import os
-        uri_norm = os.path.abspath(os.path.expanduser(self.provider_uri.strip()))
-        object.__setattr__(self, "provider_uri", uri_norm)
+        # Normalize provider_uri so that semantically identical paths compare
+        # equal across OS/casing/symlink variations. See
+        # ``_normalize_provider_uri`` for the full rationale (normcase covers
+        # Windows drive-letter case, realpath collapses symlinks).
+        object.__setattr__(
+            self, "provider_uri", _normalize_provider_uri(self.provider_uri),
+        )
         object.__setattr__(self, "region", normalized_region)
+
+
+def _normalize_provider_uri(raw: str) -> str:
+    """Canonicalize a provider_uri so equivalent paths compare equal.
+
+    Pipeline (each step only strengthens the last):
+
+    1. ``strip``         — trim incidental whitespace.
+    2. ``expanduser``    — resolve ``~`` / ``~user`` prefixes.
+    3. ``abspath``       — resolve relative paths against CWD and normalize
+                           separators (``D:/foo`` → ``D:\\foo`` on Windows).
+    4. ``realpath``      — resolve symlinks so a mount point and its target
+                           map to the same canonical URI. (Safe for
+                           non-existent paths on all supported Python
+                           versions — it just returns the input unchanged.)
+    5. ``normcase``      — lowercase on Windows (``D:\\`` → ``d:\\``) so the
+                           re-init guard doesn't misfire on drive-letter
+                           casing. No-op on POSIX.
+
+    Without this full pipeline, ``init_qlib_canonical`` would reject a
+    second call with what the user sees as "the same path" — for example
+    ``D:/qlib_data/my_cn_data`` vs ``d:\\qlib_data\\my_cn_data`` vs a
+    symlinked copy of the same directory.
+    """
+    import os
+
+    stripped = raw.strip()
+    expanded = os.path.expanduser(stripped)
+    absolute = os.path.abspath(expanded)
+    try:
+        resolved = os.path.realpath(absolute)
+    except (OSError, ValueError):
+        # realpath can raise on Windows for some pathological inputs;
+        # fall back to abspath-only rather than failing construction.
+        resolved = absolute
+    return os.path.normcase(resolved)
 
 
 _CANONICAL_CONFIG: Optional[QlibRuntimeConfig] = None
@@ -160,8 +196,6 @@ def _qlib_session_mismatch(qlib_C: object, config: QlibRuntimeConfig, region_con
     live qlib.config.C state. Returns None only when both match the incoming
     canonical config.
     """
-    import os as _os
-
     # qlib stores provider_uri as either a single string or a dict keyed by
     # freq; normalize to a string we can compare.
     live_provider_raw = getattr(qlib_C, "provider_uri", None)
@@ -176,10 +210,11 @@ def _qlib_session_mismatch(qlib_C: object, config: QlibRuntimeConfig, region_con
     if live_provider is None:
         return "qlib.config.C.provider_uri is unset"
 
+    # Use the same normalization pipeline as QlibRuntimeConfig so "D:/foo" on
+    # one side and "d:\\foo" (or a symlinked copy) on the other don't spuriously
+    # register as mismatches.
     try:
-        live_provider_norm = _os.path.abspath(
-            _os.path.expanduser(str(live_provider).strip())
-        )
+        live_provider_norm = _normalize_provider_uri(str(live_provider))
     except (TypeError, ValueError):
         live_provider_norm = str(live_provider)
 

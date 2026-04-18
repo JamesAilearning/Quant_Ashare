@@ -36,6 +36,57 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
                     predictions=pd.Series(dtype=float),
                 )
 
+    def test_rejects_missing_bench_key(self) -> None:
+        """'bench' is mandatory — no implicit empty-benchmark fallback."""
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "bench"):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {}},
+                    predictions=pd.Series(dtype=float),
+                )
+
+    def test_rejects_predictions_not_series(self) -> None:
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "pd.Series"):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {}, "bench": {}},
+                    predictions=[1.0, 2.0],
+                )
+
+    def test_rejects_predictions_flat_index(self) -> None:
+        """predictions without a MultiIndex must be rejected."""
+        flat = pd.Series([1.0, 2.0], index=["SH600000", "SZ000001"])
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "MultiIndex"):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {}, "bench": {}},
+                    predictions=flat,
+                )
+
+    def test_rejects_predictions_missing_instrument_level(self) -> None:
+        """A MultiIndex without an 'instrument' level breaks downstream math."""
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "X"), (pd.Timestamp("2025-10-02"), "Y")],
+            names=["datetime", "ticker"],  # wrong level name
+        )
+        preds = pd.Series([1.0, 2.0], index=idx)
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "instrument"):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {}, "bench": {}},
+                    predictions=preds,
+                )
+
+    def test_rejects_empty_predictions(self) -> None:
+        empty_idx = pd.MultiIndex.from_tuples([], names=["datetime", "instrument"])
+        preds = pd.Series(dtype=float, index=empty_idx)
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "empty"):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {}, "bench": {}},
+                    predictions=preds,
+                )
+
     def test_config_defaults(self) -> None:
         cfg = AttributionConfig()
         # benchmark_code and use_code_based_sectors removed as dead fields —
@@ -147,7 +198,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(PerformanceAttributionError, "empty dict"):
                 PerformanceAttribution.analyze(
-                    return_series={"return": {"2025-01-02": 0.01}},
+                    return_series={"return": {"2025-01-02": 0.01}, "bench": {}},
                     predictions=pd.Series(dtype=float),
                     positions={},
                 )
@@ -160,7 +211,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
             try:
                 PerformanceAttribution._validate(
                     config=AttributionConfig(),
-                    return_series={"return": {}},
+                    return_series={"return": {}, "bench": {}},
                     positions=None,
                 )
             except PerformanceAttributionError:

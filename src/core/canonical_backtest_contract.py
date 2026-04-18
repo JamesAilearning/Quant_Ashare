@@ -38,6 +38,33 @@ except ImportError:  # pragma: no cover - environment-dependent
     CANONICAL_OFFICIAL_BACKTEST_CALLABLE = None
     CANONICAL_OFFICIAL_BACKTEST_PATH = _EXPECTED_CANONICAL_BACKTEST_PATH
     _QLIB_BACKTEST_ANCHOR_AVAILABLE = False
+
+# The risk/return metric helper used by BacktestRunner to turn a return series
+# into official risk metrics (annualized return, information ratio, max
+# drawdown, etc.) The backtest path is already locked; this is the **second**
+# entry point for official numbers. Anchor it the same way so that any attempt
+# to compute official metrics via ``empyrical``, ``pyfolio``, or a hand-rolled
+# sharpe function inside ``src/core/`` is caught by governance rather than
+# shipped silently. Forbidden alternatives are enforced in
+# ``tests/governance/test_no_alt_backtest_path.py``.
+_EXPECTED_CANONICAL_METRIC_HELPER_PATH = "qlib.contrib.evaluate.risk_analysis"
+
+try:
+    from qlib.contrib.evaluate import risk_analysis as _qlib_metric_helper_callable  # type: ignore[import-not-found]
+
+    CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE: Optional[Callable[..., Any]] = (
+        _qlib_metric_helper_callable
+    )
+    CANONICAL_OFFICIAL_METRIC_HELPER_PATH = (
+        f"{_qlib_metric_helper_callable.__module__}."
+        f"{_qlib_metric_helper_callable.__name__}"
+    )
+    _QLIB_METRIC_HELPER_ANCHOR_AVAILABLE = True
+except ImportError:  # pragma: no cover - environment-dependent
+    CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE = None
+    CANONICAL_OFFICIAL_METRIC_HELPER_PATH = _EXPECTED_CANONICAL_METRIC_HELPER_PATH
+    _QLIB_METRIC_HELPER_ANCHOR_AVAILABLE = False
+
 OFFICIAL_METRIC_STATUS = "official"
 CANONICAL_INPUT_REQUIRED_FIELDS = (
     "predictions_ref",

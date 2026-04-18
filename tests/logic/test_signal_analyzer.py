@@ -53,6 +53,58 @@ class SignalAnalyzerValidationTests(unittest.TestCase):
             with self.assertRaises(SignalAnalyzerError):
                 SignalAnalyzer.analyze(predictions, config=SignalAnalysisConfig(ic_method="invalid"))
 
+    def test_rejects_empty_forward_periods(self):
+        predictions = pd.Series([1.0], index=pd.MultiIndex.from_tuples(
+            [("2025-01-01", "SH600000")], names=["datetime", "instrument"]
+        ))
+        with patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "forward_periods"):
+                SignalAnalyzer.analyze(
+                    predictions, config=SignalAnalysisConfig(forward_periods=()),
+                )
+
+    def test_rejects_zero_forward_period(self):
+        predictions = pd.Series([1.0], index=pd.MultiIndex.from_tuples(
+            [("2025-01-01", "SH600000")], names=["datetime", "instrument"]
+        ))
+        with patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "positive int"):
+                SignalAnalyzer.analyze(
+                    predictions, config=SignalAnalysisConfig(forward_periods=(0, 5)),
+                )
+
+    def test_rejects_negative_forward_period(self):
+        predictions = pd.Series([1.0], index=pd.MultiIndex.from_tuples(
+            [("2025-01-01", "SH600000")], names=["datetime", "instrument"]
+        ))
+        with patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "positive int"):
+                SignalAnalyzer.analyze(
+                    predictions, config=SignalAnalysisConfig(forward_periods=(-1,)),
+                )
+
+    def test_rejects_bool_forward_period(self):
+        """bool is a subclass of int — must be rejected so True doesn't silently
+        act as 1."""
+        predictions = pd.Series([1.0], index=pd.MultiIndex.from_tuples(
+            [("2025-01-01", "SH600000")], names=["datetime", "instrument"]
+        ))
+        with patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "positive int"):
+                SignalAnalyzer.analyze(
+                    predictions, config=SignalAnalysisConfig(forward_periods=(True,)),
+                )
+
+    def test_rejects_non_int_forward_period(self):
+        predictions = pd.Series([1.0], index=pd.MultiIndex.from_tuples(
+            [("2025-01-01", "SH600000")], names=["datetime", "instrument"]
+        ))
+        with patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "positive int"):
+                SignalAnalyzer.analyze(
+                    predictions, config=SignalAnalysisConfig(forward_periods=(1.5,)),
+                )
+
     def test_default_config(self):
         cfg = SignalAnalysisConfig()
         self.assertEqual(cfg.forward_periods, (1, 5, 10, 20))

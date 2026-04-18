@@ -89,6 +89,18 @@ class SignalAnalyzer:
                 f"ic_method must be 'rank' or 'normal', got '{config.ic_method}'"
             )
 
+        if not config.forward_periods:
+            raise SignalAnalyzerError(
+                "forward_periods must be a non-empty tuple of positive integers."
+            )
+        for _p in config.forward_periods:
+            # bool is a subclass of int — reject it explicitly so that
+            # forward_periods=(True,) doesn't silently resolve to (1,).
+            if isinstance(_p, bool) or not isinstance(_p, int) or _p < 1:
+                raise SignalAnalyzerError(
+                    f"forward_periods values must be positive int; got {_p!r}"
+                )
+
         import pandas as pd
         import numpy as np
 
