@@ -1,16 +1,24 @@
 """Governance regression: canonical backtest path is singular and anchored.
 
 This test protects the V1 lesson: "avoid competing official paths". It
-enforces two invariants:
+enforces the following invariants:
 
 1. ``CANONICAL_OFFICIAL_BACKTEST_PATH`` equals the expected anchor
    ``"qlib.backtest.backtest"``, regardless of whether qlib itself is
    installed in the current environment.
-2. No source file under ``src/core/`` references any alternative qlib
-   backtest entry point (for example ``qlib.contrib.evaluate.backtest_daily``).
+2. ``CANONICAL_OFFICIAL_METRIC_HELPER_PATH`` equals the expected anchor
+   ``"qlib.contrib.evaluate.risk_analysis"``. Official risk metrics are a
+   second entry point for "official numbers" beside the backtest engine
+   itself — locking it prevents a sibling path (empyrical, pyfolio,
+   hand-rolled sharpe) from silently producing metrics that claim
+   ``metric_status="official"``.
+3. No source file under ``src/core/`` references any alternative qlib
+   backtest entry point (for example ``qlib.contrib.evaluate.backtest_daily``)
+   or an alternative metric library (``empyrical``, ``pyfolio``).
 
-Additionally, when qlib IS importable, the test verifies that the
-live ``CANONICAL_OFFICIAL_BACKTEST_CALLABLE`` is the real function.
+Additionally, when qlib IS importable, the test verifies that both the
+live ``CANONICAL_OFFICIAL_BACKTEST_CALLABLE`` and
+``CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE`` are the real functions.
 """
 
 from __future__ import annotations
@@ -28,6 +36,8 @@ from src.core import canonical_backtest_contract  # noqa: E402
 from src.core.canonical_backtest_contract import (  # noqa: E402
     CANONICAL_OFFICIAL_BACKTEST_CALLABLE,
     CANONICAL_OFFICIAL_BACKTEST_PATH,
+    CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
+    CANONICAL_OFFICIAL_METRIC_HELPER_PATH,
     CanonicalBacktestContract,
 )
 
@@ -35,6 +45,19 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
 FORBIDDEN_ALT_BACKTEST_REFS = (
     "qlib.contrib.evaluate.backtest_daily",
     "from qlib.contrib.evaluate import backtest_daily",
+)
+
+# Alternative metric libraries / helpers that would silently produce
+# numbers competing with CANONICAL_OFFICIAL_METRIC_HELPER_PATH. Import or
+# usage of any of these inside ``src/core/`` breaks the singular-official-path
+# invariant. ``risk_analysis`` itself is not forbidden — the canonical helper
+# lives at ``qlib.contrib.evaluate.risk_analysis``; this list names the
+# libraries that would short-circuit around it.
+FORBIDDEN_ALT_METRIC_REFS = (
+    "import empyrical",
+    "from empyrical",
+    "import pyfolio",
+    "from pyfolio",
 )
 
 
@@ -74,6 +97,51 @@ class NoCompetingBacktestPathTests(unittest.TestCase):
             [],
             msg=(
                 "Alternative qlib backtest path leaked into canonical runtime layer. "
+                f"Offenders: {offenders}"
+            ),
+        )
+
+
+class CanonicalMetricHelperAnchorTests(unittest.TestCase):
+    """Same treatment as the backtest anchor but for risk metrics."""
+
+    def test_metric_helper_path_constant_is_expected_anchor(self) -> None:
+        self.assertEqual(
+            CANONICAL_OFFICIAL_METRIC_HELPER_PATH,
+            "qlib.contrib.evaluate.risk_analysis",
+        )
+
+    def test_live_metric_helper_anchor_when_qlib_available(self) -> None:
+        if not canonical_backtest_contract._QLIB_METRIC_HELPER_ANCHOR_AVAILABLE:
+            self.skipTest("qlib not importable in this environment")
+        self.assertIsNotNone(CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE)
+        assert CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE is not None  # for type-checkers
+        self.assertTrue(callable(CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE))
+        self.assertEqual(
+            f"{CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE.__module__}."
+            f"{CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE.__name__}",
+            "qlib.contrib.evaluate.risk_analysis",
+        )
+
+
+class NoCompetingMetricHelperTests(unittest.TestCase):
+    """No rival metric library may leak into the canonical runtime layer."""
+
+    def test_src_core_has_no_alt_metric_library_references(self) -> None:
+        core_root = PROJECT_ROOT / "src" / "core"
+        offenders: list[str] = []
+        for py_file in core_root.rglob("*.py"):
+            text = py_file.read_text(encoding="utf-8")
+            for forbidden in FORBIDDEN_ALT_METRIC_REFS:
+                if forbidden in text:
+                    offenders.append(f"{py_file.relative_to(PROJECT_ROOT)}: {forbidden}")
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Alternative metric library leaked into canonical runtime layer. "
+                f"Use CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE "
+                f"({CANONICAL_OFFICIAL_METRIC_HELPER_PATH}) instead. "
                 f"Offenders: {offenders}"
             ),
         )

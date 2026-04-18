@@ -25,6 +25,12 @@ class HyperparamOptimizerError(RuntimeError):
     """Raised on structural misuse of the optimizer."""
 
 
+# Valid optimization targets. Typos like "IC_1D", "ic1d", "ic_5D" used to
+# silently fall through to the default ic_1d branch — the user would see a
+# successful optimization and never know the wrong metric was maximized.
+_VALID_OPTIMIZATION_METRICS = ("ic_1d", "ic_5d")
+
+
 @dataclass(frozen=True)
 class HyperparamSearchSpace:
     """Defines the search space for LGBModel hyperparameters."""
@@ -57,6 +63,24 @@ class HyperparamOptConfig:
 
     # Output
     output_dir: str = "output/hyperparam"
+
+    def __post_init__(self) -> None:
+        if self.optimization_metric not in _VALID_OPTIMIZATION_METRICS:
+            raise HyperparamOptimizerError(
+                "optimization_metric must be one of "
+                f"{_VALID_OPTIMIZATION_METRICS}; got {self.optimization_metric!r}. "
+                "Typos used to silently fall back to 'ic_1d' — the user "
+                "believed they were optimizing a different metric than they "
+                "actually were."
+            )
+        if not isinstance(self.n_trials, int) or isinstance(self.n_trials, bool):
+            raise HyperparamOptimizerError(
+                f"n_trials must be an int, got {type(self.n_trials).__name__}."
+            )
+        if self.n_trials < 1:
+            raise HyperparamOptimizerError(
+                f"n_trials must be >= 1; got {self.n_trials}."
+            )
 
 
 @dataclass(frozen=True)
@@ -228,8 +252,26 @@ class HyperparamOptimizer:
                 ),
             )
 
-            ic_1d = signal_result.ic_summary.get(1, {}).get("mean_ic", 0.0)
-            ic_5d = signal_result.ic_summary.get(5, {}).get("mean_ic", 0.0)
-            ir = signal_result.ic_summary.get(1, {}).get("ir", 0.0)
+            # Structural: SignalAnalyzer must populate both periods we asked
+            # for. Falling back to 0.0 here was the old behaviour and would
+            # feed Optuna a plausible-looking "this hyperparam set scored
+            # zero" signal for what is really a broken analysis run, quietly
+            # poisoning ``best_params``.
+            missing = [p for p in (1, 5) if p not in signal_result.ic_summary]
+            if missing:
+                raise HyperparamOptimizerError(
+                    "SignalAnalyzer did not return IC for forward period(s) "
+                    f"{missing}; cannot compute ic_1d/ic_5d. Analyzer output "
+                    f"keys: {sorted(signal_result.ic_summary.keys())}."
+                )
+
+            # Values are allowed to be NaN (validation data too short to
+            # produce valid cross-sectional IC); Optuna treats NaN returns
+            # as failed trials, which is exactly what we want — failed
+            # trials will not be picked as ``best_trial``. The trial result
+            # still records the NaN for downstream visibility.
+            ic_1d = float(signal_result.ic_summary[1]["mean_ic"])
+            ic_5d = float(signal_result.ic_summary[5]["mean_ic"])
+            ir = float(signal_result.ic_summary[1]["ir"])
 
         return ic_1d, ic_5d, ir

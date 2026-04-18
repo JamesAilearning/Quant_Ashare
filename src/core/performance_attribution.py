@@ -120,14 +120,15 @@ class PerformanceAttribution:
             config = AttributionConfig()
 
         cls._validate(config, return_series, positions)
+        cls._validate_predictions(predictions)
 
         import pandas as pd
 
         _logger.info("Running performance attribution %s ~ %s...", config.start_date, config.end_date)
 
-        # Parse return series
+        # Parse return series — both keys are validated present by _validate.
         ret_dict = return_series["return"]
-        bench_dict = return_series.get("bench", {})
+        bench_dict = return_series["bench"]
 
         port_returns = pd.Series(
             {pd.Timestamp(k): float(v) for k, v in ret_dict.items()}
@@ -135,7 +136,7 @@ class PerformanceAttribution:
 
         bench_returns = pd.Series(
             {pd.Timestamp(k): float(v) for k, v in bench_dict.items()}
-        ).sort_index() if bench_dict else pd.Series(dtype=float)
+        ).sort_index()
 
         # Step 1: Brinson sector attribution
         _logger.info("Computing Brinson sector attribution...")
@@ -181,6 +182,17 @@ class PerformanceAttribution:
             raise PerformanceAttributionError(
                 "return_series must contain 'return' key."
             )
+        # 'bench' is mandatory: attribution is defined relative to a benchmark,
+        # and CanonicalBacktestOutput always populates it. Previously this was
+        # silently defaulted to an empty dict, which produced zero-benchmark
+        # attribution results that looked plausible but were nonsense. No
+        # implicit fallback — callers must pass real bench data.
+        if "bench" not in return_series:
+            raise PerformanceAttributionError(
+                "return_series must contain 'bench' key. "
+                "Attribution is defined relative to a benchmark; pass the full "
+                "return_series from CanonicalBacktestOutput."
+            )
         # Explicit empty positions dict is a caller error, not a signal to fall
         # back silently to prediction-score weights.  Pass None to opt into the
         # predictions fallback intentionally; pass a non-empty dict for real
@@ -191,6 +203,35 @@ class PerformanceAttribution:
                 "Pass positions=None to use the predictions-score fallback, "
                 "or supply the non-empty positions map from CanonicalBacktestOutput."
             )
+
+    @staticmethod
+    def _validate_predictions(predictions: Any) -> None:
+        """Structural validation for the predictions Series.
+
+        Mirrors SignalAnalyzer's contract: ``predictions`` must be a
+        non-empty ``pd.Series`` carrying a ``(datetime, instrument)``
+        MultiIndex. The attribution math reads ``instrument`` off the
+        index — a flat index or a wrong level name produces silent
+        miscomputation rather than an obvious failure, so we surface the
+        mismatch here.
+        """
+        import pandas as pd
+
+        if not isinstance(predictions, pd.Series):
+            raise PerformanceAttributionError(
+                f"predictions must be pd.Series, got {type(predictions).__name__}."
+            )
+        if not isinstance(predictions.index, pd.MultiIndex):
+            raise PerformanceAttributionError(
+                "predictions must have a (datetime, instrument) MultiIndex."
+            )
+        if "instrument" not in predictions.index.names:
+            raise PerformanceAttributionError(
+                "predictions.index must have an 'instrument' level; "
+                f"got levels {list(predictions.index.names)}."
+            )
+        if predictions.empty:
+            raise PerformanceAttributionError("predictions Series is empty.")
 
     @classmethod
     def _brinson_attribution(

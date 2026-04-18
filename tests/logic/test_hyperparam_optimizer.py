@@ -31,6 +31,80 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
         self.assertEqual(space.learning_rate_range, (0.01, 0.1))
         self.assertEqual(space.max_depth_range, (4, 12))
 
+    def test_rejects_invalid_optimization_metric(self):
+        """Typos like 'IC_1D', 'ic1d', 'ic_5D' used to silently fall back
+        to ic_1d. Regression guard for P2b."""
+        for bad in ("IC_1D", "ic1d", "ic_5D", "sharpe", ""):
+            with self.subTest(metric=bad):
+                with self.assertRaisesRegex(
+                    HyperparamOptimizerError, "optimization_metric must be one of"
+                ):
+                    HyperparamOptConfig(optimization_metric=bad)
+
+    def test_accepts_both_valid_optimization_metrics(self):
+        HyperparamOptConfig(optimization_metric="ic_1d")
+        HyperparamOptConfig(optimization_metric="ic_5d")
+
+    def test_rejects_non_positive_n_trials(self):
+        for bad in (0, -1, -100):
+            with self.subTest(n=bad):
+                with self.assertRaisesRegex(HyperparamOptimizerError, "n_trials"):
+                    HyperparamOptConfig(n_trials=bad)
+
+    def test_rejects_non_int_n_trials(self):
+        """bool is a subclass of int — must be rejected so True doesn't
+        silently act as 1 trial."""
+        for bad in (True, 1.5, "10"):
+            with self.subTest(n=bad):
+                with self.assertRaisesRegex(HyperparamOptimizerError, "n_trials"):
+                    HyperparamOptConfig(n_trials=bad)
+
+    def test_evaluate_params_raises_on_missing_ic_period(self):
+        """If SignalAnalyzer returns an ic_summary missing period 1 or 5,
+        _evaluate_params must raise rather than silently return 0.0.
+        Regression guard for P1a: Optuna used to be fed spurious zeros
+        and picked garbage ``best_params``."""
+        from unittest.mock import MagicMock, patch
+        from src.core.hyperparam_optimizer import HyperparamOptimizer
+
+        config = HyperparamOptConfig(
+            n_trials=1,
+            optimization_metric="ic_1d",
+        )
+        fake_dataset = MagicMock(name="DatasetH")
+
+        fake_model_result = MagicMock()
+        fake_model_result.predictions = MagicMock()
+
+        # ic_summary missing period 1 — simulates a broken analyzer call.
+        fake_signal_result = MagicMock()
+        fake_signal_result.ic_summary = {5: {"mean_ic": 0.03, "ir": 1.2}}
+
+        params = {
+            "num_boost_round": 100,
+            "early_stopping_rounds": 20,
+            "learning_rate": 0.05,
+            "max_depth": 6,
+            "num_leaves": 63,
+        }
+
+        with patch(
+            "src.core.model_trainer.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ), patch(
+            "src.core.signal_analyzer.SignalAnalyzer.analyze",
+            return_value=fake_signal_result,
+        ):
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(
+                    HyperparamOptimizerError,
+                    "did not return IC for forward period",
+                ):
+                    HyperparamOptimizer._evaluate_params(
+                        params, fake_dataset, config, Path(tmp),
+                    )
+
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
 

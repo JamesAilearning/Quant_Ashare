@@ -51,6 +51,62 @@ class QlibRuntimeConfigValidationTests(unittest.TestCase):
         QlibRuntimeConfig(provider_uri="D:/qlib_data/my_us_data", region="US")
 
 
+class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
+    """Provider URI normalization must be stable across OS/casing/symlinks.
+
+    Two configs that name the same directory under different spellings must
+    compare equal — otherwise the singleton re-init guard misfires on
+    harmless re-runs from different call sites.
+    """
+
+    def test_forward_and_back_slashes_are_equivalent(self) -> None:
+        # On Windows abspath already normalizes, but call it out explicitly.
+        cfg1 = QlibRuntimeConfig(provider_uri=r"D:/qlib_data/my_cn_data", region="cn")
+        cfg2 = QlibRuntimeConfig(provider_uri=r"D:\qlib_data\my_cn_data", region="cn")
+        self.assertEqual(cfg1.provider_uri, cfg2.provider_uri)
+
+    def test_drive_letter_case_insensitive_on_windows(self) -> None:
+        """``D:\\foo`` and ``d:\\foo`` must normalize to the same URI on Windows."""
+        import os
+        if os.name != "nt":
+            self.skipTest("Windows-only behaviour (normcase is a no-op on POSIX).")
+        cfg_upper = QlibRuntimeConfig(
+            provider_uri=r"D:/qlib_data/my_cn_data", region="cn",
+        )
+        cfg_lower = QlibRuntimeConfig(
+            provider_uri=r"d:/qlib_data/my_cn_data", region="cn",
+        )
+        self.assertEqual(cfg_upper.provider_uri, cfg_lower.provider_uri)
+
+    def test_trailing_whitespace_ignored(self) -> None:
+        cfg1 = QlibRuntimeConfig(provider_uri="D:/qlib_data/my_cn_data", region="cn")
+        cfg2 = QlibRuntimeConfig(provider_uri="  D:/qlib_data/my_cn_data  ", region="cn")
+        self.assertEqual(cfg1.provider_uri, cfg2.provider_uri)
+
+    def test_relative_path_resolved_absolute(self) -> None:
+        """A relative path is anchored to CWD so re-init from a subdir still matches."""
+        import os
+        cfg = QlibRuntimeConfig(provider_uri="./some_relative", region="cn")
+        self.assertTrue(os.path.isabs(cfg.provider_uri))
+
+    def test_symlink_resolves_to_target(self) -> None:
+        """realpath step must collapse a symlink to its target directory."""
+        import os
+        import tempfile
+        if os.name == "nt":
+            # Symlink creation on Windows usually requires admin — skip rather
+            # than flake. The normcase branch still covers this OS.
+            self.skipTest("skipping symlink test on Windows (needs admin).")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target")
+            link = os.path.join(tmp, "link")
+            os.mkdir(target)
+            os.symlink(target, link)
+            cfg_target = QlibRuntimeConfig(provider_uri=target, region="cn")
+            cfg_link = QlibRuntimeConfig(provider_uri=link, region="cn")
+            self.assertEqual(cfg_target.provider_uri, cfg_link.provider_uri)
+
+
 class QlibRuntimeInitGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         _reset_canonical_qlib_runtime_for_tests()
@@ -137,6 +193,23 @@ class QlibSessionMismatchTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertIn("region mismatch", result)
+
+    def test_drive_letter_case_tolerated_in_session_mismatch(self) -> None:
+        """Session mismatch check must not fire on ``D:\\`` vs ``d:\\``.
+
+        Without normcase in the mismatch helper, a re-init from the same
+        config but via a differently-cased path would spuriously report a
+        mismatch — this test is the regression guard for that bug.
+        """
+        import os
+        if os.name != "nt":
+            self.skipTest("Windows-only behaviour (case only matters on nt).")
+        from qlib.constant import REG_CN  # type: ignore[import-not-found]
+        cfg = self._cfg(r"D:/qlib_data/my_cn_data")
+        # qlib records whatever case the earlier caller provided.
+        fake_c = self._FakeC(r"d:\qlib_data\my_cn_data")
+        result = _qlib_session_mismatch(fake_c, cfg, REG_CN)
+        self.assertIsNone(result)
 
 
 class QlibRuntimeResetHelperBoundaryTests(unittest.TestCase):

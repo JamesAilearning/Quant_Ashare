@@ -74,6 +74,78 @@ class WalkForwardValidationTests(unittest.TestCase):
             self.assertLessEqual(prev_test_end, curr_test_start)
 
 
+class WalkForwardConfigValidationTests(unittest.TestCase):
+    """Regression guard for P1b: zero-length windows would hang the engine.
+
+    ``step_months=0`` used to put ``_generate_windows`` into an infinite
+    loop; ``train_months=0`` would silently make folds with no fit data.
+    """
+
+    def test_rejects_zero_step_months(self):
+        with self.assertRaisesRegex(WalkForwardError, "step_months"):
+            WalkForwardConfig(step_months=0)
+
+    def test_rejects_zero_train_months(self):
+        with self.assertRaisesRegex(WalkForwardError, "train_months"):
+            WalkForwardConfig(train_months=0)
+
+    def test_rejects_zero_valid_months(self):
+        with self.assertRaisesRegex(WalkForwardError, "valid_months"):
+            WalkForwardConfig(valid_months=0)
+
+    def test_rejects_zero_test_months(self):
+        with self.assertRaisesRegex(WalkForwardError, "test_months"):
+            WalkForwardConfig(test_months=0)
+
+    def test_rejects_negative_months(self):
+        with self.assertRaisesRegex(WalkForwardError, "step_months"):
+            WalkForwardConfig(step_months=-1)
+
+    def test_rejects_non_int_months(self):
+        """Also catches bool → would silently act as 1."""
+        with self.assertRaisesRegex(WalkForwardError, "step_months must be int"):
+            WalkForwardConfig(step_months=True)
+        with self.assertRaisesRegex(WalkForwardError, "train_months must be int"):
+            WalkForwardConfig(train_months=24.0)
+
+    def test_rejects_bad_overall_start(self):
+        with self.assertRaisesRegex(WalkForwardError, "overall_start"):
+            WalkForwardConfig(overall_start="not-a-date")
+
+    def test_rejects_bad_overall_end(self):
+        with self.assertRaisesRegex(WalkForwardError, "overall_end"):
+            WalkForwardConfig(overall_end="2024/01/01")
+
+    def test_rejects_end_before_start(self):
+        with self.assertRaisesRegex(WalkForwardError, "must be strictly after"):
+            WalkForwardConfig(
+                overall_start="2025-01-01", overall_end="2024-12-31",
+            )
+
+    def test_rejects_end_equal_start(self):
+        with self.assertRaisesRegex(WalkForwardError, "must be strictly after"):
+            WalkForwardConfig(
+                overall_start="2025-01-01", overall_end="2025-01-01",
+            )
+
+    def test_rejects_n_drop_gte_topk(self):
+        """n_drop must leave some positions after a rebalance."""
+        with self.assertRaisesRegex(WalkForwardError, "n_drop"):
+            WalkForwardConfig(topk=10, n_drop=10)
+        with self.assertRaisesRegex(WalkForwardError, "n_drop"):
+            WalkForwardConfig(topk=10, n_drop=15)
+
+    def test_rejects_non_positive_topk(self):
+        with self.assertRaisesRegex(WalkForwardError, "topk"):
+            WalkForwardConfig(topk=0)
+        with self.assertRaisesRegex(WalkForwardError, "topk"):
+            WalkForwardConfig(topk=-5)
+
+    def test_rejects_negative_n_drop(self):
+        with self.assertRaisesRegex(WalkForwardError, "n_drop"):
+            WalkForwardConfig(n_drop=-1)
+
+
 from pathlib import Path
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")

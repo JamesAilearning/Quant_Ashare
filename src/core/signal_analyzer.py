@@ -89,6 +89,18 @@ class SignalAnalyzer:
                 f"ic_method must be 'rank' or 'normal', got '{config.ic_method}'"
             )
 
+        if not config.forward_periods:
+            raise SignalAnalyzerError(
+                "forward_periods must be a non-empty tuple of positive integers."
+            )
+        for _p in config.forward_periods:
+            # bool is a subclass of int — reject it explicitly so that
+            # forward_periods=(True,) doesn't silently resolve to (1,).
+            if isinstance(_p, bool) or not isinstance(_p, int) or _p < 1:
+                raise SignalAnalyzerError(
+                    f"forward_periods values must be positive int; got {_p!r}"
+                )
+
         import pandas as pd
         import numpy as np
 
@@ -120,17 +132,31 @@ class SignalAnalyzer:
 
             valid_ic = daily_ic.dropna()
             if len(valid_ic) > 0:
+                mean_ic = float(valid_ic.mean())
+                std_ic = float(valid_ic.std())
+                # A zero std is "every day's IC is identical" — IR is
+                # undefined in that case, not zero. 0.0 would tell Optuna
+                # / walk-forward the hyperparams yielded a "flat zero-IR
+                # model", which is structurally indistinguishable from a
+                # genuinely mediocre model.
                 ic_summary_dict[period] = {
-                    "mean_ic": float(valid_ic.mean()),
-                    "std_ic": float(valid_ic.std()),
-                    "ir": float(valid_ic.mean() / valid_ic.std()) if valid_ic.std() > 0 else 0.0,
+                    "mean_ic": mean_ic,
+                    "std_ic": std_ic,
+                    "ir": (mean_ic / std_ic) if std_ic > 0 else float("nan"),
                     "ic_positive_ratio": float((valid_ic > 0).mean()),
                     "num_days": int(len(valid_ic)),
                 }
             else:
+                # No valid IC observations (data too short, all NaN, etc.).
+                # Emit NaN — downstream Optuna treats NaN trials as failed
+                # rather than "scored exactly zero", and walk-forward
+                # aggregation drops NaN folds instead of averaging them in.
                 ic_summary_dict[period] = {
-                    "mean_ic": 0.0, "std_ic": 0.0, "ir": 0.0,
-                    "ic_positive_ratio": 0.0, "num_days": 0,
+                    "mean_ic": float("nan"),
+                    "std_ic": float("nan"),
+                    "ir": float("nan"),
+                    "ic_positive_ratio": float("nan"),
+                    "num_days": 0,
                 }
 
         # Compute IC decay
@@ -285,15 +311,21 @@ class SignalAnalyzer:
             forward_ret_stacked.index.names = ["datetime", "instrument"]
 
             merged = pred_df.join(forward_ret_stacked, how="inner").dropna()
+            # Missing data at a given lag is NOT "IC = 0". Emitting NaN
+            # keeps the decay curve's shape honest — a flat zero bottom
+            # (old behaviour) looked like "model predictive power dies at
+            # lag N" when it was really "no observations at lag N".
             if merged.empty:
-                decay.append(0.0)
+                decay.append(float("nan"))
                 continue
 
             merged = merged.rename(columns={"forward_ret": "ret"})
             daily_ic = merged.groupby(level=0).apply(
                 lambda g: compute_ic_for_group(g, method)
             ).dropna()
-            decay.append(float(daily_ic.mean()) if len(daily_ic) > 0 else 0.0)
+            decay.append(
+                float(daily_ic.mean()) if len(daily_ic) > 0 else float("nan")
+            )
         return decay
 
     @classmethod

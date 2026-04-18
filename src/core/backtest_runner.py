@@ -20,6 +20,8 @@ from typing import Any, Mapping
 
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
+    CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
+    CANONICAL_OFFICIAL_METRIC_HELPER_PATH,
     OFFICIAL_METRIC_STATUS,
     CanonicalBacktestContract,
     CanonicalBacktestInput,
@@ -62,13 +64,23 @@ class BacktestRunner:
         try:
             from qlib.backtest import backtest as qlib_backtest  # type: ignore[import-not-found]
             from qlib.backtest.executor import SimulatorExecutor  # type: ignore[import-not-found]
-            from qlib.contrib.evaluate import risk_analysis  # type: ignore[import-not-found]
             from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy  # type: ignore[import-not-found]
             from qlib.utils.time import Freq  # type: ignore[import-not-found]
         except ImportError as exc:
             raise BacktestRunnerError(
                 "qlib is not importable; cannot run backtest."
             ) from exc
+
+        # Official risk metrics must go through the governance-anchored helper,
+        # not a direct import — this keeps the runtime path aligned with the
+        # path that governance locks (see tests/governance/test_no_alt_backtest_path.py).
+        if CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE is None:
+            raise BacktestRunnerError(
+                "Canonical metric helper "
+                f"({CANONICAL_OFFICIAL_METRIC_HELPER_PATH}) is not importable; "
+                "cannot compute official risk metrics."
+            )
+        risk_analysis = CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE
 
         # Map CanonicalExchangeConfig → qlib exchange_kwargs
         cost = request.exchange_config.cost_model

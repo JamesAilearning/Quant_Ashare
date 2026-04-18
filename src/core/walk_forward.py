@@ -69,6 +69,64 @@ class WalkForwardConfig:
     # Output
     output_dir: str = "output/walk_forward"
 
+    def __post_init__(self) -> None:
+        # Window sizes must be strictly positive. ``step_months=0`` was the
+        # dangerous one: ``cursor + relativedelta(months=0)`` never advances,
+        # so ``_generate_windows`` would spin forever. ``train_months=0`` is
+        # also nonsense (no fit data).
+        for name in ("train_months", "valid_months", "test_months", "step_months"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise WalkForwardError(
+                    f"{name} must be int; got {type(value).__name__}."
+                )
+            if value < 1:
+                raise WalkForwardError(
+                    f"{name} must be >= 1; got {value}. "
+                    "A zero-length window would hang the walk-forward loop "
+                    "or produce empty folds."
+                )
+
+        # Validate ISO dates up-front so misconfiguration surfaces at config
+        # construction rather than deep inside ``_generate_windows``.
+        try:
+            start = date.fromisoformat(self.overall_start)
+        except (TypeError, ValueError) as exc:
+            raise WalkForwardError(
+                f"overall_start must be an ISO date (YYYY-MM-DD); got "
+                f"{self.overall_start!r}."
+            ) from exc
+        try:
+            end = date.fromisoformat(self.overall_end)
+        except (TypeError, ValueError) as exc:
+            raise WalkForwardError(
+                f"overall_end must be an ISO date (YYYY-MM-DD); got "
+                f"{self.overall_end!r}."
+            ) from exc
+        if end <= start:
+            raise WalkForwardError(
+                f"overall_end ({self.overall_end}) must be strictly after "
+                f"overall_start ({self.overall_start})."
+            )
+
+        # Topk / drop sanity — ``n_drop > topk`` would leave the portfolio
+        # empty after the first rebalance.
+        if not isinstance(self.topk, int) or isinstance(self.topk, bool) or self.topk < 1:
+            raise WalkForwardError(f"topk must be a positive int; got {self.topk!r}.")
+        if (
+            not isinstance(self.n_drop, int)
+            or isinstance(self.n_drop, bool)
+            or self.n_drop < 0
+        ):
+            raise WalkForwardError(
+                f"n_drop must be a non-negative int; got {self.n_drop!r}."
+            )
+        if self.n_drop >= self.topk:
+            raise WalkForwardError(
+                f"n_drop ({self.n_drop}) must be strictly less than "
+                f"topk ({self.topk})."
+            )
+
 
 @dataclass(frozen=True)
 class WalkForwardFold:
@@ -260,8 +318,20 @@ class WalkForwardEngine:
             predictions=model_result.predictions,
             config=SignalAnalysisConfig(forward_periods=(1, 5), topk=config.topk),
         )
-        ic_1d = signal_result.ic_summary.get(1, {}).get("mean_ic", 0.0)
-        ic_5d = signal_result.ic_summary.get(5, {}).get("mean_ic", 0.0)
+        # Structural: both periods we asked for must come back. Missing keys
+        # signal an analyzer-layer bug, not a bad model — fall-through to
+        # ``0.0`` here used to mask analyzer regressions as "this fold had
+        # no IC".  Values themselves may be NaN (insufficient data) and
+        # propagate through to the fold result honestly.
+        missing = [p for p in (1, 5) if p not in signal_result.ic_summary]
+        if missing:
+            raise WalkForwardError(
+                f"Fold {fold_index}: SignalAnalyzer did not return IC for "
+                f"forward period(s) {missing}. Keys present: "
+                f"{sorted(signal_result.ic_summary.keys())}."
+            )
+        ic_1d = float(signal_result.ic_summary[1]["mean_ic"])
+        ic_5d = float(signal_result.ic_summary[5]["mean_ic"])
 
         # Backtest
         backtest_request = CanonicalBacktestInput(

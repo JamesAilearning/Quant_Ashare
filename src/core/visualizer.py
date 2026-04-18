@@ -78,13 +78,24 @@ class ResultVisualizer:
             raise VisualizerError(
                 "return_series must contain 'return' key with daily returns."
             )
+        # Require the ``bench`` key explicitly. A silent ``.get("bench", {})``
+        # fallback would happily draw a benchmark-less equity curve when the
+        # caller misspelled ``bench`` as ``benchmark`` — we'd never surface
+        # the typo. Callers that intentionally have no benchmark must pass
+        # ``"bench": {}`` (or ``None``) to opt into that.
+        if "bench" not in return_series:
+            raise VisualizerError(
+                "return_series must contain 'bench' key (pass an empty dict "
+                "or None to indicate no benchmark). Silent fallback would "
+                "hide misspellings like 'benchmark' vs 'bench'."
+            )
 
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Parse return series
         ret_dict = return_series["return"]
-        bench_dict = return_series.get("bench", {})
+        bench_dict = return_series["bench"] or {}
 
         returns = pd.Series(
             {pd.Timestamp(k): float(v) for k, v in ret_dict.items()}
