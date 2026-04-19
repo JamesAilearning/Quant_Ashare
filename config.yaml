@@ -24,7 +24,7 @@ max_depth: 8
 num_leaves: 210
 
 # backtest
-benchmark_code: "SH600000"
+benchmark_code: "SH000300"
 init_cash: 100000000
 commission_rate: 0.0005
 stamp_tax_bps: 10.0
