@@ -52,6 +52,14 @@ class RiskConstraintConfig:
     # Top-k for constraint enforcement
     topk: int = 50
 
+    # Optional explicit industry taxonomy: {instrument_code: industry_name}.
+    # When provided, overrides the code-based sector heuristic used as a
+    # fallback. For production use, pass an authoritative Shenwan / CSRC
+    # / GICS mapping rather than relying on stock-code prefixes, which
+    # bucket most of the universe into "SH_Main" / "SZ_Main" and make the
+    # per-industry cap effectively a single-bucket cap.
+    industry_map: Mapping[str, str] | None = None
+
 
 @dataclass(frozen=True)
 class RiskConstraintResult:
@@ -162,7 +170,7 @@ class RiskConstraintEngine:
         import pandas as pd
         import numpy as np
 
-        industry_map = cls._get_industry_map(predictions)
+        industry_map = cls._get_industry_map(predictions, config)
         if not industry_map:
             return predictions, 0, 0
 
@@ -204,23 +212,41 @@ class RiskConstraintEngine:
         return predictions, 0, 0
 
     @classmethod
-    def _get_industry_map(cls, predictions: Any) -> Any:
-        """Fetch industry classification for instruments."""
-        try:
-            from qlib.data import D  # type: ignore[import-not-found]
+    def _get_industry_map(
+        cls, predictions: Any, config: RiskConstraintConfig,
+    ) -> dict[str, str]:
+        """Resolve an {instrument: industry} map for the predictions universe.
 
-            instruments = predictions.index.get_level_values(1).unique().tolist()
-            # Try to get industry info from qlib instrument pool
-            # qlib stores instrument metadata; use D.instruments to get it
-            inst_info = D.instruments(market="all")
+        Priority order:
 
-            # qlib doesn't have a direct industry API in all versions.
-            # Fall back to a simple sector heuristic based on stock code prefixes.
-            return cls._code_based_sector_map(instruments)
-        except Exception:
-            return cls._code_based_sector_map(
-                predictions.index.get_level_values(1).unique().tolist()
-            )
+        1. If the caller passed ``config.industry_map``, use it verbatim —
+           any instrument not present in the caller's map is bucketed as
+           ``"unknown"`` (surfaced via :meth:`_apply_industry_limit`'s
+           ``.get(x, "unknown")`` call site).  This is the production
+           path when an authoritative taxonomy is available.
+
+        2. Otherwise fall back to :meth:`_code_based_sector_map`, which
+           buckets by A-share stock-code prefixes.  Logged at INFO so the
+           operator knows a rough heuristic is in force instead of a
+           proper industry taxonomy — the old implementation called
+           ``qlib.data.D.instruments(market="all")`` and immediately
+           discarded the result, pretending to consult qlib but always
+           using the prefix map while swallowing any error with a bare
+           ``except Exception``.
+        """
+        instruments = predictions.index.get_level_values(1).unique().tolist()
+
+        if config.industry_map is not None:
+            return dict(config.industry_map)
+
+        _logger.info(
+            "RiskConstraints: no explicit industry_map; falling back to "
+            "code-based sector heuristic for %d instruments. For production "
+            "use, pass RiskConstraintConfig(industry_map=...) with an "
+            "authoritative taxonomy.",
+            len(instruments),
+        )
+        return cls._code_based_sector_map(instruments)
 
     @staticmethod
     def _code_based_sector_map(instruments: list[str]) -> dict[str, str]:

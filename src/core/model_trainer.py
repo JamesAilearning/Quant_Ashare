@@ -34,6 +34,30 @@ class ModelTrainerError(RuntimeError):
 
 SUPPORTED_MODEL_TYPES = ("LGBModel", "XGBModel", "CatBoostModel")
 
+# Valid DatasetH segment names accepted by qlib. Anything else (e.g. a
+# user typo like "tets") used to raise deep inside qlib with a confusing
+# error — we reject upfront.
+_VALID_PREDICT_SEGMENTS = ("train", "valid", "test")
+
+# Sane upper bounds on gradient-boosting hyperparameters. These aren't
+# theoretical limits but "past this is a config bug, not a choice":
+#
+# - num_boost_round > 100_000 with early stopping rounds typically 20-200
+#   means the run will sit in a no-op loop burning CPU long after loss
+#   plateaus. The deepest production LGBModel runs in V1 were in the
+#   5k-10k range.
+# - max_depth > 64 on tabular features is degenerate; LightGBM's default
+#   is -1 (unlimited) but every published Alpha158/Alpha360 tuning paper
+#   caps it below 12.
+# - num_leaves > 100_000 is a memory footgun; the LightGBM docs
+#   recommend keeping num_leaves strictly below 2^max_depth, and realistic
+#   values are in the 31-1024 range.
+# - learning_rate > 1.0 makes LightGBM diverge; we stay below.
+_MAX_NUM_BOOST_ROUND = 100_000
+_MAX_MAX_DEPTH = 64
+_MAX_NUM_LEAVES = 100_000
+_MAX_LEARNING_RATE = 1.0
+
 
 @dataclass(frozen=True)
 class ModelTrainConfig:
@@ -113,7 +137,7 @@ class ModelTrainer:
         model_artifact_path: str,
         predict_segment: str = "test",
     ) -> ModelTrainResult:
-        cls._validate(config, model_artifact_path)
+        cls._validate(config, model_artifact_path, predict_segment)
 
         _seed_everything(config.seed)
 
@@ -294,7 +318,12 @@ class ModelTrainer:
             )
 
     @classmethod
-    def _validate(cls, config: ModelTrainConfig, model_artifact_path: str) -> None:
+    def _validate(
+        cls,
+        config: ModelTrainConfig,
+        model_artifact_path: str,
+        predict_segment: str = "test",
+    ) -> None:
         if not is_canonical_qlib_initialized():
             raise ModelTrainerError(
                 "Canonical qlib runtime is not initialized. "
@@ -307,19 +336,124 @@ class ModelTrainer:
                 f"got '{config.model_type}'."
             )
 
+        # ---- num_boost_round ----
+        if (
+            not isinstance(config.num_boost_round, int)
+            or isinstance(config.num_boost_round, bool)
+        ):
+            raise ModelTrainerError(
+                f"num_boost_round must be int; got "
+                f"{type(config.num_boost_round).__name__}."
+            )
         if config.num_boost_round <= 0:
             raise ModelTrainerError("num_boost_round must be > 0.")
+        if config.num_boost_round > _MAX_NUM_BOOST_ROUND:
+            raise ModelTrainerError(
+                f"num_boost_round={config.num_boost_round} exceeds sane upper "
+                f"bound of {_MAX_NUM_BOOST_ROUND}. Values this large are "
+                f"almost always a config bug (misplaced zero); real runs "
+                f"plateau well before this."
+            )
 
+        # ---- early_stopping_rounds ----
+        if (
+            not isinstance(config.early_stopping_rounds, int)
+            or isinstance(config.early_stopping_rounds, bool)
+        ):
+            raise ModelTrainerError(
+                f"early_stopping_rounds must be int; got "
+                f"{type(config.early_stopping_rounds).__name__}."
+            )
         if config.early_stopping_rounds <= 0:
             raise ModelTrainerError("early_stopping_rounds must be > 0.")
+        if config.early_stopping_rounds > config.num_boost_round:
+            raise ModelTrainerError(
+                f"early_stopping_rounds ({config.early_stopping_rounds}) "
+                f"must be <= num_boost_round ({config.num_boost_round}); "
+                "otherwise early stopping can never trigger."
+            )
 
+        # ---- learning_rate ----
+        if not isinstance(config.learning_rate, (int, float)) or isinstance(
+            config.learning_rate, bool
+        ):
+            raise ModelTrainerError(
+                f"learning_rate must be a float; got "
+                f"{type(config.learning_rate).__name__}."
+            )
         if config.learning_rate <= 0:
             raise ModelTrainerError("learning_rate must be > 0.")
+        if config.learning_rate > _MAX_LEARNING_RATE:
+            raise ModelTrainerError(
+                f"learning_rate={config.learning_rate} exceeds sane upper "
+                f"bound of {_MAX_LEARNING_RATE}. Values > 1 make gradient "
+                f"boosting diverge — almost certainly a decimal-point typo."
+            )
 
+        # ---- max_depth ----
+        if (
+            not isinstance(config.max_depth, int)
+            or isinstance(config.max_depth, bool)
+        ):
+            raise ModelTrainerError(
+                f"max_depth must be int; got {type(config.max_depth).__name__}."
+            )
+        if config.max_depth <= 0:
+            raise ModelTrainerError("max_depth must be > 0.")
+        if config.max_depth > _MAX_MAX_DEPTH:
+            raise ModelTrainerError(
+                f"max_depth={config.max_depth} exceeds sane upper bound of "
+                f"{_MAX_MAX_DEPTH}. Depths this large on tabular features "
+                f"are degenerate; published Alpha158/Alpha360 tuning stays "
+                f"below 12."
+            )
+
+        # ---- num_leaves ----
+        if (
+            not isinstance(config.num_leaves, int)
+            or isinstance(config.num_leaves, bool)
+        ):
+            raise ModelTrainerError(
+                f"num_leaves must be int; got {type(config.num_leaves).__name__}."
+            )
+        if config.num_leaves < 2:
+            raise ModelTrainerError(
+                "num_leaves must be >= 2 (LightGBM requires at least a root "
+                f"split); got {config.num_leaves}."
+            )
+        if config.num_leaves > _MAX_NUM_LEAVES:
+            raise ModelTrainerError(
+                f"num_leaves={config.num_leaves} exceeds sane upper bound "
+                f"of {_MAX_NUM_LEAVES}."
+            )
+        # LightGBM invariant: num_leaves <= 2^max_depth. If violated, LGBM
+        # silently clips num_leaves, so the model the user thinks they're
+        # training is not the model that runs. Reject loudly.
+        if config.max_depth <= 30:  # avoid overflow on huge max_depth
+            max_leaves_for_depth = 2 ** config.max_depth
+            if config.num_leaves > max_leaves_for_depth:
+                raise ModelTrainerError(
+                    f"num_leaves ({config.num_leaves}) exceeds "
+                    f"2**max_depth ({max_leaves_for_depth}). LightGBM would "
+                    f"silently clip, training a shallower model than "
+                    f"configured."
+                )
+
+        # ---- seed ----
         if not isinstance(config.seed, int) or isinstance(config.seed, bool):
             raise ModelTrainerError(
                 f"seed must be an int, got {type(config.seed).__name__}."
             )
 
+        # ---- model_artifact_path ----
         if not str(model_artifact_path or "").strip():
             raise ModelTrainerError("model_artifact_path must be non-empty.")
+
+        # ---- predict_segment ----
+        # Upfront check: a typo like "tets" used to raise deep inside
+        # qlib with a cryptic KeyError on the segment lookup.
+        if predict_segment not in _VALID_PREDICT_SEGMENTS:
+            raise ModelTrainerError(
+                f"predict_segment must be one of {_VALID_PREDICT_SEGMENTS}; "
+                f"got {predict_segment!r}."
+            )

@@ -106,6 +106,115 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
                     )
 
 
+class SuggestParamsClampingTests(unittest.TestCase):
+    """P2e regression guards on :meth:`HyperparamOptimizer._suggest_params`.
+
+    The LightGBM invariant is ``num_leaves <= 2**max_depth`` — violate it
+    and LightGBM silently clips, making the trial's actual model shallower
+    than what the user asked for. ModelTrainer's upfront validator now
+    rejects this loudly (see ``test_model_trainer.ModelTrainerUpperBoundsTests``),
+    which means if Optuna proposes such a combination the trial raises
+    instead of returning a score — wasting Optuna's budget.
+
+    Our fix: ``_suggest_params`` clamps the ``num_leaves`` range to
+    ``[2, 2**max_depth]`` *before* calling ``trial.suggest_int``, so
+    every trial Optuna runs is valid by construction.
+    """
+
+    class _StubTrial:
+        """Minimal ``optuna.Trial`` stand-in that records every ``suggest_*``
+        call's (name, low, high) tuple and always returns ``low`` (i.e.
+        the smallest legal value). That lets us assert on the observed
+        bounds without needing an Optuna installation."""
+
+        def __init__(self, forced: dict | None = None) -> None:
+            self.calls: list[tuple[str, object, object]] = []
+            self._forced = forced or {}
+
+        def suggest_int(self, name, low, high, **_kwargs):
+            self.calls.append((name, low, high))
+            return self._forced.get(name, low)
+
+        def suggest_float(self, name, low, high, **_kwargs):
+            self.calls.append((name, low, high))
+            return self._forced.get(name, low)
+
+    def test_num_leaves_range_clamped_to_two_pow_max_depth(self) -> None:
+        """When Optuna picks ``max_depth=4``, ``num_leaves`` must be
+        suggested with ``high <= 2**4 = 16`` even though the search space
+        nominally allows up to 512. Otherwise Optuna is free to propose
+        ``num_leaves=300`` and every such trial raises in ModelTrainer."""
+        space = HyperparamSearchSpace(
+            num_leaves_range=(31, 512),
+            max_depth_range=(4, 12),
+        )
+        trial = self.__class__._StubTrial(forced={"max_depth": 4})
+
+        HyperparamOptimizer._suggest_params(trial, space)
+
+        # Find the num_leaves suggestion.
+        num_leaves_calls = [c for c in trial.calls if c[0] == "num_leaves"]
+        self.assertEqual(len(num_leaves_calls), 1)
+        _, low, high = num_leaves_calls[0]
+        self.assertGreaterEqual(low, 2)
+        self.assertLessEqual(
+            high, 16,
+            f"num_leaves high={high} violates 2**max_depth=16; "
+            f"Optuna would waste budget on trials ModelTrainer rejects.",
+        )
+        self.assertLessEqual(low, high)
+
+    def test_num_leaves_low_floored_at_two(self) -> None:
+        """Even if the configured low is 1 (or anything below 2),
+        the clamped low must be >= 2 — LightGBM requires at least 2
+        leaves to split."""
+        space = HyperparamSearchSpace(
+            num_leaves_range=(1, 4),
+            max_depth_range=(4, 12),
+        )
+        trial = self.__class__._StubTrial(forced={"max_depth": 4})
+
+        HyperparamOptimizer._suggest_params(trial, space)
+
+        _, low, high = [c for c in trial.calls if c[0] == "num_leaves"][0]
+        self.assertGreaterEqual(low, 2)
+        self.assertLessEqual(high, 16)
+
+    def test_num_leaves_range_preserved_for_deep_trees(self) -> None:
+        """With a reasonably deep max_depth (8), the 2**8=256 cap is
+        above the configured 512 only partially — the upper bound must
+        be the tighter of the two (256)."""
+        space = HyperparamSearchSpace(
+            num_leaves_range=(31, 512),
+            max_depth_range=(4, 12),
+        )
+        trial = self.__class__._StubTrial(forced={"max_depth": 8})
+
+        HyperparamOptimizer._suggest_params(trial, space)
+
+        _, low, high = [c for c in trial.calls if c[0] == "num_leaves"][0]
+        self.assertLessEqual(high, 256)
+        self.assertGreaterEqual(high, 31)  # should not collapse range
+
+    def test_early_stopping_capped_at_num_boost_round(self) -> None:
+        """If the early-stopping upper bound exceeds num_boost_round,
+        stopping can never trigger — ModelTrainer's validator rejects
+        the reverse, so Optuna must be kept below that line."""
+        space = HyperparamSearchSpace(
+            num_boost_round_range=(100, 100),  # pin to 100
+            early_stopping_rounds_range=(20, 500),  # nominally up to 500
+        )
+        trial = self.__class__._StubTrial(forced={"num_boost_round": 100})
+
+        HyperparamOptimizer._suggest_params(trial, space)
+
+        _, low, high = [
+            c for c in trial.calls if c[0] == "early_stopping_rounds"
+        ][0]
+        self.assertLessEqual(high, 100)
+        self.assertLessEqual(low, high)
+
+
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
 
 
