@@ -20,7 +20,12 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeCostModel,
     EXECUTION_PRICE_CLOSE,
 )
-from src.core.backtest_runner import BacktestRunner, BacktestRunnerError, _positions_to_weight_map
+from src.core.backtest_runner import (
+    BacktestRunner,
+    BacktestRunnerError,
+    _positions_to_weight_map,
+    _risk_analysis_to_flat_dict,
+)
 
 
 def _make_request(**overrides) -> CanonicalBacktestInput:
@@ -195,6 +200,68 @@ class BacktestRunnerE2ETests(unittest.TestCase):
         self.assertIn("return", output.return_series)
         self.assertIn("config_fingerprint", output.provenance)
         self.assertGreater(output.report["total_days"], 0)
+
+
+class RiskAnalysisNormalizerTests(unittest.TestCase):
+    """Regression guards for P2f: ``_risk_analysis_to_flat_dict`` must
+    raise on unknown shapes rather than return ``{"raw": str(df)}``.
+
+    The old catch-all turned any future qlib shape change into a
+    missing-metrics scenario that downstream consumers
+    (``WalkForwardEngine._extract_cost_metrics``) coerced to 0.0 — a
+    silent zero-return run. The normalizer now propagates the failure
+    as a ``BacktestRunnerError`` so the breakage surfaces at the
+    boundary instead of rippling downstream.
+    """
+
+    def test_column_oriented_shape(self) -> None:
+        """Column-oriented risk_analysis: metrics as columns, index = 'risk'."""
+        import pandas as pd
+        df = pd.DataFrame(
+            {"annualized_return": {"risk": 0.12},
+             "information_ratio": {"risk": 1.1},
+             "max_drawdown": {"risk": -0.08}}
+        )
+        flat = _risk_analysis_to_flat_dict(df)
+        self.assertAlmostEqual(flat["annualized_return"], 0.12)
+        self.assertAlmostEqual(flat["information_ratio"], 1.1)
+        self.assertAlmostEqual(flat["max_drawdown"], -0.08)
+
+    def test_row_oriented_shape(self) -> None:
+        """Row-oriented risk_analysis: index = metric names, single 'risk' column."""
+        import pandas as pd
+        df = pd.DataFrame(
+            {"risk": {"annualized_return": 0.12,
+                      "information_ratio": 1.1,
+                      "max_drawdown": -0.08}}
+        )
+        flat = _risk_analysis_to_flat_dict(df)
+        self.assertAlmostEqual(flat["annualized_return"], 0.12)
+        self.assertAlmostEqual(flat["max_drawdown"], -0.08)
+
+    def test_raises_on_to_dict_failure(self) -> None:
+        """If the input doesn't quack like a DataFrame, raise loudly
+        instead of wrapping the failure as ``{"raw": ...}``."""
+        class _Broken:
+            def to_dict(self):
+                raise ValueError("simulated qlib shape change")
+
+        with self.assertRaisesRegex(
+            BacktestRunnerError, "shape may have changed"
+        ):
+            _risk_analysis_to_flat_dict(_Broken())
+
+    def test_no_raw_fallback_key(self) -> None:
+        """The normalizer must never produce a ``{"raw": str(df)}``
+        envelope — downstream consumers would coerce the empty metrics
+        to 0.0 silently."""
+        import pandas as pd
+        df = pd.DataFrame(
+            {"risk": {"annualized_return": 0.1, "max_drawdown": -0.05}}
+        )
+        flat = _risk_analysis_to_flat_dict(df)
+        self.assertNotIn("raw", flat)
+        self.assertIn("annualized_return", flat)
 
 
 if __name__ == "__main__":

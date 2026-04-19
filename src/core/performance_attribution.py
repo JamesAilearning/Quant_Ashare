@@ -10,6 +10,32 @@ Boundaries
 ----------
 - Operates on backtest return_series + portfolio positions (post-backtest).
 - Requires canonical qlib init for fetching sector/industry data.
+
+Methodological caveat
+---------------------
+The sector decomposition here is a **Brinson-Fachler single-period**
+approximation computed with *time-averaged* portfolio weights and
+*point-to-point* instrument returns. The ``total_excess_return`` in the
+result, by contrast, is the compound of daily portfolio vs benchmark
+returns. The two do not reconcile in general — a long holding period,
+turnover in the portfolio, or path-dependent compounding will all open
+gaps between ``sector_effects_sum`` and ``total_excess_return``.
+
+The :class:`AttributionResult` surfaces this explicitly:
+
+- ``attribution_method`` labels the model so callers can filter/flag it.
+- ``sector_effects_sum`` is the arithmetic sum of the three Brinson
+  effects.
+- ``reconciliation_residual`` = ``total_excess_return - sector_effects_sum``.
+  A non-zero residual is expected for the single-period approximation;
+  :meth:`PerformanceAttribution.print_report` emits a WARNING when the
+  absolute residual exceeds :data:`RECONCILIATION_WARN_THRESHOLD` so
+  readers know not to treat the decomposition as exact.
+
+If exact daily-level reconciliation is needed, a separate daily Brinson
+(weights-and-returns per day, summed across days) would be required —
+this module intentionally keeps the cheaper single-period form and is
+honest about the limitation rather than hiding it.
 """
 
 from __future__ import annotations
@@ -25,6 +51,21 @@ _logger = get_logger(__name__)
 
 class PerformanceAttributionError(RuntimeError):
     """Raised on attribution computation failures."""
+
+
+# Threshold (in absolute return) above which the single-period
+# Brinson approximation is flagged as "does not reconcile with the
+# compounded excess return". 50 bps is wide enough to absorb typical
+# path-dependence across a few months but tight enough that a genuinely
+# broken decomposition (e.g. wrong weights) trips the warning.
+RECONCILIATION_WARN_THRESHOLD: float = 0.005
+
+
+# Human-readable label for the attribution model used. Callers (dashboards,
+# reporting pipelines) should display this next to the effects so the
+# single-period nature of the decomposition is visible and cannot be
+# mistaken for an exact daily-accurate contribution analysis.
+ATTRIBUTION_METHOD_SINGLE_PERIOD: str = "brinson_fachler_single_period_approximation"
 
 
 @dataclass(frozen=True)
@@ -70,7 +111,12 @@ class MonthlyReturn:
 
 @dataclass(frozen=True)
 class AttributionResult:
-    """Complete attribution result."""
+    """Complete attribution result.
+
+    ``attribution_method``, ``sector_effects_sum`` and
+    ``reconciliation_residual`` make the single-period Brinson
+    approximation's inexactness explicit (see module docstring).
+    """
 
     # Brinson sector attribution
     sector_attribution: tuple[SectorAttribution, ...]
@@ -85,6 +131,15 @@ class AttributionResult:
     total_portfolio_return: float
     total_benchmark_return: float
     total_excess_return: float
+
+    # Provenance / reconciliation for the Brinson approximation.
+    # These make the methodological gap between the sector decomposition
+    # (single-period, time-averaged weights) and total_excess_return
+    # (compounded daily) explicit and observable — silent discrepancies
+    # used to let readers mistake the effects for exact attributions.
+    attribution_method: str = ATTRIBUTION_METHOD_SINGLE_PERIOD
+    sector_effects_sum: float = 0.0
+    reconciliation_residual: float = 0.0
 
 
 class PerformanceAttribution:
@@ -155,6 +210,13 @@ class PerformanceAttribution:
         # Total returns
         total_port = float((1 + port_returns).prod() - 1) if len(port_returns) > 0 else 0.0
         total_bench = float((1 + bench_returns).prod() - 1) if len(bench_returns) > 0 else 0.0
+        total_excess = total_port - total_bench
+
+        # Reconciliation: the Brinson single-period sum vs the compounded
+        # daily excess return. These will diverge for any path-dependent
+        # portfolio — we surface the gap rather than hide it.
+        sector_effects_sum = total_alloc + total_select + total_interact
+        reconciliation_residual = total_excess - sector_effects_sum
 
         return AttributionResult(
             sector_attribution=tuple(sector_attr),
@@ -164,7 +226,10 @@ class PerformanceAttribution:
             monthly_returns=tuple(monthly),
             total_portfolio_return=total_port,
             total_benchmark_return=total_bench,
-            total_excess_return=total_port - total_bench,
+            total_excess_return=total_excess,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=sector_effects_sum,
+            reconciliation_residual=reconciliation_residual,
         )
 
     @classmethod
@@ -477,10 +542,24 @@ class PerformanceAttribution:
         log("  Benchmark return:  %.2f%%", result.total_benchmark_return * 100)
         log("  Excess return:     %.2f%%", result.total_excess_return * 100)
         log("")
-        log("Brinson Decomposition:")
+        log("Brinson Decomposition (method: %s):", result.attribution_method)
         log("  Allocation effect: %+.4f", result.total_allocation_effect)
         log("  Selection effect:  %+.4f", result.total_selection_effect)
         log("  Interaction effect:%+.4f", result.total_interaction_effect)
+        log("  Sector effects sum:%+.4f", result.sector_effects_sum)
+        log(
+            "  Reconciliation residual (excess - sum): %+.4f",
+            result.reconciliation_residual,
+        )
+        if abs(result.reconciliation_residual) > RECONCILIATION_WARN_THRESHOLD:
+            _logger.warning(
+                "Attribution reconciliation residual %+.4f exceeds threshold "
+                "%.4f. The Brinson single-period approximation does not match "
+                "the compounded daily excess return — expected for path-dependent "
+                "portfolios, but treat the sector effects as indicative, not exact.",
+                result.reconciliation_residual,
+                RECONCILIATION_WARN_THRESHOLD,
+            )
 
         log("")
         log("Sector Attribution:")

@@ -146,6 +146,155 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
             WalkForwardConfig(n_drop=-1)
 
 
+class ComputeAggregateNaNSafetyTests(unittest.TestCase):
+    """Regression guards for P1c: ``_compute_aggregate`` must tolerate
+    folds whose metrics are NaN (e.g. a fold whose validation period was
+    too short for SignalAnalyzer to produce a valid IC — surfaced as
+    NaN after P2c in batch 6 rather than a silent 0.0).
+
+    Old code used ``np.mean``/``np.std``/``np.min``; a single NaN fold
+    would poison every aggregate into NaN, making a 4/5 healthy study
+    look identical to a 0/5 broken study.
+    """
+
+    def _fold(self, idx, ic_1d, ic_5d, ann_ret, max_dd, ir):
+        from src.core.walk_forward import WalkForwardFold
+        return WalkForwardFold(
+            fold_index=idx,
+            train_period="2024-01-01 ~ 2024-06-30",
+            valid_period="2024-07-01 ~ 2024-09-30",
+            test_period="2024-10-01 ~ 2024-12-31",
+            ic_1d=ic_1d,
+            ic_5d=ic_5d,
+            annualized_return=ann_ret,
+            max_drawdown=max_dd,
+            information_ratio=ir,
+            prediction_shape=(1000,),
+        )
+
+    def test_single_nan_fold_does_not_poison_aggregate(self) -> None:
+        import math
+        folds = [
+            self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1),
+            self._fold(1, math.nan, math.nan, 0.09, -0.10, 0.9),
+            self._fold(2, 0.02, 0.03, 0.07, -0.05, 0.6),
+        ]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        # Means must be finite — NaN fold excluded.
+        self.assertFalse(math.isnan(agg["mean_ic_1d"]))
+        self.assertFalse(math.isnan(agg["mean_ic_5d"]))
+        self.assertFalse(math.isnan(agg["mean_annualized_return"]))
+        # Mean of 0.04 and 0.02 is 0.03.
+        self.assertAlmostEqual(agg["mean_ic_1d"], 0.03, places=4)
+
+    def test_valid_fold_counts_surface_nan_folds(self) -> None:
+        """The output must disclose how many folds fed each mean — a
+        count of 2 in a 3-fold study means 1 fold came back as NaN."""
+        import math
+        folds = [
+            self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1),
+            self._fold(1, math.nan, 0.03, 0.09, -0.10, 0.9),
+            self._fold(2, 0.02, math.nan, 0.07, -0.05, math.nan),
+        ]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        self.assertEqual(agg["valid_folds_ic_1d"], 2.0)
+        self.assertEqual(agg["valid_folds_ic_5d"], 2.0)
+        self.assertEqual(agg["valid_folds_annualized_return"], 3.0)
+        self.assertEqual(agg["valid_folds_information_ratio"], 2.0)
+        self.assertEqual(agg["num_folds"], 3.0)
+
+    def test_all_nan_metric_returns_nan(self) -> None:
+        """If *every* fold is NaN for a metric, the mean must propagate
+        as NaN — a loud signal, not a silent zero."""
+        import math
+        folds = [
+            self._fold(0, math.nan, 0.05, 0.12, -0.08, 1.1),
+            self._fold(1, math.nan, 0.03, 0.09, -0.10, 0.9),
+        ]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        self.assertTrue(math.isnan(agg["mean_ic_1d"]))
+        self.assertEqual(agg["valid_folds_ic_1d"], 0.0)
+        # Other metrics still fine.
+        self.assertFalse(math.isnan(agg["mean_ic_5d"]))
+
+    def test_worst_drawdown_ignores_nan(self) -> None:
+        import math
+        folds = [
+            self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1),
+            self._fold(1, 0.02, 0.03, 0.09, math.nan, 0.9),
+            self._fold(2, 0.01, 0.02, 0.07, -0.20, 0.6),
+        ]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        # Worst (most negative) valid drawdown is -0.20.
+        self.assertAlmostEqual(agg["worst_drawdown"], -0.20, places=6)
+        self.assertEqual(agg["valid_folds_max_drawdown"], 2.0)
+
+
+class ExtractCostMetricsTests(unittest.TestCase):
+    """Regression guards for P2f: ``_extract_cost_metrics`` must not
+    silently coerce missing risk metrics to 0.0.
+
+    Old code used ``cost_metrics.get("annualized_return", 0.0)`` in-line
+    inside ``_run_single_fold``. That meant any qlib output shape change
+    — or a normalizer that failed and routed data into ``{"raw": str(df)}``
+    — invisibly turned every fold into a zero-return run. The helper
+    now lives as a standalone method and raises on any shape mismatch.
+    """
+
+    def test_happy_path_returns_three_floats(self) -> None:
+        risk = {
+            "excess_return_with_cost": {
+                "annualized_return": 0.12,
+                "max_drawdown": -0.08,
+                "information_ratio": 1.1,
+                "mean": 0.0004,
+            }
+        }
+        ann, dd, ir = WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
+        self.assertAlmostEqual(ann, 0.12)
+        self.assertAlmostEqual(dd, -0.08)
+        self.assertAlmostEqual(ir, 1.1)
+
+    def test_raises_when_excess_return_with_cost_missing(self) -> None:
+        """Simulate a future qlib shape change where the top-level
+        ``excess_return_with_cost`` block disappears."""
+        risk = {"return_no_cost": {"annualized_return": 0.05}}
+        with self.assertRaisesRegex(
+            WalkForwardError, "excess_return_with_cost"
+        ):
+            WalkForwardEngine._extract_cost_metrics(risk, fold_index=7)
+
+    def test_raises_when_normalizer_fell_back_to_raw(self) -> None:
+        """If the risk_analysis normalizer ever regressed and produced
+        ``{"raw": "<DataFrame repr>"}``, the extractor must refuse."""
+        risk = {"raw": "pd.DataFrame repr"}
+        with self.assertRaisesRegex(
+            WalkForwardError, "excess_return_with_cost"
+        ):
+            WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
+
+    def test_raises_when_cost_metrics_not_dict(self) -> None:
+        """qlib returning a scalar or a DataFrame-as-string must raise,
+        not silently coerce to zeros."""
+        risk = {"excess_return_with_cost": "some string"}
+        with self.assertRaisesRegex(
+            WalkForwardError, "expected dict"
+        ):
+            WalkForwardEngine._extract_cost_metrics(risk, fold_index=3)
+
+    def test_raises_when_required_metric_missing(self) -> None:
+        """A present-but-incomplete ``excess_return_with_cost`` must
+        also raise — the 0.0 default silently masked this."""
+        risk = {
+            "excess_return_with_cost": {
+                "annualized_return": 0.05,
+                # max_drawdown and information_ratio missing
+            }
+        }
+        with self.assertRaisesRegex(WalkForwardError, "missing"):
+            WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
+
+
 from pathlib import Path
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
