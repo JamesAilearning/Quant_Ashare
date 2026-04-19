@@ -361,13 +361,9 @@ class WalkForwardEngine:
             n_drop=config.n_drop,
         )
 
-        # risk_analysis["excess_return_with_cost"] is now a flat {metric: value} dict
-        # (normalized by backtest_runner._risk_analysis_to_flat_dict)
-        risk = backtest_output.risk_analysis
-        cost_metrics = risk.get("excess_return_with_cost", {})
-        ann_ret = float(cost_metrics.get("annualized_return", 0.0))
-        max_dd = float(cost_metrics.get("max_drawdown", 0.0))
-        ir = float(cost_metrics.get("information_ratio", 0.0))
+        ann_ret, max_dd, ir = cls._extract_cost_metrics(
+            backtest_output.risk_analysis, fold_index,
+        )
 
         return WalkForwardFold(
             fold_index=fold_index,
@@ -382,26 +378,121 @@ class WalkForwardEngine:
             prediction_shape=model_result.prediction_shape,
         )
 
+    @staticmethod
+    def _extract_cost_metrics(
+        risk_analysis: Mapping[str, Any],
+        fold_index: int,
+    ) -> tuple[float, float, float]:
+        """Extract ``(annualized_return, max_drawdown, information_ratio)``
+        from a qlib ``risk_analysis`` dict, raising loudly on any shape mismatch.
+
+        Old code used ``cost_metrics.get("annualized_return", 0.0)``, which
+        meant any qlib output shape change — or a normalizer that routed
+        malformed data into ``{"raw": ...}`` — silently turned every fold
+        into a zero-return run. We now require the three metrics to be
+        present as floats and raise if not.
+        """
+        if "excess_return_with_cost" not in risk_analysis:
+            raise WalkForwardError(
+                f"Fold {fold_index}: backtest risk_analysis has no "
+                f"'excess_return_with_cost' block. Available top-level keys: "
+                f"{sorted(risk_analysis.keys())}. qlib output shape may "
+                "have changed."
+            )
+        cost_metrics = risk_analysis["excess_return_with_cost"]
+        if not isinstance(cost_metrics, dict):
+            raise WalkForwardError(
+                f"Fold {fold_index}: 'excess_return_with_cost' is "
+                f"{type(cost_metrics).__name__}, expected dict. The backtest "
+                "normalizer may have failed to parse the DataFrame."
+            )
+        required_metrics = ("annualized_return", "max_drawdown", "information_ratio")
+        missing_metrics = [m for m in required_metrics if m not in cost_metrics]
+        if missing_metrics:
+            raise WalkForwardError(
+                f"Fold {fold_index}: risk_analysis['excess_return_with_cost'] "
+                f"is missing {missing_metrics}. Keys present: "
+                f"{sorted(cost_metrics.keys())}. qlib output shape may have "
+                "changed; refusing to substitute 0.0 for missing metrics."
+            )
+        return (
+            float(cost_metrics["annualized_return"]),
+            float(cost_metrics["max_drawdown"]),
+            float(cost_metrics["information_ratio"]),
+        )
+
     @classmethod
     def _compute_aggregate(cls, folds: list[WalkForwardFold]) -> dict[str, float]:
-        """Compute aggregate metrics across all folds."""
+        """Compute aggregate metrics across all folds, NaN-safe.
+
+        SignalAnalyzer now surfaces "no valid IC" as ``NaN`` rather than
+        silently coercing to 0.0 (P2c, batch 6). With plain ``np.mean``,
+        a single NaN fold poisons every downstream aggregate — the user
+        would see ``mean_ic_1d=NaN`` across an entire walk-forward study
+        because one fold happened to have too-short validation data to
+        compute cross-sectional IC.
+
+        The fix is "skip-but-disclose":
+
+        - Aggregates are computed with ``np.nan{mean,std,min}`` so NaN
+          folds are excluded rather than propagated.
+        - A companion ``valid_folds_<metric>`` count is written into the
+          result so the caller can tell a 5/5 study apart from a 1/5
+          study. Same-shape output as before (all floats), but with
+          explicit provenance on how many folds fed each statistic.
+        - If *every* fold is NaN for a metric, the aggregator still
+          returns ``NaN`` for that metric (``np.nanmean`` of all-NaN is
+          NaN by numpy convention) — a loud signal rather than a false
+          zero.
+        """
         import numpy as np
 
         if not folds:
             return {}
 
-        ic_1d = [f.ic_1d for f in folds]
-        ic_5d = [f.ic_5d for f in folds]
-        returns = [f.annualized_return for f in folds]
-        drawdowns = [f.max_drawdown for f in folds]
-        irs = [f.information_ratio for f in folds]
+        ic_1d = np.asarray([f.ic_1d for f in folds], dtype=float)
+        ic_5d = np.asarray([f.ic_5d for f in folds], dtype=float)
+        returns = np.asarray([f.annualized_return for f in folds], dtype=float)
+        drawdowns = np.asarray([f.max_drawdown for f in folds], dtype=float)
+        irs = np.asarray([f.information_ratio for f in folds], dtype=float)
+
+        def _nanmean(arr: "np.ndarray") -> float:
+            # nanmean of an all-NaN slice emits a RuntimeWarning; silence
+            # it — the NaN return is exactly the signal we want.
+            with np.errstate(invalid="ignore"):
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    return float(np.nanmean(arr)) if arr.size else float("nan")
+
+        def _nanstd(arr: "np.ndarray") -> float:
+            with np.errstate(invalid="ignore"):
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    return float(np.nanstd(arr)) if arr.size else float("nan")
+
+        def _nanmin(arr: "np.ndarray") -> float:
+            with np.errstate(invalid="ignore"):
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    return float(np.nanmin(arr)) if arr.size else float("nan")
+
+        def _valid(arr: "np.ndarray") -> int:
+            return int(np.count_nonzero(~np.isnan(arr)))
 
         return {
-            "mean_ic_1d": float(np.mean(ic_1d)),
-            "std_ic_1d": float(np.std(ic_1d)),
-            "mean_ic_5d": float(np.mean(ic_5d)),
-            "mean_annualized_return": float(np.mean(returns)),
-            "worst_drawdown": float(np.min(drawdowns)),
-            "mean_information_ratio": float(np.mean(irs)),
+            "mean_ic_1d": _nanmean(ic_1d),
+            "std_ic_1d": _nanstd(ic_1d),
+            "valid_folds_ic_1d": float(_valid(ic_1d)),
+            "mean_ic_5d": _nanmean(ic_5d),
+            "valid_folds_ic_5d": float(_valid(ic_5d)),
+            "mean_annualized_return": _nanmean(returns),
+            "valid_folds_annualized_return": float(_valid(returns)),
+            "worst_drawdown": _nanmin(drawdowns),
+            "valid_folds_max_drawdown": float(_valid(drawdowns)),
+            "mean_information_ratio": _nanmean(irs),
+            "valid_folds_information_ratio": float(_valid(irs)),
             "num_folds": float(len(folds)),
         }

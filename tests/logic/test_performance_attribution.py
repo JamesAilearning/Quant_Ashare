@@ -8,6 +8,8 @@ from unittest.mock import patch
 import pandas as pd
 
 from src.core.performance_attribution import (
+    ATTRIBUTION_METHOD_SINGLE_PERIOD,
+    RECONCILIATION_WARN_THRESHOLD,
     AttributionConfig,
     AttributionResult,
     MonthlyReturn,
@@ -239,6 +241,107 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
                 PerformanceAttribution._brinson_attribution(
                     predictions, port_returns, bench_returns, cfg, positions,
                 )
+
+
+class ReconciliationResidualTests(unittest.TestCase):
+    """Regression guards for P1d: surface the gap between the Brinson
+    single-period approximation and the compounded daily excess return.
+
+    These two quantities are *not expected* to agree in general — the
+    sector decomposition is a single-period model with time-averaged
+    weights and point-to-point instrument returns, while
+    ``total_excess_return`` is compounded from daily portfolio and
+    benchmark returns. Previously the mismatch was invisible; callers
+    who saw ``total_allocation_effect + total_selection_effect +
+    total_interaction_effect`` diverge from ``total_excess_return``
+    had no way to distinguish "path dependence" from "a bug somewhere".
+
+    Now the result carries three explicit fields:
+    - ``attribution_method``: label naming the decomposition model.
+    - ``sector_effects_sum``: arithmetic sum of the three effects.
+    - ``reconciliation_residual``: total_excess_return - sector_effects_sum.
+    """
+
+    def test_attribution_method_constant_set(self) -> None:
+        """Constant must be a non-empty string so it can be displayed
+        on dashboards and persisted into provenance."""
+        self.assertIsInstance(ATTRIBUTION_METHOD_SINGLE_PERIOD, str)
+        self.assertIn("single_period", ATTRIBUTION_METHOD_SINGLE_PERIOD)
+        self.assertIn("brinson", ATTRIBUTION_METHOD_SINGLE_PERIOD.lower())
+
+    def test_reconciliation_threshold_reasonable(self) -> None:
+        """The WARN threshold must be small enough to catch genuine
+        bugs but wide enough that normal path dependence doesn't spam."""
+        self.assertGreater(RECONCILIATION_WARN_THRESHOLD, 0.0)
+        self.assertLess(RECONCILIATION_WARN_THRESHOLD, 0.05)
+
+    def test_result_carries_method_and_residual(self) -> None:
+        """An ``AttributionResult`` constructed with the new fields
+        must expose them with the expected semantics."""
+        result = AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.01,
+            total_selection_effect=0.02,
+            total_interaction_effect=-0.005,
+            monthly_returns=(),
+            total_portfolio_return=0.10,
+            total_benchmark_return=0.05,
+            total_excess_return=0.05,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=0.025,
+            reconciliation_residual=0.025,  # 0.05 excess - 0.025 sum
+        )
+        self.assertEqual(result.attribution_method, ATTRIBUTION_METHOD_SINGLE_PERIOD)
+        self.assertAlmostEqual(result.sector_effects_sum, 0.025)
+        self.assertAlmostEqual(result.reconciliation_residual, 0.025)
+
+    def test_print_report_warns_on_large_residual(self) -> None:
+        """When ``|reconciliation_residual|`` exceeds the threshold,
+        ``print_report`` must emit a WARNING — the gap must not be
+        displayed as though the decomposition were exact."""
+        from unittest.mock import patch as _patch
+
+        result = AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.0,
+            total_selection_effect=0.0,
+            total_interaction_effect=0.0,
+            monthly_returns=(),
+            total_portfolio_return=0.10,
+            total_benchmark_return=0.0,
+            total_excess_return=0.10,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=0.0,
+            reconciliation_residual=0.10,  # well above threshold
+        )
+        with _patch("src.core.performance_attribution._logger") as mock_logger:
+            PerformanceAttribution.print_report(result)
+        mock_logger.warning.assert_called_once()
+        msg = mock_logger.warning.call_args[0][0]
+        self.assertIn("reconciliation residual", msg.lower())
+
+    def test_print_report_no_warn_on_small_residual(self) -> None:
+        """Within-threshold residuals are expected for path-dependent
+        portfolios — no WARNING needed; INFO is enough."""
+        from unittest.mock import patch as _patch
+
+        tiny = RECONCILIATION_WARN_THRESHOLD / 10.0
+        result = AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.0,
+            total_selection_effect=0.0,
+            total_interaction_effect=0.0,
+            monthly_returns=(),
+            total_portfolio_return=tiny,
+            total_benchmark_return=0.0,
+            total_excess_return=tiny,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=0.0,
+            reconciliation_residual=tiny,
+        )
+        with _patch("src.core.performance_attribution._logger") as mock_logger:
+            PerformanceAttribution.print_report(result)
+        mock_logger.warning.assert_not_called()
 
 
 if __name__ == "__main__":

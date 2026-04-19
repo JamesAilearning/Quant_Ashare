@@ -266,45 +266,57 @@ def _risk_analysis_to_flat_dict(df: Any) -> dict:
                                   "information_ratio": -1.05, ...}}
 
     Both are normalized to ``{"annualized_return": -0.27, ...}``.
+
+    If neither shape matches or ``to_dict`` itself raises, a
+    ``BacktestRunnerError`` is raised. The previous implementation
+    swallowed every exception into ``{"raw": str(df)}``, which then
+    flowed downstream as *missing* metrics that callers like
+    ``WalkForwardEngine`` coerced to 0.0 — a silent regression path
+    for any future qlib shape change.
     """
     try:
         raw = df.to_dict()
-        if not raw:
-            return {}
+    except Exception as exc:
+        raise BacktestRunnerError(
+            f"risk_analysis.to_dict() failed ({type(exc).__name__}: {exc}). "
+            "qlib risk_analysis output shape may have changed; downstream "
+            "metric extraction cannot proceed."
+        ) from exc
 
-        first_val = next(iter(raw.values()))
+    if not raw:
+        return {}
 
-        if not isinstance(first_val, dict):
-            # Already flat scalars.
-            return {str(k): (float(v) if hasattr(v, "__float__") else str(v))
-                    for k, v in raw.items()}
+    first_val = next(iter(raw.values()))
 
-        # Detect row-oriented shape: single outer key "risk" whose value
-        # is a dict of {metric_name: scalar}.
-        if len(raw) == 1 and "risk" in raw and isinstance(raw["risk"], dict):
-            inner = raw["risk"]
-            return {str(k): (float(v) if hasattr(v, "__float__") else str(v))
-                    for k, v in inner.items()}
+    if not isinstance(first_val, dict):
+        # Already flat scalars.
+        return {str(k): (float(v) if hasattr(v, "__float__") else str(v))
+                for k, v in raw.items()}
 
-        # Column-oriented shape: outer keys are metric names, inner dicts
-        # have index labels as keys (typically a single "risk" entry).
-        flat: dict = {}
-        for metric, sub in raw.items():
-            if not isinstance(sub, dict):
-                try:
-                    flat[str(metric)] = float(sub)
-                except (TypeError, ValueError):
-                    flat[str(metric)] = str(sub)
-                continue
-            # Prefer the "risk" index label; fall back to first value.
-            val = sub.get("risk", next(iter(sub.values())))
+    # Detect row-oriented shape: single outer key "risk" whose value
+    # is a dict of {metric_name: scalar}.
+    if len(raw) == 1 and "risk" in raw and isinstance(raw["risk"], dict):
+        inner = raw["risk"]
+        return {str(k): (float(v) if hasattr(v, "__float__") else str(v))
+                for k, v in inner.items()}
+
+    # Column-oriented shape: outer keys are metric names, inner dicts
+    # have index labels as keys (typically a single "risk" entry).
+    flat: dict = {}
+    for metric, sub in raw.items():
+        if not isinstance(sub, dict):
             try:
-                flat[str(metric)] = float(val)
+                flat[str(metric)] = float(sub)
             except (TypeError, ValueError):
-                flat[str(metric)] = str(val)
-        return flat
-    except Exception:
-        return {"raw": str(df)}
+                flat[str(metric)] = str(sub)
+            continue
+        # Prefer the "risk" index label; fall back to first value.
+        val = sub.get("risk", next(iter(sub.values())))
+        try:
+            flat[str(metric)] = float(val)
+        except (TypeError, ValueError):
+            flat[str(metric)] = str(val)
+    return flat
 
 
 def _dataframe_to_dict(df: Any) -> dict:
