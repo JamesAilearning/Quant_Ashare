@@ -96,6 +96,160 @@ class ModelTrainerStructuralTests(unittest.TestCase):
                 )
 
 
+class ModelTrainerUpperBoundsTests(unittest.TestCase):
+    """P2e regression guards — sane upper bounds on hyperparameters,
+    LightGBM ``num_leaves <= 2**max_depth`` invariant, and upfront
+    ``predict_segment`` validation.
+
+    Previously these slipped through:
+    - ``num_boost_round=10**9`` burned hours before the caller noticed
+    - ``max_depth=500`` quietly worked because LightGBM capped internally
+    - ``num_leaves=1024`` with ``max_depth=4`` let LightGBM silently clip
+      (the user believed they were training a 1024-leaf model; they
+      were training a 16-leaf model)
+    - ``predict_segment="tets"`` raised a cryptic ``KeyError`` deep
+      inside qlib's DatasetH.
+    """
+
+    def _call(self, **kwargs) -> None:
+        """Call train_and_predict with qlib init patched true."""
+        cfg_kwargs = {k: v for k, v in kwargs.items() if k != "predict_segment"}
+        with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
+            ModelTrainer.train_and_predict(
+                config=ModelTrainConfig(model_type="LGBModel", **cfg_kwargs),
+                dataset=None,
+                model_artifact_path="/tmp/model.pkl",
+                predict_segment=kwargs.get("predict_segment", "test"),
+            )
+
+    def test_rejects_absurd_num_boost_round(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "num_boost_round"):
+            self._call(num_boost_round=1_000_000)
+
+    def test_rejects_non_int_num_boost_round(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "num_boost_round"):
+            self._call(num_boost_round=100.0)  # type: ignore[arg-type]
+
+    def test_rejects_bool_num_boost_round(self) -> None:
+        # bool is a subtype of int — must be explicitly rejected.
+        with self.assertRaisesRegex(ModelTrainerError, "num_boost_round"):
+            self._call(num_boost_round=True)  # type: ignore[arg-type]
+
+    def test_rejects_zero_max_depth(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "max_depth"):
+            self._call(max_depth=0)
+
+    def test_rejects_absurd_max_depth(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "max_depth"):
+            self._call(max_depth=500)
+
+    def test_rejects_non_int_max_depth(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "max_depth"):
+            self._call(max_depth=8.5)  # type: ignore[arg-type]
+
+    def test_rejects_num_leaves_below_two(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "num_leaves"):
+            self._call(num_leaves=1)
+
+    def test_rejects_non_int_num_leaves(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "num_leaves"):
+            self._call(num_leaves=64.0)  # type: ignore[arg-type]
+
+    def test_rejects_absurd_num_leaves(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "num_leaves"):
+            # also passes 2**max_depth check at depth=64 (2**64 huge)
+            self._call(max_depth=64, num_leaves=500_000)
+
+    def test_rejects_num_leaves_exceeds_two_pow_max_depth(self) -> None:
+        """LightGBM invariant: with max_depth=4 the binary tree can hold
+        at most 2**4=16 leaves. 1024 leaves at depth 4 would be silently
+        clipped to 16 — caller thinks they tuned a wide model, they didn't.
+        """
+        with self.assertRaisesRegex(
+            ModelTrainerError, r"num_leaves.*2\*\*max_depth"
+        ):
+            self._call(max_depth=4, num_leaves=1024)
+
+    def test_accepts_num_leaves_at_two_pow_max_depth(self) -> None:
+        """Boundary case: num_leaves == 2**max_depth is the documented
+        maximum and must be accepted. We can't assert success (no dataset),
+        but the validation phase must pass — so any raised error should
+        NOT mention num_leaves / max_depth."""
+        with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
+            try:
+                ModelTrainer.train_and_predict(
+                    config=ModelTrainConfig(
+                        model_type="LGBModel",
+                        max_depth=4,
+                        num_leaves=16,
+                        num_boost_round=10,
+                        early_stopping_rounds=5,
+                    ),
+                    dataset=None,
+                    model_artifact_path="/tmp/model.pkl",
+                )
+            except ModelTrainerError as exc:
+                self.assertNotRegex(
+                    str(exc), r"num_leaves.*2\*\*max_depth",
+                    "validation must accept num_leaves == 2**max_depth",
+                )
+            except Exception:
+                # Downstream (model build / fit) will fail — not our concern.
+                pass
+
+    def test_rejects_learning_rate_above_one(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "learning_rate"):
+            self._call(learning_rate=1.5)
+
+    def test_rejects_non_numeric_learning_rate(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "learning_rate"):
+            self._call(learning_rate="0.05")  # type: ignore[arg-type]
+
+    def test_rejects_bool_learning_rate(self) -> None:
+        # bool is subclass of int (and Python treats int as a numeric);
+        # must be explicitly rejected so True doesn't pass through as 1.0.
+        with self.assertRaisesRegex(ModelTrainerError, "learning_rate"):
+            self._call(learning_rate=True)  # type: ignore[arg-type]
+
+    def test_rejects_early_stopping_exceeds_num_boost_round(self) -> None:
+        """If early_stopping_rounds > num_boost_round, the stopping
+        criterion can never trigger — configuration smell."""
+        with self.assertRaisesRegex(ModelTrainerError, "early_stopping_rounds"):
+            self._call(num_boost_round=20, early_stopping_rounds=100)
+
+    def test_rejects_bad_predict_segment(self) -> None:
+        for bad in ("tets", "TRAIN", "validation", "oos", ""):
+            with self.subTest(segment=bad):
+                with self.assertRaisesRegex(ModelTrainerError, "predict_segment"):
+                    self._call(predict_segment=bad)
+
+    def test_accepts_all_valid_predict_segments(self) -> None:
+        """train / valid / test must pass structural validation (may fail
+        later at fit/predict time — that's fine)."""
+        for seg in ("train", "valid", "test"):
+            with self.subTest(segment=seg):
+                with patch(
+                    "src.core.model_trainer.is_canonical_qlib_initialized",
+                    return_value=True,
+                ):
+                    try:
+                        ModelTrainer.train_and_predict(
+                            config=ModelTrainConfig(model_type="LGBModel"),
+                            dataset=None,
+                            model_artifact_path="/tmp/model.pkl",
+                            predict_segment=seg,
+                        )
+                    except ModelTrainerError as exc:
+                        self.assertNotRegex(
+                            str(exc), "predict_segment",
+                            f"valid segment {seg!r} must pass validation",
+                        )
+                    except Exception:
+                        # Fit on None dataset fails downstream — not our
+                        # concern here.
+                        pass
+
+
 class FitDispatchTests(unittest.TestCase):
     """_fit_dispatch must pass LGB-only kwargs only to LGBModel."""
 

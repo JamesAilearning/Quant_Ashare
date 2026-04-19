@@ -190,25 +190,52 @@ class HyperparamOptimizer:
 
     @staticmethod
     def _suggest_params(trial: Any, space: HyperparamSearchSpace) -> dict[str, Any]:
-        """Suggest hyperparameters for a trial."""
+        """Suggest hyperparameters for a trial.
+
+        The ``num_leaves`` range is intersected with ``[2, 2**max_depth]``
+        so the combined suggestion respects the LightGBM invariant
+        ``num_leaves <= 2**max_depth`` — otherwise LightGBM silently clips
+        and ModelTrainer's validator raises, wasting Optuna budget on
+        trials that can never actually run.
+        """
+        num_boost_round = trial.suggest_int(
+            "num_boost_round",
+            space.num_boost_round_range[0],
+            space.num_boost_round_range[1],
+        )
+        learning_rate = trial.suggest_float(
+            "learning_rate",
+            space.learning_rate_range[0],
+            space.learning_rate_range[1],
+            log=True,
+        )
+        max_depth = trial.suggest_int(
+            "max_depth", space.max_depth_range[0], space.max_depth_range[1],
+        )
+
+        # Clamp num_leaves range to the LightGBM invariant. ``max_depth``
+        # may be deeper than 30 (unlikely with our defaults but not
+        # forbidden); guard the shift to avoid overflow.
+        leaf_cap = (1 << max_depth) if max_depth <= 30 else space.num_leaves_range[1]
+        leaves_low = max(2, min(space.num_leaves_range[0], leaf_cap))
+        leaves_high = max(leaves_low, min(space.num_leaves_range[1], leaf_cap))
+        num_leaves = trial.suggest_int("num_leaves", leaves_low, leaves_high)
+
+        # Cap early_stopping_rounds at num_boost_round so validation can
+        # actually trigger stopping — ModelTrainer rejects the reverse.
+        es_low = space.early_stopping_rounds_range[0]
+        es_high = min(space.early_stopping_rounds_range[1], num_boost_round)
+        es_high = max(es_low, es_high)
+        early_stopping_rounds = trial.suggest_int(
+            "early_stopping_rounds", es_low, es_high,
+        )
+
         return {
-            "num_boost_round": trial.suggest_int(
-                "num_boost_round", space.num_boost_round_range[0], space.num_boost_round_range[1]
-            ),
-            "learning_rate": trial.suggest_float(
-                "learning_rate", space.learning_rate_range[0], space.learning_rate_range[1], log=True
-            ),
-            "max_depth": trial.suggest_int(
-                "max_depth", space.max_depth_range[0], space.max_depth_range[1]
-            ),
-            "num_leaves": trial.suggest_int(
-                "num_leaves", space.num_leaves_range[0], space.num_leaves_range[1]
-            ),
-            "early_stopping_rounds": trial.suggest_int(
-                "early_stopping_rounds",
-                space.early_stopping_rounds_range[0],
-                space.early_stopping_rounds_range[1],
-            ),
+            "num_boost_round": num_boost_round,
+            "learning_rate": learning_rate,
+            "max_depth": max_depth,
+            "num_leaves": num_leaves,
+            "early_stopping_rounds": early_stopping_rounds,
         }
 
     @classmethod
