@@ -28,7 +28,12 @@ from src.core.canonical_backtest_contract import (
 )
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
 from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
-from src.core.performance_attribution import AttributionConfig, AttributionResult, PerformanceAttribution
+from src.core.performance_attribution import (
+    AttributionConfig,
+    AttributionResult,
+    PerformanceAttribution,
+    PerformanceAttributionError,
+)
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
@@ -253,20 +258,37 @@ class Pipeline:
                 )
             else:
                 _logger.info("Running performance attribution...")
-                attribution_result = PerformanceAttribution.analyze(
-                    return_series=backtest_output.return_series,
-                    predictions=model_result.predictions,
-                    config=AttributionConfig(
-                        start_date=config.test_start,
-                        end_date=config.test_end,
-                        # benchmark_code intentionally omitted — attribution
-                        # uses return_series["bench"] from
-                        # CanonicalBacktestOutput, which already embeds the
-                        # correct benchmark data.
-                    ),
-                    positions=backtest_output.positions,
-                )
-                PerformanceAttribution.print_report(attribution_result)
+                try:
+                    attribution_result = PerformanceAttribution.analyze(
+                        return_series=backtest_output.return_series,
+                        predictions=model_result.predictions,
+                        config=AttributionConfig(
+                            start_date=config.test_start,
+                            end_date=config.test_end,
+                            # benchmark_code intentionally omitted —
+                            # attribution uses return_series["bench"]
+                            # from CanonicalBacktestOutput, which already
+                            # embeds the correct benchmark data.
+                        ),
+                        positions=backtest_output.positions,
+                    )
+                    PerformanceAttribution.print_report(attribution_result)
+                except PerformanceAttributionError as exc:
+                    # Degenerate inputs (e.g. all-non-positive predictions,
+                    # all-zero position weights) raise from the attribution
+                    # engine by design — they would otherwise be silently
+                    # masked by a uniform-weighting fallback. Downgrade to
+                    # "skipped with loud WARNING" so the run can still
+                    # finish (backtest + report are already valid) while
+                    # making the degradation visible to callers.
+                    attribution_result = None
+                    _logger.warning(
+                        "Performance attribution skipped — engine raised "
+                        "%s: %s. Backtest and risk_analysis remain valid; "
+                        "only the sector-attribution block is absent from "
+                        "the report.",
+                        type(exc).__name__, exc,
+                    )
 
         # Step 7b: Persist positions artifact (authoritative portfolio weights)
         if backtest_output.positions:

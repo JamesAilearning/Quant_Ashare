@@ -141,16 +141,37 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         self.assertAlmostEqual(weights["SH600001"], 0.5 / 1.5)
         self.assertAlmostEqual(weights["SH600002"], 0.0)
 
-    def test_predictions_to_weights_all_negative_falls_back_uniform(self) -> None:
+    def test_predictions_to_weights_all_non_positive_raises(self) -> None:
+        """All per-instrument averaged scores are non-positive → raise.
+
+        Previously this case silently fell back to a uniform ``1/n``
+        weighting, which disguised a model-failure signal ("no long
+        signal at all") as a valid equal-weight attribution run.
+        The new contract surfaces the failure so the pipeline can
+        downgrade visibly (skip attribution + WARNING) instead of
+        publishing meaningless sector effects.
+        """
         idx = pd.MultiIndex.from_tuples(
             [(pd.Timestamp("2025-10-01"), "A"),
              (pd.Timestamp("2025-10-01"), "B")],
             names=["datetime", "instrument"],
         )
         predictions = pd.Series([-0.5, -1.0], index=idx)
-        weights = PerformanceAttribution._predictions_to_weights(predictions)
-        self.assertAlmostEqual(weights["A"], 0.5)
-        self.assertAlmostEqual(weights["B"], 0.5)
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "non-positive"
+        ):
+            PerformanceAttribution._predictions_to_weights(predictions)
+
+    def test_predictions_to_weights_all_zero_raises(self) -> None:
+        """Zero is non-positive too — ``clipped.sum() == 0`` must raise."""
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "A"),
+             (pd.Timestamp("2025-10-01"), "B")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([0.0, 0.0], index=idx)
+        with self.assertRaises(PerformanceAttributionError):
+            PerformanceAttribution._predictions_to_weights(predictions)
 
     def test_positions_override_predictions_in_brinson(self) -> None:
         # When positions are supplied, Brinson weighting must come from
