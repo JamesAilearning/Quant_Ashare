@@ -427,19 +427,33 @@ class PerformanceAttribution:
         """Fallback: convert prediction scores to long-only weights.
 
         Clips negative scores to zero so that names the model ranks poorly
-        do not absorb portfolio weight. Only if all scores are non-positive
-        do we fall back to a small epsilon to keep the weights finite.
-        """
-        import pandas as pd
+        do not absorb portfolio weight.
 
+        Raises
+        ------
+        PerformanceAttributionError
+            When *every* per-instrument averaged score is non-positive.
+            The previous implementation quietly fell back to a uniform
+            ``1/n`` weighting in this case — mathematically well-defined,
+            but semantically wrong: "model produces no long signal" is a
+            failure mode that must not be disguised as "equal-weight
+            portfolio attribution". The caller in :meth:`analyze` now
+            catches this and downgrades gracefully (skip attribution with
+            a loud WARNING) rather than hiding the problem.
+        """
         avg_pred = predictions.groupby(level="instrument").mean()
         clipped = avg_pred.clip(lower=0.0)
         total = float(clipped.sum())
         if total > 0:
             return clipped / total
-        # All non-positive: fall back to uniform so downstream math stays sane
-        n = len(avg_pred)
-        return pd.Series(1.0 / n, index=avg_pred.index) if n > 0 else pd.Series(dtype=float)
+        raise PerformanceAttributionError(
+            "All prediction scores are non-positive — cannot derive a "
+            "long-only weight vector. This indicates the model is "
+            "emitting no buy signal (zero/negative scores across every "
+            "instrument), not a normal attribution input. Previously we "
+            "fell back to uniform weighting here, which disguised model "
+            "failure as a valid equal-weight portfolio."
+        )
 
     @classmethod
     def _get_sector_map(cls, instruments: list[str], config: AttributionConfig) -> dict[str, str]:
