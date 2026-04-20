@@ -18,6 +18,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Mapping
 
+from src.core.logger import get_logger
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
@@ -27,6 +28,9 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
 )
+
+
+_logger = get_logger(__name__)
 
 
 class BacktestRunnerError(RuntimeError):
@@ -344,30 +348,70 @@ def _positions_to_weight_map(positions_normal: Any) -> dict:
     qlib's ``positions_normal`` comes out of ``generate_portfolio_metrics`` as
     either a ``pd.Series`` indexed by timestamp whose values are ``Position``
     objects, or a plain ``dict`` with the same shape. Either way, each
-    ``Position`` exposes ``position`` — a dict of ``{instrument: {amount, price, weight, ...}}``
-    plus bookkeeping keys like ``"cash"``, ``"now_account_value"``.
+    ``Position`` exposes ``position`` — a dict of ``{instrument: {amount,
+    price, weight, ...}}`` plus bookkeeping keys like ``"cash"`` and
+    ``"now_account_value"``.
 
-    We extract the ``weight`` field per instrument and skip bookkeeping keys.
-    If the position dict lacks explicit weights (older qlib), we fall back to
-    ``amount * price / total_value``. On any error, we return an empty dict
-    rather than poison the backtest output.
+    Error handling
+    --------------
+    The previous implementation wrapped the whole function in a catch-all
+    that returned ``{}`` on *any* failure. Downstream (``pipeline.py``)
+    then silently coerced an empty positions map to ``None``, which made
+    ``PerformanceAttribution`` switch from "real-portfolio attribution"
+    to a prediction-score fallback — a semantically-different run under
+    the same metric name. That conflicts with the repo's "no implicit
+    fallback" governance rule.
+
+    The new contract:
+
+    * ``None`` input → ``{}`` — this is qlib's legitimate "no positions
+      generated" signal (e.g. backtest was configured without
+      ``generate_portfolio_metrics=True``).
+    * Non-``None`` input that *cannot be iterated* (no ``.items()`` or it
+      raises) → raise ``BacktestRunnerError``. This is an upstream
+      contract violation and must surface immediately.
+    * Per-day rows whose shape is malformed (e.g. ``position`` isn't a
+      dict) → logged at WARNING with date context and skipped; they do
+      not abort the whole map but they also cannot be silently dropped.
+    * Per-instrument entries with unusable weights → logged at DEBUG
+      and skipped (these are common across qlib version differences).
     """
     if positions_normal is None:
         return {}
 
+    # Outer contract: must be iterable.  The previous catch-all let
+    # non-iterable inputs (e.g. ints, strings) quietly disappear.
+    if not hasattr(positions_normal, "items"):
+        raise BacktestRunnerError(
+            "positions_to_weight_map: input is not iterable "
+            f"(got {type(positions_normal).__name__}). qlib "
+            "positions_normal must be a pd.Series or dict; receiving a "
+            "different type indicates an upstream contract violation."
+        )
     try:
-        items = positions_normal.items() if hasattr(positions_normal, "items") else []
-    except Exception:
-        return {}
+        items = list(positions_normal.items())
+    except Exception as exc:
+        raise BacktestRunnerError(
+            f"positions_to_weight_map: failed to iterate positions "
+            f"({type(exc).__name__}: {exc}). qlib positions_normal shape "
+            "may have changed; refusing to silently return empty map."
+        ) from exc
 
     result: dict[str, dict[str, float]] = {}
     bookkeeping_keys = {"cash", "now_account_value"}
+    skipped_days = 0
 
     for ts, pos in items:
         try:
             date_str = str(ts.date()) if hasattr(ts, "date") else str(ts)
             raw = getattr(pos, "position", pos)
             if not isinstance(raw, dict):
+                _logger.warning(
+                    "positions_to_weight_map: day %s has non-dict "
+                    "position payload (%s); skipping.",
+                    date_str, type(raw).__name__,
+                )
+                skipped_days += 1
                 continue
 
             # Compute total value for fallback weighting
@@ -397,11 +441,34 @@ def _positions_to_weight_map(positions_normal: Any) -> dict:
                 try:
                     day_weights[str(inst)] = float(w)
                 except (TypeError, ValueError):
+                    # Individual entry coerce failure — common across qlib
+                    # versions; log at DEBUG so noise stays low.
+                    _logger.debug(
+                        "positions_to_weight_map: day %s inst %s: weight "
+                        "%r is not coercible to float; skipping entry.",
+                        date_str, inst, w,
+                    )
                     continue
 
             if day_weights:
                 result[date_str] = day_weights
-        except Exception:
+        except Exception as exc:
+            # Per-day robustness: do NOT silently continue — surface the
+            # exception class and date so the caller can tell how much
+            # data was actually captured.
+            _logger.warning(
+                "positions_to_weight_map: failed to parse day %s (%s: %s); "
+                "skipping.",
+                ts, type(exc).__name__, exc,
+            )
+            skipped_days += 1
             continue
 
+    if skipped_days:
+        _logger.warning(
+            "positions_to_weight_map: %d of %d days were skipped due to "
+            "malformed entries; downstream attribution based on this map "
+            "will cover only %d days.",
+            skipped_days, len(items), len(result),
+        )
     return result

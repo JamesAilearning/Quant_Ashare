@@ -130,10 +130,59 @@ class PositionsSerializationTests(unittest.TestCase):
         self.assertAlmostEqual(result["2025-10-02"]["SH600000"], 0.25)
         self.assertAlmostEqual(result["2025-10-02"]["SH600001"], 0.75)
 
-    def test_malformed_input_does_not_raise(self) -> None:
-        # Garbage input must be swallowed, not crash the backtest output.
-        self.assertEqual(_positions_to_weight_map("not-a-dict"), {})
-        self.assertEqual(_positions_to_weight_map(42), {})
+    def test_malformed_input_raises(self) -> None:
+        """Non-iterable input must raise loudly.
+
+        Previously this test asserted ``{}`` — i.e. it *locked in* the
+        silent-swallow behavior that made
+        ``BacktestRunner`` → ``Pipeline`` → ``PerformanceAttribution``
+        switch to prediction-based attribution under the same metric
+        name. The new contract raises ``BacktestRunnerError`` so the
+        upstream contract violation surfaces at the boundary.
+        """
+        with self.assertRaisesRegex(BacktestRunnerError, "not iterable"):
+            _positions_to_weight_map("not-a-dict")
+        with self.assertRaisesRegex(BacktestRunnerError, "not iterable"):
+            _positions_to_weight_map(42)
+
+    def test_items_iteration_failure_raises(self) -> None:
+        """If ``.items()`` exists but raises during iteration, surface it."""
+        class _Broken:
+            def items(self):
+                raise RuntimeError("simulated qlib shape change")
+
+        with self.assertRaisesRegex(BacktestRunnerError, "failed to iterate"):
+            _positions_to_weight_map(_Broken())
+
+    def test_none_input_returns_empty_without_raising(self) -> None:
+        """``None`` is a legitimate "no positions generated" signal
+        (e.g. backtest run without ``generate_portfolio_metrics=True``);
+        it must NOT raise."""
+        self.assertEqual(_positions_to_weight_map(None), {})
+
+    def test_malformed_day_is_logged_not_silently_dropped(self) -> None:
+        """A single malformed day must be skipped with a WARNING log —
+        the previous bare ``except Exception: continue`` dropped it
+        silently, hiding partial data loss."""
+        import pandas as pd
+
+        class _Pos:
+            def __init__(self, d): self.position = d
+
+        positions = pd.Series({
+            pd.Timestamp("2025-10-01"): _Pos("not-a-dict"),  # malformed
+            pd.Timestamp("2025-10-02"): _Pos({
+                "SH600000": {"amount": 100, "price": 10.0, "weight": 1.0},
+                "cash": 0.0,
+            }),
+        })
+        with self.assertLogs("src.core.backtest_runner", level="WARNING") as cm:
+            result = _positions_to_weight_map(positions)
+        self.assertIn("2025-10-02", result)
+        self.assertNotIn("2025-10-01", result)
+        joined = "\n".join(cm.output)
+        self.assertIn("non-dict position payload", joined)
+        self.assertIn("1 of 2 days were skipped", joined)
 
 
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")

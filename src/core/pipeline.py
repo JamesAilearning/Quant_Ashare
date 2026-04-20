@@ -235,23 +235,38 @@ class Pipeline:
         # Step 7: Performance attribution (optional)
         attribution_result: AttributionResult | None = None
         if config.run_attribution:
-            _logger.info("Running performance attribution...")
-            # Pass positions only when non-empty; empty dict is an explicit
-            # error per attribution contract ("no implicit fallback" rule).
-            positions_for_attribution = backtest_output.positions if backtest_output.positions else None
-            attribution_result = PerformanceAttribution.analyze(
-                return_series=backtest_output.return_series,
-                predictions=model_result.predictions,
-                config=AttributionConfig(
-                    start_date=config.test_start,
-                    end_date=config.test_end,
-                    # benchmark_code intentionally omitted — attribution uses
-                    # return_series["bench"] from CanonicalBacktestOutput,
-                    # which already embeds the correct benchmark data.
-                ),
-                positions=positions_for_attribution,
-            )
-            PerformanceAttribution.print_report(attribution_result)
+            if not backtest_output.positions:
+                # The previous implementation silently coerced ``positions`` to
+                # ``None`` here, which flipped PerformanceAttribution into its
+                # prediction-score fallback mode — a semantically-different
+                # attribution under the same metric name. That violates the
+                # repo's "no implicit fallback" rule (see backtest_runner
+                # ``_positions_to_weight_map`` docstring for the full chain).
+                # We now skip the step explicitly and log loudly.
+                _logger.warning(
+                    "Skipping performance attribution: backtest produced no "
+                    "positions map (len=%d). Attribution is configured as "
+                    "position-based — refusing to silently fall back to "
+                    "prediction-score attribution. Check backtest_runner "
+                    "logs for per-day position parse warnings.",
+                    len(backtest_output.positions) if backtest_output.positions else 0,
+                )
+            else:
+                _logger.info("Running performance attribution...")
+                attribution_result = PerformanceAttribution.analyze(
+                    return_series=backtest_output.return_series,
+                    predictions=model_result.predictions,
+                    config=AttributionConfig(
+                        start_date=config.test_start,
+                        end_date=config.test_end,
+                        # benchmark_code intentionally omitted — attribution
+                        # uses return_series["bench"] from
+                        # CanonicalBacktestOutput, which already embeds the
+                        # correct benchmark data.
+                    ),
+                    positions=backtest_output.positions,
+                )
+                PerformanceAttribution.print_report(attribution_result)
 
         # Step 7b: Persist positions artifact (authoritative portfolio weights)
         if backtest_output.positions:
