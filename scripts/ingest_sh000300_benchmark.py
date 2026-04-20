@@ -93,6 +93,23 @@ def _log(msg: str) -> None:
     print(f"[ingest-sh000300] {msg}", flush=True)
 
 
+def _needs_leading_newline(raw_bytes: bytes) -> bool:
+    """Return True iff appending a new line to this file would produce a
+    malformed join (i.e. the last existing line lacks a terminator).
+
+    The previous implementation relied on ``raw.splitlines()[-1].endswith("\\n")``,
+    but ``splitlines()`` *strips* terminators — that check was always True
+    for non-empty files, so a spurious blank line was written before every
+    append. This helper inspects the raw trailing bytes instead, handling
+    both Unix ``\\n`` and Windows ``\\r\\n`` line endings.
+
+    An empty file does not need a leading newline (nothing to separate from).
+    """
+    if not raw_bytes:
+        return False
+    return not raw_bytes.endswith((b"\n", b"\r\n"))
+
+
 def _load_calendar() -> list[str]:
     with open(CALENDAR_PATH, encoding="utf-8") as f:
         return [ln.strip() for ln in f if ln.strip()]
@@ -160,7 +177,13 @@ def _write_bin(field_path: Path, start_index: int, values: np.ndarray) -> None:
 
 
 def _update_all_txt(first_date: str, last_date: str) -> None:
-    lines = ALL_TXT_PATH.read_text(encoding="utf-8").splitlines()
+    # Read raw bytes — we need to know whether the file itself ends with a
+    # newline, NOT whether the last post-splitlines string ends with one
+    # (splitlines strips them, so the old check was always True and we were
+    # writing a spurious blank line before every append — polluting the
+    # instrument registry).
+    raw_bytes = ALL_TXT_PATH.read_bytes()
+    lines = raw_bytes.decode("utf-8").splitlines()
     existing = [ln for ln in lines if ln.startswith(f"{INSTRUMENT_CODE}\t")]
     if existing:
         _log(
@@ -176,8 +199,7 @@ def _update_all_txt(first_date: str, last_date: str) -> None:
 
     new_line = f"{INSTRUMENT_CODE}\t{first_date}\t{last_date}"
     with open(ALL_TXT_PATH, "a", encoding="utf-8") as f:
-        # Ensure preceding newline.
-        if lines and not lines[-1].endswith("\n"):
+        if _needs_leading_newline(raw_bytes):
             f.write("\n")
         f.write(new_line + "\n")
     _log(f"appended to all.txt: {new_line}")
