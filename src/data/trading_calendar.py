@@ -34,6 +34,7 @@ Boundaries
 
 from __future__ import annotations
 
+import threading
 from bisect import bisect_left, bisect_right
 from datetime import date
 from typing import Iterable, Optional, Protocol, runtime_checkable
@@ -97,16 +98,42 @@ class QlibTradingCalendar:
     fetches the full calendar once, and caches the result inside an
     internal :class:`StaticTradingCalendar`. Subsequent calls reuse the
     cache without touching qlib.
+
+    Thread safety
+    -------------
+    Cache initialization is guarded by an instance lock: a first caller
+    racing with a second on the same instance is guaranteed to see at
+    most one ``_fetch_and_build_cache()`` call. Without the lock two
+    threads could both read ``self._cache is None``, both invoke qlib,
+    and the second write would overwrite a partially observed cache
+    pointer. The consistency risk is small — both callers would build
+    the same calendar from the same qlib data — but the wasted qlib IO
+    and the potential for torn reads on the pointer (CPython's GIL
+    makes this unlikely in practice but not guaranteed for non-CPython
+    interpreters) are easy to avoid with a lock this cheap.
+
+    The sibling ``src.core.qlib_runtime._INIT_LOCK`` uses the same
+    pattern for the one-shot ``qlib.init`` call.
     """
 
     def __init__(self, freq: str = "day") -> None:
         self._freq = freq
         self._cache: Optional[StaticTradingCalendar] = None
+        self._cache_lock = threading.Lock()
 
     def count_trading_days(self, start: date, end: date) -> int:
-        if self._cache is None:
-            self._cache = self._fetch_and_build_cache()
-        return self._cache.count_trading_days(start, end)
+        # Double-checked locking: fast path when the cache is already
+        # populated avoids lock acquisition on the hot path; the slow
+        # path holds the lock while populating so concurrent initialisers
+        # see a single fetch.
+        cache = self._cache
+        if cache is None:
+            with self._cache_lock:
+                cache = self._cache
+                if cache is None:
+                    cache = self._fetch_and_build_cache()
+                    self._cache = cache
+        return cache.count_trading_days(start, end)
 
     def _fetch_and_build_cache(self) -> StaticTradingCalendar:
         try:
