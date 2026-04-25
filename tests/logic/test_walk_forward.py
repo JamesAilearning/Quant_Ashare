@@ -1,7 +1,10 @@
 """Tests for src.core.walk_forward — walk-forward rolling backtest engine."""
 
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from src.core.canonical_backtest_contract import ADJUST_MODE_NONE, EXECUTION_PRICE_OPEN
 
 from src.core.walk_forward import (
     WalkForwardConfig,
@@ -54,6 +57,9 @@ class WalkForwardValidationTests(unittest.TestCase):
         self.assertEqual(cfg.train_months, 24)
         self.assertEqual(cfg.step_months, 3)
         self.assertEqual(cfg.model_type, "LGBModel")
+        self.assertEqual(cfg.adjust_mode, "pre_adjusted")
+        self.assertEqual(cfg.signal_to_execution_lag, 1)
+        self.assertEqual(cfg.execution_price_kind, "close")
 
     def test_multiple_folds_generated(self):
         config = WalkForwardConfig(
@@ -144,6 +150,92 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
     def test_rejects_negative_n_drop(self):
         with self.assertRaisesRegex(WalkForwardError, "n_drop"):
             WalkForwardConfig(n_drop=-1)
+
+    def test_rejects_zero_signal_to_execution_lag(self):
+        with self.assertRaisesRegex(WalkForwardError, "signal_to_execution_lag"):
+            WalkForwardConfig(signal_to_execution_lag=0)
+
+    def test_rejects_unknown_adjust_mode(self):
+        with self.assertRaisesRegex(WalkForwardError, "adjust_mode"):
+            WalkForwardConfig(adjust_mode="auto")
+
+    def test_rejects_unknown_execution_price_kind(self):
+        with self.assertRaisesRegex(WalkForwardError, "execution_price_kind"):
+            WalkForwardConfig(execution_price_kind="limit")
+
+    def test_rejects_negative_min_cost(self):
+        with self.assertRaisesRegex(WalkForwardError, "min_cost"):
+            WalkForwardConfig(min_cost=-1.0)
+
+    def test_rejects_invalid_limit_threshold(self):
+        with self.assertRaisesRegex(WalkForwardError, "limit_threshold"):
+            WalkForwardConfig(limit_threshold=0.0)
+
+
+class WalkForwardBacktestPassthroughTests(unittest.TestCase):
+    def test_fold_backtest_request_uses_configured_controls(self) -> None:
+        config = WalkForwardConfig(
+            execution_price_kind=EXECUTION_PRICE_OPEN,
+            adjust_mode=ADJUST_MODE_NONE,
+            signal_to_execution_lag=3,
+            min_cost=7.5,
+            limit_threshold=0.195,
+            commission_rate=0.0007,
+            stamp_tax_bps=8.0,
+            slippage_bps=3.0,
+        )
+
+        fake_feature_result = MagicMock()
+        fake_feature_result.dataset = object()
+        fake_model_result = MagicMock()
+        fake_model_result.predictions = "predictions"
+        fake_model_result.prediction_shape = (10,)
+        fake_signal_result = MagicMock()
+        fake_signal_result.ic_summary = {
+            1: {"mean_ic": 0.01},
+            5: {"mean_ic": 0.02},
+        }
+        fake_backtest_output = MagicMock()
+        fake_backtest_output.risk_analysis = {
+            "excess_return_with_cost": {
+                "annualized_return": 0.11,
+                "max_drawdown": -0.08,
+                "information_ratio": 1.2,
+            }
+        }
+
+        with patch(
+            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            return_value=fake_feature_result,
+        ), patch(
+            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ), patch(
+            "src.core.walk_forward.SignalAnalyzer.analyze",
+            return_value=fake_signal_result,
+        ), patch(
+            "src.core.walk_forward.BacktestRunner.run",
+            return_value=fake_backtest_output,
+        ) as mock_backtest:
+            WalkForwardEngine._run_single_fold(
+                config=config,
+                fold_index=0,
+                train_start="2024-01-01",
+                train_end="2024-06-30",
+                valid_start="2024-07-01",
+                valid_end="2024-09-30",
+                test_start="2024-10-01",
+                test_end="2024-12-31",
+                output_dir=Path("D:/tmp/walk_forward_test"),
+            )
+
+        request = mock_backtest.call_args.kwargs["request"]
+        self.assertEqual(request.adjust_mode, ADJUST_MODE_NONE)
+        self.assertEqual(request.signal_to_execution_lag, 3)
+        self.assertEqual(request.exchange_config.execution_price_kind, EXECUTION_PRICE_OPEN)
+        self.assertEqual(request.exchange_config.limit_threshold, 0.195)
+        self.assertEqual(request.exchange_config.cost_model.min_cost, 7.5)
+        self.assertEqual(request.exchange_config.cost_model.commission_rate, 0.0007)
 
 
 class ComputeAggregateNaNSafetyTests(unittest.TestCase):
@@ -295,8 +387,6 @@ class ExtractCostMetricsTests(unittest.TestCase):
             WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
 
 
-from pathlib import Path
-
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
 
 
@@ -324,7 +414,9 @@ class WalkForwardE2ETests(unittest.TestCase):
         )
         if not is_canonical_qlib_initialized():
             init_qlib_canonical(QlibRuntimeConfig(
-                provider_uri=str(_QLIB_DATA_DIR), region="cn",
+                provider_uri=str(_QLIB_DATA_DIR),
+                region="cn",
+                data_adjust_mode="pre_adjusted",
             ))
 
     def test_two_fold_walk_forward(self):

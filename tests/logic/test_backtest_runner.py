@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_POST,
     ADJUST_MODE_PRE,
     CanonicalAccountConfig,
     CanonicalBacktestContractError,
@@ -25,6 +26,10 @@ from src.core.backtest_runner import (
     BacktestRunnerError,
     _positions_to_weight_map,
     _risk_analysis_to_flat_dict,
+)
+from src.core.qlib_runtime import (
+    QlibRuntimeConfig,
+    _reset_canonical_qlib_runtime_for_tests,
 )
 
 
@@ -53,13 +58,41 @@ def _make_request(**overrides) -> CanonicalBacktestInput:
 
 
 class BacktestRunnerStructuralTests(unittest.TestCase):
-    """Structural validation — no qlib needed."""
+    """Structural validation tests; qlib itself does not need to be importable."""
+
+    def setUp(self) -> None:
+        _reset_canonical_qlib_runtime_for_tests()
+
+    def tearDown(self) -> None:
+        _reset_canonical_qlib_runtime_for_tests()
 
     def test_empty_predictions_rejected(self) -> None:
         with self.assertRaisesRegex(BacktestRunnerError, "predictions"):
             BacktestRunner.run(
                 request=_make_request(),
                 predictions=None,
+            )
+
+    def test_missing_canonical_init_rejected_before_qlib_import(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "Canonical qlib runtime"):
+            BacktestRunner.run(
+                request=_make_request(),
+                predictions="dummy",
+            )
+
+    def test_adjust_mode_mismatch_rejected_before_qlib_import(self) -> None:
+        from src.core import qlib_runtime as _rt
+
+        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(
+            provider_uri="./fake_provider",
+            region="cn",
+            data_adjust_mode=ADJUST_MODE_POST,
+        )
+        _rt._CANONICAL_QLIB_INITIALIZED = True
+        with self.assertRaisesRegex(BacktestRunnerError, "adjust_mode"):
+            BacktestRunner.run(
+                request=_make_request(adjust_mode=ADJUST_MODE_PRE),
+                predictions="dummy",
             )
 
     def test_invalid_input_rejected_by_contract(self) -> None:
@@ -207,7 +240,9 @@ class BacktestRunnerE2ETests(unittest.TestCase):
         )
         if not is_canonical_qlib_initialized():
             init_qlib_canonical(QlibRuntimeConfig(
-                provider_uri=str(_QLIB_DATA_DIR), region="cn",
+                provider_uri=str(_QLIB_DATA_DIR),
+                region="cn",
+                data_adjust_mode=ADJUST_MODE_PRE,
             ))
 
         from src.data.feature_dataset_builder import (
