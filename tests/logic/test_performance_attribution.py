@@ -318,7 +318,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         effect to zero otherwise."""
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(
-                PerformanceAttributionError, "'return'.*empty mapping"
+                PerformanceAttributionError, "'return'.*non-empty mapping"
             ):
                 PerformanceAttribution.analyze(
                     return_series={"return": {}, "bench": {"2025-10-01": 0.005}},
@@ -331,10 +331,41 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         'portfolio', which is a label-mismatch trap."""
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(
-                PerformanceAttributionError, "'bench'.*empty mapping"
+                PerformanceAttributionError, "'bench'.*non-empty mapping"
             ):
                 PerformanceAttribution.analyze(
                     return_series={"return": {"2025-10-01": 0.01}, "bench": {}},
+                    predictions=pd.Series(dtype=float),
+                )
+
+    def test_rejects_pandas_series_value_without_truthy_ambiguity(self) -> None:
+        """When ``return_series['return']`` is a pandas Series, the old
+        ``not value`` check would raise ``ValueError("truth value …
+        ambiguous")`` from pandas — surfacing the wrong exception type
+        and burying the real problem ("expected a Mapping").
+
+        The new ``isinstance(Mapping) + len()`` check rejects a Series
+        with a clean ``PerformanceAttributionError`` naming the type.
+        """
+        ser = pd.Series([0.01, 0.02], index=["2025-10-01", "2025-10-02"])
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "non-empty mapping.*Series"
+            ):
+                PerformanceAttribution.analyze(
+                    return_series={"return": ser, "bench": {"2025-10-01": 0.005}},
+                    predictions=pd.Series(dtype=float),
+                )
+
+    def test_rejects_non_mapping_return_value(self) -> None:
+        """A plain list also fails the ``isinstance(Mapping)`` test
+        with our error, not a downstream KeyError."""
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "non-empty mapping.*list"
+            ):
+                PerformanceAttribution.analyze(
+                    return_series={"return": [0.01], "bench": {"2025-10-01": 0.005}},
                     predictions=pd.Series(dtype=float),
                 )
 
