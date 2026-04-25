@@ -58,7 +58,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(PerformanceAttributionError, "pd.Series"):
                 PerformanceAttribution.analyze(
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     predictions=[1.0, 2.0],
                 )
 
@@ -68,7 +68,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(PerformanceAttributionError, "MultiIndex"):
                 PerformanceAttribution.analyze(
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     predictions=flat,
                 )
 
@@ -82,7 +82,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(PerformanceAttributionError, "instrument"):
                 PerformanceAttribution.analyze(
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     predictions=preds,
                 )
 
@@ -92,7 +92,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(PerformanceAttributionError, "empty"):
                 PerformanceAttribution.analyze(
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     predictions=preds,
                 )
 
@@ -240,7 +240,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(PerformanceAttributionError, "empty dict"):
                 PerformanceAttribution.analyze(
-                    return_series={"return": {"2025-01-02": 0.01}, "bench": {}},
+                    return_series={"return": {"2025-01-02": 0.01}, "bench": {"2025-01-02": 0.005}},
                     predictions=pd.Series(dtype=float),
                     positions={},
                 )
@@ -253,7 +253,7 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
             try:
                 PerformanceAttribution._validate(
                     config=AttributionConfig(),
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
             except PerformanceAttributionError:
@@ -280,6 +280,62 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
             with self.assertRaisesRegex(PerformanceAttributionError, "zero usable weights"):
                 PerformanceAttribution._brinson_attribution(
                     predictions, port_returns, bench_returns, cfg, positions,
+                )
+
+    def test_rejects_positions_with_explicit_zero_weight(self) -> None:
+        """Inner map non-empty but every weight is 0.0 must also raise.
+
+        Regression for P1: ``{"2025-10-01": {"SH600000": 0.0}}`` used to
+        slip past the previous "empty inner map" guard because the dict
+        is truthy, then ``total = 0`` flowed through the
+        ``port_weights = raw / total if total > 0 else raw`` else-branch
+        as a literal all-zero Series. The Brinson math then produced a
+        "valid-looking" zero-allocation/zero-selection attribution from
+        garbage. The new guard checks ``total <= 0`` after time-averaging.
+        """
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([1.0], index=idx)
+        positions = {"2025-10-01": {"SH600000": 0.0}}  # explicit zero weight
+
+        port_returns = pd.Series([0.01], index=[pd.Timestamp("2025-10-01")])
+        bench_returns = pd.Series([0.005], index=[pd.Timestamp("2025-10-01")])
+        cfg = AttributionConfig(start_date="2025-10-01", end_date="2025-10-01")
+
+        with patch.object(PerformanceAttribution, "_get_instrument_returns",
+                          return_value=pd.Series({"SH600000": 0.05})):
+            with self.assertRaisesRegex(PerformanceAttributionError, "non-positive aggregate weight"):
+                PerformanceAttribution._brinson_attribution(
+                    predictions, port_returns, bench_returns, cfg, positions,
+                )
+
+    def test_rejects_empty_return_mapping(self) -> None:
+        """``return_series['return']`` empty must raise — collapses every
+        effect to zero otherwise."""
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "'return'.*empty mapping"
+            ):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {}, "bench": {"2025-10-01": 0.005}},
+                    predictions=pd.Series(dtype=float),
+                )
+
+    def test_rejects_empty_bench_mapping(self) -> None:
+        """``return_series['bench']`` empty must raise — would silently
+        coerce total_benchmark_return to 0.0 and turn 'excess' into
+        'portfolio', which is a label-mismatch trap."""
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "'bench'.*empty mapping"
+            ):
+                PerformanceAttribution.analyze(
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {}},
+                    predictions=pd.Series(dtype=float),
                 )
 
 
@@ -411,7 +467,7 @@ class BenchWeightMethodTests(unittest.TestCase):
             try:
                 PerformanceAttribution._validate(
                     config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL),
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
             except PerformanceAttributionError:
@@ -431,7 +487,7 @@ class BenchWeightMethodTests(unittest.TestCase):
             ):
                 PerformanceAttribution._validate(
                     config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP),
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
 
@@ -442,7 +498,7 @@ class BenchWeightMethodTests(unittest.TestCase):
             ):
                 PerformanceAttribution._validate(
                     config=AttributionConfig(bench_weight_method="garbage"),
-                    return_series={"return": {}, "bench": {}},
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
 

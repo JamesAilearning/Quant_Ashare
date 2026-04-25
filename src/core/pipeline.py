@@ -8,6 +8,7 @@ All steps are wired through V2's contract and governance system.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,27 @@ from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_can
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively convert NaN floats to ``None`` so the result encodes
+    as standard JSON.
+
+    Dispatches on ``dict`` / ``list`` / ``tuple`` and replaces any
+    ``float('nan')`` it finds at the leaves. Infinity is also rejected
+    by standard JSON; treated the same way (→ ``None``) for consistency.
+    Non-finite numbers other than NaN/Inf do not exist in IEEE 754, so
+    this is exhaustive for floats.
+
+    Strings, ints, bools, and ``None`` pass through unchanged.
+    """
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 
 class PipelineError(RuntimeError):
@@ -415,37 +437,71 @@ class Pipeline:
             }
 
         if attribution_result is not None:
-            report["attribution"] = {
-                "total_portfolio_return": attribution_result.total_portfolio_return,
-                "total_benchmark_return": attribution_result.total_benchmark_return,
-                "total_excess_return": attribution_result.total_excess_return,
-                "allocation_effect": attribution_result.total_allocation_effect,
-                "selection_effect": attribution_result.total_selection_effect,
-                "interaction_effect": attribution_result.total_interaction_effect,
-                "sector_attribution": [
-                    {
-                        "sector": s.sector,
-                        "portfolio_weight": s.portfolio_weight,
-                        "benchmark_weight": s.benchmark_weight,
-                        "allocation_effect": s.allocation_effect,
-                        "selection_effect": s.selection_effect,
-                        "total_effect": s.total_effect,
-                    }
-                    for s in attribution_result.sector_attribution
-                ],
-                "monthly_returns": [
-                    {
-                        "month": f"{m.year}-{m.month:02d}",
-                        "portfolio": m.portfolio_return,
-                        "benchmark": m.benchmark_return,
-                        "excess": m.excess_return,
-                    }
-                    for m in attribution_result.monthly_returns
-                ],
-            }
+            report["attribution"] = Pipeline._attribution_to_report_dict(attribution_result)
 
+        # Standard JSON does not allow NaN/Inf — Python's default
+        # ``json.dump`` happily emits the literal token ``NaN`` which
+        # downstream parsers (browsers, ``jq``, strict libraries) reject.
+        # SignalAnalyzer and (now) FactorAnalyzer use NaN to mark
+        # *undefined* IR (zero or single-day std). Replace those NaNs
+        # with JSON-standard ``null`` recursively before writing, and set
+        # ``allow_nan=False`` so any remaining NaN trips a loud error
+        # instead of silently producing non-standard JSON.
+        sanitized = _sanitize_for_json(report)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+            json.dump(
+                sanitized, f, indent=2, ensure_ascii=False,
+                default=str, allow_nan=False,
+            )
+
+    @staticmethod
+    def _attribution_to_report_dict(attribution_result: AttributionResult) -> dict:
+        """Serialize an :class:`AttributionResult` to the JSON-report dict.
+
+        Extracted so the JSON contract (which methodology fields land in
+        ``pipeline_report.json``) is unit-testable without a full E2E
+        run. The methodology / provenance fields below were surfaced in
+        ``PerformanceAttribution.print_report`` log lines but were
+        previously missing from the JSON — JSON consumers (dashboards,
+        downstream scripts) had no way to tell whether sector buckets were
+        boards vs. industries, whether the benchmark was equal-weighted
+        vs. cap-weighted, or whether the Brinson sum reconciles with the
+        compounded excess return. Persist them so the caveats travel
+        with the data.
+        """
+        return {
+            "total_portfolio_return": attribution_result.total_portfolio_return,
+            "total_benchmark_return": attribution_result.total_benchmark_return,
+            "total_excess_return": attribution_result.total_excess_return,
+            "allocation_effect": attribution_result.total_allocation_effect,
+            "selection_effect": attribution_result.total_selection_effect,
+            "interaction_effect": attribution_result.total_interaction_effect,
+            "attribution_method": attribution_result.attribution_method,
+            "sector_taxonomy": attribution_result.sector_taxonomy,
+            "bench_weight_method": attribution_result.bench_weight_method,
+            "sector_effects_sum": attribution_result.sector_effects_sum,
+            "reconciliation_residual": attribution_result.reconciliation_residual,
+            "sector_attribution": [
+                {
+                    "sector": s.sector,
+                    "portfolio_weight": s.portfolio_weight,
+                    "benchmark_weight": s.benchmark_weight,
+                    "allocation_effect": s.allocation_effect,
+                    "selection_effect": s.selection_effect,
+                    "total_effect": s.total_effect,
+                }
+                for s in attribution_result.sector_attribution
+            ],
+            "monthly_returns": [
+                {
+                    "month": f"{m.year}-{m.month:02d}",
+                    "portfolio": m.portfolio_return,
+                    "benchmark": m.benchmark_return,
+                    "excess": m.excess_return,
+                }
+                for m in attribution_result.monthly_returns
+            ],
+        }
 
     @staticmethod
     def _print_summary(output: CanonicalBacktestOutput) -> None:

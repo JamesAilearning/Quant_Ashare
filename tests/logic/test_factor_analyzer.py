@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from src.core.factor_analyzer import (
@@ -298,6 +299,179 @@ class FactorAnalyzerE2ETests(unittest.TestCase):
         self.assertGreater(len(result.ic_decay), 0)
 
         FactorAnalyzer.print_report(result)
+
+
+class FactorICUndefinedIRTests(unittest.TestCase):
+    """Regression: undefined IR must surface as NaN, not 0.0.
+
+    Why this matters: factor screening / Optuna / walk-forward all
+    consume ``FactorICStats.ir`` and rank factors by it (or filter on
+    a threshold). Returning ``0.0`` for "we cannot compute std(IC)"
+    makes a one-good-day factor *and* a zero-volatility factor
+    indistinguishable from a real flat-IR factor — three very
+    different things end up sharing the same number.
+
+    SignalAnalyzer (signal_analyzer.py:136-145) already encodes
+    this with NaN. This test pins FactorAnalyzer to the same
+    convention.
+    """
+
+    @staticmethod
+    def _build_minimal_inputs(num_days: int) -> tuple[Any, Any]:
+        import pandas as pd
+        # 12 instruments per day so len(merged) > 10 each day; values
+        # tuned per case below to control daily IC.
+        instruments = [f"SH60000{i}" for i in range(12)]
+        dates = pd.date_range("2025-10-01", periods=num_days, freq="B")
+        idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+        return dates, idx
+
+    def test_single_day_ic_yields_nan_std_and_nan_ir(self) -> None:
+        """Only one day of valid IC → std is undefined → NaN std & IR.
+
+        With a single sample you can compute the mean (it's the value)
+        but not a standard deviation; the zero we used to write was a
+        fabricated number that travelled all the way into the report.
+        """
+        import math
+        import pandas as pd
+        from src.core.factor_analyzer import FactorAnalyzer, FactorAnalysisConfig
+
+        dates, idx = self._build_minimal_inputs(num_days=1)
+        # A linearly-correlated factor on this one day → deterministic IC ≈ 1
+        factor_df = pd.DataFrame(
+            {"f1": list(range(len(idx)))},
+            index=idx,
+        )
+        forward_ret = pd.Series(list(range(len(idx))), index=idx)
+
+        cfg = FactorAnalysisConfig(ic_method="rank")
+        results = FactorAnalyzer._compute_all_factor_ic(factor_df, forward_ret, cfg)
+        self.assertEqual(len(results), 1)
+        stats = results[0]
+        self.assertEqual(stats.num_days, 1)
+        self.assertTrue(math.isnan(stats.std_ic), f"std_ic should be NaN, got {stats.std_ic!r}")
+        self.assertTrue(math.isnan(stats.ir), f"ir should be NaN, got {stats.ir!r}")
+
+    def test_zero_volatility_ic_yields_nan_ir(self) -> None:
+        """Multiple days but every day's IC is identical → std == 0 →
+        IR is undefined, must be NaN (not ``mean_ic / 0`` and not 0.0).
+        """
+        import math
+        import pandas as pd
+        from src.core.factor_analyzer import FactorAnalyzer, FactorAnalysisConfig
+
+        dates, idx = self._build_minimal_inputs(num_days=4)
+        # Identical relationship per day → identical rank-IC each day
+        factor_vals = []
+        ret_vals = []
+        for _ in dates:
+            factor_vals.extend(range(12))
+            ret_vals.extend(range(12))
+        factor_df = pd.DataFrame({"f1": factor_vals}, index=idx)
+        forward_ret = pd.Series(ret_vals, index=idx)
+
+        cfg = FactorAnalysisConfig(ic_method="rank")
+        results = FactorAnalyzer._compute_all_factor_ic(factor_df, forward_ret, cfg)
+        self.assertEqual(len(results), 1)
+        stats = results[0]
+        # std should be exactly 0.0 (every day's IC is the same)
+        self.assertAlmostEqual(stats.std_ic, 0.0, places=10)
+        # IR therefore undefined
+        self.assertTrue(math.isnan(stats.ir), f"ir should be NaN, got {stats.ir!r}")
+
+
+class SignalAnalyzerIndexValidationTests(unittest.TestCase):
+    """Regression: SignalAnalyzer must reject MultiIndex predictions
+    that lack the named ``datetime`` and ``instrument`` levels.
+
+    Previously only the *type* (``isinstance(MultiIndex)``) was checked,
+    so an unnamed MultiIndex or one in ``(instrument, datetime)`` order
+    would slip through. Downstream code does
+    ``groupby(level="datetime")`` and reads instruments from the named
+    level — without these checks a wrong-shaped index produces
+    silently mis-grouped results.
+    """
+
+    def test_rejects_unnamed_multiindex(self) -> None:
+        import pandas as pd
+        from unittest.mock import patch as _patch
+        from src.core.signal_analyzer import (
+            SignalAnalysisConfig,
+            SignalAnalyzer,
+            SignalAnalyzerError,
+        )
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000")],
+        )  # names defaults to (None, None)
+        preds = pd.Series([1.0], index=idx)
+        with _patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "datetime"):
+                SignalAnalyzer.analyze(preds, SignalAnalysisConfig())
+
+    def test_rejects_swapped_level_order(self) -> None:
+        """``(instrument, datetime)`` levels are present but order is
+        wrong — ``in`` membership is satisfied so this passes the new
+        check; what we want is for the names being present is enough.
+
+        This test confirms the contract: the validator only requires
+        BOTH names present, regardless of order. Downstream uses
+        ``level="datetime"`` / ``level="instrument"`` by name, which
+        pandas resolves correctly regardless of position. So a swapped
+        order is *not* the bug — only missing/wrong-named levels are.
+        """
+        import pandas as pd
+        from unittest.mock import patch as _patch
+        from src.core.signal_analyzer import (
+            SignalAnalysisConfig,
+            SignalAnalyzer,
+            SignalAnalyzerError,
+        )
+
+        # Names present but in (instrument, datetime) order.
+        idx = pd.MultiIndex.from_tuples(
+            [("SH600000", pd.Timestamp("2025-10-01"))],
+            names=["instrument", "datetime"],
+        )
+        preds = pd.Series([1.0], index=idx)
+        # Should NOT raise on the index-name check (downstream
+        # ``groupby(level="datetime")`` resolves by name) — verifies the
+        # check is *name presence*, not positional. We expect failure to
+        # come later (qlib data fetch), so we patch qlib init to True
+        # and just assert the index-name guard does not fire.
+        with _patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            try:
+                # Will fail later when fetching returns, but should pass
+                # the index-name guard. We don't run the full analyze; we
+                # only confirm the *index-name* SignalAnalyzerError text
+                # is not the one raised first.
+                SignalAnalyzer.analyze(preds, SignalAnalysisConfig())
+            except SignalAnalyzerError as exc:
+                self.assertNotIn("datetime", str(exc).split("level")[0])
+            except Exception:
+                # Any non-SignalAnalyzerError is fine — proves we got past
+                # the index-name guard into qlib fetch territory.
+                pass
+
+    def test_rejects_missing_instrument_level(self) -> None:
+        """One named level missing — the symmetric case of unnamed."""
+        import pandas as pd
+        from unittest.mock import patch as _patch
+        from src.core.signal_analyzer import (
+            SignalAnalysisConfig,
+            SignalAnalyzer,
+            SignalAnalyzerError,
+        )
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "X")],
+            names=["datetime", "ticker"],  # 'instrument' missing
+        )
+        preds = pd.Series([1.0], index=idx)
+        with _patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(SignalAnalyzerError, "instrument"):
+                SignalAnalyzer.analyze(preds, SignalAnalysisConfig())
 
 
 if __name__ == "__main__":

@@ -114,6 +114,24 @@ class SignalAnalyzer:
                 "predictions must have (datetime, instrument) MultiIndex"
             )
 
+        # Level *names* matter — downstream code does
+        # ``.groupby(level="datetime")`` and reads instruments from
+        # the named level. An unnamed MultiIndex or one with the levels
+        # in the wrong order (e.g. ``(instrument, datetime)``) silently
+        # produces wrong-axis groupings rather than an obvious failure,
+        # so we validate the names here.  PerformanceAttribution applies
+        # the same contract on its own predictions input — the two
+        # callers must agree.
+        index_names = list(predictions.index.names)
+        for required in ("datetime", "instrument"):
+            if required not in index_names:
+                raise SignalAnalyzerError(
+                    "predictions.index must have both 'datetime' and "
+                    f"'instrument' levels; got names {index_names!r}. "
+                    "An unnamed or wrongly-named MultiIndex makes downstream "
+                    "groupby silently group on the wrong axis."
+                )
+
         if predictions.empty:
             raise SignalAnalyzerError("predictions Series is empty")
 

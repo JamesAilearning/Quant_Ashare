@@ -298,6 +298,17 @@ class PerformanceAttribution:
             raise PerformanceAttributionError(
                 "Canonical qlib runtime is not initialized."
             )
+        # Both keys must be present AND non-empty. An empty mapping for
+        # either side produces a degenerate run: a missing portfolio
+        # return series collapses every effect to zero; a missing benchmark
+        # silently sets the benchmark return to 0.0 and the "excess"
+        # return becomes the portfolio return itself, which is nonsense
+        # but looks plausible in a report. Both shapes are caller errors,
+        # not signals to fall back.
+        #
+        # Order: presence checks before emptiness checks, so a request
+        # missing the bench key still raises "missing bench" rather than
+        # "empty return" when the return value happens to also be empty.
         if "return" not in return_series:
             raise PerformanceAttributionError(
                 "return_series must contain 'return' key."
@@ -312,6 +323,20 @@ class PerformanceAttribution:
                 "return_series must contain 'bench' key. "
                 "Attribution is defined relative to a benchmark; pass the full "
                 "return_series from CanonicalBacktestOutput."
+            )
+        if not return_series["return"]:
+            raise PerformanceAttributionError(
+                "return_series['return'] is an empty mapping. "
+                "Pass the populated return series from CanonicalBacktestOutput; "
+                "attribution cannot run on an empty portfolio return."
+            )
+        if not return_series["bench"]:
+            raise PerformanceAttributionError(
+                "return_series['bench'] is an empty mapping. "
+                "An empty benchmark would silently coerce total_benchmark_return "
+                "to 0.0 and turn 'excess' return into 'portfolio' return — a "
+                "label mismatch that publishes meaningless attribution. Pass "
+                "the populated bench series from CanonicalBacktestOutput."
             )
         # Explicit empty positions dict is a caller error, not a signal to fall
         # back silently to prediction-score weights.  Pass None to opt into the
@@ -426,7 +451,23 @@ class PerformanceAttribution:
                 )
             raw = pd.Series({k: v / day_count for k, v in weight_sum.items()})
             total = float(raw.sum())
-            port_weights = raw / total if total > 0 else raw
+            # ``total <= 0`` happens when every per-instrument averaged weight
+            # is zero (or the rare negative-leg case): the dict is non-empty
+            # but the values are all 0.0, so ``not weight_sum`` above does NOT
+            # catch it. Without this guard the engine would silently feed an
+            # all-zero weight Series into Brinson and produce a "valid-looking"
+            # zero-allocation, zero-selection attribution — exactly the kind
+            # of degenerate output the no-implicit-fallback rule is meant to
+            # block.
+            if total <= 0:
+                raise PerformanceAttributionError(
+                    "positions yielded a non-positive aggregate weight "
+                    f"({total:.6g}) after time-averaging. Every per-instrument "
+                    "averaged weight is zero (or net-negative); this is a "
+                    "corrupted positions map, not a valid input. Check the "
+                    "CanonicalBacktestOutput.positions serialization."
+                )
+            port_weights = raw / total
         else:
             port_weights = cls._predictions_to_weights(predictions)
 

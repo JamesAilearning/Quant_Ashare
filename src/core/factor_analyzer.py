@@ -389,8 +389,22 @@ class FactorAnalyzer:
                 continue
 
             mean_ic = float(daily_ic.mean())
-            std_ic = float(daily_ic.std()) if len(daily_ic) > 1 else 0.0
-            ir = mean_ic / std_ic if std_ic > 1e-9 else 0.0
+            # Standard deviation is undefined with a single sample; ranking
+            # such a factor against multi-day factors via a fabricated 0.0
+            # std (and the 0.0 IR that follows) makes a "one good day"
+            # factor look identical to a genuinely flat one. NaN preserves
+            # the "undefined" status all the way to the report. SignalAnalyzer
+            # uses the same convention (signal_analyzer.py:136-145).
+            std_ic = float(daily_ic.std()) if len(daily_ic) > 1 else float("nan")
+            # IR = mean_ic / std_ic; undefined when std_ic is NaN or zero
+            # (zero std means every day's IC is identical, IR is not "0",
+            # it does not exist). Returning 0.0 here would tell Optuna /
+            # walk-forward the factor scored a flat-zero IR — structurally
+            # indistinguishable from a real mediocre factor.
+            if std_ic != std_ic or std_ic <= 1e-9:  # NaN or near-zero
+                ir = float("nan")
+            else:
+                ir = mean_ic / std_ic
 
             results.append(FactorICStats(
                 factor_name=str(col) if not isinstance(col, tuple) else str(col[-1]),
