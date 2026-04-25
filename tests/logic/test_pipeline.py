@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.pipeline import Pipeline, PipelineConfig, PipelineError
+from src.core.pipeline import Pipeline, PipelineConfig, PipelineError, _sanitize_for_json
 
 
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")
@@ -160,6 +160,64 @@ class AttributionReportSerializationTests(unittest.TestCase):
         decoded = json.loads(encoded)
         self.assertEqual(decoded["attribution_method"], result.attribution_method)
         self.assertEqual(decoded["sector_taxonomy"], result.sector_taxonomy)
+
+
+class JsonSanitizationTests(unittest.TestCase):
+    """``_sanitize_for_json`` must replace non-finite floats with
+    ``None`` so ``json.dumps`` produces standard JSON.
+
+    Why this matters: SignalAnalyzer and FactorAnalyzer use NaN to
+    encode "undefined IR" (zero or single-day std). Python's default
+    ``json.dump`` emits the literal token ``NaN`` for those — non-
+    standard JSON that browsers, ``jq``, and strict parsers reject.
+    The sanitizer converts NaN → null so the report stays parseable.
+    """
+
+    def test_top_level_nan_replaced_with_none(self) -> None:
+        out = _sanitize_for_json({"x": float("nan")})
+        self.assertIsNone(out["x"])
+
+    def test_inf_replaced_with_none(self) -> None:
+        out = _sanitize_for_json({"a": float("inf"), "b": float("-inf")})
+        self.assertIsNone(out["a"])
+        self.assertIsNone(out["b"])
+
+    def test_finite_floats_pass_through(self) -> None:
+        out = _sanitize_for_json({"x": 1.5, "y": -2.0, "z": 0.0})
+        self.assertEqual(out, {"x": 1.5, "y": -2.0, "z": 0.0})
+
+    def test_nested_structures_walked(self) -> None:
+        nested = {
+            "a": [1.0, float("nan"), {"b": float("nan")}],
+            "c": ({"d": 1.0, "e": float("nan")},),
+        }
+        out = _sanitize_for_json(nested)
+        self.assertEqual(out["a"][0], 1.0)
+        self.assertIsNone(out["a"][1])
+        self.assertIsNone(out["a"][2]["b"])
+        self.assertEqual(out["c"][0]["d"], 1.0)
+        self.assertIsNone(out["c"][0]["e"])
+
+    def test_strings_ints_bools_unchanged(self) -> None:
+        out = _sanitize_for_json({"s": "hi", "n": 42, "b": True, "x": None})
+        self.assertEqual(out, {"s": "hi", "n": 42, "b": True, "x": None})
+
+    def test_sanitized_dict_round_trips_through_strict_json(self) -> None:
+        """End-to-end: a NaN-laden report must produce parseable
+        standard JSON after sanitization."""
+        report = {
+            "factor_analysis": {
+                "top_factors": [
+                    {"name": "FOO", "ir": float("nan"), "mean_ic": 0.05},
+                    {"name": "BAR", "ir": 1.5, "mean_ic": 0.04},
+                ],
+            },
+        }
+        sanitized = _sanitize_for_json(report)
+        encoded = json.dumps(sanitized, allow_nan=False)
+        decoded = json.loads(encoded)
+        self.assertIsNone(decoded["factor_analysis"]["top_factors"][0]["ir"])
+        self.assertEqual(decoded["factor_analysis"]["top_factors"][1]["ir"], 1.5)
 
 
 from tests.e2e_guard import skip_unless_e2e

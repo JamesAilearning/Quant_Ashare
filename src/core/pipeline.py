@@ -8,6 +8,7 @@ All steps are wired through V2's contract and governance system.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,27 @@ from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_can
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively convert NaN floats to ``None`` so the result encodes
+    as standard JSON.
+
+    Dispatches on ``dict`` / ``list`` / ``tuple`` and replaces any
+    ``float('nan')`` it finds at the leaves. Infinity is also rejected
+    by standard JSON; treated the same way (→ ``None``) for consistency.
+    Non-finite numbers other than NaN/Inf do not exist in IEEE 754, so
+    this is exhaustive for floats.
+
+    Strings, ints, bools, and ``None`` pass through unchanged.
+    """
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 
 class PipelineError(RuntimeError):
@@ -417,8 +439,20 @@ class Pipeline:
         if attribution_result is not None:
             report["attribution"] = Pipeline._attribution_to_report_dict(attribution_result)
 
+        # Standard JSON does not allow NaN/Inf — Python's default
+        # ``json.dump`` happily emits the literal token ``NaN`` which
+        # downstream parsers (browsers, ``jq``, strict libraries) reject.
+        # SignalAnalyzer and (now) FactorAnalyzer use NaN to mark
+        # *undefined* IR (zero or single-day std). Replace those NaNs
+        # with JSON-standard ``null`` recursively before writing, and set
+        # ``allow_nan=False`` so any remaining NaN trips a loud error
+        # instead of silently producing non-standard JSON.
+        sanitized = _sanitize_for_json(report)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+            json.dump(
+                sanitized, f, indent=2, ensure_ascii=False,
+                default=str, allow_nan=False,
+            )
 
     @staticmethod
     def _attribution_to_report_dict(attribution_result: AttributionResult) -> dict:
