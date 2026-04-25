@@ -64,6 +64,104 @@ class PipelineStructuralTests(unittest.TestCase):
         self.assertNotEqual(fp1, fp2)
 
 
+class AttributionReportSerializationTests(unittest.TestCase):
+    """Pipeline JSON-report contract for attribution.
+
+    ``print_report`` log lines have always carried the methodology /
+    provenance caveats (Brinson method label, sector taxonomy, bench
+    weighting, reconciliation residual). The JSON report did not — so
+    any downstream consumer reading ``pipeline_report.json`` lost those
+    caveats and could mistake a path-dependent residual or an equal-
+    weight benchmark for an exact attribution. These tests pin the
+    JSON contract so dashboards can rely on the fields being there.
+    """
+
+    @staticmethod
+    def _build_result():
+        from src.core.performance_attribution import (
+            ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            BENCH_WEIGHT_METHOD_EQUAL,
+            AttributionResult,
+            MonthlyReturn,
+            SectorAttribution,
+        )
+        from src.core.board_heuristic import (
+            BOARD_HEURISTIC_TAXONOMY_ID,
+            BOARD_SH_MAIN,
+        )
+
+        return AttributionResult(
+            sector_attribution=(
+                SectorAttribution(
+                    sector=BOARD_SH_MAIN,
+                    portfolio_weight=0.5,
+                    benchmark_weight=0.4,
+                    portfolio_return=0.10,
+                    benchmark_return=0.08,
+                    allocation_effect=0.001,
+                    selection_effect=0.002,
+                    interaction_effect=0.0005,
+                    total_effect=0.0035,
+                ),
+            ),
+            total_allocation_effect=0.001,
+            total_selection_effect=0.002,
+            total_interaction_effect=0.0005,
+            monthly_returns=(
+                MonthlyReturn(
+                    year=2025, month=10,
+                    portfolio_return=0.03, benchmark_return=0.01,
+                    excess_return=0.02,
+                ),
+            ),
+            total_portfolio_return=0.10,
+            total_benchmark_return=0.05,
+            total_excess_return=0.05,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=0.0035,
+            reconciliation_residual=0.0465,
+            sector_taxonomy=BOARD_HEURISTIC_TAXONOMY_ID,
+            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+        )
+
+    def test_methodology_fields_persisted_in_json(self) -> None:
+        """All five methodology fields must appear in the JSON dict."""
+        result = self._build_result()
+        d = Pipeline._attribution_to_report_dict(result)
+        for field in (
+            "attribution_method",
+            "sector_taxonomy",
+            "bench_weight_method",
+            "sector_effects_sum",
+            "reconciliation_residual",
+        ):
+            self.assertIn(field, d, f"missing methodology field: {field}")
+
+    def test_methodology_field_values_round_trip(self) -> None:
+        """The values written to JSON must equal the values on the
+        result — no rounding, no relabeling, no silent transforms."""
+        result = self._build_result()
+        d = Pipeline._attribution_to_report_dict(result)
+        self.assertEqual(d["attribution_method"], result.attribution_method)
+        self.assertEqual(d["sector_taxonomy"], result.sector_taxonomy)
+        self.assertEqual(d["bench_weight_method"], result.bench_weight_method)
+        self.assertAlmostEqual(d["sector_effects_sum"], result.sector_effects_sum)
+        self.assertAlmostEqual(
+            d["reconciliation_residual"], result.reconciliation_residual,
+        )
+
+    def test_dict_is_json_serializable(self) -> None:
+        """The whole attribution dict must round-trip through json.dumps
+        — protects against accidentally landing a numpy or pandas type
+        in one of the methodology fields, which would break the report."""
+        result = self._build_result()
+        d = Pipeline._attribution_to_report_dict(result)
+        encoded = json.dumps(d)
+        decoded = json.loads(encoded)
+        self.assertEqual(decoded["attribution_method"], result.attribution_method)
+        self.assertEqual(decoded["sector_taxonomy"], result.sector_taxonomy)
+
+
 from tests.e2e_guard import skip_unless_e2e
 
 @skip_unless_e2e

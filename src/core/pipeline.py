@@ -415,37 +415,59 @@ class Pipeline:
             }
 
         if attribution_result is not None:
-            report["attribution"] = {
-                "total_portfolio_return": attribution_result.total_portfolio_return,
-                "total_benchmark_return": attribution_result.total_benchmark_return,
-                "total_excess_return": attribution_result.total_excess_return,
-                "allocation_effect": attribution_result.total_allocation_effect,
-                "selection_effect": attribution_result.total_selection_effect,
-                "interaction_effect": attribution_result.total_interaction_effect,
-                "sector_attribution": [
-                    {
-                        "sector": s.sector,
-                        "portfolio_weight": s.portfolio_weight,
-                        "benchmark_weight": s.benchmark_weight,
-                        "allocation_effect": s.allocation_effect,
-                        "selection_effect": s.selection_effect,
-                        "total_effect": s.total_effect,
-                    }
-                    for s in attribution_result.sector_attribution
-                ],
-                "monthly_returns": [
-                    {
-                        "month": f"{m.year}-{m.month:02d}",
-                        "portfolio": m.portfolio_return,
-                        "benchmark": m.benchmark_return,
-                        "excess": m.excess_return,
-                    }
-                    for m in attribution_result.monthly_returns
-                ],
-            }
+            report["attribution"] = Pipeline._attribution_to_report_dict(attribution_result)
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _attribution_to_report_dict(attribution_result: AttributionResult) -> dict:
+        """Serialize an :class:`AttributionResult` to the JSON-report dict.
+
+        Extracted so the JSON contract (which methodology fields land in
+        ``pipeline_report.json``) is unit-testable without a full E2E
+        run. The methodology / provenance fields below were surfaced in
+        ``PerformanceAttribution.print_report`` log lines but were
+        previously missing from the JSON — JSON consumers (dashboards,
+        downstream scripts) had no way to tell whether sector buckets were
+        boards vs. industries, whether the benchmark was equal-weighted
+        vs. cap-weighted, or whether the Brinson sum reconciles with the
+        compounded excess return. Persist them so the caveats travel
+        with the data.
+        """
+        return {
+            "total_portfolio_return": attribution_result.total_portfolio_return,
+            "total_benchmark_return": attribution_result.total_benchmark_return,
+            "total_excess_return": attribution_result.total_excess_return,
+            "allocation_effect": attribution_result.total_allocation_effect,
+            "selection_effect": attribution_result.total_selection_effect,
+            "interaction_effect": attribution_result.total_interaction_effect,
+            "attribution_method": attribution_result.attribution_method,
+            "sector_taxonomy": attribution_result.sector_taxonomy,
+            "bench_weight_method": attribution_result.bench_weight_method,
+            "sector_effects_sum": attribution_result.sector_effects_sum,
+            "reconciliation_residual": attribution_result.reconciliation_residual,
+            "sector_attribution": [
+                {
+                    "sector": s.sector,
+                    "portfolio_weight": s.portfolio_weight,
+                    "benchmark_weight": s.benchmark_weight,
+                    "allocation_effect": s.allocation_effect,
+                    "selection_effect": s.selection_effect,
+                    "total_effect": s.total_effect,
+                }
+                for s in attribution_result.sector_attribution
+            ],
+            "monthly_returns": [
+                {
+                    "month": f"{m.year}-{m.month:02d}",
+                    "portfolio": m.portfolio_return,
+                    "benchmark": m.benchmark_return,
+                    "excess": m.excess_return,
+                }
+                for m in attribution_result.monthly_returns
+            ],
+        }
 
     @staticmethod
     def _print_summary(output: CanonicalBacktestOutput) -> None:
