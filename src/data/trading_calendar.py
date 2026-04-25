@@ -162,6 +162,90 @@ class QlibTradingCalendar:
         return StaticTradingCalendar(dates)
 
 
+def extend_end_by_trading_days(
+    end_dt: Any,
+    n_trading_days: int,
+    *,
+    logger: Any,
+    caller_name: str,
+) -> Any:
+    """Return ``end_dt`` shifted forward by ``n_trading_days`` qlib trading
+    days, or — if the calendar lookup fails / returns fewer days than
+    requested — by ``n_trading_days * 3`` *calendar* days as a fallback.
+
+    Both fallback branches log a **WARNING** through the supplied ``logger``
+    so a degraded extension is visible. A silent fallback would mask
+    provider mis-configuration, broken calendar APIs, or data-tail
+    truncation behind an apparently-normal completion with quietly-shrunken
+    forward returns.
+
+    Why this lives here
+    -------------------
+    ``signal_analyzer`` and ``factor_analyzer`` previously each carried a
+    line-for-line copy of this routine. Centralising avoids drift —
+    fixing the calendar contract is now a one-line change.
+
+    Parameters
+    ----------
+    end_dt
+        Anything ``pd.Timestamp(...)`` accepts.
+    n_trading_days
+        How many trading days strictly after ``end_dt`` to step.
+    logger
+        Logger to emit WARNINGs on degraded paths. Caller-supplied so
+        the warning shows up under the caller's logger name.
+    caller_name
+        Human-readable caller name (e.g. ``"SignalAnalyzer"``) prepended
+        to WARNING messages so logs stay diagnostic.
+
+    Returns
+    -------
+    A ``pd.Timestamp`` ``n_trading_days`` after ``end_dt`` if qlib has
+    that many entries, otherwise the calendar-day fallback.
+    """
+    import pandas as pd
+
+    end_ts = pd.Timestamp(end_dt)
+    fallback = end_ts + pd.Timedelta(days=n_trading_days * 3)
+    try:
+        from qlib.data import D  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - environment-dependent
+        logger.warning(
+            "%s: qlib import failed inside extend_end_by_trading_days "
+            "(%s: %s). Falling back to %d calendar-day padding (%s). "
+            "Check qlib installation and provider_uri.",
+            caller_name, type(exc).__name__, exc,
+            n_trading_days * 3, fallback,
+        )
+        return fallback
+
+    try:
+        # 4× the requested days plus a 30-day buffer should always
+        # exceed n_trading_days even across long A-share holidays
+        # (Spring Festival, National Day Golden Week).
+        future_end = end_ts + pd.Timedelta(days=n_trading_days * 4 + 30)
+        cal = D.calendar(start_time=end_ts, end_time=future_end, freq="day")
+        cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
+        if len(cal_after) >= n_trading_days:
+            return cal_after[n_trading_days - 1]
+        logger.warning(
+            "%s: qlib calendar returned only %d trading day(s) after %s; "
+            "need %d. Falling back to calendar-day padding (%s). "
+            "Forward returns near the tail will be NaN.",
+            caller_name, len(cal_after), end_ts, n_trading_days, fallback,
+        )
+        return fallback
+    except Exception as exc:
+        logger.warning(
+            "%s: qlib D.calendar lookup failed (%s: %s). Falling back to "
+            "%d calendar-day padding (%s). Check qlib provider_uri and "
+            "data bundle integrity.",
+            caller_name, type(exc).__name__, exc,
+            n_trading_days * 3, fallback,
+        )
+        return fallback
+
+
 def _coerce_to_date(value: object) -> Optional[date]:
     """Best-effort conversion of a qlib calendar entry to ``datetime.date``.
 

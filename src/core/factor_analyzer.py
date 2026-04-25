@@ -303,42 +303,19 @@ class FactorAnalyzer:
 
     @staticmethod
     def _extend_end_trading_days(end_dt: Any, max_lag: int) -> Any:
-        """Extend ``end_dt`` by ``max_lag`` trading days via ``D.calendar``.
+        """Thin wrapper around :func:`src.data.trading_calendar.extend_end_by_trading_days`.
 
-        Falls back to ``max_lag * 3`` calendar days if the calendar call
-        raises or returns fewer forward days than requested — but logs a
-        **WARNING** in either case so the degradation is visible. A silent
-        fallback would mask provider mis-configuration, broken calendar
-        APIs, or data-tail truncation behind an apparently-normal
-        completion with quietly-shrunken results.
+        Kept as a method so existing tests that patch this attribute on
+        ``FactorAnalyzer`` continue to work; the actual logic now lives
+        in the shared helper to eliminate the line-for-line duplicate
+        previously held by ``SignalAnalyzer``.
         """
-        import pandas as pd
-        from qlib.data import D
+        from src.data.trading_calendar import extend_end_by_trading_days
 
-        end_ts = pd.Timestamp(end_dt)
-        fallback = end_ts + pd.Timedelta(days=max_lag * 3)
-        try:
-            future_end = end_ts + pd.Timedelta(days=max_lag * 4 + 30)
-            cal = D.calendar(start_time=end_ts, end_time=future_end, freq="day")
-            cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
-            if len(cal_after) >= max_lag:
-                return cal_after[max_lag - 1]
-            _logger.warning(
-                "FactorAnalyzer: qlib calendar returned only %d trading day(s) "
-                "after %s; need %d. Falling back to calendar-day padding "
-                "(%s). This typically means the data bundle ends near "
-                "end_dt — forward returns near the tail will be NaN.",
-                len(cal_after), end_ts, max_lag, fallback,
-            )
-            return fallback
-        except Exception as exc:
-            _logger.warning(
-                "FactorAnalyzer: qlib D.calendar lookup failed (%s: %s). "
-                "Falling back to %d calendar-day padding (%s). "
-                "Check qlib provider_uri and data bundle integrity.",
-                type(exc).__name__, exc, max_lag * 3, fallback,
-            )
-            return fallback
+        return extend_end_by_trading_days(
+            end_dt, max_lag,
+            logger=_logger, caller_name="FactorAnalyzer",
+        )
 
     @classmethod
     def _build_forward_ret_cache(

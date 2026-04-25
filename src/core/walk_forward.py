@@ -456,28 +456,27 @@ class WalkForwardEngine:
         drawdowns = np.asarray([f.max_drawdown for f in folds], dtype=float)
         irs = np.asarray([f.information_ratio for f in folds], dtype=float)
 
+        import warnings
+
+        def _nan_agg(arr: "np.ndarray", fn: Any) -> float:
+            """np.nan{mean,std,min}(arr) with the all-NaN-slice
+            RuntimeWarning silenced — NaN is exactly the result we want
+            in those cases, the warning would just be noise.
+            """
+            if not arr.size:
+                return float("nan")
+            with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                return float(fn(arr))
+
         def _nanmean(arr: "np.ndarray") -> float:
-            # nanmean of an all-NaN slice emits a RuntimeWarning; silence
-            # it — the NaN return is exactly the signal we want.
-            with np.errstate(invalid="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    return float(np.nanmean(arr)) if arr.size else float("nan")
+            return _nan_agg(arr, np.nanmean)
 
         def _nanstd(arr: "np.ndarray") -> float:
-            with np.errstate(invalid="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    return float(np.nanstd(arr)) if arr.size else float("nan")
+            return _nan_agg(arr, np.nanstd)
 
         def _nanmin(arr: "np.ndarray") -> float:
-            with np.errstate(invalid="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    return float(np.nanmin(arr)) if arr.size else float("nan")
+            return _nan_agg(arr, np.nanmin)
 
         def _valid(arr: "np.ndarray") -> int:
             return int(np.count_nonzero(~np.isnan(arr)))

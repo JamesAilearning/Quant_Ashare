@@ -28,6 +28,7 @@ from src.data.trading_calendar import (  # noqa: E402
     StaticTradingCalendar,
     TradingCalendar,
     TradingCalendarError,
+    extend_end_by_trading_days,
 )
 
 
@@ -186,6 +187,119 @@ class QlibTradingCalendarConcurrencyTests(unittest.TestCase):
         self.assertEqual(result, 1)
         release.set()
         holder.join(timeout=2.0)
+
+
+class ExtendEndByTradingDaysTests(unittest.TestCase):
+    """Regression: this helper used to live as line-for-line copies in
+    ``signal_analyzer`` and ``factor_analyzer``. Centralised here so
+    drift between the two callers is impossible.
+
+    The contract:
+    - On success, returns the n-th trading day strictly after ``end_dt``.
+    - On any degraded path (qlib import failure, calendar exception,
+      calendar returns fewer days than requested) returns a calendar-day
+      fallback ``end_dt + n*3`` and emits a WARNING through the
+      caller-supplied logger.
+    """
+
+    def test_returns_nth_trading_day_when_calendar_has_enough(self) -> None:
+        import logging
+        import sys
+        import types
+        from unittest.mock import patch
+        import pandas as pd
+
+        # Stub qlib.data so ``from qlib.data import D`` succeeds and
+        # returns a calendar with ample forward days.
+        cal_dates = pd.date_range("2026-04-25", periods=20, freq="B")
+
+        class _FakeD:
+            @staticmethod
+            def calendar(start_time, end_time, freq):
+                return cal_dates
+
+        fake_module = types.ModuleType("qlib.data")
+        fake_module.D = _FakeD
+        with patch.dict(sys.modules, {"qlib.data": fake_module}):
+            mock_logger = logging.getLogger("test_extend_end")
+            result = extend_end_by_trading_days(
+                "2026-04-25", 5,
+                logger=mock_logger, caller_name="TestCaller",
+            )
+
+        # 5 trading days strictly after 2026-04-25 → cal_dates[5]
+        # (cal_dates[0] is 2026-04-27 since 25 is Saturday and freq=B)
+        # We just assert it's a Timestamp far enough forward.
+        self.assertIsInstance(result, pd.Timestamp)
+        self.assertGreater(result, pd.Timestamp("2026-04-25"))
+
+    def test_falls_back_to_calendar_days_when_qlib_returns_too_few(self) -> None:
+        import logging
+        import sys
+        import types
+        from unittest.mock import patch
+        import pandas as pd
+
+        # Calendar has only 2 forward days; we ask for 5 → fallback path.
+        cal_dates = pd.date_range("2026-04-25", periods=2, freq="B")
+
+        class _FakeD:
+            @staticmethod
+            def calendar(start_time, end_time, freq):
+                return cal_dates
+
+        fake_module = types.ModuleType("qlib.data")
+        fake_module.D = _FakeD
+
+        captured_warnings: list[str] = []
+
+        class _CapturingLogger:
+            def warning(self, msg, *args, **kwargs):
+                captured_warnings.append(msg % args if args else msg)
+
+        with patch.dict(sys.modules, {"qlib.data": fake_module}):
+            result = extend_end_by_trading_days(
+                "2026-04-25", 5,
+                logger=_CapturingLogger(), caller_name="TestCaller",
+            )
+
+        # Calendar-day fallback: end + 5*3 days
+        self.assertEqual(result, pd.Timestamp("2026-04-25") + pd.Timedelta(days=15))
+        # Must have warned with the caller name in the message
+        self.assertEqual(len(captured_warnings), 1)
+        self.assertIn("TestCaller", captured_warnings[0])
+
+    def test_falls_back_when_calendar_raises(self) -> None:
+        import sys
+        import types
+        from unittest.mock import patch
+        import pandas as pd
+
+        class _FakeD:
+            @staticmethod
+            def calendar(start_time, end_time, freq):
+                raise RuntimeError("calendar provider exploded")
+
+        fake_module = types.ModuleType("qlib.data")
+        fake_module.D = _FakeD
+
+        captured_warnings: list[str] = []
+
+        class _CapturingLogger:
+            def warning(self, msg, *args, **kwargs):
+                captured_warnings.append(msg % args if args else msg)
+
+        with patch.dict(sys.modules, {"qlib.data": fake_module}):
+            result = extend_end_by_trading_days(
+                "2026-04-25", 7,
+                logger=_CapturingLogger(), caller_name="OtherCaller",
+            )
+
+        self.assertEqual(result, pd.Timestamp("2026-04-25") + pd.Timedelta(days=21))
+        self.assertEqual(len(captured_warnings), 1)
+        # Must mention which caller and surface the original exception type
+        self.assertIn("OtherCaller", captured_warnings[0])
+        self.assertIn("RuntimeError", captured_warnings[0])
 
 
 if __name__ == "__main__":

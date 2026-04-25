@@ -236,45 +236,19 @@ class SignalAnalyzer:
 
     @staticmethod
     def _extend_end_trading_days(end_date: Any, max_period: int) -> Any:
-        """Extend ``end_date`` by ``max_period`` *trading* days via D.calendar.
+        """Thin wrapper around :func:`src.data.trading_calendar.extend_end_by_trading_days`.
 
-        Falls back to ``max_period * 3`` calendar days if the qlib calendar
-        lookup fails or returns fewer rows than needed — but logs a
-        **WARNING** in either case so the degradation surfaces in logs
-        instead of masquerading as a successful run with quietly-shrunken
-        results (provider mis-configuration, broken calendar API, or data
-        tail truncation would otherwise be invisible).
+        Kept as a method so existing tests that patch this attribute on
+        ``SignalAnalyzer`` continue to work; the actual logic now lives
+        in the shared helper to eliminate the line-for-line duplicate
+        previously held by ``FactorAnalyzer``.
         """
-        import pandas as pd
-        from qlib.data import D  # type: ignore[import-not-found]
+        from src.data.trading_calendar import extend_end_by_trading_days
 
-        end_ts = pd.Timestamp(end_date)
-        fallback = end_ts + pd.Timedelta(days=max_period * 3)
-        try:
-            # Grab a generous calendar window (4× should always exceed
-            # max_period trading days even across Spring Festival).
-            future_end = end_ts + pd.Timedelta(days=max_period * 4 + 30)
-            cal = D.calendar(start_time=end_ts, end_time=future_end, freq="day")
-            # cal is a np.ndarray of np.datetime64 / pd.Timestamp.
-            # We want the max_period-th trading day strictly after end_ts.
-            cal_after = [pd.Timestamp(d) for d in cal if pd.Timestamp(d) > end_ts]
-            if len(cal_after) >= max_period:
-                return cal_after[max_period - 1]
-            _logger.warning(
-                "SignalAnalyzer: qlib calendar returned only %d trading "
-                "day(s) after %s; need %d. Falling back to calendar-day "
-                "padding (%s). Forward returns near the tail will be NaN.",
-                len(cal_after), end_ts, max_period, fallback,
-            )
-            return fallback
-        except Exception as exc:
-            _logger.warning(
-                "SignalAnalyzer: qlib D.calendar lookup failed (%s: %s). "
-                "Falling back to %d calendar-day padding (%s). "
-                "Check qlib provider_uri and data bundle integrity.",
-                type(exc).__name__, exc, max_period * 3, fallback,
-            )
-            return fallback
+        return extend_end_by_trading_days(
+            end_date, max_period,
+            logger=_logger, caller_name="SignalAnalyzer",
+        )
 
     @classmethod
     def _compute_daily_ic(
