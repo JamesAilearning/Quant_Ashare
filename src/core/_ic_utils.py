@@ -40,13 +40,3 @@ def compute_ic_for_group(group: Any, method: str) -> float:
     if method == "rank":
         return float(group[signal_col].rank().corr(group["ret"].rank()))
     return float(group[signal_col].corr(group["ret"]))
-
-
-def compute_ic_for_signal_group(group: Any, method: str) -> float:
-    """Variant that expects a 'pred' column (used by signal_analyzer)."""
-    return compute_ic_for_group(group, method)
-
-
-def compute_ic_for_factor_group(group: Any, method: str) -> float:
-    """Variant that expects a 'factor' column (used by factor_analyzer)."""
-    return compute_ic_for_group(group, method)

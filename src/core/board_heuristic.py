@@ -41,7 +41,12 @@ code is listed on".
 
 from __future__ import annotations
 
+import re
 from typing import Mapping
+
+from src.core.logger import get_logger
+
+_logger = get_logger(__name__)
 
 
 # Stable identifier for the taxonomy produced here. Stamp this onto
@@ -59,6 +64,7 @@ BOARD_SZ_MAIN: str = "board_SZ_Main"
 BOARD_SME: str = "board_SME"
 BOARD_CHINEXT: str = "board_ChiNext"
 BOARD_STAR: str = "board_STAR"
+BOARD_BSE: str = "board_BSE"  # Beijing Stock Exchange (北交所)
 BOARD_OTHER: str = "board_Other"
 
 ALL_BOARDS: tuple[str, ...] = (
@@ -67,40 +73,94 @@ ALL_BOARDS: tuple[str, ...] = (
     BOARD_SME,
     BOARD_CHINEXT,
     BOARD_STAR,
+    BOARD_BSE,
     BOARD_OTHER,
 )
+
+
+# Strict format: ``SH``/``SZ``/``BJ`` prefix followed by exactly six
+# digits. ``str.replace`` was the previous matching strategy and would
+# happily accept ``"SHSHE000001"`` (yielding ``"E000001"``) or even
+# ``"SH"`` alone — silently bucketing into ``board_Other``. The regex
+# locks the shape down so unfamiliar inputs go through the explicit
+# WARNING + ``board_Other`` path instead of pretending to classify.
+_INSTRUMENT_RE = re.compile(r"^(SH|SZ|BJ)(\d{6})$")
 
 
 def classify_instrument(instrument: str) -> str:
     """Return the board bucket for a single A-share instrument code.
 
-    ``instrument`` is an exchange-prefixed code like ``"SH600000"`` or
-    ``"SZ300001"``. The SH/SZ prefix is stripped before matching the
-    numeric prefix rules:
+    Accepts ``"SH600000"`` / ``"SZ300001"`` / ``"BJ430047"`` — strict
+    ``^(SH|SZ|BJ)\\d{6}$`` shape. Numeric-prefix rules:
 
-    * ``688xxx`` → ``board_STAR``
-    * ``300xxx`` / ``301xxx`` → ``board_ChiNext``
-    * ``002xxx`` → ``board_SME``
-    * ``600xxx`` / ``601xxx`` / ``603xxx`` / ``605xxx`` → ``board_SH_Main``
-    * ``000xxx`` / ``001xxx`` → ``board_SZ_Main``
-    * anything else → ``board_Other``
+    * ``SH``: ``688xxx`` → ``board_STAR``;
+      ``600/601/603/605xxx`` → ``board_SH_Main``;
+      anything else → ``board_Other``.
+    * ``SZ``: ``300/301xxx`` → ``board_ChiNext``;
+      ``002xxx`` → ``board_SME``;
+      ``000/001xxx`` → ``board_SZ_Main``;
+      anything else → ``board_Other``.
+    * ``BJ``: ``4xxxxx``/``8xxxxx`` → ``board_BSE`` (Beijing Stock
+      Exchange — created in 2021 to host former NEEQ Select-tier
+      stocks; the previous version of this module had no awareness
+      of BSE codes and bucketed them all as ``board_Other``).
 
-    Unknown or malformed inputs bucket into ``board_Other`` rather than
-    raising — this function is called on entire universes of instruments
-    and a single bad code should not abort the whole classification.
-    Callers that need strict validation should check upstream.
+    Malformed inputs (wrong prefix, wrong length, embedded duplicates,
+    etc.) log a WARNING and bucket into ``board_Other`` rather than
+    raising. The function is called on entire universes of instruments
+    and a single bad code should not abort the whole classification —
+    but the WARNING ensures the breakage shows up in logs instead of
+    silently degrading the taxonomy.
     """
-    code = instrument.replace("SH", "").replace("SZ", "")
-    if code.startswith("688"):
-        return BOARD_STAR
+    match = _INSTRUMENT_RE.match(instrument)
+    if match is None:
+        _logger.warning(
+            "board_heuristic: instrument %r does not match the strict "
+            "^(SH|SZ|BJ)\\d{6}$ shape; bucketing as %s. Pass an "
+            "exchange-prefixed 8-character code or filter the universe "
+            "upstream.",
+            instrument, BOARD_OTHER,
+        )
+        return BOARD_OTHER
+
+    exchange, code = match.group(1), match.group(2)
+    if exchange == "BJ":
+        # BSE codes start with 4 (transitioned NEEQ Select) or 8 (newly
+        # listed). Treat the whole BJ namespace as one bucket; finer
+        # subdivision belongs in a real industry taxonomy.
+        if code.startswith(("4", "8")):
+            return BOARD_BSE
+        _logger.warning(
+            "board_heuristic: BJ-prefixed code %r has unexpected leading "
+            "digit (expected 4 or 8); bucketing as %s.",
+            instrument, BOARD_OTHER,
+        )
+        return BOARD_OTHER
+
+    if exchange == "SH":
+        if code.startswith("688"):
+            return BOARD_STAR
+        if code.startswith(("600", "601", "603", "605")):
+            return BOARD_SH_MAIN
+        _logger.warning(
+            "board_heuristic: SH-prefixed code %r has an unrecognised "
+            "numeric prefix; bucketing as %s.",
+            instrument, BOARD_OTHER,
+        )
+        return BOARD_OTHER
+
+    # exchange == "SZ"
     if code.startswith(("300", "301")):
         return BOARD_CHINEXT
     if code.startswith("002"):
         return BOARD_SME
-    if code.startswith(("600", "601", "603", "605")):
-        return BOARD_SH_MAIN
     if code.startswith(("000", "001")):
         return BOARD_SZ_MAIN
+    _logger.warning(
+        "board_heuristic: SZ-prefixed code %r has an unrecognised "
+        "numeric prefix; bucketing as %s.",
+        instrument, BOARD_OTHER,
+    )
     return BOARD_OTHER
 
 

@@ -19,10 +19,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.core.backtest_runner import BacktestRunner
+from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_PRE,
+    CanonicalAccountConfig,
+    CanonicalBacktestInput,
+    CanonicalExchangeConfig,
+    CanonicalExchangeCostModel,
+)
 from src.core.logger import get_logger
+from src.core.model_trainer import ModelTrainConfig, ModelTrainer
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
+from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
 _logger = get_logger(__name__)
 
@@ -70,6 +82,13 @@ class WalkForwardConfig:
     output_dir: str = "output/walk_forward"
 
     def __post_init__(self) -> None:
+        # *Validate-only*, no field mutation. ``frozen=True`` would forbid
+        # ordinary ``self.x = ...`` assignment here — if a future iteration
+        # needs to coerce a value (e.g. round a float), use the
+        # ``object.__setattr__(self, "name", value)`` escape hatch (see
+        # ``qlib_runtime.py`` for an example) and document the coercion in
+        # the field docstring; do not silently relax ``frozen``.
+        #
         # Window sizes must be strictly positive. ``step_months=0`` was the
         # dangerous one: ``cursor + relativedelta(months=0)`` never advances,
         # so ``_generate_windows`` would spin forever. ``train_months=0`` is
@@ -272,20 +291,6 @@ class WalkForwardEngine:
         output_dir: Any,
     ) -> WalkForwardFold:
         """Execute a single train→predict→analyze→backtest fold."""
-        from pathlib import Path
-
-        from src.core.backtest_runner import BacktestRunner
-        from src.core.canonical_backtest_contract import (
-            ADJUST_MODE_PRE,
-            CanonicalAccountConfig,
-            CanonicalBacktestInput,
-            CanonicalExchangeConfig,
-            CanonicalExchangeCostModel,
-        )
-        from src.core.model_trainer import ModelTrainConfig, ModelTrainer
-        from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
-        from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
-
         # Build features
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
             instruments=config.instruments,
@@ -456,28 +461,27 @@ class WalkForwardEngine:
         drawdowns = np.asarray([f.max_drawdown for f in folds], dtype=float)
         irs = np.asarray([f.information_ratio for f in folds], dtype=float)
 
+        import warnings
+
+        def _nan_agg(arr: "np.ndarray", fn: Any) -> float:
+            """np.nan{mean,std,min}(arr) with the all-NaN-slice
+            RuntimeWarning silenced — NaN is exactly the result we want
+            in those cases, the warning would just be noise.
+            """
+            if not arr.size:
+                return float("nan")
+            with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                return float(fn(arr))
+
         def _nanmean(arr: "np.ndarray") -> float:
-            # nanmean of an all-NaN slice emits a RuntimeWarning; silence
-            # it — the NaN return is exactly the signal we want.
-            with np.errstate(invalid="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    return float(np.nanmean(arr)) if arr.size else float("nan")
+            return _nan_agg(arr, np.nanmean)
 
         def _nanstd(arr: "np.ndarray") -> float:
-            with np.errstate(invalid="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    return float(np.nanstd(arr)) if arr.size else float("nan")
+            return _nan_agg(arr, np.nanstd)
 
         def _nanmin(arr: "np.ndarray") -> float:
-            with np.errstate(invalid="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    return float(np.nanmin(arr)) if arr.size else float("nan")
+            return _nan_agg(arr, np.nanmin)
 
         def _valid(arr: "np.ndarray") -> int:
             return int(np.count_nonzero(~np.isnan(arr)))

@@ -256,6 +256,35 @@ class CanonicalBacktestInput:
     experimental_controls: Mapping[str, Any] = field(default_factory=dict)
     research_artifact_refs: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        # Reject the three "explicitly rejected" fields the moment a non-
+        # default value is supplied — without this, callers could
+        # construct an input with experimental knobs set, pass it
+        # around, and only discover the rejection at validate_input
+        # time. ``CANONICAL_INPUT_EXPLICITLY_REJECTED_FIELDS`` lists the
+        # fields whose mere presence (with non-default values) is a
+        # contract violation; defaults are tolerated so this dataclass
+        # can still be constructed by code that doesn't know about the
+        # restriction list.
+        if self.allow_implicit_fallback:
+            raise CanonicalBacktestContractError(
+                "CanonicalBacktestInput.allow_implicit_fallback=True is "
+                "not accepted by the canonical contract. Remove the field "
+                "or use a non-canonical experimental harness."
+            )
+        if self.experimental_controls:
+            raise CanonicalBacktestContractError(
+                "CanonicalBacktestInput.experimental_controls is non-empty; "
+                "experimental_controls are non-canonical and not accepted "
+                "by canonical contract input."
+            )
+        if self.research_artifact_refs:
+            raise CanonicalBacktestContractError(
+                "CanonicalBacktestInput.research_artifact_refs is non-empty; "
+                "research_artifact_refs are non-canonical and not accepted "
+                "by canonical contract input."
+            )
+
 
 @dataclass(frozen=True)
 class CanonicalBacktestOutput:

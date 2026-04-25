@@ -26,20 +26,22 @@ class PipelineStructuralTests(unittest.TestCase):
         self.assertEqual(config.instruments, "csi300")
         self.assertEqual(config.model_type, "LGBModel")
 
-    def test_make_run_dir_has_timestamp_and_fingerprint(self) -> None:
+    def test_make_run_dir_has_timestamp_uniq_and_fingerprint(self) -> None:
         config = PipelineConfig(provider_uri="/tmp/fake")
         root = Path("/tmp/any_root")
         run_dir = Pipeline._make_run_dir(root, config)
-        # Must live under runs/ and follow: YYYYMMDD_HHMMSS_<microsec>_<12hex>
+        # Must live under runs/ and follow:
+        #   YYYYMMDD_HHMMSS_<microsec>_<uniq8hex>_<fingerprint12hex>
         self.assertEqual(run_dir.parent, root / "runs")
         name = run_dir.name
         parts = name.split("_")
-        # Format: YYYYMMDD_HHMMSS_<microsec><ns_tail>_<12hex> → 4 parts
-        self.assertEqual(len(parts), 4)
-        self.assertEqual(len(parts[0]), 8)    # date
-        self.assertEqual(len(parts[1]), 6)    # time
-        self.assertEqual(len(parts[2]), 12)   # microseconds (6) + ns_tail (6)
-        self.assertEqual(len(parts[3]), 12)   # sha256 prefix
+        # 5 parts: date, time, microseconds, 8-hex uuid tag, 12-hex fingerprint
+        self.assertEqual(len(parts), 5)
+        self.assertEqual(len(parts[0]), 8)    # YYYYMMDD
+        self.assertEqual(len(parts[1]), 6)    # HHMMSS
+        self.assertEqual(len(parts[2]), 6)    # microseconds
+        self.assertEqual(len(parts[3]), 8)    # uuid4 hex tag
+        self.assertEqual(len(parts[4]), 12)   # sha256 prefix
 
     def test_make_run_dir_distinguishes_same_second_calls(self) -> None:
         # Two back-to-back calls with the same config must not collide.
@@ -52,6 +54,8 @@ class PipelineStructuralTests(unittest.TestCase):
     def test_make_run_dir_fingerprint_is_stable_for_same_config(self) -> None:
         config1 = PipelineConfig(provider_uri="/tmp/fake", topk=50)
         config2 = PipelineConfig(provider_uri="/tmp/fake", topk=50)
+        # Fingerprint is the LAST split part; the new uuid tag (-2)
+        # changes per call by design.
         fp1 = Pipeline._make_run_dir(Path("/tmp"), config1).name.split("_")[-1]
         fp2 = Pipeline._make_run_dir(Path("/tmp"), config2).name.split("_")[-1]
         self.assertEqual(fp1, fp2)
@@ -62,6 +66,76 @@ class PipelineStructuralTests(unittest.TestCase):
         fp1 = Pipeline._make_run_dir(Path("/tmp"), config1).name.split("_")[-1]
         fp2 = Pipeline._make_run_dir(Path("/tmp"), config2).name.split("_")[-1]
         self.assertNotEqual(fp1, fp2)
+
+    def test_make_run_dir_uuid_tag_differs_across_calls(self) -> None:
+        """Two calls with identical config still produce distinct
+        directory names because of the per-call uuid tag — that is what
+        prevents collisions when the OS clock has microsecond
+        granularity (Windows)."""
+        config = PipelineConfig(provider_uri="/tmp/fake", topk=50)
+        n1 = Pipeline._make_run_dir(Path("/tmp"), config).name
+        n2 = Pipeline._make_run_dir(Path("/tmp"), config).name
+        # Same fingerprint (last token); different uuid tag (second-to-last)
+        self.assertEqual(n1.split("_")[-1], n2.split("_")[-1])
+        self.assertNotEqual(n1.split("_")[-2], n2.split("_")[-2])
+
+
+class PipelineConfigPostInitTests(unittest.TestCase):
+    """``PipelineConfig.__post_init__`` catches obviously-wrong combinations
+    at the boundary so the operator does not have to wait for downstream
+    validators to surface them deep in a run.
+
+    The validation is intentionally cheap and shape-only — date *format*,
+    qlib bundle alignment, and other heavy semantic checks stay where
+    they were.
+    """
+
+    def test_rejects_empty_provider_uri(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "provider_uri"):
+            PipelineConfig(provider_uri="")
+
+    def test_rejects_empty_benchmark_code(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "benchmark_code"):
+            PipelineConfig(provider_uri="/tmp/fake", benchmark_code="")
+
+    def test_rejects_transposed_train_window(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "train_start"):
+            PipelineConfig(
+                provider_uri="/tmp/fake",
+                train_start="2024-12-31",
+                train_end="2022-01-01",  # earlier than start
+            )
+
+    def test_rejects_transposed_test_window(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "test_start"):
+            PipelineConfig(
+                provider_uri="/tmp/fake",
+                test_start="2025-12-31",
+                test_end="2025-07-01",
+            )
+
+    def test_rejects_non_positive_init_cash(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "init_cash"):
+            PipelineConfig(provider_uri="/tmp/fake", init_cash=0)
+
+    def test_rejects_zero_topk(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "topk"):
+            PipelineConfig(provider_uri="/tmp/fake", topk=0)
+
+    def test_rejects_zero_lag(self) -> None:
+        """``signal_to_execution_lag=0`` is canonical-contract-forbidden;
+        boundary check should fire here too rather than waiting for
+        ``CanonicalBacktestInput``."""
+        with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag"):
+            PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
+
+    def test_default_config_is_valid(self) -> None:
+        # Sanity: the defaults must construct successfully so downstream
+        # tests / docs that build PipelineConfig(provider_uri=...) with
+        # no overrides keep working.
+        cfg = PipelineConfig(provider_uri="/tmp/fake")
+        self.assertEqual(cfg.region, "cn")
+        self.assertEqual(cfg.signal_to_execution_lag, 1)
 
 
 class AttributionReportSerializationTests(unittest.TestCase):

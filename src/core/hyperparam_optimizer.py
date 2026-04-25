@@ -149,9 +149,21 @@ class HyperparamOptimizer:
         # Suppress optuna's verbose logging
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+        # ``MedianPruner`` cuts off trials whose intermediate IC falls
+        # below the running median by ``n_warmup_steps`` — for LGB
+        # hyperparameter searches this typically halves wall-clock time
+        # without losing the best trial. ``n_startup_trials=5`` lets the
+        # sampler accumulate a baseline before pruning starts; without
+        # the floor the first few trials would prune themselves with
+        # almost no signal. Sampler stays at the optuna default
+        # (``TPESampler``).
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=5, n_warmup_steps=10,
+        )
         study = optuna.create_study(
             direction="maximize",
             study_name="lgb_hyperparam_search",
+            pruner=pruner,
         )
 
         _logger.info("Starting %d trials...", config.n_trials)

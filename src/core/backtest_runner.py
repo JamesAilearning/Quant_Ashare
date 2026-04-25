@@ -199,12 +199,23 @@ class BacktestRunner:
         qlib's TopkDropoutStrategy uses signal at T to trade at T.
         A lag of 1 means "signal generated at T, executed at T+1"
         which is qlib's natural behavior when predictions are indexed
-        by the date the signal was generated.
+        by the date the signal was generated — so ``lag <= 1`` is a
+        no-op rather than a programming error.
 
         For lag > 1 we shift the predictions backward so that
         day-T's signal is only visible at day-T+(lag-1).
         """
         if lag <= 1:
+            # The natural-behavior path is easy to misread as a silent
+            # bug ("I asked for lag=1 but nothing was shifted"). Emit an
+            # INFO line so log readers can confirm the request was
+            # acknowledged and routed through qlib's default semantics.
+            _logger.info(
+                "BacktestRunner: signal_to_execution_lag=%d → no shift "
+                "applied; relying on qlib's native T-day-signal/T-day-trade "
+                "semantics. Pass lag>=2 to introduce an explicit delay.",
+                lag,
+            )
             return predictions
         import pandas as pd
         if isinstance(predictions, pd.Series) and isinstance(predictions.index, pd.MultiIndex):
@@ -321,17 +332,6 @@ def _risk_analysis_to_flat_dict(df: Any) -> dict:
         except (TypeError, ValueError):
             flat[str(metric)] = str(val)
     return flat
-
-
-def _dataframe_to_dict(df: Any) -> dict:
-    """Convert a pandas DataFrame to a nested dict safe for JSON."""
-    try:
-        return {
-            str(k): {str(kk): float(vv) if hasattr(vv, "__float__") else str(vv) for kk, vv in v.items()}
-            for k, v in df.to_dict().items()
-        }
-    except Exception:
-        return {"raw": str(df)}
 
 
 def _series_to_dict(series: Any) -> dict:

@@ -124,6 +124,62 @@ class PipelineConfig:
     # output
     output_dir: str = "output"
 
+    def __post_init__(self) -> None:
+        # *Validate-only*, no field mutation (frozen=True). Catch the
+        # cheap, definitely-wrong combinations at the boundary so the
+        # operator does not have to wait for ``FeatureDatasetBuilder._validate``
+        # or ``CanonicalBacktestInput`` to surface them deep in the run.
+        # Heavier semantic checks (date format, ISO calendar feasibility,
+        # qlib bundle alignment) stay where they were — this is just the
+        # config-shape sieve.
+        if not self.provider_uri:
+            raise PipelineError(
+                "PipelineConfig.provider_uri must be a non-empty path; "
+                "qlib needs an explicit data bundle location."
+            )
+        if not self.benchmark_code:
+            raise PipelineError(
+                "PipelineConfig.benchmark_code must be non-empty; the "
+                "canonical backtest contract requires a benchmark."
+            )
+        # Window order: train < valid < test. The downstream feature
+        # builder validates date *format*; here we just check ordering
+        # so a transposed train/test window does not waste an entire
+        # pipeline run before failing.
+        windows = (
+            ("train", self.train_start, self.train_end),
+            ("valid", self.valid_start, self.valid_end),
+            ("test", self.test_start, self.test_end),
+        )
+        for name, start, end in windows:
+            if not start or not end:
+                raise PipelineError(
+                    f"PipelineConfig.{name}_start / {name}_end must both be "
+                    f"non-empty; got start={start!r}, end={end!r}."
+                )
+            if start >= end:
+                raise PipelineError(
+                    f"PipelineConfig.{name}_start ({start}) must be strictly "
+                    f"less than {name}_end ({end}). String comparison works "
+                    "for ISO YYYY-MM-DD; pass dates in that format."
+                )
+        # Numeric sanity: positive cash, non-negative cost components,
+        # topk ≥ 1.
+        if self.init_cash <= 0:
+            raise PipelineError(
+                f"PipelineConfig.init_cash must be positive; got {self.init_cash!r}."
+            )
+        if self.topk < 1:
+            raise PipelineError(
+                f"PipelineConfig.topk must be >= 1; got {self.topk!r}."
+            )
+        if self.signal_to_execution_lag < 1:
+            raise PipelineError(
+                "PipelineConfig.signal_to_execution_lag must be >= 1; got "
+                f"{self.signal_to_execution_lag!r}. The canonical backtest "
+                "contract forbids zero-lag execution."
+            )
+
 
 @dataclass(frozen=True)
 class PipelineResult:
@@ -328,8 +384,18 @@ class Pipeline:
         # Step 7b: Persist positions artifact (authoritative portfolio weights)
         if backtest_output.positions:
             positions_path = output_dir / "positions.json"
+            # No ``default=str`` fallback: positions is documented as
+            # ``{date_str: {instrument: float}}`` per CanonicalBacktestOutput,
+            # so plain JSON should serialise without coercion. Falling
+            # back to ``str(...)`` would silently turn an unexpected type
+            # (numpy.float64 leaking through, a pandas Timestamp date key,
+            # a non-string instrument id, …) into a stringified value
+            # downstream consumers would have to special-case. Letting
+            # the TypeError propagate means the contract violation
+            # surfaces at write time instead of weeks later in a
+            # dashboard.
             with open(positions_path, "w", encoding="utf-8") as f:
-                json.dump(dict(backtest_output.positions), f, indent=2, default=str)
+                json.dump(dict(backtest_output.positions), f, indent=2)
             _logger.info(
                 "  Positions: %s (%d days)",
                 positions_path, len(backtest_output.positions),
@@ -367,27 +433,35 @@ class Pipeline:
 
     @staticmethod
     def _make_run_dir(root_dir: Path, config: PipelineConfig) -> Path:
-        """Return ``root_dir / runs / {timestamp}_{fingerprint}``.
+        """Return ``root_dir / runs / {timestamp}_{uniq}_{fingerprint}``.
 
         The fingerprint hashes the config dict so identical re-runs produce a
-        stable suffix; the timestamp prefix (microsecond resolution) guarantees
-        uniqueness under rapid-fire runs. Callers must create the directory
-        with ``exist_ok=False`` so an unexpected collision surfaces as an
-        error rather than silently overwriting a prior run's artifacts.
+        stable suffix; the timestamp prefix (microsecond resolution) plus an
+        8-hex random tag guarantees uniqueness under rapid-fire runs.
+        Callers must create the directory with ``exist_ok=False`` so an
+        unexpected collision surfaces as an error rather than silently
+        overwriting a prior run's artifacts.
         """
         import hashlib
         import json
+        import uuid
         from dataclasses import asdict
 
-        # Microsecond resolution plus a nanosecond counter suffix prevents
-        # collisions even when datetime.now() resolves identically across two
-        # rapid calls on coarse OS clocks (common on Windows).
-        import time as _time
-        ns_tail = _time.perf_counter_ns() % 1_000_000  # 6-digit ns jitter
-        timestamp = datetime.now().strftime(f"%Y%m%d_%H%M%S_%f") + f"{ns_tail:06d}"
+        # The previous tail used ``perf_counter_ns() % 1_000_000`` as a
+        # "6-digit ns jitter" — but ``perf_counter_ns`` is a monotonic CPU
+        # counter, not wall-clock nanoseconds, so the value modulo 1e6 had
+        # no clean semantic relationship with the microsecond timestamp it
+        # was concatenated to. Worse, on coarse OS clocks (Windows in
+        # particular) two near-simultaneous calls could land on the same
+        # microsecond bucket *and* the same perf-counter modulus, producing
+        # a directory collision after Path raises. ``uuid4().hex[:8]`` is
+        # 32 bits of randomness — more than enough for this scope, and
+        # the semantics are unambiguous (a tag, not a time).
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        uniq = uuid.uuid4().hex[:8]
         config_json = json.dumps(asdict(config), sort_keys=True, default=str)
         fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:12]
-        return root_dir / "runs" / f"{timestamp}_{fingerprint}"
+        return root_dir / "runs" / f"{timestamp}_{uniq}_{fingerprint}"
 
     @staticmethod
     def _write_report(

@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.board_heuristic import (  # noqa: E402
     ALL_BOARDS,
+    BOARD_BSE,
     BOARD_CHINEXT,
     BOARD_HEURISTIC_TAXONOMY_ID,
     BOARD_OTHER,
@@ -68,6 +69,7 @@ class BucketLabelTests(unittest.TestCase):
                 BOARD_SME,
                 BOARD_CHINEXT,
                 BOARD_STAR,
+                BOARD_BSE,
                 BOARD_OTHER,
             },
         )
@@ -97,20 +99,53 @@ class ClassifyInstrumentTests(unittest.TestCase):
         self.assertEqual(classify_instrument("SZ000001"), BOARD_SZ_MAIN)
         self.assertEqual(classify_instrument("SZ001872"), BOARD_SZ_MAIN)
 
+    def test_bse_4xx_and_8xx(self) -> None:
+        """Beijing Stock Exchange codes (created 2021) bucket as BSE.
+
+        Earlier this module had no BSE awareness — every BJ code fell
+        into ``board_Other``. The new contract recognises both leading
+        digits BSE actually uses (4 = transitioned NEEQ Select tier;
+        8 = newly listed) so a future CSI/CSI 1000 universe doesn't
+        end up with a giant ``board_Other`` bucket.
+        """
+        self.assertEqual(classify_instrument("BJ430047"), BOARD_BSE)
+        self.assertEqual(classify_instrument("BJ835174"), BOARD_BSE)
+
     def test_unknown_prefix_buckets_to_other(self) -> None:
         # 9xx is not a normal A-share prefix — the heuristic must not
         # raise; it returns OTHER so a stray code does not abort an
         # entire universe classification.
         self.assertEqual(classify_instrument("SH900901"), BOARD_OTHER)
-        # An obviously bad input also buckets to OTHER rather than
-        # raising; callers who want strict validation must check upstream.
-        self.assertEqual(classify_instrument("garbage"), BOARD_OTHER)
 
-    def test_lower_or_unprefixed_codes(self) -> None:
-        # The heuristic strips literal "SH"/"SZ" only — codes without
-        # those prefixes are still classifiable by their numeric head.
-        self.assertEqual(classify_instrument("600000"), BOARD_SH_MAIN)
-        self.assertEqual(classify_instrument("000001"), BOARD_SZ_MAIN)
+    def test_malformed_inputs_warn_and_bucket_other(self) -> None:
+        """Strict shape — anything that isn't ``^(SH|SZ|BJ)\\d{6}$``
+        logs a WARNING and lands in OTHER. The previous string-replace
+        approach would happily accept ``"SHSHE000001"`` and produce a
+        plausible-looking but garbage classification.
+        """
+        from unittest.mock import patch
+        with patch("src.core.board_heuristic._logger") as mock_logger:
+            self.assertEqual(classify_instrument("garbage"), BOARD_OTHER)
+            self.assertEqual(classify_instrument("SHSHE000001"), BOARD_OTHER)
+            self.assertEqual(classify_instrument("SH"), BOARD_OTHER)
+            # Pre-existing 6-digit code without an exchange prefix used
+            # to classify; under the strict regex it does not.
+            self.assertEqual(classify_instrument("600000"), BOARD_OTHER)
+        self.assertGreaterEqual(mock_logger.warning.call_count, 4)
+
+    def test_unrecognised_numeric_within_known_exchange_warns(self) -> None:
+        """SH/SZ prefix is correct but numeric head is not in the rule
+        set — must WARN (not silently bucket without trace) and land
+        in OTHER."""
+        from unittest.mock import patch
+        with patch("src.core.board_heuristic._logger") as mock_logger:
+            # 9xxxxx on SH is not a normal prefix
+            self.assertEqual(classify_instrument("SH900901"), BOARD_OTHER)
+            # 7xxxxx on SZ is not a normal prefix
+            self.assertEqual(classify_instrument("SZ700001"), BOARD_OTHER)
+            # BJ with a non-4/8 leading digit
+            self.assertEqual(classify_instrument("BJ123456"), BOARD_OTHER)
+        self.assertEqual(mock_logger.warning.call_count, 3)
 
 
 class ClassifyInstrumentsTests(unittest.TestCase):
