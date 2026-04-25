@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.trading_calendar import (  # noqa: E402
+    QlibTradingCalendar,
     StaticTradingCalendar,
     TradingCalendar,
     TradingCalendarError,
@@ -103,6 +104,88 @@ class StaticTradingCalendarTests(unittest.TestCase):
     def test_runtime_protocol_check(self) -> None:
         cal = StaticTradingCalendar([date(2026, 2, 2)])
         self.assertIsInstance(cal, TradingCalendar)
+
+
+class QlibTradingCalendarConcurrencyTests(unittest.TestCase):
+    """Exercise ``QlibTradingCalendar``'s cache-init lock without qlib.
+
+    We don't want to import qlib in unit tests, so we monkey-patch
+    ``_fetch_and_build_cache`` with a slow stub that sleeps long enough
+    for multiple concurrent callers to queue on the lock. The assertion
+    is: a shared instance observes exactly *one* underlying fetch, even
+    with N threads racing the cold path.
+    """
+
+    def test_concurrent_callers_trigger_single_fetch(self) -> None:
+        import threading
+        import time
+
+        fetch_count = [0]
+        fetch_count_lock = threading.Lock()
+        barrier = threading.Barrier(8)
+
+        cal = QlibTradingCalendar(freq="day")
+
+        def slow_fetch() -> StaticTradingCalendar:
+            # Count fetches atomically.
+            with fetch_count_lock:
+                fetch_count[0] += 1
+            # Sleep long enough that, without the lock, every waiting
+            # thread would also invoke fetch.
+            time.sleep(0.1)
+            return StaticTradingCalendar([date(2026, 2, 2), date(2026, 2, 3)])
+
+        cal._fetch_and_build_cache = slow_fetch  # type: ignore[method-assign]
+
+        results: list[int] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            barrier.wait()  # release all threads simultaneously
+            n = cal.count_trading_days(date(2026, 2, 1), date(2026, 2, 10))
+            with results_lock:
+                results.append(n)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(fetch_count[0], 1, "cache fetch must happen exactly once")
+        self.assertEqual(results, [2] * 8, "all threads must see the same cached result")
+
+    def test_lock_only_blocks_cold_path(self) -> None:
+        """Once the cache is populated the lock is not acquired on the
+        fast path. This is a smoke check: the second call must not block
+        even if another thread is holding the instance lock.
+        """
+        import threading
+
+        cal = QlibTradingCalendar(freq="day")
+        # Pre-populate the cache synchronously.
+        cal._cache = StaticTradingCalendar([date(2026, 2, 2)])  # type: ignore[assignment]
+
+        # Hold the lock on a different thread and confirm the main thread
+        # can still read through ``count_trading_days``.
+        lock_held = threading.Event()
+        release = threading.Event()
+
+        def hold_lock() -> None:
+            with cal._cache_lock:
+                lock_held.set()
+                release.wait(timeout=2.0)
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        self.assertTrue(lock_held.wait(timeout=2.0))
+        # If the fast path incorrectly re-acquired the lock, this call
+        # would deadlock until the holder thread released. Instead it
+        # should return immediately.
+        result = cal.count_trading_days(date(2026, 1, 1), date(2026, 3, 1))
+        self.assertEqual(result, 1)
+        release.set()
+        holder.join(timeout=2.0)
 
 
 if __name__ == "__main__":

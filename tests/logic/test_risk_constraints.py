@@ -6,6 +6,12 @@ from unittest.mock import patch
 import pandas as pd
 import numpy as np
 
+from src.core.board_heuristic import (
+    BOARD_CHINEXT,
+    BOARD_SH_MAIN,
+    BOARD_STAR,
+    BOARD_SZ_MAIN,
+)
 from src.core.risk_constraints import (
     RiskConstraintConfig,
     RiskConstraintEngine,
@@ -17,12 +23,12 @@ from src.core.risk_constraints import (
 def _make_predictions(n_dates=5, n_stocks=20):
     """Create synthetic predictions with (datetime, instrument) MultiIndex."""
     dates = pd.date_range("2024-01-01", periods=n_dates, freq="B")
-    # Mix of sectors via stock codes
+    # Mix of boards via stock codes
     stocks = (
-        [f"SH60000{i}" for i in range(5)] +  # SH_Main
-        [f"SZ00000{i}" for i in range(5)] +  # SZ_Main
-        [f"SZ30000{i}" for i in range(5)] +  # ChiNext
-        [f"SH68800{i}" for i in range(5)]    # STAR
+        [f"SH60000{i}" for i in range(5)] +  # board_SH_Main
+        [f"SZ00000{i}" for i in range(5)] +  # board_SZ_Main
+        [f"SZ30000{i}" for i in range(5)] +  # board_ChiNext
+        [f"SH68800{i}" for i in range(5)]    # board_STAR
     )[:n_stocks]
     idx = pd.MultiIndex.from_product([dates, stocks], names=["datetime", "instrument"])
     np.random.seed(42)
@@ -80,13 +86,30 @@ class RiskConstraintValidationTests(unittest.TestCase):
             )
             self.assertEqual(result.stocks_removed, 0)
 
-    def test_code_based_sector_map(self):
-        instruments = ["SH600000", "SZ000001", "SZ300001", "SH688001"]
-        sector_map = RiskConstraintEngine._code_based_sector_map(instruments)
-        self.assertEqual(sector_map["SH600000"], "SH_Main")
-        self.assertEqual(sector_map["SZ000001"], "SZ_Main")
-        self.assertEqual(sector_map["SZ300001"], "ChiNext")
-        self.assertEqual(sector_map["SH688001"], "STAR")
+    def test_fallback_uses_board_heuristic_module(self):
+        """Without an explicit ``industry_map``, the fallback path must
+        delegate to the shared ``board_heuristic`` module.
+
+        Previously each call site carried its own duplicated prefix-rule
+        implementation under the misleading name "_code_based_sector_map".
+        Both have been replaced with a single ``classify_instruments``
+        delegate. This test pins that delegation by checking the
+        characteristic ``board_*`` labels surface end-to-end.
+        """
+        predictions = _make_predictions(n_dates=1, n_stocks=20)
+        config = RiskConstraintConfig()  # industry_map=None → fallback
+        resolved = RiskConstraintEngine._get_industry_map(predictions, config)
+        # All buckets must use the new ``board_`` prefix and never the
+        # legacy unprefixed names.
+        self.assertTrue(
+            all(label.startswith("board_") for label in resolved.values()),
+            f"non-board label leaked through fallback: {set(resolved.values())}",
+        )
+        # Spot-check known prefix → bucket mappings.
+        self.assertEqual(resolved["SH600000"], BOARD_SH_MAIN)
+        self.assertEqual(resolved["SZ000001"], BOARD_SZ_MAIN)
+        self.assertEqual(resolved["SZ300001"], BOARD_CHINEXT)
+        self.assertEqual(resolved["SH688001"], BOARD_STAR)
 
 
 class IndustryMapResolutionTests(unittest.TestCase):
@@ -141,7 +164,7 @@ class IndustryMapResolutionTests(unittest.TestCase):
         # INFO log must mention the fallback so silent downgrade doesn't hide.
         mock_logger.info.assert_called_once()
         msg = mock_logger.info.call_args[0][0]
-        self.assertIn("code-based sector heuristic", msg)
+        self.assertIn("board-prefix heuristic", msg)
 
     def test_get_industry_map_takes_config(self):
         """Regression: the helper's signature changed from

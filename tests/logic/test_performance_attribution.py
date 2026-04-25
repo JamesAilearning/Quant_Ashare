@@ -7,8 +7,15 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from src.core.board_heuristic import (
+    BOARD_CHINEXT,
+    BOARD_HEURISTIC_TAXONOMY_ID,
+    BOARD_SH_MAIN,
+)
 from src.core.performance_attribution import (
     ATTRIBUTION_METHOD_SINGLE_PERIOD,
+    BENCH_WEIGHT_METHOD_EQUAL,
+    BENCH_WEIGHT_METHOD_MARKET_CAP,
     RECONCILIATION_WARN_THRESHOLD,
     AttributionConfig,
     AttributionResult,
@@ -98,12 +105,12 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
 
     def test_sector_attribution_dataclass(self) -> None:
         sa = SectorAttribution(
-            sector="SH_Main", portfolio_weight=0.5, benchmark_weight=0.3,
+            sector=BOARD_SH_MAIN, portfolio_weight=0.5, benchmark_weight=0.3,
             portfolio_return=0.1, benchmark_return=0.05,
             allocation_effect=0.01, selection_effect=0.02,
             interaction_effect=0.005, total_effect=0.035,
         )
-        self.assertEqual(sa.sector, "SH_Main")
+        self.assertEqual(sa.sector, BOARD_SH_MAIN)
         self.assertAlmostEqual(sa.total_effect, 0.035)
 
     def test_monthly_return_dataclass(self) -> None:
@@ -112,14 +119,26 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         self.assertEqual(mr.year, 2025)
         self.assertAlmostEqual(mr.excess_return, 0.02)
 
-    def test_code_based_sector_map(self) -> None:
-        instruments = ["SH600000", "SZ300001", "SZ002001", "SH688001", "SZ000001"]
-        sector_map = PerformanceAttribution._code_based_sector_map(instruments)
-        self.assertEqual(sector_map["SH600000"], "SH_Main")
-        self.assertEqual(sector_map["SZ300001"], "ChiNext")
-        self.assertEqual(sector_map["SZ002001"], "SME")
-        self.assertEqual(sector_map["SH688001"], "STAR")
-        self.assertEqual(sector_map["SZ000001"], "SZ_Main")
+    def test_attribution_result_default_sector_taxonomy(self) -> None:
+        """Default ``sector_taxonomy`` must point at the board heuristic.
+
+        This is the contract that lets a downstream consumer of an
+        ``AttributionResult`` filter or flag results that came from the
+        coarse code-prefix bucketing (vs. a real industry taxonomy).
+        Previously there was no way to tell — sector labels like
+        ``"SH_Main"`` could be misread as industries.
+        """
+        result = AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.0,
+            total_selection_effect=0.0,
+            total_interaction_effect=0.0,
+            monthly_returns=(),
+            total_portfolio_return=0.0,
+            total_benchmark_return=0.0,
+            total_excess_return=0.0,
+        )
+        self.assertEqual(result.sector_taxonomy, BOARD_HEURISTIC_TAXONOMY_ID)
 
     def test_monthly_decomposition_empty(self) -> None:
         result = PerformanceAttribution._monthly_decomposition(
@@ -203,13 +222,13 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
                 predictions, port_returns, bench_returns, cfg, positions,
             )
 
-        # SH_Main sector (SH600000) should have portfolio_weight ≈ 0.1
-        # ChiNext sector (SZ300001) should have portfolio_weight ≈ 0.9
+        # board_SH_Main (SH600000) should have portfolio_weight ≈ 0.1
+        # board_ChiNext (SZ300001) should have portfolio_weight ≈ 0.9
         by_sector = {s.sector: s for s in results}
-        self.assertIn("SH_Main", by_sector)
-        self.assertIn("ChiNext", by_sector)
-        self.assertAlmostEqual(by_sector["SH_Main"].portfolio_weight, 0.1, places=2)
-        self.assertAlmostEqual(by_sector["ChiNext"].portfolio_weight, 0.9, places=2)
+        self.assertIn(BOARD_SH_MAIN, by_sector)
+        self.assertIn(BOARD_CHINEXT, by_sector)
+        self.assertAlmostEqual(by_sector[BOARD_SH_MAIN].portfolio_weight, 0.1, places=2)
+        self.assertAlmostEqual(by_sector[BOARD_CHINEXT].portfolio_weight, 0.9, places=2)
 
 
     # ------------------------------------------------------------------
@@ -363,6 +382,114 @@ class ReconciliationResidualTests(unittest.TestCase):
         with _patch("src.core.performance_attribution._logger") as mock_logger:
             PerformanceAttribution.print_report(result)
         mock_logger.warning.assert_not_called()
+
+
+class BenchWeightMethodTests(unittest.TestCase):
+    """Regression guards for Y2: the benchmark-weighting method is now an
+    explicit, validated config field instead of a hardcoded equal-weight
+    choice buried inside ``_brinson_attribution``.
+
+    The old behaviour was: every Brinson run used an equal-weight benchmark
+    across the predictions universe. That is *not* the same as CSI 300's
+    free-float-cap weighting — and there was no field on the result to
+    say so, so consumers had no way to tell whether allocation effects
+    were comparable to the published index.
+
+    The new contract is:
+    - default ``bench_weight_method='equal'`` (matches old behaviour, but
+      now visible in config and result + flagged in print_report).
+    - ``'market_cap'`` is reserved and raises "not yet supported".
+    - any other value raises with the supported list enumerated.
+    """
+
+    def test_default_is_equal_weight(self) -> None:
+        cfg = AttributionConfig()
+        self.assertEqual(cfg.bench_weight_method, BENCH_WEIGHT_METHOD_EQUAL)
+
+    def test_validate_accepts_equal(self) -> None:
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            try:
+                PerformanceAttribution._validate(
+                    config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL),
+                    return_series={"return": {}, "bench": {}},
+                    positions=None,
+                )
+            except PerformanceAttributionError:
+                self.fail("_validate must accept bench_weight_method='equal'")
+
+    def test_validate_rejects_market_cap_with_not_yet_supported(self) -> None:
+        """``'market_cap'`` is reserved but not implemented — must raise.
+
+        This protects against the misnomer trap: if validation silently
+        accepted ``'market_cap'`` while the engine still computed equal
+        weights, the result would be published under the wrong
+        ``bench_weight_method`` label.
+        """
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "not yet supported"
+            ):
+                PerformanceAttribution._validate(
+                    config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP),
+                    return_series={"return": {}, "bench": {}},
+                    positions=None,
+                )
+
+    def test_validate_rejects_unknown_method(self) -> None:
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "bench_weight_method"
+            ):
+                PerformanceAttribution._validate(
+                    config=AttributionConfig(bench_weight_method="garbage"),
+                    return_series={"return": {}, "bench": {}},
+                    positions=None,
+                )
+
+    def test_result_carries_bench_weight_method(self) -> None:
+        """The chosen method is exposed on the result so consumers
+        don't need to look at the config object to know what
+        weighting produced the effects."""
+        result = AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.0,
+            total_selection_effect=0.0,
+            total_interaction_effect=0.0,
+            monthly_returns=(),
+            total_portfolio_return=0.0,
+            total_benchmark_return=0.0,
+            total_excess_return=0.0,
+            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+        )
+        self.assertEqual(result.bench_weight_method, BENCH_WEIGHT_METHOD_EQUAL)
+
+    def test_print_report_flags_equal_weight_caveat(self) -> None:
+        """``print_report`` must explicitly note that equal-weight
+        benchmark != real index weighting. Without this line readers
+        could misread the allocation effects as exact contributions
+        vs. CSI 300's actual cap-weighted composition."""
+        from unittest.mock import patch as _patch
+
+        result = AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.0,
+            total_selection_effect=0.0,
+            total_interaction_effect=0.0,
+            monthly_returns=(),
+            total_portfolio_return=0.0,
+            total_benchmark_return=0.0,
+            total_excess_return=0.0,
+            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+        )
+        with _patch("src.core.performance_attribution._logger") as mock_logger:
+            PerformanceAttribution.print_report(result)
+        # Walk every info call looking for the caveat marker. Using a
+        # phrase the engine prints unmistakably so a future cosmetic edit
+        # has to deliberately re-state the caveat to keep the test green.
+        info_calls = [c for c in mock_logger.info.call_args_list]
+        joined = " ".join(str(c) for c in info_calls)
+        self.assertIn("equal-weight benchmark", joined)
+        self.assertIn("free-float-cap", joined)
 
 
 if __name__ == "__main__":

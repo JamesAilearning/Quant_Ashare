@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from src.core.board_heuristic import classify_instruments
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -53,11 +54,12 @@ class RiskConstraintConfig:
     topk: int = 50
 
     # Optional explicit industry taxonomy: {instrument_code: industry_name}.
-    # When provided, overrides the code-based sector heuristic used as a
+    # When provided, overrides the board-prefix heuristic used as a
     # fallback. For production use, pass an authoritative Shenwan / CSRC
     # / GICS mapping rather than relying on stock-code prefixes, which
-    # bucket most of the universe into "SH_Main" / "SZ_Main" and make the
-    # per-industry cap effectively a single-bucket cap.
+    # bucket most of the universe into "board_SH_Main" / "board_SZ_Main"
+    # and make the per-industry cap effectively a single-bucket cap (the
+    # SH main board alone contains banks, real estate, utilities, …).
     industry_map: Mapping[str, str] | None = None
 
 
@@ -225,14 +227,20 @@ class RiskConstraintEngine:
            ``.get(x, "unknown")`` call site).  This is the production
            path when an authoritative taxonomy is available.
 
-        2. Otherwise fall back to :meth:`_code_based_sector_map`, which
-           buckets by A-share stock-code prefixes.  Logged at INFO so the
-           operator knows a rough heuristic is in force instead of a
-           proper industry taxonomy — the old implementation called
-           ``qlib.data.D.instruments(market="all")`` and immediately
+        2. Otherwise fall back to the shared
+           :mod:`src.core.board_heuristic` module, which buckets by
+           A-share stock-code prefixes into ``board_*`` labels.  Logged at
+           INFO so the operator knows a rough heuristic is in force
+           instead of a proper industry taxonomy — the old implementation
+           called ``qlib.data.D.instruments(market="all")`` and immediately
            discarded the result, pretending to consult qlib but always
            using the prefix map while swallowing any error with a bare
            ``except Exception``.
+
+        Note that the buckets returned in case (2) are *boards*, not
+        industries: the SH main board alone holds banks, real estate,
+        utilities, etc. The ``board_`` prefix on each label is meant to
+        keep that distinction visible at every consumer.
         """
         instruments = predictions.index.get_level_values(1).unique().tolist()
 
@@ -241,46 +249,13 @@ class RiskConstraintEngine:
 
         _logger.info(
             "RiskConstraints: no explicit industry_map; falling back to "
-            "code-based sector heuristic for %d instruments. For production "
-            "use, pass RiskConstraintConfig(industry_map=...) with an "
-            "authoritative taxonomy.",
+            "the A-share board-prefix heuristic for %d instruments. The "
+            "resulting buckets are *boards*, not industries — for a real "
+            "industry cap, pass RiskConstraintConfig(industry_map=...) "
+            "with an authoritative taxonomy.",
             len(instruments),
         )
-        return cls._code_based_sector_map(instruments)
-
-    @staticmethod
-    def _code_based_sector_map(instruments: list[str]) -> dict[str, str]:
-        """Simple sector classification based on A-share stock code patterns.
-
-        This is a rough heuristic for when proper industry data isn't available:
-        - 600xxx, 601xxx, 603xxx: Shanghai main board
-        - 000xxx, 001xxx: Shenzhen main board
-        - 002xxx: SME board
-        - 300xxx, 301xxx: ChiNext (GEM)
-        - 688xxx: STAR market
-
-        **Limitation**: stocks that don't match any prefix are bucketed as
-        "Other".  When many stocks fall into "Other" the per-industry limit
-        effectively becomes a single-bucket cap, which may *increase*
-        concentration rather than reduce it.  For production use, prefer
-        passing a proper industry taxonomy via ``RiskConstraintConfig.industry_map``.
-        """
-        sector_map = {}
-        for inst in instruments:
-            code = inst.replace("SH", "").replace("SZ", "")
-            if code.startswith("688"):
-                sector_map[inst] = "STAR"
-            elif code.startswith("300") or code.startswith("301"):
-                sector_map[inst] = "ChiNext"
-            elif code.startswith("002"):
-                sector_map[inst] = "SME"
-            elif code.startswith("600") or code.startswith("601") or code.startswith("603"):
-                sector_map[inst] = "SH_Main"
-            elif code.startswith("000") or code.startswith("001"):
-                sector_map[inst] = "SZ_Main"
-            else:
-                sector_map[inst] = "Other"
-        return sector_map
+        return classify_instruments(instruments)
 
     @classmethod
     def print_report(cls, result: RiskConstraintResult) -> None:

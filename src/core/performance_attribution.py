@@ -43,6 +43,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from src.core.board_heuristic import (
+    BOARD_HEURISTIC_TAXONOMY_ID,
+    classify_instruments,
+)
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -68,6 +72,26 @@ RECONCILIATION_WARN_THRESHOLD: float = 0.005
 ATTRIBUTION_METHOD_SINGLE_PERIOD: str = "brinson_fachler_single_period_approximation"
 
 
+# Equal-weight benchmark across the predictions universe. This is what
+# the engine has always done internally; the named constant exists so the
+# choice is explicit at the config layer instead of buried in
+# :meth:`PerformanceAttribution._brinson_attribution`. It is *not* the
+# same as the index's actual constituent weights (e.g. CSI 300's
+# free-float-cap weighting) — the limitation is surfaced via
+# :meth:`PerformanceAttribution.print_report`.
+BENCH_WEIGHT_METHOD_EQUAL: str = "equal"
+
+# Sentinel for the not-yet-implemented market-cap-weighted variant.
+# Reserved here so callers passing this string get a deterministic
+# "not yet supported" error rather than a silent acceptance that would
+# return equal-weight numbers under the wrong label.
+BENCH_WEIGHT_METHOD_MARKET_CAP: str = "market_cap"
+
+_SUPPORTED_BENCH_WEIGHT_METHODS: frozenset[str] = frozenset(
+    {BENCH_WEIGHT_METHOD_EQUAL, BENCH_WEIGHT_METHOD_MARKET_CAP}
+)
+
+
 @dataclass(frozen=True)
 class AttributionConfig:
     """Configuration for performance attribution."""
@@ -75,6 +99,21 @@ class AttributionConfig:
     # Date range (should match backtest period)
     start_date: str = "2025-07-01"
     end_date: str = "2025-12-31"
+
+    # How benchmark weights are derived for the Brinson decomposition.
+    #
+    # * ``"equal"`` (default): every instrument in the predictions universe
+    #   gets weight ``1/n``. This is a known approximation — it does not
+    #   reproduce CSI 300's free-float-cap weighting and will mis-attribute
+    #   sector-level allocation/selection effects when the real index is
+    #   concentrated in a subset of names.  :meth:`print_report` surfaces
+    #   this caveat in the report header.
+    # * ``"market_cap"``: reserved for a future free-float-cap weighting.
+    #   Currently raises :class:`PerformanceAttributionError` with a
+    #   "not yet supported" message; this keeps the misnomer trap closed
+    #   (silently accepting the value while still using equal weights
+    #   would publish results under the wrong label).
+    bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL
 
     # NOTE: benchmark_code is intentionally absent here. The attribution
     # engine operates on ``return_series["bench"]`` produced by
@@ -140,6 +179,21 @@ class AttributionResult:
     attribution_method: str = ATTRIBUTION_METHOD_SINGLE_PERIOD
     sector_effects_sum: float = 0.0
     reconciliation_residual: float = 0.0
+
+    # Identifies the taxonomy used to bucket instruments into "sectors".
+    # When this is :data:`src.core.board_heuristic.BOARD_HEURISTIC_TAXONOMY_ID`
+    # the buckets are A-share *boards* (SH main, ChiNext, STAR, …) — a
+    # coarse listing-venue heuristic, NOT real industries. Consumers
+    # must not silently treat it as an industry classification: one
+    # board can contain banks, real estate, and utilities all at once.
+    sector_taxonomy: str = BOARD_HEURISTIC_TAXONOMY_ID
+
+    # How the benchmark weights were derived. Currently always
+    # ``"equal"`` — see :class:`AttributionConfig.bench_weight_method`.
+    # Carried on the result so dashboards do not need to look at the
+    # config object to know whether the bench-weighting was the simple
+    # equal split or a real cap-weighted scheme.
+    bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL
 
 
 class PerformanceAttribution:
@@ -230,6 +284,7 @@ class PerformanceAttribution:
             attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
             sector_effects_sum=sector_effects_sum,
             reconciliation_residual=reconciliation_residual,
+            bench_weight_method=config.bench_weight_method,
         )
 
     @classmethod
@@ -267,6 +322,23 @@ class PerformanceAttribution:
                 "positions was supplied as an empty dict. "
                 "Pass positions=None to use the predictions-score fallback, "
                 "or supply the non-empty positions map from CanonicalBacktestOutput."
+            )
+        # bench_weight_method is fail-fast validated here so the engine never
+        # runs with an unsupported value, and never accepts "market_cap"
+        # while still computing equal-weight numbers (which would be a
+        # silent label mismatch).
+        if config.bench_weight_method not in _SUPPORTED_BENCH_WEIGHT_METHODS:
+            raise PerformanceAttributionError(
+                f"AttributionConfig.bench_weight_method must be one of "
+                f"{sorted(_SUPPORTED_BENCH_WEIGHT_METHODS)}; "
+                f"got {config.bench_weight_method!r}."
+            )
+        if config.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
+            raise PerformanceAttributionError(
+                "bench_weight_method='market_cap' is reserved but not yet "
+                "supported. The engine currently only computes equal-weight "
+                "benchmark weights; pass bench_weight_method='equal' "
+                "explicitly until the cap-weighted variant is implemented."
             )
 
     @staticmethod
@@ -328,7 +400,7 @@ class PerformanceAttribution:
                         seen.add(inst)
                         held_instruments.append(inst)
         instruments = sorted(set(pred_instruments) | set(held_instruments))
-        sector_map = cls._get_sector_map(instruments, config)
+        sector_map = classify_instruments(instruments)
 
         # Portfolio weights: prefer real positions, fall back to prediction scores.
         if positions:
@@ -456,40 +528,6 @@ class PerformanceAttribution:
         )
 
     @classmethod
-    def _get_sector_map(cls, instruments: list[str], config: AttributionConfig) -> dict[str, str]:
-        """Get instrument → sector mapping via A-share code heuristic.
-
-        Previously this had a ``use_code_based_sectors=False`` branch that
-        attempted to load ``$industry`` from qlib, but qlib's standard CN
-        data bundle does not include an industry provider — the branch was
-        dead code that could only silently fall back to the code-based path
-        anyway. Removed to avoid confusion and maintenance burden. A real
-        industry loader should be added as a separate feature when an
-        industry data source is confirmed available.
-        """
-        return cls._code_based_sector_map(instruments)
-
-    @staticmethod
-    def _code_based_sector_map(instruments: list[str]) -> dict[str, str]:
-        """A-share code-based sector heuristic (same as risk_constraints)."""
-        sector_map = {}
-        for inst in instruments:
-            code = inst.replace("SH", "").replace("SZ", "")
-            if code.startswith("688"):
-                sector_map[inst] = "STAR"
-            elif code.startswith("300") or code.startswith("301"):
-                sector_map[inst] = "ChiNext"
-            elif code.startswith("002"):
-                sector_map[inst] = "SME"
-            elif code.startswith("600") or code.startswith("601") or code.startswith("603"):
-                sector_map[inst] = "SH_Main"
-            elif code.startswith("000") or code.startswith("001"):
-                sector_map[inst] = "SZ_Main"
-            else:
-                sector_map[inst] = "Other"
-        return sector_map
-
-    @classmethod
     def _get_instrument_returns(cls, instruments: list[str], config: AttributionConfig) -> Any:
         """Get total return per instrument over the attribution period."""
         import pandas as pd
@@ -557,6 +595,24 @@ class PerformanceAttribution:
         log("  Excess return:     %.2f%%", result.total_excess_return * 100)
         log("")
         log("Brinson Decomposition (method: %s):", result.attribution_method)
+        # The taxonomy label tells the reader whether the buckets below
+        # are real industries or A-share *boards* (a coarse code-prefix
+        # heuristic). Without this line a SH_Main / ChiNext label could
+        # be misread as an industry classification, which it is not.
+        log("  Sector taxonomy:   %s", result.sector_taxonomy)
+        # The benchmark weighting choice — currently always equal across
+        # the predictions universe — is not the same as the index's real
+        # constituent weights (CSI 300 is free-float-cap weighted). The
+        # report flags the gap explicitly so allocation effects are not
+        # misread as exact contributions vs. the actual index.
+        log("  Bench weight:      %s", result.bench_weight_method)
+        if result.bench_weight_method == BENCH_WEIGHT_METHOD_EQUAL:
+            log(
+                "    NOTE: equal-weight benchmark across the predictions "
+                "universe; this does NOT reproduce the index's real "
+                "(e.g. free-float-cap) weighting. Allocation effects vs. "
+                "the actual published index will differ."
+            )
         log("  Allocation effect: %+.4f", result.total_allocation_effect)
         log("  Selection effect:  %+.4f", result.total_selection_effect)
         log("  Interaction effect:%+.4f", result.total_interaction_effect)
