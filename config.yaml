@@ -6,6 +6,14 @@ provider_uri: "D:/qlib_data/my_cn_data"
 region: "cn"
 
 # features
+#
+# IMPORTANT: these dates must point at periods the local qlib bundle
+# actually covers — running with windows that fall after the bundle's
+# tail produces empty datasets and a confusing run-time failure deep
+# in the FeatureDatasetBuilder. Refresh this block when you ingest a
+# newer data dump.
+#
+# Last verified bundle tail: 2026-03-06 (D:/qlib_data/my_cn_data).
 instruments: "csi300"
 feature_handler: "Alpha158"
 train_start: "2022-01-01"
@@ -13,7 +21,7 @@ train_end: "2024-12-31"
 valid_start: "2025-01-01"
 valid_end: "2025-06-30"
 test_start: "2025-07-01"
-test_end: "2025-12-31"
+test_end: "2026-02-28"
 
 # model
 model_type: "LGBModel"

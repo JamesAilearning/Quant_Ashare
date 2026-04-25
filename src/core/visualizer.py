@@ -24,6 +24,20 @@ class VisualizerError(RuntimeError):
     """Raised on visualization failures."""
 
 
+# Ordered list of matplotlib style names tried in turn at chart-render
+# time. The leading entry is the preferred dark-grid look introduced in
+# matplotlib 3.6+; the fallbacks step down to other built-in styles
+# that have shipped with matplotlib for many releases. The empty
+# string acts as the final "default" sentinel — applying ``""`` is a
+# no-op via ``plt.style.use``.
+_STYLE_FALLBACK_CHAIN: tuple[str, ...] = (
+    "seaborn-v0_8-darkgrid",
+    "seaborn-darkgrid",   # mpl < 3.6
+    "ggplot",             # universally available
+    "default",            # mpl built-in
+)
+
+
 @dataclass(frozen=True)
 class VisualizerConfig:
     """Configuration for result visualization."""
@@ -31,6 +45,10 @@ class VisualizerConfig:
     output_dir: str = "output/charts"
     figsize: tuple[int, int] = (12, 6)
     dpi: int = 150
+    # Preferred matplotlib style. If unavailable, the renderer walks
+    # ``_STYLE_FALLBACK_CHAIN`` looking for the first style that
+    # ``plt.style.use`` accepts. Pass an explicit name to short-circuit
+    # the fallback chain (still falls back if the override fails).
     style: str = "seaborn-v0_8-darkgrid"
 
 
@@ -111,10 +129,36 @@ class ResultVisualizer:
             {pd.Timestamp(k): float(v) for k, v in bench_dict.items()}
         ).sort_index() if bench_dict else None
 
-        try:
-            plt.style.use(config.style)
-        except OSError:
-            pass  # fallback to default style
+        # Walk the style fallback chain instead of silently rendering with
+        # whatever default matplotlib uses. ``OSError`` is the documented
+        # signal for an unknown style; ``ValueError`` shows up for some
+        # matplotlib edge-case names. We try the operator-supplied style
+        # first (so explicit overrides keep priority) and then the
+        # ordered fallback list — the first to succeed wins. Logged so
+        # the operator knows which style was actually applied.
+        candidates = [config.style] + [
+            s for s in _STYLE_FALLBACK_CHAIN if s != config.style
+        ]
+        applied: str | None = None
+        for candidate in candidates:
+            try:
+                plt.style.use(candidate)
+            except (OSError, ValueError):
+                continue
+            applied = candidate
+            break
+        if applied is None:
+            _logger.warning(
+                "Visualizer: none of the matplotlib styles in the fallback "
+                "chain (%s) could be applied; rendering with the active "
+                "default style.",
+                ", ".join(candidates),
+            )
+        elif applied != config.style:
+            _logger.info(
+                "Visualizer: requested style %r unavailable; fell back to %r.",
+                config.style, applied,
+            )
 
         # Generate charts
         eq_path = str(output_dir / "equity_curve.png")

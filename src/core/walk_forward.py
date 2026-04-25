@@ -19,10 +19,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.core.backtest_runner import BacktestRunner
+from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_PRE,
+    CanonicalAccountConfig,
+    CanonicalBacktestInput,
+    CanonicalExchangeConfig,
+    CanonicalExchangeCostModel,
+)
 from src.core.logger import get_logger
+from src.core.model_trainer import ModelTrainConfig, ModelTrainer
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
+from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
 _logger = get_logger(__name__)
 
@@ -279,20 +291,6 @@ class WalkForwardEngine:
         output_dir: Any,
     ) -> WalkForwardFold:
         """Execute a single train→predict→analyze→backtest fold."""
-        from pathlib import Path
-
-        from src.core.backtest_runner import BacktestRunner
-        from src.core.canonical_backtest_contract import (
-            ADJUST_MODE_PRE,
-            CanonicalAccountConfig,
-            CanonicalBacktestInput,
-            CanonicalExchangeConfig,
-            CanonicalExchangeCostModel,
-        )
-        from src.core.model_trainer import ModelTrainConfig, ModelTrainer
-        from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
-        from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
-
         # Build features
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
             instruments=config.instruments,
