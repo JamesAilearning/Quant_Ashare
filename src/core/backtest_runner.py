@@ -323,17 +323,6 @@ def _risk_analysis_to_flat_dict(df: Any) -> dict:
     return flat
 
 
-def _dataframe_to_dict(df: Any) -> dict:
-    """Convert a pandas DataFrame to a nested dict safe for JSON."""
-    try:
-        return {
-            str(k): {str(kk): float(vv) if hasattr(vv, "__float__") else str(vv) for kk, vv in v.items()}
-            for k, v in df.to_dict().items()
-        }
-    except Exception:
-        return {"raw": str(df)}
-
-
 def _series_to_dict(series: Any) -> dict:
     """Convert a pandas Series to a dict with string keys."""
     try:
