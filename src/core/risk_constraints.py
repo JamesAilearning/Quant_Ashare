@@ -33,18 +33,33 @@ class RiskConstraintError(RuntimeError):
 
 @dataclass(frozen=True)
 class RiskConstraintConfig:
-    """Configuration for risk constraints."""
+    """Configuration for risk constraints.
+
+    .. warning::
+
+        ``max_stock_weight``, ``max_industry_weight``, and
+        ``max_daily_turnover`` are **not yet implemented as binding
+        constraints**. The engine currently applies only the
+        ``max_stocks_per_industry`` rule. The other three fields exist
+        so the config surface matches the eventual contract; setting
+        them away from "disabled" emits a WARNING via
+        :meth:`RiskConstraintEngine.apply` but does not change the
+        resulting predictions. Track in the project backlog.
+    """
 
     # Max weight per stock (fraction of portfolio). 0 = no limit.
+    # NOT YET ENFORCED — see class docstring.
     max_stock_weight: float = 0.05  # 5% per stock
 
     # Max weight per industry (fraction of portfolio). 0 = no limit.
+    # NOT YET ENFORCED — see class docstring.
     max_industry_weight: float = 0.30  # 30% per industry
 
-    # Max number of stocks from same industry
+    # Max number of stocks from same industry — THIS ONE IS ENFORCED.
     max_stocks_per_industry: int = 10
 
     # Max daily turnover (fraction). 0 = no limit.
+    # NOT YET ENFORCED — see class docstring.
     max_daily_turnover: float = 0.0  # disabled by default
 
     # Industry classification field in qlib (e.g., "industry" or "sw_l1")
@@ -137,21 +152,47 @@ class RiskConstraintEngine:
                     f"(max {config.max_stocks_per_industry} per industry)"
                 )
 
-        # Apply per-stock weight constraint via score dampening
-        # (we can't directly set weights with TopkDropout, so we
-        # penalize stocks that would exceed weight limits by
-        # limiting how many of the top stocks come from the same name)
+        # ``max_stock_weight`` is *not yet implemented* as a binding
+        # constraint — the engine has no way to set per-name weights
+        # on top of TopkDropoutStrategy's equal-weight assumption. We
+        # still surface the situation:
+        #   - If ``topk`` is so small that the implicit ``1/topk``
+        #     weight would already exceed ``max_stock_weight``, log
+        #     it so the operator can raise topk.
+        #   - Emit a "not enforced" WARNING the first time a non-zero
+        #     ``max_stock_weight`` shows up so callers cannot silently
+        #     assume the constraint is in force.
         if config.max_stock_weight > 0 and config.topk > 0:
-            max_per_stock = max(1, int(config.topk * config.max_stock_weight * 2))
-            # For equal-weight top-k, each stock gets ~1/topk weight
-            # max_stock_weight=0.05 with topk=50 → each gets 2%, below 5%
-            # This is naturally satisfied, so only flag if topk is very small
+            _logger.warning(
+                "RiskConstraints: max_stock_weight=%.3f is configured but "
+                "NOT YET ENFORCED — TopkDropoutStrategy uses equal weights "
+                "and the engine has no per-name weight override. The "
+                "constraint will become active in a future revision; for "
+                "now treat the implicit weight as 1/topk.",
+                config.max_stock_weight,
+            )
             if 1.0 / config.topk > config.max_stock_weight:
                 log.append(
                     f"Warning: topk={config.topk} gives equal weight "
                     f"{1.0/config.topk:.1%} > max_stock_weight={config.max_stock_weight:.1%}. "
                     f"Consider increasing topk."
                 )
+
+        # Likewise surface the other not-yet-enforced fields so the
+        # operator does not assume coverage that doesn't exist.
+        if config.max_industry_weight > 0:
+            _logger.warning(
+                "RiskConstraints: max_industry_weight=%.3f is configured but "
+                "NOT YET ENFORCED — the engine currently caps per-industry "
+                "*count* (max_stocks_per_industry), not per-industry weight.",
+                config.max_industry_weight,
+            )
+        if config.max_daily_turnover > 0:
+            _logger.warning(
+                "RiskConstraints: max_daily_turnover=%.3f is configured but "
+                "NOT YET ENFORCED — turnover-cap logic is not implemented.",
+                config.max_daily_turnover,
+            )
 
         return RiskConstraintResult(
             constrained_predictions=constrained,

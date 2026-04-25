@@ -70,6 +70,13 @@ class WalkForwardConfig:
     output_dir: str = "output/walk_forward"
 
     def __post_init__(self) -> None:
+        # *Validate-only*, no field mutation. ``frozen=True`` would forbid
+        # ordinary ``self.x = ...`` assignment here — if a future iteration
+        # needs to coerce a value (e.g. round a float), use the
+        # ``object.__setattr__(self, "name", value)`` escape hatch (see
+        # ``qlib_runtime.py`` for an example) and document the coercion in
+        # the field docstring; do not silently relax ``frozen``.
+        #
         # Window sizes must be strictly positive. ``step_months=0`` was the
         # dangerous one: ``cursor + relativedelta(months=0)`` never advances,
         # so ``_generate_windows`` would spin forever. ``train_months=0`` is

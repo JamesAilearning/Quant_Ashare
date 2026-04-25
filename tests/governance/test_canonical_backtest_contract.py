@@ -82,9 +82,16 @@ class CanonicalBacktestContractTests(unittest.TestCase):
         CanonicalBacktestContract.validate_input(_valid_request())
 
     def test_no_implicit_fallback_allowed(self):
-        req = _valid_request(allow_implicit_fallback=True)
-        with self.assertRaisesRegex(CanonicalBacktestContractError, "Implicit fallback is forbidden"):
-            CanonicalBacktestContract.validate_input(req)
+        # ``allow_implicit_fallback=True`` is now rejected at construction
+        # time, not at validate_input. The previous "construct, then
+        # validate, then reject" sequence was a misnomer trap — callers
+        # could build and pass around an object that the contract was
+        # going to refuse anyway, deferring the failure. Now the
+        # forbidden flag fails fast.
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError, "allow_implicit_fallback"
+        ):
+            _valid_request(allow_implicit_fallback=True)
 
     def test_experimental_layer_rejected_by_canonical_contract(self):
         req = _valid_request(source_layer=EXPERIMENTAL_RUNTIME_LAYER)
@@ -97,14 +104,18 @@ class CanonicalBacktestContractTests(unittest.TestCase):
             CanonicalBacktestContract.validate_input(req)
 
     def test_research_artifacts_rejected_by_canonical_contract(self):
-        req = _valid_request(research_artifact_refs=("factor://alpha-1",))
-        with self.assertRaisesRegex(CanonicalBacktestContractError, "research_artifact_refs"):
-            CanonicalBacktestContract.validate_input(req)
+        # Construction-time rejection (see test_no_implicit_fallback_allowed
+        # for the rationale).
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError, "research_artifact_refs"
+        ):
+            _valid_request(research_artifact_refs=("factor://alpha-1",))
 
     def test_experimental_controls_rejected_by_canonical_contract(self):
-        req = _valid_request(experimental_controls={"max_position_ratio": 0.1})
-        with self.assertRaisesRegex(CanonicalBacktestContractError, "experimental_controls"):
-            CanonicalBacktestContract.validate_input(req)
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError, "experimental_controls"
+        ):
+            _valid_request(experimental_controls={"max_position_ratio": 0.1})
 
     def test_placeholder_run_is_intentionally_unimplemented(self):
         req = _valid_request()
