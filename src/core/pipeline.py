@@ -261,7 +261,16 @@ class Pipeline:
 
         # Step 7: Performance attribution (optional)
         attribution_result: AttributionResult | None = None
-        if config.run_attribution:
+        # Track *why* attribution was skipped (if it was). Persisted to
+        # the JSON report so downstream consumers / dashboards can tell
+        # "attribution absent because we didn't run it" from "attribution
+        # absent because the engine refused degenerate input" — both used
+        # to look identical in the report (no ``attribution`` block at
+        # all), even though only the second is a degraded run.
+        attribution_skipped_reason: str | None = None
+        if not config.run_attribution:
+            attribution_skipped_reason = "disabled_by_config"
+        elif config.run_attribution:
             if not backtest_output.positions:
                 # The previous implementation silently coerced ``positions`` to
                 # ``None`` here, which flipped PerformanceAttribution into its
@@ -270,6 +279,7 @@ class Pipeline:
                 # repo's "no implicit fallback" rule (see backtest_runner
                 # ``_positions_to_weight_map`` docstring for the full chain).
                 # We now skip the step explicitly and log loudly.
+                attribution_skipped_reason = "no_positions_from_backtest"
                 _logger.warning(
                     "Skipping performance attribution: backtest produced no "
                     "positions map (len=%d). Attribution is configured as "
@@ -304,6 +314,9 @@ class Pipeline:
                     # finish (backtest + report are already valid) while
                     # making the degradation visible to callers.
                     attribution_result = None
+                    attribution_skipped_reason = (
+                        f"engine_error: {type(exc).__name__}: {exc}"
+                    )
                     _logger.warning(
                         "Performance attribution skipped — engine raised "
                         "%s: %s. Backtest and risk_analysis remain valid; "
@@ -327,6 +340,7 @@ class Pipeline:
         cls._write_report(
             report_path, config, feature_result, model_result,
             signal_result, backtest_output, factor_result, attribution_result,
+            attribution_skipped_reason=attribution_skipped_reason,
         )
         _logger.info("  Report: %s", report_path)
 
@@ -385,6 +399,7 @@ class Pipeline:
         backtest_output: CanonicalBacktestOutput,
         factor_result: FactorAnalysisResult | None = None,
         attribution_result: AttributionResult | None = None,
+        attribution_skipped_reason: str | None = None,
     ) -> None:
         report: dict[str, Any] = {
             "generated_at": datetime.now().isoformat(),
@@ -436,8 +451,9 @@ class Pipeline:
                 "ic_decay": dict(factor_result.ic_decay),
             }
 
-        if attribution_result is not None:
-            report["attribution"] = Pipeline._attribution_to_report_dict(attribution_result)
+        report["attribution"] = Pipeline._attribution_section(
+            attribution_result, attribution_skipped_reason,
+        )
 
         # Standard JSON does not allow NaN/Inf — Python's default
         # ``json.dump`` happily emits the literal token ``NaN`` which
@@ -453,6 +469,38 @@ class Pipeline:
                 sanitized, f, indent=2, ensure_ascii=False,
                 default=str, allow_nan=False,
             )
+
+    @staticmethod
+    def _attribution_section(
+        attribution_result: AttributionResult | None,
+        skipped_reason: str | None,
+    ) -> dict:
+        """Build the ``attribution`` block of the JSON report.
+
+        Always emits a dict with a ``status`` field. Previously a missing
+        ``attribution_result`` silently dropped the entire ``attribution``
+        block, so the JSON consumer could not tell:
+
+        - ``run_attribution=False`` (intentional disable)
+        - "no positions returned by backtest" (degraded run)
+        - "attribution engine refused degenerate input" (degraded run)
+        - "attribution succeeded" (normal)
+
+        all four collapsed to "no attribution key in report" or had only
+        the third surfaced via WARNING logs. Now every case lands in a
+        machine-readable ``status`` + ``skipped_reason`` pair so
+        dashboards can surface degraded runs instead of treating them
+        as missing data.
+        """
+        if attribution_result is not None:
+            block = Pipeline._attribution_to_report_dict(attribution_result)
+            block["status"] = "ok"
+            block["skipped_reason"] = None
+            return block
+        return {
+            "status": "skipped",
+            "skipped_reason": skipped_reason or "unknown_reason",
+        }
 
     @staticmethod
     def _attribution_to_report_dict(attribution_result: AttributionResult) -> dict:

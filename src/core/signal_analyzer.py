@@ -114,23 +114,27 @@ class SignalAnalyzer:
                 "predictions must have (datetime, instrument) MultiIndex"
             )
 
-        # Level *names* matter — downstream code does
-        # ``.groupby(level="datetime")`` and reads instruments from
-        # the named level. An unnamed MultiIndex or one with the levels
-        # in the wrong order (e.g. ``(instrument, datetime)``) silently
-        # produces wrong-axis groupings rather than an obvious failure,
-        # so we validate the names here.  PerformanceAttribution applies
-        # the same contract on its own predictions input — the two
-        # callers must agree.
-        index_names = list(predictions.index.names)
-        for required in ("datetime", "instrument"):
-            if required not in index_names:
-                raise SignalAnalyzerError(
-                    "predictions.index must have both 'datetime' and "
-                    f"'instrument' levels; got names {index_names!r}. "
-                    "An unnamed or wrongly-named MultiIndex makes downstream "
-                    "groupby silently group on the wrong axis."
-                )
+        # Level *names* AND order matter. ``_fetch_returns`` reads
+        # instruments via ``get_level_values(1)`` and dates via
+        # ``get_level_values(0)`` — purely positional access, so a
+        # ``(instrument, datetime)`` MultiIndex would feed dates to
+        # qlib as instrument codes and silently produce nonsense (or
+        # crash deep inside qlib with a misleading error). Likewise
+        # ``_compute_daily_ic`` groups by position. Earlier we only
+        # checked name *presence*; that left swapped-order indices
+        # passing through. Lock the order down at the boundary so
+        # downstream positional access is safe.
+        expected_index_names = ("datetime", "instrument")
+        actual_index_names = tuple(predictions.index.names)
+        if actual_index_names != expected_index_names:
+            raise SignalAnalyzerError(
+                "predictions.index.names must be exactly "
+                f"{expected_index_names!r}; got {actual_index_names!r}. "
+                "Order matters: SignalAnalyzer reads dates from level 0 "
+                "and instruments from level 1 by position when calling "
+                "qlib.D.features. A swapped or unnamed index would feed "
+                "the wrong values to the data layer."
+            )
 
         if predictions.empty:
             raise SignalAnalyzerError("predictions Series is empty")
@@ -202,8 +206,13 @@ class SignalAnalyzer:
         import pandas as pd
         from qlib.data import D  # type: ignore[import-not-found]
 
-        instruments = predictions.index.get_level_values(1).unique().tolist()
-        dates = predictions.index.get_level_values(0)
+        # Read by name (not position) so an internal caller that bypasses
+        # the public ``analyze`` boundary still gets correct data. The
+        # public boundary already enforces ``(datetime, instrument)``
+        # order, but defence in depth: by-name access is correct
+        # regardless of how the index was constructed.
+        instruments = predictions.index.get_level_values("instrument").unique().tolist()
+        dates = predictions.index.get_level_values("datetime")
         start_date = dates.min()
         end_date = dates.max()
 
@@ -283,11 +292,12 @@ class SignalAnalyzer:
         # preserves NaN and is the forward-compatible API.
         forward_ret_stacked = forward_ret.stack(future_stack=True)
         forward_ret_stacked.name = "forward_ret"
-        forward_ret_stacked.index.names = ["datetime", "instrument"]
 
-        # Align predictions and forward returns
+        # Align predictions and forward returns. ``_validate`` already
+        # locked the index to ``(datetime, instrument)`` so we no longer
+        # rename the levels here — overwriting names would mask any
+        # caller bug rather than letting the boundary check catch it.
         pred_df = predictions.to_frame("pred")
-        pred_df.index.names = ["datetime", "instrument"]
 
         merged = pred_df.join(forward_ret_stacked, how="inner")
         merged = merged.dropna()
@@ -298,7 +308,9 @@ class SignalAnalyzer:
         # Rename "forward_ret" → "ret" so compute_ic_for_group's column
         # detection ("pred" + "ret") works without branching.
         merged = merged.rename(columns={"forward_ret": "ret"})
-        daily_ic = merged.groupby(level=0).apply(
+        # Group by name, not position — same defence-in-depth as
+        # ``_fetch_returns`` above.
+        daily_ic = merged.groupby(level="datetime").apply(
             lambda g: compute_ic_for_group(g, method)
         )
         daily_ic.name = f"IC_{period}d"
@@ -316,8 +328,9 @@ class SignalAnalyzer:
         import pandas as pd
 
         close = returns_data["close"].unstack(level="instrument")
+        # Index order/names already validated at the boundary; do not
+        # overwrite ``pred_df.index.names`` here — see ``_compute_daily_ic``.
         pred_df = predictions.to_frame("pred")
-        pred_df.index.names = ["datetime", "instrument"]
 
         decay = []
         for lag in range(1, max_lag + 1):
@@ -326,7 +339,6 @@ class SignalAnalyzer:
             # preserves NaN and is the forward-compatible API.
             forward_ret_stacked = forward_ret.stack(future_stack=True)
             forward_ret_stacked.name = "forward_ret"
-            forward_ret_stacked.index.names = ["datetime", "instrument"]
 
             merged = pred_df.join(forward_ret_stacked, how="inner").dropna()
             # Missing data at a given lag is NOT "IC = 0". Emitting NaN
@@ -338,7 +350,7 @@ class SignalAnalyzer:
                 continue
 
             merged = merged.rename(columns={"forward_ret": "ret"})
-            daily_ic = merged.groupby(level=0).apply(
+            daily_ic = merged.groupby(level="datetime").apply(
                 lambda g: compute_ic_for_group(g, method)
             ).dropna()
             decay.append(

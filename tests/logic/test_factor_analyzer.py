@@ -411,15 +411,19 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
                 SignalAnalyzer.analyze(preds, SignalAnalysisConfig())
 
     def test_rejects_swapped_level_order(self) -> None:
-        """``(instrument, datetime)`` levels are present but order is
-        wrong — ``in`` membership is satisfied so this passes the new
-        check; what we want is for the names being present is enough.
+        """``(instrument, datetime)`` order must be rejected at the
+        boundary.
 
-        This test confirms the contract: the validator only requires
-        BOTH names present, regardless of order. Downstream uses
-        ``level="datetime"`` / ``level="instrument"`` by name, which
-        pandas resolves correctly regardless of position. So a swapped
-        order is *not* the bug — only missing/wrong-named levels are.
+        The earlier iteration of this test asserted the swapped order
+        was *accepted* on the theory that downstream code resolved
+        levels by name. That was wrong: ``_fetch_returns`` reads
+        instruments via ``get_level_values(1)`` and dates via
+        ``get_level_values(0)`` — purely positional. A swapped index
+        therefore feeds the dates list to qlib as instrument codes,
+        which silently produces nonsense or crashes deep inside qlib.
+        The contract is now order-strict: the validator must reject
+        ``(instrument, datetime)`` outright so downstream positional
+        access is safe.
         """
         import pandas as pd
         from unittest.mock import patch as _patch
@@ -429,30 +433,14 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
             SignalAnalyzerError,
         )
 
-        # Names present but in (instrument, datetime) order.
         idx = pd.MultiIndex.from_tuples(
             [("SH600000", pd.Timestamp("2025-10-01"))],
-            names=["instrument", "datetime"],
+            names=["instrument", "datetime"],  # wrong order
         )
         preds = pd.Series([1.0], index=idx)
-        # Should NOT raise on the index-name check (downstream
-        # ``groupby(level="datetime")`` resolves by name) — verifies the
-        # check is *name presence*, not positional. We expect failure to
-        # come later (qlib data fetch), so we patch qlib init to True
-        # and just assert the index-name guard does not fire.
         with _patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
-            try:
-                # Will fail later when fetching returns, but should pass
-                # the index-name guard. We don't run the full analyze; we
-                # only confirm the *index-name* SignalAnalyzerError text
-                # is not the one raised first.
+            with self.assertRaisesRegex(SignalAnalyzerError, "exactly"):
                 SignalAnalyzer.analyze(preds, SignalAnalysisConfig())
-            except SignalAnalyzerError as exc:
-                self.assertNotIn("datetime", str(exc).split("level")[0])
-            except Exception:
-                # Any non-SignalAnalyzerError is fine — proves we got past
-                # the index-name guard into qlib fetch territory.
-                pass
 
     def test_rejects_missing_instrument_level(self) -> None:
         """One named level missing — the symmetric case of unnamed."""
@@ -472,6 +460,70 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
         with _patch("src.core.signal_analyzer.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(SignalAnalyzerError, "instrument"):
                 SignalAnalyzer.analyze(preds, SignalAnalysisConfig())
+
+    def test_fetch_returns_reads_levels_by_name(self) -> None:
+        """``_fetch_returns`` must access levels by *name*, not position.
+
+        Defence in depth: even if a programmer ever bypasses the public
+        ``analyze`` boundary and feeds a ``(instrument, datetime)``
+        MultiIndex directly to ``_fetch_returns``, the function must
+        still pass the right values to ``D.features`` — instruments as
+        instruments, dates as dates. The previous implementation read
+        ``get_level_values(0)`` for dates and ``get_level_values(1)``
+        for instruments, which silently broke under a swapped index.
+        """
+        import pandas as pd
+        from unittest.mock import patch as _patch
+        from src.core.signal_analyzer import SignalAnalyzer
+
+        # Deliberately put names in (instrument, datetime) order. The
+        # public ``analyze`` rejects this; ``_fetch_returns`` must
+        # nevertheless pull the right values out by name.
+        idx = pd.MultiIndex.from_tuples(
+            [
+                ("SH600000", pd.Timestamp("2025-10-01")),
+                ("SH600001", pd.Timestamp("2025-10-02")),
+            ],
+            names=["instrument", "datetime"],
+        )
+        preds = pd.Series([1.0, 2.0], index=idx)
+
+        captured = {}
+
+        def fake_features(instruments, fields, start_time, end_time, freq):
+            captured["instruments"] = list(instruments)
+            captured["start_time"] = start_time
+            captured["end_time"] = end_time
+            # Return a minimal DataFrame so the rest of _fetch_returns
+            # finishes; we only care about what was passed in.
+            mi = pd.MultiIndex.from_tuples(
+                [(inst, pd.Timestamp("2025-10-01")) for inst in instruments],
+                names=["instrument", "datetime"],
+            )
+            return pd.DataFrame({"$close": [1.0] * len(instruments)}, index=mi)
+
+        # Patch the trading-calendar extension to a no-op so we don't
+        # need a calendar provider. qlib's ``D`` is a Wrapper without a
+        # real ``features`` attribute until the provider is bound, so
+        # we patch the wrapper itself with a stub object exposing the
+        # attribute we need.
+        class _FakeD:
+            @staticmethod
+            def features(*args, **kwargs):
+                return fake_features(*args, **kwargs)
+
+        with _patch(
+            "src.core.signal_analyzer.SignalAnalyzer._extend_end_trading_days",
+            staticmethod(lambda end_date, max_period: end_date),
+        ), _patch.dict("sys.modules", {"qlib.data": type("M", (), {"D": _FakeD})()}):
+            SignalAnalyzer._fetch_returns(preds, max_period=1)
+
+        # Instruments passed to qlib must be the SH600000-style codes,
+        # not the dates from level 0.
+        self.assertEqual(set(captured["instruments"]), {"SH600000", "SH600001"})
+        # Date range must come from the datetime level, not the instrument level.
+        self.assertEqual(captured["start_time"], pd.Timestamp("2025-10-01"))
+        self.assertEqual(captured["end_time"], pd.Timestamp("2025-10-02"))
 
 
 if __name__ == "__main__":

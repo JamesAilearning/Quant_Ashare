@@ -162,6 +162,79 @@ class AttributionReportSerializationTests(unittest.TestCase):
         self.assertEqual(decoded["sector_taxonomy"], result.sector_taxonomy)
 
 
+class AttributionSectionStatusTests(unittest.TestCase):
+    """``attribution`` block must always appear in the JSON report,
+    with a machine-readable ``status`` and ``skipped_reason``.
+
+    The four cases that used to look identical in JSON (no
+    ``attribution`` key at all) are now distinguishable:
+    - ``status="ok"`` — engine succeeded; full data block present.
+    - ``status="skipped", skipped_reason="disabled_by_config"``
+    - ``status="skipped", skipped_reason="no_positions_from_backtest"``
+    - ``status="skipped", skipped_reason="engine_error: ..."``
+
+    Dashboards and downstream consumers can now surface degraded runs
+    instead of treating them as "data missing".
+    """
+
+    @staticmethod
+    def _build_ok_result():
+        from src.core.performance_attribution import (
+            ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            BENCH_WEIGHT_METHOD_EQUAL,
+            AttributionResult,
+        )
+        from src.core.board_heuristic import BOARD_HEURISTIC_TAXONOMY_ID
+
+        return AttributionResult(
+            sector_attribution=(),
+            total_allocation_effect=0.0,
+            total_selection_effect=0.0,
+            total_interaction_effect=0.0,
+            monthly_returns=(),
+            total_portfolio_return=0.0,
+            total_benchmark_return=0.0,
+            total_excess_return=0.0,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=0.0,
+            reconciliation_residual=0.0,
+            sector_taxonomy=BOARD_HEURISTIC_TAXONOMY_ID,
+            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+        )
+
+    def test_ok_status_when_result_present(self) -> None:
+        block = Pipeline._attribution_section(self._build_ok_result(), None)
+        self.assertEqual(block["status"], "ok")
+        self.assertIsNone(block["skipped_reason"])
+        # And the methodology fields from the previous PR are still here.
+        self.assertIn("attribution_method", block)
+        self.assertIn("sector_taxonomy", block)
+        self.assertIn("bench_weight_method", block)
+
+    def test_skipped_disabled_by_config(self) -> None:
+        block = Pipeline._attribution_section(None, "disabled_by_config")
+        self.assertEqual(block["status"], "skipped")
+        self.assertEqual(block["skipped_reason"], "disabled_by_config")
+
+    def test_skipped_no_positions(self) -> None:
+        block = Pipeline._attribution_section(None, "no_positions_from_backtest")
+        self.assertEqual(block["status"], "skipped")
+        self.assertEqual(block["skipped_reason"], "no_positions_from_backtest")
+
+    def test_skipped_engine_error_records_class_and_message(self) -> None:
+        reason = "engine_error: PerformanceAttributionError: all-non-positive"
+        block = Pipeline._attribution_section(None, reason)
+        self.assertEqual(block["status"], "skipped")
+        self.assertEqual(block["skipped_reason"], reason)
+
+    def test_skipped_with_no_reason_falls_back_to_unknown(self) -> None:
+        """Programmer-error guard: passing skipped + None reason should
+        still produce a report-readable string rather than ``null``."""
+        block = Pipeline._attribution_section(None, None)
+        self.assertEqual(block["status"], "skipped")
+        self.assertEqual(block["skipped_reason"], "unknown_reason")
+
+
 class JsonSanitizationTests(unittest.TestCase):
     """``_sanitize_for_json`` must replace non-finite floats with
     ``None`` so ``json.dumps`` produces standard JSON.

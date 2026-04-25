@@ -40,6 +40,7 @@ honest about the limitation rather than hiding it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping as _MappingABC
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -324,15 +325,27 @@ class PerformanceAttribution:
                 "Attribution is defined relative to a benchmark; pass the full "
                 "return_series from CanonicalBacktestOutput."
             )
-        if not return_series["return"]:
+        # ``isinstance(Mapping) + len()`` rather than ``not value`` — a
+        # bare ``not value`` raises ValueError("truth value is ambiguous")
+        # when ``value`` is a pandas Series/DataFrame, which would
+        # surprise callers who happen to pass a Series-shaped return
+        # series. The contract is "non-empty mapping" so we test that
+        # explicitly.
+        ret_value = return_series["return"]
+        if not isinstance(ret_value, _MappingABC) or len(ret_value) == 0:
             raise PerformanceAttributionError(
-                "return_series['return'] is an empty mapping. "
+                "return_series['return'] must be a non-empty mapping; "
+                f"got {type(ret_value).__name__} of size "
+                f"{len(ret_value) if hasattr(ret_value, '__len__') else 'unknown'}. "
                 "Pass the populated return series from CanonicalBacktestOutput; "
                 "attribution cannot run on an empty portfolio return."
             )
-        if not return_series["bench"]:
+        bench_value = return_series["bench"]
+        if not isinstance(bench_value, _MappingABC) or len(bench_value) == 0:
             raise PerformanceAttributionError(
-                "return_series['bench'] is an empty mapping. "
+                "return_series['bench'] must be a non-empty mapping; "
+                f"got {type(bench_value).__name__} of size "
+                f"{len(bench_value) if hasattr(bench_value, '__len__') else 'unknown'}. "
                 "An empty benchmark would silently coerce total_benchmark_return "
                 "to 0.0 and turn 'excess' return into 'portfolio' return — a "
                 "label mismatch that publishes meaningless attribution. Pass "
