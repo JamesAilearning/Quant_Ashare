@@ -16,6 +16,7 @@ Usage::
         QlibRuntimeConfig(
             provider_uri=r"D:/qlib_data/my_cn_data",
             region="cn",
+            data_adjust_mode="pre_adjusted",
         )
     )
 
@@ -33,6 +34,8 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
+from src.core.canonical_backtest_contract import SUPPORTED_ADJUST_MODES
+
 CANONICAL_QLIB_INIT_OWNER = "src.core.qlib_runtime"
 
 # Module-level lock guards all reads and writes to the singleton state.
@@ -49,12 +52,19 @@ class QlibRuntimeConfig:
 
     provider_uri: str
     region: str
+    data_adjust_mode: str
     expression_cache: Optional[str] = None
     dataset_cache: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.provider_uri.strip():
             raise QlibRuntimeInitError("provider_uri is required for canonical qlib init.")
+        if self.data_adjust_mode not in SUPPORTED_ADJUST_MODES:
+            raise QlibRuntimeInitError(
+                "Unsupported data_adjust_mode "
+                f"'{self.data_adjust_mode}'. Canonical runtime accepts "
+                f"{SUPPORTED_ADJUST_MODES}."
+            )
         normalized_region = self.region.strip().lower()
         if normalized_region not in ("cn", "us"):
             raise QlibRuntimeInitError(

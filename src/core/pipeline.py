@@ -216,6 +216,7 @@ class Pipeline:
         requested_config = QlibRuntimeConfig(
             provider_uri=config.provider_uri,
             region=config.region,
+            data_adjust_mode=config.adjust_mode,
         )
         # init_qlib_canonical is idempotent for same config, raises on mismatch
         init_qlib_canonical(requested_config)

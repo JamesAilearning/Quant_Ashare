@@ -25,10 +25,13 @@ from typing import Any, Mapping, Sequence
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
+    EXECUTION_PRICE_CLOSE,
     CanonicalAccountConfig,
+    CanonicalBacktestContractError,
     CanonicalBacktestInput,
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
+    SUPPORTED_ADJUST_MODES,
 )
 from src.core.logger import get_logger
 from src.core.model_trainer import ModelTrainConfig, ModelTrainer
@@ -77,6 +80,11 @@ class WalkForwardConfig:
     commission_rate: float = 0.0005
     stamp_tax_bps: float = 10.0
     slippage_bps: float = 5.0
+    min_cost: float = 5.0
+    execution_price_kind: str = EXECUTION_PRICE_CLOSE
+    adjust_mode: str = ADJUST_MODE_PRE
+    signal_to_execution_lag: int = 1
+    limit_threshold: float = 0.095
 
     # Output
     output_dir: str = "output/walk_forward"
@@ -145,6 +153,36 @@ class WalkForwardConfig:
                 f"n_drop ({self.n_drop}) must be strictly less than "
                 f"topk ({self.topk})."
             )
+        if (
+            not isinstance(self.signal_to_execution_lag, int)
+            or isinstance(self.signal_to_execution_lag, bool)
+            or self.signal_to_execution_lag < 1
+        ):
+            raise WalkForwardError(
+                "signal_to_execution_lag must be an int >= 1; got "
+                f"{self.signal_to_execution_lag!r}."
+            )
+        if self.adjust_mode not in SUPPORTED_ADJUST_MODES:
+            raise WalkForwardError(
+                f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
+                f"got {self.adjust_mode!r}."
+            )
+        try:
+            CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=self.execution_price_kind,
+                cost_model=CanonicalExchangeCostModel(
+                    commission_rate=self.commission_rate,
+                    stamp_tax_bps=self.stamp_tax_bps,
+                    slippage_bps=self.slippage_bps,
+                    min_cost=self.min_cost,
+                ),
+                limit_threshold=self.limit_threshold,
+            )
+        except CanonicalBacktestContractError as exc:
+            raise WalkForwardError(
+                f"Invalid WalkForwardConfig backtest controls: {exc}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -346,16 +384,17 @@ class WalkForwardEngine:
             account_config=CanonicalAccountConfig(init_cash=config.init_cash),
             exchange_config=CanonicalExchangeConfig(
                 freq="day",
-                execution_price_kind="close",
+                execution_price_kind=config.execution_price_kind,
                 cost_model=CanonicalExchangeCostModel(
                     commission_rate=config.commission_rate,
                     stamp_tax_bps=config.stamp_tax_bps,
                     slippage_bps=config.slippage_bps,
-                    min_cost=5.0,
+                    min_cost=config.min_cost,
                 ),
+                limit_threshold=config.limit_threshold,
             ),
-            adjust_mode=ADJUST_MODE_PRE,
-            signal_to_execution_lag=1,
+            adjust_mode=config.adjust_mode,
+            signal_to_execution_lag=config.signal_to_execution_lag,
             benchmark_code=config.benchmark_code,
         )
 

@@ -269,7 +269,9 @@ class FactorAnalyzerE2ETests(unittest.TestCase):
         )
         if not is_canonical_qlib_initialized():
             init_qlib_canonical(QlibRuntimeConfig(
-                provider_uri=str(_QLIB_DATA_DIR), region="cn",
+                provider_uri=str(_QLIB_DATA_DIR),
+                region="cn",
+                data_adjust_mode="pre_adjusted",
             ))
 
     def test_basic_analysis(self) -> None:

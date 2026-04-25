@@ -344,7 +344,7 @@ class PipelineDatasetReuseTests(unittest.TestCase):
             run_attribution=False,
         )
 
-        with patch("src.core.pipeline.init_qlib_canonical"), \
+        with patch("src.core.pipeline.init_qlib_canonical") as mock_init, \
              patch("src.core.pipeline.is_canonical_qlib_initialized", return_value=True), \
              patch("src.core.pipeline.FeatureDatasetBuilder.build", return_value=fake_feature_result), \
              patch("src.core.pipeline.ModelTrainer.train_and_predict", return_value=fake_model_result), \
@@ -362,8 +362,12 @@ class PipelineDatasetReuseTests(unittest.TestCase):
                     output_dir=tmp,
                     run_factor_analysis=True,
                     run_attribution=False,
+                    adjust_mode="unadjusted",
                 )
                 Pipeline.run(cfg)
+
+        runtime_config = mock_init.call_args.args[0]
+        self.assertEqual(runtime_config.data_adjust_mode, "unadjusted")
 
         # FactorAnalyzer.analyze must have been called with dataset= kwarg.
         mock_fa_analyze.assert_called_once()
@@ -399,7 +403,9 @@ class SignalAnalyzerE2ETests(unittest.TestCase):
         )
         if not is_canonical_qlib_initialized():
             init_qlib_canonical(QlibRuntimeConfig(
-                provider_uri=str(_QLIB_DATA_DIR), region="cn",
+                provider_uri=str(_QLIB_DATA_DIR),
+                region="cn",
+                data_adjust_mode="pre_adjusted",
             ))
 
         # Generate predictions from a quick model run

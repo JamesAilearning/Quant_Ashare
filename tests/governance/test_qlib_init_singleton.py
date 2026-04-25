@@ -40,15 +40,37 @@ def _qlib_importable() -> bool:
 class QlibRuntimeConfigValidationTests(unittest.TestCase):
     def test_requires_provider_uri(self) -> None:
         with self.assertRaises(QlibRuntimeInitError):
-            QlibRuntimeConfig(provider_uri="", region="cn")
+            QlibRuntimeConfig(
+                provider_uri="", region="cn", data_adjust_mode="pre_adjusted",
+            )
 
     def test_requires_known_region(self) -> None:
         with self.assertRaises(QlibRuntimeInitError):
-            QlibRuntimeConfig(provider_uri="D:/qlib_data/my_cn_data", region="eu")
+            QlibRuntimeConfig(
+                provider_uri="D:/qlib_data/my_cn_data",
+                region="eu",
+                data_adjust_mode="pre_adjusted",
+            )
+
+    def test_requires_known_data_adjust_mode(self) -> None:
+        with self.assertRaisesRegex(QlibRuntimeInitError, "data_adjust_mode"):
+            QlibRuntimeConfig(
+                provider_uri="D:/qlib_data/my_cn_data",
+                region="cn",
+                data_adjust_mode="auto",
+            )
 
     def test_accepts_cn_and_us(self) -> None:
-        QlibRuntimeConfig(provider_uri="D:/qlib_data/my_cn_data", region="cn")
-        QlibRuntimeConfig(provider_uri="D:/qlib_data/my_us_data", region="US")
+        QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
+        QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_us_data",
+            region="US",
+            data_adjust_mode="pre_adjusted",
+        )
 
 
 class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
@@ -61,8 +83,16 @@ class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
 
     def test_forward_and_back_slashes_are_equivalent(self) -> None:
         # On Windows abspath already normalizes, but call it out explicitly.
-        cfg1 = QlibRuntimeConfig(provider_uri=r"D:/qlib_data/my_cn_data", region="cn")
-        cfg2 = QlibRuntimeConfig(provider_uri=r"D:\qlib_data\my_cn_data", region="cn")
+        cfg1 = QlibRuntimeConfig(
+            provider_uri=r"D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
+        cfg2 = QlibRuntimeConfig(
+            provider_uri=r"D:\qlib_data\my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         self.assertEqual(cfg1.provider_uri, cfg2.provider_uri)
 
     def test_drive_letter_case_insensitive_on_windows(self) -> None:
@@ -71,22 +101,38 @@ class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
         if os.name != "nt":
             self.skipTest("Windows-only behaviour (normcase is a no-op on POSIX).")
         cfg_upper = QlibRuntimeConfig(
-            provider_uri=r"D:/qlib_data/my_cn_data", region="cn",
+            provider_uri=r"D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
         )
         cfg_lower = QlibRuntimeConfig(
-            provider_uri=r"d:/qlib_data/my_cn_data", region="cn",
+            provider_uri=r"d:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
         )
         self.assertEqual(cfg_upper.provider_uri, cfg_lower.provider_uri)
 
     def test_trailing_whitespace_ignored(self) -> None:
-        cfg1 = QlibRuntimeConfig(provider_uri="D:/qlib_data/my_cn_data", region="cn")
-        cfg2 = QlibRuntimeConfig(provider_uri="  D:/qlib_data/my_cn_data  ", region="cn")
+        cfg1 = QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
+        cfg2 = QlibRuntimeConfig(
+            provider_uri="  D:/qlib_data/my_cn_data  ",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         self.assertEqual(cfg1.provider_uri, cfg2.provider_uri)
 
     def test_relative_path_resolved_absolute(self) -> None:
         """A relative path is anchored to CWD so re-init from a subdir still matches."""
         import os
-        cfg = QlibRuntimeConfig(provider_uri="./some_relative", region="cn")
+        cfg = QlibRuntimeConfig(
+            provider_uri="./some_relative",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         self.assertTrue(os.path.isabs(cfg.provider_uri))
 
     def test_symlink_resolves_to_target(self) -> None:
@@ -102,8 +148,12 @@ class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
             link = os.path.join(tmp, "link")
             os.mkdir(target)
             os.symlink(target, link)
-            cfg_target = QlibRuntimeConfig(provider_uri=target, region="cn")
-            cfg_link = QlibRuntimeConfig(provider_uri=link, region="cn")
+            cfg_target = QlibRuntimeConfig(
+                provider_uri=target, region="cn", data_adjust_mode="pre_adjusted",
+            )
+            cfg_link = QlibRuntimeConfig(
+                provider_uri=link, region="cn", data_adjust_mode="pre_adjusted",
+            )
             self.assertEqual(cfg_target.provider_uri, cfg_link.provider_uri)
 
 
@@ -120,7 +170,11 @@ class QlibRuntimeInitGuardTests(unittest.TestCase):
 
     @unittest.skipUnless(_qlib_importable(), "qlib not installed in this environment")
     def test_idempotent_same_config(self) -> None:
-        cfg = QlibRuntimeConfig(provider_uri="D:/qlib_data/my_cn_data", region="cn")
+        cfg = QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         init_qlib_canonical(cfg)
         # second call with the same config must not raise
         init_qlib_canonical(cfg)
@@ -129,12 +183,37 @@ class QlibRuntimeInitGuardTests(unittest.TestCase):
 
     @unittest.skipUnless(_qlib_importable(), "qlib not installed in this environment")
     def test_conflicting_config_raises(self) -> None:
-        cfg1 = QlibRuntimeConfig(provider_uri="D:/qlib_data/my_cn_data", region="cn")
-        cfg2 = QlibRuntimeConfig(provider_uri="D:/qlib_data/other_data", region="cn")
+        cfg1 = QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
+        cfg2 = QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/other_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         init_qlib_canonical(cfg1)
         with self.assertRaises(QlibRuntimeInitError):
             init_qlib_canonical(cfg2)
         # State must still reflect the first successful config.
+        self.assertEqual(get_canonical_qlib_config(), cfg1)
+
+    def test_conflicting_adjust_mode_raises(self) -> None:
+        cfg1 = QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
+        cfg2 = QlibRuntimeConfig(
+            provider_uri="D:/qlib_data/my_cn_data",
+            region="cn",
+            data_adjust_mode="unadjusted",
+        )
+        qlib_runtime._CANONICAL_CONFIG = cfg1
+        qlib_runtime._CANONICAL_QLIB_INITIALIZED = True
+        with self.assertRaises(QlibRuntimeInitError):
+            init_qlib_canonical(cfg2)
         self.assertEqual(get_canonical_qlib_config(), cfg1)
 
 
@@ -148,7 +227,11 @@ class QlibSessionMismatchTests(unittest.TestCase):
             self.region = region
 
     def _cfg(self, path: str, region: str = "cn") -> QlibRuntimeConfig:
-        return QlibRuntimeConfig(provider_uri=path, region=region)
+        return QlibRuntimeConfig(
+            provider_uri=path,
+            region=region,
+            data_adjust_mode="pre_adjusted",
+        )
 
     def test_matching_config_returns_none(self) -> None:
         import os

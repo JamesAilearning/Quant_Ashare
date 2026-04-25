@@ -75,6 +75,7 @@ class BenchmarkPublisherE2ETests(unittest.TestCase):
             QlibRuntimeConfig(
                 provider_uri=str(LOCAL_QLIB_DATA),
                 region="cn",
+                data_adjust_mode="pre_adjusted",
             )
         )
 
@@ -240,7 +241,11 @@ class BenchmarkPublisherInitGuardTests(unittest.TestCase):
         call, so these tests do not need to stub qlib.data at all.
         """
         from src.core import qlib_runtime as _rt
-        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(provider_uri="fake://x", region="cn")
+        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(
+            provider_uri="fake://x",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         _rt._CANONICAL_QLIB_INITIALIZED = True
 
     def test_publish_bad_start_time_raises(self) -> None:
@@ -311,7 +316,11 @@ class BenchmarkPublisherInitGuardTests(unittest.TestCase):
         if not (_qlib_importable() and _local_bundle_available()):
             self.skipTest("requires local qlib bundle to exercise arg validation")
         init_qlib_canonical(
-            QlibRuntimeConfig(provider_uri=str(LOCAL_QLIB_DATA), region="cn")
+            QlibRuntimeConfig(
+                provider_uri=str(LOCAL_QLIB_DATA),
+                region="cn",
+                data_adjust_mode="pre_adjusted",
+            )
         )
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -342,7 +351,11 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
         # Use module-level state directly because real init_qlib_canonical
         # would require a real qlib install.
         from src.core import qlib_runtime as _rt
-        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(provider_uri="fake://x", region="cn")
+        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(
+            provider_uri="fake://x",
+            region="cn",
+            data_adjust_mode="pre_adjusted",
+        )
         _rt._CANONICAL_QLIB_INITIALIZED = True
 
     def tearDown(self) -> None:

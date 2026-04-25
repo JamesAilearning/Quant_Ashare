@@ -28,6 +28,10 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
 )
+from src.core.qlib_runtime import (
+    get_canonical_qlib_config,
+    is_canonical_qlib_initialized,
+)
 
 
 _logger = get_logger(__name__)
@@ -64,6 +68,27 @@ class BacktestRunner:
 
         if predictions is None or (hasattr(predictions, "empty") and predictions.empty):
             raise BacktestRunnerError("predictions must be non-empty.")
+
+        if not is_canonical_qlib_initialized():
+            raise BacktestRunnerError(
+                "Canonical qlib runtime must be initialized via "
+                "src.core.qlib_runtime.init_qlib_canonical(...) before "
+                "running official backtests."
+            )
+        runtime_config = get_canonical_qlib_config()
+        if runtime_config is None:
+            raise BacktestRunnerError(
+                "Canonical qlib runtime reports initialized but has no "
+                "recorded config; refusing to produce official metrics."
+            )
+        if request.adjust_mode != runtime_config.data_adjust_mode:
+            raise BacktestRunnerError(
+                "Canonical backtest adjust_mode does not match initialized "
+                "qlib provider adjustment mode: "
+                f"request.adjust_mode={request.adjust_mode!r}, "
+                f"runtime.data_adjust_mode={runtime_config.data_adjust_mode!r}. "
+                "Official metrics require matching data-adjustment semantics."
+            )
 
         try:
             from qlib.backtest import backtest as qlib_backtest  # type: ignore[import-not-found]
