@@ -172,8 +172,53 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
             WalkForwardConfig(limit_threshold=0.0)
 
 
+def _stub_signal_result(ic_summary=None):
+    """Build a minimally valid SignalAnalysisResult-shaped stub.
+
+    The real result is a frozen dataclass; constructing one keeps the
+    fold report writer (which iterates ``ic_decay`` / ``turnover_stats``
+    by name) working without resorting to MagicMock attribute fishing.
+    """
+    from src.core.signal_analyzer import SignalAnalysisResult
+    return SignalAnalysisResult(
+        ic_summary=ic_summary or {1: {"mean_ic": 0.01}, 5: {"mean_ic": 0.02}},
+        ic_series={},
+        ic_decay=[0.01, 0.005, 0.0],
+        turnover_stats={"mean_turnover": 0.3},
+    )
+
+
+def _stub_backtest_output():
+    """Real-shape ``CanonicalBacktestOutput`` for fold-report writes.
+
+    Walk-forward now persists ``backtest_output.report`` /
+    ``risk_analysis`` / ``provenance`` / ``positions`` to JSON; a
+    MagicMock would either pass non-dict types into ``json.dump`` or
+    silently spawn nested MagicMocks. Use a real instance so the writer
+    sees the contract it was designed against.
+    """
+    from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+    return CanonicalBacktestOutput(
+        metric_status="official",
+        official_backtest_path="qlib.backtest.backtest",
+        return_series={"return": {}, "bench": {}, "cost": {}},
+        risk_analysis={
+            "excess_return_with_cost": {
+                "annualized_return": 0.11,
+                "max_drawdown": -0.08,
+                "information_ratio": 1.2,
+            }
+        },
+        report={"total_days": 60},
+        provenance={"adjust_mode": "pre_adjusted"},
+        positions={"2024-10-01": {"SH600000": 1.0}},
+    )
+
+
 class WalkForwardBacktestPassthroughTests(unittest.TestCase):
     def test_fold_backtest_request_uses_configured_controls(self) -> None:
+        import tempfile
+
         config = WalkForwardConfig(
             execution_price_kind=EXECUTION_PRICE_OPEN,
             adjust_mode=ADJUST_MODE_NONE,
@@ -190,21 +235,10 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
         fake_model_result = MagicMock()
         fake_model_result.predictions = "predictions"
         fake_model_result.prediction_shape = (10,)
-        fake_signal_result = MagicMock()
-        fake_signal_result.ic_summary = {
-            1: {"mean_ic": 0.01},
-            5: {"mean_ic": 0.02},
-        }
-        fake_backtest_output = MagicMock()
-        fake_backtest_output.risk_analysis = {
-            "excess_return_with_cost": {
-                "annualized_return": 0.11,
-                "max_drawdown": -0.08,
-                "information_ratio": 1.2,
-            }
-        }
+        fake_model_result.best_iteration = 3
+        fake_model_result.final_valid_loss = 0.95
 
-        with patch(
+        with tempfile.TemporaryDirectory() as tmp, patch(
             "src.core.walk_forward.FeatureDatasetBuilder.build",
             return_value=fake_feature_result,
         ), patch(
@@ -212,10 +246,10 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
             return_value=fake_model_result,
         ), patch(
             "src.core.walk_forward.SignalAnalyzer.analyze",
-            return_value=fake_signal_result,
+            return_value=_stub_signal_result(),
         ), patch(
             "src.core.walk_forward.BacktestRunner.run",
-            return_value=fake_backtest_output,
+            return_value=_stub_backtest_output(),
         ) as mock_backtest:
             WalkForwardEngine._run_single_fold(
                 config=config,
@@ -226,7 +260,7 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
                 valid_end="2024-09-30",
                 test_start="2024-10-01",
                 test_end="2024-12-31",
-                output_dir=Path("D:/tmp/walk_forward_test"),
+                output_dir=Path(tmp),
             )
 
         request = mock_backtest.call_args.kwargs["request"]
@@ -444,6 +478,266 @@ class WalkForwardE2ETests(unittest.TestCase):
             # Aggregate metrics
             self.assertIn("mean_ic_1d", result.aggregate_metrics)
             self.assertIn("mean_annualized_return", result.aggregate_metrics)
+
+
+class FoldReportSerialisationTests(unittest.TestCase):
+    """Per-fold report contract.
+
+    Walk-forward used to leave only ``model_foldN.pkl`` files behind
+    after a multi-fold run — every IC, return, drawdown, signal-analysis
+    block, and positions snapshot was discarded the moment the engine
+    returned. Comparing two runs (different hyperparams, different
+    feature handler) was impossible without re-running both. The
+    per-fold report fixes that.
+
+    These tests pin the JSON schema so dashboards / diff tools can
+    rely on the field set.
+    """
+
+    def _build_args(self) -> dict:
+        return dict(
+            fold_index=0,
+            train_start="2024-01-01", train_end="2024-06-30",
+            valid_start="2024-07-01", valid_end="2024-09-30",
+            test_start="2024-10-01", test_end="2024-12-31",
+            model_artifact_path="/tmp/model_fold0.pkl",
+            model_result=MagicMock(
+                best_iteration=3,
+                final_valid_loss=0.95,
+                prediction_shape=(123,),
+            ),
+            signal_result=_stub_signal_result(),
+            backtest_output=_stub_backtest_output(),
+            positions_path=Path("/tmp/fold_00_positions.json"),
+            ic_1d=0.02,
+            ic_5d=0.04,
+            annualized_return=0.11,
+            max_drawdown=-0.08,
+            information_ratio=1.2,
+        )
+
+    def test_top_level_fields_present(self) -> None:
+        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        for key in (
+            "fold_index", "windows", "model", "signal_analysis",
+            "backtest", "metrics", "positions_path", "generated_at",
+        ):
+            self.assertIn(key, d, f"missing top-level field: {key}")
+
+    def test_windows_shape(self) -> None:
+        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        self.assertEqual(d["windows"]["train"]["start"], "2024-01-01")
+        self.assertEqual(d["windows"]["train"]["end"], "2024-06-30")
+        self.assertEqual(d["windows"]["valid"]["start"], "2024-07-01")
+        self.assertEqual(d["windows"]["test"]["end"], "2024-12-31")
+
+    def test_model_block_carries_diagnostics(self) -> None:
+        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        self.assertEqual(d["model"]["best_iteration"], 3)
+        self.assertEqual(d["model"]["final_valid_loss"], 0.95)
+        self.assertEqual(d["model"]["prediction_shape"], [123])
+        self.assertEqual(d["model"]["artifact_path"], "/tmp/model_fold0.pkl")
+
+    def test_signal_analysis_keys_coerced_to_strings(self) -> None:
+        """``ic_summary`` is keyed by int forward-period; JSON keys must
+        be strings, so the report builder must coerce them — otherwise
+        ``json.dumps`` would either raise (strict mode) or silently
+        emit non-string keys some parsers reject."""
+        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        keys = list(d["signal_analysis"]["ic_summary"].keys())
+        self.assertTrue(
+            all(isinstance(k, str) for k in keys),
+            f"ic_summary keys must be strings; got {keys!r}",
+        )
+        self.assertIn("1", keys)
+        self.assertIn("5", keys)
+
+    def test_metrics_block_mirrors_walk_forward_fold(self) -> None:
+        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        self.assertAlmostEqual(d["metrics"]["ic_1d"], 0.02)
+        self.assertAlmostEqual(d["metrics"]["ic_5d"], 0.04)
+        self.assertAlmostEqual(d["metrics"]["annualized_return"], 0.11)
+        self.assertAlmostEqual(d["metrics"]["max_drawdown"], -0.08)
+        self.assertAlmostEqual(d["metrics"]["information_ratio"], 1.2)
+
+    def test_positions_path_optional(self) -> None:
+        args = self._build_args()
+        args["positions_path"] = None
+        d = WalkForwardEngine._build_fold_report(**args)
+        self.assertIsNone(d["positions_path"])
+
+    def test_write_fold_report_round_trips_through_strict_json(self) -> None:
+        """The JSON written must parse with ``allow_nan=False``.
+        ``_sanitize_for_json`` should turn any NaN IC / return into
+        ``null`` so the report stays standard JSON regardless of the
+        underlying analyser's NaN encoding."""
+        import json
+        import tempfile
+
+        args = self._build_args()
+        # Inject NaN to confirm the sanitizer engages.
+        args["ic_1d"] = float("nan")
+        args["information_ratio"] = float("inf")
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "fold_report.json"
+            WalkForwardEngine._write_fold_report(report_path=report_path, **args)
+            with open(report_path) as f:
+                loaded = json.load(f)
+        self.assertIsNone(loaded["metrics"]["ic_1d"])
+        self.assertIsNone(loaded["metrics"]["information_ratio"])
+        # Other fields untouched.
+        self.assertEqual(loaded["fold_index"], 0)
+        self.assertEqual(loaded["windows"]["test"]["start"], "2024-10-01")
+
+
+class AggregateReportSerialisationTests(unittest.TestCase):
+    """Aggregate report contract: a single index file pointing at every
+    per-fold report plus cross-fold aggregates and a config snapshot.
+
+    Without an aggregate file, comparing two walk-forward runs requires
+    listing per-fold JSONs and hand-aggregating — exactly the friction
+    the ``walk_forward_report.json`` is meant to remove.
+    """
+
+    def _build_folds(self) -> list:
+        from src.core.walk_forward import WalkForwardFold
+        return [
+            WalkForwardFold(
+                fold_index=0,
+                train_period="2024-01-01 ~ 2024-06-30",
+                valid_period="2024-07-01 ~ 2024-09-30",
+                test_period="2024-10-01 ~ 2024-12-31",
+                ic_1d=0.02, ic_5d=0.04,
+                annualized_return=0.10, max_drawdown=-0.05,
+                information_ratio=1.5,
+                prediction_shape=(100,),
+                report_path="/tmp/fold_00_report.json",
+            ),
+            WalkForwardFold(
+                fold_index=1,
+                train_period="2024-04-01 ~ 2024-09-30",
+                valid_period="2024-10-01 ~ 2024-12-31",
+                test_period="2025-01-01 ~ 2025-03-31",
+                ic_1d=float("nan"),  # would poison json.dumps without sanitize
+                ic_5d=0.01,
+                annualized_return=-0.02, max_drawdown=-0.10,
+                information_ratio=-0.3,
+                prediction_shape=(100,),
+                report_path="/tmp/fold_01_report.json",
+            ),
+        ]
+
+    def test_top_level_fields_present(self) -> None:
+        d = WalkForwardEngine._build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=self._build_folds(),
+            aggregate_metrics={"mean_ic_1d": 0.01, "num_folds": 2.0},
+        )
+        for key in ("generated_at", "config", "folds", "aggregate_metrics", "num_folds"):
+            self.assertIn(key, d)
+
+    def test_per_fold_summaries_carry_report_path(self) -> None:
+        """Each entry in ``folds`` must point at the per-fold JSON so a
+        consumer can drill in without re-globbing the directory."""
+        d = WalkForwardEngine._build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=self._build_folds(),
+            aggregate_metrics={},
+        )
+        self.assertEqual(len(d["folds"]), 2)
+        self.assertEqual(d["folds"][0]["report_path"], "/tmp/fold_00_report.json")
+        self.assertEqual(d["folds"][1]["fold_index"], 1)
+
+    def test_config_snapshot_round_trips(self) -> None:
+        """``config`` must capture every field of ``WalkForwardConfig``
+        so the run is reproducible from the report alone."""
+        cfg = WalkForwardConfig(num_boost_round=42, topk=33)
+        d = WalkForwardEngine._build_aggregate_report(
+            config=cfg, folds=[], aggregate_metrics={},
+        )
+        self.assertEqual(d["config"]["num_boost_round"], 42)
+        self.assertEqual(d["config"]["topk"], 33)
+        self.assertEqual(d["config"]["instruments"], cfg.instruments)
+
+    def test_write_aggregate_report_strict_json_round_trips(self) -> None:
+        """The aggregate file must parse with strict JSON, even when
+        a fold has NaN IC. Without ``_sanitize_for_json`` the report
+        would emit the non-standard ``NaN`` token."""
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "walk_forward_report.json"
+            WalkForwardEngine._write_aggregate_report(
+                path=path,
+                config=WalkForwardConfig(),
+                folds=self._build_folds(),
+                aggregate_metrics={"mean_ic_1d": float("nan"), "num_folds": 2.0},
+            )
+            with open(path) as f:
+                loaded = json.load(f)
+        self.assertEqual(loaded["num_folds"], 2)
+        self.assertEqual(len(loaded["folds"]), 2)
+        # NaN fold metric must come through as null, not crash json.load
+        self.assertIsNone(loaded["folds"][1]["ic_1d"])
+        self.assertIsNone(loaded["aggregate_metrics"]["mean_ic_1d"])
+
+
+class FoldReportPersistenceFlowTests(unittest.TestCase):
+    """End-to-end (within ``_run_single_fold``): given mocked feature /
+    model / signal / backtest dependencies, the engine writes
+    ``fold_NN_report.json`` + ``fold_NN_positions.json`` to ``output_dir``
+    and the returned ``WalkForwardFold.report_path`` matches.
+    """
+
+    def test_run_single_fold_persists_report_and_positions(self) -> None:
+        import json
+        import tempfile
+
+        config = WalkForwardConfig()
+        fake_feature_result = MagicMock()
+        fake_feature_result.dataset = object()
+        fake_model_result = MagicMock(
+            predictions="predictions",
+            prediction_shape=(10,),
+            best_iteration=4,
+            final_valid_loss=0.97,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            return_value=fake_feature_result,
+        ), patch(
+            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ), patch(
+            "src.core.walk_forward.SignalAnalyzer.analyze",
+            return_value=_stub_signal_result(),
+        ), patch(
+            "src.core.walk_forward.BacktestRunner.run",
+            return_value=_stub_backtest_output(),
+        ):
+            fold = WalkForwardEngine._run_single_fold(
+                config=config,
+                fold_index=0,
+                train_start="2024-01-01", train_end="2024-06-30",
+                valid_start="2024-07-01", valid_end="2024-09-30",
+                test_start="2024-10-01", test_end="2024-12-31",
+                output_dir=Path(tmp),
+            )
+            report_path = Path(tmp) / "fold_00_report.json"
+            positions_path = Path(tmp) / "fold_00_positions.json"
+
+            self.assertTrue(report_path.exists())
+            self.assertTrue(positions_path.exists())
+            self.assertEqual(fold.report_path, str(report_path))
+            with open(report_path) as f:
+                report = json.load(f)
+            self.assertEqual(report["fold_index"], 0)
+            self.assertEqual(report["positions_path"], str(positions_path))
+            with open(positions_path) as f:
+                positions = json.load(f)
+            self.assertIn("2024-10-01", positions)
 
 
 if __name__ == "__main__":

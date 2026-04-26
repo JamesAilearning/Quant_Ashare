@@ -8,7 +8,6 @@ All steps are wired through V2's contract and governance system.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -41,25 +40,11 @@ from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
 
 
-def _sanitize_for_json(obj: Any) -> Any:
-    """Recursively convert NaN floats to ``None`` so the result encodes
-    as standard JSON.
-
-    Dispatches on ``dict`` / ``list`` / ``tuple`` and replaces any
-    ``float('nan')`` it finds at the leaves. Infinity is also rejected
-    by standard JSON; treated the same way (→ ``None``) for consistency.
-    Non-finite numbers other than NaN/Inf do not exist in IEEE 754, so
-    this is exhaustive for floats.
-
-    Strings, ints, bools, and ``None`` pass through unchanged.
-    """
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(v) for v in obj]
-    if isinstance(obj, float) and not math.isfinite(obj):
-        return None
-    return obj
+# Re-export the shared sanitizer at the previous public symbol so
+# existing imports / tests that look up ``Pipeline``/``pipeline._sanitize_for_json``
+# keep working unchanged. The implementation now lives in ``_json_utils``
+# so ``walk_forward`` can call the same code without duplicating it.
+from src.core._json_utils import _sanitize_for_json  # noqa: E402
 
 
 class PipelineError(RuntimeError):
