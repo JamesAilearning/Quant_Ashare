@@ -17,11 +17,13 @@ Boundaries
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.core._json_utils import _sanitize_for_json
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -29,14 +31,19 @@ from src.core.canonical_backtest_contract import (
     CanonicalAccountConfig,
     CanonicalBacktestContractError,
     CanonicalBacktestInput,
+    CanonicalBacktestOutput,
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
     SUPPORTED_ADJUST_MODES,
 )
 from src.core.logger import get_logger
-from src.core.model_trainer import ModelTrainConfig, ModelTrainer
+from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
 from src.core.qlib_runtime import is_canonical_qlib_initialized
-from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
+from src.core.signal_analyzer import (
+    SignalAnalysisConfig,
+    SignalAnalysisResult,
+    SignalAnalyzer,
+)
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
 _logger = get_logger(__name__)
@@ -199,6 +206,11 @@ class WalkForwardFold:
     max_drawdown: float
     information_ratio: float
     prediction_shape: tuple[int, ...]
+    # Path to the per-fold JSON report written by ``_run_single_fold``.
+    # Optional so legacy callers / mock-based tests that construct a
+    # fold without persisting a report (e.g. the aggregate-NaN tests
+    # below) keep working unchanged.
+    report_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -208,6 +220,11 @@ class WalkForwardResult:
     folds: Sequence[WalkForwardFold]
     aggregate_metrics: Mapping[str, float]
     num_folds: int
+    # Path to the aggregate JSON report written by ``WalkForwardEngine.run``.
+    # ``None`` when the engine ran without persisting one (e.g. legacy
+    # callers patched only ``_run_single_fold`` and never reach the
+    # aggregate-write step).
+    report_path: str | None = None
 
 
 class WalkForwardEngine:
@@ -269,11 +286,98 @@ class WalkForwardEngine:
             _logger.info("  %s: %.4f", key, val)
         _logger.info("=" * 60)
 
+        # Persist the aggregate report alongside the per-fold reports so
+        # downstream comparison tooling has a single index file with
+        # config, fold→file mapping, and aggregate metrics. Without this,
+        # comparing two walk-forward runs requires loading every per-fold
+        # JSON manually and re-deriving aggregates — exactly the kind of
+        # friction the aggregate file is meant to remove.
+        aggregate_path = output_dir / "walk_forward_report.json"
+        cls._write_aggregate_report(
+            path=aggregate_path,
+            config=config,
+            folds=folds,
+            aggregate_metrics=aggregate,
+        )
+        _logger.info("Aggregate report: %s", aggregate_path)
+
         return WalkForwardResult(
             folds=folds,
             aggregate_metrics=aggregate,
             num_folds=len(folds),
+            report_path=str(aggregate_path),
         )
+
+    @classmethod
+    def _build_aggregate_report(
+        cls,
+        *,
+        config: WalkForwardConfig,
+        folds: list[WalkForwardFold],
+        aggregate_metrics: Mapping[str, float],
+    ) -> dict[str, Any]:
+        """Build the aggregate JSON report dict.
+
+        Schema:
+
+        - ``config``: full ``WalkForwardConfig`` snapshot so the run is
+          reproducible from the report alone (no peeking at ``config.yaml``).
+        - ``folds``: list of compact per-fold summaries (``fold_index``,
+          test period, headline metrics, path to the per-fold report).
+          Mirrors what dashboards typically render in a fold-level table.
+        - ``aggregate_metrics``: cross-fold aggregates from
+          ``_compute_aggregate``.
+        - ``num_folds``, ``generated_at``: provenance.
+        """
+        return {
+            "generated_at": datetime.now().isoformat(),
+            "config": asdict(config),
+            "folds": [
+                {
+                    "fold_index": f.fold_index,
+                    "train_period": f.train_period,
+                    "valid_period": f.valid_period,
+                    "test_period": f.test_period,
+                    "ic_1d": f.ic_1d,
+                    "ic_5d": f.ic_5d,
+                    "annualized_return": f.annualized_return,
+                    "max_drawdown": f.max_drawdown,
+                    "information_ratio": f.information_ratio,
+                    "prediction_shape": list(f.prediction_shape),
+                    "report_path": f.report_path,
+                }
+                for f in folds
+            ],
+            "aggregate_metrics": dict(aggregate_metrics),
+            "num_folds": len(folds),
+        }
+
+    @classmethod
+    def _write_aggregate_report(
+        cls,
+        *,
+        path: Path,
+        config: WalkForwardConfig,
+        folds: list[WalkForwardFold],
+        aggregate_metrics: Mapping[str, float],
+    ) -> None:
+        """Build and persist the aggregate JSON report.
+
+        Same NaN handling as ``_write_fold_report`` — the aggregate
+        metrics include ``mean_ic_1d`` etc. which are intentionally NaN
+        when no fold produced a valid IC, and ``json.dump(..., allow_nan=False)``
+        on a sanitised payload turns those into ``null`` rather than the
+        non-standard ``NaN`` token.
+        """
+        report = cls._build_aggregate_report(
+            config=config, folds=folds, aggregate_metrics=aggregate_metrics,
+        )
+        sanitised = _sanitize_for_json(report)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                sanitised, f, indent=2, ensure_ascii=False,
+                default=str, allow_nan=False,
+            )
 
     @classmethod
     def _generate_windows(cls, config: WalkForwardConfig) -> list[tuple[str, ...]]:
@@ -409,6 +513,34 @@ class WalkForwardEngine:
             backtest_output.risk_analysis, fold_index,
         )
 
+        # Persist a per-fold report and the positions artifact. Previously
+        # the only fold-level artefact written was the model pickle, so a
+        # walk-forward run produced N pkl files with no IC / return /
+        # backtest detail accessible after the fact. Dashboards or diff
+        # tools cannot compare two runs from the in-memory ``WalkForwardFold``
+        # alone — they need the file on disk.
+        positions_path: Path | None = None
+        if backtest_output.positions:
+            positions_path = output_dir / f"fold_{fold_index:02d}_positions.json"
+            cls._write_positions(positions_path, backtest_output.positions)
+
+        report_path = output_dir / f"fold_{fold_index:02d}_report.json"
+        cls._write_fold_report(
+            report_path=report_path,
+            fold_index=fold_index,
+            train_start=train_start, train_end=train_end,
+            valid_start=valid_start, valid_end=valid_end,
+            test_start=test_start, test_end=test_end,
+            model_artifact_path=model_path,
+            model_result=model_result,
+            signal_result=signal_result,
+            backtest_output=backtest_output,
+            positions_path=positions_path,
+            ic_1d=ic_1d, ic_5d=ic_5d,
+            annualized_return=ann_ret, max_drawdown=max_dd,
+            information_ratio=ir,
+        )
+
         return WalkForwardFold(
             fold_index=fold_index,
             train_period=f"{train_start} ~ {train_end}",
@@ -420,7 +552,111 @@ class WalkForwardEngine:
             max_drawdown=max_dd,
             information_ratio=ir,
             prediction_shape=model_result.prediction_shape,
+            report_path=str(report_path),
         )
+
+    @classmethod
+    def _write_positions(
+        cls,
+        path: Path,
+        positions: Mapping[str, Mapping[str, float]],
+    ) -> None:
+        """Persist the per-day portfolio weights produced by the backtest.
+
+        Mirrors ``Pipeline.run`` step 7b: no ``default=str`` fallback —
+        the contract is ``{date_str: {instrument: float}}`` and a leak of
+        any other type should surface here at write-time, not weeks later
+        in a dashboard.
+        """
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(dict(positions), f, indent=2)
+
+    @classmethod
+    def _build_fold_report(
+        cls,
+        *,
+        fold_index: int,
+        train_start: str, train_end: str,
+        valid_start: str, valid_end: str,
+        test_start: str, test_end: str,
+        model_artifact_path: str,
+        model_result: ModelTrainResult,
+        signal_result: SignalAnalysisResult,
+        backtest_output: CanonicalBacktestOutput,
+        positions_path: Path | None,
+        ic_1d: float, ic_5d: float,
+        annualized_return: float, max_drawdown: float,
+        information_ratio: float,
+    ) -> dict[str, Any]:
+        """Build the per-fold report dict.
+
+        Extracted from :meth:`_write_fold_report` so the schema is unit-
+        testable without touching the filesystem (mirrors the same split
+        already in use for ``Pipeline._attribution_to_report_dict``).
+        """
+        # ``ic_summary`` is keyed by int (forward period); JSON keys must
+        # be strings, so coerce up front.
+        ic_summary_serialised = {
+            str(period): dict(stats)
+            for period, stats in signal_result.ic_summary.items()
+        }
+        return {
+            "fold_index": fold_index,
+            "windows": {
+                "train": {"start": train_start, "end": train_end},
+                "valid": {"start": valid_start, "end": valid_end},
+                "test":  {"start": test_start,  "end": test_end},
+            },
+            "model": {
+                "artifact_path": model_artifact_path,
+                "best_iteration": model_result.best_iteration,
+                "final_valid_loss": model_result.final_valid_loss,
+                "prediction_shape": list(model_result.prediction_shape),
+            },
+            "signal_analysis": {
+                "ic_summary": ic_summary_serialised,
+                "ic_decay": list(signal_result.ic_decay),
+                "turnover_stats": dict(signal_result.turnover_stats),
+            },
+            "backtest": {
+                "metric_status": backtest_output.metric_status,
+                "official_backtest_path": backtest_output.official_backtest_path,
+                "report": dict(backtest_output.report),
+                "risk_analysis": dict(backtest_output.risk_analysis),
+                "provenance": dict(backtest_output.provenance),
+            },
+            "metrics": {
+                "ic_1d": ic_1d,
+                "ic_5d": ic_5d,
+                "annualized_return": annualized_return,
+                "max_drawdown": max_drawdown,
+                "information_ratio": information_ratio,
+            },
+            "positions_path": str(positions_path) if positions_path else None,
+            "generated_at": datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def _write_fold_report(
+        cls,
+        *,
+        report_path: Path,
+        **kwargs: Any,
+    ) -> None:
+        """Build and persist a per-fold report at ``report_path``.
+
+        NaN-safe: routes through :func:`_sanitize_for_json` and uses
+        ``allow_nan=False`` so any leaked non-finite float surfaces as
+        an error rather than silently producing non-standard JSON
+        (browsers, ``jq``, strict parsers reject the bare ``NaN`` token).
+        """
+        report = cls._build_fold_report(**kwargs)
+        sanitised = _sanitize_for_json(report)
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(
+                sanitised, f, indent=2, ensure_ascii=False,
+                default=str, allow_nan=False,
+            )
 
     @staticmethod
     def _extract_cost_metrics(
