@@ -26,6 +26,7 @@ from src.core.backtest_runner import (
     BacktestRunnerError,
     _positions_to_weight_map,
     _risk_analysis_to_flat_dict,
+    _series_to_dict,
 )
 from src.core.qlib_runtime import (
     QlibRuntimeConfig,
@@ -346,6 +347,31 @@ class RiskAnalysisNormalizerTests(unittest.TestCase):
         flat = _risk_analysis_to_flat_dict(df)
         self.assertNotIn("raw", flat)
         self.assertIn("annualized_return", flat)
+
+
+class ReturnSeriesNormalizerTests(unittest.TestCase):
+    def test_series_to_dict_converts_dates_to_float_values(self) -> None:
+        import pandas as pd
+
+        series = pd.Series(
+            [0.01, -0.02],
+            index=[pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-05")],
+        )
+        self.assertEqual(
+            _series_to_dict(series, name="return"),
+            {"2026-01-02": 0.01, "2026-01-05": -0.02},
+        )
+
+    def test_series_to_dict_rejects_non_iterable_shape(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "return_series\\['return'\\]"):
+            _series_to_dict(123, name="return")
+
+    def test_series_to_dict_rejects_non_numeric_values_without_raw_fallback(self) -> None:
+        import pandas as pd
+
+        series = pd.Series(["not-a-number"], index=[pd.Timestamp("2026-01-02")])
+        with self.assertRaisesRegex(BacktestRunnerError, "raw fallback"):
+            _series_to_dict(series, name="bench")
 
 
 if __name__ == "__main__":

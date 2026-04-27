@@ -25,4 +25,4 @@
 ## 5. Archive Readiness
 
 - [x] 5.1 Confirm scope remains foundation-only and minimal.
-- [ ] 5.2 Archive after implementation and validation pass.
+- [x] 5.2 Archive after implementation and validation pass.

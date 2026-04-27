@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -79,6 +80,18 @@ class UniverseLoaderStructuralTests(unittest.TestCase):
                 manifest_path="",
                 temporal_mode=UNIVERSE_MODE_STATIC,
             )
+
+    def test_unreadable_artifact_raises_loader_error_with_path(self) -> None:
+        artifact = Path("unreadable-universe.csv")
+        with patch("pathlib.Path.open", side_effect=OSError("permission denied")):
+            with self.assertRaisesRegex(
+                UniverseArtifactLoaderError, "unreadable-universe.csv",
+            ):
+                UniverseArtifactLoader._read_csv(
+                    artifact,
+                    UNIVERSE_MODE_STATIC,
+                    None,
+                )
 
     def test_unknown_temporal_mode_raises(self) -> None:
         with self.assertRaisesRegex(UniverseArtifactLoaderError, "temporal_mode"):

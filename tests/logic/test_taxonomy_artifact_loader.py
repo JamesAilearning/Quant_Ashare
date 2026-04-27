@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +70,18 @@ class TaxonomyLoaderStructuralTests(unittest.TestCase):
                 manifest_path="/tmp/m.json",
                 temporal_mode=TAXONOMY_MODE_STATIC,
             )
+
+    def test_unreadable_artifact_raises_loader_error_with_path(self) -> None:
+        artifact = Path("unreadable-taxonomy.csv")
+        with patch("pathlib.Path.open", side_effect=OSError("permission denied")):
+            with self.assertRaisesRegex(
+                TaxonomyArtifactLoaderError, "unreadable-taxonomy.csv",
+            ):
+                TaxonomyArtifactLoader._read_csv(
+                    artifact,
+                    TAXONOMY_MODE_STATIC,
+                    None,
+                )
 
     def test_empty_manifest_path_raises(self) -> None:
         with self.assertRaisesRegex(TaxonomyArtifactLoaderError, "manifest_path"):
