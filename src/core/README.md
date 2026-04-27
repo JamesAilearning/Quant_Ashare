@@ -1,9 +1,11 @@
-# Core Layer (Skeleton)
+# Core Layer
 
 Purpose:
-- Future orchestration entrypoints for data -> feature -> train -> predict -> canonical backtest flow.
-- Canonical contract placeholder is defined in `canonical_backtest_contract.py`.
-- Runtime execution placeholder is defined in `runtime_execution_placeholder.py`.
+- Orchestration entrypoints for data -> feature -> train -> predict ->
+  canonical backtest flow.
+- Canonical contract definitions live in `canonical_backtest_contract.py`.
+- The official backtest runtime is implemented by `backtest_runner.py` and
+  remains bound to `qlib.backtest.backtest`.
 
 Boundary:
 - Official metrics must be sourced only from the canonical qlib-native path.
@@ -11,6 +13,9 @@ Boundary:
 - Avoid implicit fallback or hidden coupling between modules.
 
 Current state:
-- Skeleton only. No training/backtest runtime implementation in this change.
-- Canonical contract validation is defined; execution remains intentionally unimplemented.
-- Runtime execution placeholder remains intentionally unimplemented.
+- Pipeline, walk-forward, training, signal analysis, attribution, visualization,
+  and canonical backtest runtime components exist.
+- Risk constraints require a dedicated decision-first runtime-boundary change
+  before they can be treated as approved canonical behavior.
+- Runtime execution placeholder remains as a boundary reminder for behavior
+  that has not been explicitly approved.

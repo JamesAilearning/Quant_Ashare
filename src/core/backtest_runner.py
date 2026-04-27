@@ -191,9 +191,9 @@ class BacktestRunner:
         }
 
         return_series = {
-            "return": _series_to_dict(report_normal["return"]),
-            "bench": _series_to_dict(report_normal["bench"]),
-            "cost": _series_to_dict(report_normal["cost"]),
+            "return": _series_to_dict(report_normal["return"], name="return"),
+            "bench": _series_to_dict(report_normal["bench"], name="bench"),
+            "cost": _series_to_dict(report_normal["cost"], name="cost"),
         }
 
         positions_map = _positions_to_weight_map(positions_normal)
@@ -359,12 +359,26 @@ def _risk_analysis_to_flat_dict(df: Any) -> dict:
     return flat
 
 
-def _series_to_dict(series: Any) -> dict:
-    """Convert a pandas Series to a dict with string keys."""
+def _series_to_dict(series: Any, *, name: str = "series") -> dict:
+    """Convert a pandas-like Series to ``{date_str: float}``.
+
+    Unknown qlib output shapes are boundary failures. Returning a raw string
+    envelope would make ``CanonicalBacktestOutput.return_series`` no longer a
+    structured return series while allowing downstream consumers to fail later.
+    """
+    if not hasattr(series, "items"):
+        raise BacktestRunnerError(
+            f"return_series[{name!r}] must expose .items(); got "
+            f"{type(series).__name__}. qlib report output shape may have changed."
+        )
     try:
         return {str(k.date()) if hasattr(k, "date") else str(k): float(v) for k, v in series.items()}
-    except Exception:
-        return {"raw": str(series)}
+    except Exception as exc:
+        raise BacktestRunnerError(
+            f"Failed to serialize return_series[{name!r}] "
+            f"({type(exc).__name__}: {exc}). qlib report output shape may "
+            "have changed; refusing to emit an unstructured raw fallback."
+        ) from exc
 
 
 def _positions_to_weight_map(positions_normal: Any) -> dict:

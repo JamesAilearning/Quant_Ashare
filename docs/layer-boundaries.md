@@ -1,6 +1,6 @@
-# Layer Boundaries (V2 Skeleton)
+# Layer Boundaries
 
-This note documents layer responsibilities before runtime implementation starts.
+This note documents layer responsibilities for the current V2 runtime.
 
 ## `web/`
 
@@ -10,10 +10,14 @@ This note documents layer responsibilities before runtime implementation starts.
 
 ## `src/core/`
 
-- Future orchestration boundary for canonical runtime path.
+- Orchestration boundary for canonical runtime path.
 - Official metrics governance: canonical path only.
-- Contract placeholder: `src/core/canonical_backtest_contract.py`.
+- Contract definitions: `src/core/canonical_backtest_contract.py`.
+- Official backtest runtime: `src/core/backtest_runner.py`, bound to
+  `qlib.backtest.backtest`.
 - Runtime execution semantics placeholder: `src/core/runtime_execution_placeholder.py`.
+- Risk constraints are not approved canonical runtime behavior until a
+  dedicated decision-first OpenSpec change decides their boundary.
 
 ## `src/data/`
 

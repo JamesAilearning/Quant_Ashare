@@ -227,7 +227,7 @@ class TemporalArtifactLoaderBase:
             return _CsvReadOutcome(0, (), None, None, False, None, 0)
         except OSError as exc:
             raise cls._ERROR_CLASS(
-                f"Cannot read artifact CSV at '{artifact_path}': {exc}"
+                f"Cannot read artifact CSV at '{artifact_file}': {exc}"
             ) from exc
 
         # Build columns_present restricted to columns the contract cares about

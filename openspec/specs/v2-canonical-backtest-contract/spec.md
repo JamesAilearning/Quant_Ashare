@@ -35,12 +35,31 @@ The canonical contract SHALL declare required and optional inputs using frozen, 
 
 ### Requirement: Canonical backtest input SHALL require an explicit price-adjustment mode
 
-The canonical backtest input SHALL require an `adjust_mode` field whose value is one of `pre_adjusted`, `post_adjusted`, or `unadjusted`. There SHALL be no default.
+The canonical backtest input SHALL require an `adjust_mode` field whose value is
+one of `pre_adjusted`, `post_adjusted`, or `unadjusted`. There SHALL be no
+default. Runtime execution SHALL treat the field as an execution boundary, not
+only as provenance: an official backtest SHALL run only when the request's
+adjustment mode matches the initialized qlib provider adjustment mode.
 
 #### Scenario: unknown adjust_mode is rejected
 - **WHEN** a caller supplies `adjust_mode="auto"`
 - **THEN** `CanonicalBacktestContract.validate_input` raises `CanonicalBacktestContractError`
 - **AND** the error message lists the allowed values
+
+#### Scenario: requested adjustment mode differs from provider adjustment mode
+- **WHEN** canonical qlib runtime is initialized with provider adjustment mode
+  `pre_adjusted`
+- **AND** a canonical backtest request supplies `adjust_mode="unadjusted"`
+- **THEN** `BacktestRunner.run()` raises `BacktestRunnerError`
+- **AND** `qlib.backtest.backtest` is not called
+- **AND** no official metric output is produced
+
+#### Scenario: requested adjustment mode matches provider adjustment mode
+- **WHEN** canonical qlib runtime is initialized with provider adjustment mode
+  `pre_adjusted`
+- **AND** a canonical backtest request supplies `adjust_mode="pre_adjusted"`
+- **THEN** `BacktestRunner.run()` may proceed to the anchored qlib backtest
+  callable after all other contract checks pass
 
 ### Requirement: Canonical backtest input SHALL forbid zero-lag signal execution
 
@@ -115,12 +134,33 @@ Research artifacts under `research/factor_lab/` SHALL be treated as non-producti
 
 ### Requirement: Canonical contract SHALL forbid implicit fallback semantics
 
-The canonical contract SHALL require explicit behavior for missing dependencies and SHALL NOT allow hidden fallback paths that change official metric meaning without explicit labeling.
+The canonical contract SHALL require explicit behavior for missing dependencies
+and unsupported output shapes, and SHALL NOT allow hidden fallback paths that
+change official metric meaning without explicit labeling. Official backtest
+execution SHALL require the canonical qlib runtime to be initialized through
+the approved runtime entry point before any official output can be produced.
+Official backtest return-series payloads SHALL remain structured mappings of
+date string to numeric value; unknown series shapes SHALL raise a typed runtime
+error instead of being wrapped as raw display text.
+
+#### Scenario: missing canonical qlib initialization occurs
+- **WHEN** `BacktestRunner.run()` is called before
+  `src.core.qlib_runtime.init_qlib_canonical(...)` has completed
+- **THEN** a typed `BacktestRunnerError` is raised
+- **AND** `qlib.backtest.backtest` is not called
+- **AND** no official metric output is produced
 
 #### Scenario: missing canonical dependency occurs
 - **WHEN** a required canonical dependency is unavailable
 - **THEN** contract behavior is explicitly defined
 - **AND** no implicit hidden fallback changes official metric semantics
+
+#### Scenario: return-series serialization fails
+- **WHEN** the qlib report return, benchmark, or cost series cannot be
+  iterated as date/value pairs or contains non-numeric values
+- **THEN** `BacktestRunner.run()` raises `BacktestRunnerError`
+- **AND** `CanonicalBacktestOutput.return_series` is not populated with a
+  `{"raw": ...}` fallback envelope
 
 ### Requirement: Canonical backtest input SHALL validate `evaluation_start` / `evaluation_end` as ISO dates with start <= end
 

@@ -52,11 +52,6 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
             f"Config file must be a YAML mapping, got {type(raw).__name__}"
         )
 
-    qlib_cfg = QlibRuntimeConfig(
-        provider_uri=raw.get("provider_uri", "D:/qlib_data/my_cn_data"),
-        region=raw.get("region", "cn"),
-    )
-
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}
     qlib_keys = {"provider_uri", "region"}
     unknown = set(raw) - valid_fields - qlib_keys
@@ -64,7 +59,13 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
         _logger.warning("Unknown config keys ignored: %s", sorted(unknown))
 
     filtered = {k: v for k, v in raw.items() if k in valid_fields}
-    return WalkForwardConfig(**filtered), qlib_cfg
+    wf_config = WalkForwardConfig(**filtered)
+    qlib_cfg = QlibRuntimeConfig(
+        provider_uri=raw.get("provider_uri", "D:/qlib_data/my_cn_data"),
+        region=raw.get("region", "cn"),
+        data_adjust_mode=wf_config.adjust_mode,
+    )
+    return wf_config, qlib_cfg
 
 
 def main() -> None:
