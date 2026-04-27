@@ -76,6 +76,17 @@ class PipelineConfig:
     learning_rate: float = 0.0421
     max_depth: int = 8
     num_leaves: int = 210
+    # LGB regularisation / sampling. Defaults mirror LightGBM's own
+    # defaults so existing PipelineConfig users get unchanged behaviour;
+    # config files (e.g. config_walk.yaml) override them with values
+    # that let the boosted trees actually train past the
+    # ``best_iteration ≤ 6`` plateau observed in early walk-forward runs.
+    lambda_l1: float = 0.0
+    lambda_l2: float = 0.0
+    min_data_in_leaf: int = 20
+    feature_fraction: float = 1.0
+    bagging_fraction: float = 1.0
+    bagging_freq: int = 0
 
     # backtest
     benchmark_code: str = "SH000300"
@@ -235,6 +246,12 @@ class Pipeline:
                 max_depth=config.max_depth,
                 num_leaves=config.num_leaves,
                 seed=config.seed,
+                lambda_l1=config.lambda_l1,
+                lambda_l2=config.lambda_l2,
+                min_data_in_leaf=config.min_data_in_leaf,
+                feature_fraction=config.feature_fraction,
+                bagging_fraction=config.bagging_fraction,
+                bagging_freq=config.bagging_freq,
             ),
             dataset=feature_result.dataset,
             model_artifact_path=model_artifact_path,

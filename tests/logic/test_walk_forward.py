@@ -271,6 +271,62 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
         self.assertEqual(request.exchange_config.cost_model.min_cost, 7.5)
         self.assertEqual(request.exchange_config.cost_model.commission_rate, 0.0007)
 
+    def test_fold_lgb_regularisation_passed_to_trainer(self) -> None:
+        """``WalkForwardConfig.lambda_l2`` etc. must reach
+        ``ModelTrainConfig`` — without this passthrough the new tunable
+        knobs at the YAML layer would silently no-op and ``best_iteration``
+        would still hit the un-tuned plateau.
+        """
+        import tempfile
+
+        config = WalkForwardConfig(
+            lambda_l1=0.2,
+            lambda_l2=1.5,
+            min_data_in_leaf=42,
+            feature_fraction=0.7,
+            bagging_fraction=0.8,
+            bagging_freq=5,
+        )
+
+        fake_feature_result = MagicMock()
+        fake_feature_result.dataset = object()
+        fake_model_result = MagicMock(
+            predictions="predictions",
+            prediction_shape=(10,),
+            best_iteration=120,
+            final_valid_loss=0.93,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            return_value=fake_feature_result,
+        ), patch(
+            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ) as mock_trainer, patch(
+            "src.core.walk_forward.SignalAnalyzer.analyze",
+            return_value=_stub_signal_result(),
+        ), patch(
+            "src.core.walk_forward.BacktestRunner.run",
+            return_value=_stub_backtest_output(),
+        ):
+            WalkForwardEngine._run_single_fold(
+                config=config,
+                fold_index=0,
+                train_start="2024-01-01", train_end="2024-06-30",
+                valid_start="2024-07-01", valid_end="2024-09-30",
+                test_start="2024-10-01", test_end="2024-12-31",
+                output_dir=Path(tmp),
+            )
+
+        train_cfg = mock_trainer.call_args.kwargs["config"]
+        self.assertEqual(train_cfg.lambda_l1, 0.2)
+        self.assertEqual(train_cfg.lambda_l2, 1.5)
+        self.assertEqual(train_cfg.min_data_in_leaf, 42)
+        self.assertEqual(train_cfg.feature_fraction, 0.7)
+        self.assertEqual(train_cfg.bagging_fraction, 0.8)
+        self.assertEqual(train_cfg.bagging_freq, 5)
+
 
 class ComputeAggregateNaNSafetyTests(unittest.TestCase):
     """Regression guards for P1c: ``_compute_aggregate`` must tolerate

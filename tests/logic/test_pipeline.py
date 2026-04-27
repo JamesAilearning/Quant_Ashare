@@ -137,6 +137,19 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         self.assertEqual(cfg.region, "cn")
         self.assertEqual(cfg.signal_to_execution_lag, 1)
 
+    def test_lgb_regularisation_defaults_match_lightgbm(self) -> None:
+        """The new ``lambda_l1`` / ``lambda_l2`` / ``min_data_in_leaf`` /
+        ``feature_fraction`` / ``bagging_fraction`` / ``bagging_freq``
+        fields default to LightGBM's own defaults so no behaviour
+        change creeps in for callers that don't set them."""
+        cfg = PipelineConfig(provider_uri="/tmp/fake")
+        self.assertEqual(cfg.lambda_l1, 0.0)
+        self.assertEqual(cfg.lambda_l2, 0.0)
+        self.assertEqual(cfg.min_data_in_leaf, 20)
+        self.assertEqual(cfg.feature_fraction, 1.0)
+        self.assertEqual(cfg.bagging_fraction, 1.0)
+        self.assertEqual(cfg.bagging_freq, 0)
+
 
 class AttributionReportSerializationTests(unittest.TestCase):
     """Pipeline JSON-report contract for attribution.
