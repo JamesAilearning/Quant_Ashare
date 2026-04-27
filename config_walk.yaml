@@ -31,14 +31,40 @@ valid_months: 3
 test_months: 3
 step_months: 3
 
-# Model — LGB shortened from 1000→300 rounds for runtime; the early-
-# stopping patience was kept at the same ratio (50→20 ≈ 1/15 of n_rounds).
+# Model — tuned for "let LGB actually train past best_iteration ≤ 6".
+#
+# What the first run showed
+# -------------------------
+# With learning_rate=0.0421, num_leaves=210, no L2, every fold's
+# best_iteration came in at 1-6. LGB drove valid loss to its local
+# optimum on the first split and early-stopping immediately fired.
+# A fold "trained" in 30 seconds end-to-end because the boosted-tree
+# budget was never used.
+#
+# What changed
+# ------------
+# - learning_rate 0.0421 → 0.005: ~8× smaller step lets the booster
+#   take many more rounds before plateauing on valid loss.
+# - num_leaves 210 → 64 + min_data_in_leaf 20 → 50: smaller / more
+#   regularised trees so each round adds less, encouraging more rounds.
+# - lambda_l2 0.0 → 1.0: explicit L2 regularisation; without it LGB
+#   over-fits the first split's residuals in one go.
+# - feature_fraction / bagging_fraction = 0.8 + bagging_freq=5:
+#   stochastic regularisation, classic recipe for tabular GBDT.
+# - num_boost_round 300 → 1000 + early_stopping_rounds 20 → 50:
+#   raise both ceilings now that best_iter is allowed to climb.
 model_type: "LGBModel"
-num_boost_round: 300
-early_stopping_rounds: 20
-learning_rate: 0.0421
-max_depth: 8
-num_leaves: 210
+num_boost_round: 1000
+early_stopping_rounds: 50
+learning_rate: 0.005
+max_depth: 6
+num_leaves: 64
+lambda_l1: 0.0
+lambda_l2: 1.0
+min_data_in_leaf: 50
+feature_fraction: 0.8
+bagging_fraction: 0.8
+bagging_freq: 5
 
 # Backtest
 benchmark_code: "SH000300"

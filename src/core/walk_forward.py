@@ -78,6 +78,15 @@ class WalkForwardConfig:
     learning_rate: float = 0.0421
     max_depth: int = 8
     num_leaves: int = 210
+    # LGB regularisation / sampling. Defaults mirror LightGBM's own
+    # defaults — adding the fields does not change behaviour for callers
+    # that don't set them. See ModelTrainConfig for the rationale.
+    lambda_l1: float = 0.0
+    lambda_l2: float = 0.0
+    min_data_in_leaf: int = 20
+    feature_fraction: float = 1.0
+    bagging_fraction: float = 1.0
+    bagging_freq: int = 0
 
     # Backtest config
     benchmark_code: str = "SH000300"
@@ -455,6 +464,12 @@ class WalkForwardEngine:
                 learning_rate=config.learning_rate,
                 max_depth=config.max_depth,
                 num_leaves=config.num_leaves,
+                lambda_l1=config.lambda_l1,
+                lambda_l2=config.lambda_l2,
+                min_data_in_leaf=config.min_data_in_leaf,
+                feature_fraction=config.feature_fraction,
+                bagging_fraction=config.bagging_fraction,
+                bagging_freq=config.bagging_freq,
             ),
             dataset=feature_result.dataset,
             model_artifact_path=model_path,

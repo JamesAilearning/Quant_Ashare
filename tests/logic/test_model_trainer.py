@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -462,6 +462,121 @@ class ModelTrainerE2ETests(unittest.TestCase):
             )
             self.assertGreater(result.prediction_shape[0], 0)
             self.assertTrue(Path(result.model_artifact_path).exists())
+
+
+class LGBRegularisationFieldsTests(unittest.TestCase):
+    """ModelTrainConfig now exposes LGB regularisation / sampling
+    knobs (``lambda_l1``, ``lambda_l2``, ``min_data_in_leaf``,
+    ``feature_fraction``, ``bagging_fraction``, ``bagging_freq``).
+
+    Why: walk-forward's first end-to-end run had every fold's
+    ``best_iteration`` come in at 1-6 — LGB pushed valid loss to its
+    local optimum on the first split because there was zero L1/L2
+    regularisation, large ``num_leaves``, and a high learning rate.
+    Without these knobs available at the config layer, an operator
+    cannot tune the model to actually train past that plateau.
+
+    Defaults below mirror LightGBM's own defaults so adding the fields
+    does not change behaviour for callers that don't set them.
+    """
+
+    def test_defaults_match_lightgbm_defaults(self) -> None:
+        cfg = ModelTrainConfig(model_type="LGBModel")
+        self.assertEqual(cfg.lambda_l1, 0.0)
+        self.assertEqual(cfg.lambda_l2, 0.0)
+        self.assertEqual(cfg.min_data_in_leaf, 20)
+        self.assertEqual(cfg.feature_fraction, 1.0)
+        self.assertEqual(cfg.bagging_fraction, 1.0)
+        self.assertEqual(cfg.bagging_freq, 0)
+
+    def test_create_model_forwards_regularisation_to_lgbmodel(self) -> None:
+        """``_create_model`` must pass the new fields through to LGBModel.
+
+        We patch the LGBModel class with a stub that records its kwargs;
+        the test then asserts every regularisation / sampling field
+        landed on the constructor call. Without this guard, a future
+        rename in qlib's LGBModel signature would silently drop the
+        params and the operator would think they were tuning a model
+        that was actually still on defaults.
+        """
+        captured: dict = {}
+
+        class _StubLGB:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.dict(
+            "sys.modules",
+            {"qlib.contrib.model.gbdt": MagicMock(LGBModel=_StubLGB)},
+        ):
+            ModelTrainer._create_model(ModelTrainConfig(
+                model_type="LGBModel",
+                lambda_l1=0.3,
+                lambda_l2=1.5,
+                min_data_in_leaf=42,
+                feature_fraction=0.7,
+                bagging_fraction=0.8,
+                bagging_freq=4,
+            ))
+
+        self.assertEqual(captured["lambda_l1"], 0.3)
+        self.assertEqual(captured["lambda_l2"], 1.5)
+        self.assertEqual(captured["min_data_in_leaf"], 42)
+        self.assertEqual(captured["feature_fraction"], 0.7)
+        self.assertEqual(captured["bagging_fraction"], 0.8)
+        self.assertEqual(captured["bagging_freq"], 4)
+
+    def _validate_with_qlib_init(self, cfg: ModelTrainConfig) -> None:
+        with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
+            ModelTrainer._validate(cfg, model_artifact_path="/tmp/m.pkl")
+
+    def test_rejects_negative_lambda_l1(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "lambda_l1"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", lambda_l1=-0.1),
+            )
+
+    def test_rejects_negative_lambda_l2(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "lambda_l2"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", lambda_l2=-1.0),
+            )
+
+    def test_rejects_zero_min_data_in_leaf(self) -> None:
+        """LightGBM accepts 0 but it pins all rows into a single leaf —
+        a degenerate run; we reject up front."""
+        with self.assertRaisesRegex(ModelTrainerError, "min_data_in_leaf"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", min_data_in_leaf=0),
+            )
+
+    def test_rejects_feature_fraction_above_one(self) -> None:
+        """LightGBM silently clips out-of-range sampling fractions, so a
+        user thinks they're sampling 110% of features and silently runs
+        with 100%. Reject loudly."""
+        with self.assertRaisesRegex(ModelTrainerError, "feature_fraction"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", feature_fraction=1.1),
+            )
+
+    def test_rejects_zero_feature_fraction(self) -> None:
+        """0 disables sampling entirely — LGB has nothing to fit on."""
+        with self.assertRaisesRegex(ModelTrainerError, "feature_fraction"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", feature_fraction=0.0),
+            )
+
+    def test_rejects_bagging_fraction_outside_range(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "bagging_fraction"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", bagging_fraction=1.5),
+            )
+
+    def test_rejects_negative_bagging_freq(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "bagging_freq"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", bagging_freq=-1),
+            )
 
 
 if __name__ == "__main__":

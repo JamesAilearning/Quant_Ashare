@@ -61,7 +61,18 @@ _MAX_LEARNING_RATE = 1.0
 
 @dataclass(frozen=True)
 class ModelTrainConfig:
-    """Frozen configuration for model training."""
+    """Frozen configuration for model training.
+
+    The LGB regularisation / sampling fields below were added so the
+    walk-forward operator can break LGBModel out of the "best_iteration
+    plateau" we observed in the first end-to-end run (every fold's
+    early-stopping fired after ≤6 rounds because the high default
+    learning_rate combined with no L1/L2 regularisation pushed valid
+    loss to its local optimum on the first split). The defaults match
+    LightGBM's own defaults so existing callers get unchanged behaviour;
+    config files (e.g. ``config_walk.yaml``) override them with values
+    that let the boosted trees actually train.
+    """
 
     model_type: str
     num_boost_round: int = 1000
@@ -70,6 +81,16 @@ class ModelTrainConfig:
     max_depth: int = 8
     num_leaves: int = 210
     seed: int = 42
+    # ---- LGB regularisation / sampling ----
+    # All defaults below mirror LightGBM's own defaults so introducing
+    # the fields does not change behaviour for callers that don't set
+    # them. LGBModel accepts every kwarg LightGBM does via **kwargs.
+    lambda_l1: float = 0.0
+    lambda_l2: float = 0.0
+    min_data_in_leaf: int = 20
+    feature_fraction: float = 1.0
+    bagging_fraction: float = 1.0
+    bagging_freq: int = 0
 
 
 @dataclass(frozen=True)
@@ -283,6 +304,15 @@ class ModelTrainer:
                 max_depth=config.max_depth,
                 num_leaves=config.num_leaves,
                 seed=config.seed,
+                # LGB regularisation / sampling. LGBModel forwards
+                # **kwargs into lightgbm.train, so these reach the
+                # underlying booster directly.
+                lambda_l1=config.lambda_l1,
+                lambda_l2=config.lambda_l2,
+                min_data_in_leaf=config.min_data_in_leaf,
+                feature_fraction=config.feature_fraction,
+                bagging_fraction=config.bagging_fraction,
+                bagging_freq=config.bagging_freq,
             )
         elif config.model_type == "XGBModel":
             try:
@@ -443,6 +473,73 @@ class ModelTrainer:
         if not isinstance(config.seed, int) or isinstance(config.seed, bool):
             raise ModelTrainerError(
                 f"seed must be an int, got {type(config.seed).__name__}."
+            )
+
+        # ---- lambda_l1 / lambda_l2 ----
+        # Negative regularisation makes the objective non-convex, which
+        # LightGBM accepts but produces nonsensical models. Reject up
+        # front. ``int`` is allowed because ``isinstance(int, float)``
+        # is False but ``int`` values like ``0`` / ``1`` are common.
+        for name, value in (
+            ("lambda_l1", config.lambda_l1),
+            ("lambda_l2", config.lambda_l2),
+        ):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ModelTrainerError(
+                    f"{name} must be a float; got {type(value).__name__}."
+                )
+            if value < 0:
+                raise ModelTrainerError(
+                    f"{name} must be >= 0; got {value}. Negative regularisation "
+                    "produces ill-defined LGB models."
+                )
+
+        # ---- min_data_in_leaf ----
+        if (
+            not isinstance(config.min_data_in_leaf, int)
+            or isinstance(config.min_data_in_leaf, bool)
+        ):
+            raise ModelTrainerError(
+                f"min_data_in_leaf must be int; got "
+                f"{type(config.min_data_in_leaf).__name__}."
+            )
+        if config.min_data_in_leaf < 1:
+            raise ModelTrainerError(
+                f"min_data_in_leaf must be >= 1; got {config.min_data_in_leaf}."
+            )
+
+        # ---- feature_fraction / bagging_fraction ----
+        # Must lie in (0, 1] — LightGBM clips silently for values
+        # outside this range, again producing a model the user did not
+        # configure.
+        for name, value in (
+            ("feature_fraction", config.feature_fraction),
+            ("bagging_fraction", config.bagging_fraction),
+        ):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ModelTrainerError(
+                    f"{name} must be a float; got {type(value).__name__}."
+                )
+            if not (0.0 < value <= 1.0):
+                raise ModelTrainerError(
+                    f"{name} must be in (0, 1]; got {value}. "
+                    "0 disables sampling entirely (no rows / features) and "
+                    "values > 1 are clipped silently by LightGBM."
+                )
+
+        # ---- bagging_freq ----
+        if (
+            not isinstance(config.bagging_freq, int)
+            or isinstance(config.bagging_freq, bool)
+        ):
+            raise ModelTrainerError(
+                f"bagging_freq must be int; got "
+                f"{type(config.bagging_freq).__name__}."
+            )
+        if config.bagging_freq < 0:
+            raise ModelTrainerError(
+                f"bagging_freq must be >= 0; got {config.bagging_freq}. "
+                "Use 0 to disable, or a positive int (e.g. 5) for periodic bagging."
             )
 
         # ---- model_artifact_path ----
