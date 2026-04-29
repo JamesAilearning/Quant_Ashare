@@ -116,6 +116,33 @@ class AttributionConfig:
     #   would publish results under the wrong label).
     bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL
 
+    # Optional explicit ``{instrument: industry}`` override.
+    #
+    # When ``None`` (default), Brinson attribution buckets instruments
+    # via :func:`src.core.board_heuristic.classify_instruments` — the
+    # A-share *board* heuristic (SH main / ChiNext / STAR / …). That is
+    # NOT a real industry classification and the result honestly carries
+    # ``sector_taxonomy = BOARD_HEURISTIC_TAXONOMY_ID`` to flag the
+    # coarseness.
+    #
+    # When set, the engine uses this map verbatim and stamps the
+    # taxonomy id from ``industry_taxonomy_id`` onto the result so a
+    # downstream consumer can tell board-heuristic runs apart from
+    # real-industry runs (e.g. ``"tushare_sw_l2"``).
+    #
+    # Instruments missing from the override map fall back to
+    # ``"unknown"`` rather than to the board heuristic — mixing the two
+    # taxonomies in one Brinson run would produce nonsensical
+    # comparisons.
+    industry_map_override: Mapping[str, str] | None = None
+
+    # Stable taxonomy id stamped onto :class:`AttributionResult` when
+    # ``industry_map_override`` is in use. Required to be non-empty
+    # whenever ``industry_map_override`` is set; left as the empty
+    # string when the override is absent (the engine then uses the
+    # board-heuristic id).
+    industry_taxonomy_id: str = ""
+
     # NOTE: benchmark_code is intentionally absent here. The attribution
     # engine operates on ``return_series["bench"]`` produced by
     # CanonicalBacktestOutput, which already embeds the correct benchmark
@@ -273,6 +300,16 @@ class PerformanceAttribution:
         sector_effects_sum = total_alloc + total_select + total_interact
         reconciliation_residual = total_excess - sector_effects_sum
 
+        # Stamp the taxonomy id onto the result. ``industry_map_override``
+        # set → caller-supplied id (e.g. ``"tushare_sw_l2"``); otherwise
+        # the board heuristic id. Validated in pair earlier in
+        # :meth:`_validate` so the two cannot diverge.
+        sector_taxonomy = (
+            config.industry_taxonomy_id
+            if config.industry_map_override is not None
+            else BOARD_HEURISTIC_TAXONOMY_ID
+        )
+
         return AttributionResult(
             sector_attribution=tuple(sector_attr),
             total_allocation_effect=total_alloc,
@@ -286,6 +323,7 @@ class PerformanceAttribution:
             sector_effects_sum=sector_effects_sum,
             reconciliation_residual=reconciliation_residual,
             bench_weight_method=config.bench_weight_method,
+            sector_taxonomy=sector_taxonomy,
         )
 
     @classmethod
@@ -378,6 +416,36 @@ class PerformanceAttribution:
                 "benchmark weights; pass bench_weight_method='equal' "
                 "explicitly until the cap-weighted variant is implemented."
             )
+        # Industry override / taxonomy id pairing — both must be set
+        # together, never just one. Without this guard a caller could
+        # supply an override map and get a result stamped with the
+        # board-heuristic taxonomy id, or set a custom taxonomy id while
+        # the engine silently uses the board heuristic. Either way is
+        # the kind of label-mismatch trap the no-implicit-fallback rule
+        # is meant to close.
+        if config.industry_map_override is not None:
+            if len(config.industry_map_override) == 0:
+                raise PerformanceAttributionError(
+                    "AttributionConfig.industry_map_override is an empty mapping. "
+                    "Pass None to use the board heuristic explicitly, or supply "
+                    "a non-empty {instrument: industry} map."
+                )
+            if not str(config.industry_taxonomy_id or "").strip():
+                raise PerformanceAttributionError(
+                    "AttributionConfig.industry_taxonomy_id must be a non-empty "
+                    "string when industry_map_override is set. The taxonomy id "
+                    "(e.g. 'tushare_sw_l2') is stamped onto the result so "
+                    "downstream consumers can tell board-heuristic runs apart "
+                    "from real-industry runs."
+                )
+        elif config.industry_taxonomy_id:
+            raise PerformanceAttributionError(
+                "AttributionConfig.industry_taxonomy_id is set but "
+                "industry_map_override is None. Provide both together, or "
+                "neither: a taxonomy id with no override would mis-label the "
+                "result as a real-industry run while the engine actually used "
+                "the board heuristic."
+            )
 
     @staticmethod
     def _validate_predictions(predictions: Any) -> None:
@@ -407,6 +475,33 @@ class PerformanceAttribution:
             )
         if predictions.empty:
             raise PerformanceAttributionError("predictions Series is empty.")
+
+    @staticmethod
+    def _build_sector_map(
+        instruments: list[str], config: AttributionConfig,
+    ) -> dict[str, str]:
+        """Resolve the ``{instrument: bucket}`` map for Brinson.
+
+        Two paths:
+
+        - ``config.industry_map_override`` is set → use it verbatim,
+          falling back to ``"unknown"`` for instruments missing from
+          the override. Mixing in board-heuristic buckets for the
+          missing names would silently produce a Brinson run that
+          claims a real industry taxonomy while half the rows came
+          from the listing-venue heuristic.
+        - Otherwise → ``classify_instruments`` (the board heuristic).
+
+        The corresponding ``sector_taxonomy`` stamping happens in
+        :meth:`analyze` based on the same ``config.industry_map_override``
+        flag, so the result label and the actual map can never disagree.
+        """
+        if config.industry_map_override is not None:
+            override = config.industry_map_override
+            return {
+                inst: str(override.get(inst, "unknown")) for inst in instruments
+            }
+        return classify_instruments(instruments)
 
     @classmethod
     def _brinson_attribution(
@@ -438,7 +533,7 @@ class PerformanceAttribution:
                         seen.add(inst)
                         held_instruments.append(inst)
         instruments = sorted(set(pred_instruments) | set(held_instruments))
-        sector_map = classify_instruments(instruments)
+        sector_map = cls._build_sector_map(instruments, config)
 
         # Portfolio weights: prefer real positions, fall back to prediction scores.
         if positions:

@@ -579,5 +579,138 @@ class BenchWeightMethodTests(unittest.TestCase):
         self.assertIn("free-float-cap", joined)
 
 
+class IndustryMapOverrideTests(unittest.TestCase):
+    """``AttributionConfig.industry_map_override`` lets a caller swap
+    the default board-heuristic sector map for a real industry
+    classification (Tushare Shenwan L2 in v1).
+
+    Two failure modes the validation must close:
+
+    1. Override map set without ``industry_taxonomy_id`` — the result
+       would be stamped with the board-heuristic id while actually
+       computed from the override map. Label mismatch trap.
+    2. ``industry_taxonomy_id`` set without override — the result
+       would be stamped with a real-industry id while actually
+       computed from the board heuristic. Same trap, mirror image.
+    """
+
+    def test_default_uses_board_heuristic(self) -> None:
+        """No override → ``_build_sector_map`` returns board buckets,
+        and the result carries ``BOARD_HEURISTIC_TAXONOMY_ID``."""
+        cfg = AttributionConfig()
+        sector_map = PerformanceAttribution._build_sector_map(
+            ["SH600000", "SZ300001"], cfg,
+        )
+        # SH600000 → board_SH_Main, SZ300001 → board_ChiNext
+        self.assertEqual(sector_map["SH600000"], BOARD_SH_MAIN)
+        self.assertEqual(sector_map["SZ300001"], BOARD_CHINEXT)
+
+    def test_override_used_verbatim(self) -> None:
+        cfg = AttributionConfig(
+            industry_map_override={
+                "SH600000": "银行",
+                "SZ300001": "电子",
+            },
+            industry_taxonomy_id="tushare_sw_l2",
+        )
+        sector_map = PerformanceAttribution._build_sector_map(
+            ["SH600000", "SZ300001"], cfg,
+        )
+        self.assertEqual(sector_map, {
+            "SH600000": "银行",
+            "SZ300001": "电子",
+        })
+
+    def test_instrument_missing_from_override_falls_back_to_unknown(self) -> None:
+        """Missing instruments must NOT mix in the board heuristic —
+        a Brinson run mixing two taxonomies would be uninterpretable.
+        ``unknown`` makes the gap explicit."""
+        cfg = AttributionConfig(
+            industry_map_override={"SH600000": "银行"},
+            industry_taxonomy_id="tushare_sw_l2",
+        )
+        sector_map = PerformanceAttribution._build_sector_map(
+            ["SH600000", "SZ300001", "SH688001"], cfg,
+        )
+        self.assertEqual(sector_map["SH600000"], "银行")
+        self.assertEqual(sector_map["SZ300001"], "unknown")
+        self.assertEqual(sector_map["SH688001"], "unknown")
+
+    def _validate_with_qlib_init(self, **kwargs):
+        cfg = AttributionConfig(**kwargs)
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            PerformanceAttribution._validate(
+                config=cfg,
+                return_series={"return": {"d": 0.01}, "bench": {"d": 0.005}},
+                positions=None,
+            )
+
+    def test_rejects_override_without_taxonomy_id(self) -> None:
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "industry_taxonomy_id must be"
+        ):
+            self._validate_with_qlib_init(
+                industry_map_override={"SH600000": "银行"},
+                industry_taxonomy_id="",
+            )
+
+    def test_rejects_taxonomy_id_without_override(self) -> None:
+        with self.assertRaisesRegex(
+            PerformanceAttributionError,
+            "industry_taxonomy_id is set but industry_map_override is None",
+        ):
+            self._validate_with_qlib_init(
+                industry_map_override=None,
+                industry_taxonomy_id="tushare_sw_l2",
+            )
+
+    def test_rejects_empty_override_mapping(self) -> None:
+        """Empty override is a caller error, not 'use the heuristic
+        instead'. Pass ``None`` to opt into the default explicitly."""
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "empty mapping"
+        ):
+            self._validate_with_qlib_init(
+                industry_map_override={},
+                industry_taxonomy_id="tushare_sw_l2",
+            )
+
+    def test_result_carries_override_taxonomy_id(self) -> None:
+        """End-to-end via ``analyze``: when override is set, the
+        result's ``sector_taxonomy`` must be the caller-supplied id,
+        not the board-heuristic constant."""
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000"),
+             (pd.Timestamp("2025-10-01"), "SH601398")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([0.5, 0.5], index=idx)
+        cfg = AttributionConfig(
+            start_date="2025-10-01", end_date="2025-10-01",
+            industry_map_override={
+                "SH600000": "银行",
+                "SH601398": "银行",
+            },
+            industry_taxonomy_id="tushare_sw_l2",
+        )
+        return_series = {
+            "return": {"2025-10-01": 0.01},
+            "bench": {"2025-10-01": 0.005},
+        }
+        with patch(
+            "src.core.performance_attribution.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            PerformanceAttribution, "_get_instrument_returns",
+            return_value=pd.Series({"SH600000": 0.01, "SH601398": 0.02}),
+        ):
+            result = PerformanceAttribution.analyze(
+                return_series=return_series,
+                predictions=predictions,
+                config=cfg,
+            )
+        self.assertEqual(result.sector_taxonomy, "tushare_sw_l2")
+
+
 if __name__ == "__main__":
     unittest.main()
