@@ -1,0 +1,36 @@
+# Tushare industry-classification ingest config.
+#
+# IMPORTANT: this file does NOT carry the Tushare token. The
+# ingest script reads the token from the ``TUSHARE_TOKEN`` environment
+# variable so the secret never lands in committed config:
+#
+#     export TUSHARE_TOKEN='your_pro_token_here'
+#     python scripts/ingest_tushare_industry.py config_tushare.yaml
+#
+# Putting a key called ``tushare_token`` here will make the script
+# refuse to run.
+
+# Snapshot date — when this membership view was taken. Required because
+# Tushare's ``index_member`` returns "currently active" rows, not a
+# date-stamped view; the snapshot date pins the artifact so downstream
+# consumers know as-of when it is valid.
+snapshot_at: "2026-04-25"
+
+# Output paths. The artifact is a canonical taxonomy CSV
+# (instrument, industry_code) readable by TaxonomyArtifactLoader; the
+# manifest sidecar carries provenance metadata.
+artifact_path: "output/taxonomy/sw_l2.csv"
+manifest_path: "output/taxonomy/sw_l2.json"
+
+# Shenwan revision. SW2021 is the active version; SW2014 is the legacy
+# revision retained for back-compat studies.
+shenwan_src: "SW2021"
+
+# Industry level. v1 contract is L2 (~120 industries); other levels
+# work but are not part of the v1 test surface.
+level: "L2"
+
+# Taxonomy name written into the manifest. Stable string downstream
+# consumers can branch on if they ever need to distinguish Tushare-
+# published industries from a future alternative source.
+taxonomy_name: "tushare_sw_l2"
