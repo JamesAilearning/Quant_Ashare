@@ -1,4 +1,10 @@
-## ADDED Requirements
+# v2-benchmark-artifact-publisher Specification
+
+## Purpose
+Define the qlib-backed benchmark artifact publisher that writes canonical
+benchmark CSV and manifest files with explicit provenance.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a benchmark artifact publisher backed by the pinned qlib provider
 

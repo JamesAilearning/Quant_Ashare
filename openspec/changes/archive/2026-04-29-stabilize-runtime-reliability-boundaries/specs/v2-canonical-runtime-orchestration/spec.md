@@ -2,11 +2,11 @@
 
 ### Requirement: Canonical runtime orchestration SHALL preserve backtest execution semantics
 
-Runtime orchestration components and shipped runtime CLIs that construct
-canonical runtime/backtest config SHALL preserve caller-supplied canonical
-backtest controls instead of substituting hidden defaults. This includes price
-adjustment mode, signal-to-execution lag, execution price kind, minimum cost,
-and limit threshold.
+Runtime orchestration components and shipped runtime CLIs SHALL preserve
+caller-supplied canonical backtest controls when constructing canonical
+runtime/backtest config instead of substituting hidden defaults. This includes
+price adjustment mode, signal-to-execution lag, execution price kind, minimum
+cost, and limit threshold.
 
 #### Scenario: Walk-forward CLI initializes qlib runtime
 - **WHEN** `scripts/run_walk_forward.py` loads a walk-forward YAML config

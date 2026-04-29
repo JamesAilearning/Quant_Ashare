@@ -1,4 +1,10 @@
-## ADDED Requirements
+# v2-qlib-runtime-bootstrap Specification
+
+## Purpose
+Define the single canonical qlib runtime initialization boundary and the
+anchored official qlib backtest callable used by the V2 runtime.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a single canonical qlib runtime initialization entry point
 

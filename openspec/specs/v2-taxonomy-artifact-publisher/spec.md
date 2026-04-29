@@ -1,4 +1,10 @@
-## ADDED Requirements
+# v2-taxonomy-artifact-publisher Specification
+
+## Purpose
+Define the taxonomy artifact publisher that writes canonical taxonomy CSV and
+manifest files from caller-supplied rows with explicit provenance.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a taxonomy artifact publisher that writes canonical csv + manifest from caller-supplied rows
 
@@ -48,10 +54,10 @@ The publisher SHALL NOT write a csv with zero data rows. An empty
 
 ### Requirement: Taxonomy publisher SHALL validate row arity per temporal_mode before any IO
 
-Same semantics as the universe publisher: arity must match the
-declared `temporal_mode`, validation runs before any file is
-written, and failures raise `TaxonomyArtifactPublisherError` with
-no partial artifact left on disk.
+The taxonomy publisher SHALL validate row arity with the same semantics as the
+universe publisher: arity must match the declared `temporal_mode`, validation
+runs before any file is written, and failures raise
+`TaxonomyArtifactPublisherError` with no partial artifact left on disk.
 
 #### Scenario: static mode with 3-tuple rows is rejected
 - **WHEN** the publisher is called with `temporal_mode="static"`
@@ -66,11 +72,11 @@ no partial artifact left on disk.
 
 ### Requirement: Taxonomy publisher SHALL validate ISO date fields before any IO
 
-Same semantics as the universe publisher: every date-valued field
-in `rows` and in `snapshot_at` is ISO-parsed before any file is
-written. Parse failures raise `TaxonomyArtifactPublisherError`
-with the offending field and value, and leave no csv or manifest
-file on disk.
+The taxonomy publisher SHALL validate ISO date fields with the same semantics
+as the universe publisher: every date-valued field in `rows` and in
+`snapshot_at` is ISO-parsed before any file is written. Parse failures raise
+`TaxonomyArtifactPublisherError` with the offending field and value, and leave
+no csv or manifest file on disk.
 
 #### Scenario: malformed trade_date in a row is rejected
 - **WHEN** the publisher is called with `temporal_mode="trade_date"`
@@ -87,9 +93,10 @@ file on disk.
 
 ### Requirement: Taxonomy publisher SHALL derive `snapshot_at` from actual max trade_date in trade_date mode
 
-Same semantics as the universe publisher: in `trade_date` mode,
-default `snapshot_at = max(row.trade_date)`; explicit
-`snapshot_at` must strictly equal the computed value.
+The taxonomy publisher SHALL derive `snapshot_at` with the same semantics as
+the universe publisher: in `trade_date` mode, default
+`snapshot_at = max(row.trade_date)`; explicit `snapshot_at` must strictly equal
+the computed value.
 
 #### Scenario: explicit snapshot_at matches max trade_date
 - **WHEN** the publisher is called in `trade_date` mode with
@@ -108,9 +115,10 @@ default `snapshot_at = max(row.trade_date)`; explicit
 
 ### Requirement: Taxonomy publisher SHALL require explicit snapshot_at in static and range modes
 
-In `static` and `range` modes there is no natural max-row-date to
-derive `snapshot_at` from; the publisher SHALL require an explicit
-`snapshot_at` ISO date argument.
+The taxonomy publisher SHALL require explicit `snapshot_at` in `static` and
+`range` modes because there is no natural max-row-date to derive
+`snapshot_at` from. The caller SHALL provide a non-empty ISO `snapshot_at`
+argument.
 
 #### Scenario: static mode without snapshot_at is rejected
 - **WHEN** the publisher is called with `temporal_mode="static"`

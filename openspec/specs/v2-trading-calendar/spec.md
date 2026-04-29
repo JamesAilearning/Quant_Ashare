@@ -1,4 +1,10 @@
-## ADDED Requirements
+# v2-trading-calendar Specification
+
+## Purpose
+Define the trading-calendar abstraction used by artifact coverage and runtime
+date-window helpers.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a TradingCalendar abstraction in `src/data/`
 

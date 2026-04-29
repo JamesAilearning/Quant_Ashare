@@ -1,4 +1,11 @@
-## ADDED Requirements
+# v2-universe-artifact-loader Specification
+
+## Purpose
+Define the explicit file-based universe artifact loader that turns canonical
+universe CSV and manifest files into contract-consumable profiles without
+runtime universe selection.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a universe artifact loader that produces contract-consumable profiles
 

@@ -1,4 +1,11 @@
-## ADDED Requirements
+# v2-benchmark-artifact-loader Specification
+
+## Purpose
+Define the explicit file-based benchmark artifact loader that turns canonical
+benchmark CSV and manifest files into contract-consumable profiles without
+runtime benchmark selection.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a benchmark artifact loader that produces contract-consumable profiles
 

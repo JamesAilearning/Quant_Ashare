@@ -1,4 +1,10 @@
-## ADDED Requirements
+# v2-universe-artifact-publisher Specification
+
+## Purpose
+Define the universe artifact publisher that writes canonical universe CSV and
+manifest files from caller-supplied rows with explicit provenance.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a universe artifact publisher that writes canonical csv + manifest from caller-supplied rows
 
@@ -123,10 +129,11 @@ differ.
 
 ### Requirement: Universe publisher SHALL require explicit snapshot_at in static and range modes
 
-In `static` and `range` modes there is no natural max-row-date to
-derive `snapshot_at` from; the publisher SHALL require an explicit
-`snapshot_at` ISO date argument and SHALL raise
-`UniverseArtifactPublisherError` when it is missing.
+The universe publisher SHALL require explicit `snapshot_at` in `static` and
+`range` modes because there is no natural max-row-date to derive
+`snapshot_at` from. The caller SHALL provide a non-empty ISO `snapshot_at`
+argument and the publisher SHALL raise `UniverseArtifactPublisherError` when it
+is missing.
 
 #### Scenario: static mode without snapshot_at is rejected
 - **WHEN** the publisher is called with `temporal_mode="static"`

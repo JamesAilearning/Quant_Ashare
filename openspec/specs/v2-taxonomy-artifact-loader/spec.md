@@ -1,4 +1,11 @@
-## ADDED Requirements
+# v2-taxonomy-artifact-loader Specification
+
+## Purpose
+Define the explicit file-based taxonomy artifact loader that turns canonical
+taxonomy CSV and manifest files into contract-consumable profiles without
+runtime industry selection.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide a taxonomy artifact loader that produces contract-consumable profiles
 
@@ -58,9 +65,10 @@ environment lookup, or registry defaults.
 
 ### Requirement: Taxonomy loader SHALL detect snapshot_at vs max-trade-date mismatch in trade_date mode
 
-Same semantics as the universe loader: the check only fires in
-`trade_date` mode when both the manifest `snapshot_at` and the csv's
-max `trade_date` are present and parseable.
+The taxonomy loader SHALL detect snapshot mismatches with the same semantics
+as the universe loader: the check only fires in `trade_date` mode when both the
+manifest `snapshot_at` and the csv's max `trade_date` are present and
+parseable.
 
 #### Scenario: trade_date mode manifest snapshot_at greater than max trade_date
 - **WHEN** the manifest declares `snapshot_at = 2026-02-27` and the
@@ -74,7 +82,8 @@ max `trade_date` are present and parseable.
 
 ### Requirement: Taxonomy loader SHALL detect future-dated rows against reference_date
 
-Same semantics as the universe loader:
+The taxonomy loader SHALL detect future-dated rows with the same semantics as
+the universe loader:
 
 - `trade_date` mode: any `trade_date > reference_date` sets
   `has_future_effective_data=True`.
@@ -89,9 +98,10 @@ Same semantics as the universe loader:
 
 ### Requirement: Taxonomy loader SHALL accept an optional TradingCalendar for coverage accounting in trade_date mode
 
-Same semantics as the universe loader: coverage is computed only
-in `trade_date` mode AND when a `TradingCalendar` is injected. No
-calendar-free fallback approximation SHALL be used.
+The taxonomy loader SHALL compute coverage with the same semantics as the
+universe loader: coverage is computed only in `trade_date` mode AND when a
+`TradingCalendar` is injected. No calendar-free fallback approximation SHALL be
+used.
 
 #### Scenario: trade_date mode with calendar yields coverage
 - **WHEN** the loader reads a trade_date mode csv with five
