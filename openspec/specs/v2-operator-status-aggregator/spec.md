@@ -1,4 +1,10 @@
-## ADDED Requirements
+# v2-operator-status-aggregator Specification
+
+## Purpose
+Define how individual data-contract statuses are aggregated into an
+operator-facing workflow status snapshot without changing runtime semantics.
+
+## Requirements
 
 ### Requirement: V2 SHALL provide an operator status aggregator that bridges data contract statuses to the workflow snapshot
 
