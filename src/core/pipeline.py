@@ -502,11 +502,7 @@ class Pipeline:
                 "prediction_shape": list(model_result.prediction_shape),
                 "model_artifact_path": model_result.model_artifact_path,
             },
-            "signal_analysis": {
-                "ic_summary": dict(signal_result.ic_summary),
-                "ic_decay": list(signal_result.ic_decay),
-                "turnover": dict(signal_result.turnover_stats),
-            },
+            "signal_analysis": Pipeline._signal_analysis_section(signal_result),
             "backtest": {
                 "report": backtest_output.report,
                 "provenance": dict(backtest_output.provenance),
@@ -546,6 +542,38 @@ class Pipeline:
                 sanitized, f, indent=2, ensure_ascii=False,
                 default=str, allow_nan=False,
             )
+
+    @staticmethod
+    def _signal_analysis_section(signal_result: SignalAnalysisResult) -> dict:
+        """Build the ``signal_analysis`` block of the JSON report.
+
+        Why this is its own method
+        --------------------------
+        ``ic_summary`` is keyed by int forward-period in memory.
+        Without explicit coercion, ``json.dump`` silently stringifies
+        the keys on write — so the on-disk JSON has ``"1"`` / ``"5"``
+        but the in-memory dict has ``1`` / ``5``, and a single test
+        that exercises both paths would have to special-case the
+        round-trip mismatch. Coercing here aligns:
+
+        - the in-memory dict the helper returns,
+        - the bytes ``json.dump`` writes,
+        - the dict ``json.load`` parses back,
+
+        all to ``str`` keys.
+
+        Mirrors the explicit ``str(period)`` coercion already done in
+        ``walk_forward._build_fold_report`` so the two writers stay
+        consistent.
+        """
+        return {
+            "ic_summary": {
+                str(period): dict(stats)
+                for period, stats in signal_result.ic_summary.items()
+            },
+            "ic_decay": list(signal_result.ic_decay),
+            "turnover": dict(signal_result.turnover_stats),
+        }
 
     @staticmethod
     def _attribution_section(

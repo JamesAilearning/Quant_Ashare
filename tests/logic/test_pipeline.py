@@ -322,6 +322,69 @@ class AttributionSectionStatusTests(unittest.TestCase):
         self.assertEqual(block["skipped_reason"], "unknown_reason")
 
 
+class SignalAnalysisSectionTests(unittest.TestCase):
+    """``Pipeline._signal_analysis_section`` must coerce ``ic_summary``
+    keys to ``str`` *up front*, not lean on ``json.dump``'s implicit
+    int -> str.
+
+    The legacy code wrote ``dict(signal_result.ic_summary)`` directly,
+    which left keys as ints in memory; ``json.dump`` then stringified
+    them on write. After ``json.load`` the round-tripped dict had
+    str keys, so a single consumer reading both fresh-from-memory and
+    reloaded-from-disk dicts would have to special-case both shapes.
+    Aligning the writer to mirror walk_forward's explicit coercion
+    closes that.
+    """
+
+    @staticmethod
+    def _build_signal_result():
+        from src.core.signal_analyzer import SignalAnalysisResult
+        return SignalAnalysisResult(
+            ic_summary={
+                1: {"mean_ic": 0.012, "std_ic": 0.018, "ir": 0.667, "num_days": 60},
+                5: {"mean_ic": 0.024, "std_ic": 0.020, "ir": 1.20, "num_days": 60},
+            },
+            ic_series={},
+            ic_decay=[0.012, 0.020, 0.024, 0.018, 0.010],
+            turnover_stats={"mean_turnover": 0.4, "std_turnover": 0.05},
+        )
+
+    def test_keys_are_strings_in_memory(self) -> None:
+        section = Pipeline._signal_analysis_section(self._build_signal_result())
+        keys = list(section["ic_summary"].keys())
+        self.assertTrue(
+            all(isinstance(k, str) for k in keys),
+            f"ic_summary keys must be strings; got {keys!r}",
+        )
+        self.assertEqual(set(keys), {"1", "5"})
+
+    def test_inner_stats_round_trip(self) -> None:
+        section = Pipeline._signal_analysis_section(self._build_signal_result())
+        self.assertAlmostEqual(section["ic_summary"]["1"]["mean_ic"], 0.012)
+        self.assertAlmostEqual(section["ic_summary"]["5"]["ir"], 1.20)
+
+    def test_ic_decay_and_turnover_passed_through(self) -> None:
+        section = Pipeline._signal_analysis_section(self._build_signal_result())
+        self.assertEqual(len(section["ic_decay"]), 5)
+        self.assertEqual(section["turnover"]["mean_turnover"], 0.4)
+
+    def test_strict_json_round_trip_preserves_str_keys(self) -> None:
+        """End-to-end: dump with ``allow_nan=False`` (the writer's
+        actual mode), reload, and assert the ic_summary keys are still
+        strings — and equal to the in-memory keys. Without the explicit
+        coercion these two dicts would differ (int vs str)."""
+        section = Pipeline._signal_analysis_section(self._build_signal_result())
+        encoded = json.dumps(section, allow_nan=False)
+        decoded = json.loads(encoded)
+        self.assertEqual(
+            set(section["ic_summary"].keys()),
+            set(decoded["ic_summary"].keys()),
+            "in-memory and round-tripped key sets must match exactly",
+        )
+        # Belt + braces: both are ``str``.
+        self.assertTrue(all(isinstance(k, str) for k in decoded["ic_summary"]))
+
+
 class JsonSanitizationTests(unittest.TestCase):
     """``_sanitize_for_json`` must replace non-finite floats with
     ``None`` so ``json.dumps`` produces standard JSON.
