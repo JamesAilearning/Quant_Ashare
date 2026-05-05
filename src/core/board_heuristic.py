@@ -5,7 +5,7 @@ Why this module exists
 Two call sites previously carried identical 30-line implementations of
 the same function:
 
-* ``src.core.risk_constraints._code_based_sector_map``
+* ``src.experimental.risk_constraints._code_based_sector_map``
 * ``src.core.performance_attribution._code_based_sector_map``
 
 Both classified A-share instruments into six buckets by code prefix

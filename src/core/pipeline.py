@@ -13,10 +13,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core.logger import get_logger
 
 _logger = get_logger(__name__)
 
+from src.core.attribution_industry_loader import (
+    IndustryTaxonomyLoadError,
+    assert_industry_config_complete_or_empty,
+    resolve_industry_taxonomy,
+)
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -116,6 +122,10 @@ class PipelineConfig:
 
     # performance attribution
     run_attribution: bool = True
+    industry_artifact_path: str | None = None
+    industry_manifest_path: str | None = None
+    industry_taxonomy_id: str = ""
+    industry_temporal_mode: str = TAXONOMY_MODE_STATIC
 
     # output
     output_dir: str = "output"
@@ -175,6 +185,18 @@ class PipelineConfig:
                 f"{self.signal_to_execution_lag!r}. The canonical backtest "
                 "contract forbids zero-lag execution."
             )
+        # Industry-taxonomy fields: enforce all-or-nothing + supported
+        # ``temporal_mode``. Same boundary contract as
+        # ``WalkForwardConfig.__post_init__`` so the two configs cannot
+        # diverge on partial-config rejection.
+        assert_industry_config_complete_or_empty(
+            artifact_path=self.industry_artifact_path,
+            manifest_path=self.industry_manifest_path,
+            taxonomy_id=self.industry_taxonomy_id,
+            temporal_mode=self.industry_temporal_mode,
+            error_class=PipelineError,
+            error_prefix="PipelineConfig",
+        )
 
 
 @dataclass(frozen=True)
@@ -353,14 +375,7 @@ class Pipeline:
                     attribution_result = PerformanceAttribution.analyze(
                         return_series=backtest_output.return_series,
                         predictions=model_result.predictions,
-                        config=AttributionConfig(
-                            start_date=config.test_start,
-                            end_date=config.test_end,
-                            # benchmark_code intentionally omitted —
-                            # attribution uses return_series["bench"]
-                            # from CanonicalBacktestOutput, which already
-                            # embeds the correct benchmark data.
-                        ),
+                        config=cls._build_attribution_config(config),
                         positions=backtest_output.positions,
                     )
                     PerformanceAttribution.print_report(attribution_result)
@@ -492,6 +507,7 @@ class Pipeline:
                 "benchmark_code": config.benchmark_code,
                 "topk": config.topk,
                 "n_drop": config.n_drop,
+                "industry_taxonomy_id": config.industry_taxonomy_id or None,
             },
             "dataset": {
                 "train_shape": list(feature_result.train_shape),
@@ -574,6 +590,49 @@ class Pipeline:
             "ic_decay": list(signal_result.ic_decay),
             "turnover": dict(signal_result.turnover_stats),
         }
+
+    @staticmethod
+    def _build_attribution_config(config: PipelineConfig) -> AttributionConfig:
+        """Build attribution config, optionally with a validated taxonomy map.
+
+        Delegates the load + contract validation to
+        :func:`resolve_industry_taxonomy` so the same logic is shared
+        with ``WalkForwardEngine``. Pipeline-specific behaviour stays
+        here: catching the shared :class:`IndustryTaxonomyLoadError`
+        and re-raising as :class:`PipelineError` (so the rest of
+        Pipeline can ``except PipelineError`` cleanly), and logging
+        contract warnings via the pipeline's own logger so they land
+        in the run's log file.
+        """
+        base = {
+            "start_date": config.test_start,
+            "end_date": config.test_end,
+        }
+        if not config.industry_artifact_path:
+            return AttributionConfig(**base)
+
+        try:
+            resolution = resolve_industry_taxonomy(
+                artifact_path=str(config.industry_artifact_path),
+                manifest_path=str(config.industry_manifest_path),
+                taxonomy_id=str(config.industry_taxonomy_id).strip(),
+                temporal_mode=config.industry_temporal_mode,
+                reference_date=config.test_end,
+            )
+        except IndustryTaxonomyLoadError as exc:
+            raise PipelineError(str(exc)) from exc
+
+        for warning in resolution.warnings:
+            _logger.warning(
+                "Industry taxonomy contract warning for attribution: %s",
+                warning,
+            )
+
+        return AttributionConfig(
+            **base,
+            industry_map_override=resolution.industry_map,
+            industry_taxonomy_id=resolution.taxonomy_id,
+        )
 
     @staticmethod
     def _attribution_section(

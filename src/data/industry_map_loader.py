@@ -1,6 +1,6 @@
 """Read a published taxonomy CSV into the ``{instrument: industry}``
-dict shape that ``risk_constraints`` and ``performance_attribution``
-already accept.
+dict shape that experimental risk constraints and
+``performance_attribution`` already accept.
 
 Why a separate loader
 ---------------------
@@ -131,7 +131,7 @@ def coerce_industry_map(mapping: Mapping[str, str]) -> dict[str, str]:
     """Cast a ``Mapping[str, str]`` to a plain ``dict[str, str]``.
 
     Convenience for call sites that received a ``Mapping`` (which is
-    the contract type used by ``RiskConstraintConfig.industry_map``)
+    the contract type used by experimental ``RiskConstraintConfig.industry_map``)
     and need a mutable / inspectable dict for diagnostics. Pure type
     coercion — no validation.
     """

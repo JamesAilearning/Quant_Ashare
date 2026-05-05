@@ -1,4 +1,4 @@
-"""Tests for src.core.risk_constraints — portfolio risk constraint engine."""
+"""Tests for experimental risk constraints — portfolio risk constraint engine."""
 
 import unittest
 from unittest.mock import patch
@@ -12,7 +12,7 @@ from src.core.board_heuristic import (
     BOARD_STAR,
     BOARD_SZ_MAIN,
 )
-from src.core.risk_constraints import (
+from src.experimental.risk_constraints import (
     RiskConstraintConfig,
     RiskConstraintEngine,
     RiskConstraintError,
@@ -40,17 +40,17 @@ class RiskConstraintValidationTests(unittest.TestCase):
 
     def test_rejects_when_qlib_not_initialized(self):
         predictions = _make_predictions()
-        with patch("src.core.risk_constraints.is_canonical_qlib_initialized", return_value=False):
+        with patch("src.experimental.risk_constraints.is_canonical_qlib_initialized", return_value=False):
             with self.assertRaises(RiskConstraintError):
                 RiskConstraintEngine.apply(predictions)
 
     def test_rejects_non_series(self):
-        with patch("src.core.risk_constraints.is_canonical_qlib_initialized", return_value=True):
+        with patch("src.experimental.risk_constraints.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaises(RiskConstraintError):
                 RiskConstraintEngine.apply([1, 2, 3])
 
     def test_rejects_non_multiindex(self):
-        with patch("src.core.risk_constraints.is_canonical_qlib_initialized", return_value=True):
+        with patch("src.experimental.risk_constraints.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaises(RiskConstraintError):
                 RiskConstraintEngine.apply(pd.Series([1.0], index=[0]))
 
@@ -62,7 +62,7 @@ class RiskConstraintValidationTests(unittest.TestCase):
 
     def test_industry_limit_applied(self):
         predictions = _make_predictions(n_dates=3, n_stocks=20)
-        with patch("src.core.risk_constraints.is_canonical_qlib_initialized", return_value=True):
+        with patch("src.experimental.risk_constraints.is_canonical_qlib_initialized", return_value=True):
             result = RiskConstraintEngine.apply(
                 predictions,
                 config=RiskConstraintConfig(
@@ -76,7 +76,7 @@ class RiskConstraintValidationTests(unittest.TestCase):
 
     def test_no_limit_passes_through(self):
         predictions = _make_predictions(n_dates=2, n_stocks=10)
-        with patch("src.core.risk_constraints.is_canonical_qlib_initialized", return_value=True):
+        with patch("src.experimental.risk_constraints.is_canonical_qlib_initialized", return_value=True):
             result = RiskConstraintEngine.apply(
                 predictions,
                 config=RiskConstraintConfig(
@@ -152,7 +152,7 @@ class IndustryMapResolutionTests(unittest.TestCase):
         predictions = _make_predictions(n_dates=1, n_stocks=10)
         config = RiskConstraintConfig()  # industry_map=None (default)
 
-        with patch("src.core.risk_constraints._logger") as mock_logger:
+        with patch("src.experimental.risk_constraints._logger") as mock_logger:
             resolved = RiskConstraintEngine._get_industry_map(predictions, config)
 
         # Fallback map produced (prefixes yield SH_Main / SZ_Main / etc.)
@@ -190,7 +190,7 @@ class IndustryMapResolutionTests(unittest.TestCase):
             for inst in predictions.index.get_level_values(1).unique()
         }
         with patch(
-            "src.core.risk_constraints.is_canonical_qlib_initialized",
+            "src.experimental.risk_constraints.is_canonical_qlib_initialized",
             return_value=True,
         ):
             result = RiskConstraintEngine.apply(

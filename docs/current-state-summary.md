@@ -14,9 +14,12 @@ Date: 2026-04-26
 - Pipeline and WalkForward runtime orchestration exist on main.
 - Benchmark, universe, taxonomy, and run-artifact contracts/loaders provide
   validation and operator-status inputs.
-- Risk-constraint runtime behavior is still pending a dedicated
-  decision-first runtime-boundary change before it can be treated as approved
-  canonical behavior.
+- Risk-constraint runtime behavior is explicitly experimental and fails closed
+  through the canonical `src.core` boundary until a dedicated decision-first
+  runtime change approves any promotion.
+- Pipeline attribution can optionally consume a validated static taxonomy
+  artifact when artifact, manifest, and taxonomy id are configured together;
+  otherwise it remains explicitly board-heuristic.
 
 ## Immediate Goals
 

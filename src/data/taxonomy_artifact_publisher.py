@@ -148,6 +148,9 @@ class TaxonomyArtifactPublisher:
             cls._parse_iso_strict(str(snapshot_at).strip(), "snapshot_at")
             effective_snapshot_at = str(snapshot_at).strip()
 
+        if temporal_mode == TAXONOMY_MODE_STATIC:
+            cls._validate_unique_static_instruments(rows)
+
         artifact_file = Path(artifact_path)
         manifest_file = Path(manifest_path)
         try:
@@ -201,6 +204,21 @@ class TaxonomyArtifactPublisher:
             raise TaxonomyArtifactPublisherError(
                 f"{field_name} must be ISO date YYYY-MM-DD, got '{value}'."
             ) from exc
+
+    @staticmethod
+    def _validate_unique_static_instruments(rows: Sequence[tuple]) -> None:
+        seen: dict[str, str] = {}
+        for idx, row in enumerate(rows):
+            instrument = str(row[0]).strip()
+            industry_code = str(row[1]).strip()
+            if instrument in seen:
+                raise TaxonomyArtifactPublisherError(
+                    f"Duplicate instrument {instrument!r} in static taxonomy "
+                    f"rows: first industry {seen[instrument]!r}, duplicate "
+                    f"industry {industry_code!r} at row {idx}. Static taxonomy "
+                    "artifacts must contain at most one row per instrument."
+                )
+            seen[instrument] = industry_code
 
     @classmethod
     def _write_csv(
