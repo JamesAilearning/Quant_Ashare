@@ -83,7 +83,7 @@ class TushareClient:
             import tushare as ts  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise TushareClientError(
-                "tushare is not installed. Run: pip install tushare"
+                "tushare is not installed. Run: python -m pip install -e \".[tushare]\""
             ) from exc
 
         try:

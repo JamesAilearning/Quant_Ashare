@@ -38,6 +38,9 @@ research = [
   "matplotlib",
   "seaborn",
 ]
+tushare = [
+  "tushare>=1.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

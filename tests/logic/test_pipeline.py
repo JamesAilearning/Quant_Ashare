@@ -12,7 +12,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC, TAXONOMY_MODE_TRADE_DATE
 from src.core.pipeline import Pipeline, PipelineConfig, PipelineError, _sanitize_for_json
+from src.data.taxonomy_artifact_publisher import TaxonomyArtifactPublisher
 
 
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")
@@ -149,6 +151,83 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         self.assertEqual(cfg.feature_fraction, 1.0)
         self.assertEqual(cfg.bagging_fraction, 1.0)
         self.assertEqual(cfg.bagging_freq, 0)
+
+    def test_rejects_partial_industry_taxonomy_config(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "industry_artifact_path"):
+            PipelineConfig(
+                provider_uri="/tmp/fake",
+                industry_artifact_path="output/taxonomy/sw_l2.csv",
+            )
+
+    def test_rejects_unsupported_industry_temporal_mode(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "industry_temporal_mode"):
+            PipelineConfig(
+                provider_uri="/tmp/fake",
+                industry_temporal_mode=TAXONOMY_MODE_TRADE_DATE,
+            )
+
+
+class PipelineAttributionTaxonomyConfigTests(unittest.TestCase):
+    @staticmethod
+    def _publish_taxonomy(tmp: Path, taxonomy_name: str = "tushare_sw_l2") -> tuple[Path, Path]:
+        artifact = tmp / "sw_l2.csv"
+        manifest = tmp / "sw_l2.json"
+        TaxonomyArtifactPublisher.publish(
+            taxonomy_name=taxonomy_name,
+            temporal_mode=TAXONOMY_MODE_STATIC,
+            rows=[
+                ("SH600000", "银行"),
+                ("SZ000001", "银行"),
+            ],
+            artifact_path=str(artifact),
+            manifest_path=str(manifest),
+            snapshot_at="2025-07-01",
+        )
+        return artifact, manifest
+
+    def test_valid_taxonomy_artifact_flows_into_attribution_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            artifact, manifest = self._publish_taxonomy(tmp)
+            cfg = PipelineConfig(
+                provider_uri="/tmp/fake",
+                industry_artifact_path=str(artifact),
+                industry_manifest_path=str(manifest),
+                industry_taxonomy_id="tushare_sw_l2",
+            )
+
+            attr_cfg = Pipeline._build_attribution_config(cfg)
+
+            self.assertEqual(attr_cfg.industry_taxonomy_id, "tushare_sw_l2")
+            self.assertEqual(attr_cfg.industry_map_override["SH600000"], "银行")
+            self.assertEqual(attr_cfg.industry_map_override["SZ000001"], "银行")
+
+    def test_missing_taxonomy_artifact_fails_without_board_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            cfg = PipelineConfig(
+                provider_uri="/tmp/fake",
+                industry_artifact_path=str(tmp / "missing.csv"),
+                industry_manifest_path=str(tmp / "missing.json"),
+                industry_taxonomy_id="tushare_sw_l2",
+            )
+
+            with self.assertRaisesRegex(PipelineError, "missing_artifact_file"):
+                Pipeline._build_attribution_config(cfg)
+
+    def test_manifest_taxonomy_id_must_match_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            artifact, manifest = self._publish_taxonomy(tmp, taxonomy_name="actual")
+            cfg = PipelineConfig(
+                provider_uri="/tmp/fake",
+                industry_artifact_path=str(artifact),
+                industry_manifest_path=str(manifest),
+                industry_taxonomy_id="expected",
+            )
+
+            with self.assertRaisesRegex(PipelineError, "taxonomy_name does not match"):
+                Pipeline._build_attribution_config(cfg)
 
 
 class AttributionReportSerializationTests(unittest.TestCase):

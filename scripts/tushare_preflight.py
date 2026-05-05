@@ -112,8 +112,8 @@ def _run_preflight() -> int:
     except ImportError:
         _line(
             "Step 2/5: tushare module import", False,
-            "tushare is not installed. Run:\n"
-            "  pip install tushare",
+            "tushare is not installed. Run from the repo root:\n"
+            "  python -m pip install -e \".[tushare]\"",
         )
         return 1
     _line("Step 2/5: tushare module import", True, f"version={ts_version}")

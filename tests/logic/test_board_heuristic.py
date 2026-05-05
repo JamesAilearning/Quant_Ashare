@@ -1,7 +1,7 @@
 """Unit tests for src.core.board_heuristic.
 
 The board heuristic is the single shared implementation used by both
-:mod:`src.core.performance_attribution` and :mod:`src.core.risk_constraints`
+:mod:`src.core.performance_attribution` and :mod:`src.experimental.risk_constraints`
 to bucket A-share instruments by listing venue. Two things matter here:
 
 1. The bucket *labels* are stable strings prefixed with ``board_`` — both

@@ -264,6 +264,43 @@ class TaxonomyPublisherSnapshotAtRulesTests(unittest.TestCase):
             self.assertFalse(manifest.exists())
 
 
+class TaxonomyPublisherStaticUniquenessTests(unittest.TestCase):
+    def test_static_mode_rejects_duplicate_instruments_before_io(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            artifact = tmp / "t.csv"
+            manifest = tmp / "t.manifest.json"
+            with self.assertRaisesRegex(
+                TaxonomyArtifactPublisherError,
+                "Duplicate instrument 'AAPL'",
+            ):
+                TaxonomyArtifactPublisher.publish(
+                    taxonomy_name="TEST",
+                    temporal_mode=TAXONOMY_MODE_STATIC,
+                    rows=[("AAPL", "TECH"), ("AAPL", "FIN")],
+                    artifact_path=str(artifact),
+                    manifest_path=str(manifest),
+                    snapshot_at="2026-02-27",
+                )
+            self.assertFalse(artifact.exists())
+            self.assertFalse(manifest.exists())
+
+    def test_trade_date_mode_allows_repeated_instrument_across_dates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            res = TaxonomyArtifactPublisher.publish(
+                taxonomy_name="TEST",
+                temporal_mode=TAXONOMY_MODE_TRADE_DATE,
+                rows=[
+                    ("AAPL", "TECH", "2026-02-26"),
+                    ("AAPL", "FIN", "2026-02-27"),
+                ],
+                artifact_path=str(tmp / "t.csv"),
+                manifest_path=str(tmp / "t.manifest.json"),
+            )
+            self.assertEqual(res.rows_written, 2)
+
+
 class TaxonomyPublisherRoundTripTests(unittest.TestCase):
     def test_round_trip_static(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

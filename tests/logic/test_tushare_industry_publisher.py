@@ -265,6 +265,40 @@ class PublisherHappyPathTests(unittest.TestCase):
                     client=client,
                 )
 
+    def test_publish_rejects_duplicate_instrument_across_industries(self) -> None:
+        industry_df = _FakePandasFrame(rows=[
+            {"index_code": "850711.SI", "industry_name": "白酒", "level": "L2"},
+            {"index_code": "801010.SI", "industry_name": "银行", "level": "L2"},
+        ], columns=["index_code", "industry_name", "level"])
+        duplicate_members = {
+            "850711.SI": _FakePandasFrame(rows=[
+                {"con_code": "600000.SH", "is_new": "Y"},
+            ], columns=["con_code", "is_new"]),
+            "801010.SI": _FakePandasFrame(rows=[
+                {"con_code": "600000.SH", "is_new": "Y"},
+            ], columns=["con_code", "is_new"]),
+        }
+        client = _StubClient({
+            "index_classify": industry_df,
+            "index_member": duplicate_members,
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "sw_l2.csv"
+            manifest = Path(tmp) / "sw_l2.json"
+            with self.assertRaisesRegex(
+                TushareIndustryPublisherError,
+                "Duplicate instrument 'SH600000'",
+            ):
+                TushareIndustryPublisher.publish(
+                    artifact_path=str(artifact),
+                    manifest_path=str(manifest),
+                    snapshot_at="2026-04-25",
+                    client=client,
+                )
+            self.assertFalse(artifact.exists())
+            self.assertFalse(manifest.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

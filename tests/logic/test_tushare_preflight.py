@@ -131,7 +131,7 @@ class MissingTushareModuleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Step 2/5", output)
         self.assertIn("FAIL", output)
-        self.assertIn("pip install tushare", output)
+        self.assertIn(".[tushare]", output)
 
 
 # ---------------------------------------------------------------------

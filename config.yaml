@@ -50,6 +50,12 @@ factor_max_decay_lag: 20
 
 # performance attribution (set to false to skip)
 run_attribution: true
+# Optional real industry taxonomy for attribution. Leave all three empty to
+# use the explicit board heuristic. When enabled, Pipeline validates both the
+# taxonomy CSV and manifest before passing the map to attribution.
+# industry_artifact_path: "output/taxonomy/sw_l2.csv"
+# industry_manifest_path: "output/taxonomy/sw_l2.json"
+# industry_taxonomy_id: "tushare_sw_l2"
 
 # output
 output_dir: "output"
