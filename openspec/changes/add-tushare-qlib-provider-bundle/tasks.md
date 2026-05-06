@@ -36,3 +36,11 @@
 - [x] 6.2 Run `openspec validate add-tushare-qlib-provider-bundle --strict`.
 - [x] 6.3 Run `openspec validate --all --strict`.
 - [x] 6.4 Perform a scope-drift review confirming no default training source or official metric semantics changed.
+
+## 7. Benchmark Index Support
+
+- [x] 7.1 Extend the Tushare provider config, manifest, and validation profile with explicit benchmark index mappings and row counts.
+- [x] 7.2 Fetch and stage configured `index_daily` payloads without storing secrets or changing default runtime provider selection.
+- [x] 7.3 Publish benchmark feature files into the generated qlib bundle while keeping `instruments/all.txt` stock-only.
+- [x] 7.4 Add tests proving benchmark data can be read from qlib, malformed index data fails validation, and default runtime config remains unchanged.
+- [x] 7.5 Rerun targeted tests, `openspec validate`, real Tushare ingest, and a pipeline/backtest smoke on the generated bundle.

@@ -62,6 +62,25 @@ adjusted output when required factor coverage is missing.
 - **THEN** publishing fails with validation health `error`
 - **AND** the final provider bundle is not replaced by partially adjusted data
 
+### Requirement: Generated qlib bundles SHALL support explicitly configured benchmark indexes
+
+The publisher SHALL support an explicit benchmark-index mapping from qlib codes
+to Tushare index codes. Configured benchmark indexes SHALL be fetched through
+Tushare `index_daily`, written into the generated provider feature directory,
+and recorded in the manifest and validation profile. Benchmark index rows SHALL
+NOT be written into the stock training universe file.
+
+#### Scenario: benchmark index is configured
+- **WHEN** the publisher config maps `SH000300` to Tushare index `000300.SH`
+- **THEN** the generated qlib bundle contains feature files for `SH000300`
+- **AND** `SH000300` is not added to `instruments/all.txt`
+- **AND** the manifest records the configured benchmark mapping and benchmark row count
+
+#### Scenario: benchmark index data is malformed
+- **WHEN** configured `index_daily` data has duplicate index-date rows, invalid OHLCV values, missing configured index coverage, or non-calendar dates
+- **THEN** publishing fails with validation health `error`
+- **AND** the final provider bundle is not replaced by partially generated benchmark data
+
 ### Requirement: Publisher validation SHALL reject malformed staged market data
 
 Before publishing a final qlib provider bundle, the system SHALL validate staged
@@ -89,9 +108,9 @@ coverage. Validation failures SHALL be explicit and auditable.
 Each successful publish SHALL write a sidecar manifest that records source name,
 source APIs, source package version when available, requested date range,
 actual coverage range, instrument count, row counts, output adjustment mode,
-snapshot timestamp, validation health, and publisher version. The manifest SHALL
-exclude secrets and SHALL be sufficient for later training runs to identify the
-data bundle used.
+configured benchmark indexes, snapshot timestamp, validation health, and
+publisher version. The manifest SHALL exclude secrets and SHALL be sufficient
+for later training runs to identify the data bundle used.
 
 #### Scenario: publish succeeds
 - **WHEN** a Tushare qlib provider bundle is published successfully

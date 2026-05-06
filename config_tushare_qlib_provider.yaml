@@ -27,6 +27,12 @@ end_date: "2025-01-31"
 # separate index-specific instrument file.
 instruments: "all"
 
+# Optional benchmark indexes to include as qlib feature files for canonical
+# backtests that use this generated provider. Keys are qlib codes, values are
+# Tushare index codes. These rows are not added to instruments/all.txt.
+benchmark_indexes:
+  SH000300: "000300.SH"
+
 # Must match QlibRuntimeConfig.data_adjust_mode and PipelineConfig.adjust_mode
 # when training/backtesting on the generated bundle.
 data_adjust_mode: "pre_adjusted"

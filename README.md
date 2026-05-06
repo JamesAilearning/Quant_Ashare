@@ -42,7 +42,9 @@ python scripts/ingest_tushare_qlib_provider.py config_tushare_qlib_provider.yaml
 
 To train on the generated bundle, copy your strategy config and explicitly set
 `provider_uri` to the generated `output/qlib_tushare` directory. Keep
-`adjust_mode` aligned with the ingest config's `data_adjust_mode`. The first
-publisher writes `instruments/all.txt`; set `instruments: "all"` in the
-training config unless you separately publish an index-specific instrument
+`adjust_mode` aligned with the ingest config's `data_adjust_mode`. The example
+config also publishes `SH000300` from Tushare `index_daily` so canonical
+backtests can read the benchmark from the same opt-in provider path. Benchmark
+index rows are not added to `instruments/all.txt`; set `instruments: "all"` in
+the training config unless you separately publish an index-specific instrument
 file such as `csi300.txt`.

@@ -32,9 +32,18 @@ from src.data.tushare.provider_bundle import (  # noqa: E402
 
 
 class _StubClient:
-    def __init__(self, *, missing_factor: bool = False, duplicate_daily: bool = False):
+    def __init__(
+        self,
+        *,
+        missing_factor: bool = False,
+        duplicate_daily: bool = False,
+        duplicate_index: bool = False,
+        missing_index: bool = False,
+    ):
         self.missing_factor = missing_factor
         self.duplicate_daily = duplicate_daily
+        self.duplicate_index = duplicate_index
+        self.missing_index = missing_index
         self.calls: list[tuple[str, dict]] = []
 
     def call(self, api_name: str, **params):
@@ -92,6 +101,45 @@ class _StubClient:
                 "20250103": [{"ts_code": "600000.SH", "trade_date": "20250103", "adj_factor": 4.0}],
             }[params["trade_date"]]
             return pd.DataFrame(factors)
+        if api_name == "index_daily":
+            if self.missing_index:
+                return pd.DataFrame(columns=[
+                    "ts_code",
+                    "trade_date",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "vol",
+                    "amount",
+                ])
+            rows = [
+                {
+                    "ts_code": params["ts_code"],
+                    "trade_date": "20250102",
+                    "open": 4000.0,
+                    "high": 4010.0,
+                    "low": 3990.0,
+                    "close": 4000.0,
+                    "pct_chg": 0.0,
+                    "vol": 10000.0,
+                    "amount": 50000.0,
+                },
+                {
+                    "ts_code": params["ts_code"],
+                    "trade_date": "20250103",
+                    "open": 4010.0,
+                    "high": 4020.0,
+                    "low": 4000.0,
+                    "close": 4010.0,
+                    "pct_chg": 0.25,
+                    "vol": 12000.0,
+                    "amount": 60000.0,
+                },
+            ]
+            if self.duplicate_index:
+                rows = rows + [dict(rows[0])]
+            return pd.DataFrame(rows)
         raise AssertionError(f"unexpected API call: {api_name}")
 
 
@@ -128,6 +176,16 @@ class ProviderConfigTests(unittest.TestCase):
                 "start_date": "2025-01-01",
                 "end_date": "2025-01-02",
                 "data_adjust_mode": "mystery",
+            })
+
+    def test_rejects_mismatched_benchmark_mapping(self) -> None:
+        with self.assertRaisesRegex(TushareQlibProviderBundleError, "mismatch"):
+            TushareQlibProviderBundleConfig.from_mapping({
+                "output_dir": "out",
+                "start_date": "2025-01-01",
+                "end_date": "2025-01-02",
+                "data_adjust_mode": ADJUST_MODE_PRE,
+                "benchmark_indexes": {"SH000300": "399006.SZ"},
             })
 
     def test_script_loader_rejects_token_in_yaml(self) -> None:
@@ -189,6 +247,36 @@ class ProviderPublishTests(unittest.TestCase):
             self.assertAlmostEqual(float(close_payload[1]), 5.0)
             self.assertAlmostEqual(float(close_payload[2]), 20.0)
 
+    def test_publish_writes_configured_benchmark_without_adding_to_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_text:
+            tmp = Path(tmp_text)
+            config = _base_config(
+                tmp,
+                benchmark_indexes={"SH000300": "000300.SH"},
+            )
+            result = TushareQlibProviderPublisher.publish(config, client=_StubClient())
+
+            output = Path(result.output_dir)
+            self.assertTrue((output / "features" / "sh000300" / "close.day.bin").exists())
+            all_text = (output / "instruments" / "all.txt").read_text(encoding="utf-8")
+            self.assertIn("SH600000", all_text)
+            self.assertNotIn("SH000300", all_text)
+
+            with open(result.manifest_path, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            self.assertEqual(manifest["benchmark_indexes"], [["SH000300", "000300.SH"]])
+            self.assertEqual(manifest["benchmark_count"], 1)
+            self.assertEqual(manifest["index_row_count"], 2)
+            self.assertIn("index_daily", manifest["source_apis"])
+
+            index_close_payload = np.fromfile(
+                output / "features" / "sh000300" / "close.day.bin",
+                dtype="<f4",
+            )
+            self.assertEqual(index_close_payload[0], 0.0)
+            self.assertAlmostEqual(float(index_close_payload[1]), 4000.0)
+            self.assertAlmostEqual(float(index_close_payload[2]), 4010.0)
+
     def test_unadjusted_output_does_not_require_complete_factors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_text:
             tmp = Path(tmp_text)
@@ -228,6 +316,32 @@ class ProviderPublishTests(unittest.TestCase):
                 TushareQlibProviderPublisher.publish(
                     config,
                     client=_StubClient(duplicate_daily=True),
+                )
+
+    def test_duplicate_index_rows_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_text:
+            tmp = Path(tmp_text)
+            config = _base_config(
+                tmp,
+                benchmark_indexes={"SH000300": "000300.SH"},
+            )
+            with self.assertRaisesRegex(TushareQlibProviderBundleError, "duplicate_index_rows"):
+                TushareQlibProviderPublisher.publish(
+                    config,
+                    client=_StubClient(duplicate_index=True),
+                )
+
+    def test_missing_index_rows_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_text:
+            tmp = Path(tmp_text)
+            config = _base_config(
+                tmp,
+                benchmark_indexes={"SH000300": "000300.SH"},
+            )
+            with self.assertRaisesRegex(TushareQlibProviderBundleError, "empty_benchmark_index_data"):
+                TushareQlibProviderPublisher.publish(
+                    config,
+                    client=_StubClient(missing_index=True),
                 )
 
     def test_non_calendar_rows_are_rejected(self) -> None:
@@ -340,7 +454,10 @@ class ProviderPublishTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_text:
             tmp = Path(tmp_text)
-            config = _base_config(tmp)
+            config = _base_config(
+                tmp,
+                benchmark_indexes={"SH000300": "000300.SH"},
+            )
             result = TushareQlibProviderPublisher.publish(config, client=_StubClient())
             code = textwrap.dedent(
                 f"""
@@ -350,9 +467,13 @@ class ProviderPublishTests(unittest.TestCase):
                 qlib.init(provider_uri={result.output_dir!r}, region=REG_CN)
                 instruments = D.list_instruments(D.instruments("all"), start_time="2025-01-02", end_time="2025-01-03")
                 assert "SH600000" in instruments
+                assert "SH000300" not in instruments
                 df = D.features(["SH600000"], ["$close"], start_time="2025-01-02", end_time="2025-01-03")
                 assert not df.empty
                 assert float(df.iloc[-1, 0]) == 20.0
+                benchmark = D.features(["SH000300"], ["$close"], start_time="2025-01-02", end_time="2025-01-03")
+                assert not benchmark.empty
+                assert float(benchmark.iloc[-1, 0]) == 4010.0
                 """
             )
             completed = subprocess.run(

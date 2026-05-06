@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -36,10 +36,12 @@ MANIFEST_SCHEMA_VERSION = "v1"
 VALIDATION_SCHEMA_VERSION = "v1"
 SOURCE_NAME = "tushare"
 SOURCE_APIS: tuple[str, ...] = ("daily", "adj_factor", "trade_cal", "stock_basic")
+INDEX_SOURCE_API = "index_daily"
 FORBIDDEN_CONFIG_KEYS: tuple[str, ...] = ("tushare_token", "token", "api_token")
 
 STAGED_DAILY_DIR = "daily"
 STAGED_ADJ_FACTOR_DIR = "adj_factor"
+STAGED_INDEX_DAILY_DIR = "index_daily"
 STAGED_TRADE_CAL_FILE = "trade_cal.csv"
 STAGED_STOCK_BASIC_FILE = "stock_basic.csv"
 
@@ -66,6 +68,7 @@ class TushareQlibProviderBundleConfig:
     validation_path: str | None = None
     comparison_path: str | None = None
     baseline_provider_uri: str | None = None
+    benchmark_indexes: tuple[tuple[str, str], ...] = tuple()
     reuse_staged: bool = True
     region: str = "cn"
     freq: str = "day"
@@ -95,6 +98,10 @@ class TushareQlibProviderBundleConfig:
         values = dict(raw)
         if "instruments" in values:
             values["instruments"] = _normalize_instrument_scope(values["instruments"])
+        if "benchmark_indexes" in values:
+            values["benchmark_indexes"] = _normalize_benchmark_indexes(
+                values["benchmark_indexes"]
+            )
         return cls(**values)
 
     def __post_init__(self) -> None:
@@ -114,6 +121,11 @@ class TushareQlibProviderBundleConfig:
             raise TushareQlibProviderBundleError("instruments must not be empty.")
         normalized_scope = _normalize_instrument_scope(self.instruments)
         object.__setattr__(self, "instruments", normalized_scope)
+        object.__setattr__(
+            self,
+            "benchmark_indexes",
+            _normalize_benchmark_indexes(self.benchmark_indexes),
+        )
         if self.freq != "day":
             raise TushareQlibProviderBundleError(
                 f"Only day frequency is supported in v1; got {self.freq!r}."
@@ -182,13 +194,18 @@ class TushareQlibProviderValidationProfile:
     coverage_end_date: str | None
     calendar_count: int
     row_count: int
+    index_row_count: int
     adj_factor_row_count: int
     stock_basic_row_count: int
     instrument_count: int
+    benchmark_count: int
     duplicate_market_rows: int
     duplicate_factor_rows: int
+    duplicate_index_rows: int
     invalid_ohlcv_rows: int
+    invalid_index_ohlcv_rows: int
     non_calendar_rows: int
+    non_calendar_index_rows: int
     missing_factor_rows: int
     data_adjust_mode: str
 
@@ -214,8 +231,11 @@ class TushareQlibProviderManifest:
     snapshot_at: str
     data_adjust_mode: str
     instruments_requested: tuple[str, ...]
+    benchmark_indexes: tuple[tuple[str, str], ...]
     instrument_count: int
+    benchmark_count: int
     row_count: int
+    index_row_count: int
     calendar_count: int
     validation_health: str
 
@@ -271,6 +291,8 @@ class TushareStagedMarketData:
     staging_dir: str
     daily_files: tuple[str, ...]
     adj_factor_files: tuple[str, ...]
+    index_daily: pd.DataFrame = field(default_factory=pd.DataFrame)
+    index_daily_files: tuple[str, ...] = tuple()
 
 
 @dataclass(frozen=True)
@@ -301,8 +323,11 @@ class TushareMarketDataFetcher:
         raw_dir = staging_dir / "raw"
         daily_dir = raw_dir / STAGED_DAILY_DIR
         adj_dir = raw_dir / STAGED_ADJ_FACTOR_DIR
+        index_dir = raw_dir / STAGED_INDEX_DAILY_DIR
         daily_dir.mkdir(parents=True, exist_ok=True)
         adj_dir.mkdir(parents=True, exist_ok=True)
+        if config.benchmark_indexes:
+            index_dir.mkdir(parents=True, exist_ok=True)
 
         trade_cal_path = raw_dir / STAGED_TRADE_CAL_FILE
         stock_basic_path = raw_dir / STAGED_STOCK_BASIC_FILE
@@ -332,8 +357,10 @@ class TushareMarketDataFetcher:
 
         daily_frames: list[pd.DataFrame] = []
         adj_frames: list[pd.DataFrame] = []
+        index_frames: list[pd.DataFrame] = []
         daily_files: list[str] = []
         adj_files: list[str] = []
+        index_files: list[str] = []
         requested_codes = config.requested_tushare_codes
 
         for trade_date in open_dates:
@@ -363,8 +390,27 @@ class TushareMarketDataFetcher:
             adj_frames.append(adj)
             adj_files.append(str(adj_path))
 
+        for qlib_code, ts_code in config.benchmark_indexes:
+            index_path = index_dir / f"{qlib_code}.csv"
+            index_daily = cls._fetch_or_read(
+                index_path,
+                config=config,
+                api_name=INDEX_SOURCE_API,
+                client=client,
+                params={
+                    "ts_code": ts_code,
+                    "start_date": _to_tushare_date(config.start_date),
+                    "end_date": _to_tushare_date(config.end_date),
+                },
+            )
+            index_daily = _filter_tushare_codes(index_daily, (ts_code,))
+            _write_frame(index_path, index_daily)
+            index_frames.append(index_daily)
+            index_files.append(str(index_path))
+
         daily_all = _concat_frames(daily_frames)
         adj_all = _concat_frames(adj_frames)
+        index_all = _concat_frames(index_frames)
         return TushareStagedMarketData(
             daily=daily_all,
             adj_factor=adj_all,
@@ -373,6 +419,8 @@ class TushareMarketDataFetcher:
             staging_dir=str(staging_dir),
             daily_files=tuple(daily_files),
             adj_factor_files=tuple(adj_files),
+            index_daily=index_all,
+            index_daily_files=tuple(index_files),
         )
 
     @staticmethod
@@ -462,7 +510,7 @@ class TushareQlibProviderPublisher:
             manifest = TushareQlibProviderManifest(
                 schema_version=MANIFEST_SCHEMA_VERSION,
                 source_name=SOURCE_NAME,
-                source_apis=SOURCE_APIS,
+                source_apis=_source_apis_for_config(config),
                 source_package_version=_get_tushare_version(),
                 publisher_version=PUBLISHER_VERSION,
                 bundle_format="qlib_bin_day",
@@ -474,8 +522,11 @@ class TushareQlibProviderPublisher:
                 snapshot_at=datetime.now(timezone.utc).isoformat(),
                 data_adjust_mode=config.data_adjust_mode,
                 instruments_requested=config.instruments,
+                benchmark_indexes=config.benchmark_indexes,
                 instrument_count=prepared.validation_profile.instrument_count,
+                benchmark_count=prepared.validation_profile.benchmark_count,
                 row_count=prepared.validation_profile.row_count,
+                index_row_count=prepared.validation_profile.index_row_count,
                 calendar_count=prepared.validation_profile.calendar_count,
                 validation_health=prepared.validation_profile.health,
             )
@@ -519,7 +570,7 @@ class TushareQlibProviderPublisher:
         staged: TushareStagedMarketData,
         config: TushareQlibProviderBundleConfig,
     ) -> _PreparedMarketData:
-        daily, adj, calendar, errors, warnings = cls._normalize_and_validate_inputs(staged, config)
+        daily, adj, calendar, index_daily, errors, warnings = cls._normalize_and_validate_inputs(staged, config)
         profile_base = {
             "schema_version": VALIDATION_SCHEMA_VERSION,
             "requested_start_date": config.start_date,
@@ -541,12 +592,17 @@ class TushareQlibProviderPublisher:
                     coverage_end_date=None,
                     calendar_count=0,
                     row_count=0,
+                    index_row_count=0,
                     adj_factor_row_count=int(len(staged.adj_factor)),
                     instrument_count=0,
+                    benchmark_count=0,
                     duplicate_market_rows=0,
                     duplicate_factor_rows=0,
+                    duplicate_index_rows=0,
                     invalid_ohlcv_rows=0,
+                    invalid_index_ohlcv_rows=0,
                     non_calendar_rows=0,
+                    non_calendar_index_rows=0,
                     missing_factor_rows=0,
                     **profile_base,
                 ),
@@ -555,27 +611,53 @@ class TushareQlibProviderPublisher:
         open_dates = tuple(sorted(calendar["date"].dt.strftime("%Y-%m-%d").unique()))
         daily = daily.copy()
         adj = adj.copy()
+        index_daily = index_daily.copy()
 
         duplicate_market_rows = int(daily.duplicated(["ts_code", "trade_date"]).sum())
         duplicate_factor_rows = int(adj.duplicated(["ts_code", "trade_date"]).sum())
+        duplicate_index_rows = (
+            int(index_daily.duplicated(["ts_code", "trade_date"]).sum())
+            if not index_daily.empty
+            else 0
+        )
         if duplicate_market_rows:
             errors.append("duplicate_market_rows")
         if duplicate_factor_rows:
             errors.append("duplicate_factor_rows")
+        if duplicate_index_rows:
+            errors.append("duplicate_index_rows")
 
         daily = daily.drop_duplicates(["ts_code", "trade_date"], keep="last")
         adj = adj.drop_duplicates(["ts_code", "trade_date"], keep="last")
+        if not index_daily.empty:
+            index_daily = index_daily.drop_duplicates(["ts_code", "trade_date"], keep="last")
 
         valid_calendar = set(open_dates)
         daily["date"] = daily["trade_date"].dt.strftime("%Y-%m-%d")
         adj["date"] = adj["trade_date"].dt.strftime("%Y-%m-%d")
+        if not index_daily.empty:
+            index_daily["date"] = index_daily["trade_date"].dt.strftime("%Y-%m-%d")
         non_calendar_rows = int((~daily["date"].isin(valid_calendar)).sum())
+        non_calendar_index_rows = (
+            int((~index_daily["date"].isin(valid_calendar)).sum())
+            if not index_daily.empty
+            else 0
+        )
         if non_calendar_rows:
             errors.append("calendar_alignment")
+        if non_calendar_index_rows:
+            errors.append("index_calendar_alignment")
 
         invalid_ohlcv_rows = cls._count_invalid_ohlcv(daily)
+        invalid_index_ohlcv_rows = (
+            cls._count_invalid_ohlcv(index_daily)
+            if not index_daily.empty
+            else 0
+        )
         if invalid_ohlcv_rows:
             errors.append("invalid_ohlcv")
+        if invalid_index_ohlcv_rows:
+            errors.append("invalid_index_ohlcv")
 
         merged = daily.merge(
             adj[["ts_code", "date", "adj_factor"]],
@@ -595,16 +677,44 @@ class TushareQlibProviderPublisher:
         if merged.empty:
             errors.append("empty_instrument_coverage")
 
+        if config.benchmark_indexes:
+            if index_daily.empty:
+                errors.append("empty_benchmark_index_data")
+            else:
+                expected_ts_codes = {ts_code for _, ts_code in config.benchmark_indexes}
+                index_daily["ts_code"] = index_daily["ts_code"].astype(str).str.upper()
+                index_daily = index_daily[index_daily["ts_code"].isin(expected_ts_codes)].copy()
+                index_daily["instrument"] = index_daily["ts_code"].map(_tushare_to_qlib_instrument)
+                missing_benchmarks = [
+                    qlib_code
+                    for qlib_code, ts_code in config.benchmark_indexes
+                    if ts_code not in set(index_daily["ts_code"])
+                ]
+                if missing_benchmarks:
+                    errors.append(
+                        "missing_benchmark_index_data:"
+                        + ",".join(sorted(missing_benchmarks))
+                    )
+                index_daily = index_daily.dropna(subset=["instrument"])
+        else:
+            index_daily = pd.DataFrame()
+
         if errors:
             health = "error"
             qlib_frame = pd.DataFrame()
             instruments: tuple[str, ...] = tuple()
+            benchmark_count = 0
+            index_row_count = 0
             coverage_start = None
             coverage_end = None
             row_count = 0
         else:
-            qlib_frame = cls._build_qlib_frame(merged, config.data_adjust_mode)
-            instruments = tuple(sorted(qlib_frame["instrument"].unique()))
+            stock_qlib_frame = cls._build_qlib_frame(merged, config.data_adjust_mode)
+            index_qlib_frame = cls._build_index_qlib_frame(index_daily)
+            qlib_frame = _concat_frames([stock_qlib_frame, index_qlib_frame])
+            instruments = tuple(sorted(stock_qlib_frame["instrument"].unique()))
+            benchmark_count = int(index_qlib_frame["instrument"].nunique()) if not index_qlib_frame.empty else 0
+            index_row_count = int(len(index_qlib_frame))
             coverage_start = str(qlib_frame["date"].min())
             coverage_end = str(qlib_frame["date"].max())
             row_count = int(len(qlib_frame))
@@ -618,12 +728,17 @@ class TushareQlibProviderPublisher:
             coverage_end_date=coverage_end,
             calendar_count=len(open_dates),
             row_count=row_count,
+            index_row_count=index_row_count,
             adj_factor_row_count=int(len(adj)),
             instrument_count=len(instruments),
+            benchmark_count=benchmark_count,
             duplicate_market_rows=duplicate_market_rows,
             duplicate_factor_rows=duplicate_factor_rows,
+            duplicate_index_rows=duplicate_index_rows,
             invalid_ohlcv_rows=invalid_ohlcv_rows,
+            invalid_index_ohlcv_rows=invalid_index_ohlcv_rows,
             non_calendar_rows=non_calendar_rows,
+            non_calendar_index_rows=non_calendar_index_rows,
             missing_factor_rows=missing_factor_rows,
             **profile_base,
         )
@@ -638,33 +753,44 @@ class TushareQlibProviderPublisher:
     def _normalize_and_validate_inputs(
         staged: TushareStagedMarketData,
         config: TushareQlibProviderBundleConfig,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str], list[str]]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str], list[str]]:
         errors: list[str] = []
         warnings: list[str] = []
         daily = staged.daily.copy()
         adj = staged.adj_factor.copy()
         calendar = staged.trade_calendar.copy()
+        index_daily = staged.index_daily.copy()
 
         required_daily = {"ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount"}
         required_adj = {"ts_code", "trade_date", "adj_factor"}
+        required_index = {"ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount"}
         required_calendar = {"cal_date"}
         missing_daily = required_daily - set(daily.columns)
         missing_adj = required_adj - set(adj.columns)
+        missing_index = required_index - set(index_daily.columns) if config.benchmark_indexes else set()
         missing_calendar = required_calendar - set(calendar.columns)
         if missing_daily:
             errors.append(f"schema_mismatch_daily:{sorted(missing_daily)}")
         if missing_adj:
             errors.append(f"schema_mismatch_adj_factor:{sorted(missing_adj)}")
+        if missing_index:
+            errors.append(f"schema_mismatch_index_daily:{sorted(missing_index)}")
         if missing_calendar:
             errors.append(f"schema_mismatch_trade_cal:{sorted(missing_calendar)}")
         if errors:
-            return daily, adj, calendar, errors, warnings
+            return daily, adj, calendar, index_daily, errors, warnings
 
         daily["trade_date"] = _parse_tushare_date_series(daily["trade_date"], "daily.trade_date", errors)
         adj["trade_date"] = _parse_tushare_date_series(adj["trade_date"], "adj_factor.trade_date", errors)
+        if config.benchmark_indexes:
+            index_daily["trade_date"] = _parse_tushare_date_series(
+                index_daily["trade_date"],
+                "index_daily.trade_date",
+                errors,
+            )
         calendar["date"] = _parse_tushare_date_series(calendar["cal_date"], "trade_cal.cal_date", errors)
         if errors:
-            return daily, adj, calendar, errors, warnings
+            return daily, adj, calendar, index_daily, errors, warnings
 
         if "is_open" in calendar.columns:
             calendar = calendar[calendar["is_open"].astype(str).str.strip().isin(("1", "1.0", "True", "true"))]
@@ -674,9 +800,16 @@ class TushareQlibProviderPublisher:
 
         daily = daily[(daily["trade_date"] >= pd.Timestamp(config.start_date)) & (daily["trade_date"] <= pd.Timestamp(config.end_date))]
         adj = adj[(adj["trade_date"] >= pd.Timestamp(config.start_date)) & (adj["trade_date"] <= pd.Timestamp(config.end_date))]
+        if config.benchmark_indexes:
+            index_daily = index_daily[
+                (index_daily["trade_date"] >= pd.Timestamp(config.start_date))
+                & (index_daily["trade_date"] <= pd.Timestamp(config.end_date))
+            ]
         if daily.empty:
             errors.append("empty_market_data")
-        return daily, adj, calendar, errors, warnings
+        if config.benchmark_indexes and index_daily.empty:
+            errors.append("empty_benchmark_index_data")
+        return daily, adj, calendar, index_daily, errors, warnings
 
     @staticmethod
     def _count_invalid_ohlcv(daily: pd.DataFrame) -> int:
@@ -744,6 +877,17 @@ class TushareQlibProviderPublisher:
             "change",
         ]
         return frame[fields].sort_values(["instrument", "date"]).reset_index(drop=True)
+
+    @staticmethod
+    def _build_index_qlib_frame(index_daily: pd.DataFrame) -> pd.DataFrame:
+        if index_daily.empty:
+            return pd.DataFrame()
+        frame = index_daily.copy()
+        frame["adj_factor"] = 1.0
+        return TushareQlibProviderPublisher._build_qlib_frame(
+            frame,
+            ADJUST_MODE_NONE,
+        )
 
     @staticmethod
     def _write_qlib_bundle(
@@ -896,6 +1040,79 @@ def _normalize_instrument_scope(value: Any) -> tuple[str, ...]:
     return tuple(sorted(set(normalized)))
 
 
+def _normalize_benchmark_indexes(value: Any) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return tuple()
+    if isinstance(value, Mapping):
+        raw_items = list(value.items())
+    elif isinstance(value, str):
+        raise TushareQlibProviderBundleError(
+            "benchmark_indexes must be a mapping or list of qlib/Tushare code pairs."
+        )
+    elif isinstance(value, Iterable):
+        raw_items = []
+        for item in value:
+            if isinstance(item, Mapping):
+                qlib_code = item.get("qlib_code") or item.get("qlib")
+                ts_code = item.get("tushare_code") or item.get("ts_code")
+                raw_items.append((qlib_code, ts_code))
+            elif isinstance(item, Sequence) and not isinstance(item, str) and len(item) == 2:
+                raw_items.append((item[0], item[1]))
+            else:
+                raise TushareQlibProviderBundleError(
+                    "benchmark_indexes entries must be mappings or two-item pairs."
+                )
+    else:
+        raise TushareQlibProviderBundleError(
+            f"benchmark_indexes must be a mapping or list; got {type(value).__name__}."
+        )
+
+    normalized: list[tuple[str, str]] = []
+    seen_qlib: set[str] = set()
+    for raw_qlib_code, raw_ts_code in raw_items:
+        qlib_code = _normalize_qlib_index_code(raw_qlib_code)
+        ts_code = _normalize_tushare_index_code(raw_ts_code)
+        if qlib_code is None or ts_code is None:
+            raise TushareQlibProviderBundleError(
+                "benchmark_indexes must map qlib index codes like SH000300 "
+                "to Tushare index codes like 000300.SH."
+            )
+        expected_qlib_code = _tushare_to_qlib_instrument(ts_code)
+        if expected_qlib_code != qlib_code:
+            raise TushareQlibProviderBundleError(
+                f"benchmark index mapping mismatch: {qlib_code!r} does not "
+                f"match Tushare code {ts_code!r}."
+            )
+        if qlib_code in seen_qlib:
+            raise TushareQlibProviderBundleError(
+                f"Duplicate benchmark index qlib code {qlib_code!r}."
+            )
+        seen_qlib.add(qlib_code)
+        normalized.append((qlib_code, ts_code))
+    return tuple(sorted(normalized))
+
+
+def _normalize_qlib_index_code(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    if "." in text:
+        return _tushare_to_qlib_instrument(text)
+    if len(text) != 8:
+        return None
+    suffix, code = text[:2], text[2:]
+    if suffix not in ("SH", "SZ") or not code.isdigit():
+        return None
+    return text
+
+
+def _normalize_tushare_index_code(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if _tushare_to_qlib_instrument(text) is None:
+        return None
+    return text
+
+
 def _qlib_to_tushare_instrument(instrument: str) -> str | None:
     text = str(instrument).strip().upper()
     if "." in text:
@@ -906,6 +1123,12 @@ def _qlib_to_tushare_instrument(instrument: str) -> str | None:
     if suffix not in ("SH", "SZ", "BJ") or not code.isdigit():
         return None
     return f"{code}.{suffix}"
+
+
+def _source_apis_for_config(config: TushareQlibProviderBundleConfig) -> tuple[str, ...]:
+    if config.benchmark_indexes:
+        return SOURCE_APIS + (INDEX_SOURCE_API,)
+    return SOURCE_APIS
 
 
 def _require_non_empty_str(value: Any, field_name: str) -> None:
@@ -956,6 +1179,9 @@ def _read_frame(path: Path) -> pd.DataFrame:
 def _concat_frames(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
     non_empty = [f for f in frames if f is not None and not f.empty]
     if not non_empty:
+        for frame in frames:
+            if frame is not None:
+                return frame.copy().iloc[0:0]
         return pd.DataFrame()
     return pd.concat(non_empty, ignore_index=True, sort=False)
 
