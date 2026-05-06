@@ -27,3 +27,22 @@ V1 is used as a source of lessons and migration principles, not as an implementa
 - [Current State Summary](docs/current-state-summary.md)
 - [Improvement Roadmap](docs/improvement-roadmap.md)
 - [V1 Lessons](docs/v1-lessons.md)
+
+## Tushare Market Data
+
+Tushare OHLCV training data is opt-in. The shipped publisher builds a
+separate qlib provider bundle; it does not change `config.yaml` or the
+canonical training source by default.
+
+```powershell
+$env:TUSHARE_TOKEN = "your_pro_token_here"
+python -m pip install -e ".[tushare]"
+python scripts/ingest_tushare_qlib_provider.py config_tushare_qlib_provider.yaml
+```
+
+To train on the generated bundle, copy your strategy config and explicitly set
+`provider_uri` to the generated `output/qlib_tushare` directory. Keep
+`adjust_mode` aligned with the ingest config's `data_adjust_mode`. The first
+publisher writes `instruments/all.txt`; set `instruments: "all"` in the
+training config unless you separately publish an index-specific instrument
+file such as `csi300.txt`.
