@@ -11,7 +11,8 @@ silently changing canonical training semantics.
 
 - Add a Tushare OHLCV ingestion and publishing capability that materializes a
   qlib-compatible provider bundle from Tushare A-share daily bars, adjustment
-  factors, trading calendar, and instrument metadata.
+  factors, trading calendar, instrument metadata, and explicitly configured
+  benchmark index daily bars.
 - Require explicit provenance and validation metadata for the generated bundle,
   including source APIs, date coverage, adjustment convention, snapshot time,
   and validation health.
@@ -39,7 +40,7 @@ silently changing canonical training semantics.
   modules under `src/data/`, config examples, and tests under
   `tests/logic/` and `tests/governance/`.
 - Affected external integration: Tushare Pro APIs for daily bars, adjustment
-  factors, trading calendar, stock metadata, and optionally index/benchmark
-  data needed for comparison.
+  factors, trading calendar, stock metadata, and explicitly configured
+  index/benchmark daily bars.
 - No breaking change to current `config.yaml`, canonical qlib initialization,
   canonical backtest path, or official metrics definition.

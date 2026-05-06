@@ -1,4 +1,4 @@
-"""Tushare data-source integration (v1: industry classification only).
+"""Tushare data-source integration.
 
 Why this module exists
 ----------------------
@@ -17,12 +17,15 @@ Tushare provides Shenwan industry classification via ``index_classify`` /
   read the same on-disk taxonomy artifact regardless of which source
   produced it. No vendor lock-in baked into the consumer layer.
 
-Scope (v1)
-----------
+Scope
+-----
 - Shenwan L2 (~120 industries) only.
 - Static snapshot: one ``(instrument, industry_code)`` mapping per
   publish call. Time-varying classification (industry changes mid-period)
   is a v2 feature.
+- A-share daily OHLCV provider bundle publishing is opt-in: it stages
+  Tushare payloads, validates them, and writes a qlib-compatible provider
+  directory. It never changes the default canonical training source by import.
 - Token via ``TUSHARE_TOKEN`` environment variable. Never read from YAML
   to avoid accidental secret commits.
 """

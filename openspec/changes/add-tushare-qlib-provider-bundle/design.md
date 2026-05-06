@@ -18,6 +18,9 @@ rather than treating Tushare as a drop-in replacement.
 
 - Build an opt-in Tushare-to-qlib provider bundle publisher for A-share daily
   OHLCV data.
+- Include explicitly configured benchmark index daily bars in the generated
+  provider bundle so canonical backtests can read the configured benchmark from
+  the same opt-in provider path.
 - Record manifest/provenance metadata sufficient to audit source APIs, coverage,
   adjustment mode, package version, and validation health.
 - Validate staged Tushare data before publishing a bundle that can be used as a
@@ -81,6 +84,15 @@ rather than treating Tushare as a drop-in replacement.
    can define source-of-truth promotion criteria after real comparison results
    exist.
 
+6. **Write benchmark features without adding them to the stock universe.**
+
+   The publisher can fetch configured Tushare `index_daily` series, such as
+   HS300, and write qlib feature files under index-style codes like
+   `SH000300`. These benchmark rows are recorded in the manifest and validation
+   profile, but are not written into `instruments/all.txt`; the training
+   universe remains stock-only unless an operator explicitly provides another
+   instrument file.
+
 ## Risks / Trade-offs
 
 - **Tushare permission or rate-limit failures** -> keep all Tushare calls behind
@@ -112,7 +124,7 @@ rather than treating Tushare as a drop-in replacement.
 
 - Which historical start date should be recommended for the first full A-share
   training bundle?
-- Should the first implementation include index/benchmark provider data, or
-  should benchmark artifacts remain separate until comparison is complete?
+- Which benchmark index set beyond HS300 should be recommended in the example
+  config?
 - What tolerance should future A/B comparison use for adjusted price differences
   between the existing provider and the Tushare-generated provider?
