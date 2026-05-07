@@ -684,13 +684,28 @@ class WalkForwardEngine:
 
         attribution_overrides: dict[str, Any] = {}
         if config.industry_artifact_path:
+            # ``reference_date=None`` is intentional. Per-fold attribution
+            # is *post-hoc analysis* of an already-completed backtest,
+            # not a trading-signal generator: using the most recent
+            # Shenwan classification to bucket historical positions is
+            # the standard practice. Passing ``test_end`` would trip
+            # the contract's ``temporal_leakage`` rule whenever the
+            # artifact's snapshot is after the fold's test window —
+            # which is true for every fold when an operator ingested
+            # the taxonomy "today" and runs a 4-year walk-forward.
+            # That rule is correct for *training* artifacts (lookahead
+            # bias is real there); for attribution it's a false alarm.
+            # Keeping ``reference_date=None`` opts out of the future-
+            # snapshot check while still running every other contract
+            # validation (manifest schema, taxonomy_id match, file
+            # presence, etc.).
             try:
                 resolution = resolve_industry_taxonomy(
                     artifact_path=str(config.industry_artifact_path),
                     manifest_path=str(config.industry_manifest_path),
                     taxonomy_id=str(config.industry_taxonomy_id).strip(),
                     temporal_mode=config.industry_temporal_mode,
-                    reference_date=test_end,
+                    reference_date=None,
                 )
             except IndustryTaxonomyLoadError as exc:
                 # Industry-artifact load failures are config / file
