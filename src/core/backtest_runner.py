@@ -219,10 +219,32 @@ class BacktestRunner:
 
     @staticmethod
     def _apply_lag(predictions: Any, lag: int) -> Any:
-        """Shift predictions to simulate signal-to-execution lag.
+        """Shift predictions so qlib's ``TopkDropoutStrategy`` consumes
+        them on the appropriate trading day.
 
-        ``lag=0`` is explicit same-day execution/no shift. Positive lag
-        values delay each instrument's signal by exactly ``lag`` trading rows.
+        Semantics
+        ---------
+        Predictions arrive indexed by *signal date* — the day the model
+        was given to score the universe. qlib's ``TopkDropoutStrategy``
+        rebalances on whatever date it sees a signal for, so to encode
+        a "signal at T → trade at T+lag" delay we shift the prediction
+        *date stamps* forward by ``lag`` rows::
+
+            # before shift:  index date = T  (signal date)
+            # after shift:   index date = T+lag  (date strategy sees it)
+
+        That makes ``TopkDropoutStrategy`` consume the T-day signal on
+        T+lag and rebalance accordingly. Returning ``df.shift(lag)`` is
+        therefore correct under the standard qlib framing — the comment
+        is the precise version of "T+1 execution".
+
+        ``lag=0`` is the explicit same-day-execution opt-in: the
+        prediction's date stamp is unchanged, the strategy rebalances
+        the same day. Positive ``lag`` values delay each prediction by
+        exactly that many index rows (which equal trading rows when
+        the index is a trading-day calendar — qlib unstacks by date so
+        ``shift(lag)`` is row-wise on those dates). Negative ``lag`` is
+        rejected upstream by ``PipelineConfig.__post_init__``.
         """
         if lag == 0:
             _logger.info(
@@ -232,7 +254,11 @@ class BacktestRunner:
             return predictions
         import pandas as pd
         if isinstance(predictions, pd.Series) and isinstance(predictions.index, pd.MultiIndex):
-            # MultiIndex (datetime, instrument): shift the datetime level
+            # MultiIndex (datetime, instrument): shift the datetime level.
+            # ``unstack()`` pivots instrument to columns so ``shift(lag)``
+            # advances every instrument's date stamps by the same number
+            # of rows; ``stack().dropna()`` drops the leading rows that
+            # now have no source.
             df = predictions.unstack()
             df = df.shift(lag)
             return df.stack().dropna()
@@ -402,6 +428,27 @@ def _positions_to_weight_map(positions_normal: Any) -> dict:
       not abort the whole map but they also cannot be silently dropped.
     * Per-instrument entries with unusable weights → logged at DEBUG
       and skipped (these are common across qlib version differences).
+
+    Cash inclusion in the denominator
+    ---------------------------------
+    The total denominator includes ``raw["cash"]`` alongside the
+    instruments' market value. This means per-instrument weights sum
+    to ``< 1`` whenever the portfolio holds any cash — they reflect
+    *NAV share*, not *equity share*.
+
+    Downstream consequence in Brinson attribution: the sector
+    decomposition (``allocation + selection + interaction``) only
+    covers the equity portion, so its sum will not exactly match
+    ``total_excess_return`` whenever cash > 0. That gap is the
+    ``reconciliation_residual`` already surfaced on
+    :class:`AttributionResult`; the
+    :func:`PerformanceAttribution.print_report` method emits a
+    WARNING when ``|residual| > RECONCILIATION_WARN_THRESHOLD`` so
+    the gap is visible. We deliberately do *not* renormalise the
+    weights to sum to 1 here — that would hide the cash position from
+    NAV-aware consumers (turnover analysis, position-size limits,
+    risk budgets) which is a much costlier silent change than the
+    Brinson residual.
     """
     if positions_normal is None:
         return {}

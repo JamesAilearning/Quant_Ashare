@@ -24,6 +24,24 @@ mis-classification). Co-locating the logic here keeps the contract
 checks consistent across both call sites and makes the wiring
 unit-testable.
 
+The ``purpose`` enum
+--------------------
+:func:`resolve_industry_taxonomy` accepts a required ``purpose``
+parameter (:data:`PURPOSE_TRAINING` or :data:`PURPOSE_ATTRIBUTION`)
+that decides whether the contract's
+``has_future_known_metadata``-style temporal-leakage checks fire.
+Walk-forward attribution intentionally uses a "today" snapshot to
+bucket historical positions for *post-hoc analysis*; that is not a
+lookahead-bias risk because it never feeds back into trading
+signals. Training, on the other hand, must reject future-dated
+metadata because lookahead-bias *is* the dominant failure mode there.
+
+Putting the choice in the function signature (rather than letting
+callers pass ``reference_date=None`` to silently bypass the check)
+means a future caller that wants leakage protection cannot get it
+"by accident": they must explicitly opt out via ``purpose`` and the
+review notes will catch it.
+
 Public surface
 --------------
 - :class:`IndustryTaxonomyLoadError` — raised on any failure during
@@ -39,6 +57,8 @@ Public surface
   validation layer.
 - :func:`resolve_industry_taxonomy` — happy path. Returns the
   resolution tuple or raises :class:`IndustryTaxonomyLoadError`.
+- :data:`PURPOSE_TRAINING`, :data:`PURPOSE_ATTRIBUTION`,
+  :data:`SUPPORTED_PURPOSES` — the purpose enum and validation set.
 """
 
 from __future__ import annotations
@@ -57,6 +77,24 @@ from src.data.taxonomy_artifact_loader import (
     TaxonomyArtifactLoader,
     TaxonomyArtifactLoaderError,
 )
+
+
+# Purpose enum: which validation policy applies when calling
+# :func:`resolve_industry_taxonomy`. ``"training"`` runs the full
+# contract suite including the temporal-leakage check (a future-dated
+# manifest used to label training rows would leak labels). ``"attribution"``
+# is post-hoc analysis of an already-completed backtest, so a future
+# manifest is acceptable — using "today's" Shenwan classification to
+# bucket historical positions is the standard practice for industry
+# attribution. Putting this choice in the function signature (instead
+# of bypassing via ``reference_date=None``) means a future caller has
+# to *say what they want* and a code reviewer can catch a wrong
+# choice.
+PURPOSE_TRAINING: str = "training"
+PURPOSE_ATTRIBUTION: str = "attribution"
+SUPPORTED_PURPOSES: frozenset[str] = frozenset({
+    PURPOSE_TRAINING, PURPOSE_ATTRIBUTION,
+})
 
 
 class IndustryTaxonomyLoadError(RuntimeError):
@@ -151,6 +189,7 @@ def resolve_industry_taxonomy(
     manifest_path: str,
     taxonomy_id: str,
     temporal_mode: str,
+    purpose: str,
     reference_date: Optional[str] = None,
 ) -> IndustryTaxonomyResolution:
     """Load and validate an industry taxonomy artifact.
@@ -167,24 +206,59 @@ def resolve_industry_taxonomy(
     Any failure in steps 1-4 raises :class:`IndustryTaxonomyLoadError`
     with a message that names which step failed and why.
 
-    ``reference_date`` is forwarded to the loader so staleness flags
-    are computed against the run's evaluation period. Pass the
-    backtest's ``end`` date for a single-fold run, or each fold's
-    ``test_end`` for walk-forward.
+    Parameters
+    ----------
+    purpose
+        Either :data:`PURPOSE_TRAINING` or :data:`PURPOSE_ATTRIBUTION`.
+        Required to make the temporal-leakage policy explicit at the
+        call site rather than implicit in whether ``reference_date``
+        is passed.
+
+        - ``"training"``: the full contract runs, including
+          ``has_future_known_metadata`` (a manifest dated after
+          ``reference_date`` raises). This is the right policy when
+          the artifact is used to label training data — lookahead bias
+          is real there.
+        - ``"attribution"``: post-hoc analysis of an already-completed
+          backtest. Uses the most recent Shenwan classification to
+          bucket historical positions, which is the industry-standard
+          practice; a future-dated manifest is *not* a leakage risk
+          because it never feeds back into trading signals. The
+          contract runs without a ``reference_date`` so the
+          future-snapshot check does not fire.
+    reference_date
+        Used only for ``purpose='training'``. For ``purpose='attribution'``
+        we deliberately ignore the operator-provided value to keep the
+        leakage check from firing on every fold of a backwards-looking
+        walk-forward.
     """
+    if purpose not in SUPPORTED_PURPOSES:
+        raise IndustryTaxonomyLoadError(
+            f"Unknown purpose {purpose!r}. Supported: "
+            f"{sorted(SUPPORTED_PURPOSES)}."
+        )
+
+    # Attribution is post-hoc: we drop ``reference_date`` to opt out of
+    # the temporal-leakage check. Pin the choice here so a future
+    # caller cannot accidentally re-enable the check (or accidentally
+    # disable it for training) by passing the wrong value.
+    effective_reference_date = (
+        reference_date if purpose == PURPOSE_TRAINING else None
+    )
+
     try:
         profile = TaxonomyArtifactLoader.load(
             artifact_path=artifact_path,
             manifest_path=manifest_path,
             temporal_mode=temporal_mode,
-            reference_date=reference_date,
+            reference_date=effective_reference_date,
         )
         status = TaxonomyDataContract.validate_and_build_status(
             TaxonomyContractInput(
                 taxonomy_name=taxonomy_id,
                 temporal_mode=temporal_mode,
                 profile=profile,
-                reference_date=reference_date,
+                reference_date=effective_reference_date,
             )
         )
     except (TaxonomyArtifactLoaderError, TaxonomyDataContractError) as exc:

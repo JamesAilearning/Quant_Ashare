@@ -26,6 +26,7 @@ from typing import Any, Mapping, Sequence
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core._json_utils import _sanitize_for_json
 from src.core.attribution_industry_loader import (
+    PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
     assert_industry_config_complete_or_empty,
     resolve_industry_taxonomy,
@@ -684,28 +685,21 @@ class WalkForwardEngine:
 
         attribution_overrides: dict[str, Any] = {}
         if config.industry_artifact_path:
-            # ``reference_date=None`` is intentional. Per-fold attribution
-            # is *post-hoc analysis* of an already-completed backtest,
-            # not a trading-signal generator: using the most recent
-            # Shenwan classification to bucket historical positions is
-            # the standard practice. Passing ``test_end`` would trip
-            # the contract's ``temporal_leakage`` rule whenever the
-            # artifact's snapshot is after the fold's test window —
-            # which is true for every fold when an operator ingested
-            # the taxonomy "today" and runs a 4-year walk-forward.
-            # That rule is correct for *training* artifacts (lookahead
-            # bias is real there); for attribution it's a false alarm.
-            # Keeping ``reference_date=None`` opts out of the future-
-            # snapshot check while still running every other contract
-            # validation (manifest schema, taxonomy_id match, file
-            # presence, etc.).
+            # ``purpose=PURPOSE_ATTRIBUTION`` is the explicit "this is
+            # post-hoc analysis, not training" declaration. The shared
+            # loader uses the purpose enum to decide whether the
+            # temporal-leakage check fires; we no longer rely on
+            # ``reference_date=None`` as the implicit signal. See the
+            # ``purpose`` parameter docstring in
+            # :func:`resolve_industry_taxonomy` for the full
+            # rationale.
             try:
                 resolution = resolve_industry_taxonomy(
                     artifact_path=str(config.industry_artifact_path),
                     manifest_path=str(config.industry_manifest_path),
                     taxonomy_id=str(config.industry_taxonomy_id).strip(),
                     temporal_mode=config.industry_temporal_mode,
-                    reference_date=None,
+                    purpose=PURPOSE_ATTRIBUTION,
                 )
             except IndustryTaxonomyLoadError as exc:
                 # Industry-artifact load failures are config / file
