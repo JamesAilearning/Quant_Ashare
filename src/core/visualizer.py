@@ -129,24 +129,40 @@ class ResultVisualizer:
             {pd.Timestamp(k): float(v) for k, v in bench_dict.items()}
         ).sort_index() if bench_dict else None
 
-        # Walk the style fallback chain instead of silently rendering with
-        # whatever default matplotlib uses. ``OSError`` is the documented
-        # signal for an unknown style; ``ValueError`` shows up for some
-        # matplotlib edge-case names. We try the operator-supplied style
-        # first (so explicit overrides keep priority) and then the
-        # ordered fallback list — the first to succeed wins. Logged so
-        # the operator knows which style was actually applied.
+        # Walk the style fallback chain to find one that ``plt.style.context``
+        # accepts. ``OSError`` is the documented signal for an unknown
+        # style; ``ValueError`` shows up for some matplotlib edge-case
+        # names. We try the operator-supplied style first (so explicit
+        # overrides keep priority) and then the ordered fallback list —
+        # the first to succeed wins. Logged so the operator knows which
+        # style was actually applied.
+        #
+        # Crucially, we use ``plt.style.context(...)`` rather than
+        # ``plt.style.use(...)`` to keep the style scoped to this
+        # ``generate()`` call. ``plt.style.use`` mutates *global*
+        # matplotlib rcParams; in a Jupyter notebook or any process
+        # that draws charts elsewhere, that side-effect surprises
+        # callers (their unrelated plots inherit our seaborn-darkgrid
+        # styling). ``context`` rolls back on exit.
         candidates = [config.style] + [
             s for s in _STYLE_FALLBACK_CHAIN if s != config.style
         ]
         applied: str | None = None
         for candidate in candidates:
             try:
-                plt.style.use(candidate)
+                # Probe by entering and immediately exiting; if the style
+                # name resolves we'll re-enter the context for real below.
+                with plt.style.context(candidate):
+                    pass
             except (OSError, ValueError):
                 continue
             applied = candidate
             break
+
+        eq_path = str(output_dir / "equity_curve.png")
+        dd_path = str(output_dir / "drawdown.png")
+        hm_path = str(output_dir / "monthly_heatmap.png")
+
         if applied is None:
             _logger.warning(
                 "Visualizer: none of the matplotlib styles in the fallback "
@@ -154,21 +170,18 @@ class ResultVisualizer:
                 "default style.",
                 ", ".join(candidates),
             )
-        elif applied != config.style:
-            _logger.info(
-                "Visualizer: requested style %r unavailable; fell back to %r.",
-                config.style, applied,
-            )
-
-        # Generate charts
-        eq_path = str(output_dir / "equity_curve.png")
-        cls._plot_equity_curve(returns, benchmark, eq_path, config)
-
-        dd_path = str(output_dir / "drawdown.png")
-        cls._plot_drawdown(returns, benchmark, dd_path, config)
-
-        hm_path = str(output_dir / "monthly_heatmap.png")
-        cls._plot_monthly_heatmap(returns, hm_path, config)
+            # Render under the unmodified default style — equivalent to
+            # the legacy "fallback to default" behaviour without the
+            # global mutation.
+            cls._render_all(returns, benchmark, output_dir, config)
+        else:
+            if applied != config.style:
+                _logger.info(
+                    "Visualizer: requested style %r unavailable; fell back to %r.",
+                    config.style, applied,
+                )
+            with plt.style.context(applied):
+                cls._render_all(returns, benchmark, output_dir, config)
 
         plt.close("all")
 
@@ -181,6 +194,33 @@ class ResultVisualizer:
             equity_curve_path=eq_path,
             drawdown_path=dd_path,
             monthly_heatmap_path=hm_path,
+        )
+
+    @classmethod
+    def _render_all(
+        cls,
+        returns: Any,
+        benchmark: Any,
+        output_dir: Path,
+        config: VisualizerConfig,
+    ) -> None:
+        """Run all three plot routines back-to-back.
+
+        Extracted so :meth:`generate` can invoke them once inside a
+        ``plt.style.context(...)`` block (or once outside if no style
+        was applicable) without duplicating the call sequence. Output
+        filenames are computed by the caller so the returned
+        :class:`VisualizerResult` paths and the on-disk filenames are
+        defined in exactly one place.
+        """
+        cls._plot_equity_curve(
+            returns, benchmark, str(output_dir / "equity_curve.png"), config,
+        )
+        cls._plot_drawdown(
+            returns, benchmark, str(output_dir / "drawdown.png"), config,
+        )
+        cls._plot_monthly_heatmap(
+            returns, str(output_dir / "monthly_heatmap.png"), config,
         )
 
     @classmethod

@@ -19,6 +19,7 @@ from src.core.logger import get_logger
 _logger = get_logger(__name__)
 
 from src.core.attribution_industry_loader import (
+    PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
     assert_industry_config_complete_or_empty,
     resolve_industry_taxonomy,
@@ -347,7 +348,11 @@ class Pipeline:
         attribution_skipped_reason: str | None = None
         if not config.run_attribution:
             attribution_skipped_reason = "disabled_by_config"
-        elif config.run_attribution:
+        else:
+            # ``run_attribution`` is bool; the previous ``elif config.run_attribution``
+            # was logically equivalent to ``else`` and only added noise
+            # for a reader walking the branch tree. Plain ``else`` makes
+            # the intent obvious.
             if not backtest_output.positions:
                 # The previous implementation silently coerced ``positions`` to
                 # ``None`` here, which flipped PerformanceAttribution into its
@@ -607,13 +612,19 @@ class Pipeline:
         if not config.industry_artifact_path:
             return AttributionConfig(**base)
 
+        # ``purpose=PURPOSE_ATTRIBUTION`` is the explicit "post-hoc
+        # analysis, not training" declaration — same convention as
+        # ``WalkForwardEngine._run_attribution_for_fold``. The shared
+        # loader uses ``purpose`` to decide the temporal-leakage policy
+        # so callers cannot accidentally mix it up by toggling
+        # ``reference_date``.
         try:
             resolution = resolve_industry_taxonomy(
                 artifact_path=str(config.industry_artifact_path),
                 manifest_path=str(config.industry_manifest_path),
                 taxonomy_id=str(config.industry_taxonomy_id).strip(),
                 temporal_mode=config.industry_temporal_mode,
-                reference_date=config.test_end,
+                purpose=PURPOSE_ATTRIBUTION,
             )
         except IndustryTaxonomyLoadError as exc:
             raise PipelineError(str(exc)) from exc

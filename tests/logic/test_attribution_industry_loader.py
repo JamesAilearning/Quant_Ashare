@@ -18,6 +18,8 @@ from src.contracts.taxonomy_data_contract import (  # noqa: E402
     TAXONOMY_MODE_TRADE_DATE,
 )
 from src.core.attribution_industry_loader import (  # noqa: E402
+    PURPOSE_ATTRIBUTION,
+    PURPOSE_TRAINING,
     IndustryTaxonomyLoadError,
     IndustryTaxonomyResolution,
     assert_industry_config_complete_or_empty,
@@ -162,6 +164,7 @@ class ResolveIndustryTaxonomyTests(unittest.TestCase):
                 manifest_path=str(manifest),
                 taxonomy_id="tushare_sw_l2",
                 temporal_mode=TAXONOMY_MODE_STATIC,
+                purpose=PURPOSE_TRAINING,
                 reference_date="2025-08-01",
             )
         self.assertIsInstance(resolution, IndustryTaxonomyResolution)
@@ -180,6 +183,7 @@ class ResolveIndustryTaxonomyTests(unittest.TestCase):
                     manifest_path=str(tmp / "missing.json"),
                     taxonomy_id="tushare_sw_l2",
                     temporal_mode=TAXONOMY_MODE_STATIC,
+                    purpose=PURPOSE_ATTRIBUTION,
                 )
 
     def test_taxonomy_id_mismatch_raises(self) -> None:
@@ -197,6 +201,7 @@ class ResolveIndustryTaxonomyTests(unittest.TestCase):
                     manifest_path=str(manifest),
                     taxonomy_id="expected_name",
                     temporal_mode=TAXONOMY_MODE_STATIC,
+                    purpose=PURPOSE_ATTRIBUTION,
                 )
 
     def test_warnings_propagated(self) -> None:
@@ -208,11 +213,13 @@ class ResolveIndustryTaxonomyTests(unittest.TestCase):
             artifact, manifest = self._publish(tmp)
             # Force a stale snapshot by passing a reference date much
             # later than the artifact's snapshot_at (2025-07-01).
+            # Use purpose=TRAINING so the reference_date is honoured.
             resolution = resolve_industry_taxonomy(
                 artifact_path=str(artifact),
                 manifest_path=str(manifest),
                 taxonomy_id="tushare_sw_l2",
                 temporal_mode=TAXONOMY_MODE_STATIC,
+                purpose=PURPOSE_TRAINING,
                 reference_date="2026-12-31",
             )
         # Warnings list is always present; whether non-empty depends on
@@ -220,6 +227,91 @@ class ResolveIndustryTaxonomyTests(unittest.TestCase):
         # warning string (the contract library owns those) — we just
         # verify the channel exists.
         self.assertIsInstance(resolution.warnings, list)
+
+
+class PurposeParameterTests(unittest.TestCase):
+    """Pin the temporal-leakage policy switching driven by ``purpose``.
+
+    These guards are the whole point of #3 in the cleanup batch: a
+    future caller that wants leakage protection cannot get it
+    "by accident", and an attribution caller cannot trip the leakage
+    check just because the artifact snapshot is in the future.
+    """
+
+    @staticmethod
+    def _publish(tmp: Path) -> tuple[Path, Path]:
+        from src.data.taxonomy_artifact_publisher import TaxonomyArtifactPublisher
+        artifact = tmp / "sw_l2.csv"
+        manifest = tmp / "sw_l2.json"
+        TaxonomyArtifactPublisher.publish(
+            taxonomy_name="tushare_sw_l2",
+            temporal_mode=TAXONOMY_MODE_STATIC,
+            rows=[("SH600000", "银行")],
+            artifact_path=str(artifact),
+            manifest_path=str(manifest),
+            # Snapshot well into the future relative to the
+            # ``reference_date`` we pass below — would trip
+            # ``has_future_known_metadata`` under TRAINING.
+            snapshot_at="2099-01-01",
+        )
+        return artifact, manifest
+
+    def test_attribution_purpose_ignores_future_snapshot(self) -> None:
+        """The walk-forward use case: artifact ingested "today",
+        backtest folds run on past data → manifest snapshot is in the
+        future relative to every fold's test_end. Under ``purpose=
+        attribution`` the load must succeed; under ``training`` it
+        must fail."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            artifact, manifest = self._publish(tmp)
+
+            # Attribution path: future snapshot is fine, load returns
+            # successfully even when the operator-supplied
+            # ``reference_date`` is well before the snapshot.
+            resolution = resolve_industry_taxonomy(
+                artifact_path=str(artifact),
+                manifest_path=str(manifest),
+                taxonomy_id="tushare_sw_l2",
+                temporal_mode=TAXONOMY_MODE_STATIC,
+                purpose=PURPOSE_ATTRIBUTION,
+                reference_date="2024-06-30",
+            )
+            self.assertEqual(resolution.taxonomy_id, "tushare_sw_l2")
+
+    def test_training_purpose_enforces_temporal_leakage_check(self) -> None:
+        """Same fixture, but under ``purpose=training`` the contract
+        must reject a future-dated manifest. Pinning this ensures
+        an accidental ``purpose=PURPOSE_ATTRIBUTION`` on a training
+        site would be a visible behavioural change, not a silent
+        one."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            artifact, manifest = self._publish(tmp)
+
+            with self.assertRaisesRegex(
+                IndustryTaxonomyLoadError, "temporal_leakage"
+            ):
+                resolve_industry_taxonomy(
+                    artifact_path=str(artifact),
+                    manifest_path=str(manifest),
+                    taxonomy_id="tushare_sw_l2",
+                    temporal_mode=TAXONOMY_MODE_STATIC,
+                    purpose=PURPOSE_TRAINING,
+                    reference_date="2024-06-30",
+                )
+
+    def test_unknown_purpose_rejected(self) -> None:
+        """Typos like ``"atttribution"`` must not silently default to
+        either policy. Loud raise so a code reviewer catches the typo."""
+        with self.assertRaisesRegex(IndustryTaxonomyLoadError, "Unknown purpose"):
+            resolve_industry_taxonomy(
+                artifact_path="anything",
+                manifest_path="anything",
+                taxonomy_id="x",
+                temporal_mode=TAXONOMY_MODE_STATIC,
+                purpose="atttribution",  # typo
+            )
 
 
 if __name__ == "__main__":

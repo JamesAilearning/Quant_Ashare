@@ -224,13 +224,20 @@ class RiskConstraintEngine:
         total_violations = 0
         result_parts = []
 
-        for date, group in predictions.groupby(level=0):
+        # Group by name, not position — same defence-in-depth as
+        # SignalAnalyzer's ``groupby(level="datetime")``. Even though
+        # the canonical input boundary already enforces
+        # ``(datetime, instrument)`` order, this experimental module
+        # might be invoked from research scripts that bypass the
+        # boundary. ``level="datetime"`` keeps it correct regardless.
+        for date, group in predictions.groupby(level="datetime"):
             # Get top candidates for this day
             sorted_group = group.sort_values(ascending=False)
             top_candidates = sorted_group.head(config.topk * 2)  # look at more than topk
 
-            # Map instruments to industries
-            instruments = top_candidates.index.get_level_values(1)
+            # Map instruments to industries — index access is by name
+            # to match the groupby above.
+            instruments = top_candidates.index.get_level_values("instrument")
             industries = instruments.map(
                 lambda x: industry_map.get(x, "unknown")
             )
