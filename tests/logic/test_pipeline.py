@@ -124,6 +124,29 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "topk"):
             PipelineConfig(provider_uri="/tmp/fake", topk=0)
 
+    def test_rejects_n_drop_gte_topk(self) -> None:
+        """``n_drop >= topk`` would empty the portfolio after the first
+        rebalance under TopkDropoutStrategy. ``WalkForwardConfig`` already
+        rejects this; ``PipelineConfig`` now does too — same boundary
+        contract regardless of which engine builds the config."""
+        with self.assertRaisesRegex(PipelineError, "n_drop"):
+            PipelineConfig(provider_uri="/tmp/fake", topk=10, n_drop=10)
+        with self.assertRaisesRegex(PipelineError, "n_drop"):
+            PipelineConfig(provider_uri="/tmp/fake", topk=10, n_drop=15)
+
+    def test_rejects_negative_n_drop(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "n_drop"):
+            PipelineConfig(provider_uri="/tmp/fake", n_drop=-1)
+
+    def test_rejects_bool_n_drop(self) -> None:
+        """``True`` would silently behave as ``1`` (==/!= topk depending
+        on topk), and ``False`` as ``0``. Both should be rejected at the
+        type layer so a YAML typo doesn't slip through."""
+        with self.assertRaisesRegex(PipelineError, "n_drop"):
+            PipelineConfig(provider_uri="/tmp/fake", n_drop=True)
+        with self.assertRaisesRegex(PipelineError, "n_drop"):
+            PipelineConfig(provider_uri="/tmp/fake", n_drop=False)
+
     def test_accepts_zero_lag_as_explicit_same_day_execution(self) -> None:
         cfg = PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
         self.assertEqual(cfg.signal_to_execution_lag, 0)

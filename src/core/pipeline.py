@@ -181,6 +181,28 @@ class PipelineConfig:
             raise PipelineError(
                 f"PipelineConfig.topk must be >= 1; got {self.topk!r}."
             )
+        # ``n_drop`` is the number of names ``TopkDropoutStrategy``
+        # rotates out of the portfolio each rebalance; if it equals or
+        # exceeds ``topk`` the strategy ends up holding zero names after
+        # the first rebalance. ``WalkForwardConfig`` already enforces
+        # this — keep the two configs in lock-step so a copy-pasted
+        # ``topk=10, n_drop=10`` doesn't slip through here while being
+        # rejected one path over.
+        if (
+            not isinstance(self.n_drop, int)
+            or isinstance(self.n_drop, bool)
+            or self.n_drop < 0
+        ):
+            raise PipelineError(
+                f"PipelineConfig.n_drop must be a non-negative int; got "
+                f"{self.n_drop!r}."
+            )
+        if self.n_drop >= self.topk:
+            raise PipelineError(
+                f"PipelineConfig.n_drop ({self.n_drop}) must be strictly "
+                f"less than topk ({self.topk}); otherwise TopkDropoutStrategy "
+                "would empty the portfolio after the first rebalance."
+            )
         if isinstance(self.signal_to_execution_lag, bool) or not isinstance(
             self.signal_to_execution_lag,
             int,
@@ -337,7 +359,35 @@ class Pipeline:
             )
             FactorAnalyzer.print_report(factor_result)
 
-        # Step 7: Performance attribution (optional)
+        # Step 7a: Persist positions artifact (authoritative portfolio
+        # weights) *before* attribution. Previously this lived after the
+        # attribution step; if attribution raised any exception other
+        # than ``PerformanceAttributionError`` (e.g. a NameError in
+        # downstream changes, a missing dependency on first run) the
+        # positions JSON would never be written and the entire backtest
+        # output would be lost — even though the backtest itself
+        # finished successfully. Persisting first means a hard failure
+        # later still leaves positions on disk for inspection.
+        if backtest_output.positions:
+            positions_path = output_dir / "positions.json"
+            # No ``default=str`` fallback: positions is documented as
+            # ``{date_str: {instrument: float}}`` per CanonicalBacktestOutput,
+            # so plain JSON should serialise without coercion. Falling
+            # back to ``str(...)`` would silently turn an unexpected type
+            # (numpy.float64 leaking through, a pandas Timestamp date key,
+            # a non-string instrument id, …) into a stringified value
+            # downstream consumers would have to special-case. Letting
+            # the TypeError propagate means the contract violation
+            # surfaces at write time instead of weeks later in a
+            # dashboard.
+            with open(positions_path, "w", encoding="utf-8") as f:
+                json.dump(dict(backtest_output.positions), f, indent=2)
+            _logger.info(
+                "  Positions: %s (%d days)",
+                positions_path, len(backtest_output.positions),
+            )
+
+        # Step 7b: Performance attribution (optional)
         attribution_result: AttributionResult | None = None
         # Track *why* attribution was skipped (if it was). Persisted to
         # the JSON report so downstream consumers / dashboards can tell
@@ -399,26 +449,6 @@ class Pipeline:
                         "the report.",
                         type(exc).__name__, exc,
                     )
-
-        # Step 7b: Persist positions artifact (authoritative portfolio weights)
-        if backtest_output.positions:
-            positions_path = output_dir / "positions.json"
-            # No ``default=str`` fallback: positions is documented as
-            # ``{date_str: {instrument: float}}`` per CanonicalBacktestOutput,
-            # so plain JSON should serialise without coercion. Falling
-            # back to ``str(...)`` would silently turn an unexpected type
-            # (numpy.float64 leaking through, a pandas Timestamp date key,
-            # a non-string instrument id, …) into a stringified value
-            # downstream consumers would have to special-case. Letting
-            # the TypeError propagate means the contract violation
-            # surfaces at write time instead of weeks later in a
-            # dashboard.
-            with open(positions_path, "w", encoding="utf-8") as f:
-                json.dump(dict(backtest_output.positions), f, indent=2)
-            _logger.info(
-                "  Positions: %s (%d days)",
-                positions_path, len(backtest_output.positions),
-            )
 
         # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")

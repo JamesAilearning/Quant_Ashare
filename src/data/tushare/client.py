@@ -45,9 +45,29 @@ class TushareClient:
     raw constructor exists so unit tests can inject a known token
     without depending on the environment, but production code should
     not call it directly.
+
+    The default ``@dataclass`` ``__repr__`` would print
+    ``TushareClient(token='1a2b3c...')`` verbatim, which lands the
+    secret in any logger / exception message that quotes the client.
+    We override ``__repr__`` to mask the token so it is safe to
+    surface in tracebacks and ``logging.error("client=%r", client)``
+    style logs.
     """
 
     token: str
+
+    def __repr__(self) -> str:
+        # Show only the token's length and a 4-char prefix so a
+        # debugger can still confirm "this is the right env var"
+        # without leaking the full secret. Empty-token clients are
+        # rejected upstream by ``from_environment``; the raw
+        # constructor allows them for test injection, in which case
+        # we still mask defensively.
+        token = getattr(self, "token", "") or ""
+        if not token:
+            return "TushareClient(token='<empty>')"
+        prefix = token[:4]
+        return f"TushareClient(token='{prefix}***' len={len(token)})"
 
     @classmethod
     def from_environment(cls) -> "TushareClient":

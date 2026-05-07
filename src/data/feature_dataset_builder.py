@@ -80,8 +80,20 @@ def list_supported_feature_handlers() -> tuple[str, ...]:
     return tuple(sorted(_FEATURE_HANDLER_REGISTRY))
 
 
-def _reset_feature_handler_registry_for_tests() -> None:
-    """Reset feature handler registry to default registrations. TEST-ONLY."""
+def _reset_feature_handler_registry_to_defaults() -> None:
+    """Reset feature handler registry to default registrations.
+
+    Used at module-import time to seed the registry with the built-in
+    handlers, and by tests that register a custom factory and need to
+    restore the baseline before the next test runs.
+
+    The previous name (``_reset_feature_handler_registry_for_tests``)
+    was misleading: the same call also runs at module-import (see the
+    bottom of this file), so any caller who imports the module *after*
+    registering a custom handler would silently lose their registration.
+    The new name reflects that this is the canonical "wipe and restore
+    defaults" operation, not test-only plumbing.
+    """
 
     _FEATURE_HANDLER_REGISTRY.clear()
     register_feature_handler("Alpha158", _alpha158_factory)
@@ -99,7 +111,12 @@ def _alpha158_factory(config: FeatureDatasetConfig) -> Any:
     )
 
 
-_reset_feature_handler_registry_for_tests()
+# Module-load: seed the registry with the built-in handler. Importing
+# this module *after* registering a custom factory will reset it back
+# to defaults — that's the documented behaviour of
+# ``_reset_feature_handler_registry_to_defaults``. To register a custom
+# handler durably, do so *after* the first import of this module.
+_reset_feature_handler_registry_to_defaults()
 
 
 class FeatureDatasetBuilder:

@@ -253,16 +253,35 @@ class BacktestRunner:
             )
             return predictions
         import pandas as pd
-        if isinstance(predictions, pd.Series) and isinstance(predictions.index, pd.MultiIndex):
-            # MultiIndex (datetime, instrument): shift the datetime level.
-            # ``unstack()`` pivots instrument to columns so ``shift(lag)``
-            # advances every instrument's date stamps by the same number
-            # of rows; ``stack().dropna()`` drops the leading rows that
-            # now have no source.
-            df = predictions.unstack()
-            df = df.shift(lag)
-            return df.stack().dropna()
-        return predictions
+        # Refuse to silently fall through on the wrong shape. The previous
+        # implementation returned ``predictions`` unchanged when the input
+        # was not a ``(datetime, instrument)`` MultiIndex Series, which
+        # silently dropped the requested lag — turning "T+1 execution"
+        # into "T-execution" with no warning. If a research script ever
+        # passes a single-level Series or DataFrame, we want a loud
+        # error, not a wrong-but-plausible backtest.
+        if not isinstance(predictions, pd.Series):
+            raise BacktestRunnerError(
+                "BacktestRunner._apply_lag: predictions must be a pandas "
+                f"Series with (datetime, instrument) MultiIndex; got "
+                f"{type(predictions).__name__}. Refusing to drop the "
+                f"requested lag={lag} silently."
+            )
+        if not isinstance(predictions.index, pd.MultiIndex):
+            raise BacktestRunnerError(
+                "BacktestRunner._apply_lag: predictions Series must carry a "
+                "(datetime, instrument) MultiIndex; got "
+                f"{type(predictions.index).__name__}. Refusing to drop the "
+                f"requested lag={lag} silently."
+            )
+        # MultiIndex (datetime, instrument): shift the datetime level.
+        # ``unstack()`` pivots instrument to columns so ``shift(lag)``
+        # advances every instrument's date stamps by the same number
+        # of rows; ``stack().dropna()`` drops the leading rows that
+        # now have no source.
+        df = predictions.unstack()
+        df = df.shift(lag)
+        return df.stack().dropna()
 
     @staticmethod
     def _build_provenance(

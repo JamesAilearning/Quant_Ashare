@@ -16,7 +16,7 @@ from src.data.feature_dataset_builder import (
     FeatureDatasetBuilder,
     FeatureDatasetBuilderError,
     FeatureDatasetConfig,
-    _reset_feature_handler_registry_for_tests,
+    _reset_feature_handler_registry_to_defaults,
     list_supported_feature_handlers,
     register_feature_handler,
 )
@@ -26,10 +26,10 @@ class FeatureDatasetBuilderStructuralTests(unittest.TestCase):
     """Structural validation — no qlib needed."""
 
     def setUp(self) -> None:
-        _reset_feature_handler_registry_for_tests()
+        _reset_feature_handler_registry_to_defaults()
 
     def tearDown(self) -> None:
-        _reset_feature_handler_registry_for_tests()
+        _reset_feature_handler_registry_to_defaults()
 
     def _config(self, *, feature_handler: str = "Alpha158") -> FeatureDatasetConfig:
         return FeatureDatasetConfig(

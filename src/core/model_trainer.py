@@ -287,15 +287,22 @@ class ModelTrainer:
         own RNG is deterministic (Python/numpy seeding only helps with
         pre-processing). For LGBModel we use ``seed``; XGB uses ``seed``;
         CatBoost uses ``random_seed``.
-        """
-        try:
-            from qlib.contrib.model.gbdt import LGBModel  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise ModelTrainerError(
-                "qlib is not importable; cannot train model."
-            ) from exc
 
+        Each framework is imported lazily *inside* its own branch so a
+        user running XGB or CatBoost does not hit ``ImportError`` when
+        lightgbm is not installed. The previous unconditional
+        ``from qlib.contrib.model.gbdt import LGBModel`` at the top of
+        the method made the LGB dep a hard requirement for every call
+        site, even XGB/CatBoost.
+        """
         if config.model_type == "LGBModel":
+            try:
+                from qlib.contrib.model.gbdt import LGBModel  # type: ignore[import-not-found]
+            except ImportError as exc:
+                raise ModelTrainerError(
+                    "lightgbm / qlib LGBModel is not importable. Run: "
+                    "pip install lightgbm"
+                ) from exc
             return LGBModel(
                 loss="mse",
                 num_boost_round=config.num_boost_round,

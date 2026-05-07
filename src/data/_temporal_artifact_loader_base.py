@@ -206,8 +206,16 @@ class TemporalArtifactLoaderBase:
                                 max_trade_date = parsed
                             if reference is not None and parsed > reference:
                                 has_future_effective_data = True
-                            # Accumulate for coverage computation (no second read)
-                            distinct_trade_dates.add(raw)
+                            # Accumulate for coverage computation (no second
+                            # read). Use the parsed date's canonical
+                            # ISO form rather than the raw string so two
+                            # equivalent representations of the same date
+                            # ("2024-01-01" vs "2024-1-01" vs trailing
+                            # whitespace) collapse to a single entry —
+                            # otherwise ``distinct_trade_date_count``
+                            # over-counts and the contract reports
+                            # phantom coverage.
+                            distinct_trade_dates.add(parsed.isoformat())
 
                     if temporal_mode == cls.MODE_RANGE:
                         if eff_start_idx >= 0 and eff_start_idx < len(record):
