@@ -54,9 +54,19 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
 
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}
     qlib_keys = {"provider_uri", "region"}
-    unknown = set(raw) - valid_fields - qlib_keys
+    unknown = sorted(set(raw) - valid_fields - qlib_keys)
     if unknown:
-        _logger.warning("Unknown config keys ignored: %s", sorted(unknown))
+        # Reject unknown keys hard. Previously we logged a WARNING and
+        # silently dropped them, which masked typos like ``top_k`` /
+        # ``ensemble_window_size`` etc. — the run continued with default
+        # values, producing official metrics that bore no relation to
+        # the YAML the operator thought they had set.
+        raise ValueError(
+            f"Unknown config keys in {config_path}: {unknown}. "
+            f"Valid WalkForwardConfig fields: {sorted(valid_fields)}; "
+            f"plus qlib runtime keys: {sorted(qlib_keys)}. "
+            "Refusing to run with potentially-typo'd keys."
+        )
 
     filtered = {k: v for k, v in raw.items() if k in valid_fields}
     wf_config = WalkForwardConfig(**filtered)

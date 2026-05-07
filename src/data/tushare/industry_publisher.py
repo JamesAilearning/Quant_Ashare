@@ -282,6 +282,8 @@ class TushareIndustryPublisher:
                     f"column {col!r}. Columns present: {list(df.columns)}."
                 )
 
+        import pandas as pd  # local import — avoids module-level dep
+
         out: list[tuple[str, str]] = []
         for _, row in df.iterrows():
             row_level = row.get("level", "")
@@ -289,7 +291,14 @@ class TushareIndustryPublisher:
                 continue
             index_code = row.get("index_code")
             industry_name = row.get("industry_name")
-            if index_code is None or industry_name is None:
+            # ``pd.isna`` catches both ``None`` and ``np.nan``. The
+            # previous ``is None`` check let NaN values through, which
+            # then became the literal string ``"nan"`` after
+            # ``str(np.nan).strip()`` and triggered confusing
+            # ``"Failed to fetch members for industry nan"`` errors
+            # downstream when the publisher tried to fetch members for
+            # the bogus industry.
+            if pd.isna(index_code) or pd.isna(industry_name):
                 _logger.warning(
                     "Skipping industry row with missing fields: %r", dict(row)
                 )

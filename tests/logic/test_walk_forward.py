@@ -1432,5 +1432,174 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
         self.assertEqual(report["ensemble"]["prior_models_loaded"], 0)
 
 
+class FoldFailureContinuationTests(unittest.TestCase):
+    """Per review #5: a single fold's exception must NOT abort the whole
+    walk-forward run. The run continues with a NaN-only placeholder
+    fold and the aggregate report still gets written so completed folds'
+    work is preserved on disk.
+    """
+
+    def test_single_fold_exception_records_nan_placeholder_and_continues(self) -> None:
+        """Fold 1 raises mid-run; folds 0 and 2+ should still produce
+        valid records, the aggregate JSON should be written, and the
+        failed fold should appear with NaN metrics rather than be
+        silently dropped from ``num_folds``."""
+        import math
+        import tempfile
+
+        from src.core.walk_forward import WalkForwardFold
+
+        # Fake ``_run_single_fold``: fold 1 raises, others succeed.
+        def fake_single_fold(*, fold_index, train_start, train_end,
+                             valid_start, valid_end, test_start, test_end,
+                             prior_model_paths, **_):
+            if fold_index == 1:
+                raise RuntimeError("simulated transient qlib hiccup")
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period=f"{train_start} ~ {train_end}",
+                valid_period=f"{valid_start} ~ {valid_end}",
+                test_period=f"{test_start} ~ {test_end}",
+                ic_1d=0.02 + fold_index * 0.001,
+                ic_5d=0.04,
+                annualized_return=0.10,
+                max_drawdown=-0.05,
+                information_ratio=1.5,
+                prediction_shape=(100,),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            WalkForwardEngine, "_run_single_fold",
+            side_effect=fake_single_fold,
+        ):
+            config = WalkForwardConfig(
+                overall_start="2022-01-01",
+                overall_end="2025-06-30",
+                train_months=24,
+                valid_months=3,
+                test_months=3,
+                step_months=3,
+                output_dir=tmp,
+            )
+            result = WalkForwardEngine.run(config)
+
+        # Run completes — aggregate report exists and num_folds counts
+        # the placeholder.
+        self.assertIsNotNone(result.report_path)
+        self.assertEqual(len(result.folds), result.num_folds)
+
+        # Fold 1 must appear with NaN metrics (placeholder), not absent.
+        fold1 = result.folds[1]
+        self.assertEqual(fold1.fold_index, 1)
+        self.assertTrue(math.isnan(fold1.ic_1d))
+        self.assertTrue(math.isnan(fold1.annualized_return))
+
+        # Aggregate ``valid_folds_*`` excludes the placeholder.
+        agg = result.aggregate_metrics
+        self.assertEqual(
+            int(agg["valid_folds_ic_1d"]), len(result.folds) - 1,
+            "Failed fold's NaN must drop out of valid_folds count",
+        )
+        self.assertEqual(int(agg["num_folds"]), len(result.folds))
+
+    def test_failed_fold_does_not_pollute_subsequent_ensemble(self) -> None:
+        """When ``ensemble_window > 1``, the failed fold's pickle path
+        must NOT be appended to ``prior_model_paths`` (the model
+        wasn't trained, the file is missing or partial). Subsequent
+        folds' ensemble windows should skip over it."""
+        import tempfile
+
+        from src.core.walk_forward import WalkForwardFold
+
+        captured_priors: list[tuple[str, ...]] = []
+
+        def fake_single_fold(*, fold_index, train_start, train_end,
+                             valid_start, valid_end, test_start, test_end,
+                             prior_model_paths, **_):
+            captured_priors.append(tuple(prior_model_paths))
+            if fold_index == 1:
+                raise RuntimeError("fold 1 boom")
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period=f"{train_start} ~ {train_end}",
+                valid_period=f"{valid_start} ~ {valid_end}",
+                test_period=f"{test_start} ~ {test_end}",
+                ic_1d=0.01, ic_5d=0.02,
+                annualized_return=0.05, max_drawdown=-0.05,
+                information_ratio=0.5,
+                prediction_shape=(100,),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            WalkForwardEngine, "_run_single_fold",
+            side_effect=fake_single_fold,
+        ):
+            config = WalkForwardConfig(
+                overall_start="2022-01-01",
+                overall_end="2025-06-30",
+                train_months=24,
+                valid_months=3,
+                test_months=3,
+                step_months=3,
+                ensemble_window=3,
+                output_dir=tmp,
+            )
+            WalkForwardEngine.run(config)
+
+        # Fold 0: no priors. Fold 1: 1 prior (fold 0). Fold 2: still
+        # only fold 0 — fold 1 failed and its pickle path is NOT
+        # appended. Fold 3: folds 0 and 2.
+        self.assertGreaterEqual(len(captured_priors), 4)
+        self.assertEqual(len(captured_priors[0]), 0)  # fold 0
+        self.assertEqual(len(captured_priors[1]), 1)  # fold 1 sees fold 0
+        self.assertTrue(captured_priors[1][0].endswith("model_fold0.pkl"))
+        # Fold 2 still sees only fold 0 (fold 1's path was NOT appended).
+        self.assertEqual(len(captured_priors[2]), 1)
+        self.assertTrue(captured_priors[2][0].endswith("model_fold0.pkl"))
+        # Fold 3 sees fold 0 and fold 2 (fold 1 still skipped).
+        self.assertEqual(len(captured_priors[3]), 2)
+        self.assertTrue(captured_priors[3][0].endswith("model_fold0.pkl"))
+        self.assertTrue(captured_priors[3][1].endswith("model_fold2.pkl"))
+
+
+class CLIUnknownConfigKeyTests(unittest.TestCase):
+    """``scripts/run_walk_forward.py`` must hard-fail on unknown YAML
+    keys instead of warning + silently dropping them. The previous
+    behaviour masked typos like ``top_k`` (no effect — ``topk`` stays
+    at default 50) and ``ensemble_window_size`` (vs the real field
+    ``ensemble_window``)."""
+
+    def test_unknown_key_raises_value_error(self) -> None:
+        import tempfile
+        import textwrap
+
+        from scripts.run_walk_forward import _load_config
+
+        yaml_text = textwrap.dedent("""\
+            provider_uri: D:/qlib_data/my_cn_data
+            region: cn
+            top_k: 100  # typo — real field is ``topk``
+            overall_start: '2024-01-01'
+            overall_end: '2025-12-31'
+        """)
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(yaml_text)
+            config_path = f.name
+
+        try:
+            with self.assertRaisesRegex(ValueError, "top_k"):
+                _load_config(config_path)
+        finally:
+            Path(config_path).unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()

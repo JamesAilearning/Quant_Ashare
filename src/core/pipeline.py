@@ -181,6 +181,26 @@ class PipelineConfig:
             raise PipelineError(
                 f"PipelineConfig.topk must be >= 1; got {self.topk!r}."
             )
+        # Cost / fee parameters must be non-negative. Negative
+        # commission / stamp tax / slippage / min_cost would silently
+        # *add* return rather than subtract it — backtest looks better
+        # than reality. ``CanonicalExchangeCostModel.__post_init__``
+        # would catch these at backtest-construction time, but by then
+        # the feature build + model train + predict steps have already
+        # run for several minutes; failing here at config construction
+        # avoids the wasted compute.
+        for name in ("commission_rate", "stamp_tax_bps", "slippage_bps", "min_cost"):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise PipelineError(
+                    f"PipelineConfig.{name} must be a real number; got "
+                    f"{type(value).__name__} ({value!r})."
+                )
+            if value < 0:
+                raise PipelineError(
+                    f"PipelineConfig.{name} must be >= 0 to avoid silently "
+                    f"inflating returns by negative cost; got {value!r}."
+                )
         # ``n_drop`` is the number of names ``TopkDropoutStrategy``
         # rotates out of the portfolio each rebalance; if it equals or
         # exceeds ``topk`` the strategy ends up holding zero names after
@@ -370,18 +390,23 @@ class Pipeline:
         # later still leaves positions on disk for inspection.
         if backtest_output.positions:
             positions_path = output_dir / "positions.json"
-            # No ``default=str`` fallback: positions is documented as
-            # ``{date_str: {instrument: float}}`` per CanonicalBacktestOutput,
-            # so plain JSON should serialise without coercion. Falling
-            # back to ``str(...)`` would silently turn an unexpected type
-            # (numpy.float64 leaking through, a pandas Timestamp date key,
-            # a non-string instrument id, …) into a stringified value
-            # downstream consumers would have to special-case. Letting
-            # the TypeError propagate means the contract violation
-            # surfaces at write time instead of weeks later in a
-            # dashboard.
+            # No ``default=str`` fallback for the contract types: positions
+            # is documented as ``{date_str: {instrument: float}}`` per
+            # CanonicalBacktestOutput, so plain JSON should serialise
+            # without coercion. Falling back to ``str(...)`` would
+            # silently turn an unexpected type (numpy.float64 leaking
+            # through, a pandas Timestamp date key, a non-string
+            # instrument id, …) into a stringified value downstream
+            # consumers would have to special-case.
+            #
+            # NaN-safe via ``_sanitize_for_json`` + ``allow_nan=False``:
+            # the same convention the per-fold / aggregate reports use.
+            # A NaN weight leaking through to ``positions`` would
+            # otherwise produce the non-standard ``NaN`` JSON token
+            # that strict parsers (jq, browsers) reject.
+            sanitised_positions = _sanitize_for_json(dict(backtest_output.positions))
             with open(positions_path, "w", encoding="utf-8") as f:
-                json.dump(dict(backtest_output.positions), f, indent=2)
+                json.dump(sanitised_positions, f, indent=2, allow_nan=False)
             _logger.info(
                 "  Positions: %s (%d days)",
                 positions_path, len(backtest_output.positions),
@@ -423,32 +448,61 @@ class Pipeline:
             else:
                 _logger.info("Running performance attribution...")
                 try:
-                    attribution_result = PerformanceAttribution.analyze(
-                        return_series=backtest_output.return_series,
-                        predictions=model_result.predictions,
-                        config=cls._build_attribution_config(config),
-                        positions=backtest_output.positions,
-                    )
-                    PerformanceAttribution.print_report(attribution_result)
-                except PerformanceAttributionError as exc:
-                    # Degenerate inputs (e.g. all-non-positive predictions,
-                    # all-zero position weights) raise from the attribution
-                    # engine by design — they would otherwise be silently
-                    # masked by a uniform-weighting fallback. Downgrade to
-                    # "skipped with loud WARNING" so the run can still
-                    # finish (backtest + report are already valid) while
-                    # making the degradation visible to callers.
+                    attribution_config = cls._build_attribution_config(config)
+                except PipelineError as exc:
+                    # ``_build_attribution_config`` re-raises
+                    # :class:`IndustryTaxonomyLoadError` as
+                    # :class:`PipelineError`. The previous implementation
+                    # let that bubble out of ``run``, killing the entire
+                    # pipeline — including the report-write step — even
+                    # though the backtest had already finished
+                    # successfully. Treat a taxonomy failure the same as
+                    # a degenerate-input PerformanceAttributionError:
+                    # skip + WARN, so the run still produces a usable
+                    # report (with an explicit ``skipped_reason`` in the
+                    # attribution block).
                     attribution_result = None
                     attribution_skipped_reason = (
-                        f"engine_error: {type(exc).__name__}: {exc}"
+                        f"taxonomy_load_failed: {exc}"
                     )
                     _logger.warning(
-                        "Performance attribution skipped — engine raised "
-                        "%s: %s. Backtest and risk_analysis remain valid; "
-                        "only the sector-attribution block is absent from "
-                        "the report.",
-                        type(exc).__name__, exc,
+                        "Performance attribution skipped — industry taxonomy "
+                        "load failed: %s. Backtest and risk_analysis remain "
+                        "valid; only the sector-attribution block is absent "
+                        "from the report.",
+                        exc,
                     )
+                    attribution_config = None
+                if attribution_config is None:
+                    pass  # already handled above
+                else:
+                    try:
+                        attribution_result = PerformanceAttribution.analyze(
+                            return_series=backtest_output.return_series,
+                            predictions=model_result.predictions,
+                            config=attribution_config,
+                            positions=backtest_output.positions,
+                        )
+                        PerformanceAttribution.print_report(attribution_result)
+                    except PerformanceAttributionError as exc:
+                        # Degenerate inputs (e.g. all-non-positive predictions,
+                        # all-zero position weights) raise from the attribution
+                        # engine by design — they would otherwise be silently
+                        # masked by a uniform-weighting fallback. Downgrade to
+                        # "skipped with loud WARNING" so the run can still
+                        # finish (backtest + report are already valid) while
+                        # making the degradation visible to callers.
+                        attribution_result = None
+                        attribution_skipped_reason = (
+                            f"engine_error: {type(exc).__name__}: {exc}"
+                        )
+                        _logger.warning(
+                            "Performance attribution skipped — engine raised "
+                            "%s: %s. Backtest and risk_analysis remain valid; "
+                            "only the sector-attribution block is absent from "
+                            "the report.",
+                            type(exc).__name__, exc,
+                        )
 
         # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")

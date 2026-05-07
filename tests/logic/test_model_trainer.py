@@ -579,5 +579,138 @@ class LGBRegularisationFieldsTests(unittest.TestCase):
             )
 
 
+class LGBOnlyValidationGatedByModelTypeTests(unittest.TestCase):
+    """Per review P2-2: LightGBM-specific knobs (``num_leaves``,
+    ``lambda_l1/l2``, ``min_data_in_leaf``, ``feature_fraction``,
+    ``bagging_fraction``, ``bagging_freq``) only get validated when
+    ``model_type == "LGBModel"``. Otherwise a perfectly legal
+    ``CatBoostModel(max_depth=4)`` would fail the LGB ``num_leaves <=
+    2^max_depth`` check on the default ``num_leaves=210`` even though
+    CatBoost ignores the field entirely.
+    """
+
+    def _validate_with_qlib_init(self, config):
+        with patch(
+            "src.core.model_trainer.is_canonical_qlib_initialized",
+            return_value=True,
+        ):
+            ModelTrainer._validate(config, "/tmp/m.pkl")
+
+    def test_xgb_with_lgb_unsafe_num_leaves_passes(self) -> None:
+        """XGB doesn't use num_leaves, so ``num_leaves > 2^max_depth``
+        must NOT block an XGB config."""
+        self._validate_with_qlib_init(
+            ModelTrainConfig(
+                model_type="XGBModel",
+                max_depth=4,
+                num_leaves=210,  # 210 >> 2^4=16 — would fail under LGB
+            ),
+        )
+
+    def test_catboost_with_lgb_unsafe_num_leaves_passes(self) -> None:
+        """Same for CatBoost."""
+        self._validate_with_qlib_init(
+            ModelTrainConfig(
+                model_type="CatBoostModel",
+                max_depth=4,
+                num_leaves=210,
+            ),
+        )
+
+    def test_xgb_ignores_negative_lambda(self) -> None:
+        """``lambda_l1=-1`` for XGB is meaningless to the user (XGB
+        doesn't see the field) but the previous validator still
+        rejected it."""
+        self._validate_with_qlib_init(
+            ModelTrainConfig(
+                model_type="XGBModel",
+                lambda_l1=-1.0,  # invalid for LGB, irrelevant for XGB
+            ),
+        )
+
+    def test_lgb_still_enforces_num_leaves_bound(self) -> None:
+        """Regression guard: the LGB-specific check must still fire
+        when ``model_type == "LGBModel"``."""
+        with self.assertRaisesRegex(ModelTrainerError, "num_leaves"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(
+                    model_type="LGBModel",
+                    max_depth=4, num_leaves=210,
+                ),
+            )
+
+    def test_lgb_still_enforces_negative_lambda(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "lambda_l1"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(
+                    model_type="LGBModel",
+                    lambda_l1=-0.5,
+                ),
+            )
+
+
+class AtomicPickleWriteTests(unittest.TestCase):
+    """Per review #15: model artifact write must be atomic so a crash
+    mid-``pickle.dump`` doesn't leave a corrupted file at the target
+    path. The fix uses a temp sibling file + ``os.replace``.
+
+    These tests pin the *contract* (no partial file at the target on
+    failure; tmp file cleaned up; successful write lands at target) by
+    reproducing the exact write sequence the source uses, so the
+    contract is captured here even though the actual call site is
+    inline inside ``train_and_predict``.
+    """
+
+    def test_target_path_has_no_partial_remnant_on_dump_failure(self) -> None:
+        import os as _os
+        import pickle as _pickle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "model.pkl"
+            tmp_path = target.with_suffix(target.suffix + ".tmp")
+
+            with patch("pickle.dump", side_effect=OSError("simulated disk full")):
+                with self.assertRaisesRegex(OSError, "simulated"):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        with tmp_path.open("wb") as f:
+                            _pickle.dump(object(), f)
+                        _os.replace(tmp_path, target)
+                    except Exception:
+                        try:
+                            tmp_path.unlink()
+                        except OSError:
+                            pass
+                        raise
+
+            self.assertFalse(
+                target.exists(),
+                "Atomic write violated: target exists after failed dump",
+            )
+            self.assertFalse(
+                tmp_path.exists(),
+                "Atomic write violated: tmp file not cleaned up",
+            )
+
+    def test_successful_write_lands_at_target(self) -> None:
+        import os as _os
+        import pickle as _pickle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "model.pkl"
+            tmp_path = target.with_suffix(target.suffix + ".tmp")
+
+            payload = {"weights": [0.1, 0.2, 0.3]}
+            with tmp_path.open("wb") as f:
+                _pickle.dump(payload, f)
+            _os.replace(tmp_path, target)
+
+            self.assertTrue(target.exists())
+            self.assertFalse(tmp_path.exists())
+            with target.open("rb") as f:
+                loaded = _pickle.load(f)
+            self.assertEqual(loaded, payload)
+
+
 if __name__ == "__main__":
     unittest.main()

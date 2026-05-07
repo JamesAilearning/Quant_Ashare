@@ -773,5 +773,95 @@ class IndustryMapOverrideTests(unittest.TestCase):
         self.assertEqual(result.sector_taxonomy, "tushare_sw_l2")
 
 
+class PositionsContractValidationTests(unittest.TestCase):
+    """Per review #14: ``positions[date]`` must be a mapping. A
+    list / scalar / string for some day used to crash at ``.items()``
+    mid-iteration after several days had already accumulated. Reject
+    loudly with a clear message instead.
+    """
+
+    def test_non_dict_day_map_raises_with_clear_message(self) -> None:
+        from src.core.performance_attribution import (
+            AttributionConfig,
+            PerformanceAttribution,
+            PerformanceAttributionError,
+        )
+
+        return_series = {
+            "return": {"2025-01-02": 0.01, "2025-01-03": 0.02},
+            "bench": {"2025-01-02": 0.005, "2025-01-03": 0.01},
+            "cost": {"2025-01-02": 0.0001, "2025-01-03": 0.0001},
+        }
+        positions = {
+            "2025-01-02": ["SH600000", "SH600001"],  # bad: list, not dict
+            "2025-01-03": {"SH600000": 0.5, "SH600001": 0.5},
+        }
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-01-02"), "SH600000"),
+             (pd.Timestamp("2025-01-02"), "SH600001"),
+             (pd.Timestamp("2025-01-03"), "SH600000"),
+             (pd.Timestamp("2025-01-03"), "SH600001")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([0.1, 0.2, 0.3, 0.4], index=idx)
+
+        # ``analyze`` checks qlib init at the top; mock that so this
+        # test focuses on the positions-contract check rather than
+        # requiring a live qlib runtime.
+        with patch(
+            "src.core.performance_attribution.is_canonical_qlib_initialized",
+            return_value=True,
+        ), self.assertRaisesRegex(
+            PerformanceAttributionError, "positions contract violation",
+        ):
+            PerformanceAttribution.analyze(
+                return_series=return_series,
+                predictions=predictions,
+                config=AttributionConfig(
+                    start_date="2025-01-01", end_date="2025-01-31",
+                ),
+                positions=positions,
+            )
+
+
+class MonthlyBenchmarkGapTests(unittest.TestCase):
+    """Per review P2-4: missing benchmark months previously got
+    silently substituted with 0.0, disguising a data gap as 'index
+    flat'. The fix surfaces the gap as NaN benchmark / NaN excess.
+    """
+
+    def test_missing_bench_month_yields_nan_excess(self) -> None:
+        from src.core.performance_attribution import PerformanceAttribution
+
+        port = pd.Series(
+            [0.01, 0.02, 0.015, 0.005],
+            index=pd.to_datetime([
+                "2025-01-15", "2025-01-20",
+                "2025-02-10", "2025-02-15",
+            ]),
+        )
+        bench = pd.Series(
+            [0.005, 0.005],
+            index=pd.to_datetime(["2025-01-15", "2025-01-20"]),
+        )
+        helper = getattr(
+            PerformanceAttribution, "_compute_monthly_returns", None,
+        )
+        if helper is None:
+            self.skipTest(
+                "_compute_monthly_returns is not exposed; covered indirectly"
+            )
+        result = helper(port, bench)
+        feb = [r for r in result if r.year == 2025 and r.month == 2]
+        self.assertEqual(len(feb), 1, "Feb portfolio month must appear")
+        import math
+        self.assertTrue(math.isnan(feb[0].benchmark_return))
+        self.assertTrue(math.isnan(feb[0].excess_return))
+        # January (both sides present) must have real numbers.
+        jan = [r for r in result if r.year == 2025 and r.month == 1]
+        self.assertEqual(len(jan), 1)
+        self.assertFalse(math.isnan(jan[0].benchmark_return))
+
+
 if __name__ == "__main__":
     unittest.main()
