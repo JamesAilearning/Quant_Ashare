@@ -75,5 +75,22 @@ commission_rate: 0.0005
 stamp_tax_bps: 10.0
 slippage_bps: 5.0
 
+# Performance attribution per fold. Default ``True`` produces an
+# ``attribution`` block in every ``fold_NN_report.json`` (board-heuristic
+# bucketing if no industry artifact is configured). Set to ``false`` to
+# skip the per-fold Brinson decomposition entirely.
+run_attribution: true
+
+# Optional real industry taxonomy for per-fold attribution. Mirrors the
+# three-field contract on ``PipelineConfig``: leave all three empty to
+# use the explicit board heuristic, or set the full triple to load the
+# Tushare-published Shenwan L2 artifact and render real Chinese
+# industry names ("白酒" / "银行") in fold reports instead of board
+# buckets ("board_SH_Main"). Same partial-config rejection as Pipeline
+# (any 1/3 or 2/3 combination raises at config construction time).
+# industry_artifact_path: "output/taxonomy/sw_l2.csv"
+# industry_manifest_path: "output/taxonomy/sw_l2.json"
+# industry_taxonomy_id: "tushare_sw_l2"
+
 # Output
 output_dir: "output/walk_forward"
