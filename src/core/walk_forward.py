@@ -116,6 +116,39 @@ class WalkForwardConfig:
     signal_to_execution_lag: int = 1
     limit_threshold: float = 0.095
 
+    # Cross-fold model ensemble.
+    #
+    # When >1, each fold's prediction is the equal-weighted mean of:
+    #   1. the current fold's freshly trained model, plus
+    #   2. up to ``ensemble_window - 1`` prior folds' models (loaded
+    #      from their pickle artifacts and re-predicted against the
+    #      current fold's dataset).
+    #
+    # Default ``1`` is a no-op — current behaviour preserved for any
+    # existing config that doesn't set this. ``2`` averages current +
+    # 1 prior; ``3`` averages current + 2 priors; etc.
+    #
+    # Why this matters: the first walk-forward + industry-attribution
+    # run showed model selection ability flipping sign within a single
+    # quarter on the same sector (semiconductors: select −0.62% in
+    # fold 5, +0.88% in fold 7). Most of that flip is parameter noise
+    # rather than real regime change; averaging across recent training
+    # windows smooths it out.
+    #
+    # Caveat: prior models predict the *current* fold's processed
+    # dataset. The processors (RobustZScoreNorm, etc.) were fit on
+    # the current train window, not the prior model's train window —
+    # so the prior models see slightly off-distribution inputs. In
+    # practice the cross-sectional normalisation is stable enough
+    # for this "warm ensemble" to behave well on A-share data; an
+    # operator who needs strict consistency should run separate
+    # backtests instead.
+    #
+    # Early folds (fold_index < ensemble_window - 1) gracefully
+    # degrade: they use as many prior models as exist (0 or more).
+    # Fold 0 always uses only its own model regardless of N.
+    ensemble_window: int = 1
+
     # Performance attribution per fold.
     # ``run_attribution`` controls whether ``_run_single_fold`` calls
     # ``PerformanceAttribution.analyze`` after backtest. Default ``True``
@@ -220,6 +253,20 @@ class WalkForwardConfig:
                 f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
                 f"got {self.adjust_mode!r}."
             )
+
+        # ensemble_window: must be a positive int. ``1`` is the no-op
+        # default; values >1 enable cross-fold averaging. Reject 0 /
+        # negatives explicitly so a typo can't silently disable the
+        # current fold's own predictions.
+        if (
+            isinstance(self.ensemble_window, bool)
+            or not isinstance(self.ensemble_window, int)
+            or self.ensemble_window < 1
+        ):
+            raise WalkForwardError(
+                "ensemble_window must be an int >= 1 (1 disables ensembling); "
+                f"got {self.ensemble_window!r}."
+            )
         try:
             CanonicalExchangeConfig(
                 freq="day",
@@ -311,6 +358,11 @@ class WalkForwardEngine:
             )
 
         folds: list[WalkForwardFold] = []
+        # Chronological list of model pickle paths across folds so each
+        # subsequent fold can pull the most recent ``ensemble_window - 1``
+        # priors. We append after the fold finishes so the current fold
+        # never re-uses its own pickle (it already trained fresh).
+        prior_model_paths: list[str] = []
         _logger.info("Starting %d folds", len(windows))
         _logger.info("=" * 60)
 
@@ -327,8 +379,16 @@ class WalkForwardEngine:
                 valid_start=valid_s, valid_end=valid_e,
                 test_start=test_s, test_end=test_e,
                 output_dir=output_dir,
+                prior_model_paths=tuple(prior_model_paths),
             )
             folds.append(fold)
+            # Mirror the path the trainer wrote to in ``_run_single_fold``;
+            # keep this construction in sync with the ``model_path`` line
+            # there. The duplication is intentional — the engine doesn't
+            # surface ``model_path`` on ``WalkForwardFold`` (it's an
+            # internal artifact path, not a metric), so reconstructing
+            # it here is the cheapest way to thread it forward.
+            prior_model_paths.append(str(output_dir / f"model_fold{i}.pkl"))
             _logger.info(
                 "  IC(1d)=%.4f | Return=%.2f%% | MaxDD=%.2f%%",
                 fold.ic_1d, fold.annualized_return * 100, fold.max_drawdown * 100,
@@ -489,8 +549,19 @@ class WalkForwardEngine:
         valid_start: str, valid_end: str,
         test_start: str, test_end: str,
         output_dir: Any,
+        prior_model_paths: Sequence[str] = (),
     ) -> WalkForwardFold:
-        """Execute a single train→predict→analyze→backtest fold."""
+        """Execute a single train→predict→analyze→backtest fold.
+
+        ``prior_model_paths`` carries the pickle paths of every prior
+        fold's model in chronological order. When
+        ``config.ensemble_window > 1`` the function loads up to the
+        most-recent ``ensemble_window - 1`` of those, has each one
+        predict the *current* fold's test segment, and averages the
+        per-instrument scores across all models (current + priors).
+        Early folds with fewer priors than the window asks for
+        gracefully degrade to "however many are available".
+        """
         # Build features
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
             instruments=config.instruments,
@@ -511,9 +582,22 @@ class WalkForwardEngine:
             model_artifact_path=model_path,
         )
 
+        # Optionally average current fold's predictions with prior
+        # fold models' predictions on this dataset. Returns the
+        # possibly-replaced predictions plus an ``ensemble_meta`` dict
+        # that lands on the fold report so the operator can audit
+        # which folds contributed.
+        predictions, ensemble_meta = cls._maybe_apply_ensemble(
+            current_predictions=model_result.predictions,
+            current_dataset=feature_result.dataset,
+            prior_model_paths=prior_model_paths,
+            ensemble_window=config.ensemble_window,
+            current_fold_index=fold_index,
+        )
+
         # Signal analysis
         signal_result = SignalAnalyzer.analyze(
-            predictions=model_result.predictions,
+            predictions=predictions,
             config=SignalAnalysisConfig(forward_periods=(1, 5), topk=config.topk),
         )
         # Structural: both periods we asked for must come back. Missing keys
@@ -555,7 +639,7 @@ class WalkForwardEngine:
 
         backtest_output = BacktestRunner.run(
             request=backtest_request,
-            predictions=model_result.predictions,
+            predictions=predictions,
             topk=config.topk,
             n_drop=config.n_drop,
         )
@@ -587,7 +671,7 @@ class WalkForwardEngine:
                 config=config,
                 fold_index=fold_index,
                 test_start=test_start, test_end=test_end,
-                model_result=model_result,
+                predictions=predictions,
                 backtest_output=backtest_output,
             )
         )
@@ -609,6 +693,7 @@ class WalkForwardEngine:
             information_ratio=ir,
             attribution_result=attribution_result,
             attribution_skipped_reason=attribution_skipped_reason,
+            ensemble_meta=ensemble_meta,
         )
 
         return WalkForwardFold(
@@ -624,6 +709,173 @@ class WalkForwardEngine:
             prediction_shape=model_result.prediction_shape,
             report_path=str(report_path),
         )
+
+    @classmethod
+    def _maybe_apply_ensemble(
+        cls,
+        *,
+        current_predictions: Any,
+        current_dataset: Any,
+        prior_model_paths: Sequence[str],
+        ensemble_window: int,
+        current_fold_index: int,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Average current fold's predictions with up to ``N-1`` prior fold models.
+
+        Returns ``(predictions, meta)``:
+
+        - ``predictions``: a ``pd.Series`` aligned to ``current_predictions``'
+          ``(datetime, instrument)`` index. When the window is ``1`` or no
+          priors are available, this is exactly ``current_predictions``
+          (same object — no copy).
+        - ``meta``: a ``dict`` describing what actually happened, embedded
+          in the per-fold report. Keys:
+
+          * ``window`` — the configured ``ensemble_window``.
+          * ``used`` — ``True`` iff ≥1 prior model contributed.
+          * ``n_models`` — number of models averaged (current + priors).
+          * ``contributing_folds`` — fold indices whose models were
+            averaged in, in chronological order, with the current fold
+            last.
+          * ``prior_models_attempted`` — how many prior pickle paths the
+            engine tried to load (``ensemble_window - 1`` capped by the
+            available history).
+          * ``prior_models_loaded`` — how many of those actually
+            predicted successfully. A gap (e.g. corrupted pickle, model
+            schema mismatch) is logged and skipped, not raised, so a
+            single broken artifact does not abort the whole run.
+
+        Why this is "warm" rather than strict
+        --------------------------------------
+        Each prior model was trained against its own fold's processed
+        dataset (RobustZScoreNorm fit on that train window's stats); we
+        run it against the *current* fold's dataset, which has different
+        normalisation parameters. In practice cross-section IC is robust
+        to these small distribution shifts on A-share data; in pathological
+        regimes the operator should fall back to ``ensemble_window=1``
+        and inspect the per-fold reports.
+        """
+        meta: dict[str, Any] = {
+            "window": int(ensemble_window),
+            "used": False,
+            "n_models": 1,
+            "contributing_folds": [int(current_fold_index)],
+            "prior_models_attempted": 0,
+            "prior_models_loaded": 0,
+        }
+
+        # No-op fast path: window 1 means "current fold only", which is
+        # the legacy behaviour. Returning the current Series unchanged
+        # also keeps ``ensemble_window=1`` cheap (no copy, no I/O).
+        if ensemble_window <= 1:
+            return current_predictions, meta
+
+        # Window asks for priors but none exist yet (fold 0, or fold N
+        # where prior pickles were not provided). Natural degradation:
+        # use whatever's available — which here is just the current
+        # model. Same shape as fold 0 below.
+        if not prior_model_paths:
+            return current_predictions, meta
+
+        import pandas as pd
+        import numpy as np
+        import pickle
+
+        # Pick the most-recent ``window - 1`` priors. ``prior_model_paths``
+        # is in chronological (oldest-first) order; ``[-(window-1):]``
+        # gives the newest ones.
+        priors_to_load = list(prior_model_paths[-(ensemble_window - 1):])
+        meta["prior_models_attempted"] = len(priors_to_load)
+
+        # Stack predictions: start with the current fold's series, then
+        # append each prior model's prediction over the same dataset.
+        # Doing the stacking in pandas (rather than numpy on raw arrays)
+        # means a hypothetical index mismatch fails loudly at concat time
+        # rather than silently re-aligning.
+        prediction_frames: list[Any] = [current_predictions.rename("m0")]
+        contributing_folds: list[int] = []
+        loaded = 0
+
+        # ``prior_model_paths`` is oldest-first; the slice above keeps
+        # that ordering, so the corresponding fold indices are
+        # ``current_fold_index - len(priors_to_load) ... current_fold_index - 1``.
+        first_prior_fold = current_fold_index - len(priors_to_load)
+
+        for offset, prior_path in enumerate(priors_to_load):
+            prior_fold_idx = first_prior_fold + offset
+            try:
+                with open(prior_path, "rb") as f:
+                    prior_model = pickle.load(f)
+                # Each qlib LGBModel has ``predict(dataset, segment)``.
+                # We want the test-segment scores aligned to the current
+                # dataset's test slice — same as what the current model
+                # produced — so use the same segment name the trainer
+                # writes (``"test"``).
+                prior_pred = prior_model.predict(current_dataset, "test")
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "Fold %d ensemble: skipping prior model %r — load/"
+                    "predict failed (%s: %s). Continuing with the "
+                    "remaining priors so a single bad pickle does not "
+                    "abort the run.",
+                    current_fold_index, prior_path, type(exc).__name__, exc,
+                )
+                continue
+
+            # Coerce to Series. qlib's predict returns a Series for the
+            # canonical handler, but a research-time monkey-patch could
+            # in principle return a DataFrame; reject that loudly.
+            if not isinstance(prior_pred, pd.Series):
+                _logger.warning(
+                    "Fold %d ensemble: prior model %r returned %s, "
+                    "expected pd.Series. Skipping this prior.",
+                    current_fold_index, prior_path,
+                    type(prior_pred).__name__,
+                )
+                continue
+
+            prediction_frames.append(
+                prior_pred.rename(f"m{offset + 1}")
+            )
+            contributing_folds.append(int(prior_fold_idx))
+            loaded += 1
+
+        meta["prior_models_loaded"] = loaded
+
+        if loaded == 0:
+            # Every prior failed — fall back to current-fold-only. The
+            # warning was already emitted per-prior above; here we just
+            # surface the aggregate state in the meta block.
+            return current_predictions, meta
+
+        # ``concat(axis=1)`` aligns each model's predictions on the
+        # ``(datetime, instrument)`` index. ``mean(axis=1, skipna=True)``
+        # then averages across models — ``skipna`` matters because a
+        # prior model can legitimately have NaN scores for instruments
+        # not in its training universe (e.g. newly listed names),
+        # whereas the current model has them.
+        stacked = pd.concat(prediction_frames, axis=1)
+        averaged = stacked.mean(axis=1, skipna=True)
+        # The result Series has no name; rename to match the current
+        # predictions' name so downstream consumers (SignalAnalyzer,
+        # BacktestRunner) see the same shape.
+        averaged.name = getattr(current_predictions, "name", None)
+
+        # Order contributing_folds chronologically with current fold last
+        # so the reader sees "earliest -> latest -> current" — matches
+        # the semantic of "warm ensemble".
+        meta["used"] = True
+        meta["n_models"] = 1 + loaded
+        meta["contributing_folds"] = contributing_folds + [int(current_fold_index)]
+
+        _logger.info(
+            "Fold %d ensemble: averaged %d models (current + %d priors, "
+            "contributing folds %s).",
+            current_fold_index, meta["n_models"], loaded,
+            meta["contributing_folds"],
+        )
+
+        return averaged, meta
 
     @classmethod
     def _write_positions(
@@ -648,7 +900,7 @@ class WalkForwardEngine:
         config: WalkForwardConfig,
         fold_index: int,
         test_start: str, test_end: str,
-        model_result: ModelTrainResult,
+        predictions: Any,
         backtest_output: CanonicalBacktestOutput,
     ) -> tuple[AttributionResult | None, str | None]:
         """Run per-fold performance attribution; return ``(result, reason)``.
@@ -726,7 +978,10 @@ class WalkForwardEngine:
         try:
             result = PerformanceAttribution.analyze(
                 return_series=backtest_output.return_series,
-                predictions=model_result.predictions,
+                # Use the ensemble-aware predictions (same series the
+                # backtest received) so attribution's universe and the
+                # backtest's universe are guaranteed to match.
+                predictions=predictions,
                 config=attr_config,
                 positions=backtest_output.positions,
             )
@@ -759,12 +1014,21 @@ class WalkForwardEngine:
         information_ratio: float,
         attribution_result: AttributionResult | None = None,
         attribution_skipped_reason: str | None = None,
+        ensemble_meta: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build the per-fold report dict.
 
         Extracted from :meth:`_write_fold_report` so the schema is unit-
         testable without touching the filesystem (mirrors the same split
         already in use for ``Pipeline._attribution_to_report_dict``).
+
+        ``ensemble_meta`` (when supplied by :meth:`_run_single_fold`)
+        carries the cross-fold averaging audit trail produced by
+        :meth:`_maybe_apply_ensemble`. It always lands on the report
+        under ``"ensemble"`` so the downstream comparison tooling
+        (PR #29 walk-forward-compare) sees a uniform shape across
+        ``ensemble_window=1`` runs (``used=False, n_models=1``) and
+        ensembled runs.
         """
         # ``ic_summary`` is keyed by int (forward period); JSON keys must
         # be strings, so coerce up front.
@@ -810,6 +1074,22 @@ class WalkForwardEngine:
             # comparison tools see a uniform shape.
             "attribution": cls._attribution_section_for_fold(
                 attribution_result, attribution_skipped_reason,
+            ),
+            # Default the ensemble block to a "no-op" shape when the caller
+            # did not supply meta — this preserves report compatibility for
+            # any test that constructs a report directly without going
+            # through ``_run_single_fold``.
+            "ensemble": (
+                dict(ensemble_meta)
+                if ensemble_meta is not None
+                else {
+                    "window": 1,
+                    "used": False,
+                    "n_models": 1,
+                    "contributing_folds": [fold_index],
+                    "prior_models_attempted": 0,
+                    "prior_models_loaded": 0,
+                }
             ),
             "positions_path": str(positions_path) if positions_path else None,
             "generated_at": datetime.now().isoformat(),

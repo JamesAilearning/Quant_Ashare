@@ -2,6 +2,7 @@
 
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.core.canonical_backtest_contract import ADJUST_MODE_NONE, EXECUTION_PRICE_OPEN
@@ -881,7 +882,7 @@ class _AttributionForFoldTests(unittest.TestCase):
         result, reason = WalkForwardEngine._run_attribution_for_fold(
             config=config, fold_index=0,
             test_start="2024-10-01", test_end="2024-12-31",
-            model_result=MagicMock(),
+            predictions=MagicMock(),
             backtest_output=self._backtest_output_with_positions(),
         )
         self.assertIsNone(result)
@@ -898,7 +899,7 @@ class _AttributionForFoldTests(unittest.TestCase):
             result, reason = WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=0,
                 test_start="2024-10-01", test_end="2024-12-31",
-                model_result=MagicMock(),
+                predictions=MagicMock(),
                 backtest_output=self._backtest_output_with_positions(positions={}),
             )
         self.assertIsNone(result)
@@ -920,7 +921,7 @@ class _AttributionForFoldTests(unittest.TestCase):
             result, reason = WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=3,
                 test_start="2024-10-01", test_end="2024-12-31",
-                model_result=MagicMock(),
+                predictions=MagicMock(),
                 backtest_output=self._backtest_output_with_positions(),
             )
         self.assertIsNone(result)
@@ -942,7 +943,7 @@ class _AttributionForFoldTests(unittest.TestCase):
             WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=0,
                 test_start="2024-10-01", test_end="2024-12-31",
-                model_result=MagicMock(),
+                predictions=MagicMock(),
                 backtest_output=self._backtest_output_with_positions(),
             )
 
@@ -1075,6 +1076,360 @@ class FoldReportContainsAttributionBlockTests(unittest.TestCase):
             report["attribution"]["skipped_reason"].startswith("engine_error: "),
             report["attribution"]["skipped_reason"],
         )
+
+
+class EnsembleWindowConfigValidationTests(unittest.TestCase):
+    """Pin the boundary contract for ``ensemble_window``.
+
+    The ``frozen=True`` dataclass means a typo in YAML lands at
+    config-construction; reject zero / negative / non-int up front so
+    the engine never silently disables current-fold predictions.
+    """
+
+    def test_default_is_one_no_op(self) -> None:
+        cfg = WalkForwardConfig()
+        self.assertEqual(cfg.ensemble_window, 1)
+
+    def test_window_three_passes(self) -> None:
+        cfg = WalkForwardConfig(ensemble_window=3)
+        self.assertEqual(cfg.ensemble_window, 3)
+
+    def test_rejects_zero(self) -> None:
+        with self.assertRaisesRegex(WalkForwardError, "ensemble_window"):
+            WalkForwardConfig(ensemble_window=0)
+
+    def test_rejects_negative(self) -> None:
+        with self.assertRaisesRegex(WalkForwardError, "ensemble_window"):
+            WalkForwardConfig(ensemble_window=-2)
+
+    def test_rejects_bool(self) -> None:
+        """``True`` would silently behave as ``1`` (no-op) and ``False``
+        as ``0`` (would disable current fold). Catch both."""
+        with self.assertRaisesRegex(WalkForwardError, "ensemble_window"):
+            WalkForwardConfig(ensemble_window=True)
+        with self.assertRaisesRegex(WalkForwardError, "ensemble_window"):
+            WalkForwardConfig(ensemble_window=False)
+
+    def test_rejects_float(self) -> None:
+        with self.assertRaisesRegex(WalkForwardError, "ensemble_window"):
+            WalkForwardConfig(ensemble_window=2.5)
+
+
+def _pandas_available() -> bool:
+    try:
+        import pandas  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+@unittest.skipUnless(_pandas_available(), "requires pandas")
+class MaybeApplyEnsembleTests(unittest.TestCase):
+    """Direct-call coverage of :meth:`WalkForwardEngine._maybe_apply_ensemble`.
+
+    Each branch (window=1 no-op, no priors, fold 0 graceful, all priors
+    fail, success) is exercised in isolation so a future refactor does
+    not silently change the averaging semantics.
+
+    The ``_pandas_available`` skip keeps the file collectible in
+    minimal-deps envs (e.g. lint-only CI) — the engine itself imports
+    pandas lazily so the source module loads fine without it.
+    """
+
+    def _build_predictions(self, value: float) -> Any:
+        """Build a (datetime, instrument) MultiIndex Series of ``value``s.
+
+        The actual averaging logic operates on these Series via
+        ``pd.concat(..., axis=1).mean(axis=1)`` so a constant-value Series
+        is the cleanest way to assert "averaged correctly" — the result's
+        scalar is the arithmetic mean of the inputs.
+        """
+        import pandas as pd
+        idx = pd.MultiIndex.from_tuples(
+            [("2024-10-01", "SH600000"), ("2024-10-01", "SH600001")],
+            names=("datetime", "instrument"),
+        )
+        return pd.Series([value, value], index=idx, name="score")
+
+    def test_window_one_returns_current_unchanged(self) -> None:
+        current = self._build_predictions(0.5)
+        result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            current_predictions=current,
+            current_dataset=object(),
+            prior_model_paths=("/tmp/m0.pkl", "/tmp/m1.pkl"),
+            ensemble_window=1,
+            current_fold_index=2,
+        )
+        self.assertIs(result, current)
+        self.assertFalse(meta["used"])
+        self.assertEqual(meta["n_models"], 1)
+        self.assertEqual(meta["window"], 1)
+        self.assertEqual(meta["contributing_folds"], [2])
+        self.assertEqual(meta["prior_models_attempted"], 0)
+
+    def test_no_priors_falls_back_gracefully(self) -> None:
+        """Fold 0 of a multi-fold run has no priors yet — the natural
+        degradation path."""
+        current = self._build_predictions(0.5)
+        result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            current_predictions=current,
+            current_dataset=object(),
+            prior_model_paths=(),
+            ensemble_window=3,
+            current_fold_index=0,
+        )
+        self.assertIs(result, current)
+        self.assertFalse(meta["used"])
+        self.assertEqual(meta["window"], 3)
+        self.assertEqual(meta["n_models"], 1)
+        self.assertEqual(meta["contributing_folds"], [0])
+
+    def test_window_three_averages_current_plus_two_priors(self) -> None:
+        """Happy path: current model returns 0.6, two priors return 0.3
+        and 0.0; the average is 0.3."""
+        import pandas as pd
+
+        current = self._build_predictions(0.6)
+        prior1_pred = self._build_predictions(0.3)
+        prior2_pred = self._build_predictions(0.0)
+
+        prior1 = MagicMock()
+        prior1.predict.return_value = prior1_pred
+        prior2 = MagicMock()
+        prior2.predict.return_value = prior2_pred
+
+        # Patch ``open`` + ``pickle.load`` so the loader yields one of
+        # our mocks per path. Order: oldest first → fold 1, fold 2.
+        load_seq = [prior1, prior2]
+        with patch(
+            "builtins.open",
+            new=MagicMock(),  # context-manager protocol provided by MagicMock
+        ), patch(
+            "pickle.load",
+            side_effect=load_seq,
+        ):
+            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+                current_predictions=current,
+                current_dataset=object(),
+                prior_model_paths=("/tmp/m1.pkl", "/tmp/m2.pkl"),
+                ensemble_window=3,
+                current_fold_index=3,
+            )
+
+        self.assertTrue(meta["used"])
+        self.assertEqual(meta["window"], 3)
+        self.assertEqual(meta["n_models"], 3)
+        self.assertEqual(meta["prior_models_attempted"], 2)
+        self.assertEqual(meta["prior_models_loaded"], 2)
+        self.assertEqual(meta["contributing_folds"], [1, 2, 3])
+
+        # Average of 0.6 + 0.3 + 0.0 = 0.3.
+        self.assertAlmostEqual(float(result.iloc[0]), 0.3)
+        self.assertAlmostEqual(float(result.iloc[1]), 0.3)
+        # ``predict`` was called with the current dataset and the
+        # canonical "test" segment — same as the trainer wrote.
+        for prior in (prior1, prior2):
+            prior.predict.assert_called_once()
+            args, _ = prior.predict.call_args
+            self.assertEqual(args[1], "test")
+
+    def test_only_recent_priors_loaded_when_history_exceeds_window(self) -> None:
+        """``ensemble_window=2`` with 4 priors must only load the most
+        recent 1 (= window-1)."""
+        current = self._build_predictions(0.4)
+        prior_pred = self._build_predictions(0.2)
+        prior = MagicMock()
+        prior.predict.return_value = prior_pred
+
+        with patch("builtins.open", new=MagicMock()), patch(
+            "pickle.load", return_value=prior,
+        ):
+            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+                current_predictions=current,
+                current_dataset=object(),
+                prior_model_paths=(
+                    "/tmp/m0.pkl", "/tmp/m1.pkl",
+                    "/tmp/m2.pkl", "/tmp/m3.pkl",
+                ),
+                ensemble_window=2,
+                current_fold_index=4,
+            )
+        self.assertEqual(meta["n_models"], 2)
+        self.assertEqual(meta["prior_models_attempted"], 1)
+        # Most-recent prior is fold 3 (index 4 - 1).
+        self.assertEqual(meta["contributing_folds"], [3, 4])
+        # Average of 0.4 + 0.2 = 0.3.
+        self.assertAlmostEqual(float(result.iloc[0]), 0.3)
+
+    def test_partial_prior_failure_skipped_not_aborted(self) -> None:
+        """A single corrupted pickle must not abort the run — it should
+        be logged and skipped, with the meta block reflecting the gap."""
+        current = self._build_predictions(0.6)
+        good_pred = self._build_predictions(0.0)
+        good = MagicMock()
+        good.predict.return_value = good_pred
+
+        # First load raises (bad pickle), second succeeds.
+        load_seq = [RuntimeError("corrupt pickle"), good]
+
+        with patch("builtins.open", new=MagicMock()), patch(
+            "pickle.load", side_effect=load_seq,
+        ):
+            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+                current_predictions=current,
+                current_dataset=object(),
+                prior_model_paths=("/tmp/bad.pkl", "/tmp/good.pkl"),
+                ensemble_window=3,
+                current_fold_index=2,
+            )
+        self.assertTrue(meta["used"])
+        self.assertEqual(meta["prior_models_attempted"], 2)
+        self.assertEqual(meta["prior_models_loaded"], 1)
+        # Only fold 1 (good) and fold 2 (current) contributed.
+        self.assertEqual(meta["contributing_folds"], [1, 2])
+        # Average of 0.6 + 0.0 = 0.3.
+        self.assertAlmostEqual(float(result.iloc[0]), 0.3)
+
+    def test_all_priors_fail_falls_back_to_current(self) -> None:
+        """Every prior pickle is corrupt → return current unchanged with
+        meta showing 0 loaded; no exception escapes."""
+        current = self._build_predictions(0.7)
+
+        with patch("builtins.open", new=MagicMock()), patch(
+            "pickle.load",
+            side_effect=[RuntimeError("bad"), RuntimeError("bad")],
+        ):
+            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+                current_predictions=current,
+                current_dataset=object(),
+                prior_model_paths=("/tmp/m0.pkl", "/tmp/m1.pkl"),
+                ensemble_window=3,
+                current_fold_index=2,
+            )
+        self.assertIs(result, current)
+        self.assertFalse(meta["used"])
+        self.assertEqual(meta["prior_models_attempted"], 2)
+        self.assertEqual(meta["prior_models_loaded"], 0)
+        # When fallback fires the contributing-fold list stays at
+        # current-only.
+        self.assertEqual(meta["contributing_folds"], [2])
+
+
+class EnsembleEndToEndFlowTests(unittest.TestCase):
+    """Confirm ``run()`` accumulates ``prior_model_paths`` across folds,
+    threads them into ``_run_single_fold``, and that the ensemble block
+    lands on the per-fold report.
+    """
+
+    def test_run_threads_prior_model_paths_in_chronological_order(self) -> None:
+        """After fold N, the engine must call fold N+1 with N pickle
+        paths in order (``model_fold0.pkl, model_fold1.pkl, ...``)."""
+        config = WalkForwardConfig(
+            overall_start="2022-01-01",
+            overall_end="2025-06-30",
+            train_months=24,
+            valid_months=3,
+            test_months=3,
+            step_months=3,
+            ensemble_window=3,
+        )
+
+        from src.core.walk_forward import WalkForwardFold
+
+        captured_calls: list[dict[str, Any]] = []
+
+        def fake_single_fold(*, prior_model_paths, fold_index, **kwargs):
+            captured_calls.append({
+                "fold_index": fold_index,
+                "prior_model_paths": tuple(prior_model_paths),
+            })
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period="x", valid_period="x", test_period="x",
+                ic_1d=0.01, ic_5d=0.02,
+                annualized_return=0.05, max_drawdown=-0.05,
+                information_ratio=0.5,
+                prediction_shape=(100,),
+            )
+
+        with patch(
+            "src.core.walk_forward.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            WalkForwardEngine, "_run_single_fold",
+            side_effect=fake_single_fold,
+        ), patch(
+            "src.core.walk_forward.WalkForwardEngine._write_aggregate_report"
+        ):
+            WalkForwardEngine.run(config)
+
+        # Fold 0 sees no priors.
+        self.assertGreaterEqual(len(captured_calls), 2)
+        self.assertEqual(captured_calls[0]["prior_model_paths"], ())
+        # Fold 1 sees fold 0's pickle.
+        self.assertEqual(len(captured_calls[1]["prior_model_paths"]), 1)
+        self.assertTrue(
+            captured_calls[1]["prior_model_paths"][0].endswith("model_fold0.pkl")
+        )
+        # Fold 2 (if it exists) sees fold 0 and fold 1, in order.
+        if len(captured_calls) >= 3:
+            paths = captured_calls[2]["prior_model_paths"]
+            self.assertEqual(len(paths), 2)
+            self.assertTrue(paths[0].endswith("model_fold0.pkl"))
+            self.assertTrue(paths[1].endswith("model_fold1.pkl"))
+
+    def test_disk_report_carries_ensemble_block_with_no_op_default(self) -> None:
+        """``ensemble_window=1`` — the default — must still emit the
+        ``ensemble`` block on disk so a downstream comparison tool sees a
+        uniform shape across runs."""
+        import json
+        import tempfile
+
+        config = WalkForwardConfig()  # ensemble_window=1 by default
+        fake_feature_result = MagicMock()
+        fake_feature_result.dataset = object()
+        fake_model_result = MagicMock(
+            predictions="predictions",
+            prediction_shape=(10,),
+            best_iteration=4,
+            final_valid_loss=0.97,
+        )
+
+        from src.core.performance_attribution import PerformanceAttributionError
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            return_value=fake_feature_result,
+        ), patch(
+            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ), patch(
+            "src.core.walk_forward.SignalAnalyzer.analyze",
+            return_value=_stub_signal_result(),
+        ), patch(
+            "src.core.walk_forward.BacktestRunner.run",
+            return_value=_stub_backtest_output(),
+        ), patch(
+            "src.core.walk_forward.PerformanceAttribution.analyze",
+            side_effect=PerformanceAttributionError("skip for test"),
+        ):
+            WalkForwardEngine._run_single_fold(
+                config=config,
+                fold_index=0,
+                train_start="2024-01-01", train_end="2024-06-30",
+                valid_start="2024-07-01", valid_end="2024-09-30",
+                test_start="2024-10-01", test_end="2024-12-31",
+                output_dir=Path(tmp),
+            )
+            with open(Path(tmp) / "fold_00_report.json") as f:
+                report = json.load(f)
+
+        self.assertIn("ensemble", report)
+        self.assertEqual(report["ensemble"]["window"], 1)
+        self.assertFalse(report["ensemble"]["used"])
+        self.assertEqual(report["ensemble"]["n_models"], 1)
+        self.assertEqual(report["ensemble"]["contributing_folds"], [0])
+        self.assertEqual(report["ensemble"]["prior_models_loaded"], 0)
 
 
 if __name__ == "__main__":
