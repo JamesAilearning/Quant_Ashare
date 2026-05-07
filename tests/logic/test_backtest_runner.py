@@ -193,6 +193,96 @@ class SignalLagTests(unittest.TestCase):
         with self.assertRaisesRegex(BacktestRunnerError, "MultiIndex"):
             BacktestRunner._apply_lag(single_index, 1)
 
+    def test_lag_zero_validates_shape_too(self) -> None:
+        """Regression guard: the same-day-execution path (``lag=0``)
+        used to short-circuit before the shape check, so a wrong-shape
+        DataFrame / list would pass through to qlib silently. Validate
+        uniformly across lag values."""
+        from src.core.backtest_runner import BacktestRunnerError
+
+        with self.assertRaisesRegex(BacktestRunnerError, "MultiIndex|forward"):
+            BacktestRunner._apply_lag([1, 2, 3], 0)
+
+    def test_lag_zero_rejects_swapped_index_names(self) -> None:
+        """``(instrument, datetime)`` MultiIndex would silently feed
+        instruments to the date axis. Pin the order check at lag=0 too."""
+        import pandas as pd
+        from src.core.backtest_runner import BacktestRunnerError
+
+        idx = pd.MultiIndex.from_product(
+            [["SH600000", "SH600001"], pd.to_datetime(["2025-01-02", "2025-01-03"])],
+            names=["instrument", "datetime"],  # swapped order
+        )
+        swapped = pd.Series([1.0, 2.0, 3.0, 4.0], index=idx)
+        with self.assertRaisesRegex(BacktestRunnerError, "names must be"):
+            BacktestRunner._apply_lag(swapped, 0)
+        with self.assertRaisesRegex(BacktestRunnerError, "names must be"):
+            BacktestRunner._apply_lag(swapped, 1)
+
+
+class BacktestRunnerNDropValidationTests(unittest.TestCase):
+    """``BacktestRunner.run`` must reject ``n_drop >= topk`` even when
+    callers bypass ``WalkForwardConfig`` / ``PipelineConfig``. Without
+    this defence-in-depth check, a research script that calls
+    ``BacktestRunner.run(...)`` directly with ``topk=5, n_drop=5``
+    would land qlib's ``TopkDropoutStrategy`` in a state that rotates
+    out every position and silently returns an empty backtest."""
+
+    def _make_request(self):
+        from src.core.canonical_backtest_contract import (
+            ADJUST_MODE_PRE,
+            EXECUTION_PRICE_CLOSE,
+            CanonicalAccountConfig,
+            CanonicalBacktestInput,
+            CanonicalExchangeConfig,
+            CanonicalExchangeCostModel,
+        )
+        return CanonicalBacktestInput(
+            predictions_ref="/tmp/x.pkl",
+            evaluation_start="2025-01-01",
+            evaluation_end="2025-03-31",
+            account_config=CanonicalAccountConfig(init_cash=1_000_000),
+            exchange_config=CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=EXECUTION_PRICE_CLOSE,
+                cost_model=CanonicalExchangeCostModel(
+                    commission_rate=0.0005, stamp_tax_bps=10.0,
+                    slippage_bps=5.0, min_cost=5.0,
+                ),
+                limit_threshold=0.095,
+            ),
+            adjust_mode=ADJUST_MODE_PRE,
+            signal_to_execution_lag=1,
+            benchmark_code="SH000300",
+        )
+
+    def test_rejects_n_drop_equal_topk(self) -> None:
+        from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
+        with self.assertRaisesRegex(BacktestRunnerError, "n_drop"):
+            BacktestRunner.run(
+                request=self._make_request(),
+                predictions="dummy",
+                topk=5, n_drop=5,
+            )
+
+    def test_rejects_negative_n_drop(self) -> None:
+        from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
+        with self.assertRaisesRegex(BacktestRunnerError, "n_drop"):
+            BacktestRunner.run(
+                request=self._make_request(),
+                predictions="dummy",
+                topk=5, n_drop=-1,
+            )
+
+    def test_rejects_zero_topk(self) -> None:
+        from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
+        with self.assertRaisesRegex(BacktestRunnerError, "topk"):
+            BacktestRunner.run(
+                request=self._make_request(),
+                predictions="dummy",
+                topk=0, n_drop=0,
+            )
+
 
 class PositionsSerializationTests(unittest.TestCase):
     """Unit tests for the ``_positions_to_weight_map`` helper."""
@@ -448,6 +538,130 @@ class ReturnSeriesNormalizerTests(unittest.TestCase):
         series = pd.Series(["not-a-number"], index=[pd.Timestamp("2026-01-02")])
         with self.assertRaisesRegex(BacktestRunnerError, "raw fallback"):
             _series_to_dict(series, name="bench")
+
+
+class ProvenanceFingerprintTests(unittest.TestCase):
+    """``_build_provenance`` must fold qlib runtime config into the
+    fingerprint so swapping the data bundle changes the fingerprint
+    even when the request and strategy params are identical.
+
+    Without this, two runs against different ``provider_uri`` /
+    ``data_adjust_mode`` would produce different official metrics but
+    the *same* fingerprint, defeating the comparison-tool's ability to
+    distinguish "regressed model" from "different bundle".
+    """
+
+    def _make_request(self):
+        return CanonicalBacktestInput(
+            predictions_ref="/tmp/x.pkl",
+            evaluation_start="2025-01-01",
+            evaluation_end="2025-03-31",
+            account_config=CanonicalAccountConfig(init_cash=1_000_000),
+            exchange_config=CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=EXECUTION_PRICE_CLOSE,
+                cost_model=CanonicalExchangeCostModel(
+                    commission_rate=0.0005, stamp_tax_bps=10.0,
+                    slippage_bps=5.0, min_cost=5.0,
+                ),
+                limit_threshold=0.095,
+            ),
+            adjust_mode=ADJUST_MODE_PRE,
+            signal_to_execution_lag=1,
+            benchmark_code="SH000300",
+        )
+
+    def test_fingerprint_includes_runtime_config_block(self) -> None:
+        """The provenance ``config`` must surface ``runtime`` so a
+        downstream diff can see provider_uri / region / data_adjust_mode
+        without re-deriving from the fingerprint."""
+        runtime_cfg = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle_a", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime_cfg,
+        ):
+            prov = BacktestRunner._build_provenance(
+                self._make_request(), topk=50, n_drop=5,
+            )
+        self.assertIn("runtime", prov["config"])
+        # ``QlibRuntimeConfig.__post_init__`` normalises the path
+        # (``os.path.normcase`` + ``realpath``); on Windows that turns
+        # "/tmp/bundle_a" into something like "d:\\tmp\\bundle_a". We
+        # only assert the recognisable suffix is present so the test is
+        # OS-agnostic.
+        self.assertIn("bundle_a", prov["config"]["runtime"]["provider_uri"])
+        self.assertEqual(prov["config"]["runtime"]["region"], "cn")
+        self.assertEqual(
+            prov["config"]["runtime"]["data_adjust_mode"], ADJUST_MODE_PRE,
+        )
+
+    def test_fingerprint_changes_with_provider_uri(self) -> None:
+        """Same request, different provider_uri → different fingerprint."""
+        request = self._make_request()
+        runtime_a = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle_a", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        runtime_b = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle_b", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime_a,
+        ):
+            prov_a = BacktestRunner._build_provenance(request, topk=50, n_drop=5)
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime_b,
+        ):
+            prov_b = BacktestRunner._build_provenance(request, topk=50, n_drop=5)
+        self.assertNotEqual(
+            prov_a["config_fingerprint"], prov_b["config_fingerprint"],
+            "Different provider_uri must produce different fingerprint",
+        )
+
+    def test_fingerprint_changes_with_data_adjust_mode(self) -> None:
+        """Same provider, different adjust_mode → different fingerprint."""
+        request = self._make_request()
+        runtime_pre = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        runtime_post = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle", region="cn",
+            data_adjust_mode=ADJUST_MODE_POST,
+        )
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime_pre,
+        ):
+            prov_pre = BacktestRunner._build_provenance(request, topk=50, n_drop=5)
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime_post,
+        ):
+            prov_post = BacktestRunner._build_provenance(request, topk=50, n_drop=5)
+        self.assertNotEqual(
+            prov_pre["config_fingerprint"], prov_post["config_fingerprint"],
+        )
+
+    def test_fingerprint_handles_uninitialised_runtime_defensively(self) -> None:
+        """If ``get_canonical_qlib_config()`` returns ``None`` (e.g. a
+        stale-state edge case during shutdown), provenance must still
+        produce a valid record rather than crash."""
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=None,
+        ):
+            prov = BacktestRunner._build_provenance(
+                self._make_request(), topk=50, n_drop=5,
+            )
+        self.assertIn("config_fingerprint", prov)
+        self.assertEqual(prov["config"]["runtime"], {})
 
 
 if __name__ == "__main__":

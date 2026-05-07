@@ -31,14 +31,22 @@ def _load_config(path: str) -> PipelineConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"Config file must be a YAML mapping, got {type(raw).__name__}")
 
-    # Only pass keys that PipelineConfig accepts
+    # Reject unknown keys hard. The previous WARNING was easy to miss
+    # in a noisy log and silently masked typos like ``top_k`` (which
+    # has no effect — ``topk`` stays at the default 50). Hard-fail so
+    # the run aborts before training starts and the operator gets a
+    # clear list of invalid keys.
     valid_fields = {f.name for f in PipelineConfig.__dataclass_fields__.values()}
-    unknown = set(raw) - valid_fields
+    unknown = sorted(set(raw) - valid_fields)
     if unknown:
-        _logger.warning("Unknown config keys ignored: %s", sorted(unknown))
+        raise ValueError(
+            f"Unknown config keys in {config_path}: {unknown}. "
+            f"Valid PipelineConfig fields: {sorted(valid_fields)}. "
+            "Refusing to run with potentially-typo'd keys; the previous "
+            "default was a WARNING that hid silent reverts to defaults."
+        )
 
-    filtered = {k: v for k, v in raw.items() if k in valid_fields}
-    return PipelineConfig(**filtered)
+    return PipelineConfig(**raw)
 
 
 def main() -> None:

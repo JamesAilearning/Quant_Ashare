@@ -176,8 +176,29 @@ class ModelTrainer:
 
         artifact_path = Path(model_artifact_path)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        with artifact_path.open("wb") as f:
-            pickle.dump(model, f)
+        # Atomic write: serialise to a sibling temp file first, then
+        # ``os.replace`` it onto the target path. The previous direct-
+        # write approach left a partial pickle on disk if the process
+        # was killed (Ctrl-C, OOM, disk-full) mid-``pickle.dump`` — the
+        # next ``pickle.load`` against that path would then raise
+        # ``EOFError`` / ``UnpicklingError`` with a name that suggested
+        # corruption rather than "write was interrupted". ``os.replace``
+        # is atomic on both POSIX and Windows for files within the same
+        # directory, so a reader either sees the previous good copy
+        # (if any) or the new complete copy — never a half-written one.
+        tmp_path = artifact_path.with_suffix(artifact_path.suffix + ".tmp")
+        try:
+            with tmp_path.open("wb") as f:
+                pickle.dump(model, f)
+            os.replace(tmp_path, artifact_path)
+        except Exception:
+            # Best-effort cleanup; ``os.replace`` failure leaves the tmp
+            # file behind, which would otherwise accumulate across runs.
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            raise
 
         best_iter, final_val = cls._extract_training_diagnostics(
             model, config.model_type, evals_result,
@@ -445,109 +466,119 @@ class ModelTrainer:
                 f"below 12."
             )
 
-        # ---- num_leaves ----
-        if (
-            not isinstance(config.num_leaves, int)
-            or isinstance(config.num_leaves, bool)
-        ):
-            raise ModelTrainerError(
-                f"num_leaves must be int; got {type(config.num_leaves).__name__}."
-            )
-        if config.num_leaves < 2:
-            raise ModelTrainerError(
-                "num_leaves must be >= 2 (LightGBM requires at least a root "
-                f"split); got {config.num_leaves}."
-            )
-        if config.num_leaves > _MAX_NUM_LEAVES:
-            raise ModelTrainerError(
-                f"num_leaves={config.num_leaves} exceeds sane upper bound "
-                f"of {_MAX_NUM_LEAVES}."
-            )
-        # LightGBM invariant: num_leaves <= 2^max_depth. If violated, LGBM
-        # silently clips num_leaves, so the model the user thinks they're
-        # training is not the model that runs. Reject loudly.
-        if config.max_depth <= 30:  # avoid overflow on huge max_depth
-            max_leaves_for_depth = 2 ** config.max_depth
-            if config.num_leaves > max_leaves_for_depth:
-                raise ModelTrainerError(
-                    f"num_leaves ({config.num_leaves}) exceeds "
-                    f"2**max_depth ({max_leaves_for_depth}). LightGBM would "
-                    f"silently clip, training a shallower model than "
-                    f"configured."
-                )
-
-        # ---- seed ----
+        # ---- seed ---- (used by every model type)
         if not isinstance(config.seed, int) or isinstance(config.seed, bool):
             raise ModelTrainerError(
                 f"seed must be an int, got {type(config.seed).__name__}."
             )
 
-        # ---- lambda_l1 / lambda_l2 ----
-        # Negative regularisation makes the objective non-convex, which
-        # LightGBM accepts but produces nonsensical models. Reject up
-        # front. ``int`` is allowed because ``isinstance(int, float)``
-        # is False but ``int`` values like ``0`` / ``1`` are common.
-        for name, value in (
-            ("lambda_l1", config.lambda_l1),
-            ("lambda_l2", config.lambda_l2),
-        ):
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
+        # The block below validates LightGBM-specific hyperparameters
+        # (``num_leaves``, ``lambda_l1/l2``, ``min_data_in_leaf``,
+        # ``feature_fraction``, ``bagging_fraction``, ``bagging_freq``).
+        # Gating it on ``model_type == "LGBModel"`` so the *defaults*
+        # (e.g. ``num_leaves=210``) don't reject a perfectly legal
+        # ``CatBoostModel(max_depth=4)`` config because ``210 > 2^4``.
+        # XGB / CatBoost paths in ``_create_model`` simply ignore
+        # these fields; we keep them on the dataclass for surface
+        # uniformity but only enforce shape when LGB is selected.
+        if config.model_type == "LGBModel":
+            # ---- num_leaves ----
+            if (
+                not isinstance(config.num_leaves, int)
+                or isinstance(config.num_leaves, bool)
+            ):
                 raise ModelTrainerError(
-                    f"{name} must be a float; got {type(value).__name__}."
+                    f"num_leaves must be int; got {type(config.num_leaves).__name__}."
                 )
-            if value < 0:
+            if config.num_leaves < 2:
                 raise ModelTrainerError(
-                    f"{name} must be >= 0; got {value}. Negative regularisation "
-                    "produces ill-defined LGB models."
+                    "num_leaves must be >= 2 (LightGBM requires at least a root "
+                    f"split); got {config.num_leaves}."
+                )
+            if config.num_leaves > _MAX_NUM_LEAVES:
+                raise ModelTrainerError(
+                    f"num_leaves={config.num_leaves} exceeds sane upper bound "
+                    f"of {_MAX_NUM_LEAVES}."
+                )
+            # LightGBM invariant: num_leaves <= 2^max_depth. If violated, LGBM
+            # silently clips num_leaves, so the model the user thinks they're
+            # training is not the model that runs. Reject loudly.
+            if config.max_depth <= 30:  # avoid overflow on huge max_depth
+                max_leaves_for_depth = 2 ** config.max_depth
+                if config.num_leaves > max_leaves_for_depth:
+                    raise ModelTrainerError(
+                        f"num_leaves ({config.num_leaves}) exceeds "
+                        f"2**max_depth ({max_leaves_for_depth}). LightGBM would "
+                        f"silently clip, training a shallower model than "
+                        f"configured."
+                    )
+
+            # ---- lambda_l1 / lambda_l2 ----
+            # Negative regularisation makes the objective non-convex, which
+            # LightGBM accepts but produces nonsensical models. Reject up
+            # front. ``int`` is allowed because ``isinstance(int, float)``
+            # is False but ``int`` values like ``0`` / ``1`` are common.
+            for name, value in (
+                ("lambda_l1", config.lambda_l1),
+                ("lambda_l2", config.lambda_l2),
+            ):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise ModelTrainerError(
+                        f"{name} must be a float; got {type(value).__name__}."
+                    )
+                if value < 0:
+                    raise ModelTrainerError(
+                        f"{name} must be >= 0; got {value}. Negative regularisation "
+                        "produces ill-defined LGB models."
+                    )
+
+            # ---- min_data_in_leaf ----
+            if (
+                not isinstance(config.min_data_in_leaf, int)
+                or isinstance(config.min_data_in_leaf, bool)
+            ):
+                raise ModelTrainerError(
+                    f"min_data_in_leaf must be int; got "
+                    f"{type(config.min_data_in_leaf).__name__}."
+                )
+            if config.min_data_in_leaf < 1:
+                raise ModelTrainerError(
+                    f"min_data_in_leaf must be >= 1; got {config.min_data_in_leaf}."
                 )
 
-        # ---- min_data_in_leaf ----
-        if (
-            not isinstance(config.min_data_in_leaf, int)
-            or isinstance(config.min_data_in_leaf, bool)
-        ):
-            raise ModelTrainerError(
-                f"min_data_in_leaf must be int; got "
-                f"{type(config.min_data_in_leaf).__name__}."
-            )
-        if config.min_data_in_leaf < 1:
-            raise ModelTrainerError(
-                f"min_data_in_leaf must be >= 1; got {config.min_data_in_leaf}."
-            )
+            # ---- feature_fraction / bagging_fraction ----
+            # Must lie in (0, 1] — LightGBM clips silently for values
+            # outside this range, again producing a model the user did not
+            # configure.
+            for name, value in (
+                ("feature_fraction", config.feature_fraction),
+                ("bagging_fraction", config.bagging_fraction),
+            ):
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise ModelTrainerError(
+                        f"{name} must be a float; got {type(value).__name__}."
+                    )
+                if not (0.0 < value <= 1.0):
+                    raise ModelTrainerError(
+                        f"{name} must be in (0, 1]; got {value}. "
+                        "0 disables sampling entirely (no rows / features) and "
+                        "values > 1 are clipped silently by LightGBM."
+                    )
 
-        # ---- feature_fraction / bagging_fraction ----
-        # Must lie in (0, 1] — LightGBM clips silently for values
-        # outside this range, again producing a model the user did not
-        # configure.
-        for name, value in (
-            ("feature_fraction", config.feature_fraction),
-            ("bagging_fraction", config.bagging_fraction),
-        ):
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
+            # ---- bagging_freq ----
+            if (
+                not isinstance(config.bagging_freq, int)
+                or isinstance(config.bagging_freq, bool)
+            ):
                 raise ModelTrainerError(
-                    f"{name} must be a float; got {type(value).__name__}."
+                    f"bagging_freq must be int; got "
+                    f"{type(config.bagging_freq).__name__}."
                 )
-            if not (0.0 < value <= 1.0):
+            if config.bagging_freq < 0:
                 raise ModelTrainerError(
-                    f"{name} must be in (0, 1]; got {value}. "
-                    "0 disables sampling entirely (no rows / features) and "
-                    "values > 1 are clipped silently by LightGBM."
+                    f"bagging_freq must be >= 0; got {config.bagging_freq}. "
+                    "Use 0 to disable, or a positive int (e.g. 5) for periodic bagging."
                 )
-
-        # ---- bagging_freq ----
-        if (
-            not isinstance(config.bagging_freq, int)
-            or isinstance(config.bagging_freq, bool)
-        ):
-            raise ModelTrainerError(
-                f"bagging_freq must be int; got "
-                f"{type(config.bagging_freq).__name__}."
-            )
-        if config.bagging_freq < 0:
-            raise ModelTrainerError(
-                f"bagging_freq must be >= 0; got {config.bagging_freq}. "
-                "Use 0 to disable, or a positive int (e.g. 5) for periodic bagging."
-            )
 
         # ---- model_artifact_path ----
         if not str(model_artifact_path or "").strip():

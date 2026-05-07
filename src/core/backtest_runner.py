@@ -69,6 +69,31 @@ class BacktestRunner:
         if predictions is None or (hasattr(predictions, "empty") and predictions.empty):
             raise BacktestRunnerError("predictions must be non-empty.")
 
+        # ``WalkForwardConfig`` and ``PipelineConfig`` already reject
+        # ``n_drop >= topk`` at __post_init__ time, but ``BacktestRunner.run``
+        # is also a public entry point used directly from research scripts.
+        # Defence-in-depth: refuse the degenerate combination here so a
+        # caller bypassing the config layer still gets a loud error
+        # instead of a zero-position backtest that returns "valid"
+        # all-zero metrics.
+        if not isinstance(topk, int) or isinstance(topk, bool) or topk < 1:
+            raise BacktestRunnerError(
+                f"BacktestRunner.run: topk must be a positive int; got "
+                f"{topk!r}."
+            )
+        if not isinstance(n_drop, int) or isinstance(n_drop, bool) or n_drop < 0:
+            raise BacktestRunnerError(
+                f"BacktestRunner.run: n_drop must be a non-negative int; "
+                f"got {n_drop!r}."
+            )
+        if n_drop >= topk:
+            raise BacktestRunnerError(
+                f"BacktestRunner.run: n_drop ({n_drop}) must be strictly "
+                f"less than topk ({topk}); otherwise TopkDropoutStrategy "
+                "rotates out every name and the backtest returns silently "
+                "with an empty portfolio."
+            )
+
         if not is_canonical_qlib_initialized():
             raise BacktestRunnerError(
                 "Canonical qlib runtime must be initialized via "
@@ -170,15 +195,19 @@ class BacktestRunner:
                 "Backtest produced no results. Check date ranges and predictions."
             )
 
-        # Extract risk analysis
+        # Extract risk analysis. Use the *configured* exchange frequency
+        # so qlib's annualisation factor matches the underlying data
+        # cadence. The previous hardcoded ``freq="day"`` would have
+        # over-stated annualised return / Sharpe by 2-4× if a future
+        # caller ever ran an hourly or minute-level backtest.
         try:
             excess_return_without_cost = risk_analysis(
                 report_normal["return"] - report_normal["bench"],
-                freq="day",
+                freq=request.exchange_config.freq,
             )
             excess_return_with_cost = risk_analysis(
                 report_normal["return"] - report_normal["bench"] - report_normal["cost"],
-                freq="day",
+                freq=request.exchange_config.freq,
             )
         except Exception as exc:
             raise BacktestRunnerError(
@@ -246,34 +275,47 @@ class BacktestRunner:
         ``shift(lag)`` is row-wise on those dates). Negative ``lag`` is
         rejected upstream by ``PipelineConfig.__post_init__``.
         """
+        # Validate predictions shape *before* the lag=0 short-circuit so
+        # the same-day-execution path cannot bypass the structural
+        # contract. The previous implementation skipped validation
+        # whenever ``lag == 0`` — which meant a research script feeding
+        # a wrong-shape Series or DataFrame to ``signal_to_execution_lag=0``
+        # would still produce official metrics from qlib without any
+        # complaint here, while ``lag>=1`` callers got a loud error.
+        # Validate uniformly.
+        import pandas as pd
+        if not isinstance(predictions, pd.Series):
+            raise BacktestRunnerError(
+                "BacktestRunner._apply_lag: predictions must be a pandas "
+                f"Series with (datetime, instrument) MultiIndex; got "
+                f"{type(predictions).__name__}. Refusing to forward to "
+                "qlib silently."
+            )
+        if not isinstance(predictions.index, pd.MultiIndex):
+            raise BacktestRunnerError(
+                "BacktestRunner._apply_lag: predictions Series must carry a "
+                "(datetime, instrument) MultiIndex; got "
+                f"{type(predictions.index).__name__}. Refusing to forward "
+                "to qlib silently."
+            )
+        # Names matter: qlib's ``TopkDropoutStrategy`` and the unstack
+        # path below access levels by *name*, so an
+        # ``(instrument, datetime)``-ordered MultiIndex would silently
+        # feed instruments to the date axis. Pin it.
+        expected_names = ("datetime", "instrument")
+        if tuple(predictions.index.names) != expected_names:
+            raise BacktestRunnerError(
+                "BacktestRunner._apply_lag: predictions index names must be "
+                f"{expected_names}; got {tuple(predictions.index.names)!r}. "
+                "Refusing to forward to qlib silently."
+            )
+
         if lag == 0:
             _logger.info(
                 "BacktestRunner: signal_to_execution_lag=0 -> no shift applied; "
                 "same-day execution was requested explicitly."
             )
             return predictions
-        import pandas as pd
-        # Refuse to silently fall through on the wrong shape. The previous
-        # implementation returned ``predictions`` unchanged when the input
-        # was not a ``(datetime, instrument)`` MultiIndex Series, which
-        # silently dropped the requested lag — turning "T+1 execution"
-        # into "T-execution" with no warning. If a research script ever
-        # passes a single-level Series or DataFrame, we want a loud
-        # error, not a wrong-but-plausible backtest.
-        if not isinstance(predictions, pd.Series):
-            raise BacktestRunnerError(
-                "BacktestRunner._apply_lag: predictions must be a pandas "
-                f"Series with (datetime, instrument) MultiIndex; got "
-                f"{type(predictions).__name__}. Refusing to drop the "
-                f"requested lag={lag} silently."
-            )
-        if not isinstance(predictions.index, pd.MultiIndex):
-            raise BacktestRunnerError(
-                "BacktestRunner._apply_lag: predictions Series must carry a "
-                "(datetime, instrument) MultiIndex; got "
-                f"{type(predictions.index).__name__}. Refusing to drop the "
-                f"requested lag={lag} silently."
-            )
         # MultiIndex (datetime, instrument): shift the datetime level.
         # ``unstack()`` pivots instrument to columns so ``shift(lag)``
         # advances every instrument's date stamps by the same number
@@ -289,27 +331,56 @@ class BacktestRunner:
         topk: int,
         n_drop: int,
     ) -> Mapping[str, Any]:
-        """Build a provenance record covering the full request + strategy params.
+        """Build a provenance record covering the full request + strategy
+        params *plus* the qlib runtime config the metrics depend on.
 
-        Previously only ``topk`` and ``n_drop`` were captured, which meant
-        any new strategy hyperparameter (selection filter, risk constraints,
-        etc.) added later would silently escape the fingerprint. We now hash
-        the complete serialised ``request`` together with the strategy params
-        so the fingerprint reflects every input that can affect results.
+        Previously only ``topk`` and ``n_drop`` were captured, then the
+        full request — but the same ``predictions_ref`` evaluated against
+        a different qlib provider (different ``provider_uri`` / ``region``
+        / ``data_adjust_mode``) would yield different official metrics
+        and the fingerprint stayed identical, so a downstream comparison
+        tool diff'ing two run reports could not tell the difference
+        between "true regression" and "switched data bundle".
+
+        We now also hash the live qlib runtime config — the
+        ``runtime.data_adjust_mode`` / ``runtime.provider_uri`` /
+        ``runtime.region`` triple — into the same JSON blob so the
+        fingerprint changes whenever any of those change.
         """
         # Strategy params not captured by CanonicalBacktestInput.
         strategy_dict = {"topk": topk, "n_drop": n_drop}
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)
+        # qlib runtime config snapshot. ``run`` already verified the
+        # runtime is initialised and that ``request.adjust_mode`` matches
+        # ``runtime.data_adjust_mode``, so a non-None config is the
+        # expected path. We tolerate ``None`` defensively rather than
+        # crashing the provenance step — the metrics themselves would
+        # have already failed earlier in that case.
+        runtime_config = get_canonical_qlib_config()
+        runtime_dict: dict[str, Any] = (
+            {
+                "provider_uri": runtime_config.provider_uri,
+                "region": runtime_config.region,
+                "data_adjust_mode": runtime_config.data_adjust_mode,
+            }
+            if runtime_config is not None
+            else {}
+        )
         config_dict = {
             "request": request_dict,
             "strategy": strategy_dict,
+            "runtime": runtime_dict,
         }
         config_json = json.dumps(config_dict, sort_keys=True, default=str)
         fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:16]
         return {
-            "config": {**request_dict, **strategy_dict},  # flat for human readability
+            # Flat surface for human readability; includes runtime so a
+            # diff between two runs can also see provider / region /
+            # adjust_mode side by side without re-deriving from the
+            # fingerprint alone.
+            "config": {**request_dict, **strategy_dict, "runtime": runtime_dict},
             "config_fingerprint": fingerprint,
             "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         }

@@ -147,6 +147,32 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "n_drop"):
             PipelineConfig(provider_uri="/tmp/fake", n_drop=False)
 
+    def test_rejects_negative_commission_rate(self) -> None:
+        """Negative cost components silently inflate returns. Caught at
+        config construction so the cheap fail beats running the full
+        feature build + train before ``CanonicalExchangeCostModel``
+        catches it downstream."""
+        with self.assertRaisesRegex(PipelineError, "commission_rate"):
+            PipelineConfig(provider_uri="/tmp/fake", commission_rate=-0.001)
+
+    def test_rejects_negative_stamp_tax_bps(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "stamp_tax_bps"):
+            PipelineConfig(provider_uri="/tmp/fake", stamp_tax_bps=-1.0)
+
+    def test_rejects_negative_slippage_bps(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "slippage_bps"):
+            PipelineConfig(provider_uri="/tmp/fake", slippage_bps=-5.0)
+
+    def test_rejects_negative_min_cost(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "min_cost"):
+            PipelineConfig(provider_uri="/tmp/fake", min_cost=-0.01)
+
+    def test_rejects_bool_cost_field(self) -> None:
+        """``True`` / ``False`` would silently be 1 / 0 — accept them as
+        ints, so YAML ``commission_rate: false`` becomes 0 commission. Reject."""
+        with self.assertRaisesRegex(PipelineError, "commission_rate"):
+            PipelineConfig(provider_uri="/tmp/fake", commission_rate=True)
+
     def test_accepts_zero_lag_as_explicit_same_day_execution(self) -> None:
         cfg = PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
         self.assertEqual(cfg.signal_to_execution_lag, 0)

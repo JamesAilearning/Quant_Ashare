@@ -563,14 +563,40 @@ class PerformanceAttribution:
             # Time-average the actual per-day weights
             weight_sum: dict[str, float] = {}
             day_count = 0
-            for day_map in positions.values():
+            for day_key, day_map in positions.items():
+                # ``positions`` contract is ``{date_str: {instrument: float}}``.
+                # If a day's value is anything other than a mapping (a stray
+                # list, scalar, or string from a corrupt upstream serialiser),
+                # ``not day_map`` was True only for empty falsy values and
+                # the next ``.items()`` call would crash mid-iteration with
+                # AttributeError, after several days had already accumulated.
+                # Reject the bad day loudly so the operator can find the
+                # serialisation upstream instead of chasing a partial result.
+                if not isinstance(day_map, dict):
+                    raise PerformanceAttributionError(
+                        "positions contract violation: each day's value must "
+                        "be a mapping ``{instrument: weight}``. Got "
+                        f"{type(day_map).__name__} for date {day_key!r}. "
+                        "This indicates an upstream serialisation bug."
+                    )
                 if not day_map:
                     continue
                 day_count += 1
                 for inst, w in day_map.items():
                     try:
                         weight_sum[inst] = weight_sum.get(inst, 0.0) + float(w)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError) as exc:
+                        # Record the drop instead of silently skipping —
+                        # a string / None weight is a serialisation defect
+                        # the operator needs to see. We continue rather
+                        # than abort (a single bad name should not
+                        # invalidate the whole attribution) but the
+                        # WARNING leaves a trail in the run log.
+                        _logger.warning(
+                            "PerformanceAttribution: dropping non-numeric "
+                            "weight for %s on %s (%s: %s).",
+                            inst, day_key, type(exc).__name__, exc,
+                        )
                         continue
             if day_count == 0 or not weight_sum:
                 # positions was non-empty at validation time but every day
@@ -808,13 +834,32 @@ class PerformanceAttribution:
 
         results = []
         for (year, month), port_r in port_monthly.items():
-            bench_r = float(bench_monthly.get((year, month), 0.0))
+            # When a month is missing from ``bench_monthly`` the previous
+            # implementation defaulted to ``0.0``, which silently
+            # disguises a benchmark-data gap as "the index didn't move
+            # this month" and inflates the reported excess return.
+            # Surface the gap as a NaN benchmark / NaN excess so a
+            # downstream consumer can tell "missing" from "actually flat".
+            if (year, month) in bench_monthly:
+                bench_r = float(bench_monthly[(year, month)])
+                excess = round(port_r - bench_r, 6)
+            else:
+                _logger.warning(
+                    "PerformanceAttribution: monthly benchmark return missing "
+                    "for %04d-%02d; reporting NaN benchmark / NaN excess "
+                    "rather than substituting 0.0.",
+                    int(year), int(month),
+                )
+                bench_r = float("nan")
+                excess = float("nan")
+            # ``round`` of NaN is NaN, so the same call works for both
+            # the present-bench and missing-bench branches.
             results.append(MonthlyReturn(
                 year=int(year),
                 month=int(month),
                 portfolio_return=round(port_r, 6),
                 benchmark_return=round(bench_r, 6),
-                excess_return=round(port_r - bench_r, 6),
+                excess_return=excess,
             ))
 
         return results

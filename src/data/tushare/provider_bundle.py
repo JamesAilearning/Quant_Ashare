@@ -223,6 +223,17 @@ class TushareQlibProviderValidationProfile:
     non_calendar_rows: int
     non_calendar_index_rows: int
     missing_factor_rows: int
+    # Calendar-coverage gaps (open trading day with no market / index
+    # rows). Surfaces upstream Tushare hiccups that would otherwise
+    # silently drop a day from the published bundle.
+    missing_market_dates: int
+    missing_index_dates: int
+    # adj_factor sanity: rows where the factor is non-finite (NaN/Inf,
+    # often from a non-numeric Tushare value) or non-positive (zero or
+    # negative). These would surface as NaN/Inf/sign-flipped adjusted
+    # prices much later in ``_build_qlib_frame`` if not caught here.
+    non_finite_factor_rows: int
+    non_positive_factor_rows: int
     data_adjust_mode: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -634,6 +645,10 @@ class TushareQlibProviderPublisher:
                     non_calendar_rows=0,
                     non_calendar_index_rows=0,
                     missing_factor_rows=0,
+                    missing_market_dates=0,
+                    missing_index_dates=0,
+                    non_finite_factor_rows=0,
+                    non_positive_factor_rows=0,
                     **profile_base,
                 ),
             )
@@ -688,6 +703,54 @@ class TushareQlibProviderPublisher:
             errors.append("invalid_ohlcv")
         if invalid_index_ohlcv_rows:
             errors.append("invalid_index_ohlcv")
+
+        # Calendar-coverage check: every open trading day must have at
+        # least one market row. ``non_calendar_rows`` already catches
+        # extra rows whose date is *not* in the calendar; this catches
+        # the inverse — a calendar date with *zero* daily rows. Without
+        # this, an upstream Tushare hiccup that returns an empty
+        # response for one trading day silently drops that day from the
+        # published bundle, and downstream qlib backtests skip it as if
+        # the market were closed. Hard-fail the publish.
+        market_dates = set(daily["date"].unique())
+        missing_market_date_list = sorted(set(open_dates) - market_dates)
+        missing_market_dates_count = len(missing_market_date_list)
+        if missing_market_date_list:
+            errors.append("missing_market_dates")
+            _logger.warning(
+                "Tushare provider bundle: %d calendar trading day(s) have "
+                "no market rows: %s%s",
+                missing_market_dates_count,
+                missing_market_date_list[:5],
+                "..." if missing_market_dates_count > 5 else "",
+            )
+        missing_index_dates_count = 0
+        if not index_daily.empty:
+            index_dates = set(index_daily["date"].unique())
+            missing_index_date_list = sorted(set(open_dates) - index_dates)
+            missing_index_dates_count = len(missing_index_date_list)
+            if missing_index_date_list:
+                errors.append("missing_index_dates")
+                _logger.warning(
+                    "Tushare provider bundle: %d calendar trading day(s) "
+                    "have no index rows: %s%s",
+                    missing_index_dates_count,
+                    missing_index_date_list[:5],
+                    "..." if missing_index_dates_count > 5 else "",
+                )
+
+        # adj_factor must be finite and strictly positive — non-numeric
+        # strings, zero, or negative values would survive ``isna()``
+        # checks below and only surface as ``NaN`` / ``Inf`` / sign-flipped
+        # adjusted prices much later in ``_build_qlib_frame``. Hard-fail
+        # at validation time instead of writing corrupt bins.
+        adj_numeric = pd.to_numeric(adj["adj_factor"], errors="coerce")
+        non_finite_factor_rows = int((~np.isfinite(adj_numeric)).sum())
+        non_positive_factor_rows = int((adj_numeric <= 0).sum())
+        if non_finite_factor_rows:
+            errors.append("non_finite_adjustment_factors")
+        if non_positive_factor_rows:
+            errors.append("non_positive_adjustment_factors")
 
         # ``validate="one_to_one"`` raises ``pandas.errors.MergeError`` if
         # either side has duplicate (ts_code, date) keys. We already
@@ -795,6 +858,10 @@ class TushareQlibProviderPublisher:
             non_calendar_rows=non_calendar_rows,
             non_calendar_index_rows=non_calendar_index_rows,
             missing_factor_rows=missing_factor_rows,
+            missing_market_dates=missing_market_dates_count,
+            missing_index_dates=missing_index_dates_count,
+            non_finite_factor_rows=non_finite_factor_rows,
+            non_positive_factor_rows=non_positive_factor_rows,
             **profile_base,
         )
         return _PreparedMarketData(
@@ -917,12 +984,31 @@ class TushareQlibProviderPublisher:
         )
         frame["vwap"] = frame["vwap"] * frame["_scale"]
         frame["factor"] = frame["_scale"]
-        if "pct_chg" in frame.columns:
+        # ``change`` semantics
+        # --------------------
+        # qlib uses ``$change`` for the daily *investment return* (i.e.
+        # close[t]/close[t-1] - 1 on the same adjustment basis as the
+        # OHLC columns). Tushare's ``pct_chg`` is the raw unadjusted
+        # daily price change percentage, which on a dividend / split day
+        # diverges from the adjusted-close return: an ex-dividend day
+        # shows a sharp negative ``pct_chg`` even though the
+        # post-adjustment investment return is roughly zero.
+        #
+        # Previously we wrote ``pct_chg / 100`` directly into ``change``
+        # whenever it was present, so in PRE/POST adjust modes the
+        # ``change`` column was on a *different basis* than ``close`` —
+        # silently breaking any downstream factor that joins them.
+        #
+        # Fix: in adjusted modes always recompute ``change`` from the
+        # already-adjusted ``close`` so the two columns stay on the same
+        # basis. In ``ADJUST_MODE_NONE`` we keep ``pct_chg`` (cheaper +
+        # avoids floating-point drift on a column the consumer already
+        # treats as raw-price-change anyway).
+        if data_adjust_mode == ADJUST_MODE_NONE and "pct_chg" in frame.columns:
             frame["change"] = pd.to_numeric(frame["pct_chg"], errors="coerce") / 100.0
         else:
             frame["change"] = frame.groupby("instrument")["close"].pct_change()
-        if "change" in frame.columns:
-            frame["change"] = frame["change"].fillna(0.0)
+        frame["change"] = frame["change"].fillna(0.0)
         fields = [
             "instrument",
             "date",

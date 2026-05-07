@@ -262,15 +262,52 @@ class FactorAnalyzer:
 
     @classmethod
     def _get_factor_values(cls, config: FactorAnalysisConfig) -> Any:
-        """Load Alpha158 features for the test period as a DataFrame."""
-        from qlib.contrib.data.handler import Alpha158
+        """Load the configured feature handler's features for the test period.
+
+        Looks up the handler factory from the same registry
+        :class:`FeatureDatasetBuilder` uses, so a caller's
+        ``feature_handler="Alpha360"`` (or any custom-registered
+        handler) is honoured rather than silently overridden by a
+        hardcoded ``Alpha158`` import. The previous implementation
+        ignored ``config.feature_handler`` entirely — which Pipeline's
+        dataset-reuse path masked, but a standalone
+        ``FactorAnalyzer.analyze(config=...)`` invocation hit head-on.
+        """
         from qlib.data.dataset import DatasetH
 
-        handler = Alpha158(
-            instruments=config.instruments,
-            start_time=config.test_start,
-            end_time=config.test_end,
+        from src.data.feature_dataset_builder import (
+            FeatureDatasetConfig,
+            _FEATURE_HANDLER_REGISTRY,
         )
+
+        factory = _FEATURE_HANDLER_REGISTRY.get(config.feature_handler)
+        if factory is None:
+            raise FactorAnalyzerError(
+                f"feature_handler {config.feature_handler!r} is not "
+                "registered. Register a factory via "
+                "``register_feature_handler`` before calling "
+                "``FactorAnalyzer.analyze``, or use one of the built-in "
+                f"handlers: {sorted(_FEATURE_HANDLER_REGISTRY.keys())}."
+            )
+
+        # The shared factories take a ``FeatureDatasetConfig``. The
+        # standalone factor-analyzer path has no train/valid windows
+        # of its own, so we collapse all four to the test window — the
+        # factory uses ``instruments`` and the test dates, plus
+        # ``fit_*_time`` for handler-internal normalisation that
+        # ``FactorAnalyzer`` does not need to be tuned to a separate
+        # train window.
+        builder_config = FeatureDatasetConfig(
+            instruments=config.instruments,
+            feature_handler=config.feature_handler,
+            train_start=config.test_start,
+            train_end=config.test_end,
+            valid_start=config.test_start,
+            valid_end=config.test_end,
+            test_start=config.test_start,
+            test_end=config.test_end,
+        )
+        handler = factory(builder_config)
         dataset = DatasetH(
             handler=handler,
             segments={"test": [config.test_start, config.test_end]},

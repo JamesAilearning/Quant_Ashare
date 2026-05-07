@@ -372,15 +372,59 @@ class WalkForwardEngine:
                 i + 1, len(windows), train_s, train_e, valid_s, valid_e, test_s, test_e,
             )
 
-            fold = cls._run_single_fold(
-                config=config,
-                fold_index=i,
-                train_start=train_s, train_end=train_e,
-                valid_start=valid_s, valid_end=valid_e,
-                test_start=test_s, test_end=test_e,
-                output_dir=output_dir,
-                prior_model_paths=tuple(prior_model_paths),
-            )
+            # Wrap the per-fold execution so a transient failure mid-run
+            # (qlib data hiccup, a corrupted prior pickle in the ensemble,
+            # an out-of-disk write, etc.) does not throw away every
+            # already-completed fold. The previous implementation had no
+            # try/except here: fold N's exception abort the whole run,
+            # the aggregate JSON never wrote, and the operator had to
+            # rerun everything from fold 0.
+            #
+            # We record a NaN-only placeholder ``WalkForwardFold`` so:
+            #   * ``_compute_aggregate`` (already NaN-tolerant) excludes
+            #     the failed fold from means but still surfaces the
+            #     failure via ``valid_folds_*`` counts < total.
+            #   * The aggregate report renders, with the failed fold's
+            #     row showing NaN metrics — visibly degraded rather
+            #     than silently absent.
+            #   * ``prior_model_paths`` is *not* extended for the failed
+            #     fold (no model pickle was produced), so subsequent
+            #     folds' ensemble naturally omits this fold.
+            try:
+                fold = cls._run_single_fold(
+                    config=config,
+                    fold_index=i,
+                    train_start=train_s, train_end=train_e,
+                    valid_start=valid_s, valid_end=valid_e,
+                    test_start=test_s, test_end=test_e,
+                    output_dir=output_dir,
+                    prior_model_paths=tuple(prior_model_paths),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.error(
+                    "Fold %d/%d FAILED with %s: %s. Recording NaN-only "
+                    "placeholder fold and continuing; the aggregate "
+                    "report will surface this via valid_folds_* counts "
+                    "< num_folds. Subsequent folds' ensemble window "
+                    "will skip this fold.",
+                    i + 1, len(windows), type(exc).__name__, exc,
+                )
+                folds.append(WalkForwardFold(
+                    fold_index=i,
+                    train_period=f"{train_s} ~ {train_e}",
+                    valid_period=f"{valid_s} ~ {valid_e}",
+                    test_period=f"{test_s} ~ {test_e}",
+                    ic_1d=float("nan"),
+                    ic_5d=float("nan"),
+                    annualized_return=float("nan"),
+                    max_drawdown=float("nan"),
+                    information_ratio=float("nan"),
+                    prediction_shape=(0,),
+                ))
+                # Skip the prior-model-path append so the broken fold's
+                # (likely missing or partial) pickle never re-enters
+                # subsequent folds' ensembles.
+                continue
             folds.append(fold)
             # Mirror the path the trainer wrote to in ``_run_single_fold``;
             # keep this construction in sync with the ``model_path`` line
@@ -890,8 +934,13 @@ class WalkForwardEngine:
         any other type should surface here at write-time, not weeks later
         in a dashboard.
         """
+        # NaN-safe via ``_sanitize_for_json`` + ``allow_nan=False`` —
+        # same convention as the per-fold and aggregate reports. A
+        # leaked non-finite weight would otherwise produce the
+        # non-standard ``NaN`` JSON token that strict parsers reject.
+        sanitised = _sanitize_for_json(dict(positions))
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(dict(positions), f, indent=2)
+            json.dump(sanitised, f, indent=2, allow_nan=False)
 
     @classmethod
     def _run_attribution_for_fold(
