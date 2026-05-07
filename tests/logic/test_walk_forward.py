@@ -796,5 +796,282 @@ class FoldReportPersistenceFlowTests(unittest.TestCase):
             self.assertIn("2024-10-01", positions)
 
 
+class WalkForwardConfigIndustryTaxonomyTests(unittest.TestCase):
+    """Boundary contract for the four ``industry_*`` fields on
+    :class:`WalkForwardConfig`.
+
+    Mirrors :class:`PipelineConfigPostInitTests` — the same partial-
+    config rejection runs through
+    :func:`assert_industry_config_complete_or_empty`. If the two
+    callers ever diverge a fold could silently load a half-configured
+    artifact with a confusing "no such file" deep in the loader.
+    """
+
+    def test_default_uses_board_heuristic(self) -> None:
+        cfg = WalkForwardConfig()
+        self.assertIsNone(cfg.industry_artifact_path)
+        self.assertIsNone(cfg.industry_manifest_path)
+        self.assertEqual(cfg.industry_taxonomy_id, "")
+
+    def test_all_three_set_passes(self) -> None:
+        cfg = WalkForwardConfig(
+            industry_artifact_path="output/taxonomy/sw_l2.csv",
+            industry_manifest_path="output/taxonomy/sw_l2.json",
+            industry_taxonomy_id="tushare_sw_l2",
+        )
+        self.assertEqual(cfg.industry_taxonomy_id, "tushare_sw_l2")
+
+    def test_only_artifact_set_rejected(self) -> None:
+        with self.assertRaisesRegex(WalkForwardError, "explicit triple"):
+            WalkForwardConfig(industry_artifact_path="a.csv")
+
+    def test_only_manifest_set_rejected(self) -> None:
+        with self.assertRaisesRegex(WalkForwardError, "explicit triple"):
+            WalkForwardConfig(industry_manifest_path="a.json")
+
+    def test_only_taxonomy_id_set_rejected(self) -> None:
+        with self.assertRaisesRegex(WalkForwardError, "explicit triple"):
+            WalkForwardConfig(industry_taxonomy_id="t")
+
+    def test_unsupported_temporal_mode_rejected(self) -> None:
+        from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_TRADE_DATE
+        with self.assertRaisesRegex(WalkForwardError, "industry_temporal_mode"):
+            WalkForwardConfig(industry_temporal_mode=TAXONOMY_MODE_TRADE_DATE)
+
+    def test_run_attribution_default_true(self) -> None:
+        """Per-fold attribution is the main observability win after the
+        per-fold report wiring; default-true so a vanilla walk-forward
+        run carries the block out of the box."""
+        cfg = WalkForwardConfig()
+        self.assertTrue(cfg.run_attribution)
+
+
+class _AttributionForFoldTests(unittest.TestCase):
+    """Direct-call coverage of ``_run_attribution_for_fold``.
+
+    Avoids the full ``_run_single_fold`` setup so each branch (disabled
+    / no-positions / artifact-load-failed / engine-error / happy-path)
+    is exercised in isolation. Each branch returns a specific
+    ``(result, skipped_reason)`` tuple the fold report serialiser
+    depends on.
+    """
+
+    def _backtest_output_with_positions(self, positions=None):
+        from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+        return CanonicalBacktestOutput(
+            metric_status="official",
+            official_backtest_path="qlib.backtest.backtest",
+            return_series={"return": {}, "bench": {}, "cost": {}},
+            risk_analysis={"excess_return_with_cost": {
+                "annualized_return": 0.1, "max_drawdown": -0.05,
+                "information_ratio": 1.0,
+            }},
+            report={}, provenance={},
+            positions=positions if positions is not None else {
+                "2024-10-01": {"SH600000": 1.0},
+            },
+        )
+
+    def test_disabled_by_config_short_circuits(self) -> None:
+        config = WalkForwardConfig(run_attribution=False)
+        result, reason = WalkForwardEngine._run_attribution_for_fold(
+            config=config, fold_index=0,
+            test_start="2024-10-01", test_end="2024-12-31",
+            model_result=MagicMock(),
+            backtest_output=self._backtest_output_with_positions(),
+        )
+        self.assertIsNone(result)
+        self.assertEqual(reason, "disabled_by_config")
+
+    def test_no_positions_short_circuits_without_calling_engine(self) -> None:
+        """Refusing to silently fall back to a prediction-score proxy
+        when the backtest produced no positions — same no-implicit-fallback
+        rule that's already in :class:`Pipeline`."""
+        config = WalkForwardConfig()
+        with patch(
+            "src.core.walk_forward.PerformanceAttribution.analyze"
+        ) as mock_analyze:
+            result, reason = WalkForwardEngine._run_attribution_for_fold(
+                config=config, fold_index=0,
+                test_start="2024-10-01", test_end="2024-12-31",
+                model_result=MagicMock(),
+                backtest_output=self._backtest_output_with_positions(positions={}),
+            )
+        self.assertIsNone(result)
+        self.assertEqual(reason, "no_positions_from_backtest")
+        mock_analyze.assert_not_called()
+
+    def test_engine_error_yields_skip_with_typed_reason(self) -> None:
+        """Degenerate inputs (e.g. all-zero positions) raise
+        :class:`PerformanceAttributionError` from the engine. Walk-forward
+        downgrades that to skip + WARN with a typed reason so the diff
+        tool (PR #29) can flag the degraded fold without aborting the
+        rest of the run."""
+        from src.core.performance_attribution import PerformanceAttributionError
+        config = WalkForwardConfig()
+        with patch(
+            "src.core.walk_forward.PerformanceAttribution.analyze",
+            side_effect=PerformanceAttributionError("all-non-positive"),
+        ):
+            result, reason = WalkForwardEngine._run_attribution_for_fold(
+                config=config, fold_index=3,
+                test_start="2024-10-01", test_end="2024-12-31",
+                model_result=MagicMock(),
+                backtest_output=self._backtest_output_with_positions(),
+            )
+        self.assertIsNone(result)
+        self.assertTrue(reason.startswith("engine_error: "))
+        self.assertIn("PerformanceAttributionError", reason)
+        self.assertIn("all-non-positive", reason)
+
+    def test_artifact_load_failure_promotes_to_walkforward_error(self) -> None:
+        """Industry-artifact load failures are config / file problems —
+        every fold will hit the same error, so we promote to a hard
+        :class:`WalkForwardError` rather than silently skipping
+        attribution. Operator should fix the root cause once."""
+        config = WalkForwardConfig(
+            industry_artifact_path="/no/such/dir/missing.csv",
+            industry_manifest_path="/no/such/dir/missing.json",
+            industry_taxonomy_id="tushare_sw_l2",
+        )
+        with self.assertRaisesRegex(WalkForwardError, "industry taxonomy load failed"):
+            WalkForwardEngine._run_attribution_for_fold(
+                config=config, fold_index=0,
+                test_start="2024-10-01", test_end="2024-12-31",
+                model_result=MagicMock(),
+                backtest_output=self._backtest_output_with_positions(),
+            )
+
+
+class _AttributionSectionForFoldTests(unittest.TestCase):
+    """Pin the JSON shape that lands in ``fold_NN_report.json``'s
+    ``attribution`` block. Same status / skipped_reason convention as
+    :meth:`Pipeline._attribution_section` so a single downstream
+    consumer reads both."""
+
+    def test_skipped_section_carries_status_and_reason(self) -> None:
+        block = WalkForwardEngine._attribution_section_for_fold(
+            None, "no_positions_from_backtest",
+        )
+        self.assertEqual(block["status"], "skipped")
+        self.assertEqual(block["skipped_reason"], "no_positions_from_backtest")
+        # No keys leaked from the ok branch — a consumer that branches on
+        # ``status`` should not have to defensively check for missing
+        # ok-only fields.
+        self.assertNotIn("sector_attribution", block)
+        self.assertNotIn("sector_taxonomy", block)
+
+    def test_skipped_with_no_reason_falls_back_to_unknown(self) -> None:
+        """Defensive: a future bug that calls this with both ``None``
+        must still produce a parseable status field, not ``null``."""
+        block = WalkForwardEngine._attribution_section_for_fold(None, None)
+        self.assertEqual(block["status"], "skipped")
+        self.assertEqual(block["skipped_reason"], "unknown_reason")
+
+    def test_ok_section_carries_taxonomy_and_effects(self) -> None:
+        from src.core.performance_attribution import (
+            ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            BENCH_WEIGHT_METHOD_EQUAL,
+            AttributionResult,
+            SectorAttribution,
+        )
+        from src.core.board_heuristic import BOARD_HEURISTIC_TAXONOMY_ID
+
+        result = AttributionResult(
+            sector_attribution=(
+                SectorAttribution(
+                    sector="银行",
+                    portfolio_weight=0.5, benchmark_weight=0.4,
+                    portfolio_return=0.10, benchmark_return=0.08,
+                    allocation_effect=0.001,
+                    selection_effect=0.002,
+                    interaction_effect=0.0005,
+                    total_effect=0.0035,
+                ),
+            ),
+            total_allocation_effect=0.001, total_selection_effect=0.002,
+            total_interaction_effect=0.0005,
+            monthly_returns=(),
+            total_portfolio_return=0.10, total_benchmark_return=0.08,
+            total_excess_return=0.02,
+            attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
+            sector_effects_sum=0.0035, reconciliation_residual=0.0165,
+            sector_taxonomy="tushare_sw_l2",
+            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+        )
+        block = WalkForwardEngine._attribution_section_for_fold(result, None)
+
+        self.assertEqual(block["status"], "ok")
+        self.assertIsNone(block["skipped_reason"])
+        self.assertEqual(block["sector_taxonomy"], "tushare_sw_l2")
+        self.assertEqual(block["attribution_method"], ATTRIBUTION_METHOD_SINGLE_PERIOD)
+        self.assertEqual(block["bench_weight_method"], BENCH_WEIGHT_METHOD_EQUAL)
+        self.assertAlmostEqual(block["total_excess_return"], 0.02)
+        self.assertAlmostEqual(block["reconciliation_residual"], 0.0165)
+        self.assertEqual(len(block["sector_attribution"]), 1)
+        self.assertEqual(block["sector_attribution"][0]["sector"], "银行")
+
+
+class FoldReportContainsAttributionBlockTests(unittest.TestCase):
+    """End-to-end: the persisted ``fold_NN_report.json`` carries the
+    ``attribution`` block produced by the section helper. Without this
+    test, a future refactor could drop the wiring in
+    :meth:`_build_fold_report` and per-fold attribution would silently
+    vanish from the on-disk report.
+    """
+
+    def test_disk_report_has_attribution_skipped_block_by_default(self) -> None:
+        import json
+        import tempfile
+
+        config = WalkForwardConfig()  # run_attribution=True, no artifact
+        fake_feature_result = MagicMock()
+        fake_feature_result.dataset = object()
+        fake_model_result = MagicMock(
+            predictions="predictions",
+            prediction_shape=(10,),
+            best_iteration=4,
+            final_valid_loss=0.97,
+        )
+
+        from src.core.performance_attribution import PerformanceAttributionError
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            return_value=fake_feature_result,
+        ), patch(
+            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ), patch(
+            "src.core.walk_forward.SignalAnalyzer.analyze",
+            return_value=_stub_signal_result(),
+        ), patch(
+            "src.core.walk_forward.BacktestRunner.run",
+            return_value=_stub_backtest_output(),
+        ), patch(
+            # Force a skip path so the test does not depend on a
+            # working qlib runtime.
+            "src.core.walk_forward.PerformanceAttribution.analyze",
+            side_effect=PerformanceAttributionError("qlib not initialized"),
+        ):
+            WalkForwardEngine._run_single_fold(
+                config=config,
+                fold_index=0,
+                train_start="2024-01-01", train_end="2024-06-30",
+                valid_start="2024-07-01", valid_end="2024-09-30",
+                test_start="2024-10-01", test_end="2024-12-31",
+                output_dir=Path(tmp),
+            )
+            with open(Path(tmp) / "fold_00_report.json") as f:
+                report = json.load(f)
+
+        self.assertIn("attribution", report)
+        self.assertEqual(report["attribution"]["status"], "skipped")
+        self.assertTrue(
+            report["attribution"]["skipped_reason"].startswith("engine_error: "),
+            report["attribution"]["skipped_reason"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

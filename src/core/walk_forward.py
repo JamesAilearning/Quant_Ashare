@@ -23,7 +23,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core._json_utils import _sanitize_for_json
+from src.core.attribution_industry_loader import (
+    IndustryTaxonomyLoadError,
+    assert_industry_config_complete_or_empty,
+    resolve_industry_taxonomy,
+)
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -39,6 +45,12 @@ from src.core.canonical_backtest_contract import (
 from src.core.logger import get_logger
 from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+from src.core.performance_attribution import (
+    AttributionConfig,
+    AttributionResult,
+    PerformanceAttribution,
+    PerformanceAttributionError,
+)
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
     SignalAnalysisResult,
@@ -101,6 +113,28 @@ class WalkForwardConfig:
     adjust_mode: str = ADJUST_MODE_PRE
     signal_to_execution_lag: int = 1
     limit_threshold: float = 0.095
+
+    # Performance attribution per fold.
+    # ``run_attribution`` controls whether ``_run_single_fold`` calls
+    # ``PerformanceAttribution.analyze`` after backtest. Default ``True``
+    # because the per-fold attribution block is the main observability
+    # win after PR #30 wired per-fold reports — without it the only
+    # OOS-period industry decomposition is the single-fold pipeline, and
+    # walk-forward fold reports would just duplicate raw IC numbers.
+    run_attribution: bool = True
+
+    # Industry taxonomy artifact for attribution (optional). All four
+    # fields must be set together or all left at defaults — the partial
+    # combination is rejected at ``__post_init__`` time. Populated, the
+    # fold's attribution buckets render the real Shenwan industry name
+    # ("白酒", "银行") instead of the board-heuristic fallback
+    # ("board_SH_Main"). Mirrors the same fields on
+    # :class:`PipelineConfig`; the boundary contract is shared via
+    # :func:`assert_industry_config_complete_or_empty`.
+    industry_artifact_path: str | None = None
+    industry_manifest_path: str | None = None
+    industry_taxonomy_id: str = ""
+    industry_temporal_mode: str = TAXONOMY_MODE_STATIC
 
     # Output
     output_dir: str = "output/walk_forward"
@@ -199,6 +233,18 @@ class WalkForwardConfig:
             raise WalkForwardError(
                 f"Invalid WalkForwardConfig backtest controls: {exc}"
             ) from exc
+
+        # Industry-taxonomy fields: same all-or-nothing contract used by
+        # PipelineConfig. Catching the partial state here prevents a
+        # confusing "no such file" deep inside the loader during a fold.
+        assert_industry_config_complete_or_empty(
+            artifact_path=self.industry_artifact_path,
+            manifest_path=self.industry_manifest_path,
+            taxonomy_id=self.industry_taxonomy_id,
+            temporal_mode=self.industry_temporal_mode,
+            error_class=WalkForwardError,
+            error_prefix="WalkForwardConfig",
+        )
 
 
 @dataclass(frozen=True)
@@ -539,6 +585,23 @@ class WalkForwardEngine:
             positions_path = output_dir / f"fold_{fold_index:02d}_positions.json"
             cls._write_positions(positions_path, backtest_output.positions)
 
+        # Per-fold performance attribution. Runs after backtest so the
+        # attribution engine sees the real positions / return series.
+        # Same skip-but-disclose pattern as ``Pipeline.run``: degenerate
+        # inputs (e.g. all-zero positions, all-non-positive predictions)
+        # raise ``PerformanceAttributionError`` from the engine; we
+        # downgrade to "skip + WARN + status in fold report" so a single
+        # bad fold does not abort the entire walk-forward run.
+        attribution_result, attribution_skipped_reason = (
+            cls._run_attribution_for_fold(
+                config=config,
+                fold_index=fold_index,
+                test_start=test_start, test_end=test_end,
+                model_result=model_result,
+                backtest_output=backtest_output,
+            )
+        )
+
         report_path = output_dir / f"fold_{fold_index:02d}_report.json"
         cls._write_fold_report(
             report_path=report_path,
@@ -554,6 +617,8 @@ class WalkForwardEngine:
             ic_1d=ic_1d, ic_5d=ic_5d,
             annualized_return=ann_ret, max_drawdown=max_dd,
             information_ratio=ir,
+            attribution_result=attribution_result,
+            attribution_skipped_reason=attribution_skipped_reason,
         )
 
         return WalkForwardFold(
@@ -587,6 +652,98 @@ class WalkForwardEngine:
             json.dump(dict(positions), f, indent=2)
 
     @classmethod
+    def _run_attribution_for_fold(
+        cls,
+        *,
+        config: WalkForwardConfig,
+        fold_index: int,
+        test_start: str, test_end: str,
+        model_result: ModelTrainResult,
+        backtest_output: CanonicalBacktestOutput,
+    ) -> tuple[AttributionResult | None, str | None]:
+        """Run per-fold performance attribution; return ``(result, reason)``.
+
+        Mirrors ``Pipeline.run`` step 7 layering exactly:
+
+        - ``run_attribution=False`` → return ``(None,
+          "disabled_by_config")``.
+        - Backtest produced no positions → return ``(None,
+          "no_positions_from_backtest")`` — refusing to silently fall
+          back to a prediction-score proxy.
+        - Industry artifact configured → resolve via the shared loader;
+          a load failure aborts the run with :class:`WalkForwardError`
+          (vs the soft skip for engine errors below) because it
+          indicates a config / file mismatch the operator must fix
+          before any fold can produce trustworthy attribution.
+        - Engine raises :class:`PerformanceAttributionError` (degenerate
+          inputs) → return ``(None, "engine_error: ...")`` with a
+          WARNING log. This matches Pipeline's "skip + WARN" path so
+          downstream comparison tools (PR #29 walk-forward-compare)
+          can flag the degraded fold without aborting the rest.
+        """
+        if not config.run_attribution:
+            return None, "disabled_by_config"
+
+        if not backtest_output.positions:
+            _logger.warning(
+                "Fold %d: skipping attribution — backtest produced no "
+                "positions. Refusing to fall back to prediction-score "
+                "attribution (no implicit fallback).",
+                fold_index,
+            )
+            return None, "no_positions_from_backtest"
+
+        attribution_overrides: dict[str, Any] = {}
+        if config.industry_artifact_path:
+            try:
+                resolution = resolve_industry_taxonomy(
+                    artifact_path=str(config.industry_artifact_path),
+                    manifest_path=str(config.industry_manifest_path),
+                    taxonomy_id=str(config.industry_taxonomy_id).strip(),
+                    temporal_mode=config.industry_temporal_mode,
+                    reference_date=test_end,
+                )
+            except IndustryTaxonomyLoadError as exc:
+                # Industry-artifact load failures are config / file
+                # problems — every fold will hit the same error. Promote
+                # to a hard ``WalkForwardError`` rather than skipping
+                # silently so the operator fixes the root cause once.
+                raise WalkForwardError(
+                    f"Fold {fold_index}: industry taxonomy load failed: {exc}"
+                ) from exc
+            for warning in resolution.warnings:
+                _logger.warning(
+                    "Fold %d industry taxonomy contract warning: %s",
+                    fold_index, warning,
+                )
+            attribution_overrides["industry_map_override"] = resolution.industry_map
+            attribution_overrides["industry_taxonomy_id"] = resolution.taxonomy_id
+
+        attr_config = AttributionConfig(
+            start_date=test_start,
+            end_date=test_end,
+            **attribution_overrides,
+        )
+
+        try:
+            result = PerformanceAttribution.analyze(
+                return_series=backtest_output.return_series,
+                predictions=model_result.predictions,
+                config=attr_config,
+                positions=backtest_output.positions,
+            )
+        except PerformanceAttributionError as exc:
+            _logger.warning(
+                "Fold %d: attribution skipped — engine raised %s: %s. "
+                "Backtest and risk_analysis remain valid; only the "
+                "sector-attribution block is absent from this fold's report.",
+                fold_index, type(exc).__name__, exc,
+            )
+            return None, f"engine_error: {type(exc).__name__}: {exc}"
+
+        return result, None
+
+    @classmethod
     def _build_fold_report(
         cls,
         *,
@@ -602,6 +759,8 @@ class WalkForwardEngine:
         ic_1d: float, ic_5d: float,
         annualized_return: float, max_drawdown: float,
         information_ratio: float,
+        attribution_result: AttributionResult | None = None,
+        attribution_skipped_reason: str | None = None,
     ) -> dict[str, Any]:
         """Build the per-fold report dict.
 
@@ -647,8 +806,59 @@ class WalkForwardEngine:
                 "max_drawdown": max_drawdown,
                 "information_ratio": information_ratio,
             },
+            # Always emit the attribution block — same convention as
+            # ``Pipeline._attribution_section``: ``status`` / ``skipped_reason``
+            # are present whether or not the engine ran, so downstream
+            # comparison tools see a uniform shape.
+            "attribution": cls._attribution_section_for_fold(
+                attribution_result, attribution_skipped_reason,
+            ),
             "positions_path": str(positions_path) if positions_path else None,
             "generated_at": datetime.now().isoformat(),
+        }
+
+    @staticmethod
+    def _attribution_section_for_fold(
+        attribution_result: AttributionResult | None,
+        skipped_reason: str | None,
+    ) -> dict[str, Any]:
+        """Build the per-fold attribution block.
+
+        Mirrors :meth:`Pipeline._attribution_section` so the same
+        downstream consumers (``walk-forward-compare`` PR #29,
+        dashboards) read the same shape regardless of which engine
+        produced the report.
+        """
+        if attribution_result is None:
+            return {
+                "status": "skipped",
+                "skipped_reason": skipped_reason or "unknown_reason",
+            }
+        return {
+            "status": "ok",
+            "skipped_reason": None,
+            "sector_taxonomy": attribution_result.sector_taxonomy,
+            "attribution_method": attribution_result.attribution_method,
+            "bench_weight_method": attribution_result.bench_weight_method,
+            "total_portfolio_return": attribution_result.total_portfolio_return,
+            "total_benchmark_return": attribution_result.total_benchmark_return,
+            "total_excess_return": attribution_result.total_excess_return,
+            "allocation_effect": attribution_result.total_allocation_effect,
+            "selection_effect": attribution_result.total_selection_effect,
+            "interaction_effect": attribution_result.total_interaction_effect,
+            "sector_effects_sum": attribution_result.sector_effects_sum,
+            "reconciliation_residual": attribution_result.reconciliation_residual,
+            "sector_attribution": [
+                {
+                    "sector": s.sector,
+                    "portfolio_weight": s.portfolio_weight,
+                    "benchmark_weight": s.benchmark_weight,
+                    "allocation_effect": s.allocation_effect,
+                    "selection_effect": s.selection_effect,
+                    "total_effect": s.total_effect,
+                }
+                for s in attribution_result.sector_attribution
+            ],
         }
 
     @classmethod
