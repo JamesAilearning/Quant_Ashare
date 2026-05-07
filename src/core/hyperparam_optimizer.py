@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from src.core.logger import get_logger
+from src.core.model_config_projection import build_model_train_config
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
 _logger = get_logger(__name__)
@@ -40,6 +41,12 @@ class HyperparamSearchSpace:
     max_depth_range: tuple[int, int] = (4, 12)
     num_leaves_range: tuple[int, int] = (31, 512)
     early_stopping_rounds_range: tuple[int, int] = (20, 100)
+    lambda_l1_range: tuple[float, float] = (0.0, 10.0)
+    lambda_l2_range: tuple[float, float] = (0.0, 10.0)
+    min_data_in_leaf_range: tuple[int, int] = (5, 100)
+    feature_fraction_range: tuple[float, float] = (0.6, 1.0)
+    bagging_fraction_range: tuple[float, float] = (0.6, 1.0)
+    bagging_freq_range: tuple[int, int] = (0, 5)
 
 
 @dataclass(frozen=True)
@@ -241,6 +248,32 @@ class HyperparamOptimizer:
         early_stopping_rounds = trial.suggest_int(
             "early_stopping_rounds", es_low, es_high,
         )
+        lambda_l1 = trial.suggest_float(
+            "lambda_l1", space.lambda_l1_range[0], space.lambda_l1_range[1],
+        )
+        lambda_l2 = trial.suggest_float(
+            "lambda_l2", space.lambda_l2_range[0], space.lambda_l2_range[1],
+        )
+        min_data_in_leaf = trial.suggest_int(
+            "min_data_in_leaf",
+            space.min_data_in_leaf_range[0],
+            space.min_data_in_leaf_range[1],
+        )
+        feature_fraction = trial.suggest_float(
+            "feature_fraction",
+            space.feature_fraction_range[0],
+            space.feature_fraction_range[1],
+        )
+        bagging_fraction = trial.suggest_float(
+            "bagging_fraction",
+            space.bagging_fraction_range[0],
+            space.bagging_fraction_range[1],
+        )
+        bagging_freq = trial.suggest_int(
+            "bagging_freq",
+            space.bagging_freq_range[0],
+            space.bagging_freq_range[1],
+        )
 
         return {
             "num_boost_round": num_boost_round,
@@ -248,6 +281,12 @@ class HyperparamOptimizer:
             "max_depth": max_depth,
             "num_leaves": num_leaves,
             "early_stopping_rounds": early_stopping_rounds,
+            "lambda_l1": lambda_l1,
+            "lambda_l2": lambda_l2,
+            "min_data_in_leaf": min_data_in_leaf,
+            "feature_fraction": feature_fraction,
+            "bagging_fraction": bagging_fraction,
+            "bagging_freq": bagging_freq,
         }
 
     @classmethod
@@ -262,21 +301,14 @@ class HyperparamOptimizer:
         import tempfile
         from pathlib import Path
 
-        from src.core.model_trainer import ModelTrainConfig, ModelTrainer
+        from src.core.model_trainer import ModelTrainer
         from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
 
         with tempfile.TemporaryDirectory() as tmpdir:
             model_path = str(Path(tmpdir) / "model.pkl")
 
             model_result = ModelTrainer.train_and_predict(
-                config=ModelTrainConfig(
-                    model_type="LGBModel",
-                    num_boost_round=params["num_boost_round"],
-                    early_stopping_rounds=params["early_stopping_rounds"],
-                    learning_rate=params["learning_rate"],
-                    max_depth=params["max_depth"],
-                    num_leaves=params["num_leaves"],
-                ),
+                config=build_model_train_config(params, model_type="LGBModel"),
                 dataset=dataset,
                 model_artifact_path=model_path,
                 predict_segment="valid",

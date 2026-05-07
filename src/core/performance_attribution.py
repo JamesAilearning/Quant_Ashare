@@ -40,6 +40,7 @@ honest about the limitation rather than hiding it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping as _MappingABC
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -80,7 +81,9 @@ ATTRIBUTION_METHOD_SINGLE_PERIOD: str = "brinson_fachler_single_period_approxima
 # same as the index's actual constituent weights (e.g. CSI 300's
 # free-float-cap weighting) — the limitation is surfaced via
 # :meth:`PerformanceAttribution.print_report`.
+BENCH_WEIGHT_METHOD_EQUAL_PROXY: str = "equal_weight_proxy"
 BENCH_WEIGHT_METHOD_EQUAL: str = "equal"
+BENCH_WEIGHT_METHOD_EXPLICIT: str = "explicit"
 
 # Sentinel for the not-yet-implemented market-cap-weighted variant.
 # Reserved here so callers passing this string get a deterministic
@@ -89,7 +92,12 @@ BENCH_WEIGHT_METHOD_EQUAL: str = "equal"
 BENCH_WEIGHT_METHOD_MARKET_CAP: str = "market_cap"
 
 _SUPPORTED_BENCH_WEIGHT_METHODS: frozenset[str] = frozenset(
-    {BENCH_WEIGHT_METHOD_EQUAL, BENCH_WEIGHT_METHOD_MARKET_CAP}
+    {
+        BENCH_WEIGHT_METHOD_EQUAL_PROXY,
+        BENCH_WEIGHT_METHOD_EQUAL,
+        BENCH_WEIGHT_METHOD_EXPLICIT,
+        BENCH_WEIGHT_METHOD_MARKET_CAP,
+    }
 )
 
 
@@ -114,7 +122,13 @@ class AttributionConfig:
     #   "not yet supported" message; this keeps the misnomer trap closed
     #   (silently accepting the value while still using equal weights
     #   would publish results under the wrong label).
-    bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL
+    bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL_PROXY
+
+    # Optional static ``{instrument: weight}`` mapping for the Brinson
+    # benchmark leg. Weights are coerced to finite non-negative floats,
+    # aligned to the analyzed instrument universe, and normalized to sum to
+    # one over that overlap. Missing instruments receive zero weight.
+    benchmark_weights: Mapping[str, float] | None = None
 
     # Optional explicit ``{instrument: industry}`` override.
     #
@@ -221,7 +235,7 @@ class AttributionResult:
     # Carried on the result so dashboards do not need to look at the
     # config object to know whether the bench-weighting was the simple
     # equal split or a real cap-weighted scheme.
-    bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL
+    bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL_PROXY
 
 
 class PerformanceAttribution:
@@ -322,7 +336,7 @@ class PerformanceAttribution:
             attribution_method=ATTRIBUTION_METHOD_SINGLE_PERIOD,
             sector_effects_sum=sector_effects_sum,
             reconciliation_residual=reconciliation_residual,
-            bench_weight_method=config.bench_weight_method,
+            bench_weight_method=cls._effective_bench_weight_method(config),
             sector_taxonomy=sector_taxonomy,
         )
 
@@ -409,12 +423,21 @@ class PerformanceAttribution:
                 f"{sorted(_SUPPORTED_BENCH_WEIGHT_METHODS)}; "
                 f"got {config.bench_weight_method!r}."
             )
-        if config.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
+        if config.benchmark_weights is not None and len(config.benchmark_weights) == 0:
             raise PerformanceAttributionError(
-                "bench_weight_method='market_cap' is reserved but not yet "
-                "supported. The engine currently only computes equal-weight "
-                "benchmark weights; pass bench_weight_method='equal' "
-                "explicitly until the cap-weighted variant is implemented."
+                "AttributionConfig.benchmark_weights is an empty mapping. "
+                "Pass None to use the equal-weight proxy, or provide a "
+                "non-empty {instrument: weight} mapping."
+            )
+        if (
+            config.bench_weight_method
+            in {BENCH_WEIGHT_METHOD_EXPLICIT, BENCH_WEIGHT_METHOD_MARKET_CAP}
+            and config.benchmark_weights is None
+        ):
+            raise PerformanceAttributionError(
+                f"bench_weight_method={config.bench_weight_method!r} requires "
+                "AttributionConfig.benchmark_weights. This module does not "
+                "fetch or infer benchmark constituent weights implicitly."
             )
         # Industry override / taxonomy id pairing — both must be set
         # together, never just one. Without this guard a caller could
@@ -579,9 +602,7 @@ class PerformanceAttribution:
         else:
             port_weights = cls._predictions_to_weights(predictions)
 
-        # Benchmark weights: equal weight across all instruments
-        n_instruments = len(instruments)
-        bench_weights = pd.Series(1.0 / n_instruments, index=instruments)
+        bench_weights = cls._resolve_benchmark_weights(instruments, config)
 
         # Get per-instrument returns over the period
         inst_returns = cls._get_instrument_returns(instruments, config)
@@ -613,7 +634,7 @@ class PerformanceAttribution:
             else:
                 r_p = 0.0
 
-            # Sector return in benchmark (equal-weighted)
+            # Sector return in benchmark using the configured benchmark weights.
             sector_bench_w = bench_weights.reindex(sector_instruments).dropna()
             common_b = sector_bench_w.index.intersection(sector_inst_r.index)
             if len(common_b) > 0 and w_b > 1e-9:
@@ -642,6 +663,74 @@ class PerformanceAttribution:
         # Sort by absolute total effect
         results.sort(key=lambda s: abs(s.total_effect), reverse=True)
         return results
+
+    @staticmethod
+    def _effective_bench_weight_method(config: AttributionConfig) -> str:
+        """Return the result label that matches the weights actually used."""
+        if config.benchmark_weights is not None:
+            if config.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
+                return BENCH_WEIGHT_METHOD_MARKET_CAP
+            return BENCH_WEIGHT_METHOD_EXPLICIT
+        if config.bench_weight_method == BENCH_WEIGHT_METHOD_EQUAL:
+            return BENCH_WEIGHT_METHOD_EQUAL_PROXY
+        return config.bench_weight_method
+
+    @classmethod
+    def _resolve_benchmark_weights(
+        cls,
+        instruments: Sequence[str],
+        config: AttributionConfig,
+    ) -> Any:
+        """Build the Brinson benchmark weight vector for ``instruments``."""
+        import pandas as pd
+
+        instrument_list = list(instruments)
+        if not instrument_list:
+            raise PerformanceAttributionError(
+                "Cannot compute benchmark weights for an empty instrument universe."
+            )
+
+        if config.benchmark_weights is None:
+            if config.bench_weight_method in {
+                BENCH_WEIGHT_METHOD_EXPLICIT,
+                BENCH_WEIGHT_METHOD_MARKET_CAP,
+            }:
+                raise PerformanceAttributionError(
+                    f"bench_weight_method={config.bench_weight_method!r} requires "
+                    "AttributionConfig.benchmark_weights."
+                )
+            return pd.Series(
+                1.0 / len(instrument_list),
+                index=instrument_list,
+                dtype=float,
+            )
+
+        raw_values: dict[str, float] = {}
+        for inst, value in config.benchmark_weights.items():
+            inst_key = str(inst)
+            try:
+                weight = float(value)
+            except (TypeError, ValueError) as exc:
+                raise PerformanceAttributionError(
+                    "AttributionConfig.benchmark_weights contains a non-numeric "
+                    f"weight for {inst_key!r}: {value!r}."
+                ) from exc
+            if not math.isfinite(weight) or weight < 0:
+                raise PerformanceAttributionError(
+                    "AttributionConfig.benchmark_weights must contain finite "
+                    f"non-negative weights; got {weight!r} for {inst_key!r}."
+                )
+            raw_values[inst_key] = weight
+
+        raw = pd.Series(raw_values, dtype=float)
+        aligned = raw.reindex(instrument_list).fillna(0.0)
+        total = float(aligned.sum())
+        if total <= 0:
+            raise PerformanceAttributionError(
+                "AttributionConfig.benchmark_weights has no positive overlap "
+                "with the analyzed instrument universe."
+            )
+        return aligned / total
 
     @staticmethod
     def _predictions_to_weights(predictions: Any) -> Any:
@@ -755,13 +844,17 @@ class PerformanceAttribution:
         # report flags the gap explicitly so allocation effects are not
         # misread as exact contributions vs. the actual index.
         log("  Bench weight:      %s", result.bench_weight_method)
-        if result.bench_weight_method == BENCH_WEIGHT_METHOD_EQUAL:
+        if result.bench_weight_method == BENCH_WEIGHT_METHOD_EQUAL_PROXY:
             log(
                 "    NOTE: equal-weight benchmark across the predictions "
                 "universe; this does NOT reproduce the index's real "
                 "(e.g. free-float-cap) weighting. Allocation effects vs. "
                 "the actual published index will differ."
             )
+        elif result.bench_weight_method == BENCH_WEIGHT_METHOD_EXPLICIT:
+            log("    NOTE: explicit caller-supplied benchmark weights.")
+        elif result.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
+            log("    NOTE: caller-supplied market-cap benchmark weights.")
         log("  Allocation effect: %+.4f", result.total_allocation_effect)
         log("  Selection effect:  %+.4f", result.total_selection_effect)
         log("  Interaction effect:%+.4f", result.total_interaction_effect)

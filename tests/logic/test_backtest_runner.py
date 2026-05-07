@@ -103,8 +103,8 @@ class BacktestRunnerStructuralTests(unittest.TestCase):
                 predictions="dummy",
             )
 
-    def test_zero_lag_rejected_by_contract(self) -> None:
-        with self.assertRaises(CanonicalBacktestContractError):
+    def test_zero_lag_reaches_canonical_init_guard(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "Canonical qlib runtime"):
             BacktestRunner.run(
                 request=_make_request(signal_to_execution_lag=0),
                 predictions="dummy",
@@ -116,6 +116,53 @@ class BacktestRunnerStructuralTests(unittest.TestCase):
                 request=_make_request(experimental_controls={"key": "val"}),
                 predictions="dummy",
             )
+
+
+class SignalLagTests(unittest.TestCase):
+    def _predictions(self):
+        import pandas as pd
+
+        dates = pd.to_datetime(["2025-01-02", "2025-01-03", "2025-01-06"])
+        index = pd.MultiIndex.from_product(
+            [dates, ["SH600000", "SH600001"]],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series(range(1, 7), index=index, dtype=float)
+
+    def test_lag_zero_is_noop(self) -> None:
+        predictions = self._predictions()
+        shifted = BacktestRunner._apply_lag(predictions, 0)
+        self.assertTrue(shifted.equals(predictions))
+
+    def test_lag_one_delays_one_trading_row_per_instrument(self) -> None:
+        import pandas as pd
+
+        predictions = self._predictions()
+        shifted = BacktestRunner._apply_lag(predictions, 1)
+
+        self.assertNotIn(("2025-01-02", "SH600000"), {
+            (str(dt.date()), inst) for dt, inst in shifted.index
+        })
+        self.assertEqual(
+            float(shifted.loc[(pd.Timestamp("2025-01-03"), "SH600000")]),
+            1.0,
+        )
+        self.assertEqual(
+            float(shifted.loc[(pd.Timestamp("2025-01-06"), "SH600001")]),
+            4.0,
+        )
+
+    def test_lag_two_delays_two_trading_rows_per_instrument(self) -> None:
+        import pandas as pd
+
+        predictions = self._predictions()
+        shifted = BacktestRunner._apply_lag(predictions, 2)
+
+        self.assertEqual(len(shifted), 2)
+        self.assertEqual(
+            float(shifted.loc[(pd.Timestamp("2025-01-06"), "SH600000")]),
+            1.0,
+        )
 
 
 class PositionsSerializationTests(unittest.TestCase):

@@ -150,14 +150,13 @@ class CanonicalBacktestStrictInputTests(unittest.TestCase):
     def test_post_adjusted_is_accepted(self):
         CanonicalBacktestContract.validate_input(_valid_request(adjust_mode=ADJUST_MODE_POST))
 
-    def test_zero_signal_to_execution_lag_is_rejected(self):
+    def test_zero_signal_to_execution_lag_is_accepted_as_explicit_same_day(self):
         req = _valid_request(signal_to_execution_lag=0)
-        with self.assertRaisesRegex(CanonicalBacktestContractError, "look-ahead"):
-            CanonicalBacktestContract.validate_input(req)
+        CanonicalBacktestContract.validate_input(req)
 
     def test_negative_signal_to_execution_lag_is_rejected(self):
         req = _valid_request(signal_to_execution_lag=-1)
-        with self.assertRaisesRegex(CanonicalBacktestContractError, "look-ahead"):
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "signal_to_execution_lag"):
             CanonicalBacktestContract.validate_input(req)
 
     def test_bool_signal_to_execution_lag_is_rejected(self):

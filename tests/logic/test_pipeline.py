@@ -124,12 +124,13 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "topk"):
             PipelineConfig(provider_uri="/tmp/fake", topk=0)
 
-    def test_rejects_zero_lag(self) -> None:
-        """``signal_to_execution_lag=0`` is canonical-contract-forbidden;
-        boundary check should fire here too rather than waiting for
-        ``CanonicalBacktestInput``."""
+    def test_accepts_zero_lag_as_explicit_same_day_execution(self) -> None:
+        cfg = PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
+        self.assertEqual(cfg.signal_to_execution_lag, 0)
+
+    def test_rejects_negative_lag(self) -> None:
         with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag"):
-            PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
+            PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=-1)
 
     def test_default_config_is_valid(self) -> None:
         # Sanity: the defaults must construct successfully so downstream
