@@ -15,6 +15,8 @@ from src.core.board_heuristic import (
 from src.core.performance_attribution import (
     ATTRIBUTION_METHOD_SINGLE_PERIOD,
     BENCH_WEIGHT_METHOD_EQUAL,
+    BENCH_WEIGHT_METHOD_EQUAL_PROXY,
+    BENCH_WEIGHT_METHOD_EXPLICIT,
     BENCH_WEIGHT_METHOD_MARKET_CAP,
     RECONCILIATION_WARN_THRESHOLD,
     AttributionConfig,
@@ -491,20 +493,25 @@ class BenchWeightMethodTests(unittest.TestCase):
 
     def test_default_is_equal_weight(self) -> None:
         cfg = AttributionConfig()
-        self.assertEqual(cfg.bench_weight_method, BENCH_WEIGHT_METHOD_EQUAL)
+        self.assertEqual(cfg.bench_weight_method, BENCH_WEIGHT_METHOD_EQUAL_PROXY)
 
-    def test_validate_accepts_equal(self) -> None:
+    def test_validate_accepts_equal_proxy_and_legacy_equal(self) -> None:
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
-            try:
+            for method in (BENCH_WEIGHT_METHOD_EQUAL_PROXY, BENCH_WEIGHT_METHOD_EQUAL):
                 PerformanceAttribution._validate(
-                    config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL),
+                    config=AttributionConfig(bench_weight_method=method),
                     return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
-            except PerformanceAttributionError:
-                self.fail("_validate must accept bench_weight_method='equal'")
 
-    def test_validate_rejects_market_cap_with_not_yet_supported(self) -> None:
+    def test_legacy_equal_normalizes_to_proxy_result_label(self) -> None:
+        cfg = AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL)
+        self.assertEqual(
+            PerformanceAttribution._effective_bench_weight_method(cfg),
+            BENCH_WEIGHT_METHOD_EQUAL_PROXY,
+        )
+
+    def test_validate_rejects_market_cap_without_weights(self) -> None:
         """``'market_cap'`` is reserved but not implemented — must raise.
 
         This protects against the misnomer trap: if validation silently
@@ -514,10 +521,21 @@ class BenchWeightMethodTests(unittest.TestCase):
         """
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(
-                PerformanceAttributionError, "not yet supported"
+                PerformanceAttributionError, "requires.*benchmark_weights"
             ):
                 PerformanceAttribution._validate(
                     config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP),
+                    return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
+                    positions=None,
+                )
+
+    def test_validate_rejects_explicit_without_weights(self) -> None:
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(
+                PerformanceAttributionError, "requires.*benchmark_weights"
+            ):
+                PerformanceAttribution._validate(
+                    config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_EXPLICIT),
                     return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
@@ -533,6 +551,49 @@ class BenchWeightMethodTests(unittest.TestCase):
                     positions=None,
                 )
 
+    def test_explicit_weights_flow_into_sector_benchmark_weights(self) -> None:
+        idx = pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2025-10-01"), "SH600000"),
+                (pd.Timestamp("2025-10-01"), "SZ300001"),
+            ],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([0.5, 0.5], index=idx)
+        positions = {"2025-10-01": {"SH600000": 0.5, "SZ300001": 0.5}}
+        port_returns = pd.Series([0.01], index=[pd.Timestamp("2025-10-01")])
+        bench_returns = pd.Series([0.005], index=[pd.Timestamp("2025-10-01")])
+        cfg = AttributionConfig(
+            start_date="2025-10-01",
+            end_date="2025-10-01",
+            bench_weight_method=BENCH_WEIGHT_METHOD_EXPLICIT,
+            benchmark_weights={"SH600000": 0.8, "SZ300001": 0.2},
+        )
+
+        with patch.object(
+            PerformanceAttribution,
+            "_get_instrument_returns",
+            return_value=pd.Series({"SH600000": 0.01, "SZ300001": 0.02}),
+        ):
+            results = PerformanceAttribution._brinson_attribution(
+                predictions, port_returns, bench_returns, cfg, positions,
+            )
+
+        by_sector = {s.sector: s for s in results}
+        self.assertAlmostEqual(by_sector[BOARD_SH_MAIN].benchmark_weight, 0.8)
+        self.assertAlmostEqual(by_sector[BOARD_CHINEXT].benchmark_weight, 0.2)
+        self.assertEqual(
+            PerformanceAttribution._effective_bench_weight_method(cfg),
+            BENCH_WEIGHT_METHOD_EXPLICIT,
+        )
+
+    def test_explicit_weights_require_positive_overlap(self) -> None:
+        with self.assertRaisesRegex(PerformanceAttributionError, "positive overlap"):
+            PerformanceAttribution._resolve_benchmark_weights(
+                ["SH600000"],
+                AttributionConfig(benchmark_weights={"SZ300001": 1.0}),
+            )
+
     def test_result_carries_bench_weight_method(self) -> None:
         """The chosen method is exposed on the result so consumers
         don't need to look at the config object to know what
@@ -546,9 +607,9 @@ class BenchWeightMethodTests(unittest.TestCase):
             total_portfolio_return=0.0,
             total_benchmark_return=0.0,
             total_excess_return=0.0,
-            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+            bench_weight_method=BENCH_WEIGHT_METHOD_EXPLICIT,
         )
-        self.assertEqual(result.bench_weight_method, BENCH_WEIGHT_METHOD_EQUAL)
+        self.assertEqual(result.bench_weight_method, BENCH_WEIGHT_METHOD_EXPLICIT)
 
     def test_print_report_flags_equal_weight_caveat(self) -> None:
         """``print_report`` must explicitly note that equal-weight
@@ -566,7 +627,7 @@ class BenchWeightMethodTests(unittest.TestCase):
             total_portfolio_return=0.0,
             total_benchmark_return=0.0,
             total_excess_return=0.0,
-            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+            bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL_PROXY,
         )
         with _patch("src.core.performance_attribution._logger") as mock_logger:
             PerformanceAttribution.print_report(result)

@@ -366,9 +366,10 @@ class CanonicalBacktestContract:
             raise CanonicalBacktestContractError(
                 f"signal_to_execution_lag must be an int, got {type(request.signal_to_execution_lag).__name__}."
             )
-        if request.signal_to_execution_lag < 1:
+        if request.signal_to_execution_lag < 0:
             raise CanonicalBacktestContractError(
-                "signal_to_execution_lag must be >= 1 to avoid look-ahead bias; "
+                "signal_to_execution_lag must be >= 0; use 0 only for explicit "
+                "same-day execution/no shift, and 1 for T+1 delayed execution. "
                 f"got {request.signal_to_execution_lag}."
             )
 

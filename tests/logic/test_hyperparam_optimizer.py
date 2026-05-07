@@ -30,6 +30,12 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
         self.assertEqual(space.num_boost_round_range, (100, 2000))
         self.assertEqual(space.learning_rate_range, (0.01, 0.1))
         self.assertEqual(space.max_depth_range, (4, 12))
+        self.assertEqual(space.lambda_l1_range, (0.0, 10.0))
+        self.assertEqual(space.lambda_l2_range, (0.0, 10.0))
+        self.assertEqual(space.min_data_in_leaf_range, (5, 100))
+        self.assertEqual(space.feature_fraction_range, (0.6, 1.0))
+        self.assertEqual(space.bagging_fraction_range, (0.6, 1.0))
+        self.assertEqual(space.bagging_freq_range, (0, 5))
 
     def test_rejects_invalid_optimization_metric(self):
         """Typos like 'IC_1D', 'ic1d', 'ic_5D' used to silently fall back
@@ -86,6 +92,12 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
             "learning_rate": 0.05,
             "max_depth": 6,
             "num_leaves": 63,
+            "lambda_l1": 0.5,
+            "lambda_l2": 1.5,
+            "min_data_in_leaf": 25,
+            "feature_fraction": 0.8,
+            "bagging_fraction": 0.9,
+            "bagging_freq": 2,
         }
 
         with patch(
@@ -104,6 +116,57 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
                     HyperparamOptimizer._evaluate_params(
                         params, fake_dataset, config, Path(tmp),
                     )
+
+    def test_evaluate_params_projects_regularization_fields(self):
+        from unittest.mock import MagicMock, patch
+        from src.core.hyperparam_optimizer import HyperparamOptimizer
+
+        config = HyperparamOptConfig(n_trials=1)
+        fake_dataset = MagicMock(name="DatasetH")
+        fake_model_result = MagicMock()
+        fake_model_result.predictions = MagicMock()
+        fake_signal_result = MagicMock()
+        fake_signal_result.ic_summary = {
+            1: {"mean_ic": 0.11, "ir": 1.7},
+            5: {"mean_ic": 0.22, "ir": 2.0},
+        }
+        params = {
+            "num_boost_round": 111,
+            "early_stopping_rounds": 22,
+            "learning_rate": 0.03,
+            "max_depth": 5,
+            "num_leaves": 17,
+            "lambda_l1": 0.4,
+            "lambda_l2": 0.8,
+            "min_data_in_leaf": 31,
+            "feature_fraction": 0.75,
+            "bagging_fraction": 0.85,
+            "bagging_freq": 3,
+        }
+
+        with patch(
+            "src.core.model_trainer.ModelTrainer.train_and_predict",
+            return_value=fake_model_result,
+        ) as train_mock, patch(
+            "src.core.signal_analyzer.SignalAnalyzer.analyze",
+            return_value=fake_signal_result,
+        ):
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(
+                    HyperparamOptimizer._evaluate_params(
+                        params, fake_dataset, config, Path(tmp),
+                    ),
+                    (0.11, 0.22, 1.7),
+                )
+
+        projected = train_mock.call_args.kwargs["config"]
+        self.assertEqual(projected.lambda_l1, 0.4)
+        self.assertEqual(projected.lambda_l2, 0.8)
+        self.assertEqual(projected.min_data_in_leaf, 31)
+        self.assertEqual(projected.feature_fraction, 0.75)
+        self.assertEqual(projected.bagging_fraction, 0.85)
+        self.assertEqual(projected.bagging_freq, 3)
 
 
 class SuggestParamsClampingTests(unittest.TestCase):
@@ -213,6 +276,23 @@ class SuggestParamsClampingTests(unittest.TestCase):
         ][0]
         self.assertLessEqual(high, 100)
         self.assertLessEqual(low, high)
+
+    def test_regularization_and_sampling_params_are_suggested(self) -> None:
+        trial = self.__class__._StubTrial(forced={"max_depth": 6})
+
+        params = HyperparamOptimizer._suggest_params(trial, HyperparamSearchSpace())
+
+        for name in (
+            "lambda_l1",
+            "lambda_l2",
+            "min_data_in_leaf",
+            "feature_fraction",
+            "bagging_fraction",
+            "bagging_freq",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, params)
+                self.assertTrue(any(call[0] == name for call in trial.calls))
 
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")

@@ -43,7 +43,8 @@ from src.core.canonical_backtest_contract import (
     SUPPORTED_ADJUST_MODES,
 )
 from src.core.logger import get_logger
-from src.core.model_trainer import ModelTrainConfig, ModelTrainer, ModelTrainResult
+from src.core.model_config_projection import build_model_train_config
+from src.core.model_trainer import ModelTrainer, ModelTrainResult
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 from src.core.performance_attribution import (
     AttributionConfig,
@@ -206,11 +207,12 @@ class WalkForwardConfig:
         if (
             not isinstance(self.signal_to_execution_lag, int)
             or isinstance(self.signal_to_execution_lag, bool)
-            or self.signal_to_execution_lag < 1
+            or self.signal_to_execution_lag < 0
         ):
             raise WalkForwardError(
-                "signal_to_execution_lag must be an int >= 1; got "
-                f"{self.signal_to_execution_lag!r}."
+                "signal_to_execution_lag must be an int >= 0; got "
+                f"{self.signal_to_execution_lag!r}. Use 0 only for explicit "
+                "same-day execution/no shift, and 1 for T+1 delayed execution."
             )
         if self.adjust_mode not in SUPPORTED_ADJUST_MODES:
             raise WalkForwardError(
@@ -503,20 +505,7 @@ class WalkForwardEngine:
         # Train model
         model_path = str(output_dir / f"model_fold{fold_index}.pkl")
         model_result = ModelTrainer.train_and_predict(
-            config=ModelTrainConfig(
-                model_type=config.model_type,
-                num_boost_round=config.num_boost_round,
-                early_stopping_rounds=config.early_stopping_rounds,
-                learning_rate=config.learning_rate,
-                max_depth=config.max_depth,
-                num_leaves=config.num_leaves,
-                lambda_l1=config.lambda_l1,
-                lambda_l2=config.lambda_l2,
-                min_data_in_leaf=config.min_data_in_leaf,
-                feature_fraction=config.feature_fraction,
-                bagging_fraction=config.bagging_fraction,
-                bagging_freq=config.bagging_freq,
-            ),
+            config=build_model_train_config(config),
             dataset=feature_result.dataset,
             model_artifact_path=model_path,
         )

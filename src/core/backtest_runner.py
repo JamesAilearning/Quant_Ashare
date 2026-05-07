@@ -221,32 +221,20 @@ class BacktestRunner:
     def _apply_lag(predictions: Any, lag: int) -> Any:
         """Shift predictions to simulate signal-to-execution lag.
 
-        qlib's TopkDropoutStrategy uses signal at T to trade at T.
-        A lag of 1 means "signal generated at T, executed at T+1"
-        which is qlib's natural behavior when predictions are indexed
-        by the date the signal was generated — so ``lag <= 1`` is a
-        no-op rather than a programming error.
-
-        For lag > 1 we shift the predictions backward so that
-        day-T's signal is only visible at day-T+(lag-1).
+        ``lag=0`` is explicit same-day execution/no shift. Positive lag
+        values delay each instrument's signal by exactly ``lag`` trading rows.
         """
-        if lag <= 1:
-            # The natural-behavior path is easy to misread as a silent
-            # bug ("I asked for lag=1 but nothing was shifted"). Emit an
-            # INFO line so log readers can confirm the request was
-            # acknowledged and routed through qlib's default semantics.
+        if lag == 0:
             _logger.info(
-                "BacktestRunner: signal_to_execution_lag=%d → no shift "
-                "applied; relying on qlib's native T-day-signal/T-day-trade "
-                "semantics. Pass lag>=2 to introduce an explicit delay.",
-                lag,
+                "BacktestRunner: signal_to_execution_lag=0 -> no shift applied; "
+                "same-day execution was requested explicitly."
             )
             return predictions
         import pandas as pd
         if isinstance(predictions, pd.Series) and isinstance(predictions.index, pd.MultiIndex):
             # MultiIndex (datetime, instrument): shift the datetime level
             df = predictions.unstack()
-            df = df.shift(lag - 1)
+            df = df.shift(lag)
             return df.stack().dropna()
         return predictions
 
