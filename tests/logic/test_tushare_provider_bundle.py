@@ -49,15 +49,22 @@ class _StubClient:
     def call(self, api_name: str, **params):
         self.calls.append((api_name, dict(params)))
         if api_name == "trade_cal":
-            return pd.DataFrame([
+            rows = [
                 {"cal_date": "20250102", "is_open": 1},
                 {"cal_date": "20250103", "is_open": 1},
-            ])
+                {"cal_date": "20250106", "is_open": 1},
+            ]
+            start = str(params.get("start_date", "00000000"))
+            end = str(params.get("end_date", "99999999"))
+            return pd.DataFrame(
+                [row for row in rows if start <= row["cal_date"] <= end]
+            )
         if api_name == "stock_basic":
             status = params.get("list_status")
             if status == "L":
                 return pd.DataFrame([
                     {"ts_code": "600000.SH", "symbol": "600000", "name": "PF Bank"},
+                    {"ts_code": "000001.SZ", "symbol": "000001", "name": "PAB"},
                 ])
             return pd.DataFrame(columns=["ts_code", "symbol", "name"])
         if api_name == "daily":
@@ -74,7 +81,18 @@ class _StubClient:
                         "pct_chg": 0.0,
                         "vol": 100.0,
                         "amount": 100.0,
-                    }
+                    },
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20250102",
+                        "open": 30.0,
+                        "high": 31.0,
+                        "low": 29.0,
+                        "close": 30.0,
+                        "pct_chg": 0.0,
+                        "vol": 300.0,
+                        "amount": 900.0,
+                    },
                 ],
                 "20250103": [
                     {
@@ -87,7 +105,42 @@ class _StubClient:
                         "pct_chg": 100.0,
                         "vol": 200.0,
                         "amount": 400.0,
-                    }
+                    },
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20250103",
+                        "open": 40.0,
+                        "high": 41.0,
+                        "low": 39.0,
+                        "close": 40.0,
+                        "pct_chg": 33.33,
+                        "vol": 400.0,
+                        "amount": 1600.0,
+                    },
+                ],
+                "20250106": [
+                    {
+                        "ts_code": "600000.SH",
+                        "trade_date": "20250106",
+                        "open": 21.0,
+                        "high": 23.0,
+                        "low": 20.0,
+                        "close": 22.0,
+                        "pct_chg": 10.0,
+                        "vol": 220.0,
+                        "amount": 484.0,
+                    },
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20250106",
+                        "open": 41.0,
+                        "high": 43.0,
+                        "low": 40.0,
+                        "close": 42.0,
+                        "pct_chg": 5.0,
+                        "vol": 420.0,
+                        "amount": 1764.0,
+                    },
                 ],
             }[trade_date]
             if self.duplicate_daily and trade_date == "20250102":
@@ -97,8 +150,18 @@ class _StubClient:
             if self.missing_factor and params["trade_date"] == "20250103":
                 return pd.DataFrame(columns=["ts_code", "trade_date", "adj_factor"])
             factors = {
-                "20250102": [{"ts_code": "600000.SH", "trade_date": "20250102", "adj_factor": 2.0}],
-                "20250103": [{"ts_code": "600000.SH", "trade_date": "20250103", "adj_factor": 4.0}],
+                "20250102": [
+                    {"ts_code": "600000.SH", "trade_date": "20250102", "adj_factor": 2.0},
+                    {"ts_code": "000001.SZ", "trade_date": "20250102", "adj_factor": 3.0},
+                ],
+                "20250103": [
+                    {"ts_code": "600000.SH", "trade_date": "20250103", "adj_factor": 4.0},
+                    {"ts_code": "000001.SZ", "trade_date": "20250103", "adj_factor": 4.0},
+                ],
+                "20250106": [
+                    {"ts_code": "600000.SH", "trade_date": "20250106", "adj_factor": 4.4},
+                    {"ts_code": "000001.SZ", "trade_date": "20250106", "adj_factor": 4.2},
+                ],
             }[params["trade_date"]]
             return pd.DataFrame(factors)
         if api_name == "index_daily":
@@ -208,6 +271,10 @@ class ProviderConfigTests(unittest.TestCase):
 
 
 class StagingTests(unittest.TestCase):
+    @staticmethod
+    def _call_count(client: _StubClient, api_name: str) -> int:
+        return sum(1 for name, _params in client.calls if name == api_name)
+
     def test_staging_reuses_existing_payloads_for_same_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_text:
             tmp = Path(tmp_text)
@@ -220,6 +287,51 @@ class StagingTests(unittest.TestCase):
             staged_again = TushareMarketDataFetcher.stage(config, client=client)
             self.assertEqual(len(staged_again.daily), 2)
             self.assertEqual(len(client.calls), first_call_count)
+
+    def test_staging_refetches_cache_when_date_range_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_text:
+            tmp = Path(tmp_text)
+            short = _base_config(tmp, end_date="2025-01-02")
+            client = _StubClient()
+            staged_short = TushareMarketDataFetcher.stage(short, client=client)
+            self.assertEqual(
+                set(staged_short.daily["trade_date"].astype(str)),
+                {"20250102"},
+            )
+            trade_cal_calls = self._call_count(client, "trade_cal")
+
+            expanded = _base_config(tmp)
+            staged_expanded = TushareMarketDataFetcher.stage(expanded, client=client)
+            self.assertEqual(
+                set(staged_expanded.trade_calendar["cal_date"].astype(str)),
+                {"20250102", "20250103"},
+            )
+            self.assertEqual(
+                set(staged_expanded.daily["trade_date"].astype(str)),
+                {"20250102", "20250103"},
+            )
+            self.assertGreater(self._call_count(client, "trade_cal"), trade_cal_calls)
+
+    def test_staging_preserves_raw_payloads_across_instrument_scopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_text:
+            tmp = Path(tmp_text)
+            subset = _base_config(tmp, instruments=["SH600000"])
+            client = _StubClient()
+            staged_subset = TushareMarketDataFetcher.stage(subset, client=client)
+            self.assertEqual(set(staged_subset.daily["ts_code"].astype(str)), {"600000.SH"})
+
+            raw_daily = pd.read_csv(staged_subset.daily_files[0])
+            self.assertEqual(
+                set(raw_daily["ts_code"].astype(str)),
+                {"600000.SH", "000001.SZ"},
+            )
+
+            wider = _base_config(tmp, instruments=["all"])
+            staged_wider = TushareMarketDataFetcher.stage(wider, client=client)
+            self.assertEqual(
+                set(staged_wider.daily["ts_code"].astype(str)),
+                {"600000.SH", "000001.SZ"},
+            )
 
 
 class ProviderPublishTests(unittest.TestCase):

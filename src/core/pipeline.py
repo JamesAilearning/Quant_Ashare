@@ -180,6 +180,15 @@ class PipelineConfig:
             raise PipelineError(
                 f"PipelineConfig.topk must be >= 1; got {self.topk!r}."
             )
+        if isinstance(self.signal_to_execution_lag, bool) or not isinstance(
+            self.signal_to_execution_lag,
+            int,
+        ):
+            raise PipelineError(
+                "PipelineConfig.signal_to_execution_lag must be an int, not "
+                f"{type(self.signal_to_execution_lag).__name__}; got "
+                f"{self.signal_to_execution_lag!r}."
+            )
         if self.signal_to_execution_lag < 0:
             raise PipelineError(
                 "PipelineConfig.signal_to_execution_lag must be >= 0; got "

@@ -132,6 +132,12 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag"):
             PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=-1)
 
+    def test_rejects_bool_lag(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag must be an int"):
+            PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=True)
+        with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag must be an int"):
+            PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=False)
+
     def test_default_config_is_valid(self) -> None:
         # Sanity: the defaults must construct successfully so downstream
         # tests / docs that build PipelineConfig(provider_uri=...) with

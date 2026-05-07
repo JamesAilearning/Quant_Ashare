@@ -44,6 +44,8 @@ STAGED_ADJ_FACTOR_DIR = "adj_factor"
 STAGED_INDEX_DAILY_DIR = "index_daily"
 STAGED_TRADE_CAL_FILE = "trade_cal.csv"
 STAGED_STOCK_BASIC_FILE = "stock_basic.csv"
+STAGED_CACHE_METADATA_SUFFIX = ".meta.json"
+STAGED_CACHE_METADATA_VERSION = "v1"
 
 DEFAULT_MANIFEST_NAME = "tushare_provider_manifest.json"
 DEFAULT_VALIDATION_NAME = "tushare_provider_validation.json"
@@ -373,7 +375,6 @@ class TushareMarketDataFetcher:
                 params={"trade_date": trade_date},
             )
             daily = _filter_tushare_codes(daily, requested_codes)
-            _write_frame(daily_path, daily)
             daily_frames.append(daily)
             daily_files.append(str(daily_path))
 
@@ -386,7 +387,6 @@ class TushareMarketDataFetcher:
                 params={"trade_date": trade_date},
             )
             adj = _filter_tushare_codes(adj, requested_codes)
-            _write_frame(adj_path, adj)
             adj_frames.append(adj)
             adj_files.append(str(adj_path))
 
@@ -432,7 +432,11 @@ class TushareMarketDataFetcher:
         client: TushareClient,
         params: Mapping[str, Any],
     ) -> pd.DataFrame:
-        if config.reuse_staged and path.exists():
+        if config.reuse_staged and _staged_cache_metadata_matches(
+            path,
+            api_name=api_name,
+            params=params,
+        ):
             return _read_frame(path)
         try:
             result = client.call(api_name, **dict(params))
@@ -442,6 +446,7 @@ class TushareMarketDataFetcher:
             ) from exc
         frame = _ensure_frame(result, api_name)
         _write_frame(path, frame)
+        _write_staged_cache_metadata(path, api_name=api_name, params=params)
         return frame
 
     @classmethod
@@ -452,7 +457,17 @@ class TushareMarketDataFetcher:
         config: TushareQlibProviderBundleConfig,
         client: TushareClient,
     ) -> pd.DataFrame:
-        if config.reuse_staged and path.exists():
+        fields = "ts_code,symbol,name,area,industry,list_date,delist_date,is_hs"
+        params = {
+            "exchange": "",
+            "list_status": ("L", "D", "P"),
+            "fields": fields,
+        }
+        if config.reuse_staged and _staged_cache_metadata_matches(
+            path,
+            api_name="stock_basic",
+            params=params,
+        ):
             return _read_frame(path)
         frames: list[pd.DataFrame] = []
         for status in ("L", "D", "P"):
@@ -461,7 +476,7 @@ class TushareMarketDataFetcher:
                     "stock_basic",
                     exchange="",
                     list_status=status,
-                    fields="ts_code,symbol,name,area,industry,list_date,delist_date,is_hs",
+                    fields=fields,
                 )
             except TushareClientError as exc:
                 raise TushareQlibProviderBundleError(
@@ -472,6 +487,7 @@ class TushareMarketDataFetcher:
         if "ts_code" in combined.columns:
             combined = combined.drop_duplicates(subset=["ts_code"], keep="first")
         _write_frame(path, combined)
+        _write_staged_cache_metadata(path, api_name="stock_basic", params=params)
         return combined
 
 
@@ -1174,6 +1190,62 @@ def _write_frame(path: Path, frame: pd.DataFrame) -> None:
 
 def _read_frame(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
+
+
+def _staged_cache_metadata_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}{STAGED_CACHE_METADATA_SUFFIX}")
+
+
+def _stable_cache_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(k): _stable_cache_value(v)
+            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_stable_cache_value(v) for v in value]
+    return value
+
+
+def _staged_cache_signature(api_name: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": STAGED_CACHE_METADATA_VERSION,
+        "api_name": str(api_name),
+        "params": {
+            str(k): _stable_cache_value(v)
+            for k, v in sorted(params.items(), key=lambda item: str(item[0]))
+        },
+    }
+
+
+def _write_staged_cache_metadata(
+    path: Path,
+    *,
+    api_name: str,
+    params: Mapping[str, Any],
+) -> None:
+    _write_json(
+        _staged_cache_metadata_path(path),
+        _staged_cache_signature(api_name, params),
+    )
+
+
+def _staged_cache_metadata_matches(
+    path: Path,
+    *,
+    api_name: str,
+    params: Mapping[str, Any],
+) -> bool:
+    if not path.exists():
+        return False
+    metadata_path = _staged_cache_metadata_path(path)
+    if not metadata_path.exists():
+        return False
+    try:
+        cached = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return cached == _staged_cache_signature(api_name, params)
 
 
 def _concat_frames(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
