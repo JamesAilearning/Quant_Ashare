@@ -51,6 +51,20 @@ DEFAULT_MANIFEST_NAME = "tushare_provider_manifest.json"
 DEFAULT_VALIDATION_NAME = "tushare_provider_validation.json"
 DEFAULT_COMPARISON_NAME = "tushare_provider_comparison.json"
 
+# Tushare → qlib unit conversions for the daily OHLCV table.
+#
+# Tushare's ``daily`` API publishes the A-share canonical units:
+#   * ``vol``    — trading volume in *lots* (1 lot = 100 shares)
+#   * ``amount`` — turnover in *thousands of CNY* (千元)
+# qlib expects shares and yuan respectively, so we scale at ingest:
+#   volume_shares = vol  * 100
+#   money_yuan    = amount * 1000
+# Naming the multipliers here keeps the units obvious at the call site
+# in ``_build_qlib_frame`` and stops a later reader from "tidying up"
+# the literal 100/1000 into the wrong scale.
+_TUSHARE_VOL_LOTS_TO_SHARES: float = 100.0
+_TUSHARE_AMOUNT_KYUAN_TO_YUAN: float = 1000.0
+
 
 class TushareQlibProviderBundleError(RuntimeError):
     """Raised when a Tushare qlib provider bundle cannot be produced."""
@@ -675,12 +689,37 @@ class TushareQlibProviderPublisher:
         if invalid_index_ohlcv_rows:
             errors.append("invalid_index_ohlcv")
 
-        merged = daily.merge(
-            adj[["ts_code", "date", "adj_factor"]],
-            on=["ts_code", "date"],
-            how="left",
-            validate="one_to_one",
-        )
+        # ``validate="one_to_one"`` raises ``pandas.errors.MergeError`` if
+        # either side has duplicate (ts_code, date) keys. We already
+        # called ``drop_duplicates`` above on both ``daily`` and ``adj``,
+        # so a MergeError here would only fire if the dedup also left
+        # multiple keys (extremely unlikely — would need a dtype-shift
+        # bug in pandas itself). Catch and surface as a structured
+        # error instead of letting it propagate as an opaque exception
+        # that bypasses the rest of the contract validation, so the
+        # caller still gets the full ``errors`` list.
+        try:
+            merged = daily.merge(
+                adj[["ts_code", "date", "adj_factor"]],
+                on=["ts_code", "date"],
+                how="left",
+                validate="one_to_one",
+            )
+        except pd.errors.MergeError as exc:
+            _logger.warning(
+                "Tushare provider bundle: one_to_one merge failed (%s). "
+                "Falling back to a left merge so the rest of the contract "
+                "validation can continue; the error code "
+                "'duplicate_market_or_factor_keys_after_dedup' is appended "
+                "for the caller.",
+                exc,
+            )
+            errors.append("duplicate_market_or_factor_keys_after_dedup")
+            merged = daily.merge(
+                adj[["ts_code", "date", "adj_factor"]],
+                on=["ts_code", "date"],
+                how="left",
+            )
         missing_factor_rows = int(merged["adj_factor"].isna().sum())
         if config.data_adjust_mode in (ADJUST_MODE_PRE, ADJUST_MODE_POST) and missing_factor_rows:
             errors.append("missing_adjustment_factors")
@@ -864,8 +903,13 @@ class TushareQlibProviderPublisher:
 
         for col in ("open", "high", "low", "close"):
             frame[col] = frame[col] * frame["_scale"]
-        frame["volume"] = frame["vol"] * 100.0
-        frame["money"] = frame["amount"] * 1000.0
+        # Convert Tushare's lot/千元 units to qlib's share/yuan units.
+        # See module-level ``_TUSHARE_*`` constants for the unit
+        # explanation; using named constants here makes the unit
+        # mismatch visible without the reader having to remember A-share
+        # market conventions.
+        frame["volume"] = frame["vol"] * _TUSHARE_VOL_LOTS_TO_SHARES
+        frame["money"] = frame["amount"] * _TUSHARE_AMOUNT_KYUAN_TO_YUAN
         frame["vwap"] = np.where(
             frame["volume"] > 0,
             frame["money"] / frame["volume"],

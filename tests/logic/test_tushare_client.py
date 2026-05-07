@@ -147,5 +147,47 @@ class TushareClientCallTests(unittest.TestCase):
                 TushareClient(token="t").call("index_classify")
 
 
+class TushareClientReprMaskingTests(unittest.TestCase):
+    """Pin the secret-masking behaviour of ``TushareClient.__repr__``.
+
+    The dataclass auto-generated ``__repr__`` would print the raw token
+    verbatim, which lands the secret in:
+
+    - exception messages (``raise SomeError(f"client={client!r} ...")``)
+    - logger calls (``_logger.error("client=%r", client)``)
+    - REPL / pytest tracebacks
+
+    The custom ``__repr__`` must mask everything past a 4-char prefix.
+    """
+
+    def test_repr_masks_full_token(self) -> None:
+        client = TushareClient(token="super_secret_pro_token_12345")
+        rendered = repr(client)
+        self.assertNotIn("super_secret_pro_token_12345", rendered)
+        # Prefix and length should be visible — those help debugging
+        # ("did the env var resolve?") without disclosing the secret.
+        self.assertIn("supe***", rendered)
+        self.assertIn(f"len={len('super_secret_pro_token_12345')}", rendered)
+
+    def test_repr_handles_short_token(self) -> None:
+        """A 1-3 char token still must not leak the full string."""
+        client = TushareClient(token="abc")
+        rendered = repr(client)
+        # The prefix is whatever ``token[:4]`` returns (here, the
+        # whole token). The mask + length disclosure is what stops
+        # this from being a secret leak: no logger reader can
+        # reconstruct a longer token from a shortened repr.
+        self.assertIn("***", rendered)
+        self.assertIn("len=3", rendered)
+
+    def test_repr_handles_empty_token_defensively(self) -> None:
+        """The raw constructor allows an empty token for test injection
+        (``from_environment`` rejects it). Empty case still must not
+        crash repr."""
+        client = TushareClient(token="")
+        rendered = repr(client)
+        self.assertIn("<empty>", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -164,6 +164,35 @@ class SignalLagTests(unittest.TestCase):
             1.0,
         )
 
+    def test_non_series_input_raises_loudly(self) -> None:
+        """The previous implementation silently fell through and returned
+        the input unchanged when ``predictions`` was not a Series — so a
+        research script that fed in a list / DataFrame / numpy array
+        would think lag was applied while actually getting a no-op
+        T-execution backtest. We now raise ``BacktestRunnerError``."""
+        from src.core.backtest_runner import BacktestRunnerError
+
+        with self.assertRaisesRegex(BacktestRunnerError, "MultiIndex"):
+            BacktestRunner._apply_lag([1, 2, 3], 1)
+        with self.assertRaisesRegex(BacktestRunnerError, "MultiIndex"):
+            BacktestRunner._apply_lag({"a": 1}, 1)
+
+    def test_single_index_series_raises_loudly(self) -> None:
+        """A pandas Series with only a date index (no instrument level)
+        cannot be unstacked the way the lag logic needs it. The previous
+        implementation silently returned it unchanged and dropped the
+        lag; we now refuse."""
+        import pandas as pd
+
+        from src.core.backtest_runner import BacktestRunnerError
+
+        single_index = pd.Series(
+            [1.0, 2.0, 3.0],
+            index=pd.to_datetime(["2025-01-02", "2025-01-03", "2025-01-06"]),
+        )
+        with self.assertRaisesRegex(BacktestRunnerError, "MultiIndex"):
+            BacktestRunner._apply_lag(single_index, 1)
+
 
 class PositionsSerializationTests(unittest.TestCase):
     """Unit tests for the ``_positions_to_weight_map`` helper."""
