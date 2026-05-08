@@ -70,8 +70,15 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
 
     filtered = {k: v for k, v in raw.items() if k in valid_fields}
     wf_config = WalkForwardConfig(**filtered)
+    provider_uri = raw.get("provider_uri")
+    if not str(provider_uri or "").strip():
+        raise ValueError(
+            f"Config file {config_path} must set provider_uri explicitly. "
+            "Walk-forward official metrics cannot use a machine-local "
+            "fallback data bundle."
+        )
     qlib_cfg = QlibRuntimeConfig(
-        provider_uri=raw.get("provider_uri", "D:/qlib_data/my_cn_data"),
+        provider_uri=str(provider_uri),
         region=raw.get("region", "cn"),
         data_adjust_mode=wf_config.adjust_mode,
     )

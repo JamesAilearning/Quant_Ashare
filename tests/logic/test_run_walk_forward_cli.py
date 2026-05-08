@@ -36,6 +36,14 @@ class WalkForwardCliConfigTests(unittest.TestCase):
         self.assertEqual(wf_config.adjust_mode, ADJUST_MODE_NONE)
         self.assertEqual(qlib_config.data_adjust_mode, ADJUST_MODE_NONE)
 
+    def test_provider_uri_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "walk.yaml"
+            cfg.write_text('region: "cn"\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "provider_uri"):
+                _load_config(str(cfg))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ Boundaries
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -124,10 +125,20 @@ class ResultVisualizer:
                 "return_series['return'] is empty after parsing. "
                 "Cannot generate charts with no data."
             )
+        if any(not math.isfinite(float(v)) for v in returns):
+            raise VisualizerError(
+                "return_series['return'] contains NaN or infinite values; "
+                "cannot generate reliable charts."
+            )
 
         benchmark = pd.Series(
             {pd.Timestamp(k): float(v) for k, v in bench_dict.items()}
         ).sort_index() if bench_dict else None
+        if benchmark is not None and any(not math.isfinite(float(v)) for v in benchmark):
+            raise VisualizerError(
+                "return_series['bench'] contains NaN or infinite values; "
+                "cannot generate reliable charts."
+            )
 
         # Walk the style fallback chain to find one that ``plt.style.context``
         # accepts. ``OSError`` is the documented signal for an unknown
@@ -299,8 +310,13 @@ class ResultVisualizer:
         ax.grid(True, alpha=0.3)
 
         # Annotate max drawdown
-        max_dd = drawdown.min()
-        max_dd_date = drawdown.idxmin()
+        finite_drawdown = drawdown.dropna()
+        if finite_drawdown.empty:
+            raise VisualizerError(
+                "Drawdown series is entirely NaN; cannot annotate max drawdown."
+            )
+        max_dd = finite_drawdown.min()
+        max_dd_date = finite_drawdown.idxmin()
         ax.annotate(
             f"Max DD: {max_dd:.1%}",
             xy=(max_dd_date, max_dd),

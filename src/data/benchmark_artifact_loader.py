@@ -229,16 +229,15 @@ class BenchmarkArtifactLoader:
                     header = next(reader)
                 except StopIteration:
                     return _CsvReadOutcome(0, (), None, None, False)
-                header_normalized = tuple(col.strip().lower() for col in header if col.strip())
+                header_lookup = {
+                    col.strip().lower(): idx
+                    for idx, col in enumerate(header)
+                    if col.strip()
+                }
+                header_normalized = tuple(header_lookup)
 
-                try:
-                    date_idx = header_normalized.index("date")
-                except ValueError:
-                    date_idx = -1
-                try:
-                    close_idx = header_normalized.index("close")
-                except ValueError:
-                    close_idx = -1
+                date_idx = header_lookup.get("date", -1)
+                close_idx = header_lookup.get("close", -1)
 
                 for record in reader:
                     if not record or all(not str(cell).strip() for cell in record):

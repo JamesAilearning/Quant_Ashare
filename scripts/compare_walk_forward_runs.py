@@ -110,7 +110,7 @@ def main() -> int:
         t = treat_folds.get(period, {})
         # Pull ensemble meta from per-fold report (aggregate file is
         # compact and intentionally omits it).
-        idx = t.get("fold_index", b.get("fold_index"))
+        idx = t.get("fold_index")
         t_fold_report = (
             _load_fold(treatment_dir, idx) if idx is not None else {}
         )

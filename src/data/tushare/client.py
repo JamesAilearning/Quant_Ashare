@@ -7,19 +7,21 @@ Why this module exists
   arguments is forbidden — secrets do not belong in committed config.
 - Lazy-imports ``tushare`` so importing the package in a contract-only
   test environment (no network, no token, no extras) does not blow up.
+- Reuses the underlying ``pro_api`` handle per wrapper instance so long
+  fetch loops do not rebuild the client for every date/API call.
 - Normalises Tushare's mixed error surface (``TushareError`` for some
   paths, generic ``Exception`` for others, plain ``None`` returns for
   rate-limit failures) into a single :class:`TushareClientError`.
 
-This module does NOT cache, retry, or implement any per-API knowledge.
-Higher layers (e.g. :class:`TushareIndustryPublisher`) own those
-concerns; the client is just a typed boundary.
+This module does NOT retry or implement any per-API knowledge. Higher layers
+(e.g. :class:`TushareIndustryPublisher`) own those concerns; the client is just
+a typed boundary.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from src.core.logger import get_logger
@@ -55,6 +57,7 @@ class TushareClient:
     """
 
     token: str
+    _pro_client: Any = field(default=None, init=False, repr=False, compare=False)
 
     def __repr__(self) -> str:
         # Show only the token's length and a 4-char prefix so a
@@ -106,14 +109,17 @@ class TushareClient:
                 "tushare is not installed. Run: python -m pip install -e \".[tushare]\""
             ) from exc
 
-        try:
-            pro = ts.pro_api(self.token)
-        except Exception as exc:
-            raise TushareClientError(
-                f"Failed to construct Tushare pro client (api='{api_name}'): "
-                f"{type(exc).__name__}: {exc}. Check that TUSHARE_TOKEN is "
-                "valid and your account has Pro permissions."
-            ) from exc
+        pro = self._pro_client
+        if pro is None:
+            try:
+                pro = ts.pro_api(self.token)
+            except Exception as exc:
+                raise TushareClientError(
+                    f"Failed to construct Tushare pro client (api='{api_name}'): "
+                    f"{type(exc).__name__}: {exc}. Check that TUSHARE_TOKEN is "
+                    "valid and your account has Pro permissions."
+                ) from exc
+            object.__setattr__(self, "_pro_client", pro)
 
         method = getattr(pro, api_name, None)
         if method is None or not callable(method):

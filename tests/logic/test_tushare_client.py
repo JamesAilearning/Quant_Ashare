@@ -95,6 +95,29 @@ class TushareClientCallTests(unittest.TestCase):
         self.assertEqual(result, "DF")
         self.assertEqual(captured, {"level": "L2"})
 
+    def test_reuses_pro_api_handle_between_calls(self) -> None:
+        constructed_tokens: list[str] = []
+
+        class _FakePro:
+            def daily(self, **params):
+                return params["value"]
+
+            def adj_factor(self, **params):
+                return params["value"]
+
+        def _factory(token):
+            constructed_tokens.append(token)
+            return _FakePro()
+
+        with patch.dict("sys.modules", {
+            "tushare": _install_fake_tushare(_factory),
+        }):
+            client = TushareClient(token="t")
+            self.assertEqual(client.call("daily", value=1), 1)
+            self.assertEqual(client.call("adj_factor", value=2), 2)
+
+        self.assertEqual(constructed_tokens, ["t"])
+
     def test_unknown_api_name_raises(self) -> None:
         class _FakePro:
             pass  # no methods at all

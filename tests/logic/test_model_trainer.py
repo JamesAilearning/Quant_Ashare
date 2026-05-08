@@ -143,6 +143,15 @@ class ModelTrainerUpperBoundsTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelTrainerError, "max_depth"):
             self._call(max_depth=500)
 
+    def test_rejects_catboost_depth_above_framework_limit(self) -> None:
+        with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(ModelTrainerError, "CatBoostModel max_depth"):
+                ModelTrainer.train_and_predict(
+                    config=ModelTrainConfig(model_type="CatBoostModel", max_depth=32),
+                    dataset=None,
+                    model_artifact_path="/tmp/model.pkl",
+                )
+
     def test_rejects_non_int_max_depth(self) -> None:
         with self.assertRaisesRegex(ModelTrainerError, "max_depth"):
             self._call(max_depth=8.5)  # type: ignore[arg-type]
@@ -276,25 +285,39 @@ class FitDispatchTests(unittest.TestCase):
         self.assertEqual(kwargs["early_stopping_rounds"], 3)
         self.assertIs(kwargs["evals_result"], evals)
 
-    def test_xgb_receives_only_dataset(self) -> None:
+    def test_xgb_receives_fit_time_controls(self) -> None:
         model = self._make_model()
+        evals: dict = {}
         ModelTrainer._fit_dispatch(
             model, dataset="DS",
-            config=ModelTrainConfig(model_type="XGBModel"),
-            evals_result={},
+            config=ModelTrainConfig(
+                model_type="XGBModel",
+                num_boost_round=11,
+                early_stopping_rounds=4,
+            ),
+            evals_result=evals,
         )
         _, kwargs = model.fit_calls[0]
-        self.assertEqual(kwargs, {})  # no extra kwargs forwarded
+        self.assertEqual(kwargs["num_boost_round"], 11)
+        self.assertEqual(kwargs["early_stopping_rounds"], 4)
+        self.assertIs(kwargs["evals_result"], evals)
 
-    def test_catboost_receives_only_dataset(self) -> None:
+    def test_catboost_receives_fit_time_controls(self) -> None:
         model = self._make_model()
+        evals: dict = {}
         ModelTrainer._fit_dispatch(
             model, dataset="DS",
-            config=ModelTrainConfig(model_type="CatBoostModel"),
-            evals_result={},
+            config=ModelTrainConfig(
+                model_type="CatBoostModel",
+                num_boost_round=13,
+                early_stopping_rounds=5,
+            ),
+            evals_result=evals,
         )
         _, kwargs = model.fit_calls[0]
-        self.assertEqual(kwargs, {})
+        self.assertEqual(kwargs["num_boost_round"], 13)
+        self.assertEqual(kwargs["early_stopping_rounds"], 5)
+        self.assertIs(kwargs["evals_result"], evals)
 
 
 class TrainingDiagnosticsTests(unittest.TestCase):

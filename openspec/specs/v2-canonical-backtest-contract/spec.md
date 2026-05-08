@@ -61,19 +61,6 @@ adjustment mode matches the initialized qlib provider adjustment mode.
 - **THEN** `BacktestRunner.run()` may proceed to the anchored qlib backtest
   callable after all other contract checks pass
 
-### Requirement: Canonical backtest input SHALL forbid zero-lag signal execution
-
-The canonical backtest input SHALL require `signal_to_execution_lag >= 1`. A value of zero SHALL be rejected as a look-ahead violation.
-
-#### Scenario: zero lag is rejected
-- **WHEN** a caller supplies `signal_to_execution_lag=0`
-- **THEN** `CanonicalBacktestContract.validate_input` raises `CanonicalBacktestContractError`
-- **AND** the error message mentions look-ahead
-
-#### Scenario: negative lag is rejected
-- **WHEN** a caller supplies `signal_to_execution_lag=-1`
-- **THEN** `CanonicalBacktestContract.validate_input` raises `CanonicalBacktestContractError`
-
 ### Requirement: Canonical exchange config SHALL require an explicit execution price kind
 
 The `CanonicalExchangeConfig` SHALL require an `execution_price_kind` whose value is one of `open`, `close`, or `vwap`. There SHALL be no default.
@@ -209,4 +196,30 @@ The canonical contract SHALL require minimum validation coverage, including boun
 - **THEN** minimum regression categories are explicitly defined
 - **AND** canonical source integrity checks are part of required validation
 - **AND** boundary regressions are required before archive/merge
+
+### Requirement: Canonical backtest input SHALL define explicit signal lag semantics
+
+The canonical backtest input SHALL define `signal_to_execution_lag` as the
+number of trading rows by which prediction signals are delayed before execution.
+`0` SHALL mean explicit same-day execution/no shift. Positive values SHALL shift
+signals by exactly that many trading rows. Negative values and booleans SHALL be
+rejected.
+
+#### Scenario: zero lag is explicit same-day execution
+- **WHEN** a caller supplies `signal_to_execution_lag=0`
+- **THEN** `CanonicalBacktestContract.validate_input` accepts the request
+- **AND** `BacktestRunner` leaves prediction timestamps unchanged
+
+#### Scenario: one lag shifts by one trading row
+- **WHEN** a caller supplies `signal_to_execution_lag=1`
+- **THEN** `BacktestRunner` delays predictions by one trading row per instrument
+- **AND** same-day execution is not used
+
+#### Scenario: negative lag is rejected
+- **WHEN** a caller supplies `signal_to_execution_lag=-1`
+- **THEN** `CanonicalBacktestContract.validate_input` raises `CanonicalBacktestContractError`
+
+#### Scenario: boolean lag is rejected
+- **WHEN** a caller supplies `signal_to_execution_lag=True`
+- **THEN** `CanonicalBacktestContract.validate_input` raises `CanonicalBacktestContractError`
 
