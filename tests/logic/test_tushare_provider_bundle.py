@@ -335,6 +335,45 @@ class StagingTests(unittest.TestCase):
 
 
 class ProviderPublishTests(unittest.TestCase):
+    def test_zero_volume_vwap_fallback_applies_adjustment_once(self) -> None:
+        merged = pd.DataFrame(
+            [
+                {
+                    "instrument": "SH600000",
+                    "date": "2025-01-02",
+                    "open": 10.0,
+                    "high": 10.0,
+                    "low": 10.0,
+                    "close": 10.0,
+                    "vol": 0.0,
+                    "amount": 0.0,
+                    "adj_factor": 2.0,
+                    "pct_chg": 0.0,
+                },
+                {
+                    "instrument": "SH600000",
+                    "date": "2025-01-03",
+                    "open": 12.0,
+                    "high": 12.0,
+                    "low": 12.0,
+                    "close": 12.0,
+                    "vol": 100.0,
+                    "amount": 120.0,
+                    "adj_factor": 4.0,
+                    "pct_chg": 20.0,
+                },
+            ]
+        )
+
+        frame = TushareQlibProviderPublisher._build_qlib_frame(
+            merged, ADJUST_MODE_PRE,
+        )
+
+        first = frame.loc[frame["date"] == "2025-01-02"].iloc[0]
+        self.assertAlmostEqual(float(first["factor"]), 0.5)
+        self.assertAlmostEqual(float(first["close"]), 5.0)
+        self.assertAlmostEqual(float(first["vwap"]), 5.0)
+
     def test_publish_writes_qlib_layout_manifest_and_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_text:
             tmp = Path(tmp_text)

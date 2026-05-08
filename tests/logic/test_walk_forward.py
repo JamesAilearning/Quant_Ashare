@@ -788,14 +788,20 @@ class FoldReportPersistenceFlowTests(unittest.TestCase):
             )
             report_path = Path(tmp) / "fold_00_report.json"
             positions_path = Path(tmp) / "fold_00_positions.json"
+            predictions_path = Path(tmp) / "fold_00_predictions.pkl"
 
             self.assertTrue(report_path.exists())
             self.assertTrue(positions_path.exists())
+            self.assertTrue(predictions_path.exists())
             self.assertEqual(fold.report_path, str(report_path))
             with open(report_path) as f:
                 report = json.load(f)
             self.assertEqual(report["fold_index"], 0)
             self.assertEqual(report["positions_path"], str(positions_path))
+            self.assertEqual(
+                report["ensemble"]["prediction_artifact_path"],
+                str(predictions_path),
+            )
             with open(positions_path) as f:
                 positions = json.load(f)
             self.assertIn("2024-10-01", positions)
@@ -1314,6 +1320,35 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
         # current-only.
         self.assertEqual(meta["contributing_folds"], [2])
 
+    def test_prior_index_mismatch_is_rejected_from_ensemble(self) -> None:
+        import pandas as pd
+
+        current = self._build_predictions(0.6)
+        mismatched_idx = pd.MultiIndex.from_tuples(
+            [("2024-10-02", "SH600000"), ("2024-10-02", "SH600001")],
+            names=("datetime", "instrument"),
+        )
+        prior = MagicMock()
+        prior.predict.return_value = pd.Series([0.0, 0.0], index=mismatched_idx)
+
+        with patch("builtins.open", new=MagicMock()), patch(
+            "pickle.load", return_value=prior,
+        ):
+            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+                current_predictions=current,
+                current_dataset=object(),
+                prior_model_paths=((1, "/tmp/m1.pkl"),),
+                ensemble_window=3,
+                current_fold_index=2,
+            )
+
+        self.assertIs(result, current)
+        self.assertFalse(meta["used"])
+        self.assertEqual(meta["prior_models_loaded"], 0)
+        self.assertEqual(meta["prior_models_index_mismatched"], 1)
+        self.assertEqual(meta["contributing_folds"], [2])
+        self.assertEqual(meta["rejected_priors"][0]["reason"], "index_mismatch")
+
 
 class EnsembleEndToEndFlowTests(unittest.TestCase):
     """Confirm ``run()`` accumulates ``prior_model_paths`` across folds,
@@ -1369,14 +1404,16 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
         # Fold 1 sees fold 0's pickle.
         self.assertEqual(len(captured_calls[1]["prior_model_paths"]), 1)
         self.assertTrue(
-            captured_calls[1]["prior_model_paths"][0].endswith("model_fold0.pkl")
+            captured_calls[1]["prior_model_paths"][0][1].endswith("model_fold0.pkl")
         )
         # Fold 2 (if it exists) sees fold 0 and fold 1, in order.
         if len(captured_calls) >= 3:
             paths = captured_calls[2]["prior_model_paths"]
             self.assertEqual(len(paths), 2)
-            self.assertTrue(paths[0].endswith("model_fold0.pkl"))
-            self.assertTrue(paths[1].endswith("model_fold1.pkl"))
+            self.assertEqual(paths[0][0], 0)
+            self.assertEqual(paths[1][0], 1)
+            self.assertTrue(paths[0][1].endswith("model_fold0.pkl"))
+            self.assertTrue(paths[1][1].endswith("model_fold1.pkl"))
 
     def test_disk_report_carries_ensemble_block_with_no_op_default(self) -> None:
         """``ensemble_window=1`` — the default — must still emit the
@@ -1430,6 +1467,10 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
         self.assertEqual(report["ensemble"]["n_models"], 1)
         self.assertEqual(report["ensemble"]["contributing_folds"], [0])
         self.assertEqual(report["ensemble"]["prior_models_loaded"], 0)
+        self.assertTrue(report["ensemble"]["prediction_artifact_path"].endswith(
+            "fold_00_predictions.pkl"
+        ))
+        self.assertRegex(report["ensemble"]["prediction_artifact_sha256"], r"^[0-9a-f]{64}$")
 
 
 class FoldFailureContinuationTests(unittest.TestCase):
@@ -1514,7 +1555,7 @@ class FoldFailureContinuationTests(unittest.TestCase):
 
         from src.core.walk_forward import WalkForwardFold
 
-        captured_priors: list[tuple[str, ...]] = []
+        captured_priors: list[tuple[tuple[int, str], ...]] = []
 
         def fake_single_fold(*, fold_index, train_start, train_end,
                              valid_start, valid_end, test_start, test_end,
@@ -1558,14 +1599,18 @@ class FoldFailureContinuationTests(unittest.TestCase):
         self.assertGreaterEqual(len(captured_priors), 4)
         self.assertEqual(len(captured_priors[0]), 0)  # fold 0
         self.assertEqual(len(captured_priors[1]), 1)  # fold 1 sees fold 0
-        self.assertTrue(captured_priors[1][0].endswith("model_fold0.pkl"))
+        self.assertEqual(captured_priors[1][0][0], 0)
+        self.assertTrue(captured_priors[1][0][1].endswith("model_fold0.pkl"))
         # Fold 2 still sees only fold 0 (fold 1's path was NOT appended).
         self.assertEqual(len(captured_priors[2]), 1)
-        self.assertTrue(captured_priors[2][0].endswith("model_fold0.pkl"))
+        self.assertEqual(captured_priors[2][0][0], 0)
+        self.assertTrue(captured_priors[2][0][1].endswith("model_fold0.pkl"))
         # Fold 3 sees fold 0 and fold 2 (fold 1 still skipped).
         self.assertEqual(len(captured_priors[3]), 2)
-        self.assertTrue(captured_priors[3][0].endswith("model_fold0.pkl"))
-        self.assertTrue(captured_priors[3][1].endswith("model_fold2.pkl"))
+        self.assertEqual(captured_priors[3][0][0], 0)
+        self.assertEqual(captured_priors[3][1][0], 2)
+        self.assertTrue(captured_priors[3][0][1].endswith("model_fold0.pkl"))
+        self.assertTrue(captured_priors[3][1][1].endswith("model_fold2.pkl"))
 
 
 class CLIUnknownConfigKeyTests(unittest.TestCase):

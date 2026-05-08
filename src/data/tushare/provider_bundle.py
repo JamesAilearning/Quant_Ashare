@@ -968,6 +968,7 @@ class TushareQlibProviderPublisher:
                 f"Unsupported data_adjust_mode {data_adjust_mode!r}."
             )
 
+        raw_close = frame["close"].copy()
         for col in ("open", "high", "low", "close"):
             frame[col] = frame[col] * frame["_scale"]
         # Convert Tushare's lot/千元 units to qlib's share/yuan units.
@@ -980,7 +981,7 @@ class TushareQlibProviderPublisher:
         frame["vwap"] = np.where(
             frame["volume"] > 0,
             frame["money"] / frame["volume"],
-            frame["close"],
+            raw_close,
         )
         frame["vwap"] = frame["vwap"] * frame["_scale"]
         frame["factor"] = frame["_scale"]

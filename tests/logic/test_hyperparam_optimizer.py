@@ -168,6 +168,34 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
         self.assertEqual(projected.bagging_fraction, 0.85)
         self.assertEqual(projected.bagging_freq, 3)
 
+    def test_all_trial_failures_raise_optimizer_error_not_raw_trial_exception(self):
+        try:
+            import optuna  # noqa: F401
+        except ImportError:
+            self.skipTest("optuna not installed")
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.hyperparam_optimizer.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            HyperparamOptimizer,
+            "_build_dataset",
+            return_value=object(),
+        ), patch.object(
+            HyperparamOptimizer,
+            "_evaluate_params",
+            side_effect=RuntimeError("trial blew up"),
+        ):
+            with self.assertRaisesRegex(
+                HyperparamOptimizerError,
+                "All hyperparameter trials failed",
+            ):
+                HyperparamOptimizer.optimize(
+                    HyperparamOptConfig(n_trials=2, output_dir=tmp),
+                )
+
 
 class SuggestParamsClampingTests(unittest.TestCase):
     """P2e regression guards on :meth:`HyperparamOptimizer._suggest_params`.

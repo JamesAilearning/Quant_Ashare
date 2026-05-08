@@ -17,7 +17,9 @@ Boundaries
 
 from __future__ import annotations
 
+import hashlib
 import json
+import pickle
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -358,11 +360,12 @@ class WalkForwardEngine:
             )
 
         folds: list[WalkForwardFold] = []
-        # Chronological list of model pickle paths across folds so each
+        # Chronological list of model pickle refs across folds so each
         # subsequent fold can pull the most recent ``ensemble_window - 1``
-        # priors. We append after the fold finishes so the current fold
-        # never re-uses its own pickle (it already trained fresh).
-        prior_model_paths: list[str] = []
+        # priors. Keep real fold index beside each path; failed folds are
+        # skipped, so deriving fold index from list position corrupts
+        # ensemble provenance after a gap.
+        prior_model_paths: list[tuple[int, str]] = []
         _logger.info("Starting %d folds", len(windows))
         _logger.info("=" * 60)
 
@@ -432,7 +435,7 @@ class WalkForwardEngine:
             # surface ``model_path`` on ``WalkForwardFold`` (it's an
             # internal artifact path, not a metric), so reconstructing
             # it here is the cheapest way to thread it forward.
-            prior_model_paths.append(str(output_dir / f"model_fold{i}.pkl"))
+            prior_model_paths.append((i, str(output_dir / f"model_fold{i}.pkl")))
             _logger.info(
                 "  IC(1d)=%.4f | Return=%.2f%% | MaxDD=%.2f%%",
                 fold.ic_1d, fold.annualized_return * 100, fold.max_drawdown * 100,
@@ -593,7 +596,7 @@ class WalkForwardEngine:
         valid_start: str, valid_end: str,
         test_start: str, test_end: str,
         output_dir: Any,
-        prior_model_paths: Sequence[str] = (),
+        prior_model_paths: Sequence[Any] = (),
     ) -> WalkForwardFold:
         """Execute a single train→predict→analyze→backtest fold.
 
@@ -638,6 +641,16 @@ class WalkForwardEngine:
             ensemble_window=config.ensemble_window,
             current_fold_index=fold_index,
         )
+        prediction_artifact_path = output_dir / f"fold_{fold_index:02d}_predictions.pkl"
+        prediction_artifact_sha = cls._write_prediction_artifact(
+            prediction_artifact_path, predictions,
+        )
+        ensemble_meta = {
+            **ensemble_meta,
+            "current_model_ref": model_path,
+            "prediction_artifact_path": str(prediction_artifact_path),
+            "prediction_artifact_sha256": prediction_artifact_sha,
+        }
 
         # Signal analysis
         signal_result = SignalAnalyzer.analyze(
@@ -661,7 +674,7 @@ class WalkForwardEngine:
 
         # Backtest
         backtest_request = CanonicalBacktestInput(
-            predictions_ref=model_path,
+            predictions_ref=str(prediction_artifact_path),
             evaluation_start=test_start,
             evaluation_end=test_end,
             account_config=CanonicalAccountConfig(init_cash=config.init_cash),
@@ -760,7 +773,7 @@ class WalkForwardEngine:
         *,
         current_predictions: Any,
         current_dataset: Any,
-        prior_model_paths: Sequence[str],
+        prior_model_paths: Sequence[Any],
         ensemble_window: int,
         current_fold_index: int,
     ) -> tuple[Any, dict[str, Any]]:
@@ -804,8 +817,11 @@ class WalkForwardEngine:
             "used": False,
             "n_models": 1,
             "contributing_folds": [int(current_fold_index)],
+            "contributing_model_refs": [],
             "prior_models_attempted": 0,
             "prior_models_loaded": 0,
+            "prior_models_index_mismatched": 0,
+            "rejected_priors": [],
         }
 
         # No-op fast path: window 1 means "current fold only", which is
@@ -822,8 +838,6 @@ class WalkForwardEngine:
             return current_predictions, meta
 
         import pandas as pd
-        import numpy as np
-        import pickle
 
         # Pick the most-recent ``window - 1`` priors. ``prior_model_paths``
         # is in chronological (oldest-first) order; ``[-(window-1):]``
@@ -832,21 +846,25 @@ class WalkForwardEngine:
         meta["prior_models_attempted"] = len(priors_to_load)
 
         # Stack predictions: start with the current fold's series, then
-        # append each prior model's prediction over the same dataset.
-        # Doing the stacking in pandas (rather than numpy on raw arrays)
-        # means a hypothetical index mismatch fails loudly at concat time
-        # rather than silently re-aligning.
+        # append each prior model's prediction over the same dataset. We
+        # require exact index equality before stacking so pandas never
+        # union-aligns a stale prior into a different signal universe.
         prediction_frames: list[Any] = [current_predictions.rename("m0")]
         contributing_folds: list[int] = []
         loaded = 0
 
-        # ``prior_model_paths`` is oldest-first; the slice above keeps
-        # that ordering, so the corresponding fold indices are
-        # ``current_fold_index - len(priors_to_load) ... current_fold_index - 1``.
-        first_prior_fold = current_fold_index - len(priors_to_load)
-
-        for offset, prior_path in enumerate(priors_to_load):
-            prior_fold_idx = first_prior_fold + offset
+        for offset, prior_ref in enumerate(priors_to_load):
+            if (
+                isinstance(prior_ref, tuple)
+                and len(prior_ref) == 2
+            ):
+                prior_fold_idx, prior_path = prior_ref
+            else:
+                # Backward-compatible fallback for tests/direct callers that
+                # still pass bare paths. Runtime ``run`` passes real refs.
+                prior_fold_idx = current_fold_index - len(priors_to_load) + offset
+                prior_path = prior_ref
+            prior_path = str(prior_path)
             try:
                 with open(prior_path, "rb") as f:
                     prior_model = pickle.load(f)
@@ -877,11 +895,34 @@ class WalkForwardEngine:
                     type(prior_pred).__name__,
                 )
                 continue
+            if not prior_pred.index.equals(current_predictions.index):
+                meta["prior_models_index_mismatched"] = int(
+                    meta["prior_models_index_mismatched"]
+                ) + 1
+                meta["rejected_priors"].append({
+                    "fold_index": int(prior_fold_idx),
+                    "model_ref": prior_path,
+                    "reason": "index_mismatch",
+                    "current_size": int(len(current_predictions.index)),
+                    "prior_size": int(len(prior_pred.index)),
+                })
+                _logger.warning(
+                    "Fold %d ensemble: prior model %r returned an index that "
+                    "does not exactly match current predictions; skipping it "
+                    "to avoid pandas union-alignment changing the signal "
+                    "universe.",
+                    current_fold_index, prior_path,
+                )
+                continue
 
             prediction_frames.append(
                 prior_pred.rename(f"m{offset + 1}")
             )
             contributing_folds.append(int(prior_fold_idx))
+            meta["contributing_model_refs"].append({
+                "fold_index": int(prior_fold_idx),
+                "model_ref": prior_path,
+            })
             loaded += 1
 
         meta["prior_models_loaded"] = loaded
@@ -900,6 +941,7 @@ class WalkForwardEngine:
         # whereas the current model has them.
         stacked = pd.concat(prediction_frames, axis=1)
         averaged = stacked.mean(axis=1, skipna=True)
+        averaged = averaged.reindex(current_predictions.index)
         # The result Series has no name; rename to match the current
         # predictions' name so downstream consumers (SignalAnalyzer,
         # BacktestRunner) see the same shape.
@@ -920,6 +962,19 @@ class WalkForwardEngine:
         )
 
         return averaged, meta
+
+    @staticmethod
+    def _write_prediction_artifact(path: Path, predictions: Any) -> str:
+        """Persist the exact prediction Series consumed by official backtest.
+
+        Model pickles alone are insufficient provenance once walk-forward
+        ensembling is enabled: the backtest consumes the materialized signal,
+        not a single model artifact. Return a SHA256 so reports can identify
+        the exact bytes written.
+        """
+        with open(path, "wb") as f:
+            pickle.dump(predictions, f)
+        return hashlib.sha256(path.read_bytes()).hexdigest()
 
     @classmethod
     def _write_positions(
@@ -1136,8 +1191,11 @@ class WalkForwardEngine:
                     "used": False,
                     "n_models": 1,
                     "contributing_folds": [fold_index],
+                    "contributing_model_refs": [],
                     "prior_models_attempted": 0,
                     "prior_models_loaded": 0,
+                    "prior_models_index_mismatched": 0,
+                    "rejected_priors": [],
                 }
             ),
             "positions_path": str(positions_path) if positions_path else None,

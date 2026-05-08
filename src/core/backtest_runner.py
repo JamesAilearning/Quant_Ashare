@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict
 from typing import Any, Mapping
 
@@ -309,6 +310,13 @@ class BacktestRunner:
                 f"{expected_names}; got {tuple(predictions.index.names)!r}. "
                 "Refusing to forward to qlib silently."
             )
+        if not predictions.index.is_unique:
+            raise BacktestRunnerError(
+                "BacktestRunner._apply_lag: predictions index must be unique "
+                "before unstack/lag. Duplicate (datetime, instrument) rows "
+                "would make pandas raise ValueError deep in unstack and leave "
+                "the official backtest boundary ambiguous."
+            )
 
         if lag == 0:
             _logger.info(
@@ -565,6 +573,15 @@ def _positions_to_weight_map(positions_normal: Any) -> dict:
     bookkeeping_keys = {"cash", "now_account_value"}
     skipped_days = 0
 
+    def _finite_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        return numeric if math.isfinite(numeric) else None
+
     for ts, pos in items:
         try:
             date_str = str(ts.date()) if hasattr(ts, "date") else str(ts)
@@ -583,13 +600,13 @@ def _positions_to_weight_map(positions_normal: Any) -> dict:
             for inst, info in raw.items():
                 if inst in bookkeeping_keys or not isinstance(info, dict):
                     continue
-                amt = float(info.get("amount", 0.0) or 0.0)
-                price = float(info.get("price", 0.0) or 0.0)
+                amt = _finite_float(info.get("amount")) or 0.0
+                price = _finite_float(info.get("price")) or 0.0
                 total_value += amt * price
             # Include cash in denominator so weights reflect NAV share
-            cash = raw.get("cash")
-            if isinstance(cash, (int, float)):
-                total_value += float(cash)
+            cash = _finite_float(raw.get("cash"))
+            if cash is not None:
+                total_value += cash
 
             day_weights: dict[str, float] = {}
             for inst, info in raw.items():
@@ -597,22 +614,22 @@ def _positions_to_weight_map(positions_normal: Any) -> dict:
                     continue
                 w = info.get("weight")
                 if w is None and total_value > 0:
-                    amt = float(info.get("amount", 0.0) or 0.0)
-                    price = float(info.get("price", 0.0) or 0.0)
+                    amt = _finite_float(info.get("amount")) or 0.0
+                    price = _finite_float(info.get("price")) or 0.0
                     w = (amt * price) / total_value
                 if w is None:
                     continue
-                try:
-                    day_weights[str(inst)] = float(w)
-                except (TypeError, ValueError):
+                weight = _finite_float(w)
+                if weight is None:
                     # Individual entry coerce failure — common across qlib
                     # versions; log at DEBUG so noise stays low.
                     _logger.debug(
                         "positions_to_weight_map: day %s inst %s: weight "
-                        "%r is not coercible to float; skipping entry.",
+                        "%r is not finite/coercible to float; skipping entry.",
                         date_str, inst, w,
                     )
                     continue
+                day_weights[str(inst)] = weight
 
             if day_weights:
                 result[date_str] = day_weights

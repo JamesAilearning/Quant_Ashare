@@ -219,6 +219,21 @@ class SignalLagTests(unittest.TestCase):
         with self.assertRaisesRegex(BacktestRunnerError, "names must be"):
             BacktestRunner._apply_lag(swapped, 1)
 
+    def test_rejects_duplicate_prediction_index_before_unstack(self) -> None:
+        import pandas as pd
+        from src.core.backtest_runner import BacktestRunnerError
+
+        idx = pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2025-01-02"), "SH600000"),
+                (pd.Timestamp("2025-01-02"), "SH600000"),
+            ],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([1.0, 2.0], index=idx)
+        with self.assertRaisesRegex(BacktestRunnerError, "unique"):
+            BacktestRunner._apply_lag(predictions, 1)
+
 
 class BacktestRunnerNDropValidationTests(unittest.TestCase):
     """``BacktestRunner.run`` must reject ``n_drop >= topk`` even when
@@ -329,6 +344,30 @@ class PositionsSerializationTests(unittest.TestCase):
         result = _positions_to_weight_map(positions)
         self.assertAlmostEqual(result["2025-10-02"]["SH600000"], 0.25)
         self.assertAlmostEqual(result["2025-10-02"]["SH600001"], 0.75)
+
+    def test_non_finite_position_fields_do_not_poison_day_weights(self) -> None:
+        import pandas as pd
+
+        class _Pos:
+            def __init__(self, d):
+                self.position = d
+
+        positions = pd.Series({
+            pd.Timestamp("2025-10-03"): _Pos({
+                "BAD_AMOUNT": {"amount": float("nan"), "price": 10.0},
+                "BAD_PRICE": {"amount": 100, "price": float("nan")},
+                "GOOD": {"amount": 100, "price": 20.0},
+                "BAD_WEIGHT": {"amount": 100, "price": 10.0, "weight": float("nan")},
+                "cash": float("nan"),
+            }),
+        })
+        result = _positions_to_weight_map(positions)
+        self.assertIn("2025-10-03", result)
+        day = result["2025-10-03"]
+        self.assertAlmostEqual(day["GOOD"], 2.0 / 3.0)
+        self.assertAlmostEqual(day["BAD_AMOUNT"], 0.0)
+        self.assertAlmostEqual(day["BAD_PRICE"], 0.0)
+        self.assertNotIn("BAD_WEIGHT", day)
 
     def test_malformed_input_raises(self) -> None:
         """Non-iterable input must raise loudly.

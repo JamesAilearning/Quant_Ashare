@@ -173,7 +173,17 @@ class HyperparamOptimizer:
         )
 
         _logger.info("Starting %d trials...", config.n_trials)
-        study.optimize(objective, n_trials=config.n_trials)
+        study.optimize(objective, n_trials=config.n_trials, catch=(Exception,))
+
+        if not trial_results:
+            failed = [
+                f"trial#{t.number}:{t.state.name}"
+                for t in study.trials
+            ]
+            raise HyperparamOptimizerError(
+                "All hyperparameter trials failed; no best trial is available. "
+                f"Trial states: {failed}"
+            )
 
         best = study.best_trial
         _logger.info(

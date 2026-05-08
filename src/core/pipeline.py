@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -165,11 +165,19 @@ class PipelineConfig:
                     f"PipelineConfig.{name}_start / {name}_end must both be "
                     f"non-empty; got start={start!r}, end={end!r}."
                 )
-            if start >= end:
+            try:
+                start_d = date.fromisoformat(str(start))
+                end_d = date.fromisoformat(str(end))
+            except ValueError as exc:
+                raise PipelineError(
+                    f"PipelineConfig.{name}_start / {name}_end must be strict "
+                    f"ISO dates in YYYY-MM-DD format; got start={start!r}, "
+                    f"end={end!r}."
+                ) from exc
+            if start_d >= end_d:
                 raise PipelineError(
                     f"PipelineConfig.{name}_start ({start}) must be strictly "
-                    f"less than {name}_end ({end}). String comparison works "
-                    "for ISO YYYY-MM-DD; pass dates in that format."
+                    f"less than {name}_end ({end})."
                 )
         # Numeric sanity: positive cash, non-negative cost components,
         # topk ≥ 1.
@@ -222,6 +230,19 @@ class PipelineConfig:
                 f"PipelineConfig.n_drop ({self.n_drop}) must be strictly "
                 f"less than topk ({self.topk}); otherwise TopkDropoutStrategy "
                 "would empty the portfolio after the first rebalance."
+            )
+        if (
+            not isinstance(self.limit_threshold, (int, float))
+            or isinstance(self.limit_threshold, bool)
+        ):
+            raise PipelineError(
+                "PipelineConfig.limit_threshold must be a real number; got "
+                f"{type(self.limit_threshold).__name__}."
+            )
+        if not (0.0 < float(self.limit_threshold) <= 0.25):
+            raise PipelineError(
+                "PipelineConfig.limit_threshold must be in (0, 0.25]; got "
+                f"{self.limit_threshold!r}."
             )
         if isinstance(self.signal_to_execution_lag, bool) or not isinstance(
             self.signal_to_execution_lag,
@@ -361,23 +382,36 @@ class Pipeline:
 
         # Step 6: Factor analysis (optional)
         factor_result: FactorAnalysisResult | None = None
+        factor_skipped_reason: str | None = None
         if config.run_factor_analysis:
             _logger.info("Running factor analysis...")
             # Reuse the Alpha158 dataset already built in step 2 — otherwise
             # FactorAnalyzer would rebuild the (expensive) handler from zero.
-            factor_result = FactorAnalyzer.analyze(
-                FactorAnalysisConfig(
-                    instruments=config.instruments,
-                    feature_handler=config.feature_handler,
-                    test_start=config.test_start,
-                    test_end=config.test_end,
-                    forward_period=config.factor_forward_period,
-                    top_n_factors=config.factor_top_n,
-                    max_decay_lag=config.factor_max_decay_lag,
-                ),
-                dataset=feature_result.dataset,
-            )
-            FactorAnalyzer.print_report(factor_result)
+            try:
+                factor_result = FactorAnalyzer.analyze(
+                    FactorAnalysisConfig(
+                        instruments=config.instruments,
+                        feature_handler=config.feature_handler,
+                        test_start=config.test_start,
+                        test_end=config.test_end,
+                        forward_period=config.factor_forward_period,
+                        top_n_factors=config.factor_top_n,
+                        max_decay_lag=config.factor_max_decay_lag,
+                    ),
+                    dataset=feature_result.dataset,
+                )
+                FactorAnalyzer.print_report(factor_result)
+            except Exception as exc:  # noqa: BLE001
+                factor_result = None
+                factor_skipped_reason = f"{type(exc).__name__}: {exc}"
+                _logger.warning(
+                    "Factor analysis skipped after successful backtest: %s. "
+                    "Pipeline report will still be written with a skipped "
+                    "factor_analysis block.",
+                    factor_skipped_reason,
+                )
+        else:
+            factor_skipped_reason = "disabled_by_config"
 
         # Step 7a: Persist positions artifact (authoritative portfolio
         # weights) *before* attribution. Previously this lived after the
@@ -510,6 +544,7 @@ class Pipeline:
             report_path, config, feature_result, model_result,
             signal_result, backtest_output, factor_result, attribution_result,
             attribution_skipped_reason=attribution_skipped_reason,
+            factor_skipped_reason=factor_skipped_reason,
         )
         _logger.info("  Report: %s", report_path)
 
@@ -519,10 +554,17 @@ class Pipeline:
         # Step 10: Generate charts
         _logger.info("Generating performance charts...")
         charts_dir = str(output_dir / "charts")
-        ResultVisualizer.generate(
-            return_series=backtest_output.return_series,
-            config=VisualizerConfig(output_dir=charts_dir),
-        )
+        try:
+            ResultVisualizer.generate(
+                return_series=backtest_output.return_series,
+                config=VisualizerConfig(output_dir=charts_dir),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Chart generation skipped after successful report write: "
+                "%s: %s.",
+                type(exc).__name__, exc,
+            )
 
         return PipelineResult(
             feature_result=feature_result,
@@ -577,6 +619,7 @@ class Pipeline:
         factor_result: FactorAnalysisResult | None = None,
         attribution_result: AttributionResult | None = None,
         attribution_skipped_reason: str | None = None,
+        factor_skipped_reason: str | None = None,
     ) -> None:
         report: dict[str, Any] = {
             "generated_at": datetime.now().isoformat(),
@@ -613,6 +656,8 @@ class Pipeline:
 
         if factor_result is not None:
             report["factor_analysis"] = {
+                "status": "ok",
+                "skipped_reason": None,
                 "total_factors": factor_result.total_factors,
                 "top_factors": [
                     {
@@ -623,6 +668,11 @@ class Pipeline:
                     for s in factor_result.factor_ic_stats[:20]
                 ],
                 "ic_decay": dict(factor_result.ic_decay),
+            }
+        else:
+            report["factor_analysis"] = {
+                "status": "skipped",
+                "skipped_reason": factor_skipped_reason,
             }
 
         report["attribution"] = Pipeline._attribution_section(

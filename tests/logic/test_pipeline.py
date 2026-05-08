@@ -116,6 +116,10 @@ class PipelineConfigPostInitTests(unittest.TestCase):
                 test_end="2025-07-01",
             )
 
+    def test_rejects_non_iso_date_at_boundary(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "YYYY-MM-DD"):
+            PipelineConfig(provider_uri="/tmp/fake", train_start="2025-1-01")
+
     def test_rejects_non_positive_init_cash(self) -> None:
         with self.assertRaisesRegex(PipelineError, "init_cash"):
             PipelineConfig(provider_uri="/tmp/fake", init_cash=0)
@@ -166,6 +170,12 @@ class PipelineConfigPostInitTests(unittest.TestCase):
     def test_rejects_negative_min_cost(self) -> None:
         with self.assertRaisesRegex(PipelineError, "min_cost"):
             PipelineConfig(provider_uri="/tmp/fake", min_cost=-0.01)
+
+    def test_rejects_invalid_limit_threshold_early(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "limit_threshold"):
+            PipelineConfig(provider_uri="/tmp/fake", limit_threshold=0.0)
+        with self.assertRaisesRegex(PipelineError, "limit_threshold"):
+            PipelineConfig(provider_uri="/tmp/fake", limit_threshold=True)
 
     def test_rejects_bool_cost_field(self) -> None:
         """``True`` / ``False`` would silently be 1 / 0 — accept them as

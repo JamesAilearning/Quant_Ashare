@@ -152,6 +152,41 @@ class BenchmarkLoaderFailurePathTests(unittest.TestCase):
         self.assertIn(ISSUE_SCHEMA_MISMATCH, status.errors)
         self.assertEqual(status.contract_health, "error")
 
+    def test_blank_header_column_does_not_shift_close_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            csv_path = tmp_dir / "blank_col.csv"
+            csv_path.write_text(
+                "date,,close\n"
+                "2026-02-02,ignored,3800.12\n"
+                "2026-02-03,ignored,3812.55\n",
+                encoding="utf-8",
+            )
+            manifest_path = tmp_dir / "blank_col.csv.manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "benchmark_code": "SH000300",
+                        "source_name": "fixture-local",
+                        "source_uri": "file://blank_col.csv",
+                        "snapshot_at": "2026-02-03",
+                        "schema_version": "v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = BenchmarkArtifactLoader.load(
+                artifact_path=str(csv_path),
+                manifest_path=str(manifest_path),
+                reference_date="2026-02-03",
+            )
+
+        self.assertIn("date", profile.columns_present)
+        self.assertIn("close", profile.columns_present)
+        self.assertEqual(profile.rows, 2)
+        self.assertEqual(profile.snapshot_end, "2026-02-03")
+
     def test_future_dated_snapshot_yields_temporal_issue(self) -> None:
         # Use the healthy fixture but with a reference_date BEFORE snapshot_end.
         profile = BenchmarkArtifactLoader.load(

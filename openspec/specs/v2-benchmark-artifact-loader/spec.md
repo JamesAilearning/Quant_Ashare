@@ -4,9 +4,7 @@
 Define the explicit file-based benchmark artifact loader that turns canonical
 benchmark CSV and manifest files into contract-consumable profiles without
 runtime benchmark selection.
-
 ## Requirements
-
 ### Requirement: V2 SHALL provide a benchmark artifact loader that produces contract-consumable profiles
 
 The system SHALL provide a loader that reads a benchmark artifact csv and its sidecar manifest and produces a `BenchmarkArtifactProfile` consumable by `BenchmarkDataContract.validate_and_build_status` without modification.
@@ -97,3 +95,14 @@ modification.
 - **THEN** `coverage_ratio` is computed using the legacy
   `span_days × 0.63` approximation
 - **AND** existing tests continue to pass unchanged
+
+### Requirement: Benchmark artifact CSV parsing SHALL preserve original column positions
+
+Benchmark artifact loaders SHALL normalize header names for matching while
+preserving their original CSV column indexes when reading row values.
+
+#### Scenario: CSV contains an unnamed column
+- **WHEN** a benchmark CSV header is `date,,close`
+- **THEN** the loader maps `close` to the original third column
+- **AND** blank unnamed columns do not shift row-value reads into the wrong
+  field

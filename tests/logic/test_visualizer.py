@@ -79,6 +79,17 @@ class VisualizerTests(unittest.TestCase):
                     config=VisualizerConfig(output_dir=tmpdir),
                 )
 
+    def test_rejects_non_finite_returns_before_drawdown(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(VisualizerError, "NaN or infinite"):
+                ResultVisualizer.generate(
+                    return_series={
+                        "return": {"2024-10-01": float("nan")},
+                        "bench": {"2024-10-01": 0.0},
+                    },
+                    config=VisualizerConfig(output_dir=tmpdir, dpi=72),
+                )
+
     def test_file_sizes_reasonable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             return_series = _make_return_series(n_days=120)

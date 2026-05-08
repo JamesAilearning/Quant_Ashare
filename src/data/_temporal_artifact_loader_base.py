@@ -173,15 +173,15 @@ class TemporalArtifactLoaderBase:
                 except StopIteration:
                     return _CsvReadOutcome(0, (), None, None, False, None, 0)
 
-                header_normalized = tuple(
-                    col.strip().lower() for col in header if col.strip()
-                )
+                header_lookup = {
+                    col.strip().lower(): idx
+                    for idx, col in enumerate(header)
+                    if col.strip()
+                }
+                header_normalized = tuple(header_lookup)
 
                 def _index(column: str) -> int:
-                    try:
-                        return header_normalized.index(column)
-                    except ValueError:
-                        return -1
+                    return header_lookup.get(column, -1)
 
                 trade_date_idx = _index(cls.TRADE_DATE_COLUMN)
                 eff_start_idx = _index(cls.RANGE_COLUMNS[0])

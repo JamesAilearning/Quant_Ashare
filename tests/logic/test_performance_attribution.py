@@ -98,6 +98,23 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
                     predictions=preds,
                 )
 
+    def test_rejects_non_finite_return_series_values(self) -> None:
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000")],
+            names=["datetime", "instrument"],
+        )
+        preds = pd.Series([1.0], index=idx)
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            with self.assertRaisesRegex(PerformanceAttributionError, "non-finite"):
+                PerformanceAttribution.analyze(
+                    return_series={
+                        "return": {"2025-10-01": float("nan")},
+                        "bench": {"2025-10-01": 0.005},
+                    },
+                    predictions=preds,
+                    positions=None,
+                )
+
     def test_config_defaults(self) -> None:
         cfg = AttributionConfig()
         # benchmark_code and use_code_based_sectors removed as dead fields —
@@ -311,6 +328,27 @@ class PerformanceAttributionStructuralTests(unittest.TestCase):
         with patch.object(PerformanceAttribution, "_get_instrument_returns",
                           return_value=pd.Series({"SH600000": 0.05})):
             with self.assertRaisesRegex(PerformanceAttributionError, "non-positive aggregate weight"):
+                PerformanceAttribution._brinson_attribution(
+                    predictions, port_returns, bench_returns, cfg, positions,
+                )
+
+    def test_rejects_empty_instrument_return_coverage(self) -> None:
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2025-10-01"), "SH600000")],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([1.0], index=idx)
+        positions = {"2025-10-01": {"SH600000": 1.0}}
+        port_returns = pd.Series([0.01], index=[pd.Timestamp("2025-10-01")])
+        bench_returns = pd.Series([0.005], index=[pd.Timestamp("2025-10-01")])
+        cfg = AttributionConfig(start_date="2025-10-01", end_date="2025-10-01")
+
+        with patch.object(
+            PerformanceAttribution,
+            "_get_instrument_returns",
+            return_value=pd.Series(dtype=float),
+        ):
+            with self.assertRaisesRegex(PerformanceAttributionError, "No finite instrument close"):
                 PerformanceAttribution._brinson_attribution(
                     predictions, port_returns, bench_returns, cfg, positions,
                 )

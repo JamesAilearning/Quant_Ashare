@@ -288,6 +288,8 @@ class PerformanceAttribution:
         bench_returns = pd.Series(
             {pd.Timestamp(k): float(v) for k, v in bench_dict.items()}
         ).sort_index()
+        cls._require_finite_series(port_returns, "return_series['return']")
+        cls._require_finite_series(bench_returns, "return_series['bench']")
 
         # Step 1: Brinson sector attribution
         _logger.info("Computing Brinson sector attribution...")
@@ -339,6 +341,25 @@ class PerformanceAttribution:
             bench_weight_method=cls._effective_bench_weight_method(config),
             sector_taxonomy=sector_taxonomy,
         )
+
+    @staticmethod
+    def _require_finite_series(series: Any, label: str) -> None:
+        bad = []
+        for key, value in series.items():
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                bad.append((key, value))
+                continue
+            if not math.isfinite(numeric):
+                bad.append((key, value))
+        if bad:
+            sample = ", ".join(f"{k!s}={v!r}" for k, v in bad[:3])
+            raise PerformanceAttributionError(
+                f"{label} contains non-finite or non-numeric values "
+                f"({sample}). Attribution refuses to let pandas silently "
+                "skip or propagate malformed return data."
+            )
 
     @classmethod
     def _validate(
@@ -584,7 +605,7 @@ class PerformanceAttribution:
                 day_count += 1
                 for inst, w in day_map.items():
                     try:
-                        weight_sum[inst] = weight_sum.get(inst, 0.0) + float(w)
+                        weight = float(w)
                     except (TypeError, ValueError) as exc:
                         # Record the drop instead of silently skipping —
                         # a string / None weight is a serialisation defect
@@ -598,6 +619,14 @@ class PerformanceAttribution:
                             inst, day_key, type(exc).__name__, exc,
                         )
                         continue
+                    if not math.isfinite(weight):
+                        _logger.warning(
+                            "PerformanceAttribution: dropping non-finite "
+                            "weight for %s on %s (%r).",
+                            inst, day_key, w,
+                        )
+                        continue
+                    weight_sum[inst] = weight_sum.get(inst, 0.0) + weight
             if day_count == 0 or not weight_sum:
                 # positions was non-empty at validation time but every day
                 # deserialized to zero weights — treat as corrupted input.
@@ -632,6 +661,12 @@ class PerformanceAttribution:
 
         # Get per-instrument returns over the period
         inst_returns = cls._get_instrument_returns(instruments, config)
+        if inst_returns.empty:
+            raise PerformanceAttributionError(
+                "No finite instrument close returns were available for "
+                "Brinson attribution. Refusing to emit all-zero sector "
+                "effects from missing qlib close data."
+            )
 
         # Aggregate by sector
         sectors = sorted(set(sector_map.values()))

@@ -55,6 +55,7 @@ _VALID_PREDICT_SEGMENTS = ("train", "valid", "test")
 # - learning_rate > 1.0 makes LightGBM diverge; we stay below.
 _MAX_NUM_BOOST_ROUND = 100_000
 _MAX_MAX_DEPTH = 64
+_MAX_CATBOOST_DEPTH = 16
 _MAX_NUM_LEAVES = 100_000
 _MAX_LEARNING_RATE = 1.0
 
@@ -223,10 +224,9 @@ class ModelTrainer:
     ) -> None:
         """Call ``model.fit`` with the kwargs each framework actually accepts.
 
-        LGBModel's fit() accepts num_boost_round/early_stopping_rounds/evals_result
-        as overrides. XGBModel and CatBoostModel read these from __init__ only
-        and would raise TypeError if we forward extra kwargs. This dispatch
-        keeps the multi-model claim honest.
+        qlib's LGBModel, XGBModel, and CatBoostModel wrappers all own
+        num_boost_round/early_stopping_rounds at fit-time. Forwarding them here
+        keeps user config from silently falling back to wrapper defaults.
         """
         if config.model_type == "LGBModel":
             model.fit(
@@ -235,9 +235,14 @@ class ModelTrainer:
                 early_stopping_rounds=config.early_stopping_rounds,
                 evals_result=evals_result,
             )
+        elif config.model_type in ("XGBModel", "CatBoostModel"):
+            model.fit(
+                dataset,
+                num_boost_round=config.num_boost_round,
+                early_stopping_rounds=config.early_stopping_rounds,
+                evals_result=evals_result,
+            )
         else:
-            # XGB / CatBoost: plain fit(dataset). Hyperparams already baked in
-            # at _create_model time; no evals_result hook is exposed.
             model.fit(dataset)
 
     @classmethod
@@ -464,6 +469,12 @@ class ModelTrainer:
                 f"{_MAX_MAX_DEPTH}. Depths this large on tabular features "
                 f"are degenerate; published Alpha158/Alpha360 tuning stays "
                 f"below 12."
+            )
+        if config.model_type == "CatBoostModel" and config.max_depth > _MAX_CATBOOST_DEPTH:
+            raise ModelTrainerError(
+                f"CatBoostModel max_depth={config.max_depth} exceeds supported "
+                f"upper bound of {_MAX_CATBOOST_DEPTH}. CatBoost rejects deeper "
+                "trees internally; fail at the config boundary instead."
             )
 
         # ---- seed ---- (used by every model type)
