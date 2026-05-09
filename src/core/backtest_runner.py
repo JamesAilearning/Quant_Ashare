@@ -347,6 +347,7 @@ class BacktestRunner:
         # return (ret_matrix[dt+1]), not the dt-1→dt return that was
         # already priced in before rebalancing.
         close_unstacked = close.unstack(level="instrument")["$close"]
+        close_unstacked = close_unstacked.sort_index()
         ret_matrix = close_unstacked.pct_change().shift(-1)
         # The last row has no next-day return; drop it.
         ret_matrix = ret_matrix.iloc[:-1].dropna(how="all")

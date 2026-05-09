@@ -975,8 +975,14 @@ class WalkForwardEngine:
                             "path": prior_path,
                             "reason": f"lightgbm {sidecar_lgb} != {_lgb.__version__}",
                         })
-                except Exception:
-                    pass  # sidecar parse failed → load without guard
+                except Exception as exc:  # noqa: BLE001
+                    _logger.warning(
+                        "Fold %d ensemble: sidecar parse/check failed "
+                        "for %r (%s: %s) — loading prior model without "
+                        "version guard.",
+                        current_fold_index, prior_path,
+                        type(exc).__name__, exc,
+                    )
             if skip_prior:
                 continue
 
