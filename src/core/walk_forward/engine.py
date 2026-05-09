@@ -336,7 +336,12 @@ class WalkForwardEngine:
         prediction_artifact_sha = write_prediction_artifact(
             prediction_artifact_path, predictions,
         )
-        ensemble_meta["prediction_artifact_sha256"] = prediction_artifact_sha
+        ensemble_meta = {
+            **ensemble_meta,
+            "current_model_ref": model_path,
+            "prediction_artifact_path": str(prediction_artifact_path),
+            "prediction_artifact_sha256": prediction_artifact_sha,
+        }
 
         # Signal analysis
         signal_result = SignalAnalyzer.analyze(
@@ -362,7 +367,7 @@ class WalkForwardEngine:
         # Backtest
         _logger.info("  Fold %d: backtest...", fold_index)
         backtest_request = CanonicalBacktestInput(
-            predictions_ref=model_path,
+            predictions_ref=str(prediction_artifact_path),
             evaluation_start=test_start,
             evaluation_end=test_end,
             account_config=CanonicalAccountConfig(
@@ -455,7 +460,8 @@ class WalkForwardEngine:
             annualized_return=ann_ret,
             max_drawdown=max_dd,
             information_ratio=ir,
-            prediction_shape=tuple(model_result.prediction_shape),
+            prediction_shape=model_result.prediction_shape,
+            report_path=str(report_path),
         )
 
     @classmethod
