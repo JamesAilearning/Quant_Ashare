@@ -735,5 +735,101 @@ class AtomicPickleWriteTests(unittest.TestCase):
             self.assertEqual(loaded, payload)
 
 
+class TrainAndPredictHappyPathTests(unittest.TestCase):
+    """PR #54 introduced ``_write_model_sidecar`` that runs after a
+    successful pickle write.  An ``UnboundLocalError`` in the
+    sidecar call order slipped past review because the existing
+    atomic-write tests mocked ``pickle.dump`` to raise an exception
+    before the sidecar path was reached.  These tests exercise the
+    full success path without requiring qlib runtime.
+    """
+
+    def _write_fake_pickle(self, target: Path) -> bytes:
+        data = b"fake_pickle_payload_for_sha256"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return data
+
+    def test_sidecar_contains_required_fields(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp) / "model.pkl"
+            payload = self._write_fake_pickle(model_path)
+
+            config = MagicMock()
+            config.model_type = "LGBModel"
+            ModelTrainer._write_model_sidecar(
+                model_path, config, best_iter=42, final_val=0.99,
+            )
+
+            sidecar_path = model_path.with_suffix(".pkl.meta.json")
+            self.assertTrue(
+                sidecar_path.is_file(),
+                "Sidecar not written after successful pickle dump",
+            )
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["schema_version"], "v1")
+            self.assertIsInstance(sidecar["pkl_sha256"], str)
+            self.assertEqual(len(sidecar["pkl_sha256"]), 64)
+            self.assertEqual(sidecar["best_iteration"], 42)
+            self.assertEqual(sidecar["final_valid_loss"], 0.99)
+            self.assertEqual(sidecar["model_type"], "LGBModel")
+            self.assertIn("trained_at", sidecar)
+            self.assertIn("python_version", sidecar)
+
+    def test_sidecar_pkl_sha256_matches_pickle_bytes(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp) / "model.pkl"
+            payload = self._write_fake_pickle(model_path)
+
+            config = MagicMock()
+            config.model_type = "XGBModel"
+            ModelTrainer._write_model_sidecar(
+                model_path, config, best_iter=None, final_val=None,
+            )
+
+            sidecar_path = model_path.with_suffix(".pkl.meta.json")
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+
+            import hashlib
+            expected_sha = hashlib.sha256(payload).hexdigest()
+            self.assertEqual(
+                sidecar["pkl_sha256"], expected_sha,
+                "Sidecar sha256 must match the pickle bytes on disk",
+            )
+
+    def test_unbound_best_iter_regression_guard(self) -> None:
+        """Pin the correct ordering: _extract_training_diagnostics is
+        called *before* _write_model_sidecar, so best_iter / final_val
+        are always assigned when the sidecar writes them.
+
+        PR #54 introduced the opposite order — best_iter was passed to
+        the sidecar before _extract_training_diagnostics assigned it,
+        causing UnboundLocalError on every real training run. If this
+        order regresses, the sidecar would see None for both fields
+        (the initial values set at :file:``model_trainer.py:167-168``)
+        instead of the extracted diagnostics.
+        """
+        import inspect
+        import textwrap
+
+        src = textwrap.dedent(inspect.getsource(ModelTrainer.train_and_predict))
+        # The _write_model_sidecar call must appear *after* the
+        # _extract_training_diagnostics call in the source text.
+        sidecar_pos = src.index("_write_model_sidecar")
+        extract_pos = src.index("_extract_training_diagnostics")
+        self.assertGreater(
+            sidecar_pos, extract_pos,
+            "PR #54 regression: _write_model_sidecar must be called "
+            "AFTER _extract_training_diagnostics so best_iter/final_val "
+            "are assigned before the sidecar writes them.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
