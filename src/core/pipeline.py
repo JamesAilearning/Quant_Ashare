@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -43,6 +43,7 @@ from src.core.performance_attribution import (
     PerformanceAttributionError,
 )
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized
+from src.core.run_catalog import append_run_record, build_record as build_catalog_record
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
@@ -322,6 +323,7 @@ class Pipeline:
         # an earlier run's artifacts.
         output_dir.mkdir(parents=True, exist_ok=False)
         _logger.info("Run directory: %s", output_dir)
+        started_at = datetime.now(tz=timezone.utc).isoformat()
 
         # Step 1: Initialize qlib (or validate config matches existing init)
         _logger.info("Initializing qlib runtime...")
@@ -610,6 +612,11 @@ class Pipeline:
                 type(exc).__name__, exc,
             )
 
+        cls._append_catalog_entry(
+            output_dir, config, report_path, backtest_output,
+            signal_result, started_at,
+        )
+
         return PipelineResult(
             feature_result=feature_result,
             model_result=model_result,
@@ -619,6 +626,55 @@ class Pipeline:
             attribution=attribution_result,
             report_path=report_path,
         )
+
+    @staticmethod
+    def _append_catalog_entry(
+        output_dir: Path,
+        config: PipelineConfig,
+        report_path: str,
+        backtest_output: Any,
+        signal_result: Any,
+        started_at: str,
+        *,
+        status: str = "ok",
+    ) -> None:
+        """Append a run-catalog record for a completed pipeline run."""
+        try:
+            from dataclasses import asdict
+            import hashlib, json
+            config_dict = asdict(config)
+            fingerprint = hashlib.sha256(
+                json.dumps(config_dict, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+
+            record = build_catalog_record(
+                engine="pipeline",
+                status=status,
+                started_at=started_at,
+                config_fingerprint=fingerprint,
+                config_summary={
+                    "instruments": config.instruments,
+                    "feature_handler": config.feature_handler,
+                    "model_type": config.model_type,
+                    "topk": config.topk,
+                },
+                headline_metrics={
+                    "mean_ic_1d": (
+                        float(signal_result.ic_summary.get(1, float("nan")))
+                        if signal_result else None
+                    ),
+                    "annualized_return": (
+                        backtest_output.risk_analysis.get(
+                            "excess_return_with_cost", {}
+                        ).get("annualized_return")
+                    ),
+                },
+                report_path=report_path,
+                output_dir=str(output_dir),
+            )
+            append_run_record(record)
+        except Exception:  # noqa: BLE001 — catalog is best-effort
+            _logger.debug("Run catalog append skipped.", exc_info=True)
 
     @staticmethod
     def _make_run_dir(root_dir: Path, config: PipelineConfig) -> Path:

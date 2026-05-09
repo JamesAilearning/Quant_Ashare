@@ -370,6 +370,7 @@ class WalkForwardEngine:
 
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        started_at = datetime.now(tz=timezone.utc).isoformat()
 
         # Generate fold windows
         windows = cls._generate_windows(config)
@@ -485,6 +486,38 @@ class WalkForwardEngine:
             aggregate_metrics=aggregate,
         )
         _logger.info("Aggregate report: %s", aggregate_path)
+
+        # Best-effort run catalog: append one JSONL line so operators
+        # can query historical runs without find + jq. Non-fatal on
+        # failure — the per-run report is the authoritative artifact.
+        try:
+            from src.core.run_catalog import append_run_record, build_record as build_catalog_record
+            record = build_catalog_record(
+                engine="walk_forward",
+                status="ok",
+                started_at=started_at,
+                config_fingerprint="",
+                config_summary={
+                    "instruments": config.instruments,
+                    "feature_handler": config.feature_handler,
+                    "model_type": config.model_type,
+                    "ensemble_window": config.ensemble_window,
+                    "topk": config.topk,
+                    "overall_start": config.overall_start,
+                    "overall_end": config.overall_end,
+                },
+                headline_metrics={
+                    "num_folds": aggregate.get("num_folds"),
+                    "mean_ic_1d": aggregate.get("mean_ic_1d"),
+                    "mean_ir": aggregate.get("mean_information_ratio"),
+                    "worst_drawdown": aggregate.get("worst_drawdown"),
+                },
+                report_path=str(aggregate_path),
+                output_dir=str(output_dir),
+            )
+            append_run_record(record)
+        except Exception:  # noqa: BLE001
+            _logger.debug("Run catalog append skipped.", exc_info=True)
 
         return WalkForwardResult(
             folds=folds,
@@ -1391,17 +1424,64 @@ class WalkForwardEngine:
         def _valid(arr: "np.ndarray") -> int:
             return int(np.count_nonzero(~np.isnan(arr)))
 
+        def _bootstrap_mean_ci(
+            arr: "np.ndarray",
+            *,
+            n_boot: int = 10000,
+            ci: float = 0.95,
+            seed: int = 42,
+        ) -> tuple[float, float]:
+            """95% bootstrap CI for the sample mean.
+
+            Folds are designed non-overlapping (window boundaries never
+            share the same calendar month), so ``block_size=1`` (standard
+            i.i.d. bootstrap) is appropriate.  If a future change
+            introduces overlap (``step_months < test_months``) this
+            function should be re-tuned with ``block_size`` to match the
+            maximum overlap depth.
+
+            Returns ``(NaN, NaN)`` when fewer than 2 finite observations
+            are available — a single-fold CI is not meaningful.
+            """
+            finite = arr[~np.isnan(arr)]
+            if finite.size < 2:
+                return float("nan"), float("nan")
+            rng = np.random.default_rng(seed)
+            boots = rng.choice(
+                finite, size=(n_boot, finite.size), replace=True
+            ).mean(axis=1)
+            lo = float(np.percentile(boots, 100 * (1 - ci) / 2))
+            hi = float(np.percentile(boots, 100 * (1 + ci) / 2))
+            return lo, hi
+
+        ci_ic_1d_lo, ci_ic_1d_hi = _bootstrap_mean_ci(ic_1d)
+        ci_ic_5d_lo, ci_ic_5d_hi = _bootstrap_mean_ci(ic_5d)
+        ci_ir_lo, ci_ir_hi = _bootstrap_mean_ci(irs)
+        ci_ret_lo, ci_ret_hi = _bootstrap_mean_ci(returns)
+
         return {
             "mean_ic_1d": _nanmean(ic_1d),
             "std_ic_1d": _nanstd(ic_1d),
+            "mean_ic_1d_ci_low": ci_ic_1d_lo,
+            "mean_ic_1d_ci_high": ci_ic_1d_hi,
             "valid_folds_ic_1d": _valid(ic_1d),
             "mean_ic_5d": _nanmean(ic_5d),
+            "std_ic_5d": _nanstd(ic_5d),
+            "mean_ic_5d_ci_low": ci_ic_5d_lo,
+            "mean_ic_5d_ci_high": ci_ic_5d_hi,
             "valid_folds_ic_5d": _valid(ic_5d),
             "mean_annualized_return": _nanmean(returns),
+            "mean_annualized_return_ci_low": ci_ret_lo,
+            "mean_annualized_return_ci_high": ci_ret_hi,
             "valid_folds_annualized_return": _valid(returns),
             "worst_drawdown": _nanmin(drawdowns),
             "valid_folds_max_drawdown": _valid(drawdowns),
             "mean_information_ratio": _nanmean(irs),
+            "std_information_ratio": _nanstd(irs),
+            "mean_information_ratio_ci_low": ci_ir_lo,
+            "mean_information_ratio_ci_high": ci_ir_hi,
             "valid_folds_information_ratio": _valid(irs),
             "num_folds": len(folds),
+            "bootstrap_seed": 42,
+            "bootstrap_n": 10000,
         }
