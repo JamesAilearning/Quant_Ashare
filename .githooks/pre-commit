@@ -1,0 +1,77 @@
+#!/bin/bash
+# Versioned pre-commit hook. Activate per-clone with:
+#   git config core.hooksPath .githooks
+#
+# Catches the failure modes documented in AGENTS.md > Implementation
+# discipline. Specifically:
+#   1. Import-time NameError (a removed-but-still-referenced import)
+#   2. Targeted test failure on a touched src/core or src/data file
+#
+# Bypass with --no-verify only when explicitly requested by the user.
+
+set -e
+
+# Colour codes (no-op on dumb terminals)
+RED=$(tput setaf 1 2>/dev/null || true)
+GREEN=$(tput setaf 2 2>/dev/null || true)
+YELLOW=$(tput setaf 3 2>/dev/null || true)
+RESET=$(tput sgr0 2>/dev/null || true)
+
+# ────────────────────────────────────────────────────────────────────
+# 1. Syntax + import smoke for every staged .py file
+# ────────────────────────────────────────────────────────────────────
+staged_py=$(git diff --cached --name-only --diff-filter=AM | grep '\.py$' || true)
+
+if [ -z "$staged_py" ]; then
+    # No Python files changed — nothing to verify
+    exit 0
+fi
+
+echo "${YELLOW}pre-commit: syntax check on $(echo "$staged_py" | wc -l | tr -d ' ') file(s)${RESET}"
+
+for f in $staged_py; do
+    # AST parse — catches the "claimed-to-move-import-but-didn't" class
+    # of regression. Open with utf-8 so files with Chinese comments
+    # don't trip Windows GBK default.
+    if ! python -c "
+import ast, sys
+src = open(sys.argv[1], encoding='utf-8').read()
+try:
+    ast.parse(src)
+except SyntaxError as e:
+    print(f'  SyntaxError in {sys.argv[1]}:{e.lineno}: {e.msg}')
+    sys.exit(1)
+" "$f"; then
+        echo "${RED}pre-commit: syntax check FAILED on $f${RESET}"
+        echo "${RED}fix the syntax error or run with --no-verify if intentional${RESET}"
+        exit 1
+    fi
+done
+
+# ────────────────────────────────────────────────────────────────────
+# 2. Targeted test run for any src/core/*.py or src/data/*.py touched
+#
+# The matching test_<basename>.py runs IF it exists. Heavy E2E tests
+# (RUN_E2E=1) stay off — those need a qlib bundle and are CI-only.
+# ────────────────────────────────────────────────────────────────────
+test_files=""
+for f in $(echo "$staged_py" | grep -E 'src/(core|data)/'); do
+    base=$(basename "$f" .py)
+    candidate="tests/logic/test_${base}.py"
+    if [ -f "$candidate" ]; then
+        test_files="$test_files $candidate"
+    fi
+done
+
+if [ -n "$test_files" ]; then
+    echo "${YELLOW}pre-commit: running targeted tests${RESET}"
+    if ! python -m pytest -q $test_files; then
+        echo "${RED}pre-commit: targeted tests FAILED${RESET}"
+        echo "${RED}fix the regression before committing,${RESET}"
+        echo "${RED}or run with --no-verify only if user explicitly asked${RESET}"
+        exit 1
+    fi
+fi
+
+echo "${GREEN}pre-commit: ok${RESET}"
+exit 0

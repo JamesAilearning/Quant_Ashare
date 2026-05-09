@@ -52,3 +52,44 @@ New contract foundations should include contract-focused tests.
 Placeholder runtime components should include tests confirming they remain intentionally unimplemented.
 Prefer targeted tests plus repo-wide tests when the change is small enough.
 Run `openspec validate` for OpenSpec-affecting changes.
+
+Implementation discipline (mandatory for any code-change task)
+These rules are derived from real failure patterns observed across merged PRs in this repository. They are not guidelines; they are blockers. Skip a check, ship a regression — multiple recent PRs have done exactly this and required follow-up commits to repair main.
+
+Before you claim a task is done
+Run `pytest tests/logic/ tests/governance/` and read the output. If anything is RED, do not commit. Fix the failure or roll back the change.
+Run `python -c "import <module>"` for every source module you touched. This catches import-time `NameError` (a removed-but-still-referenced import) which heavy-path tests will only surface inside a Pipeline.run call.
+If you removed an import line, grep the file for the removed symbol. The "moved to top" claim must match the actual file.
+
+Commit messages must match the diff, not the plan
+Write the code first, then `git diff --cached`, then write the commit message describing what the diff shows. The message "moved hashlib to module top" is only acceptable when an `import hashlib` line at module top exists in the diff. If the message claims X and the diff lacks X, the message is wrong; fix one of the two before commit.
+
+Changing a contract requires migrating callers and tests
+Whenever you change any of: a function signature (parameter name, type, position, default), a dataclass field, the exception type a function raises, or a JSON / dict schema written to disk — `grep -rn '<symbol>' src/ tests/ scripts/` and update every caller. Tests asserting the old behavior must be renamed and rewritten in the same commit. A test named `test_x_rejected_by_validate_input` is broken when the rejection has moved to `__post_init__`; rename to match.
+
+Never invent fields. Always grep the producer.
+Before reading `result["foo"]` or `report["section"]["bar"]`, grep the producing code: `grep -rn "'foo'\|\"foo\"" src/`. If the field does not appear at a write site, the field does not exist. Find the actual field. Do not guess from the function name or from a sibling tool's schema.
+
+Match the local style. Read sibling functions before adding a new one.
+Before adding a new method, read 2–3 existing methods in the same module. If they `raise X` on bad input, do not silently `return {}` or `return None`. If they log a WARNING with a specific reason string, do the same. Convention divergence within one file is a code smell; either align, or write a comment explaining why divergence is correct.
+
+Refactors must achieve their stated goal
+If your commit message says "single source of truth", the diff must delete the duplicate. If the message says "remove magic numbers", the diff must replace literals with named constants. Adding a SECOND source of truth (defence-in-depth) without removing the first is a code smell, not a refactor — the next reader now has two places to update and no clear primary. State the goal honestly or pick a different goal.
+
+Two engines, one schema
+This codebase has Pipeline (single-fold) and WalkForwardEngine (rolling). They write parallel artifacts: `pipeline_report.json` / `walk_forward_report.json` / `output/runs/_index.jsonl`. Schema field names MUST be identical across both engines. When you add or rename a key in one, change the other in the same commit. If you cannot, write the symmetric change as a TODO with the exact key list, and stop.
+
+No silent fallback
+This codebase rejects implicit fallback. If qlib import fails, raise — do not return `{}`. If positions has the wrong shape, raise — do not silently produce an empty result. If a config key is unknown, hard-fail — do not log a warning and proceed with defaults. Search for the existing "Refusing to silently fall back" comments in the codebase for the canonical pattern.
+
+Test discipline
+New behavior requires a test. Test names describe the behavior, not the function — `test_lag_zero_validates_shape` not `test_apply_lag`.
+A regression test that requires `RUN_E2E=1` plus a local data bundle is not automated regression coverage; CI cannot run it. Pair every E2E regression test with a synthetic-input unit-level twin that runs without external state.
+When fixing a bug, write a test that fails before the fix and passes after. Cite this in the commit body: "before fix: <test> raises X; after fix: passes."
+
+PR scope
+One logically coherent change per PR. "P1 batch — N items" is fine ONLY if every item is the same kind (e.g. all defensive-validation tightening). Mixing data-correctness fixes with refactors with new tools makes review impossible.
+Follow-up commits within the same PR are a SIGNAL that the original review missed something. When you push a follow-up to a PR you opened, write in the follow-up's body why it slipped past the original review so the next agent reading this can avoid the same gap.
+
+Pre-commit hook
+A versioned pre-commit hook ships at `.githooks/pre-commit`. Activate it once per clone with `git config core.hooksPath .githooks`. The hook runs the same import-smoke and targeted-test checks listed above; do not bypass it with `--no-verify` unless explicitly asked by the user.
