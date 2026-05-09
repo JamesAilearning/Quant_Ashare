@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from src.core._json_utils import _sanitize_for_json
 from src.core.logger import get_logger
 from src.core.walk_forward._types import WalkForwardFold
+from src.core.walk_forward.config import WalkForwardError
 
 _logger = get_logger(__name__)
 
