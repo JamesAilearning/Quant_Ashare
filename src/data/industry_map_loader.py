@@ -79,9 +79,14 @@ def load_industry_map(artifact_path: str | Path) -> dict[str, str]:
             )
 
         try:
-            instrument_idx = header.index(_INSTRUMENT_COLUMN)
-            industry_idx = header.index(_INDUSTRY_COLUMN)
-        except ValueError as exc:
+            header_lookup = {
+                col.strip().lower(): idx
+                for idx, col in enumerate(header)
+                if col.strip()
+            }
+            instrument_idx = header_lookup[_INSTRUMENT_COLUMN]
+            industry_idx = header_lookup[_INDUSTRY_COLUMN]
+        except KeyError as exc:
             raise IndustryMapLoaderError(
                 f"Industry artifact at {p} is missing a required column. "
                 f"Expected '{_INSTRUMENT_COLUMN}' and '{_INDUSTRY_COLUMN}' "

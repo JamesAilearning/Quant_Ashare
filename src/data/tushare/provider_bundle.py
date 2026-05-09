@@ -1009,6 +1009,13 @@ class TushareQlibProviderPublisher:
             frame["change"] = pd.to_numeric(frame["pct_chg"], errors="coerce") / 100.0
         else:
             frame["change"] = frame.groupby("instrument")["close"].pct_change()
+        coerced = frame["change"].isna()
+        if coerced.any():
+            _logger.warning(
+                "pct_chg has %d non-numeric/missing values coerced to 0.0 "
+                "(Tushare data quality issue).",
+                int(coerced.sum()),
+            )
         frame["change"] = frame["change"].fillna(0.0)
         fields = [
             "instrument",

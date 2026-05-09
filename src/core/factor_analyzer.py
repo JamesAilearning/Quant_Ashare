@@ -392,11 +392,12 @@ class FactorAnalyzer:
             factor_col = factor_df[col]
             merged = pd.DataFrame({"factor": factor_col, "ret": forward_ret}).dropna()
 
-            if len(merged) < 10:
+            if len(merged) < _MIN_IC_OBSERVATIONS_PER_LAG:
                 continue
 
             daily_ic = merged.groupby(level="datetime").apply(
-                lambda g: compute_ic_for_group(g, ic_method)
+                lambda g: compute_ic_for_group(g, ic_method),
+                include_groups=False,
             ).dropna()
 
             if len(daily_ic) == 0:
@@ -509,7 +510,8 @@ class FactorAnalyzer:
                     continue
 
                 daily_ic = merged.groupby(level="datetime").apply(
-                    lambda g: compute_ic_for_group(g, config.ic_method)
+                    lambda g: compute_ic_for_group(g, config.ic_method),
+                    include_groups=False,
                 ).dropna()
                 decay_values.append(
                     float(daily_ic.mean()) if len(daily_ic) > 0 else float("nan")

@@ -285,7 +285,8 @@ class SignalAnalyzer:
         # Group by name, not position — same defence-in-depth as
         # ``_fetch_returns`` above.
         daily_ic = merged.groupby(level="datetime").apply(
-            lambda g: compute_ic_for_group(g, method)
+            lambda g: compute_ic_for_group(g, method),
+            include_groups=False,
         )
         daily_ic.name = f"IC_{period}d"
         return daily_ic
@@ -325,7 +326,8 @@ class SignalAnalyzer:
 
             merged = merged.rename(columns={"forward_ret": "ret"})
             daily_ic = merged.groupby(level="datetime").apply(
-                lambda g: compute_ic_for_group(g, method)
+                lambda g: compute_ic_for_group(g, method),
+                include_groups=False,
             ).dropna()
             decay.append(
                 float(daily_ic.mean()) if len(daily_ic) > 0 else float("nan")

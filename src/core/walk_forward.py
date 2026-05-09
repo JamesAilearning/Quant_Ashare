@@ -21,7 +21,7 @@ import hashlib
 import json
 import pickle
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -151,6 +151,10 @@ class WalkForwardConfig:
     # Fold 0 always uses only its own model regardless of N.
     ensemble_window: int = 1
 
+    # Reproducibility — seed for numpy/python random/LGB/XGB/CatBoost.
+    # Mirrors PipelineConfig.seed.
+    seed: int = 42
+
     # Performance attribution per fold.
     # ``run_attribution`` controls whether ``_run_single_fold`` calls
     # ``PerformanceAttribution.analyze`` after backtest. Default ``True``
@@ -254,6 +258,22 @@ class WalkForwardConfig:
             raise WalkForwardError(
                 f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
                 f"got {self.adjust_mode!r}."
+            )
+
+        # Model hyperparameter sanity: reject definitely-wrong values
+        # (zero/negative) at config construction — same rationale as
+        # PipelineConfig.__post_init__.
+        if self.num_boost_round < 1:
+            raise WalkForwardError(
+                f"num_boost_round must be >= 1; got {self.num_boost_round!r}."
+            )
+        if self.learning_rate <= 0:
+            raise WalkForwardError(
+                f"learning_rate must be > 0; got {self.learning_rate!r}."
+            )
+        if self.max_depth < 1:
+            raise WalkForwardError(
+                f"max_depth must be >= 1; got {self.max_depth!r}."
             )
 
         # ensemble_window: must be a positive int. ``1`` is the no-op
@@ -495,7 +515,7 @@ class WalkForwardEngine:
         - ``num_folds``, ``generated_at``: provenance.
         """
         return {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "config": asdict(config),
             "folds": [
                 {
@@ -1199,7 +1219,7 @@ class WalkForwardEngine:
                 }
             ),
             "positions_path": str(positions_path) if positions_path else None,
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         }
 
     @staticmethod
@@ -1374,14 +1394,14 @@ class WalkForwardEngine:
         return {
             "mean_ic_1d": _nanmean(ic_1d),
             "std_ic_1d": _nanstd(ic_1d),
-            "valid_folds_ic_1d": float(_valid(ic_1d)),
+            "valid_folds_ic_1d": _valid(ic_1d),
             "mean_ic_5d": _nanmean(ic_5d),
-            "valid_folds_ic_5d": float(_valid(ic_5d)),
+            "valid_folds_ic_5d": _valid(ic_5d),
             "mean_annualized_return": _nanmean(returns),
-            "valid_folds_annualized_return": float(_valid(returns)),
+            "valid_folds_annualized_return": _valid(returns),
             "worst_drawdown": _nanmin(drawdowns),
-            "valid_folds_max_drawdown": float(_valid(drawdowns)),
+            "valid_folds_max_drawdown": _valid(drawdowns),
             "mean_information_ratio": _nanmean(irs),
-            "valid_folds_information_ratio": float(_valid(irs)),
-            "num_folds": float(len(folds)),
+            "valid_folds_information_ratio": _valid(irs),
+            "num_folds": len(folds),
         }
