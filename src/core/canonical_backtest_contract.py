@@ -250,13 +250,21 @@ class CanonicalBacktestInput:
     exchange_config: CanonicalExchangeConfig
     adjust_mode: str
     signal_to_execution_lag: int
-    benchmark_code: Optional[str] = None
+    benchmark_code: str = ""
     source_layer: str = CANONICAL_RUNTIME_LAYER
     allow_implicit_fallback: bool = False
     experimental_controls: Mapping[str, Any] = field(default_factory=dict)
     research_artifact_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        # Reject non-empty benchmark_code at construction so the type
+        # annotation matches runtime behaviour — ``Optional[str]`` was
+        # misleading: ``validate_input`` always rejects None/empty.
+        if not self.benchmark_code:
+            raise CanonicalBacktestContractError(
+                "CanonicalBacktestInput.benchmark_code must be non-empty; "
+                "canonical backtest requires a benchmark."
+            )
         # Reject the three "explicitly rejected" fields the moment a non-
         # default value is supplied — without this, callers could
         # construct an input with experimental knobs set, pass it

@@ -259,6 +259,26 @@ class PipelineConfig:
                 f"{self.signal_to_execution_lag!r}. Use 0 only for explicit "
                 "same-day execution/no shift, and 1 for T+1 delayed execution."
             )
+        # Model hyperparameter sanity: reject definitely-wrong values
+        # (zero/negative) at config construction so the operator does not
+        # wait for dataset build + model init to discover them. Heavier
+        # checks (LGB num_leaves <= 2^max_depth, CatBoost depth <= 16)
+        # are deferred to ModelTrainer._validate.
+        if self.num_boost_round < 1:
+            raise PipelineError(
+                f"PipelineConfig.num_boost_round must be >= 1; got "
+                f"{self.num_boost_round!r}."
+            )
+        if self.learning_rate <= 0:
+            raise PipelineError(
+                f"PipelineConfig.learning_rate must be > 0; got "
+                f"{self.learning_rate!r}."
+            )
+        if self.max_depth < 1:
+            raise PipelineError(
+                f"PipelineConfig.max_depth must be >= 1; got "
+                f"{self.max_depth!r}."
+            )
         # Industry-taxonomy fields: enforce all-or-nothing + supported
         # ``temporal_mode``. Same boundary contract as
         # ``WalkForwardConfig.__post_init__`` so the two configs cannot
@@ -537,16 +557,40 @@ class Pipeline:
                             "the report.",
                             type(exc).__name__, exc,
                         )
+                    except Exception as exc:  # noqa: BLE001
+                        # Catch-all for non-PerformanceAttributionError
+                        # failures inside the attribution engine — bare
+                        # ValueError from float(v), RuntimeError/KeyError
+                        # from qlib D.features(), pandas groupby ValueError,
+                        # etc. Same downgrade pattern as FactorAnalyzer and
+                        # ResultVisualizer: skip + WARN, preserve backtest.
+                        attribution_result = None
+                        attribution_skipped_reason = (
+                            f"unexpected_error: {type(exc).__name__}: {exc}"
+                        )
+                        _logger.warning(
+                            "Performance attribution skipped — unexpected "
+                            "error in engine: %s: %s. Backtest and "
+                            "risk_analysis remain valid.",
+                            type(exc).__name__, exc,
+                        )
 
         # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")
-        cls._write_report(
-            report_path, config, feature_result, model_result,
-            signal_result, backtest_output, factor_result, attribution_result,
-            attribution_skipped_reason=attribution_skipped_reason,
-            factor_skipped_reason=factor_skipped_reason,
-        )
-        _logger.info("  Report: %s", report_path)
+        try:
+            cls._write_report(
+                report_path, config, feature_result, model_result,
+                signal_result, backtest_output, factor_result, attribution_result,
+                attribution_skipped_reason=attribution_skipped_reason,
+                factor_skipped_reason=factor_skipped_reason,
+            )
+            _logger.info("  Report: %s", report_path)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Report write failed: %s: %s. Backtest results and "
+                "positions are already persisted; report-only step skipped.",
+                type(exc).__name__, exc,
+            )
 
         # Step 9: Print summary
         cls._print_summary(backtest_output)
@@ -587,8 +631,6 @@ class Pipeline:
         unexpected collision surfaces as an error rather than silently
         overwriting a prior run's artifacts.
         """
-        import hashlib
-        import json
         import uuid
         from dataclasses import asdict
 

@@ -25,7 +25,6 @@ class FeatureDatasetBuilderError(RuntimeError):
 
 
 FeatureHandlerFactory = Callable[["FeatureDatasetConfig"], Any]
-SUPPORTED_FEATURE_HANDLERS = ("Alpha158",)
 _FEATURE_HANDLER_REGISTRY: dict[str, FeatureHandlerFactory] = {}
 
 
@@ -111,12 +110,12 @@ def _alpha158_factory(config: FeatureDatasetConfig) -> Any:
     )
 
 
-# Module-load: seed the registry with the built-in handler. Importing
-# this module *after* registering a custom factory will reset it back
-# to defaults — that's the documented behaviour of
-# ``_reset_feature_handler_registry_to_defaults``. To register a custom
-# handler durably, do so *after* the first import of this module.
-_reset_feature_handler_registry_to_defaults()
+# Module-load: seed the registry with the built-in handler. Only on the
+# first import — ``importlib.reload`` or an indirect re-import through
+# another module must not wipe custom factories already registered by the
+# application. The guard mirrors the common "init-once" pattern.
+if not _FEATURE_HANDLER_REGISTRY:
+    _reset_feature_handler_registry_to_defaults()
 
 
 class FeatureDatasetBuilder:

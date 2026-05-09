@@ -96,6 +96,7 @@ class HyperparamTrialResult:
 
     trial_number: int
     params: Mapping[str, Any]
+    state: str  # Optuna TrialState name (COMPLETE, FAIL, PRUNED, ...)
     ic_1d: float
     ic_5d: float
     ir: float
@@ -141,13 +142,9 @@ class HyperparamOptimizer:
                 params, dataset, config, output_dir
             )
 
-            trial_results.append(HyperparamTrialResult(
-                trial_number=trial.number,
-                params=params,
-                ic_1d=ic_1d,
-                ic_5d=ic_5d,
-                ir=ir,
-            ))
+            trial.set_user_attr("ic_1d", ic_1d)
+            trial.set_user_attr("ic_5d", ic_5d)
+            trial.set_user_attr("ir", ir)
 
             if config.optimization_metric == "ic_5d":
                 return ic_5d
@@ -175,14 +172,25 @@ class HyperparamOptimizer:
         _logger.info("Starting %d trials...", config.n_trials)
         study.optimize(objective, n_trials=config.n_trials, catch=(Exception,))
 
+        # Build trial_results from study.trials (the source of truth).
+        # Failed trials (caught by ``catch=(Exception,)``) are included
+        # with NaN IC/IR values — the previous ``objective``-scoped
+        # append missed them, making ``n_trials_completed`` lower than
+        # ``n_trials`` whenever any trial failed.
+        for t in study.trials:
+            attrs = t.user_attrs
+            trial_results.append(HyperparamTrialResult(
+                trial_number=t.number,
+                params=dict(t.params),
+                state=t.state.name,
+                ic_1d=float(attrs.get("ic_1d", float("nan"))),
+                ic_5d=float(attrs.get("ic_5d", float("nan"))),
+                ir=float(attrs.get("ir", float("nan"))),
+            ))
+
         if not trial_results:
-            failed = [
-                f"trial#{t.number}:{t.state.name}"
-                for t in study.trials
-            ]
             raise HyperparamOptimizerError(
-                "All hyperparameter trials failed; no best trial is available. "
-                f"Trial states: {failed}"
+                "All hyperparameter trials failed; no best trial is available."
             )
 
         best = study.best_trial
