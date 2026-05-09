@@ -117,8 +117,8 @@ class WalkForwardEngine:
                     train_start=train_s, train_end=train_e,
                     valid_start=valid_s, valid_end=valid_e,
                     test_start=test_s, test_end=test_e,
-                    prior_model_paths=tuple(prior_model_paths),
                     output_dir=output_dir,
+                    prior_model_paths=tuple(prior_model_paths),
                 )
             except Exception as exc:  # noqa: BLE001
                 _logger.error(
@@ -272,8 +272,8 @@ class WalkForwardEngine:
         train_start: str, train_end: str,
         valid_start: str, valid_end: str,
         test_start: str, test_end: str,
-        prior_model_paths: Sequence[tuple[int, str]],
         output_dir: Path,
+        prior_model_paths: Sequence[tuple[int, str]] = (),
     ) -> WalkForwardFold:
         """Execute one fold: feature build → train → ensemble → signal
         → backtest → attribution.  Returns a ``WalkForwardFold`` with
@@ -478,14 +478,16 @@ class WalkForwardEngine:
         if not backtest_output.positions:
             return None, "no_positions_from_backtest"
 
-        base: dict[str, Any] = {
-            "start_date": test_start,
-            "end_date": test_end,
-            "benchmark_code": config.benchmark_code,
-        }
-        if not config.industry_artifact_path:
-            attribution_config = AttributionConfig(**base)
-        else:
+        attribution_overrides: dict[str, Any] = {}
+        if config.industry_artifact_path:
+            # ``purpose=PURPOSE_ATTRIBUTION`` is the explicit "this is
+            # post-hoc analysis, not training" declaration. The shared
+            # loader uses the purpose enum to decide whether the
+            # temporal-leakage check fires; we no longer rely on
+            # ``reference_date=None`` as the implicit signal. See the
+            # ``purpose`` parameter docstring in
+            # :func:`resolve_industry_taxonomy` for the full
+            # rationale.
             try:
                 resolution = resolve_industry_taxonomy(
                     artifact_path=str(config.industry_artifact_path),
@@ -495,27 +497,35 @@ class WalkForwardEngine:
                     purpose=PURPOSE_ATTRIBUTION,
                 )
             except IndustryTaxonomyLoadError as exc:
+                # Industry-artifact load failures are config / file
+                # problems — every fold will hit the same error. Promote
+                # to a hard ``WalkForwardError`` rather than skipping
+                # silently so the operator fixes the root cause once.
                 raise WalkForwardError(
-                    f"Industry taxonomy load failed for fold {fold_index}: "
-                    f"{exc} — promote to a hard WalkForwardError (unlike the "
-                    "per-pipeline down-grade) so the operator fixes the root "
-                    "cause once."
+                    f"Fold {fold_index}: industry taxonomy load failed: {exc}"
                 ) from exc
             for warning in resolution.warnings:
                 _logger.warning(
-                    "Fold %d industry taxonomy warning: %s",
+                    "Fold %d industry taxonomy contract warning: %s",
                     fold_index, warning,
                 )
-            attribution_config = AttributionConfig(
-                **base,
-                industry_map_override=resolution.industry_map,
-            )
+            attribution_overrides["industry_map_override"] = resolution.industry_map
+            attribution_overrides["industry_taxonomy_id"] = resolution.taxonomy_id
+
+        attr_config = AttributionConfig(
+            start_date=test_start,
+            end_date=test_end,
+            **attribution_overrides,
+        )
 
         try:
             attribution_result = PerformanceAttribution.analyze(
                 return_series=backtest_output.return_series,
+                # Use the ensemble-aware predictions (same series the
+                # backtest received) so attribution's universe and the
+                # backtest's universe are guaranteed to match.
                 predictions=predictions,
-                config=attribution_config,
+                config=attr_config,
                 positions=backtest_output.positions,
             )
         except PerformanceAttributionError as exc:
