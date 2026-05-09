@@ -18,7 +18,7 @@ class WalkForwardValidationTests(unittest.TestCase):
     """Unit tests that do NOT require qlib."""
 
     def test_rejects_when_qlib_not_initialized(self):
-        with patch("src.core.walk_forward.is_canonical_qlib_initialized", return_value=False):
+        with patch("src.core.walk_forward.engine.is_canonical_qlib_initialized", return_value=False):
             with self.assertRaises(WalkForwardError):
                 WalkForwardEngine.run(WalkForwardConfig())
 
@@ -244,16 +244,16 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
         fake_model_result.final_valid_loss = 0.95
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            "src.core.walk_forward.engine.FeatureDatasetBuilder.build",
             return_value=fake_feature_result,
         ), patch(
-            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            "src.core.walk_forward.engine.ModelTrainer.train_and_predict",
             return_value=fake_model_result,
         ), patch(
-            "src.core.walk_forward.SignalAnalyzer.analyze",
+            "src.core.walk_forward.engine.SignalAnalyzer.analyze",
             return_value=_stub_signal_result(),
         ), patch(
-            "src.core.walk_forward.BacktestRunner.run",
+            "src.core.walk_forward.engine.BacktestRunner.run",
             return_value=_stub_backtest_output(),
         ) as mock_backtest:
             WalkForwardEngine._run_single_fold(
@@ -303,16 +303,16 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            "src.core.walk_forward.engine.FeatureDatasetBuilder.build",
             return_value=fake_feature_result,
         ), patch(
-            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            "src.core.walk_forward.engine.ModelTrainer.train_and_predict",
             return_value=fake_model_result,
         ) as mock_trainer, patch(
-            "src.core.walk_forward.SignalAnalyzer.analyze",
+            "src.core.walk_forward.engine.SignalAnalyzer.analyze",
             return_value=_stub_signal_result(),
         ), patch(
-            "src.core.walk_forward.BacktestRunner.run",
+            "src.core.walk_forward.engine.BacktestRunner.run",
             return_value=_stub_backtest_output(),
         ):
             WalkForwardEngine._run_single_fold(
@@ -808,16 +808,16 @@ class FoldReportPersistenceFlowTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            "src.core.walk_forward.engine.FeatureDatasetBuilder.build",
             return_value=fake_feature_result,
         ), patch(
-            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            "src.core.walk_forward.engine.ModelTrainer.train_and_predict",
             return_value=fake_model_result,
         ), patch(
-            "src.core.walk_forward.SignalAnalyzer.analyze",
+            "src.core.walk_forward.engine.SignalAnalyzer.analyze",
             return_value=_stub_signal_result(),
         ), patch(
-            "src.core.walk_forward.BacktestRunner.run",
+            "src.core.walk_forward.engine.BacktestRunner.run",
             return_value=_stub_backtest_output(),
         ):
             fold = WalkForwardEngine._run_single_fold(
@@ -942,7 +942,7 @@ class _AttributionForFoldTests(unittest.TestCase):
         rule that's already in :class:`Pipeline`."""
         config = WalkForwardConfig()
         with patch(
-            "src.core.walk_forward.PerformanceAttribution.analyze"
+            "src.core.walk_forward.engine.PerformanceAttribution.analyze"
         ) as mock_analyze:
             result, reason = WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=0,
@@ -963,7 +963,7 @@ class _AttributionForFoldTests(unittest.TestCase):
         from src.core.performance_attribution import PerformanceAttributionError
         config = WalkForwardConfig()
         with patch(
-            "src.core.walk_forward.PerformanceAttribution.analyze",
+            "src.core.walk_forward.engine.PerformanceAttribution.analyze",
             side_effect=PerformanceAttributionError("all-non-positive"),
         ):
             result, reason = WalkForwardEngine._run_attribution_for_fold(
@@ -1090,21 +1090,21 @@ class FoldReportContainsAttributionBlockTests(unittest.TestCase):
         from src.core.performance_attribution import PerformanceAttributionError
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            "src.core.walk_forward.engine.FeatureDatasetBuilder.build",
             return_value=fake_feature_result,
         ), patch(
-            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            "src.core.walk_forward.engine.ModelTrainer.train_and_predict",
             return_value=fake_model_result,
         ), patch(
-            "src.core.walk_forward.SignalAnalyzer.analyze",
+            "src.core.walk_forward.engine.SignalAnalyzer.analyze",
             return_value=_stub_signal_result(),
         ), patch(
-            "src.core.walk_forward.BacktestRunner.run",
+            "src.core.walk_forward.engine.BacktestRunner.run",
             return_value=_stub_backtest_output(),
         ), patch(
             # Force a skip path so the test does not depend on a
             # working qlib runtime.
-            "src.core.walk_forward.PerformanceAttribution.analyze",
+            "src.core.walk_forward.engine.PerformanceAttribution.analyze",
             side_effect=PerformanceAttributionError("qlib not initialized"),
         ):
             WalkForwardEngine._run_single_fold(
@@ -1430,13 +1430,13 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
             )
 
         with patch(
-            "src.core.walk_forward.is_canonical_qlib_initialized",
+            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
             return_value=True,
         ), patch.object(
             WalkForwardEngine, "_run_single_fold",
             side_effect=fake_single_fold,
         ), patch(
-            "src.core.walk_forward.WalkForwardEngine._write_aggregate_report"
+            "src.core.walk_forward.engine.WalkForwardEngine._write_aggregate_report"
         ):
             WalkForwardEngine.run(config)
 
@@ -1477,19 +1477,19 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
         from src.core.performance_attribution import PerformanceAttributionError
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.FeatureDatasetBuilder.build",
+            "src.core.walk_forward.engine.FeatureDatasetBuilder.build",
             return_value=fake_feature_result,
         ), patch(
-            "src.core.walk_forward.ModelTrainer.train_and_predict",
+            "src.core.walk_forward.engine.ModelTrainer.train_and_predict",
             return_value=fake_model_result,
         ), patch(
-            "src.core.walk_forward.SignalAnalyzer.analyze",
+            "src.core.walk_forward.engine.SignalAnalyzer.analyze",
             return_value=_stub_signal_result(),
         ), patch(
-            "src.core.walk_forward.BacktestRunner.run",
+            "src.core.walk_forward.engine.BacktestRunner.run",
             return_value=_stub_backtest_output(),
         ), patch(
-            "src.core.walk_forward.PerformanceAttribution.analyze",
+            "src.core.walk_forward.engine.PerformanceAttribution.analyze",
             side_effect=PerformanceAttributionError("skip for test"),
         ):
             WalkForwardEngine._run_single_fold(
@@ -1552,7 +1552,7 @@ class FoldFailureContinuationTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.is_canonical_qlib_initialized",
+            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
             return_value=True,
         ), patch.object(
             WalkForwardEngine, "_run_single_fold",
@@ -1617,7 +1617,7 @@ class FoldFailureContinuationTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.core.walk_forward.is_canonical_qlib_initialized",
+            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
             return_value=True,
         ), patch.object(
             WalkForwardEngine, "_run_single_fold",
