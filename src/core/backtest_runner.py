@@ -232,7 +232,7 @@ class BacktestRunner:
         # overhead) by using the same position set with 1/topk weights.
         if compute_baselines:
             eqw_returns = cls._compute_equalweight_baseline(
-                predictions=predictions,
+                predictions=shifted_predictions,
                 topk=topk,
                 evaluation_start=request.evaluation_start,
                 evaluation_end=request.evaluation_end,

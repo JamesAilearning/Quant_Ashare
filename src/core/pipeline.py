@@ -280,6 +280,51 @@ class PipelineConfig:
                 f"PipelineConfig.max_depth must be >= 1; got "
                 f"{self.max_depth!r}."
             )
+        # Shared validation via nested dataclass construction — same
+        # boundary checks run for both PipelineConfig and WalkForwardConfig
+        # from a single source of truth.  The inline checks above remain
+        # as the primary (fail-fast) layer; these constructors provide
+        # defence-in-depth so the two config paths can never drift apart.
+        from src.core._shared_params import (  # noqa: F811
+            _BacktestParams,
+            _IndustryAttributionParams,
+            _ModelParams,
+        )
+        _ModelParams(
+            model_type=self.model_type,
+            num_boost_round=self.num_boost_round,
+            early_stopping_rounds=self.early_stopping_rounds,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            num_leaves=self.num_leaves,
+            lambda_l1=self.lambda_l1,
+            lambda_l2=self.lambda_l2,
+            min_data_in_leaf=self.min_data_in_leaf,
+            feature_fraction=self.feature_fraction,
+            bagging_fraction=self.bagging_fraction,
+            bagging_freq=self.bagging_freq,
+            seed=self.seed,
+        )
+        _BacktestParams(
+            benchmark_code=self.benchmark_code,
+            init_cash=self.init_cash,
+            topk=self.topk,
+            n_drop=self.n_drop,
+            commission_rate=self.commission_rate,
+            stamp_tax_bps=self.stamp_tax_bps,
+            slippage_bps=self.slippage_bps,
+            min_cost=self.min_cost,
+            execution_price_kind=self.execution_price_kind,
+            adjust_mode=self.adjust_mode,
+            signal_to_execution_lag=self.signal_to_execution_lag,
+            limit_threshold=self.limit_threshold,
+        )
+        _IndustryAttributionParams(
+            artifact_path=self.industry_artifact_path,
+            manifest_path=self.industry_manifest_path,
+            taxonomy_id=self.industry_taxonomy_id,
+            temporal_mode=self.industry_temporal_mode,
+        )
         # Industry-taxonomy fields: enforce all-or-nothing + supported
         # ``temporal_mode``. Same boundary contract as
         # ``WalkForwardConfig.__post_init__`` so the two configs cannot

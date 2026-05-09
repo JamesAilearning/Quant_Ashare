@@ -306,6 +306,49 @@ class WalkForwardConfig:
                 f"Invalid WalkForwardConfig backtest controls: {exc}"
             ) from exc
 
+        # Shared validation via nested dataclass construction — same
+        # boundary checks as PipelineConfig, single source of truth.
+        from src.core._shared_params import (
+            _BacktestParams,
+            _IndustryAttributionParams,
+            _ModelParams,
+        )
+        _ModelParams(
+            model_type=self.model_type,
+            num_boost_round=self.num_boost_round,
+            early_stopping_rounds=self.early_stopping_rounds,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            num_leaves=self.num_leaves,
+            lambda_l1=self.lambda_l1,
+            lambda_l2=self.lambda_l2,
+            min_data_in_leaf=self.min_data_in_leaf,
+            feature_fraction=self.feature_fraction,
+            bagging_fraction=self.bagging_fraction,
+            bagging_freq=self.bagging_freq,
+            seed=self.seed,
+        )
+        _BacktestParams(
+            benchmark_code=self.benchmark_code,
+            init_cash=self.init_cash,
+            topk=self.topk,
+            n_drop=self.n_drop,
+            commission_rate=self.commission_rate,
+            stamp_tax_bps=self.stamp_tax_bps,
+            slippage_bps=self.slippage_bps,
+            min_cost=self.min_cost,
+            execution_price_kind=self.execution_price_kind,
+            adjust_mode=self.adjust_mode,
+            signal_to_execution_lag=self.signal_to_execution_lag,
+            limit_threshold=self.limit_threshold,
+        )
+        _IndustryAttributionParams(
+            artifact_path=self.industry_artifact_path,
+            manifest_path=self.industry_manifest_path,
+            taxonomy_id=self.industry_taxonomy_id,
+            temporal_mode=self.industry_temporal_mode,
+        )
+
         # Industry-taxonomy fields: same all-or-nothing contract used by
         # PipelineConfig. Catching the partial state here prevents a
         # confusing "no such file" deep inside the loader during a fold.
@@ -918,6 +961,39 @@ class WalkForwardEngine:
                 prior_fold_idx = current_fold_index - len(priors_to_load) + offset
                 prior_path = prior_ref
             prior_path = str(prior_path)
+            # ── provenance sidecar check ─────────────────────────
+            # Read the model's provenance sidecar (written by
+            # ModelTrainer.train_and_predict) before unpickling.
+            # A lightgbm minor-bump can silently change booster
+            # serialisation semantics — the same pickle may load
+            # without error but produce semantically different
+            # behaviour. We guard against that here by comparing
+            # library versions.
+            skip_prior = False
+            sidecar_path = Path(prior_path).with_suffix(".pkl.meta.json")
+            if sidecar_path.is_file():
+                try:
+                    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                    import lightgbm as _lgb
+                    sidecar_lgb = sidecar.get("lightgbm_version")
+                    if sidecar_lgb and sidecar_lgb != _lgb.__version__:
+                        _logger.warning(
+                            "Fold %d ensemble: prior model %r trained with "
+                            "lightgbm %s; current is %s — skipping.",
+                            current_fold_index, prior_path,
+                            sidecar_lgb, _lgb.__version__,
+                        )
+                        skip_prior = True
+                        meta["rejected_priors"].append({
+                            "fold_idx": prior_fold_idx,
+                            "path": prior_path,
+                            "reason": f"lightgbm {sidecar_lgb} != {_lgb.__version__}",
+                        })
+                except Exception:
+                    pass  # sidecar parse failed → load without guard
+            if skip_prior:
+                continue
+
             try:
                 with open(prior_path, "rb") as f:
                     prior_model = pickle.load(f)
