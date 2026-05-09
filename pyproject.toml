@@ -9,14 +9,14 @@ description = "V2 qlib-based quantitative trading system (contract-first, govern
 requires-python = ">=3.10,<3.13"
 
 # NOTE:
-# - qlib is consumed from a local source checkout, not PyPI. The expected
-#   path on the author's development machine is D:/Qlib/qlib. See docs/qlib-pin.md
-#   for the pinned commit hash and upgrade procedure.
+# - qlib is NOT listed here because it is consumed from a local source
+#   checkout on dev machines (see docs/qlib-pin.md). Install manually:
+#     pip install -e D:/Qlib/qlib
+#   CI installs from the pinned git commit instead (see .github/workflows).
 # - numpy is pinned below 2.0 because qlib 0.9.x still assumes numpy 1.x
 #   dtype semantics. Do not relax this upper bound without a separate
 #   spec-approved change.
 dependencies = [
-  "pyqlib @ file:///D:/Qlib/qlib",
   "numpy>=1.24,<2.0",
   "pandas>=2.0,<2.3",
   "pyarrow>=14",

@@ -26,6 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install git+https://github.com/microsoft/qlib.git@8fd6d5ca7eab59a69bf5c62f84e8b4e2a4e8910b
           pip install -e ".[dev]"
         continue-on-error: true
 

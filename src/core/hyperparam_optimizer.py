@@ -188,15 +188,10 @@ class HyperparamOptimizer:
                 ir=float(attrs.get("ir", float("nan"))),
             ))
 
-        if not trial_results:
-            raise HyperparamOptimizerError(
-                "All hyperparameter trials failed; no best trial is available."
-            )
-
         completed = [t for t in study.trials if t.state.name == "COMPLETE"]
         if not completed:
             raise HyperparamOptimizerError(
-                "No completed trials; all hyperparameter trials failed."
+                "All hyperparameter trials failed; no completed trial available."
             )
         best = study.best_trial
         _logger.info(
