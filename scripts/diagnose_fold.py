@@ -68,38 +68,26 @@ class FoldDiagnosis:
 
     def headline(self) -> dict[str, Any]:
         r = self._report or {}
+        m = r.get("metrics", {})
+        w = r.get("windows", {})
+        test = w.get("test", {})
+        test_period = f"{test.get('start', '?')} ~ {test.get('end', '?')}"
         return {
             "fold_index": self.fold_index,
-            "test_period": r.get("test_period", "unknown"),
-            "ic_1d": r.get("ic_1d"),
-            "ic_5d": r.get("ic_5d"),
-            "annualized_return": r.get("annualized_return"),
-            "max_drawdown": r.get("max_drawdown"),
-            "information_ratio": r.get("information_ratio"),
+            "test_period": test_period,
+            "ic_1d": m.get("ic_1d"),
+            "ic_5d": m.get("ic_5d"),
+            "annualized_return": m.get("annualized_return"),
+            "max_drawdown": m.get("max_drawdown"),
+            "information_ratio": m.get("information_ratio"),
         }
 
     # ── daily IC time series ──────────────────────────────────────
 
-    def daily_ic(self) -> list[dict[str, Any]]:
+    def ic_decay_curve(self) -> list[float]:
         r = self._report or {}
-        ic_decay = r.get("ic_decay", {})
-        daily = ic_decay.get("lag_1_daily_ic", [])
-        if not daily:
-            return []
-        return [
-            {"date": d["date"], "ic": d["value"]}
-            for d in daily if d.get("value") is not None
-        ]
-
-    def worst_ic_days(self, n: int = 5) -> list[dict[str, Any]]:
-        daily = self.daily_ic()
-        daily.sort(key=lambda d: d["ic"] or 0.0)
-        return daily[:n]
-
-    def best_ic_days(self, n: int = 5) -> list[dict[str, Any]]:
-        daily = self.daily_ic()
-        daily.sort(key=lambda d: d["ic"] or 0.0, reverse=True)
-        return daily[:n]
+        sig = r.get("signal_analysis", {})
+        return sig.get("ic_decay", [])
 
     # ── sector exposure ───────────────────────────────────────────
 
@@ -110,42 +98,31 @@ class FoldDiagnosis:
     # ── training diagnostic ───────────────────────────────────────
 
     def training_diagnostic(self) -> dict[str, Any]:
-        if self._model_path is None:
-            return {}
-        try:
-            with open(self._model_path, "rb") as f:
-                model = pickle.load(f)
-        except Exception:
-            return {"error": "failed to load model pickle"}
-
-        inner = getattr(model, "model", None)
-        result: dict[str, Any] = {}
-        if hasattr(inner, "best_iteration"):
-            result["best_iteration"] = int(inner.best_iteration)
-        if hasattr(inner, "best_score"):
-            bs = inner.best_score
-            if "valid" in bs:
-                result["best_valid_score"] = float(bs["valid"][-1])
-            else:
-                result["best_score"] = float(str(bs)[:120])
-        return result
+        r = self._report or {}
+        model = r.get("model", {})
+        return {
+            "artifact_path": model.get("artifact_path"),
+            "best_iteration": model.get("best_iteration"),
+            "final_valid_loss": model.get("final_valid_loss"),
+            "prediction_shape": model.get("prediction_shape"),
+        }
 
     # ── charts ────────────────────────────────────────────────────
 
-    def chart_daily_ic(self, path: Path) -> Path | None:
+    def chart_ic_decay(self, path: Path) -> Path | None:
         if not _HAS_MPL:
             return None
-        daily = self.daily_ic()
-        if not daily:
+        curve = self.ic_decay_curve()
+        if not curve:
             return None
-        dates = [d["date"] for d in daily]
-        ics = [d["ic"] for d in daily]
-        fig, ax = plt.subplots(figsize=(10, 3))
+        lags = list(range(1, len(curve) + 1))
+        fig, ax = plt.subplots(figsize=(8, 3))
         ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
-        ax.plot(dates, ics, marker=".", markersize=3, linewidth=0.8, color="#2196F3")
-        ax.set_title(f"Fold {self.fold_index} Daily IC(1d)")
-        ax.set_ylabel("IC")
-        ax.tick_params(axis="x", rotation=45)
+        ax.bar(lags, curve, color="#2196F3", width=0.6)
+        ax.set_title(f"Fold {self.fold_index} IC Decay Curve")
+        ax.set_xlabel("Lag (days)")
+        ax.set_ylabel("Mean IC")
+        ax.set_xticks(lags)
         fig.tight_layout()
         fig.savefig(path, dpi=120)
         plt.close(fig)
@@ -174,18 +151,15 @@ def diagnose(run_dir: Path, fold_index: int, output_dir: Path | None = None) -> 
     lines.append(f"Max DD      : {h['max_drawdown']!r}")
     lines.append(f"IR          : {h['information_ratio']!r}")
 
-    # ── [2] Daily IC time series ─────────────────────────────────
-    daily = diag.daily_ic()
-    if daily:
-        lines.append(format_section("Daily IC", f"{len(daily)} days"))
-        worst = diag.worst_ic_days(5)
-        lines.append("Worst 5 days:")
-        for d in worst:
-            lines.append(f"  {d['date']}  IC={d['ic']:.4f}")
-        best = diag.best_ic_days(5)
-        lines.append("Best 5 days:")
-        for d in best:
-            lines.append(f"  {d['date']}  IC={d['ic']:.4f}")
+    # ── [2] IC decay curve ──────────────────────────────────────
+    curve = diag.ic_decay_curve()
+    if curve:
+        lines.append(format_section("IC Decay Curve", f"{len(curve)} lags"))
+        lines.append(
+            " ".join(f"lag{i+1}={v:.4f}" for i, v in enumerate(curve[:10]))
+        )
+        if len(curve) > 10:
+            lines.append(f"  ... +{len(curve)-10} more lags")
 
     # ── [3] Sector exposure ──────────────────────────────────────
     att = diag.sector_exposure()
@@ -211,10 +185,10 @@ def diagnose(run_dir: Path, fold_index: int, output_dir: Path | None = None) -> 
     # ── [5] Charts ────────────────────────────────────────────────
     out = output_dir or run_dir
     out.mkdir(parents=True, exist_ok=True)
-    chart_path = diag.chart_daily_ic(out / f"fold{fold_index:02d}_daily_ic.png")
+    chart_path = diag.chart_ic_decay(out / f"fold{fold_index:02d}_ic_decay.png")
     if chart_path:
         lines.append(format_section("Charts"))
-        lines.append(f"  daily_ic.png: {chart_path}")
+        lines.append(f"  ic_decay.png: {chart_path}")
 
     return "".join(line + "\n" for line in lines)
 
