@@ -231,14 +231,21 @@ class BacktestRunner:
         # qlib close prices. Avoids a second full backtest run (~50%
         # overhead) by using the same position set with 1/topk weights.
         if compute_baselines:
-            eqw_returns = cls._compute_equalweight_baseline(
-                predictions=shifted_predictions,
-                topk=topk,
-                evaluation_start=request.evaluation_start,
-                evaluation_end=request.evaluation_end,
-            )
-            if eqw_returns:
-                return_series["equalweight_topk"] = eqw_returns
+            try:
+                eqw_returns = cls._compute_equalweight_baseline(
+                    predictions=shifted_predictions,
+                    topk=topk,
+                    evaluation_start=request.evaluation_start,
+                    evaluation_end=request.evaluation_end,
+                )
+                if eqw_returns:
+                    return_series["equalweight_topk"] = eqw_returns
+            except BacktestRunnerError as exc:
+                _logger.warning(
+                    "Equal-weight baseline skipped: %s. Strategy "
+                    "backtest and risk_analysis remain valid.",
+                    exc,
+                )
 
         positions_map = _positions_to_weight_map(positions_normal)
 
@@ -286,12 +293,20 @@ class BacktestRunner:
             import pandas as pd
             from qlib.data import D
         except ImportError:
-            return {}
+            raise BacktestRunnerError(
+                "qlib is not importable; cannot compute equal-weight baseline."
+            )
 
         if not isinstance(predictions, pd.Series) or predictions.empty:
-            return {}
+            raise BacktestRunnerError(
+                "predictions must be a non-empty pd.Series for "
+                "equal-weight baseline computation."
+            )
         if not isinstance(predictions.index, pd.MultiIndex):
-            return {}
+            raise BacktestRunnerError(
+                "predictions must have a (datetime, instrument) MultiIndex "
+                "for equal-weight baseline computation."
+            )
 
         # Extract per-date top-k instrument sets.
         daily_topk: dict[pd.Timestamp, set] = {}
@@ -300,7 +315,10 @@ class BacktestRunner:
             daily_topk[dt] = set(top.index.get_level_values(1))
 
         if not daily_topk:
-            return {}
+            raise BacktestRunnerError(
+                "No daily top-k instruments could be extracted from "
+                "predictions for equal-weight baseline."
+            )
 
         all_instruments = sorted(
             {inst for names in daily_topk.values() for inst in names}
@@ -313,15 +331,25 @@ class BacktestRunner:
                 end_time=evaluation_end,
                 freq="day",
             )
-        except Exception:
-            return {}
+        except Exception as exc:
+            raise BacktestRunnerError(
+                "qlib D.features() failed for equal-weight baseline: "
+                f"{exc}"
+            ) from exc
 
         if close is None or close.empty:
-            return {}
+            raise BacktestRunnerError(
+                "qlib returned no close prices for equal-weight baseline."
+            )
 
-        # Compute daily return per instrument.
+        # Compute daily return per instrument, shifted forward by one
+        # day so that a position taken at dt close earns the dt→dt+1
+        # return (ret_matrix[dt+1]), not the dt-1→dt return that was
+        # already priced in before rebalancing.
         close_unstacked = close.unstack(level="instrument")["$close"]
-        ret_matrix = close_unstacked.pct_change().dropna(how="all")
+        ret_matrix = close_unstacked.pct_change().shift(-1)
+        # The last row has no next-day return; drop it.
+        ret_matrix = ret_matrix.iloc[:-1].dropna(how="all")
 
         result: dict[str, float] = {}
         for dt, instruments in daily_topk.items():
@@ -329,7 +357,10 @@ class BacktestRunner:
                 continue
             row = ret_matrix.loc[dt]
             valid = [row.get(inst) for inst in instruments if inst in row]
-            if not valid or any(v is None or (isinstance(v, float) and np.isnan(v)) for v in valid):
+            if not valid or any(
+                v is None or (isinstance(v, float) and np.isnan(v))
+                for v in valid
+            ):
                 continue
             result[str(dt.date())] = float(np.nanmean(valid))
 
