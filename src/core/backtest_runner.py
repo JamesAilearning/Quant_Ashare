@@ -62,6 +62,7 @@ class BacktestRunner:
         predictions: Any,
         topk: int = 50,
         n_drop: int = 5,
+        compute_baselines: bool = True,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -226,6 +227,19 @@ class BacktestRunner:
             "cost": _series_to_dict(report_normal["cost"], name="cost"),
         }
 
+        # Compute equal-weight top-k baseline post-hoc from predictions +
+        # qlib close prices. Avoids a second full backtest run (~50%
+        # overhead) by using the same position set with 1/topk weights.
+        if compute_baselines:
+            eqw_returns = cls._compute_equalweight_baseline(
+                predictions=predictions,
+                topk=topk,
+                evaluation_start=request.evaluation_start,
+                evaluation_end=request.evaluation_end,
+            )
+            if eqw_returns:
+                return_series["equalweight_topk"] = eqw_returns
+
         positions_map = _positions_to_weight_map(positions_normal)
 
         report = {
@@ -246,6 +260,80 @@ class BacktestRunner:
             provenance=provenance,
             positions=positions_map,
         )
+
+    @staticmethod
+    def _compute_equalweight_baseline(
+        predictions: Any,
+        topk: int,
+        evaluation_start: str,
+        evaluation_end: str,
+    ) -> dict[str, float]:
+        """Post-hoc equal-weight top-k daily return series.
+
+        Replaces ``n_drop>0`` rotation with a static buy-and-hold of the
+        prediction-ranked top-k — same universe, same ranking, same
+        rebalance dates, but equal-weight and no dropout. This provides
+        the "does alpha come from model rotation or from top-k selection?"
+        decomposition.
+
+        The computation uses qlib close prices fetched once for the full
+        evaluation window. Each rebalance day picks the ``topk``
+        highest-scored instruments; the day's equal-weight return is the
+        arithmetic mean of those instruments' close-to-close returns.
+        """
+        try:
+            import numpy as np
+            import pandas as pd
+            from qlib.data import D
+        except ImportError:
+            return {}
+
+        if not isinstance(predictions, pd.Series) or predictions.empty:
+            return {}
+        if not isinstance(predictions.index, pd.MultiIndex):
+            return {}
+
+        # Extract per-date top-k instrument sets.
+        daily_topk: dict[pd.Timestamp, set] = {}
+        for dt, group in predictions.groupby(level=0):
+            top = group.nlargest(topk)
+            daily_topk[dt] = set(top.index.get_level_values(1))
+
+        if not daily_topk:
+            return {}
+
+        all_instruments = sorted(
+            {inst for names in daily_topk.values() for inst in names}
+        )
+        try:
+            close = D.features(
+                all_instruments,
+                ["$close"],
+                start_time=evaluation_start,
+                end_time=evaluation_end,
+                freq="day",
+            )
+        except Exception:
+            return {}
+
+        if close is None or close.empty:
+            return {}
+
+        # Compute daily return per instrument.
+        close_unstacked = close.unstack(level="instrument")["$close"]
+        ret_matrix = close_unstacked.pct_change().dropna(how="all")
+
+        result: dict[str, float] = {}
+        for dt, instruments in daily_topk.items():
+            if dt not in ret_matrix.index:
+                continue
+            row = ret_matrix.loc[dt]
+            valid = [row.get(inst) for inst in instruments if inst in row]
+            if not valid or any(v is None or (isinstance(v, float) and np.isnan(v)) for v in valid):
+                continue
+            result[str(dt.date())] = float(np.nanmean(valid))
+
+        return result
 
     @staticmethod
     def _apply_lag(predictions: Any, lag: int) -> Any:

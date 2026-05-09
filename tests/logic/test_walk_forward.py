@@ -416,6 +416,48 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(agg["worst_drawdown"], -0.20, places=6)
         self.assertEqual(agg["valid_folds_max_drawdown"], 2.0)
 
+    # ── bootstrap CI ────────────────────────────────────────────────
+
+    def test_bootstrap_ci_keys_are_present(self) -> None:
+        folds = [
+            self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1),
+            self._fold(1, 0.02, 0.03, 0.09, -0.10, 0.9),
+        ]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        self.assertIn("mean_ic_1d_ci_low", agg)
+        self.assertIn("mean_ic_1d_ci_high", agg)
+        self.assertIn("mean_information_ratio_ci_low", agg)
+        self.assertIn("mean_information_ratio_ci_high", agg)
+        self.assertIn("std_information_ratio", agg)
+        self.assertIn("bootstrap_seed", agg)
+        self.assertIn("bootstrap_n", agg)
+
+    def test_bootstrap_ci_nan_with_single_fold(self) -> None:
+        import math
+        folds = [self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1)]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        self.assertTrue(math.isnan(agg["mean_ic_1d_ci_low"]))
+        self.assertTrue(math.isnan(agg["mean_ic_1d_ci_high"]))
+
+    def test_bootstrap_ci_deterministic_given_seed(self) -> None:
+        folds = [
+            self._fold(i, 0.01 * i, 0.01 * i, 0.05 * i, -0.05 * i, 0.5 * i)
+            for i in range(1, 9)
+        ]
+        agg1 = WalkForwardEngine._compute_aggregate(folds)
+        agg2 = WalkForwardEngine._compute_aggregate(folds)
+        self.assertEqual(agg1["mean_ic_1d_ci_low"], agg2["mean_ic_1d_ci_low"])
+        self.assertEqual(agg1["mean_ic_1d_ci_high"], agg2["mean_ic_1d_ci_high"])
+
+    def test_bootstrap_ci_nan_with_all_nan_input(self) -> None:
+        import math
+        folds = [
+            self._fold(0, math.nan, math.nan, math.nan, math.nan, math.nan),
+            self._fold(1, math.nan, math.nan, math.nan, math.nan, math.nan),
+        ]
+        agg = WalkForwardEngine._compute_aggregate(folds)
+        self.assertTrue(math.isnan(agg["mean_ic_1d_ci_low"]))
+
 
 class ExtractCostMetricsTests(unittest.TestCase):
     """Regression guards for P2f: ``_extract_cost_metrics`` must not
