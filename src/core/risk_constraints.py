@@ -1,12 +1,9 @@
 """Canonical boundary for risk constraints.
 
-Risk constraints are runtime trading behavior: they can filter or reshape
-model predictions before backtest execution. That behavior is not approved as
-canonical runtime logic yet, so the canonical core import path fails closed.
-
-Experimental research / migration work lives in
-``src.experimental.risk_constraints`` and must not be treated as an official
-metrics path.
+Risk constraint enforcement (sector caps, position limits, etc.) is an
+experimental capability and is not currently implemented in this repo.
+The experimental module was removed in PR #53; track
+``openspec/changes/`` for any future proposal that re-introduces it.
 """
 
 from __future__ import annotations
@@ -24,10 +21,9 @@ class RiskConstraintEngine:
     @classmethod
     def apply(cls, *_args: Any, **_kwargs: Any) -> None:
         raise RiskConstraintError(
-            "RiskConstraintEngine is experimental runtime trading behavior "
-            "and is not approved in src.core canonical runtime. Import "
-            "src.experimental.risk_constraints for explicitly experimental "
-            "work, and do not treat those results as official metrics."
+            "Risk constraint enforcement is an experimental capability "
+            "and is not currently implemented in this repo. Track "
+            "openspec/changes/ for any future proposal that re-introduces it."
         )
 
 

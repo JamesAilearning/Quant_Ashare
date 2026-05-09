@@ -11,7 +11,7 @@ class CoreRiskConstraintBoundaryTests(unittest.TestCase):
     def test_core_risk_constraints_fail_closed(self) -> None:
         with self.assertRaisesRegex(
             RiskConstraintError,
-            "experimental runtime trading behavior",
+            "not currently implemented",
         ):
             RiskConstraintEngine.apply(object())
 
