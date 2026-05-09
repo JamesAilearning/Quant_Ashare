@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.core._yaml_loader import load_yaml_with_inheritance  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
 from src.core.walk_forward import (  # noqa: E402
@@ -37,15 +38,14 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
 
     The YAML may carry a top-level ``provider_uri`` and ``region``
     used to initialise qlib; everything else is funnelled into
-    :class:`WalkForwardConfig`. Unknown keys log a WARNING (mirrors
-    ``main.py``'s behaviour).
+    :class:`WalkForwardConfig`. Unknown keys raise a hard error
+    (mirrors ``main.py``'s behaviour).
     """
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    raw = load_yaml_with_inheritance(config_path)
 
     if not isinstance(raw, dict):
         raise ValueError(

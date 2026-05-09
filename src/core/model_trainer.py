@@ -15,10 +15,13 @@ Boundaries
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import random
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -201,6 +204,15 @@ class ModelTrainer:
                 pass
             raise
 
+        # Write a provenance sidecar alongside the pickle so ensemble
+        # loading can check library versions before unpickling. Missing
+        # sidecar → load anyway (backwards compatible). Version mismatch
+        # → skip with WARNING (avoid silent corruption from e.g. a
+        # lightgbm minor-bump that changes the booster serialisation).
+        cls._write_model_sidecar(
+            artifact_path, config, best_iter, final_val,
+        )
+
         best_iter, final_val = cls._extract_training_diagnostics(
             model, config.model_type, evals_result,
         )
@@ -244,6 +256,51 @@ class ModelTrainer:
             )
         else:
             model.fit(dataset)
+
+    @staticmethod
+    def _write_model_sidecar(
+        artifact_path: Path,
+        config: Any,
+        best_iter: int | None,
+        final_val: float | None,
+    ) -> None:
+        """Write ``<model>.meta.json`` provenance sidecar.
+
+        Ensemble loading reads this before unpickling to check that
+        library versions match — a lightgbm minor bump can silently
+        change booster serialisation semantics.
+        """
+        sidecar_path = artifact_path.with_suffix(artifact_path.suffix + ".meta.json")
+        sidecar: dict[str, Any] = {
+            "schema_version": "v1",
+            "model_type": config.model_type,
+            "python_version": sys.version.split()[0],
+            "trained_at": datetime.now(tz=timezone.utc).isoformat(),
+            "best_iteration": best_iter,
+            "final_valid_loss": final_val,
+        }
+        # Best-effort library version capture — no hard dependency on
+        # lightgbm/xgboost/catboost being importable at write time.
+        for lib, _pkg in (("lightgbm", "lightgbm"), ("xgboost", "xgboost"),
+                           ("catboost", "catboost")):
+            try:
+                mod = __import__(_pkg)
+                sidecar[f"{lib}_version"] = mod.__version__
+            except ImportError:
+                pass
+
+        sidecar_json = json.dumps(sidecar, indent=2, ensure_ascii=False)
+        # Atomic via write-to-temp + replace, same convention as the
+        # pickle write above.
+        tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+        try:
+            tmp.write_text(sidecar_json, encoding="utf-8")
+            os.replace(tmp, sidecar_path)
+        except OSError:
+            _logger.debug(
+                "Model sidecar write skipped (%s) — non-fatal.",
+                sidecar_path,
+            )
 
     @classmethod
     def _extract_training_diagnostics(
