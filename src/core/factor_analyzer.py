@@ -170,7 +170,7 @@ class FactorAnalyzer:
             factor_ic_stats=tuple(all_stats),
             correlation_matrix=corr_matrix,
             ic_decay=decay,
-            total_factors=len(factor_names),
+            total_factors=len(all_stats),
         )
 
     @staticmethod
@@ -335,6 +335,12 @@ class FactorAnalyzer:
         close = D.features(
             instruments, ["$close"], start_time=start, end_time=end_extended
         )
+        # qlib returns (instrument, datetime) — swap to
+        # (datetime, instrument) and sort so shift(-lag) moves by
+        # trading-day order, not physical row order.  Missing sort
+        # produces silently wrong forward returns / IC / decay values.
+        close = close.swaplevel()
+        close = close.sort_index()
         close.columns = ["close"]
         return close["close"].unstack(level="instrument")
 
