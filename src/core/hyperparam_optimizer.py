@@ -193,6 +193,11 @@ class HyperparamOptimizer:
                 "All hyperparameter trials failed; no best trial is available."
             )
 
+        completed = [t for t in study.trials if t.state.name == "COMPLETE"]
+        if not completed:
+            raise HyperparamOptimizerError(
+                "No completed trials; all hyperparameter trials failed."
+            )
         best = study.best_trial
         _logger.info(
             "Best trial #%d: IC=%.4f, params=%s",

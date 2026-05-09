@@ -243,10 +243,28 @@ class BenchmarkCodeContractTests(unittest.TestCase):
         optional = CanonicalBacktestContract.input_boundary()["optional"]
         self.assertNotIn("benchmark_code", optional)
 
-    def test_none_benchmark_code_rejected_by_validate_input(self) -> None:
-        req = _valid_request(benchmark_code=None)
-        with self.assertRaisesRegex(CanonicalBacktestContractError, "benchmark_code is required"):
-            CanonicalBacktestContract.validate_input(req)
+    def test_none_benchmark_code_rejected_by_post_init(self) -> None:
+        with self.assertRaisesRegex(CanonicalBacktestContractError, "benchmark_code must be non-empty"):
+            CanonicalBacktestInput(
+                predictions_ref="p.pkl",
+                evaluation_start="2025-01-01",
+                evaluation_end="2025-06-30",
+                account_config=CanonicalAccountConfig(init_cash=100_000_000),
+                exchange_config=CanonicalExchangeConfig(
+                    freq="day",
+                    execution_price_kind="close",
+                    cost_model=CanonicalExchangeCostModel(
+                        commission_rate=0.0005,
+                        stamp_tax_bps=10.0,
+                        slippage_bps=5.0,
+                        min_cost=5.0,
+                    ),
+                    limit_threshold=0.095,
+                ),
+                adjust_mode="pre",
+                signal_to_execution_lag=1,
+                benchmark_code="",
+            )
 
     def test_empty_benchmark_code_rejected_by_validate_input(self) -> None:
         req = _valid_request(benchmark_code="   ")

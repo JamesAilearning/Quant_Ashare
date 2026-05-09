@@ -306,49 +306,6 @@ class WalkForwardConfig:
                 f"Invalid WalkForwardConfig backtest controls: {exc}"
             ) from exc
 
-        # Shared validation via nested dataclass construction — same
-        # boundary checks as PipelineConfig, single source of truth.
-        from src.core._shared_params import (
-            _BacktestParams,
-            _IndustryAttributionParams,
-            _ModelParams,
-        )
-        _ModelParams(
-            model_type=self.model_type,
-            num_boost_round=self.num_boost_round,
-            early_stopping_rounds=self.early_stopping_rounds,
-            learning_rate=self.learning_rate,
-            max_depth=self.max_depth,
-            num_leaves=self.num_leaves,
-            lambda_l1=self.lambda_l1,
-            lambda_l2=self.lambda_l2,
-            min_data_in_leaf=self.min_data_in_leaf,
-            feature_fraction=self.feature_fraction,
-            bagging_fraction=self.bagging_fraction,
-            bagging_freq=self.bagging_freq,
-            seed=self.seed,
-        )
-        _BacktestParams(
-            benchmark_code=self.benchmark_code,
-            init_cash=self.init_cash,
-            topk=self.topk,
-            n_drop=self.n_drop,
-            commission_rate=self.commission_rate,
-            stamp_tax_bps=self.stamp_tax_bps,
-            slippage_bps=self.slippage_bps,
-            min_cost=self.min_cost,
-            execution_price_kind=self.execution_price_kind,
-            adjust_mode=self.adjust_mode,
-            signal_to_execution_lag=self.signal_to_execution_lag,
-            limit_threshold=self.limit_threshold,
-        )
-        _IndustryAttributionParams(
-            artifact_path=self.industry_artifact_path,
-            manifest_path=self.industry_manifest_path,
-            taxonomy_id=self.industry_taxonomy_id,
-            temporal_mode=self.industry_temporal_mode,
-        )
-
         # Industry-taxonomy fields: same all-or-nothing contract used by
         # PipelineConfig. Catching the partial state here prevents a
         # confusing "no such file" deep inside the loader during a fold.
@@ -535,11 +492,19 @@ class WalkForwardEngine:
         # failure — the per-run report is the authoritative artifact.
         try:
             from src.core.run_catalog import append_run_record, build_record as build_catalog_record
+            import math
+            from dataclasses import asdict
+            has_any_nan = any(
+                math.isnan(f.ic_1d) or math.isnan(f.ic_5d)
+                for f in folds
+            )
+            config_json = json.dumps(asdict(config), sort_keys=True, default=str)
+            fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:12]
             record = build_catalog_record(
                 engine="walk_forward",
-                status="ok",
+                status="partial" if has_any_nan else "ok",
                 started_at=started_at,
-                config_fingerprint="",
+                config_fingerprint=fingerprint,
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
@@ -552,8 +517,9 @@ class WalkForwardEngine:
                 headline_metrics={
                     "num_folds": aggregate.get("num_folds"),
                     "mean_ic_1d": aggregate.get("mean_ic_1d"),
-                    "mean_ir": aggregate.get("mean_information_ratio"),
+                    "annualized_return": aggregate.get("mean_annualized_return"),
                     "worst_drawdown": aggregate.get("worst_drawdown"),
+                    "mean_information_ratio": aggregate.get("mean_information_ratio"),
                 },
                 report_path=str(aggregate_path),
                 output_dir=str(output_dir),
@@ -975,6 +941,26 @@ class WalkForwardEngine:
                 try:
                     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
                     import lightgbm as _lgb
+                    # Check pickle integrity against the sidecar hash.
+                    pkl_sha = sidecar.get("pkl_sha256")
+                    if pkl_sha:
+                        actual_sha = hashlib.sha256(
+                            Path(prior_path).read_bytes()
+                        ).hexdigest()
+                        if actual_sha != pkl_sha:
+                            _logger.warning(
+                                "Fold %d ensemble: prior model %r sha256 "
+                                "mismatch (expected %s, got %s) — pickle "
+                                "replaced or corrupt. Skipping.",
+                                current_fold_index, prior_path,
+                                pkl_sha, actual_sha,
+                            )
+                            skip_prior = True
+                            meta["rejected_priors"].append({
+                                "fold_idx": prior_fold_idx,
+                                "path": prior_path,
+                                "reason": f"pkl_sha256 mismatch",
+                            })
                     sidecar_lgb = sidecar.get("lightgbm_version")
                     if sidecar_lgb and sidecar_lgb != _lgb.__version__:
                         _logger.warning(

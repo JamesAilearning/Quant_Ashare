@@ -15,6 +15,7 @@ Boundaries
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pickle
@@ -279,6 +280,12 @@ class ModelTrainer:
             "best_iteration": best_iter,
             "final_valid_loss": final_val,
         }
+        # Bind the sidecar to the pickle artifact so ensemble loading
+        # can detect a replacement that left the sidecar untouched.
+        if artifact_path.is_file():
+            sidecar["pkl_sha256"] = hashlib.sha256(
+                artifact_path.read_bytes()
+            ).hexdigest()
         # Best-effort library version capture — no hard dependency on
         # lightgbm/xgboost/catboost being importable at write time.
         for lib, _pkg in (("lightgbm", "lightgbm"), ("xgboost", "xgboost"),
