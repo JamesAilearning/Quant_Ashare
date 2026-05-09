@@ -463,7 +463,7 @@ class WalkForwardEngine:
             )
 
         # Aggregate
-        aggregate = cls._compute_aggregate(folds)
+        aggregate = cls._compute_aggregate(folds, seed=config.seed)
 
         _logger.info("=" * 60)
         _logger.info("AGGREGATE RESULTS")
@@ -1427,7 +1427,7 @@ class WalkForwardEngine:
         )
 
     @classmethod
-    def _compute_aggregate(cls, folds: list[WalkForwardFold]) -> dict[str, float]:
+    def _compute_aggregate(cls, folds: list[WalkForwardFold], *, seed: int = 42) -> dict[str, float]:
         """Compute aggregate metrics across all folds, NaN-safe.
 
         SignalAnalyzer now surfaces "no valid IC" as ``NaN`` rather than
@@ -1516,10 +1516,10 @@ class WalkForwardEngine:
             hi = float(np.percentile(boots, 100 * (1 + ci) / 2))
             return lo, hi
 
-        ci_ic_1d_lo, ci_ic_1d_hi = _bootstrap_mean_ci(ic_1d)
-        ci_ic_5d_lo, ci_ic_5d_hi = _bootstrap_mean_ci(ic_5d)
-        ci_ir_lo, ci_ir_hi = _bootstrap_mean_ci(irs)
-        ci_ret_lo, ci_ret_hi = _bootstrap_mean_ci(returns)
+        ci_ic_1d_lo, ci_ic_1d_hi = _bootstrap_mean_ci(ic_1d, seed=seed)
+        ci_ic_5d_lo, ci_ic_5d_hi = _bootstrap_mean_ci(ic_5d, seed=seed)
+        ci_ir_lo, ci_ir_hi = _bootstrap_mean_ci(irs, seed=seed)
+        ci_ret_lo, ci_ret_hi = _bootstrap_mean_ci(returns, seed=seed)
 
         return {
             "mean_ic_1d": _nanmean(ic_1d),
@@ -1544,6 +1544,6 @@ class WalkForwardEngine:
             "mean_information_ratio_ci_high": ci_ir_hi,
             "valid_folds_information_ratio": _valid(irs),
             "num_folds": len(folds),
-            "bootstrap_seed": 42,
+            "bootstrap_seed": seed,
             "bootstrap_n": 10000,
         }

@@ -205,6 +205,10 @@ class ModelTrainer:
                 pass
             raise
 
+        best_iter, final_val = cls._extract_training_diagnostics(
+            model, config.model_type, evals_result,
+        )
+
         # Write a provenance sidecar alongside the pickle so ensemble
         # loading can check library versions before unpickling. Missing
         # sidecar → load anyway (backwards compatible). Version mismatch
@@ -212,10 +216,6 @@ class ModelTrainer:
         # lightgbm minor-bump that changes the booster serialisation).
         cls._write_model_sidecar(
             artifact_path, config, best_iter, final_val,
-        )
-
-        best_iter, final_val = cls._extract_training_diagnostics(
-            model, config.model_type, evals_result,
         )
         if best_iter is not None:
             _logger.info("Best iteration: %d", best_iter)
