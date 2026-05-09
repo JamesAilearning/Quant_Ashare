@@ -390,7 +390,7 @@ class WalkForwardEngine:
             n_drop=config.n_drop,
         )
 
-        ann_ret, max_dd, ir = extract_cost_metrics(backtest_output.risk_analysis)
+        ann_ret, max_dd, ir = extract_cost_metrics(backtest_output.risk_analysis, fold_index)
         _logger.info(
             "  Fold %d: AnnRet=%.2f%% | MaxDD=%.2f%% | IR=%.3f",
             fold_index, ann_ret * 100, max_dd * 100, ir,
@@ -587,6 +587,6 @@ class WalkForwardEngine:
         write_fold_report(**kwargs)
 
     @staticmethod
-    def _extract_cost_metrics(risk_analysis):
+    def _extract_cost_metrics(risk_analysis, fold_index):
         """Backward-compat facade — see :func:`aggregate.extract_cost_metrics`."""
-        return extract_cost_metrics(risk_analysis)
+        return extract_cost_metrics(risk_analysis, fold_index)

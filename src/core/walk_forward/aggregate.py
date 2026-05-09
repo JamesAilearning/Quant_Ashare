@@ -309,7 +309,7 @@ def extract_cost_metrics(
     )
 
 
-def compute_aggregate(cls, folds: list[WalkForwardFold], *, seed: int = 42) -> dict[str, float]:
+def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[str, float]:
     """Compute aggregate metrics across all folds, NaN-safe.
 
     SignalAnalyzer now surfaces "no valid IC" as ``NaN`` rather than
