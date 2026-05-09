@@ -721,7 +721,7 @@ class Pipeline:
         factor_skipped_reason: str | None = None,
     ) -> None:
         report: dict[str, Any] = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "metric_status": backtest_output.metric_status,
             "official_backtest_path": backtest_output.official_backtest_path,
             "config": {
