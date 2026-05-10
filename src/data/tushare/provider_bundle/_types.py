@@ -49,6 +49,7 @@ class TushareQlibProviderBundleError(RuntimeError):
 
 
 
+@dataclass(frozen=True)
 class TushareQlibProviderValidationProfile:
     """Auditable validation result for staged Tushare market data."""
 

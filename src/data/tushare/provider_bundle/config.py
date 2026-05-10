@@ -15,6 +15,7 @@ from src.data.tushare.provider_bundle._types import (
     TushareQlibProviderManifest,
 )
 
+@dataclass(frozen=True)
 class TushareQlibProviderBundleConfig:
     """Configuration for publishing an opt-in Tushare qlib provider bundle."""
 
