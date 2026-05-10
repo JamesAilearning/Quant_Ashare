@@ -140,10 +140,12 @@ class WalkForwardEngine:
                 )
             folds.append(fold)
 
-            # Only successful folds contribute to the ensemble history.
-            # A NaN-placeholder fold is skipped here so subsequent folds'
-            # ensemble does not include a broken model.
-            if not np.isnan(fold.ic_1d):
+            # Placeholder fold (prediction_shape=(0,)) means
+            # _run_single_fold raised — the model pickle may be
+            # missing or partial. A real successful fold whose IC
+            # happens to be NaN (short validation period) still has
+            # a valid pickle and should contribute to the ensemble.
+            if fold.prediction_shape != (0,):
                 model_path = str(output_dir / f"model_fold{i}.pkl")
                 prior_model_paths.append((i, model_path))
 

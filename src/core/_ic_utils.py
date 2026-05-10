@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
+# Minimum merged observations per lag for a meaningful IC summary.
+# Shared between factor_analyzer and signal_analyzer.
+MIN_IC_OBSERVATIONS_PER_LAG = 10
+
 
 def compute_ic_for_group(group: Any, method: str) -> float:
     """Compute cross-sectional IC for a single date group.

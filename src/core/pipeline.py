@@ -181,6 +181,23 @@ class PipelineConfig:
                     f"PipelineConfig.{name}_start ({start}) must be strictly "
                     f"less than {name}_end ({end})."
                 )
+        # Cross-window order: train_end < valid_start < test_start.
+        # The per-window check above only validates each window
+        # internally; overlapping windows silently leak training data
+        # into validation / test sets, inflating backtest metrics.
+        for prev_end_attr, next_start_attr in (
+            ("train_end", "valid_start"),
+            ("valid_end", "test_start"),
+        ):
+            prev_end_d = date.fromisoformat(str(getattr(self, prev_end_attr)))
+            next_start_d = date.fromisoformat(str(getattr(self, next_start_attr)))
+            if prev_end_d >= next_start_d:
+                raise PipelineError(
+                    f"PipelineConfig.{prev_end_attr} "
+                    f"({getattr(self, prev_end_attr)}) must be strictly "
+                    f"before {next_start_attr} "
+                    f"({getattr(self, next_start_attr)})."
+                )
         # Numeric sanity: positive cash, non-negative cost components,
         # topk ≥ 1.
         if self.init_cash <= 0:
@@ -661,7 +678,7 @@ class Pipeline:
                 },
                 headline_metrics={
                     "mean_ic_1d": (
-                        signal_result.ic_summary.get(1, {}).get("mean_ic", float("nan"))
+                        signal_result.ic_summary.get(1, {}).get("mean_ic")
                         if signal_result else None
                     ),
                     "annualized_return": (

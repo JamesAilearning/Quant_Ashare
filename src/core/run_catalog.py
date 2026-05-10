@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from src.core._json_utils import _sanitize_for_json
 from src.core.logger import get_logger
 
 _logger = get_logger(__name__)
@@ -35,8 +36,8 @@ def append_run_record(
     dest = catalog_path or _DEFAULT_CATALOG_PATH
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    line = json.dumps(record, ensure_ascii=False, sort_keys=True,
-                      default=str) + "\n"
+    line = json.dumps(_sanitize_for_json(record), ensure_ascii=False,
+                      sort_keys=True, default=str, allow_nan=False) + "\n"
 
     try:
         with open(dest, "a", encoding="utf-8") as fh:

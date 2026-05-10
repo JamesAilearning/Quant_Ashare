@@ -120,7 +120,6 @@ def apply_ensemble(
         if sidecar_path.is_file():
             try:
                 sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-                import lightgbm as _lgb
                 # Check pickle integrity against the sidecar hash.
                 pkl_sha = sidecar.get("pkl_sha256")
                 if pkl_sha:
@@ -141,20 +140,21 @@ def apply_ensemble(
                             "path": prior_path,
                             "reason": f"pkl_sha256 mismatch",
                         })
-                sidecar_lgb = sidecar.get("lightgbm_version")
-                if sidecar_lgb and sidecar_lgb != _lgb.__version__:
-                    _logger.warning(
-                        "Fold %d ensemble: prior model %r trained with "
-                        "lightgbm %s; current is %s — skipping.",
-                        current_fold_index, prior_path,
-                        sidecar_lgb, _lgb.__version__,
-                    )
-                    skip_prior = True
-                    meta["rejected_priors"].append({
-                        "fold_idx": prior_fold_idx,
-                        "path": prior_path,
-                        "reason": f"lightgbm {sidecar_lgb} != {_lgb.__version__}",
-                    })
+                if sidecar_lgb:
+                    import lightgbm as _lgb
+                    if sidecar_lgb != _lgb.__version__:
+                        _logger.warning(
+                            "Fold %d ensemble: prior model %r trained with "
+                            "lightgbm %s; current is %s — skipping.",
+                            current_fold_index, prior_path,
+                            sidecar_lgb, _lgb.__version__,
+                        )
+                        skip_prior = True
+                        meta["rejected_priors"].append({
+                            "fold_idx": prior_fold_idx,
+                            "path": prior_path,
+                            "reason": f"lightgbm {sidecar_lgb} != {_lgb.__version__}",
+                        })
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
                     "Fold %d ensemble: sidecar parse/check failed "

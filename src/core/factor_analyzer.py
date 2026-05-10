@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from src.core._ic_utils import compute_ic_for_group
+from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, compute_ic_for_group
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -24,11 +24,6 @@ _logger = get_logger(__name__)
 
 
 # Minimum (factor, forward-return) observations per lag before we trust the
-# cross-sectional IC. Below this, daily IC estimates are too noisy to mean
-# anything and we emit NaN rather than a zero that would contaminate decay
-# plots.
-_MIN_IC_OBSERVATIONS_PER_LAG = 10
-
 
 class FactorAnalyzerError(RuntimeError):
     """Raised on factor analysis failures."""
@@ -398,7 +393,7 @@ class FactorAnalyzer:
             factor_col = factor_df[col]
             merged = pd.DataFrame({"factor": factor_col, "ret": forward_ret}).dropna()
 
-            if len(merged) < _MIN_IC_OBSERVATIONS_PER_LAG:
+            if len(merged) < MIN_IC_OBSERVATIONS_PER_LAG:
                 continue
 
             daily_ic = merged.groupby(level="datetime").apply(
@@ -511,7 +506,7 @@ class FactorAnalyzer:
                 # Too few observations → NaN, not 0.0. Zero used to hide
                 # "no data at this lag" inside the decay curve so it looked
                 # like the factor's predictive power vanished at lag N.
-                if len(merged) < _MIN_IC_OBSERVATIONS_PER_LAG:
+                if len(merged) < MIN_IC_OBSERVATIONS_PER_LAG:
                     decay_values.append(float("nan"))
                     continue
 

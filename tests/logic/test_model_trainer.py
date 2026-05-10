@@ -357,6 +357,20 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         # best_iter=3 → values[2] = 0.3
         self.assertAlmostEqual(final_val, 0.3)
 
+    def test_best_iter_zero_uses_values_index_zero_not_last(self) -> None:
+        """best_iter==0 (0-indexed, CatBoost) must select values[0],
+        not fall through the old guard to values[-1].  Before the
+        max(0, best_iter-1) fix, 0 < 0 failed the guard and final_val
+        silently returned the last element."""
+        class _Inner:
+            def get_best_iteration(self): return 0
+        class _M: model = _Inner()
+        evals = {"valid": {"l2": [0.9, 0.7, 0.5, 0.3]}}
+        best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "CatBoostModel", evals)
+        self.assertEqual(best_iter, 0)
+        # best_iter=0 → max(0, -1)=0 → values[0] = 0.9
+        self.assertAlmostEqual(final_val, 0.9)
+
     def test_diagnostic_extraction_never_raises(self) -> None:
         # Malformed evals_result must not poison the output.
         class _M: model = None
