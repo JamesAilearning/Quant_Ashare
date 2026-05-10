@@ -360,8 +360,8 @@ class ModelTrainer:
                     values = losses[metric_name]
                     if values:
                         final_val = float(
-                            values[best_iter - 1]
-                            if best_iter is not None and 0 < best_iter <= len(values)
+                            values[max(0, best_iter - 1)]
+                            if best_iter is not None and best_iter < len(values)
                             else values[-1]
                         )
         except Exception:

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from src.core._ic_utils import compute_ic_for_group
+from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, compute_ic_for_group
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -278,6 +278,8 @@ class SignalAnalyzer:
 
         if merged.empty:
             return pd.Series(dtype=float)
+        if len(merged) < MIN_IC_OBSERVATIONS_PER_LAG:
+            return pd.Series(dtype=float)
 
         # Rename "forward_ret" → "ret" so compute_ic_for_group's column
         # detection ("pred" + "ret") works without branching.
@@ -321,6 +323,9 @@ class SignalAnalyzer:
             # (old behaviour) looked like "model predictive power dies at
             # lag N" when it was really "no observations at lag N".
             if merged.empty:
+                decay.append(float("nan"))
+                continue
+            if len(merged) < MIN_IC_OBSERVATIONS_PER_LAG:
                 decay.append(float("nan"))
                 continue
 

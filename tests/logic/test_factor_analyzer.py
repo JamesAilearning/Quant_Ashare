@@ -239,8 +239,8 @@ class FactorDecayNaNBehaviorTests(unittest.TestCase):
 
     def test_min_observations_constant_is_ten(self) -> None:
         """Anchor the threshold so it can't drift silently."""
-        from src.core.factor_analyzer import _MIN_IC_OBSERVATIONS_PER_LAG
-        self.assertEqual(_MIN_IC_OBSERVATIONS_PER_LAG, 10)
+        from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG
+        self.assertEqual(MIN_IC_OBSERVATIONS_PER_LAG, 10)
 
 
 # ----- E2E tests (only run when qlib data is available) -----
