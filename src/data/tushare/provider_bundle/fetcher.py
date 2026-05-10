@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import pandas as pd
 
 from src.core.logger import get_logger
-from src.data.tushare.client import TushareClient
+from src.data.tushare.client import TushareClient, TushareClientError
 
 from src.data.tushare.provider_bundle._types import (
+    INDEX_SOURCE_API,
     SOURCE_APIS,
     STAGED_ADJ_FACTOR_DIR,
     STAGED_DAILY_DIR,
@@ -30,6 +31,7 @@ from src.data.tushare.provider_bundle._utils import (
     _write_frame,
     _write_staged_cache_metadata,
 )
+from src.data.tushare.provider_bundle.config import TushareQlibProviderBundleConfig
 
 _logger = get_logger(__name__)
 

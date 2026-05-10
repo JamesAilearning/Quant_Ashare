@@ -6,9 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+from src.core.canonical_backtest_contract import SUPPORTED_ADJUST_MODES
 from src.data.tushare.client import TushareClient
 
 from src.data.tushare.provider_bundle._types import (
+    DEFAULT_COMPARISON_NAME,
+    DEFAULT_MANIFEST_NAME,
+    DEFAULT_VALIDATION_NAME,
     FORBIDDEN_CONFIG_KEYS,
     SOURCE_APIS,
     TushareQlibProviderBundleError,
