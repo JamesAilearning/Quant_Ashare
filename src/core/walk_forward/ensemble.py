@@ -140,6 +140,7 @@ def apply_ensemble(
                             "path": prior_path,
                             "reason": f"pkl_sha256 mismatch",
                         })
+                sidecar_lgb = sidecar.get("lightgbm_version")
                 if sidecar_lgb:
                     import lightgbm as _lgb
                     if sidecar_lgb != _lgb.__version__:

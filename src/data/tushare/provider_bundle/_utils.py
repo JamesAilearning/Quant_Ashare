@@ -6,8 +6,9 @@ import hashlib
 import json
 import os
 import shutil
+from datetime import date
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,8 @@ from src.core.logger import get_logger
 from src.data.tushare.industry_publisher import _tushare_to_qlib_instrument
 
 from src.data.tushare.provider_bundle._types import (
+    INDEX_SOURCE_API,
+    SOURCE_APIS,
     _TUSHARE_AMOUNT_KYUAN_TO_YUAN,
     _TUSHARE_VOL_LOTS_TO_SHARES,
     STAGED_CACHE_METADATA_SUFFIX,
