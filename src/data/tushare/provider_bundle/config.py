@@ -14,6 +14,13 @@ from src.data.tushare.provider_bundle._types import (
     TushareQlibProviderBundleError,
     TushareQlibProviderManifest,
 )
+from src.data.tushare.provider_bundle._utils import (
+    _normalize_benchmark_indexes,
+    _normalize_instrument_scope,
+    _parse_iso_date,
+    _qlib_to_tushare_instrument,
+    _require_non_empty_str,
+)
 
 @dataclass(frozen=True)
 class TushareQlibProviderBundleConfig:
