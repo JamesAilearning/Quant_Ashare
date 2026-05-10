@@ -467,21 +467,43 @@ class WalkForwardEngine:
     @classmethod
     def _run_attribution_for_fold(
         cls,
+        *,
         config: WalkForwardConfig,
         fold_index: int,
         test_start: str, test_end: str,
         predictions: Any,
         backtest_output: CanonicalBacktestOutput,
     ) -> tuple[AttributionResult | None, str | None]:
-        """Run per-fold performance attribution.
+        """Run per-fold performance attribution; return ``(result, reason)``.
 
-        Returns ``(result, skipped_reason)`` where ``skipped_reason``
-        is ``None`` on success. Skipped-reason values mirror
-        ``Pipeline.run``'s attribution block contract.
+        Mirrors ``Pipeline.run`` step 7 layering exactly:
+
+        - ``run_attribution=False`` → return ``(None,
+          "disabled_by_config")``.
+        - Backtest produced no positions → return ``(None,
+          "no_positions_from_backtest")`` — refusing to silently fall
+          back to a prediction-score proxy.
+        - Industry artifact configured → resolve via the shared loader;
+          a load failure aborts the run with :class:`WalkForwardError`
+          (vs the soft skip for engine errors below) because it
+          indicates a config / file mismatch the operator must fix
+          before any fold can produce trustworthy attribution.
+        - Engine raises :class:`PerformanceAttributionError` (degenerate
+          inputs) → return ``(None, "engine_error: ...")`` with a
+          WARNING log. This matches Pipeline's "skip + WARN" path so
+          downstream comparison tools (PR #29 walk-forward-compare)
+          can flag the degraded fold without aborting the rest.
         """
         if not config.run_attribution:
             return None, "disabled_by_config"
+
         if not backtest_output.positions:
+            _logger.warning(
+                "Fold %d: skipping attribution — backtest produced no "
+                "positions. Refusing to fall back to prediction-score "
+                "attribution (no implicit fallback).",
+                fold_index,
+            )
             return None, "no_positions_from_backtest"
 
         attribution_overrides: dict[str, Any] = {}
@@ -525,7 +547,7 @@ class WalkForwardEngine:
         )
 
         try:
-            attribution_result = PerformanceAttribution.analyze(
+            result = PerformanceAttribution.analyze(
                 return_series=backtest_output.return_series,
                 # Use the ensemble-aware predictions (same series the
                 # backtest received) so attribution's universe and the
@@ -535,11 +557,15 @@ class WalkForwardEngine:
                 positions=backtest_output.positions,
             )
         except PerformanceAttributionError as exc:
+            _logger.warning(
+                "Fold %d: attribution skipped — engine raised %s: %s. "
+                "Backtest and risk_analysis remain valid; only the "
+                "sector-attribution block is absent from this fold's report.",
+                fold_index, type(exc).__name__, exc,
+            )
             return None, f"engine_error: {type(exc).__name__}: {exc}"
-        except Exception as exc:  # noqa: BLE001
-            return None, f"unexpected_error: {type(exc).__name__}: {exc}"
 
-        return attribution_result, None
+        return result, None
 
     # ── thin wrappers ─────────────────────────────────────────────
 
