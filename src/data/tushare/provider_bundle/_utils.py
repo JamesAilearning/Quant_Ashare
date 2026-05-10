@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.logger import get_logger
+from src.data.tushare.industry_publisher import _tushare_to_qlib_instrument
 
 from src.data.tushare.provider_bundle._types import (
     _TUSHARE_AMOUNT_KYUAN_TO_YUAN,

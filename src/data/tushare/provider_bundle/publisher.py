@@ -18,6 +18,7 @@ from src.core.canonical_backtest_contract import (
 )
 from src.core.logger import get_logger
 from src.data.tushare.client import TushareClient
+from src.data.tushare.industry_publisher import _tushare_to_qlib_instrument
 from src.data.tushare.provider_bundle.config import TushareQlibProviderBundleConfig
 from src.data.tushare.provider_bundle._types import (
     DEFAULT_COMPARISON_NAME,
