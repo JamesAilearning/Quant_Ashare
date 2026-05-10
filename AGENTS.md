@@ -90,6 +90,11 @@ When fixing a bug, write a test that fails before the fix and passes after. Cite
 PR scope
 One logically coherent change per PR. "P1 batch — N items" is fine ONLY if every item is the same kind (e.g. all defensive-validation tightening). Mixing data-correctness fixes with refactors with new tools makes review impossible.
 Follow-up commits within the same PR are a SIGNAL that the original review missed something. When you push a follow-up to a PR you opened, write in the follow-up's body why it slipped past the original review so the next agent reading this can avoid the same gap.
-
+Mechanical-move PRs require pre/post diff verification
+A "split this file into a sub-package", "rename this module", or "extract this helper into its own file" task has the explicit goal of zero behavior change. For these PRs a green test suite is necessary but not sufficient — tests cover the properties tests assert on, not all behavior. Lost WARNING logs, dropped keyword-only markers, swapped parameter order, compressed or rewritten docstrings, quietly-added except Exception catch-alls, and similar drift all pass an unchanged test suite while violating "no behavior change". Before opening the PR, for every public function or class moved between files run:
+  git show <pre-move-sha>:<old-path> > /tmp/pre.py
+  diff <(awk '/def <symbol>/,/^    @|^def |^class /' /tmp/pre.py) \
+       <(awk '/def <symbol>/,/^    @|^def |^class /' <new-path>)
+Paste the per-symbol diff (or the literal text "no diff") into the PR description as proof. Any non-whitespace, non-trivial-rename difference must either be reverted to the pre-move form or justified in the PR body. The walk_forward.py split required five hotfix rounds despite each intermediate state passing the test suite, because this verification was skipped — silent drift in `_run_attribution_for_fold` (lost WARNINGs and a new silent catch-all) was caught only by direct diff against the pre-move source.
 Pre-commit hook
 A versioned pre-commit hook ships at `.githooks/pre-commit`. Activate it once per clone with `git config core.hooksPath .githooks`. The hook runs the same import-smoke and targeted-test checks listed above; do not bypass it with `--no-verify` unless explicitly asked by the user.
