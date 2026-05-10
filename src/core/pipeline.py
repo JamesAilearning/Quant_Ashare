@@ -678,7 +678,7 @@ class Pipeline:
                 },
                 headline_metrics={
                     "mean_ic_1d": (
-                        signal_result.ic_summary.get(1, {}).get("mean_ic", float("nan"))
+                        signal_result.ic_summary.get(1, {}).get("mean_ic")
                         if signal_result else None
                     ),
                     "annualized_return": (
