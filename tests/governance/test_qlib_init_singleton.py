@@ -85,6 +85,9 @@ class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
 
     def test_forward_and_back_slashes_are_equivalent(self) -> None:
         # On Windows abspath already normalizes, but call it out explicitly.
+        import os
+        if os.name != "nt":
+            self.skipTest("Windows-only behaviour (backslash is not a POSIX path separator).")
         cfg1 = QlibRuntimeConfig(
             provider_uri=r"D:/qlib_data/my_cn_data",
             region="cn",
