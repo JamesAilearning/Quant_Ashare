@@ -60,7 +60,7 @@ def load_yaml_with_inheritance(
             f"{' → '.join(_chain)} → {path_str}"
         )
 
-    with open(file_path, "r", encoding="utf-8") as fh:
+    with open(file_path, encoding="utf-8") as fh:
         raw: dict[str, Any] = yaml.safe_load(fh)
 
     if not isinstance(raw, dict):

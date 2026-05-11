@@ -8,10 +8,9 @@ without resorting to ``find`` + ``jq``.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from src.core._json_utils import _sanitize_for_json
 from src.core.logger import get_logger
@@ -24,7 +23,7 @@ _DEFAULT_CATALOG_PATH = Path("output/runs/_index.jsonl")
 def append_run_record(
     record: dict[str, Any],
     *,
-    catalog_path: Optional[Path] = None,
+    catalog_path: Path | None = None,
 ) -> None:
     """Append a single JSON line to the run catalog.
 
@@ -53,12 +52,12 @@ def build_record(
     *,
     engine: str,
     status: str,
-    started_at: Optional[str] = None,
-    completed_at: Optional[str] = None,
+    started_at: str | None = None,
+    completed_at: str | None = None,
     config_fingerprint: str = "",
-    config_summary: Optional[dict[str, Any]] = None,
-    headline_metrics: Optional[dict[str, Any]] = None,
-    report_path: Optional[str] = None,
+    config_summary: dict[str, Any] | None = None,
+    headline_metrics: dict[str, Any] | None = None,
+    report_path: str | None = None,
     output_dir: str = "",
 ) -> dict[str, Any]:
     """Build a run-catalog record with consistent schema."""
@@ -76,7 +75,7 @@ def build_record(
     }
 
 
-def _build_run_id(engine: str, completed_at: Optional[str],
+def _build_run_id(engine: str, completed_at: str | None,
                   fingerprint: str) -> str:
     ts = (completed_at or datetime.now(tz=timezone.utc).isoformat())[:19]
     fp = fingerprint[:12] if fingerprint else "no_fingerprint"

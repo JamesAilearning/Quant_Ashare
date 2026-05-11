@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from src.data.trading_calendar import TradingCalendar
-
 
 # ---------------------------------------------------------------------------
 # Shared internal CSV read result
@@ -34,10 +34,10 @@ from src.data.trading_calendar import TradingCalendar
 class _CsvReadOutcome:
     rows: int
     columns_present: tuple[str, ...]
-    snapshot_start: Optional[str]
-    snapshot_end: Optional[str]
+    snapshot_start: str | None
+    snapshot_end: str | None
     has_future_effective_data: bool
-    max_trade_date: Optional[str]
+    max_trade_date: str | None
     # Distinct trade-date count is computed in one pass (no second file read)
     distinct_trade_date_count: int = 0
 
@@ -78,9 +78,9 @@ class TemporalArtifactLoaderBase:
         artifact_path: str,
         manifest_path: str,
         temporal_mode: str,
-        reference_date: Optional[str],
-        calendar: Optional[TradingCalendar],
-    ) -> tuple[_CsvReadOutcome, Mapping[str, Any], bool, bool, Optional[int], Optional[float]]:
+        reference_date: str | None,
+        calendar: TradingCalendar | None,
+    ) -> tuple[_CsvReadOutcome, Mapping[str, Any], bool, bool, int | None, float | None]:
         """Run the shared load logic and return computed values.
 
         Returns
@@ -119,14 +119,14 @@ class TemporalArtifactLoaderBase:
             )
 
         # stale_days
-        stale_days: Optional[int] = None
+        stale_days: int | None = None
         if reference is not None and outcome.snapshot_end is not None:
             end_date = cls._parse_iso_date(outcome.snapshot_end)
             if end_date is not None:
                 stale_days = max((reference - end_date).days, 0)
 
         # coverage_ratio
-        coverage_ratio: Optional[float] = None
+        coverage_ratio: float | None = None
         if (
             temporal_mode == cls.MODE_TRADE_DATE
             and calendar is not None
@@ -154,15 +154,15 @@ class TemporalArtifactLoaderBase:
         cls,
         artifact_file: Path,
         temporal_mode: str,
-        reference: Optional[date],
+        reference: date | None,
     ) -> _CsvReadOutcome:
         rows = 0
         has_future_effective_data = False
         header_normalized: tuple[str, ...] = ()
-        min_trade_date: Optional[date] = None
-        max_trade_date: Optional[date] = None
-        min_effective_start: Optional[date] = None
-        max_effective_end: Optional[date] = None
+        min_trade_date: date | None = None
+        max_trade_date: date | None = None
+        min_effective_start: date | None = None
+        max_effective_end: date | None = None
         distinct_trade_dates: set[str] = set()
 
         try:
@@ -276,7 +276,7 @@ class TemporalArtifactLoaderBase:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+    def _parse_iso_date(value: str | None) -> date | None:
         if value is None:
             return None
         text = str(value).strip()

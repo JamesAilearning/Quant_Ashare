@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from src.contracts.benchmark_data_contract import BenchmarkArtifactProfile
 from src.core.qlib_runtime import is_canonical_qlib_initialized
@@ -73,9 +74,9 @@ class BenchmarkArtifactPublisher:
         manifest_path: str,
         *,
         source_name: str = BENCHMARK_PUBLISHER_SOURCE_NAME_DEFAULT,
-        source_uri: Optional[str] = None,
-        snapshot_at: Optional[str] = None,
-        reference_date: Optional[str] = None,
+        source_uri: str | None = None,
+        snapshot_at: str | None = None,
+        reference_date: str | None = None,
     ) -> BenchmarkPublishResult:
         """Publish a benchmark artifact.
 

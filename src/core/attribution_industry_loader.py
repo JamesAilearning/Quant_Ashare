@@ -64,7 +64,6 @@ Public surface
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from src.contracts.taxonomy_data_contract import (
     TAXONOMY_MODE_STATIC,
@@ -77,7 +76,6 @@ from src.data.taxonomy_artifact_loader import (
     TaxonomyArtifactLoader,
     TaxonomyArtifactLoaderError,
 )
-
 
 # Purpose enum: which validation policy applies when calling
 # :func:`resolve_industry_taxonomy`. ``"training"`` runs the full
@@ -133,10 +131,10 @@ class IndustryTaxonomyResolution:
 
 
 def assert_industry_config_complete_or_empty(
-    artifact_path: Optional[str],
-    manifest_path: Optional[str],
-    taxonomy_id: Optional[str],
-    temporal_mode: Optional[str],
+    artifact_path: str | None,
+    manifest_path: str | None,
+    taxonomy_id: str | None,
+    temporal_mode: str | None,
     *,
     error_class: type,
     error_prefix: str,
@@ -190,7 +188,7 @@ def resolve_industry_taxonomy(
     taxonomy_id: str,
     temporal_mode: str,
     purpose: str,
-    reference_date: Optional[str] = None,
+    reference_date: str | None = None,
 ) -> IndustryTaxonomyResolution:
     """Load and validate an industry taxonomy artifact.
 

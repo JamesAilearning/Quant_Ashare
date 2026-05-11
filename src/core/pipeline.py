@@ -12,13 +12,10 @@ import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
-from src.core.logger import get_logger
-
-_logger = get_logger(__name__)
-
+from src.core._json_utils import _sanitize_for_json
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -35,6 +32,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeCostModel,
 )
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
+from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
 from src.core.model_trainer import ModelTrainer, ModelTrainResult
 from src.core.performance_attribution import (
@@ -43,18 +41,18 @@ from src.core.performance_attribution import (
     PerformanceAttribution,
     PerformanceAttributionError,
 )
-from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized
-from src.core.run_catalog import append_run_record, build_record as build_catalog_record
+from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
+from src.core.run_catalog import append_run_record
+from src.core.run_catalog import build_record as build_catalog_record
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
-
 
 # Re-export the shared sanitizer at the previous public symbol so
 # existing imports / tests that look up ``Pipeline``/``pipeline._sanitize_for_json``
 # keep working unchanged. The implementation now lives in ``_json_utils``
 # so ``walk_forward`` can call the same code without duplicating it.
-from src.core._json_utils import _sanitize_for_json  # noqa: E402
+_logger = get_logger(__name__)
 
 
 class PipelineError(RuntimeError):
@@ -658,8 +656,9 @@ class Pipeline:
     ) -> None:
         """Append a run-catalog record for a completed pipeline run."""
         try:
+            import hashlib
+            import json
             from dataclasses import asdict
-            import hashlib, json
             config_dict = asdict(config)
             fingerprint = hashlib.sha256(
                 json.dumps(config_dict, sort_keys=True, default=str).encode()

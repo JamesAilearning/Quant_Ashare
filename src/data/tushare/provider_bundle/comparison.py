@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
 from src.core.logger import get_logger
-
 from src.data.tushare.provider_bundle._types import (
     TushareProviderComparisonReport,
-    TushareQlibProviderBundleError,
 )
 from src.data.tushare.provider_bundle._utils import (
-    _read_frame,
     _read_provider_calendar,
     _read_provider_feature,
     _read_provider_instruments,
@@ -46,10 +42,7 @@ def compare_provider_bundles(
     close_points = 0
     volume_points = 0
     for instrument in overlap_instruments[:max_price_instruments]:
-        for field, current_max, current_points in (
-            ("close", max_close_delta, close_points),
-            ("volume", max_volume_delta, volume_points),
-        ):
+        for field in ("close", "volume"):
             try:
                 generated_series = _read_provider_feature(generated, instrument, field, generated_calendar)
                 baseline_series = _read_provider_feature(baseline, instrument, field, baseline_calendar)

@@ -11,22 +11,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.canonical_backtest_contract import (
-    ADJUST_MODE_POST,
-    ADJUST_MODE_PRE,
-    CanonicalAccountConfig,
-    CanonicalBacktestContractError,
-    CanonicalBacktestInput,
-    CanonicalExchangeConfig,
-    CanonicalExchangeCostModel,
-    EXECUTION_PRICE_CLOSE,
-)
 from src.core.backtest_runner import (
     BacktestRunner,
     BacktestRunnerError,
     _positions_to_weight_map,
     _risk_analysis_to_flat_dict,
     _series_to_dict,
+)
+from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_POST,
+    ADJUST_MODE_PRE,
+    EXECUTION_PRICE_CLOSE,
+    CanonicalAccountConfig,
+    CanonicalBacktestContractError,
+    CanonicalBacktestInput,
+    CanonicalExchangeConfig,
+    CanonicalExchangeCostModel,
 )
 from src.core.qlib_runtime import (
     QlibRuntimeConfig,
@@ -207,6 +207,7 @@ class SignalLagTests(unittest.TestCase):
         """``(instrument, datetime)`` MultiIndex would silently feed
         instruments to the date axis. Pin the order check at lag=0 too."""
         import pandas as pd
+
         from src.core.backtest_runner import BacktestRunnerError
 
         idx = pd.MultiIndex.from_product(
@@ -221,6 +222,7 @@ class SignalLagTests(unittest.TestCase):
 
     def test_rejects_duplicate_prediction_index_before_unstack(self) -> None:
         import pandas as pd
+
         from src.core.backtest_runner import BacktestRunnerError
 
         idx = pd.MultiIndex.from_tuples(
@@ -430,6 +432,7 @@ _HAS_QLIB_DATA = _QLIB_DATA_DIR.exists() and (_QLIB_DATA_DIR / "calendars").exis
 
 from tests.e2e_guard import skip_unless_e2e
 
+
 @skip_unless_e2e
 @unittest.skipUnless(_HAS_QLIB_DATA, "qlib data bundle not available")
 class BacktestRunnerE2ETests(unittest.TestCase):
@@ -451,12 +454,13 @@ class BacktestRunnerE2ETests(unittest.TestCase):
                 data_adjust_mode=ADJUST_MODE_PRE,
             ))
 
+        import tempfile
+
+        from src.core.model_trainer import ModelTrainConfig, ModelTrainer
         from src.data.feature_dataset_builder import (
             FeatureDatasetBuilder,
             FeatureDatasetConfig,
         )
-        from src.core.model_trainer import ModelTrainer, ModelTrainConfig
-        import tempfile
 
         ds_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
             instruments="csi300",

@@ -64,7 +64,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 QLIB_ROOT = Path(r"D:/qlib_data/my_cn_data")
 XLSX_PATH = QLIB_ROOT / "000300perf (1).xlsx"
 CALENDAR_PATH = QLIB_ROOT / "calendars" / "day.txt"

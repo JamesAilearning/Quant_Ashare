@@ -1,11 +1,11 @@
 """Tests for src.core.visualizer — result visualization."""
 
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from src.core.visualizer import (
     ResultVisualizer,
@@ -22,8 +22,8 @@ def _make_return_series(n_days=60):
     returns = np.random.normal(0.001, 0.02, n_days)
     bench = np.random.normal(0.0005, 0.015, n_days)
     return {
-        "return": {str(d.date()): float(r) for d, r in zip(dates, returns)},
-        "bench": {str(d.date()): float(b) for d, b in zip(dates, bench)},
+        "return": {str(d.date()): float(r) for d, r in zip(dates, returns, strict=True)},
+        "bench": {str(d.date()): float(b) for d, b in zip(dates, bench, strict=True)},
     }
 
 

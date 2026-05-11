@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any
 
 import pandas as pd
-
-from src.core.canonical_backtest_contract import ADJUST_MODE_NONE
 
 PUBLISHER_VERSION = "v1"
 MANIFEST_SCHEMA_VERSION = "v1"

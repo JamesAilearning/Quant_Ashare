@@ -6,7 +6,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.core.canonical_backtest_contract import ADJUST_MODE_NONE, EXECUTION_PRICE_OPEN
-
 from src.core.walk_forward import (
     WalkForwardConfig,
     WalkForwardEngine,
@@ -537,6 +536,7 @@ def _qlib_available():
 
 from tests.e2e_guard import skip_unless_e2e
 
+
 @skip_unless_e2e
 @unittest.skipUnless(_qlib_available(), "requires qlib + local data bundle")
 class WalkForwardE2ETests(unittest.TestCase):
@@ -1028,7 +1028,6 @@ class _AttributionSectionForFoldTests(unittest.TestCase):
             AttributionResult,
             SectorAttribution,
         )
-        from src.core.board_heuristic import BOARD_HEURISTIC_TAXONOMY_ID
 
         result = AttributionResult(
             sector_attribution=(
@@ -1235,7 +1234,6 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
     def test_window_three_averages_current_plus_two_priors(self) -> None:
         """Happy path: current model returns 0.6, two priors return 0.3
         and 0.0; the average is 0.3."""
-        import pandas as pd
 
         current = self._build_predictions(0.6)
         prior1_pred = self._build_predictions(0.3)

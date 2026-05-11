@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from src.contracts import _shared_validators as _sv
 
@@ -83,17 +84,17 @@ class UniverseDataContractError(ValueError):
 class UniverseArtifactProfile:
     """Normalized universe artifact snapshot used by contract validation."""
 
-    artifact_path: Optional[str]
-    manifest_path: Optional[str]
+    artifact_path: str | None
+    manifest_path: str | None
     artifact_present: bool
     manifest_present: bool
     metadata: Mapping[str, Any]
-    rows: Optional[int]
+    rows: int | None
     columns_present: tuple[str, ...] = ()
-    snapshot_start: Optional[str] = None
-    snapshot_end: Optional[str] = None
-    stale_days: Optional[int] = None
-    coverage_ratio: Optional[float] = None
+    snapshot_start: str | None = None
+    snapshot_end: str | None = None
+    stale_days: int | None = None
+    coverage_ratio: float | None = None
     has_inconsistent_membership: bool = False
     has_future_effective_data: bool = False
     has_future_known_metadata: bool = False
@@ -121,7 +122,7 @@ class UniverseContractInput:
     runtime_universe_controls: Mapping[str, Any] = field(default_factory=dict)
     stale_days_warn_threshold: int = 5
     min_coverage_ratio: float = 0.95
-    reference_date: Optional[str] = None
+    reference_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,19 +133,19 @@ class UniverseContractStatus:
     contract_health: str
     universe_name: str
     source_of_truth: str
-    artifact_path: Optional[str]
-    manifest_path: Optional[str]
+    artifact_path: str | None
+    manifest_path: str | None
     artifact_present: bool
     manifest_present: bool
     temporal_mode: str
     metadata_fields_present: tuple[str, ...]
     metadata_fields_missing: tuple[str, ...]
-    snapshot_start: Optional[str]
-    snapshot_end: Optional[str]
-    rows: Optional[int]
+    snapshot_start: str | None
+    snapshot_end: str | None
+    rows: int | None
     columns_present: tuple[str, ...]
-    stale_days: Optional[int]
-    coverage_ratio: Optional[float]
+    stale_days: int | None
+    coverage_ratio: float | None
     membership_consistency_status: str
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
@@ -176,7 +177,7 @@ class UniverseDataContract:
         return UNIVERSE_OPERATOR_STATUS_FIELDS
 
     @staticmethod
-    def _as_date(value: Optional[str]) -> Optional[date]:
+    def _as_date(value: str | None) -> date | None:
         """Thin wrapper kept for backward compatibility with validate_input_boundary."""
         return _sv.parse_iso_date(value, error_cls=UniverseDataContractError)
 

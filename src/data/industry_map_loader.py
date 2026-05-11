@@ -41,9 +41,8 @@ Validation explicitly NOT here
 from __future__ import annotations
 
 import csv
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
-
 
 _INSTRUMENT_COLUMN = "instrument"
 _INDUSTRY_COLUMN = "industry_code"
@@ -73,10 +72,10 @@ def load_industry_map(artifact_path: str | Path) -> dict[str, str]:
         reader = csv.reader(handle)
         try:
             header = next(reader)
-        except StopIteration:
+        except StopIteration as exc:
             raise IndustryMapLoaderError(
                 f"Industry artifact at {p} is completely empty (no header)."
-            )
+            ) from exc
 
         try:
             header_lookup = {

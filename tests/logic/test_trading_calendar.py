@@ -18,7 +18,6 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -207,6 +206,7 @@ class ExtendEndByTradingDaysTests(unittest.TestCase):
         import sys
         import types
         from unittest.mock import patch
+
         import pandas as pd
 
         # Stub qlib.data so ``from qlib.data import D`` succeeds and
@@ -234,10 +234,10 @@ class ExtendEndByTradingDaysTests(unittest.TestCase):
         self.assertGreater(result, pd.Timestamp("2026-04-25"))
 
     def test_falls_back_to_calendar_days_when_qlib_returns_too_few(self) -> None:
-        import logging
         import sys
         import types
         from unittest.mock import patch
+
         import pandas as pd
 
         # Calendar has only 2 forward days; we ask for 5 → fallback path.
@@ -273,6 +273,7 @@ class ExtendEndByTradingDaysTests(unittest.TestCase):
         import sys
         import types
         from unittest.mock import patch
+
         import pandas as pd
 
         class _FakeD:

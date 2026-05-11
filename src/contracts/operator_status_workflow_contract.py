@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 STATUS_OK = "ok"
 STATUS_WARNING = "warning"

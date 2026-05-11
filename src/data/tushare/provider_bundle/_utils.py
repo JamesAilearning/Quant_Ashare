@@ -2,31 +2,31 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from src.core.logger import get_logger
 from src.data.tushare.industry_publisher import _tushare_to_qlib_instrument
-
 from src.data.tushare.provider_bundle._types import (
     INDEX_SOURCE_API,
     SOURCE_APIS,
-    _TUSHARE_AMOUNT_KYUAN_TO_YUAN,
-    _TUSHARE_VOL_LOTS_TO_SHARES,
     STAGED_CACHE_METADATA_SUFFIX,
     STAGED_CACHE_METADATA_VERSION,
     TushareQlibProviderBundleError,
 )
 
 _logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from src.data.tushare.provider_bundle.config import TushareQlibProviderBundleConfig
+
 
 def _normalize_instrument_scope(value: Any) -> tuple[str, ...]:
     if value is None:

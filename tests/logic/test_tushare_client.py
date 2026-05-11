@@ -13,11 +13,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.tushare.client import (  # noqa: E402
+    _TOKEN_ENV_VAR,
     TushareClient,
     TushareClientError,
-    _TOKEN_ENV_VAR,
 )
-
 
 # ---------------------------------------------------------------------
 # Helpers — install a fake ``tushare`` module so the client's lazy

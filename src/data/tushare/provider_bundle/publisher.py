@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import os
 import shutil
-from dataclasses import asdict
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -21,8 +18,9 @@ from src.core.canonical_backtest_contract import (
 from src.core.logger import get_logger
 from src.data.tushare.client import TushareClient
 from src.data.tushare.industry_publisher import _tushare_to_qlib_instrument
-from src.data.tushare.provider_bundle.config import TushareQlibProviderBundleConfig
 from src.data.tushare.provider_bundle._types import (
+    _TUSHARE_AMOUNT_KYUAN_TO_YUAN,
+    _TUSHARE_VOL_LOTS_TO_SHARES,
     DEFAULT_COMPARISON_NAME,
     DEFAULT_MANIFEST_NAME,
     DEFAULT_VALIDATION_NAME,
@@ -30,15 +28,12 @@ from src.data.tushare.provider_bundle._types import (
     PUBLISHER_VERSION,
     SOURCE_NAME,
     VALIDATION_SCHEMA_VERSION,
-    _PreparedMarketData,
-    _TUSHARE_AMOUNT_KYUAN_TO_YUAN,
-    _TUSHARE_VOL_LOTS_TO_SHARES,
-    TushareProviderComparisonReport,
     TushareQlibProviderBundleError,
     TushareQlibProviderManifest,
     TushareQlibProviderPublishResult,
     TushareQlibProviderValidationProfile,
     TushareStagedMarketData,
+    _PreparedMarketData,
 )
 from src.data.tushare.provider_bundle._utils import (
     _concat_frames,
@@ -50,8 +45,9 @@ from src.data.tushare.provider_bundle._utils import (
     _temporary_publish_dir,
     _write_json,
 )
-from src.data.tushare.provider_bundle.fetcher import TushareMarketDataFetcher
 from src.data.tushare.provider_bundle.comparison import compare_provider_bundles
+from src.data.tushare.provider_bundle.config import TushareQlibProviderBundleConfig
+from src.data.tushare.provider_bundle.fetcher import TushareMarketDataFetcher
 
 _logger = get_logger(__name__)
 
@@ -63,7 +59,7 @@ class TushareQlibProviderPublisher:
         cls,
         config: TushareQlibProviderBundleConfig,
         *,
-        client: Optional[TushareClient] = None,
+        client: TushareClient | None = None,
     ) -> TushareQlibProviderPublishResult:
         staged = TushareMarketDataFetcher.stage(config, client=client)
         prepared = cls.prepare_staged_data(staged, config)

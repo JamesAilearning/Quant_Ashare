@@ -51,8 +51,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from src.core.logger import get_logger
 from src.data.taxonomy_artifact_publisher import (
@@ -129,7 +128,7 @@ class TushareIndustryPublisher:
         level: str = "L2",
         shenwan_src: str = DEFAULT_SHENWAN_SRC,
         taxonomy_name: str = SW_L2_TAXONOMY_NAME,
-        client: Optional[TushareClient] = None,
+        client: TushareClient | None = None,
     ) -> TushareIndustryPublishResult:
         """Fetch the industry classification and persist it as an artifact.
 
@@ -341,7 +340,7 @@ class TushareIndustryPublisher:
         return out
 
 
-def _tushare_to_qlib_instrument(con_code: str) -> Optional[str]:
+def _tushare_to_qlib_instrument(con_code: str) -> str | None:
     """Convert Tushare's ``"600000.SH"`` to qlib's ``"SH600000"``.
 
     Returns ``None`` for codes that do not match the dotted exchange-

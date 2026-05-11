@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import MISSING, fields
-from typing import Any, Mapping
+from typing import Any
 
 from src.core.model_trainer import ModelTrainConfig
 

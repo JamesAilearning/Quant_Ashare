@@ -24,9 +24,9 @@ from src.contracts.operator_status_workflow_contract import (  # noqa: E402
     BOUNDARY_RUNTIME_PLACEHOLDER,
     GOVERNANCE_CANONICAL,
     INFORMATIONAL_BOUNDARY_NOTE,
-    OperatorStatusEntry,
     STATUS_NOT_READY,
     STATUS_OK,
+    OperatorStatusEntry,
 )
 from src.contracts.taxonomy_data_contract import (  # noqa: E402
     TAXONOMY_CONTRACT_NAME,
@@ -39,7 +39,6 @@ from src.contracts.universe_data_contract import (  # noqa: E402
 from src.core.operator_status_aggregator import (  # noqa: E402
     OperatorStatusAggregator,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal contract status constructors
@@ -313,6 +312,7 @@ class AggregatorDelegationTests(unittest.TestCase):
     def test_aggregator_does_not_assign_overall_status_directly(self) -> None:
         """Governance: the aggregator source must not contain overall_status assignment."""
         import inspect
+
         from src.core import operator_status_aggregator as mod
 
         source = inspect.getsource(mod)

@@ -42,9 +42,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.logger import setup_logging  # noqa: E402
 from src.data.tushare.client import (  # noqa: E402
+    _TOKEN_ENV_VAR,
     TushareClient,
     TushareClientError,
-    _TOKEN_ENV_VAR,
 )
 from src.data.tushare.industry_publisher import (  # noqa: E402
     DEFAULT_SHENWAN_SRC,

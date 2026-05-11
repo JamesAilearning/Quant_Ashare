@@ -13,9 +13,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.model_trainer import (
+    ModelTrainConfig,
     ModelTrainer,
     ModelTrainerError,
-    ModelTrainConfig,
 )
 
 
@@ -324,33 +324,51 @@ class TrainingDiagnosticsTests(unittest.TestCase):
     """_extract_training_diagnostics best-effort extraction."""
 
     def test_lgb_best_iteration_from_inner_model(self) -> None:
-        class _Inner: best_iteration = 42
-        class _M: model = _Inner()
+        class _Inner:
+            best_iteration = 42
+
+        class _M:
+            model = _Inner()
+
         best_iter, _ = ModelTrainer._extract_training_diagnostics(_M(), "LGBModel", {})
         self.assertEqual(best_iter, 42)
 
     def test_xgb_best_iteration_from_inner_model(self) -> None:
-        class _Inner: best_iteration = 17
-        class _M: model = _Inner()
+        class _Inner:
+            best_iteration = 17
+
+        class _M:
+            model = _Inner()
+
         best_iter, _ = ModelTrainer._extract_training_diagnostics(_M(), "XGBModel", {})
         self.assertEqual(best_iter, 17)
 
     def test_catboost_best_iteration_via_getter(self) -> None:
         class _Inner:
-            def get_best_iteration(self): return 99
-        class _M: model = _Inner()
+            def get_best_iteration(self):
+                return 99
+
+        class _M:
+            model = _Inner()
+
         best_iter, _ = ModelTrainer._extract_training_diagnostics(_M(), "CatBoostModel", {})
         self.assertEqual(best_iter, 99)
 
     def test_missing_inner_returns_none(self) -> None:
-        class _M: model = None
+        class _M:
+            model = None
+
         best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "LGBModel", {})
         self.assertIsNone(best_iter)
         self.assertIsNone(final_val)
 
     def test_final_valid_loss_from_evals_result(self) -> None:
-        class _Inner: best_iteration = 3
-        class _M: model = _Inner()
+        class _Inner:
+            best_iteration = 3
+
+        class _M:
+            model = _Inner()
+
         evals = {"valid": {"l2": [0.5, 0.4, 0.3, 0.35]}}
         best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "LGBModel", evals)
         self.assertEqual(best_iter, 3)
@@ -363,8 +381,12 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         max(0, best_iter-1) fix, 0 < 0 failed the guard and final_val
         silently returned the last element."""
         class _Inner:
-            def get_best_iteration(self): return 0
-        class _M: model = _Inner()
+            def get_best_iteration(self):
+                return 0
+
+        class _M:
+            model = _Inner()
+
         evals = {"valid": {"l2": [0.9, 0.7, 0.5, 0.3]}}
         best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "CatBoostModel", evals)
         self.assertEqual(best_iter, 0)
@@ -373,7 +395,9 @@ class TrainingDiagnosticsTests(unittest.TestCase):
 
     def test_diagnostic_extraction_never_raises(self) -> None:
         # Malformed evals_result must not poison the output.
-        class _M: model = None
+        class _M:
+            model = None
+
         best_iter, final_val = ModelTrainer._extract_training_diagnostics(
             _M(), "LGBModel", {"valid": "not a dict"},
         )
@@ -384,6 +408,7 @@ class TrainingDiagnosticsTests(unittest.TestCase):
 class SeedEverythingTests(unittest.TestCase):
     def test_seed_sets_python_and_numpy(self) -> None:
         import random as _random
+
         from src.core.model_trainer import _seed_everything
         _seed_everything(1234)
         a1 = _random.random()
@@ -407,6 +432,7 @@ _HAS_QLIB_DATA = _QLIB_DATA_DIR.exists() and (_QLIB_DATA_DIR / "calendars").exis
 
 
 from tests.e2e_guard import skip_unless_e2e
+
 
 @skip_unless_e2e
 @unittest.skipUnless(_HAS_QLIB_DATA, "qlib data bundle not available")
@@ -770,7 +796,7 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             model_path = Path(tmp) / "model.pkl"
-            payload = self._write_fake_pickle(model_path)
+            self._write_fake_pickle(model_path)
 
             config = MagicMock()
             config.model_type = "LGBModel"

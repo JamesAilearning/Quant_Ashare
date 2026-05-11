@@ -12,8 +12,9 @@ Boundaries
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, compute_ic_for_group
 from src.core.logger import get_logger
@@ -102,7 +103,6 @@ class SignalAnalyzer:
                 )
 
         import pandas as pd
-        import numpy as np
 
         if not isinstance(predictions, pd.Series):
             raise SignalAnalyzerError(
@@ -203,7 +203,6 @@ class SignalAnalyzer:
 
         Returns a DataFrame with (datetime, instrument) MultiIndex and 'close' column.
         """
-        import pandas as pd
         from qlib.data import D  # type: ignore[import-not-found]
 
         # Read by name (not position) so an internal caller that bypasses
@@ -302,7 +301,6 @@ class SignalAnalyzer:
         Pre-computes the close price matrix once and derives all forward
         returns from it, avoiding redundant unstack/shift per lag.
         """
-        import pandas as pd
 
         close = returns_data["close"].unstack(level="instrument")
         # Index order/names already validated at the boundary; do not
@@ -342,7 +340,6 @@ class SignalAnalyzer:
     @classmethod
     def _compute_turnover(cls, predictions: Any, topk: int) -> dict[str, float]:
         """Compute daily portfolio turnover for top-k stocks."""
-        import pandas as pd
         import numpy as np
 
         # Get top-k instruments per day

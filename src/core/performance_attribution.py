@@ -41,9 +41,10 @@ honest about the limitation rather than hiding it.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from collections.abc import Mapping as _MappingABC
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from src.core.board_heuristic import (
     BOARD_HEURISTIC_TAXONOMY_ID,
@@ -564,7 +565,6 @@ class PerformanceAttribution:
         clipping negatives to zero so ranked-low names do not leak weight.
         """
         import pandas as pd
-        import numpy as np
 
         # Instruments universe: union of predictions and held positions
         pred_instruments = predictions.index.get_level_values("instrument").unique().tolist()

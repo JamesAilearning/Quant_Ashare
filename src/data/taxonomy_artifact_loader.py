@@ -15,11 +15,8 @@ the second base column, the profile/error types, and the mode constants.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from src.contracts.taxonomy_data_contract import (
     TAXONOMY_MODE_RANGE,
-    TAXONOMY_MODE_STATIC,
     TAXONOMY_MODE_TRADE_DATE,
     TAXONOMY_SUPPORTED_TEMPORAL_MODES,
     TaxonomyArtifactProfile,
@@ -50,8 +47,8 @@ class TaxonomyArtifactLoader(TemporalArtifactLoaderBase):
         manifest_path: str,
         *,
         temporal_mode: str,
-        reference_date: Optional[str] = None,
-        calendar: Optional[TradingCalendar] = None,
+        reference_date: str | None = None,
+        calendar: TradingCalendar | None = None,
     ) -> TaxonomyArtifactProfile:
         """Load an explicit artifact + manifest pair into a profile.
 

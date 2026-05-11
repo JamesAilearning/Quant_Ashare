@@ -18,7 +18,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -37,7 +36,6 @@ from src.data.benchmark_artifact_publisher import (  # noqa: E402
     BenchmarkArtifactPublisher,
     BenchmarkArtifactPublisherError,
 )
-
 
 LOCAL_QLIB_DATA = Path(r"D:/qlib_data/my_cn_data")
 TEST_BENCHMARK_CODE = "SH600000"
@@ -60,6 +58,7 @@ def _local_bundle_available() -> bool:
 
 
 from tests.e2e_guard import skip_unless_e2e
+
 
 @skip_unless_e2e
 @unittest.skipUnless(_qlib_importable(), "qlib not installed in this environment")
@@ -366,7 +365,6 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
 
     def _patch_publisher(self, fake_rows):
         """Replace _flatten_close_frame and the qlib import with stubs."""
-        import src.data.benchmark_artifact_publisher as pub_mod
         # Inject a fake qlib.data module via sys.modules so the
         # `from qlib.data import D` inside publish() resolves to our stub
         # without requiring a real qlib install. Snapshot any pre-existing
@@ -374,6 +372,8 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
         # leaking the fakes (or, worse, deleting a real module that was
         # imported by some earlier test in the same process).
         import types
+
+        import src.data.benchmark_artifact_publisher as pub_mod
         self._prior_qlib = sys.modules.get("qlib", self._MODULE_ABSENT)
         self._prior_qlib_data = sys.modules.get("qlib.data", self._MODULE_ABSENT)
         fake_qlib_data = types.ModuleType("qlib.data")
@@ -389,7 +389,8 @@ class BenchmarkPublisherSnapshotAtDerivationTests(unittest.TestCase):
                 # Provide a calendar covering a wide window so the
                 # publisher's injected QlibTradingCalendar can fetch
                 # something real-shaped during the round-trip load.
-                from datetime import date as _d, timedelta as _td
+                from datetime import date as _d
+                from datetime import timedelta as _td
                 start = _d(2025, 1, 1)
                 end = _d(2027, 12, 31)
                 days: list = []

@@ -12,8 +12,9 @@ Boundaries
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
@@ -123,8 +124,9 @@ class HyperparamOptimizer:
                 "Canonical qlib runtime must be initialized before optimization."
             )
 
-        import optuna
         from pathlib import Path
+
+        import optuna
 
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Optional
 
 from src.core.canonical_backtest_contract import SUPPORTED_ADJUST_MODES
 
@@ -53,8 +52,8 @@ class QlibRuntimeConfig:
     provider_uri: str
     region: str
     data_adjust_mode: str
-    expression_cache: Optional[str] = None
-    dataset_cache: Optional[str] = None
+    expression_cache: str | None = None
+    dataset_cache: str | None = None
 
     def __post_init__(self) -> None:
         if not self.provider_uri.strip():
@@ -116,7 +115,7 @@ def _normalize_provider_uri(raw: str) -> str:
     return os.path.normcase(resolved)
 
 
-_CANONICAL_CONFIG: Optional[QlibRuntimeConfig] = None
+_CANONICAL_CONFIG: QlibRuntimeConfig | None = None
 _CANONICAL_QLIB_INITIALIZED: bool = False
 
 
@@ -187,7 +186,7 @@ def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
         _CANONICAL_QLIB_INITIALIZED = True
 
 
-def get_canonical_qlib_config() -> Optional[QlibRuntimeConfig]:
+def get_canonical_qlib_config() -> QlibRuntimeConfig | None:
     """Return the config that initialized qlib, or None if not initialized."""
     with _INIT_LOCK:
         return _CANONICAL_CONFIG
@@ -199,7 +198,7 @@ def is_canonical_qlib_initialized() -> bool:
         return _CANONICAL_QLIB_INITIALIZED
 
 
-def _qlib_session_mismatch(qlib_C: object, config: QlibRuntimeConfig, region_constant: object) -> Optional[str]:
+def _qlib_session_mismatch(qlib_C: object, config: QlibRuntimeConfig, region_constant: object) -> str | None:
     """Return a human-readable mismatch description, or None if aligned.
 
     Checks provider_uri (after path normalization) and region against the

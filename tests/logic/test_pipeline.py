@@ -16,7 +16,6 @@ from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC, TAXONOMY_
 from src.core.pipeline import Pipeline, PipelineConfig, PipelineError, _sanitize_for_json
 from src.data.taxonomy_artifact_publisher import TaxonomyArtifactPublisher
 
-
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")
 _HAS_QLIB_DATA = _QLIB_DATA_DIR.exists() and (_QLIB_DATA_DIR / "calendars").exists()
 
@@ -310,16 +309,16 @@ class AttributionReportSerializationTests(unittest.TestCase):
 
     @staticmethod
     def _build_result():
+        from src.core.board_heuristic import (
+            BOARD_HEURISTIC_TAXONOMY_ID,
+            BOARD_SH_MAIN,
+        )
         from src.core.performance_attribution import (
             ATTRIBUTION_METHOD_SINGLE_PERIOD,
             BENCH_WEIGHT_METHOD_EQUAL,
             AttributionResult,
             MonthlyReturn,
             SectorAttribution,
-        )
-        from src.core.board_heuristic import (
-            BOARD_HEURISTIC_TAXONOMY_ID,
-            BOARD_SH_MAIN,
         )
 
         return AttributionResult(
@@ -411,12 +410,12 @@ class AttributionSectionStatusTests(unittest.TestCase):
 
     @staticmethod
     def _build_ok_result():
+        from src.core.board_heuristic import BOARD_HEURISTIC_TAXONOMY_ID
         from src.core.performance_attribution import (
             ATTRIBUTION_METHOD_SINGLE_PERIOD,
             BENCH_WEIGHT_METHOD_EQUAL,
             AttributionResult,
         )
-        from src.core.board_heuristic import BOARD_HEURISTIC_TAXONOMY_ID
 
         return AttributionResult(
             sector_attribution=(),
@@ -589,6 +588,7 @@ class JsonSanitizationTests(unittest.TestCase):
 
 
 from tests.e2e_guard import skip_unless_e2e
+
 
 @skip_unless_e2e
 @unittest.skipUnless(_HAS_QLIB_DATA, "qlib data bundle not available")

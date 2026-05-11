@@ -14,7 +14,6 @@ import logging
 import sys
 import threading
 
-
 # Guarded by ``_CONFIG_LOCK`` so two threads racing the first
 # ``get_logger`` call do not both pass the ``if _CONFIGURED`` check
 # and double-attach the handler (which would emit every line twice).

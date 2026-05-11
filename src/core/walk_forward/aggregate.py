@@ -1,23 +1,31 @@
 from __future__ import annotations
 
 import json
-import math
 import warnings
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 from src.core._json_utils import _sanitize_for_json
 from src.core.logger import get_logger
 from src.core.walk_forward._types import WalkForwardFold
 from src.core.walk_forward.config import WalkForwardError
 
+if TYPE_CHECKING:
+    from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+    from src.core.model_trainer import ModelTrainResult
+    from src.core.performance_attribution import AttributionResult
+    from src.core.signal_analyzer import SignalAnalysisResult
+    from src.core.walk_forward.config import WalkForwardConfig
+
 _logger = get_logger(__name__)
 
 
-def build_aggregate_report(*,
-config: WalkForwardConfig,
+def build_aggregate_report(
+    *,
+    config: WalkForwardConfig,
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
 ) -> dict[str, Any]:
@@ -58,8 +66,9 @@ config: WalkForwardConfig,
     }
 
 
-def write_aggregate_report(*,
-path: Path,
+def write_aggregate_report(
+    *,
+    path: Path,
     config: WalkForwardConfig,
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
@@ -84,7 +93,7 @@ path: Path,
 
 
 def write_positions(
-path: Path,
+    path: Path,
     positions: Mapping[str, Mapping[str, float]],
 ) -> None:
     """Persist the per-day portfolio weights produced by the backtest.
@@ -103,8 +112,9 @@ path: Path,
         json.dump(sanitised, f, indent=2, allow_nan=False)
 
 
-def build_fold_report(*,
-fold_index: int,
+def build_fold_report(
+    *,
+    fold_index: int,
     train_start: str, train_end: str,
     valid_start: str, valid_end: str,
     test_start: str, test_end: str,
@@ -247,8 +257,9 @@ def attribution_section_for_fold(
     }
 
 
-def write_fold_report(*,
-report_path: Path,
+def write_fold_report(
+    *,
+    report_path: Path,
     **kwargs: Any,
 ) -> None:
     """Build and persist a per-fold report at ``report_path``.
@@ -344,9 +355,8 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
     drawdowns = np.asarray([f.max_drawdown for f in folds], dtype=float)
     irs = np.asarray([f.information_ratio for f in folds], dtype=float)
 
-    import warnings
 
-    def _nan_agg(arr: "np.ndarray", fn: Any) -> float:
+    def _nan_agg(arr: np.ndarray, fn: Any) -> float:
         """np.nan{mean,std,min}(arr) with the all-NaN-slice
         RuntimeWarning silenced — NaN is exactly the result we want
         in those cases, the warning would just be noise.
@@ -357,20 +367,20 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
             warnings.simplefilter("ignore", RuntimeWarning)
             return float(fn(arr))
 
-    def _nanmean(arr: "np.ndarray") -> float:
+    def _nanmean(arr: np.ndarray) -> float:
         return _nan_agg(arr, np.nanmean)
 
-    def _nanstd(arr: "np.ndarray") -> float:
+    def _nanstd(arr: np.ndarray) -> float:
         return _nan_agg(arr, np.nanstd)
 
-    def _nanmin(arr: "np.ndarray") -> float:
+    def _nanmin(arr: np.ndarray) -> float:
         return _nan_agg(arr, np.nanmin)
 
-    def _valid(arr: "np.ndarray") -> int:
+    def _valid(arr: np.ndarray) -> int:
         return int(np.count_nonzero(~np.isnan(arr)))
 
     def _bootstrap_mean_ci(
-        arr: "np.ndarray",
+        arr: np.ndarray,
         *,
         n_boot: int = 10000,
         ci: float = 0.95,

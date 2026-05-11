@@ -14,8 +14,9 @@ is importable.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Optional
+from typing import Any
 
 from src.contracts import _shared_validators as _sv
 from src.contracts.canonical_boundaries import (
@@ -29,7 +30,7 @@ _EXPECTED_CANONICAL_BACKTEST_PATH = "qlib.backtest.backtest"
 try:
     from qlib.backtest import backtest as _qlib_backtest_callable  # type: ignore[import-not-found]
 
-    CANONICAL_OFFICIAL_BACKTEST_CALLABLE: Optional[Callable[..., Any]] = _qlib_backtest_callable
+    CANONICAL_OFFICIAL_BACKTEST_CALLABLE: Callable[..., Any] | None = _qlib_backtest_callable
     CANONICAL_OFFICIAL_BACKTEST_PATH = (
         f"{_qlib_backtest_callable.__module__}.{_qlib_backtest_callable.__name__}"
     )
@@ -52,7 +53,7 @@ _EXPECTED_CANONICAL_METRIC_HELPER_PATH = "qlib.contrib.evaluate.risk_analysis"
 try:
     from qlib.contrib.evaluate import risk_analysis as _qlib_metric_helper_callable  # type: ignore[import-not-found]
 
-    CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE: Optional[Callable[..., Any]] = (
+    CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE: Callable[..., Any] | None = (
         _qlib_metric_helper_callable
     )
     CANONICAL_OFFICIAL_METRIC_HELPER_PATH = (

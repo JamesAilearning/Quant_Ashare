@@ -21,24 +21,22 @@ Design invariants
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Union
+from collections.abc import Sequence
 
 from src.contracts.benchmark_data_contract import BenchmarkContractStatus
 from src.contracts.operator_status_workflow_contract import (
-    BOUNDARY_CANONICAL_RUNTIME,
     BOUNDARY_DATA_CONTRACT,
-    BOUNDARY_RUNTIME_PLACEHOLDER,
     GOVERNANCE_CANONICAL,
     INFORMATIONAL_BOUNDARY_NOTE,
-    OperatorStatusEntry,
-    OperatorStatusWorkflowContract,
-    OperatorWorkflowStatusInput,
-    OperatorWorkflowStatusSnapshot,
     REQUIRED_WORKFLOW_BOUNDARIES,
     STATUS_ERROR,
     STATUS_NOT_READY,
     STATUS_OK,
     STATUS_WARNING,
+    OperatorStatusEntry,
+    OperatorStatusWorkflowContract,
+    OperatorWorkflowStatusInput,
+    OperatorWorkflowStatusSnapshot,
 )
 from src.contracts.taxonomy_data_contract import TaxonomyContractStatus
 from src.contracts.universe_data_contract import UniverseContractStatus
@@ -49,11 +47,7 @@ _HEALTH_TO_STATUS = {
     "error": STATUS_ERROR,
 }
 
-ContractStatus = Union[
-    BenchmarkContractStatus,
-    UniverseContractStatus,
-    TaxonomyContractStatus,
-]
+ContractStatus = BenchmarkContractStatus | UniverseContractStatus | TaxonomyContractStatus
 
 
 class OperatorStatusAggregatorError(ValueError):
@@ -130,8 +124,8 @@ class OperatorStatusAggregator:
     def aggregate(
         cls,
         *,
-        contract_statuses: Optional[Sequence[ContractStatus]] = None,
-        extra_entries: Optional[Sequence[OperatorStatusEntry]] = None,
+        contract_statuses: Sequence[ContractStatus] | None = None,
+        extra_entries: Sequence[OperatorStatusEntry] | None = None,
     ) -> OperatorWorkflowStatusSnapshot:
         """Aggregate contract statuses and optional extra entries into a snapshot.
 
