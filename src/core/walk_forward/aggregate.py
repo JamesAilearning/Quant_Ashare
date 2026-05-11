@@ -4,7 +4,7 @@ import json
 import warnings
 from collections.abc import Mapping
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -62,6 +62,7 @@ def build_aggregate_report(
             for f in folds
         ],
         "aggregate_metrics": dict(aggregate_metrics),
+        "test_window_coverage": compute_test_window_coverage(folds),
         "num_folds": len(folds),
     }
 
@@ -110,6 +111,95 @@ def write_positions(
     sanitised = _sanitize_for_json(dict(positions))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(sanitised, f, indent=2, allow_nan=False)
+
+
+def compute_test_window_coverage(folds: list[WalkForwardFold]) -> dict[str, Any]:
+    """Summarise test-period continuity, gaps, and overlaps.
+
+    The diagnostics are informational: sparse or overlapping walk-forward
+    schedules are valid operator choices, but aggregate consumers should not
+    have to infer those caveats from raw period strings.
+    """
+    if not folds:
+        return {
+            "mode": "none",
+            "gap_count": 0,
+            "max_gap_days": 0,
+            "overlap_count": 0,
+            "max_overlap_days": 0,
+            "max_overlap_depth": 0,
+        }
+
+    periods = sorted(_parse_test_period(f.test_period) for f in folds)
+    gap_count = 0
+    max_gap_days = 0
+    overlap_count = 0
+    max_overlap_days = 0
+
+    for (_, prev_end), (next_start, next_end) in zip(
+        periods, periods[1:], strict=False,
+    ):
+        if next_start > prev_end + timedelta(days=1):
+            gap_days = (next_start - prev_end).days - 1
+            gap_count += 1
+            max_gap_days = max(max_gap_days, gap_days)
+        elif next_start <= prev_end:
+            overlap_days = (min(prev_end, next_end) - next_start).days + 1
+            overlap_count += 1
+            max_overlap_days = max(max_overlap_days, overlap_days)
+
+    max_overlap_depth = _max_overlap_depth(periods)
+    if gap_count and overlap_count:
+        mode = "mixed"
+    elif overlap_count:
+        mode = "overlapping"
+    elif gap_count:
+        mode = "gapped"
+    else:
+        mode = "continuous"
+
+    return {
+        "mode": mode,
+        "gap_count": gap_count,
+        "max_gap_days": max_gap_days,
+        "overlap_count": overlap_count,
+        "max_overlap_days": max_overlap_days,
+        "max_overlap_depth": max_overlap_depth,
+    }
+
+
+def _parse_test_period(period: str) -> tuple[date, date]:
+    parts = [part.strip() for part in period.split("~", maxsplit=1)]
+    if len(parts) != 2:
+        raise WalkForwardError(
+            f"Invalid fold test_period {period!r}; expected 'YYYY-MM-DD ~ YYYY-MM-DD'."
+        )
+    try:
+        start = date.fromisoformat(parts[0])
+        end = date.fromisoformat(parts[1])
+    except ValueError as exc:
+        raise WalkForwardError(
+            f"Invalid fold test_period {period!r}; expected ISO dates."
+        ) from exc
+    if start > end:
+        raise WalkForwardError(
+            f"Invalid fold test_period {period!r}; start date is after end date."
+        )
+    return start, end
+
+
+def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
+    events: list[tuple[date, int]] = []
+    for start, end in periods:
+        events.append((start, 1))
+        events.append((end + timedelta(days=1), -1))
+
+    active = 0
+    max_depth = 0
+    for _, delta in sorted(events, key=lambda item: (item[0], item[1])):
+        active += delta
+        max_depth = max(max_depth, active)
+    return max_depth
 
 
 def build_fold_report(

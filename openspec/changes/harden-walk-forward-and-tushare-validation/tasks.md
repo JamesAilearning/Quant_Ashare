@@ -1,0 +1,4 @@
+- [x] 1. Add walk-forward attribution unexpected-exception handling and focused regression coverage.
+- [x] 2. Add finite OHLCV validation to the Tushare provider bundle publisher and focused regression coverage.
+- [x] 3. Add walk-forward test-window coverage diagnostics to aggregate output and focused regression coverage.
+- [x] 4. Run targeted tests, import smoke for touched modules, full logic/governance tests, regression tests, ruff, and OpenSpec validation.
