@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 
 import pandas as pd
 
 from src.core.logger import get_logger
 from src.data.tushare.client import TushareClient, TushareClientError
-
 from src.data.tushare.provider_bundle._types import (
     INDEX_SOURCE_API,
-    SOURCE_APIS,
     STAGED_ADJ_FACTOR_DIR,
     STAGED_DAILY_DIR,
     STAGED_INDEX_DAILY_DIR,
@@ -24,7 +23,8 @@ from src.data.tushare.provider_bundle._types import (
 from src.data.tushare.provider_bundle._utils import (
     _concat_frames,
     _ensure_frame,
-    _parse_tushare_date_series,
+    _extract_open_trade_dates,
+    _filter_tushare_codes,
     _read_frame,
     _staged_cache_metadata_matches,
     _to_tushare_date,
@@ -43,7 +43,7 @@ class TushareMarketDataFetcher:
         cls,
         config: TushareQlibProviderBundleConfig,
         *,
-        client: Optional[TushareClient] = None,
+        client: TushareClient | None = None,
     ) -> TushareStagedMarketData:
         if client is None:
             try:
