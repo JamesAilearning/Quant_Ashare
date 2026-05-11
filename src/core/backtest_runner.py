@@ -16,10 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Any, Mapping
+from typing import Any
 
-from src.core.logger import get_logger
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
@@ -29,11 +29,11 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
 )
+from src.core.logger import get_logger
 from src.core.qlib_runtime import (
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
 )
-
 
 _logger = get_logger(__name__)
 
@@ -292,10 +292,10 @@ class BacktestRunner:
             import numpy as np
             import pandas as pd
             from qlib.data import D
-        except ImportError:
+        except ImportError as exc:
             raise BacktestRunnerError(
                 "qlib is not importable; cannot compute equal-weight baseline."
-            )
+            ) from exc
 
         if not isinstance(predictions, pd.Series) or predictions.empty:
             raise BacktestRunnerError(

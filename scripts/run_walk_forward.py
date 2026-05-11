@@ -14,8 +14,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import yaml
-
 # Allow ``python scripts/run_walk_forward.py`` from the repo root —
 # ensure the project root is on sys.path before importing src.*
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

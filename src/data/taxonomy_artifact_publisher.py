@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any
 
 from src.contracts.taxonomy_data_contract import (
     TAXONOMY_MODE_RANGE,
@@ -66,10 +67,10 @@ class TaxonomyArtifactPublisher:
         manifest_path: str,
         *,
         source_name: str = TAXONOMY_PUBLISHER_SOURCE_NAME_DEFAULT,
-        source_uri: Optional[str] = None,
-        snapshot_at: Optional[str] = None,
-        reference_date: Optional[str] = None,
-        calendar: Optional[TradingCalendar] = None,
+        source_uri: str | None = None,
+        snapshot_at: str | None = None,
+        reference_date: str | None = None,
+        calendar: TradingCalendar | None = None,
     ) -> TaxonomyPublishResult:
         """Publish a taxonomy artifact from explicit row tuples."""
         cls._require_non_empty_str(taxonomy_name, "taxonomy_name")
@@ -95,7 +96,7 @@ class TaxonomyArtifactPublisher:
                     f"{expected_arity}-tuple, got {row!r}."
                 )
 
-        max_trade_date: Optional[str] = None
+        max_trade_date: str | None = None
 
         if temporal_mode == TAXONOMY_MODE_TRADE_DATE:
             parsed_trade_dates: list[date] = []

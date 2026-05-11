@@ -1,8 +1,8 @@
 """Tests for src.core.hyperparam_optimizer — Optuna-based hyperparameter search."""
 
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 from src.core.hyperparam_optimizer import (
     HyperparamOptConfig,
@@ -71,6 +71,7 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
         Regression guard for P1a: Optuna used to be fed spurious zeros
         and picked garbage ``best_params``."""
         from unittest.mock import MagicMock, patch
+
         from src.core.hyperparam_optimizer import HyperparamOptimizer
 
         config = HyperparamOptConfig(
@@ -119,6 +120,7 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
 
     def test_evaluate_params_projects_regularization_fields(self):
         from unittest.mock import MagicMock, patch
+
         from src.core.hyperparam_optimizer import HyperparamOptimizer
 
         config = HyperparamOptConfig(n_trials=1)
@@ -328,14 +330,15 @@ _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
 
 def _qlib_available():
     try:
-        import qlib  # noqa: F401
         import optuna  # noqa: F401
+        import qlib  # noqa: F401
         return _QLIB_DATA_DIR.exists()
     except ImportError:
         return False
 
 
 from tests.e2e_guard import skip_unless_e2e
+
 
 @skip_unless_e2e
 @unittest.skipUnless(_qlib_available(), "requires qlib + optuna + local data")

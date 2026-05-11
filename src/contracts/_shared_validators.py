@@ -26,9 +26,9 @@ Design invariants
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import date
-from typing import Any, Iterable, Mapping, Optional, Protocol, Type
-
+from typing import Any, Protocol
 
 # ---------------------------------------------------------------------------
 # Minimal Protocols
@@ -49,15 +49,15 @@ class _HasMetadata(Protocol):
 
 
 class _HasStaleness(Protocol):
-    stale_days: Optional[int]
+    stale_days: int | None
 
 
 class _HasCoverage(Protocol):
-    coverage_ratio: Optional[float]
+    coverage_ratio: float | None
 
 
 class _HasSnapshotEnd(Protocol):
-    snapshot_end: Optional[str]
+    snapshot_end: str | None
 
 
 class _HasSnapshotAtMismatch(Protocol):
@@ -69,7 +69,7 @@ class _HasSnapshotAtMismatch(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def parse_iso_date(value: Optional[str], *, error_cls: Type[Exception]) -> Optional[date]:
+def parse_iso_date(value: str | None, *, error_cls: type[Exception]) -> date | None:
     """Parse an optional ISO date string.
 
     ``None`` or empty strings return ``None``. Non-empty strings that cannot
@@ -191,11 +191,11 @@ def check_coverage(
 
 def check_temporal_basic(
     *,
-    snapshot_end: Optional[str],
-    reference_date: Optional[str],
+    snapshot_end: str | None,
+    reference_date: str | None,
     has_future_data_flags: tuple[bool, ...],
     temporal_code: str,
-    error_cls: Type[Exception],
+    error_cls: type[Exception],
 ) -> list[str]:
     """Return a temporal error when the profile leaks future data.
 

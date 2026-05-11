@@ -27,7 +27,6 @@ from src.core.attribution_industry_loader import (  # noqa: E402
 )
 from src.data.taxonomy_artifact_publisher import TaxonomyArtifactPublisher  # noqa: E402
 
-
 # ---------------------------------------------------------------------
 # Boundary check: partial config must be rejected
 # ---------------------------------------------------------------------

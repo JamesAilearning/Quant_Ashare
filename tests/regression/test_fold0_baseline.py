@@ -52,7 +52,7 @@ class Fold0RegressionBaselineTests(unittest.TestCase):
     def _load_fixtures() -> tuple[Any, dict[str, Any]]:
         with open(PREDICTIONS_FIXTURE, "rb") as f:
             predictions = pickle.load(f)
-        with open(EXPECTED_METRICS_FIXTURE, "r", encoding="utf-8") as f:
+        with open(EXPECTED_METRICS_FIXTURE, encoding="utf-8") as f:
             metrics = json.load(f)
         return predictions, metrics
 
@@ -154,7 +154,7 @@ class Fold0FixtureSchemaTests(unittest.TestCase):
     def test_fixture_has_required_top_level_keys(self) -> None:
         if not EXPECTED_METRICS_FIXTURE.is_file():
             self.skipTest("Fixture file not found.")
-        with open(EXPECTED_METRICS_FIXTURE, "r", encoding="utf-8") as f:
+        with open(EXPECTED_METRICS_FIXTURE, encoding="utf-8") as f:
             data = json.load(f)
         for key in ("config", "metrics", "tolerance"):
             self.assertIn(key, data, f"Fixture missing key: {key}")
@@ -162,7 +162,7 @@ class Fold0FixtureSchemaTests(unittest.TestCase):
     def test_tolerance_values_are_positive(self) -> None:
         if not EXPECTED_METRICS_FIXTURE.is_file():
             self.skipTest("Fixture file not found.")
-        with open(EXPECTED_METRICS_FIXTURE, "r", encoding="utf-8") as f:
+        with open(EXPECTED_METRICS_FIXTURE, encoding="utf-8") as f:
             data = json.load(f)
         for key, val in data.get("tolerance", {}).items():
             self.assertGreater(

@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any
 
 from src.core.canonical_backtest_contract import SUPPORTED_ADJUST_MODES
-from src.data.tushare.client import TushareClient
-
 from src.data.tushare.provider_bundle._types import (
     DEFAULT_COMPARISON_NAME,
     DEFAULT_MANIFEST_NAME,
     DEFAULT_VALIDATION_NAME,
     FORBIDDEN_CONFIG_KEYS,
-    SOURCE_APIS,
     TushareQlibProviderBundleError,
-    TushareQlibProviderManifest,
 )
 from src.data.tushare.provider_bundle._utils import (
     _normalize_benchmark_indexes,
@@ -25,6 +22,7 @@ from src.data.tushare.provider_bundle._utils import (
     _qlib_to_tushare_instrument,
     _require_non_empty_str,
 )
+
 
 @dataclass(frozen=True)
 class TushareQlibProviderBundleConfig:
@@ -46,7 +44,7 @@ class TushareQlibProviderBundleConfig:
     freq: str = "day"
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "TushareQlibProviderBundleConfig":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> TushareQlibProviderBundleConfig:
         """Build config from a YAML/JSON mapping while rejecting secrets."""
         if not isinstance(raw, Mapping):
             raise TushareQlibProviderBundleError(

@@ -21,10 +21,11 @@ import os
 import pickle
 import random
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized

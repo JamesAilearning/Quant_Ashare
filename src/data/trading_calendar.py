@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import threading
 from bisect import bisect_left, bisect_right
+from collections.abc import Iterable
 from datetime import date
-from typing import Iterable, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 class TradingCalendarError(ValueError):
@@ -118,7 +119,7 @@ class QlibTradingCalendar:
 
     def __init__(self, freq: str = "day") -> None:
         self._freq = freq
-        self._cache: Optional[StaticTradingCalendar] = None
+        self._cache: StaticTradingCalendar | None = None
         self._cache_lock = threading.Lock()
 
     def count_trading_days(self, start: date, end: date) -> int:
@@ -246,7 +247,7 @@ def extend_end_by_trading_days(
         return fallback
 
 
-def _coerce_to_date(value: object) -> Optional[date]:
+def _coerce_to_date(value: object) -> date | None:
     """Best-effort conversion of a qlib calendar entry to ``datetime.date``.
 
     qlib's ``D.calendar`` typically returns ``pandas.Timestamp`` objects

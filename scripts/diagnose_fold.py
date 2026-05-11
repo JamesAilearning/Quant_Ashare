@@ -15,14 +15,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
-import pickle
 import sys
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 try:
     import matplotlib

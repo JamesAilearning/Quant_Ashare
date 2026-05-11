@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
-from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core.attribution_industry_loader import assert_industry_config_complete_or_empty
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
     EXECUTION_PRICE_CLOSE,
+    SUPPORTED_ADJUST_MODES,
     CanonicalBacktestContractError,
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
-    SUPPORTED_ADJUST_MODES,
 )
+
 
 class WalkForwardError(RuntimeError):
     """Raised on structural misuse of the walk-forward engine."""

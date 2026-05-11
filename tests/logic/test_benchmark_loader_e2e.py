@@ -13,7 +13,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -387,7 +386,8 @@ class BenchmarkLoaderCalendarInjectionTests(unittest.TestCase):
         # Pretend that EVERY calendar day in the window is a trading day.
         # The fixture covers 26 calendar days (Feb 2 - Feb 27), so the
         # ratio becomes 20/26 ≈ 0.769, well below the 0.95 default.
-        from datetime import date as _date, timedelta as _td
+        from datetime import date as _date
+        from datetime import timedelta as _td
         inflated = [
             _date(2026, 2, 2) + _td(days=i)
             for i in range(((_date(2026, 2, 27) - _date(2026, 2, 2)).days) + 1)

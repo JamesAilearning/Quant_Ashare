@@ -150,6 +150,7 @@ _HAS_QLIB_DATA = _QLIB_DATA_DIR.exists() and (_QLIB_DATA_DIR / "calendars").exis
 
 from tests.e2e_guard import skip_unless_e2e
 
+
 @skip_unless_e2e
 @unittest.skipUnless(_HAS_QLIB_DATA, "qlib data bundle not available")
 class FeatureDatasetBuilderE2ETests(unittest.TestCase):

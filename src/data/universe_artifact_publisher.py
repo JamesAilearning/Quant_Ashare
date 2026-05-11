@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any
 
 from src.contracts.universe_data_contract import (
     UNIVERSE_MODE_RANGE,
@@ -83,10 +84,10 @@ class UniverseArtifactPublisher:
         manifest_path: str,
         *,
         source_name: str = UNIVERSE_PUBLISHER_SOURCE_NAME_DEFAULT,
-        source_uri: Optional[str] = None,
-        snapshot_at: Optional[str] = None,
-        reference_date: Optional[str] = None,
-        calendar: Optional[TradingCalendar] = None,
+        source_uri: str | None = None,
+        snapshot_at: str | None = None,
+        reference_date: str | None = None,
+        calendar: TradingCalendar | None = None,
     ) -> UniversePublishResult:
         """Publish a universe artifact from explicit row tuples.
 
@@ -136,7 +137,7 @@ class UniverseArtifactPublisher:
                     f"{expected_arity}-tuple, got {row!r}."
                 )
 
-        max_trade_date: Optional[str] = None
+        max_trade_date: str | None = None
 
         if temporal_mode == UNIVERSE_MODE_TRADE_DATE:
             parsed_trade_dates: list[date] = []

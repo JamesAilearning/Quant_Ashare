@@ -32,8 +32,7 @@ jobs:
 
       - name: Lint (ruff)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: ruff check src/ tests/
-        continue-on-error: true
+        run: ruff check src/ tests/ scripts/
 
       - name: Type check (mypy)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'

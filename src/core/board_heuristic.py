@@ -42,7 +42,6 @@ code is listed on".
 from __future__ import annotations
 
 import re
-from typing import Mapping
 
 from src.core.logger import get_logger
 

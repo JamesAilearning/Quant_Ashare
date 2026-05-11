@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from src.core.logger import get_logger
 
@@ -138,7 +139,7 @@ def apply_ensemble(
                         meta["rejected_priors"].append({
                             "fold_idx": prior_fold_idx,
                             "path": prior_path,
-                            "reason": f"pkl_sha256 mismatch",
+                            "reason": "pkl_sha256 mismatch",
                         })
                 sidecar_lgb = sidecar.get("lightgbm_version")
                 if sidecar_lgb:

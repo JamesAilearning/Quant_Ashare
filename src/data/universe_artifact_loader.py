@@ -32,11 +32,8 @@ substantive differences are the second base column (``in_universe`` vs
 
 from __future__ import annotations
 
-from typing import Optional
-
 from src.contracts.universe_data_contract import (
     UNIVERSE_MODE_RANGE,
-    UNIVERSE_MODE_STATIC,
     UNIVERSE_MODE_TRADE_DATE,
     UNIVERSE_SUPPORTED_TEMPORAL_MODES,
     UniverseArtifactProfile,
@@ -67,8 +64,8 @@ class UniverseArtifactLoader(TemporalArtifactLoaderBase):
         manifest_path: str,
         *,
         temporal_mode: str,
-        reference_date: Optional[str] = None,
-        calendar: Optional[TradingCalendar] = None,
+        reference_date: str | None = None,
+        calendar: TradingCalendar | None = None,
     ) -> UniverseArtifactProfile:
         """Load an explicit artifact + manifest pair into a profile.
 

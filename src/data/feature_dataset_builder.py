@@ -13,8 +13,9 @@ Boundaries
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from src.contracts._shared_validators import parse_iso_date
 from src.core.qlib_runtime import is_canonical_qlib_initialized

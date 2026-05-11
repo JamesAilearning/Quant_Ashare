@@ -2,10 +2,10 @@
 
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
@@ -126,6 +126,7 @@ class NaNPropagationTests(unittest.TestCase):
         → ``merged.empty`` at every lag → decay curve must be all-NaN, not
         all-zero."""
         import math
+
         import pandas as pd
 
         dates = pd.date_range("2025-01-01", periods=4, freq="D")
@@ -160,8 +161,9 @@ class NaNPropagationTests(unittest.TestCase):
         stub it. Everything downstream is pure pandas.
         """
         import math
-        import pandas as pd
         from unittest.mock import patch
+
+        import pandas as pd
 
         # 6 dates, *only one instrument* per date → every date's group has
         # < 3 rows → compute_ic_for_group returns NaN for every day.
@@ -214,7 +216,6 @@ class CalendarWarningTests(unittest.TestCase):
         """Context manager: inject a fake qlib.data.D into sys.modules."""
         import sys
         from types import ModuleType
-        from unittest.mock import MagicMock
 
         mock_D = MagicMock(name="D")
         if calendar_side_effect is not None:
@@ -287,7 +288,8 @@ class PipelineDatasetReuseTests(unittest.TestCase):
         """When run_factor_analysis=True, FactorAnalyzer.analyze must be
         called with dataset=feature_result.dataset (not dataset=None).
         This locks the dataset-reuse path so it can't regress silently."""
-        from unittest.mock import MagicMock, patch, call
+        from unittest.mock import patch
+
         import pandas as pd
 
         # Build minimal mocks for every pipeline dependency.
@@ -338,14 +340,8 @@ class PipelineDatasetReuseTests(unittest.TestCase):
         fake_signal_result.turnover_stats = {}
 
         from src.core.pipeline import Pipeline, PipelineConfig
-        config = PipelineConfig(
-            provider_uri="/tmp/fake_data",
-            run_factor_analysis=True,
-            run_attribution=False,
-        )
 
         with patch("src.core.pipeline.init_qlib_canonical") as mock_init, \
-             patch("src.core.pipeline.is_canonical_qlib_initialized", return_value=True), \
              patch("src.core.pipeline.FeatureDatasetBuilder.build", return_value=fake_feature_result), \
              patch("src.core.pipeline.ModelTrainer.train_and_predict", return_value=fake_model_result), \
              patch("src.core.pipeline.SignalAnalyzer.analyze", return_value=fake_signal_result), \
@@ -389,6 +385,7 @@ def _qlib_available():
 
 from tests.e2e_guard import skip_unless_e2e
 
+
 @skip_unless_e2e
 @unittest.skipUnless(_qlib_available(), "requires qlib + local data bundle")
 class SignalAnalyzerE2ETests(unittest.TestCase):
@@ -409,9 +406,10 @@ class SignalAnalyzerE2ETests(unittest.TestCase):
             ))
 
         # Generate predictions from a quick model run
-        from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
-        from src.core.model_trainer import ModelTrainer, ModelTrainConfig
         import tempfile
+
+        from src.core.model_trainer import ModelTrainConfig, ModelTrainer
+        from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
             instruments="csi300",

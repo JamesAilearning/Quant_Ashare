@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
-import numpy as np
-
-from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -26,7 +23,7 @@ from src.core.canonical_backtest_contract import (
 )
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
-from src.core.model_trainer import ModelTrainer, ModelTrainResult
+from src.core.model_trainer import ModelTrainer
 from src.core.performance_attribution import (
     AttributionConfig,
     AttributionResult,
@@ -36,7 +33,6 @@ from src.core.performance_attribution import (
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
-    SignalAnalysisResult,
     SignalAnalyzer,
 )
 from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
@@ -70,9 +66,7 @@ class WalkForwardEngine:
                 "Canonical qlib runtime must be initialized before walk-forward."
             )
 
-        from dateutil.relativedelta import relativedelta
         from pathlib import Path
-        import numpy as np
 
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -177,9 +171,11 @@ class WalkForwardEngine:
         # can query historical runs without find + jq. Non-fatal on
         # failure — the per-run report is the authoritative artifact.
         try:
-            from src.core.run_catalog import append_run_record, build_record as build_catalog_record
             import math
             from dataclasses import asdict
+
+            from src.core.run_catalog import append_run_record
+            from src.core.run_catalog import build_record as build_catalog_record
             has_any_nan = any(
                 math.isnan(f.ic_1d) or math.isnan(f.ic_5d)
                 for f in folds
@@ -298,9 +294,6 @@ class WalkForwardEngine:
            data fetch timeouts) while this method's own guards stop the
            predictable ones at source.
         """
-        import numpy as np
-        import pandas as pd
-        from pathlib import Path
 
         _logger.info("  Fold %d: features...", fold_index)
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(

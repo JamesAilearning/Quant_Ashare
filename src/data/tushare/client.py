@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from src.core.logger import get_logger
 
@@ -73,7 +73,7 @@ class TushareClient:
         return f"TushareClient(token='{prefix}***' len={len(token)})"
 
     @classmethod
-    def from_environment(cls) -> "TushareClient":
+    def from_environment(cls) -> TushareClient:
         """Read ``TUSHARE_TOKEN`` from the environment and build a client.
 
         Raises :class:`TushareClientError` if the variable is unset,

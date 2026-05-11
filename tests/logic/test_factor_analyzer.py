@@ -74,7 +74,7 @@ class ForwardReturnCacheTests(unittest.TestCase):
         cache = FactorAnalyzer._build_forward_ret_cache(close, idx, lags=[1, 3, 5])
 
         self.assertEqual(set(cache.keys()), {1, 3, 5})
-        for lag, s in cache.items():
+        for _lag, s in cache.items():
             self.assertEqual(list(s.index.names), ["datetime", "instrument"])
             # Reindexed to factor_index → exact row count.
             self.assertEqual(len(s), len(idx))
@@ -211,6 +211,7 @@ class FactorDecayNaNBehaviorTests(unittest.TestCase):
         """Only 5 merged rows per lag → below the 10-observation threshold
         → all decay values must be NaN."""
         import math
+
         import pandas as pd
 
         dates = pd.date_range("2025-07-01", periods=5, freq="D")
@@ -258,6 +259,7 @@ def _qlib_available() -> bool:
 
 from tests.e2e_guard import skip_unless_e2e
 
+
 @skip_unless_e2e
 @unittest.skipUnless(_qlib_available(), "requires qlib + local data bundle")
 class FactorAnalyzerE2ETests(unittest.TestCase):
@@ -265,7 +267,9 @@ class FactorAnalyzerE2ETests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         from src.core.qlib_runtime import (
-            QlibRuntimeConfig, init_qlib_canonical, is_canonical_qlib_initialized,
+            QlibRuntimeConfig,
+            init_qlib_canonical,
+            is_canonical_qlib_initialized,
         )
         if not is_canonical_qlib_initialized():
             init_qlib_canonical(QlibRuntimeConfig(
@@ -336,8 +340,10 @@ class FactorICUndefinedIRTests(unittest.TestCase):
         fabricated number that travelled all the way into the report.
         """
         import math
+
         import pandas as pd
-        from src.core.factor_analyzer import FactorAnalyzer, FactorAnalysisConfig
+
+        from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalyzer
 
         dates, idx = self._build_minimal_inputs(num_days=1)
         # A linearly-correlated factor on this one day → deterministic IC ≈ 1
@@ -360,8 +366,10 @@ class FactorICUndefinedIRTests(unittest.TestCase):
         IR is undefined, must be NaN (not ``mean_ic / 0`` and not 0.0).
         """
         import math
+
         import pandas as pd
-        from src.core.factor_analyzer import FactorAnalyzer, FactorAnalysisConfig
+
+        from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalyzer
 
         dates, idx = self._build_minimal_inputs(num_days=4)
         # Identical relationship per day → identical rank-IC each day
@@ -396,8 +404,10 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
     """
 
     def test_rejects_unnamed_multiindex(self) -> None:
-        import pandas as pd
         from unittest.mock import patch as _patch
+
+        import pandas as pd
+
         from src.core.signal_analyzer import (
             SignalAnalysisConfig,
             SignalAnalyzer,
@@ -427,8 +437,10 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
         ``(instrument, datetime)`` outright so downstream positional
         access is safe.
         """
-        import pandas as pd
         from unittest.mock import patch as _patch
+
+        import pandas as pd
+
         from src.core.signal_analyzer import (
             SignalAnalysisConfig,
             SignalAnalyzer,
@@ -446,8 +458,10 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
 
     def test_rejects_missing_instrument_level(self) -> None:
         """One named level missing — the symmetric case of unnamed."""
-        import pandas as pd
         from unittest.mock import patch as _patch
+
+        import pandas as pd
+
         from src.core.signal_analyzer import (
             SignalAnalysisConfig,
             SignalAnalyzer,
@@ -474,8 +488,10 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
         ``get_level_values(0)`` for dates and ``get_level_values(1)``
         for instruments, which silently broke under a swapped index.
         """
-        import pandas as pd
         from unittest.mock import patch as _patch
+
+        import pandas as pd
+
         from src.core.signal_analyzer import SignalAnalyzer
 
         # Deliberately put names in (instrument, datetime) order. The

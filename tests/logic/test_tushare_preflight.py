@@ -12,12 +12,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import sys
-import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -35,7 +33,6 @@ _spec.loader.exec_module(preflight)  # type: ignore[union-attr]
 
 
 from src.data.tushare.client import _TOKEN_ENV_VAR  # noqa: E402
-
 
 # ---------------------------------------------------------------------
 # _summarise_token: must never reveal the secret

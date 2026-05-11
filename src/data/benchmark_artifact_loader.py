@@ -28,10 +28,11 @@ from __future__ import annotations
 import csv
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from src.contracts.benchmark_data_contract import BenchmarkArtifactProfile
 from src.data.trading_calendar import TradingCalendar
@@ -45,8 +46,8 @@ class BenchmarkArtifactLoaderError(ValueError):
 class _CsvReadOutcome:
     rows: int
     columns_present: tuple[str, ...]
-    snapshot_start: Optional[str]
-    snapshot_end: Optional[str]
+    snapshot_start: str | None
+    snapshot_end: str | None
     has_future_data: bool
 
 
@@ -60,8 +61,8 @@ class BenchmarkArtifactLoader:
         cls,
         artifact_path: str,
         manifest_path: str,
-        reference_date: Optional[str] = None,
-        calendar: Optional[TradingCalendar] = None,
+        reference_date: str | None = None,
+        calendar: TradingCalendar | None = None,
     ) -> BenchmarkArtifactProfile:
         """Load an explicit artifact + manifest pair into a profile.
 
@@ -108,13 +109,13 @@ class BenchmarkArtifactLoader:
                 has_future_data=False,
             )
 
-        stale_days: Optional[int] = None
+        stale_days: int | None = None
         if reference is not None and outcome.snapshot_end is not None:
             end_date = cls._parse_iso_date(outcome.snapshot_end)
             if end_date is not None:
                 stale_days = max((reference - end_date).days, 0)
 
-        coverage_ratio: Optional[float] = None
+        coverage_ratio: float | None = None
         if (
             outcome.rows > 0
             and outcome.snapshot_start is not None
@@ -185,7 +186,7 @@ class BenchmarkArtifactLoader:
     # -- Internal helpers --------------------------------------------------
 
     @staticmethod
-    def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+    def _parse_iso_date(value: str | None) -> date | None:
         if value is None:
             return None
         text = str(value).strip()
@@ -213,14 +214,14 @@ class BenchmarkArtifactLoader:
     _CLOSE_NAN_RATIO_THRESHOLD: float = 0.5
 
     @classmethod
-    def _read_csv(cls, artifact_file: Path, reference: Optional[date]) -> _CsvReadOutcome:
+    def _read_csv(cls, artifact_file: Path, reference: date | None) -> _CsvReadOutcome:
         rows = 0
         has_future_data = False
         close_nan_count = 0
         close_total_count = 0
         header_normalized: tuple[str, ...] = ()
-        min_date: Optional[date] = None
-        max_date: Optional[date] = None
+        min_date: date | None = None
+        max_date: date | None = None
 
         try:
             with artifact_file.open("r", encoding="utf-8", newline="") as handle:

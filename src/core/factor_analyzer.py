@@ -13,8 +13,9 @@ Boundaries
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, compute_ic_for_group
 from src.core.logger import get_logger
@@ -271,8 +272,8 @@ class FactorAnalyzer:
         from qlib.data.dataset import DatasetH
 
         from src.data.feature_dataset_builder import (
-            FeatureDatasetConfig,
             _FEATURE_HANDLER_REGISTRY,
+            FeatureDatasetConfig,
         )
 
         factory = _FEATURE_HANDLER_REGISTRY.get(config.feature_handler)
@@ -319,7 +320,6 @@ class FactorAnalyzer:
         fails. This prevents holiday clusters (Spring Festival etc.) from
         starving the forward-return computation.
         """
-        import pandas as pd
         from qlib.data import D
 
         instruments = factor_df.index.get_level_values("instrument").unique().tolist()
@@ -438,7 +438,6 @@ class FactorAnalyzer:
         cls, factor_df: Any, factor_names: list[str]
     ) -> dict[str, dict[str, float]]:
         """Compute pairwise rank correlation between top factors."""
-        import pandas as pd
 
         # Alpha158 columns may be tuples like ('KLEN',) — match by last element
         col_map = {}

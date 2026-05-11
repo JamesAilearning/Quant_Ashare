@@ -8,13 +8,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.tushare.client import TushareClient
 from src.data.tushare.industry_publisher import (  # noqa: E402
     SW_L2_TAXONOMY_NAME,
     TushareIndustryPublisher,
@@ -41,8 +39,7 @@ class _FakePandasFrame:
         return len(self._rows)
 
     def iterrows(self):
-        for idx, row in enumerate(self._rows):
-            yield idx, row
+        yield from enumerate(self._rows)
 
 
 class _StubClient:
