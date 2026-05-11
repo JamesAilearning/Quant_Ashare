@@ -730,14 +730,78 @@ class AggregateReportSerialisationTests(unittest.TestCase):
             ),
         ]
 
+    def _fold_with_test_period(self, idx: int, test_period: str):
+        from src.core.walk_forward import WalkForwardFold
+        return WalkForwardFold(
+            fold_index=idx,
+            train_period="2024-01-01 ~ 2024-06-30",
+            valid_period="2024-07-01 ~ 2024-09-30",
+            test_period=test_period,
+            ic_1d=0.02,
+            ic_5d=0.04,
+            annualized_return=0.10,
+            max_drawdown=-0.05,
+            information_ratio=1.5,
+            prediction_shape=(100,),
+            report_path=f"/tmp/fold_{idx:02d}_report.json",
+        )
+
     def test_top_level_fields_present(self) -> None:
         d = WalkForwardEngine._build_aggregate_report(
             config=WalkForwardConfig(),
             folds=self._build_folds(),
             aggregate_metrics={"mean_ic_1d": 0.01, "num_folds": 2.0},
         )
-        for key in ("generated_at", "config", "folds", "aggregate_metrics", "num_folds"):
+        for key in (
+            "generated_at",
+            "config",
+            "folds",
+            "aggregate_metrics",
+            "test_window_coverage",
+            "num_folds",
+        ):
             self.assertIn(key, d)
+
+    def test_test_window_coverage_reports_continuous_periods(self) -> None:
+        d = WalkForwardEngine._build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=self._build_folds(),
+            aggregate_metrics={},
+        )
+        coverage = d["test_window_coverage"]
+        self.assertEqual(coverage["mode"], "continuous")
+        self.assertEqual(coverage["gap_count"], 0)
+        self.assertEqual(coverage["overlap_count"], 0)
+        self.assertEqual(coverage["max_overlap_depth"], 1)
+
+    def test_test_window_coverage_reports_gaps(self) -> None:
+        d = WalkForwardEngine._build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=[
+                self._fold_with_test_period(0, "2024-01-01 ~ 2024-01-31"),
+                self._fold_with_test_period(1, "2024-02-03 ~ 2024-02-29"),
+            ],
+            aggregate_metrics={},
+        )
+        coverage = d["test_window_coverage"]
+        self.assertEqual(coverage["mode"], "gapped")
+        self.assertEqual(coverage["gap_count"], 1)
+        self.assertEqual(coverage["max_gap_days"], 2)
+
+    def test_test_window_coverage_reports_overlaps(self) -> None:
+        d = WalkForwardEngine._build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=[
+                self._fold_with_test_period(0, "2024-01-01 ~ 2024-01-31"),
+                self._fold_with_test_period(1, "2024-01-15 ~ 2024-02-15"),
+            ],
+            aggregate_metrics={},
+        )
+        coverage = d["test_window_coverage"]
+        self.assertEqual(coverage["mode"], "overlapping")
+        self.assertEqual(coverage["overlap_count"], 1)
+        self.assertEqual(coverage["max_overlap_days"], 17)
+        self.assertEqual(coverage["max_overlap_depth"], 2)
 
     def test_per_fold_summaries_carry_report_path(self) -> None:
         """Each entry in ``folds`` must point at the per-fold JSON so a
@@ -976,6 +1040,24 @@ class _AttributionForFoldTests(unittest.TestCase):
         self.assertTrue(reason.startswith("engine_error: "))
         self.assertIn("PerformanceAttributionError", reason)
         self.assertIn("all-non-positive", reason)
+
+    def test_unexpected_attribution_error_yields_skip_with_typed_reason(self) -> None:
+        """Unexpected optional attribution failures keep fold outputs."""
+        config = WalkForwardConfig()
+        with patch(
+            "src.core.walk_forward.engine.PerformanceAttribution.analyze",
+            side_effect=ValueError("bad attribution shape"),
+        ):
+            result, reason = WalkForwardEngine._run_attribution_for_fold(
+                config=config, fold_index=3,
+                test_start="2024-10-01", test_end="2024-12-31",
+                predictions=MagicMock(),
+                backtest_output=self._backtest_output_with_positions(),
+            )
+        self.assertIsNone(result)
+        self.assertTrue(reason.startswith("unexpected_error: "))
+        self.assertIn("ValueError", reason)
+        self.assertIn("bad attribution shape", reason)
 
     def test_artifact_load_failure_promotes_to_walkforward_error(self) -> None:
         """Industry-artifact load failures are config / file problems —
@@ -1420,7 +1502,9 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
             })
             return WalkForwardFold(
                 fold_index=fold_index,
-                train_period="x", valid_period="x", test_period="x",
+                train_period=f"{kwargs['train_start']} ~ {kwargs['train_end']}",
+                valid_period=f"{kwargs['valid_start']} ~ {kwargs['valid_end']}",
+                test_period=f"{kwargs['test_start']} ~ {kwargs['test_end']}",
                 ic_1d=0.01, ic_5d=0.02,
                 annualized_return=0.05, max_drawdown=-0.05,
                 information_ratio=0.5,

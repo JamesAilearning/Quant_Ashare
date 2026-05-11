@@ -474,11 +474,13 @@ class TushareQlibProviderPublisher:
         frame = daily.copy()
         for col in numeric_cols:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
+        finite = np.isfinite(frame[list(numeric_cols)]).all(axis=1)
         invalid = (
             frame[["open", "high", "low", "close"]].isna().any(axis=1)
             | (frame[["open", "high", "low", "close"]] <= 0).any(axis=1)
             | frame[["vol", "amount"]].isna().any(axis=1)
             | (frame[["vol", "amount"]] < 0).any(axis=1)
+            | ~finite
             | (frame["high"] < frame[["open", "close", "low"]].max(axis=1))
             | (frame["low"] > frame[["open", "close", "high"]].min(axis=1))
         )

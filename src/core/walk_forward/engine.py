@@ -559,6 +559,14 @@ class WalkForwardEngine:
                 fold_index, type(exc).__name__, exc,
             )
             return None, f"engine_error: {type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Fold %d: attribution skipped due to unexpected error %s: %s. "
+                "Backtest and risk_analysis remain valid; only the "
+                "sector-attribution block is absent from this fold's report.",
+                fold_index, type(exc).__name__, exc,
+            )
+            return None, f"unexpected_error: {type(exc).__name__}: {exc}"
 
         return result, None
 

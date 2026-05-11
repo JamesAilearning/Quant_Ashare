@@ -580,6 +580,39 @@ class ProviderPublishTests(unittest.TestCase):
         self.assertEqual(prepared.validation_profile.health, "error")
         self.assertIn("invalid_ohlcv", prepared.validation_profile.errors)
 
+    def test_non_finite_ohlcv_rows_are_rejected(self) -> None:
+        staged = TushareStagedMarketData(
+            daily=pd.DataFrame([
+                {
+                    "ts_code": "600000.SH",
+                    "trade_date": "20250102",
+                    "open": 10,
+                    "high": np.inf,
+                    "low": 8,
+                    "close": 10,
+                    "vol": 100,
+                    "amount": np.inf,
+                }
+            ]),
+            adj_factor=pd.DataFrame([
+                {"ts_code": "600000.SH", "trade_date": "20250102", "adj_factor": 1.0}
+            ]),
+            trade_calendar=pd.DataFrame([
+                {"cal_date": "20250102", "is_open": 1}
+            ]),
+            stock_basic=pd.DataFrame(),
+            staging_dir="unused",
+            daily_files=tuple(),
+            adj_factor_files=tuple(),
+        )
+        with tempfile.TemporaryDirectory() as tmp_text:
+            prepared = TushareQlibProviderPublisher.prepare_staged_data(
+                staged,
+                _base_config(Path(tmp_text), start_date="2025-01-02", end_date="2025-01-02"),
+            )
+        self.assertEqual(prepared.validation_profile.health, "error")
+        self.assertIn("invalid_ohlcv", prepared.validation_profile.errors)
+
     def test_comparison_report_is_informational(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_text:
             tmp = Path(tmp_text)
