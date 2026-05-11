@@ -21,7 +21,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ingest_tushare_qlib_provider import _load_config  # noqa: E402
 from src.core.canonical_backtest_contract import ADJUST_MODE_NONE, ADJUST_MODE_PRE  # noqa: E402
 from src.data.tushare.provider_bundle import (  # noqa: E402
-    DEFAULT_MANIFEST_NAME,
     TushareMarketDataFetcher,
     TushareQlibProviderBundleConfig,
     TushareQlibProviderBundleError,
@@ -598,10 +597,15 @@ class ProviderPublishTests(unittest.TestCase):
             self.assertEqual(report.max_abs_close_delta, 0.0)
 
     def test_generated_bundle_can_initialize_qlib_when_available(self) -> None:
-        try:
-            import qlib  # noqa: F401
-        except ImportError:
-            self.skipTest("qlib not importable")
+        qlib_check = subprocess.run(
+            [sys.executable, "-c", "import qlib"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if qlib_check.returncode != 0:
+            self.skipTest("qlib not importable in subprocess")
 
         with tempfile.TemporaryDirectory() as tmp_text:
             tmp = Path(tmp_text)
@@ -630,9 +634,8 @@ class ProviderPublishTests(unittest.TestCase):
             completed = subprocess.run(
                 [sys.executable, "-c", code],
                 cwd=str(PROJECT_ROOT),
+                capture_output=True,
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 timeout=60,
             )
             self.assertEqual(

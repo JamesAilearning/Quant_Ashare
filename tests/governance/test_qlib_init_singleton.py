@@ -12,7 +12,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -27,6 +26,9 @@ from src.core.qlib_runtime import (  # noqa: E402
     init_qlib_canonical,
     is_canonical_qlib_initialized,
 )
+
+_REG_CN = "cn"
+_REG_US = "us"
 
 
 def _qlib_importable() -> bool:
@@ -83,6 +85,9 @@ class QlibRuntimeProviderUriNormalizationTests(unittest.TestCase):
 
     def test_forward_and_back_slashes_are_equivalent(self) -> None:
         # On Windows abspath already normalizes, but call it out explicitly.
+        import os
+        if os.name != "nt":
+            self.skipTest("Windows-only behaviour (backslash is not a POSIX path separator).")
         cfg1 = QlibRuntimeConfig(
             provider_uri=r"D:/qlib_data/my_cn_data",
             region="cn",
@@ -237,8 +242,7 @@ class QlibSessionMismatchTests(unittest.TestCase):
         import os
         cfg = self._cfg(r"D:/qlib_data/my_cn_data")
         fake_c = self._FakeC(os.path.normpath(r"D:/qlib_data/my_cn_data"))
-        from qlib.constant import REG_CN  # type: ignore[import-not-found]
-        result = _qlib_session_mismatch(fake_c, cfg, REG_CN)
+        result = _qlib_session_mismatch(fake_c, cfg, _REG_CN)
         self.assertIsNone(result)
 
     def test_provider_uri_mismatch_detected(self) -> None:
@@ -257,8 +261,7 @@ class QlibSessionMismatchTests(unittest.TestCase):
             "day": os.path.normpath(r"D:/qlib_data/my_cn_data"),
             "1min": r"D:/qlib_data/1min_data",
         })
-        from qlib.constant import REG_CN  # type: ignore[import-not-found]
-        result = _qlib_session_mismatch(fake_c, cfg, REG_CN)
+        result = _qlib_session_mismatch(fake_c, cfg, _REG_CN)
         self.assertIsNone(result)
 
     def test_none_provider_uri_returns_description(self) -> None:
@@ -269,10 +272,9 @@ class QlibSessionMismatchTests(unittest.TestCase):
 
     def test_region_mismatch_detected(self) -> None:
         import os
-        from qlib.constant import REG_CN, REG_US  # type: ignore[import-not-found]
         cfg = self._cfg(r"D:/qlib_data/my_cn_data", region="us")
-        fake_c = self._FakeC(os.path.normpath(r"D:/qlib_data/my_cn_data"), region=REG_CN)
-        result = _qlib_session_mismatch(fake_c, cfg, REG_US)
+        fake_c = self._FakeC(os.path.normpath(r"D:/qlib_data/my_cn_data"), region=_REG_CN)
+        result = _qlib_session_mismatch(fake_c, cfg, _REG_US)
         self.assertIsNotNone(result)
         assert result is not None
         self.assertIn("region mismatch", result)
@@ -287,11 +289,10 @@ class QlibSessionMismatchTests(unittest.TestCase):
         import os
         if os.name != "nt":
             self.skipTest("Windows-only behaviour (case only matters on nt).")
-        from qlib.constant import REG_CN  # type: ignore[import-not-found]
         cfg = self._cfg(r"D:/qlib_data/my_cn_data")
         # qlib records whatever case the earlier caller provided.
         fake_c = self._FakeC(r"d:\qlib_data\my_cn_data")
-        result = _qlib_session_mismatch(fake_c, cfg, REG_CN)
+        result = _qlib_session_mismatch(fake_c, cfg, _REG_CN)
         self.assertIsNone(result)
 
 

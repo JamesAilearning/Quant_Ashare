@@ -12,9 +12,10 @@ Boundaries
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from src.core.logger import get_logger
 
@@ -84,12 +85,6 @@ class ResultVisualizer:
         -------
         VisualizerResult with paths to generated PNG files.
         """
-        import matplotlib
-        matplotlib.use("Agg")  # Non-interactive backend
-        import matplotlib.pyplot as plt
-        import pandas as pd
-        import numpy as np
-
         if config is None:
             config = VisualizerConfig()
 
@@ -108,6 +103,16 @@ class ResultVisualizer:
                 "or None to indicate no benchmark). Silent fallback would "
                 "hide misspellings like 'benchmark' vs 'bench'."
             )
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")  # Non-interactive backend
+            import matplotlib.pyplot as plt
+        except ImportError as exc:
+            raise VisualizerError(
+                "matplotlib is not installed. Run: pip install matplotlib"
+            ) from exc
+        import pandas as pd
 
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -284,7 +289,6 @@ class ResultVisualizer:
     ) -> None:
         """Plot drawdown chart."""
         import matplotlib.pyplot as plt
-        import numpy as np
 
         fig, ax = plt.subplots(figsize=config.figsize)
 
