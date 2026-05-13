@@ -7,8 +7,8 @@ from pathlib import Path
 import streamlit as st
 
 from web.operator_ui.chart_reader import discover_charts
+from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
-from web.operator_ui.pages.results import _fmt_metric
 from web.operator_ui.report_reader import read_fold_reports, read_walk_forward_report
 
 st.title("Walk-Forward Detail")
@@ -36,10 +36,10 @@ if not folds:
             with st.expander(f"Fold {fr.get('fold_index', '?')}"):
                 metrics = fr.get("metrics", {})
                 cols = st.columns(4)
-                cols[0].metric("IC(1d)", _fmt_metric(metrics.get("ic_1d")))
-                cols[1].metric("IC(5d)", _fmt_metric(metrics.get("ic_5d")))
-                cols[2].metric("Return", _fmt_metric(metrics.get("annualized_return")))
-                cols[3].metric("IR", _fmt_metric(metrics.get("information_ratio")))
+                cols[0].metric("IC(1d)", fmt_metric(metrics.get("ic_1d")))
+                cols[1].metric("IC(5d)", fmt_metric(metrics.get("ic_5d")))
+                cols[2].metric("Return", fmt_metric(metrics.get("annualized_return")))
+                cols[3].metric("IR", fmt_metric(metrics.get("information_ratio")))
 
                 signal = fr.get("signal_analysis", {})
                 ic_decay = signal.get("ic_decay", [])

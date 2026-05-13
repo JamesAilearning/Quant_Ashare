@@ -2,28 +2,14 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import streamlit as st
 
 from web.operator_ui.chart_reader import discover_charts
+from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.report_reader import read_pipeline_report, read_walk_forward_report
-
-
-def _fmt_metric(val, /):
-    """Format a numeric value for display, or 'unavailable' if missing/non-finite."""
-    if val is None:
-        return "unavailable"
-    try:
-        v = float(val)
-        if math.isfinite(v):
-            return f"{v:.4f}"
-    except (TypeError, ValueError):
-        pass
-    return "unavailable"
-
 
 st.title("Results")
 
@@ -51,24 +37,24 @@ if pipeline_report:
         "Max Drawdown": risk.get("max_drawdown"),
         "Information Ratio": risk.get("information_ratio"),
     }
-    st.json({k: (f"{v:.4f}" if isinstance(v, (int, float)) else str(v)) for k, v in metrics.items()})
+    st.json({k: fmt_metric(v) for k, v in metrics.items()})
 
     signal = pipeline_report.get("signal_analysis", {})
     if signal:
         st.subheader("Signal Analysis")
         ic_summary = signal.get("ic_summary", {})
         for period, stats in ic_summary.items():
-            st.metric(f"IC ({period}d)", f"{stats.get('mean_ic', 'N/A'):.4f}" if isinstance(stats.get('mean_ic'), float) else "N/A")
+            st.metric(f"IC ({period}d)", fmt_metric(stats.get("mean_ic")))
 
 elif wf_report:
     st.header("Walk-Forward Report")
     agg = wf_report.get("aggregate_metrics", {})
     st.subheader("Aggregate Metrics")
     cols = st.columns(4)
-    cols[0].metric("Mean IC (1d)", _fmt_metric(agg.get("mean_ic_1d")))
-    cols[1].metric("Mean IR", _fmt_metric(agg.get("mean_information_ratio")))
-    cols[2].metric("Mean Return", _fmt_metric(agg.get("mean_annualized_return")))
-    cols[3].metric("Worst DD", _fmt_metric(agg.get("worst_drawdown")))
+    cols[0].metric("Mean IC (1d)", fmt_metric(agg.get("mean_ic_1d")))
+    cols[1].metric("Mean IR", fmt_metric(agg.get("mean_information_ratio")))
+    cols[2].metric("Mean Return", fmt_metric(agg.get("mean_annualized_return")))
+    cols[3].metric("Worst DD", fmt_metric(agg.get("worst_drawdown")))
 
     st.subheader("Coverage")
     st.json(wf_report.get("test_window_coverage", {}))
