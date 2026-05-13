@@ -41,6 +41,9 @@ research = [
 tushare = [
   "tushare>=1.4",
 ]
+ui = [
+  "streamlit>=1.36",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
