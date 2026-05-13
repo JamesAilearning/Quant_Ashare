@@ -55,13 +55,13 @@ else:
     import pandas as pd
     df = pd.DataFrame([{
         "Fold": f["fold_index"],
-        "IC(1d)": f.get("ic_1d"),
-        "IC(5d)": f.get("ic_5d"),
-        "Return": f.get("annualized_return"),
-        "MaxDD": f.get("max_drawdown"),
-        "IR": f.get("information_ratio"),
+        "IC(1d)": fmt_metric(f.get("ic_1d")),
+        "IC(5d)": fmt_metric(f.get("ic_5d")),
+        "Return": fmt_metric(f.get("annualized_return")),
+        "MaxDD": fmt_metric(f.get("max_drawdown")),
+        "IR": fmt_metric(f.get("information_ratio")),
     } for f in folds])
-    st.dataframe(df.style.format("{:.4f}"), use_container_width=True)
+    st.dataframe(df, use_container_width=True)
 
 # Charts
 charts = discover_charts(run_dir)

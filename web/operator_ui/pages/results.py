@@ -65,12 +65,12 @@ elif wf_report:
         import pandas as pd
         df = pd.DataFrame([{
             "Fold": f["fold_index"],
-            "IC(1d)": f.get("ic_1d"),
-            "IR": f.get("information_ratio"),
-            "Return": f.get("annualized_return"),
-            "MaxDD": f.get("max_drawdown"),
+            "IC(1d)": fmt_metric(f.get("ic_1d")),
+            "IR": fmt_metric(f.get("information_ratio")),
+            "Return": fmt_metric(f.get("annualized_return")),
+            "MaxDD": fmt_metric(f.get("max_drawdown")),
         } for f in folds])
-        st.dataframe(df.style.format("{:.4f}"), use_container_width=True)
+        st.dataframe(df, use_container_width=True)
 else:
     st.warning("No pipeline_report.json or walk_forward_report.json found in this run directory.")
 
