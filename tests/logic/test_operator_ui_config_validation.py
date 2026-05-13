@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import sys as _sys
 import unittest
 from pathlib import Path
-
-import sys as _sys
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in _sys.path:
@@ -26,13 +25,13 @@ class ConfigValidationTests(unittest.TestCase):
         validate_provider_uri("/data/qlib_bundle")
 
     def test_unknown_config_keys_hard_fail(self) -> None:
-        from web.operator_ui.config_forms import validate_config_keys, PIPELINE_KEYS
+        from web.operator_ui.config_forms import PIPELINE_KEYS, validate_config_keys
         config = {"provider_uri": "/data", "typo_key": 123, "another_typo": True}
         with self.assertRaises(ValueError):
             validate_config_keys(config, PIPELINE_KEYS)
 
     def test_valid_config_keys_pass(self) -> None:
-        from web.operator_ui.config_forms import validate_config_keys, PIPELINE_KEYS
+        from web.operator_ui.config_forms import PIPELINE_KEYS, validate_config_keys
         config = {"provider_uri": "/data", "instruments": "csi300", "train_start": "2022-01-01",
                    "train_end": "2024-12-31", "valid_start": "2025-01-01", "valid_end": "2025-06-30",
                    "test_start": "2025-07-01", "test_end": "2025-12-31"}

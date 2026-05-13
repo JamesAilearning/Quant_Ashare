@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
+import sys as _sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
-import sys as _sys
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in _sys.path:
@@ -23,8 +22,9 @@ class ReportReaderPathGuardTests(unittest.TestCase):
 
     def test_rejects_path_outside_roots(self) -> None:
         with patch("web.operator_ui.report_reader._ALLOWED_ROOTS", (Path("output").resolve(),)):
-            from web.operator_ui.report_reader import _guard_path
             import tempfile
+
+            from web.operator_ui.report_reader import _guard_path
             outside = Path(tempfile.gettempdir())
             with self.assertRaises(ValueError):
                 _guard_path(outside)

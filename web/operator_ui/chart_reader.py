@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 _ALLOWED_ROOTS = (Path("output").resolve(), Path("output").resolve() / "operator_ui")
 
 

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 _ALLOWED_ROOTS = (Path("output").resolve(), Path("output").resolve() / "operator_ui")
 
 
@@ -57,7 +56,7 @@ def read_job_from_catalog(run_dir: Path) -> dict[str, Any]:
     index_path = Path("output/runs/_index.jsonl")
     if not index_path.is_file():
         return {}
-    with open(index_path, "r", encoding="utf-8") as f:
+    with open(index_path, encoding="utf-8") as f:
         for line in f:
             try:
                 record = json.loads(line)
@@ -74,7 +73,7 @@ def read_all_catalog_entries() -> list[dict[str, Any]]:
     if not index_path.is_file():
         return []
     entries = []
-    with open(index_path, "r", encoding="utf-8") as f:
+    with open(index_path, encoding="utf-8") as f:
         for line in f:
             try:
                 entries.append(json.loads(line))

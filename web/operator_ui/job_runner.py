@@ -10,24 +10,23 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 def _find_run_dir(output_dir: Path) -> str | None:
-    runs_dir = output_dir / "runs"
-    if not runs_dir.is_dir():
-        return None
-    entries = sorted(runs_dir.iterdir())
-    for entry in entries:
-        if entry.is_dir():
-            return str(entry)
     # Walk-forward: output_dir IS the run dir (no runs/ subfolder)
-    report = output_dir / "walk_forward_report.json"
-    if report.is_file():
+    wf_report = output_dir / "walk_forward_report.json"
+    if wf_report.is_file():
         return str(output_dir)
+    # Pipeline: run dir is under runs/ subfolder
+    runs_dir = output_dir / "runs"
+    if runs_dir.is_dir():
+        entries = sorted(runs_dir.iterdir())
+        for entry in entries:
+            if entry.is_dir():
+                return str(entry)
     return None
 
 
@@ -73,7 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     if mode == "pipeline":
         cmd.append("main.py")
     elif mode == "walk_forward":
-        cmd.extend(["scripts", "run_walk_forward.py"])
+        cmd.append("scripts/run_walk_forward.py")
     else:
         _write_job_json(job_dir, {
             "status": "failed",

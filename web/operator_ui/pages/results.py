@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import streamlit as st
-from web.operator_ui.report_reader import read_pipeline_report, read_walk_forward_report
+
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.report_reader import read_pipeline_report, read_walk_forward_report
+
+
+def _fmt_metric(val, /):
+    """Format a numeric value for display, or 'unavailable' if missing/non-finite."""
+    if val is None:
+        return "unavailable"
+    try:
+        v = float(val)
+        if math.isfinite(v):
+            return f"{v:.4f}"
+    except (TypeError, ValueError):
+        pass
+    return "unavailable"
+
 
 st.title("Results")
 
@@ -49,10 +65,10 @@ elif wf_report:
     agg = wf_report.get("aggregate_metrics", {})
     st.subheader("Aggregate Metrics")
     cols = st.columns(4)
-    cols[0].metric("Mean IC (1d)", f"{agg.get('mean_ic_1d', 0):.4f}")
-    cols[1].metric("Mean IR", f"{agg.get('mean_information_ratio', 0):.4f}")
-    cols[2].metric("Mean Return", f"{agg.get('mean_annualized_return', 0):.4f}")
-    cols[3].metric("Worst DD", f"{agg.get('worst_drawdown', 0):.4f}")
+    cols[0].metric("Mean IC (1d)", _fmt_metric(agg.get("mean_ic_1d")))
+    cols[1].metric("Mean IR", _fmt_metric(agg.get("mean_information_ratio")))
+    cols[2].metric("Mean Return", _fmt_metric(agg.get("mean_annualized_return")))
+    cols[3].metric("Worst DD", _fmt_metric(agg.get("worst_drawdown")))
 
     st.subheader("Coverage")
     st.json(wf_report.get("test_window_coverage", {}))

@@ -111,25 +111,9 @@ class JobManager:
         data = _read_job_json(job_dir)
         if not data:
             return {"job_id": job_id, "status": "unknown"}
-
-        if data.get("status") == "running":
-            pid = data.get("pid")
-            if pid:
-                import os as _os
-                try:
-                    _os.kill(pid, 0)
-                except OSError:
-                    # Process no longer exists — check stdout for result
-                    stdout_path = job_dir / "stdout.log"
-                    returncode = None
-                    if stdout_path.is_file():
-                        returncode = 0  # best-effort; runner writes success/failed
-                    new_status = "success" if returncode == 0 else "failed"
-                    _write_job_json(job_dir, {
-                        "status": new_status,
-                        "ended_at": datetime.now(timezone.utc).isoformat(),
-                    })
-                    data["status"] = new_status
+        # Trust job_runner's own status writes — do not signal the
+        # process tree (os.kill is unsafe on Windows).  job_runner
+        # writes success/failed + ended_at when the CLI exits.
         return data
 
     @staticmethod

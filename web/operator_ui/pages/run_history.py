@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import streamlit as st
-from web.operator_ui.report_reader import read_all_catalog_entries
+
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.report_reader import read_all_catalog_entries
 
 st.title("Run History")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import streamlit as st
+
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
     WALK_FORWARD_KEYS,
@@ -49,7 +50,11 @@ with st.form("run_form"):
         n_drop = st.number_input("n_drop", value=5, min_value=0)
         signal_to_execution_lag = st.number_input("signal_to_execution_lag", value=1, min_value=0)
 
-    submitted = st.form_submit_button("Run")
+    provider_uri_valid = bool(provider_uri and provider_uri.strip())
+    if not provider_uri_valid:
+        st.warning("provider_uri is required to run.")
+
+    submitted = st.form_submit_button("Run", disabled=not provider_uri_valid)
 
 if submitted:
     try:

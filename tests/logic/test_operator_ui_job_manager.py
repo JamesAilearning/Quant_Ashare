@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
+import sys as _sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import sys as _sys
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in _sys.path:
