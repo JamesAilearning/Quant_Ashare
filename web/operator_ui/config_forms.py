@@ -7,6 +7,7 @@ from typing import Any
 
 from src.core.pipeline import PipelineConfig
 from src.core.walk_forward import WalkForwardConfig
+from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
 
 
 def validate_provider_uri(uri: str) -> None:
@@ -31,3 +32,4 @@ def _dataclass_field_names(cls: type) -> set[str]:
 
 PIPELINE_KEYS = _dataclass_field_names(PipelineConfig)
 WALK_FORWARD_KEYS = _dataclass_field_names(WalkForwardConfig) | {"provider_uri", "region"}
+TUSHARE_PROVIDER_KEYS = _dataclass_field_names(TushareQlibProviderBundleConfig)

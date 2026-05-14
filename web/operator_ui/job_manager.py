@@ -14,6 +14,7 @@ import yaml
 
 JOB_ROOT = Path("output/operator_ui/jobs")
 RESULT_ROOT = Path("output/operator_ui/results")
+JobMode = Literal["pipeline", "walk_forward", "tushare_provider"]
 
 
 class JobManagerError(RuntimeError):
@@ -51,7 +52,7 @@ class JobManager:
     """Create, start, stop, and monitor UI-launched training runs."""
 
     @staticmethod
-    def start(config: dict[str, Any], mode: Literal["pipeline", "walk_forward"]) -> str:
+    def start(config: dict[str, Any], mode: JobMode) -> str:
         # Copy to avoid mutating the caller's dict
         config = dict(config)
 
@@ -59,8 +60,18 @@ class JobManager:
         job_dir = JOB_ROOT / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
 
-        # Force output_dir so report_reader can find results
-        config["output_dir"] = str(RESULT_ROOT / job_id)
+        # Force output paths under the UI result root so report_reader
+        # and job history never have to chase machine-local defaults.
+        result_dir = RESULT_ROOT / job_id
+        if mode == "tushare_provider":
+            provider_dir = result_dir / "qlib_provider"
+            config["output_dir"] = str(provider_dir)
+            config.setdefault("staging_dir", str(result_dir / "staging"))
+            config.setdefault("manifest_path", str(result_dir / "manifest.json"))
+            config.setdefault("validation_path", str(result_dir / "validation.json"))
+            config.setdefault("comparison_path", str(result_dir / "comparison.json"))
+        else:
+            config["output_dir"] = str(result_dir)
 
         config_path = job_dir / "config.yaml"
         _write_config_yaml(config, config_path)

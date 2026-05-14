@@ -26,6 +26,7 @@ class PipelineStructuralTests(unittest.TestCase):
         self.assertEqual(config.region, "cn")
         self.assertEqual(config.instruments, "csi300")
         self.assertEqual(config.model_type, "LGBModel")
+        self.assertEqual(config.compute_device, "cpu")
 
     def test_make_run_dir_has_timestamp_uniq_and_fingerprint(self) -> None:
         config = PipelineConfig(provider_uri="/tmp/fake")
@@ -98,6 +99,18 @@ class PipelineConfigPostInitTests(unittest.TestCase):
     def test_rejects_empty_benchmark_code(self) -> None:
         with self.assertRaisesRegex(PipelineError, "benchmark_code"):
             PipelineConfig(provider_uri="/tmp/fake", benchmark_code="")
+
+    def test_rejects_unknown_compute_device(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "compute_device"):
+            PipelineConfig(provider_uri="/tmp/fake", compute_device="cuda")
+
+    def test_rejects_gpu_for_non_lgb_model(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "silently fall"):
+            PipelineConfig(
+                provider_uri="/tmp/fake",
+                model_type="XGBModel",
+                compute_device="gpu",
+            )
 
     def test_rejects_transposed_train_window(self) -> None:
         with self.assertRaisesRegex(PipelineError, "train_start"):

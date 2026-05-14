@@ -60,6 +60,7 @@ class WalkForwardValidationTests(unittest.TestCase):
         self.assertEqual(cfg.adjust_mode, "pre_adjusted")
         self.assertEqual(cfg.signal_to_execution_lag, 1)
         self.assertEqual(cfg.execution_price_kind, "close")
+        self.assertEqual(cfg.compute_device, "cpu")
 
     def test_multiple_folds_generated(self):
         config = WalkForwardConfig(
@@ -162,6 +163,14 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
     def test_rejects_unknown_adjust_mode(self):
         with self.assertRaisesRegex(WalkForwardError, "adjust_mode"):
             WalkForwardConfig(adjust_mode="auto")
+
+    def test_rejects_unknown_compute_device(self):
+        with self.assertRaisesRegex(WalkForwardError, "compute_device"):
+            WalkForwardConfig(compute_device="cuda")
+
+    def test_rejects_gpu_for_non_lgb_model(self):
+        with self.assertRaisesRegex(WalkForwardError, "silently fall"):
+            WalkForwardConfig(model_type="CatBoostModel", compute_device="gpu")
 
     def test_rejects_unknown_execution_price_kind(self):
         with self.assertRaisesRegex(WalkForwardError, "execution_price_kind"):
