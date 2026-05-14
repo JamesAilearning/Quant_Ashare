@@ -34,7 +34,12 @@ from src.core.canonical_backtest_contract import (
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
-from src.core.model_trainer import ModelTrainer, ModelTrainResult
+from src.core.model_trainer import (
+    GPU_SUPPORTED_MODEL_TYPES,
+    SUPPORTED_COMPUTE_DEVICES,
+    ModelTrainer,
+    ModelTrainResult,
+)
 from src.core.performance_attribution import (
     AttributionConfig,
     AttributionResult,
@@ -115,6 +120,7 @@ class PipelineConfig:
 
     # reproducibility — seed for numpy/python random/LGB/XGB/CatBoost
     seed: int = 42
+    compute_device: str = "cpu"
 
     # factor analysis
     run_factor_analysis: bool = True
@@ -149,6 +155,21 @@ class PipelineConfig:
             raise PipelineError(
                 "PipelineConfig.benchmark_code must be non-empty; the "
                 "canonical backtest contract requires a benchmark."
+            )
+        if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
+            raise PipelineError(
+                f"PipelineConfig.compute_device must be one of "
+                f"{SUPPORTED_COMPUTE_DEVICES}; got {self.compute_device!r}."
+            )
+        if (
+            self.compute_device == "gpu"
+            and self.model_type not in GPU_SUPPORTED_MODEL_TYPES
+        ):
+            raise PipelineError(
+                "PipelineConfig.compute_device='gpu' is currently supported "
+                f"only for {GPU_SUPPORTED_MODEL_TYPES}; got "
+                f"model_type={self.model_type!r}. Refusing to silently fall "
+                "back to CPU."
             )
         # Window order: train < valid < test. The downstream feature
         # builder validates date *format*; here we just check ordering

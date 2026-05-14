@@ -38,6 +38,8 @@ class ModelTrainerError(RuntimeError):
 
 
 SUPPORTED_MODEL_TYPES = ("LGBModel", "XGBModel", "CatBoostModel")
+SUPPORTED_COMPUTE_DEVICES = ("cpu", "gpu")
+GPU_SUPPORTED_MODEL_TYPES = ("LGBModel",)
 
 # Valid DatasetH segment names accepted by qlib. Anything else (e.g. a
 # user typo like "tets") used to raise deep inside qlib with a confusing
@@ -97,6 +99,10 @@ class ModelTrainConfig:
     feature_fraction: float = 1.0
     bagging_fraction: float = 1.0
     bagging_freq: int = 0
+    # Explicit compute backend request. ``cpu`` preserves existing
+    # behaviour. ``gpu`` is currently approved only for qlib LGBModel
+    # and is passed through to LightGBM as ``device_type='gpu'``.
+    compute_device: str = "cpu"
 
 
 @dataclass(frozen=True)
@@ -276,6 +282,7 @@ class ModelTrainer:
         sidecar: dict[str, Any] = {
             "schema_version": "v1",
             "model_type": config.model_type,
+            "compute_device": config.compute_device,
             "python_version": sys.version.split()[0],
             "trained_at": datetime.now(tz=timezone.utc).isoformat(),
             "best_iteration": best_iter,
@@ -394,24 +401,27 @@ class ModelTrainer:
                     "lightgbm / qlib LGBModel is not importable. Run: "
                     "pip install lightgbm"
                 ) from exc
-            return LGBModel(
-                loss="mse",
-                num_boost_round=config.num_boost_round,
-                early_stopping_rounds=config.early_stopping_rounds,
-                learning_rate=config.learning_rate,
-                max_depth=config.max_depth,
-                num_leaves=config.num_leaves,
-                seed=config.seed,
+            lgb_kwargs = {
+                "loss": "mse",
+                "num_boost_round": config.num_boost_round,
+                "early_stopping_rounds": config.early_stopping_rounds,
+                "learning_rate": config.learning_rate,
+                "max_depth": config.max_depth,
+                "num_leaves": config.num_leaves,
+                "seed": config.seed,
                 # LGB regularisation / sampling. LGBModel forwards
                 # **kwargs into lightgbm.train, so these reach the
                 # underlying booster directly.
-                lambda_l1=config.lambda_l1,
-                lambda_l2=config.lambda_l2,
-                min_data_in_leaf=config.min_data_in_leaf,
-                feature_fraction=config.feature_fraction,
-                bagging_fraction=config.bagging_fraction,
-                bagging_freq=config.bagging_freq,
-            )
+                "lambda_l1": config.lambda_l1,
+                "lambda_l2": config.lambda_l2,
+                "min_data_in_leaf": config.min_data_in_leaf,
+                "feature_fraction": config.feature_fraction,
+                "bagging_fraction": config.bagging_fraction,
+                "bagging_freq": config.bagging_freq,
+            }
+            if config.compute_device == "gpu":
+                lgb_kwargs["device_type"] = "gpu"
+            return LGBModel(**lgb_kwargs)
         elif config.model_type == "XGBModel":
             try:
                 from qlib.contrib.model.xgboost import XGBModel  # type: ignore[import-not-found]
@@ -462,6 +472,20 @@ class ModelTrainer:
             raise ModelTrainerError(
                 f"model_type must be one of {SUPPORTED_MODEL_TYPES}, "
                 f"got '{config.model_type}'."
+            )
+        if config.compute_device not in SUPPORTED_COMPUTE_DEVICES:
+            raise ModelTrainerError(
+                f"compute_device must be one of {SUPPORTED_COMPUTE_DEVICES}, "
+                f"got {config.compute_device!r}."
+            )
+        if (
+            config.compute_device == "gpu"
+            and config.model_type not in GPU_SUPPORTED_MODEL_TYPES
+        ):
+            raise ModelTrainerError(
+                "compute_device='gpu' is currently supported only for "
+                f"{GPU_SUPPORTED_MODEL_TYPES}; got model_type={config.model_type!r}. "
+                "Refusing to silently fall back to CPU."
             )
 
         # ---- num_boost_round ----

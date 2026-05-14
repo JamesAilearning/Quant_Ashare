@@ -551,6 +551,7 @@ class LGBRegularisationFieldsTests(unittest.TestCase):
         self.assertEqual(cfg.feature_fraction, 1.0)
         self.assertEqual(cfg.bagging_fraction, 1.0)
         self.assertEqual(cfg.bagging_freq, 0)
+        self.assertEqual(cfg.compute_device, "cpu")
 
     def test_create_model_forwards_regularisation_to_lgbmodel(self) -> None:
         """``_create_model`` must pass the new fields through to LGBModel.
@@ -588,6 +589,24 @@ class LGBRegularisationFieldsTests(unittest.TestCase):
         self.assertEqual(captured["feature_fraction"], 0.7)
         self.assertEqual(captured["bagging_fraction"], 0.8)
         self.assertEqual(captured["bagging_freq"], 4)
+
+    def test_create_model_forwards_gpu_device_to_lgbmodel(self) -> None:
+        captured: dict = {}
+
+        class _StubLGB:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.dict(
+            "sys.modules",
+            {"qlib.contrib.model.gbdt": MagicMock(LGBModel=_StubLGB)},
+        ):
+            ModelTrainer._create_model(ModelTrainConfig(
+                model_type="LGBModel",
+                compute_device="gpu",
+            ))
+
+        self.assertEqual(captured["device_type"], "gpu")
 
     def _validate_with_qlib_init(self, cfg: ModelTrainConfig) -> None:
         with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
@@ -639,6 +658,18 @@ class LGBRegularisationFieldsTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelTrainerError, "bagging_freq"):
             self._validate_with_qlib_init(
                 ModelTrainConfig(model_type="LGBModel", bagging_freq=-1),
+            )
+
+    def test_rejects_unknown_compute_device(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "compute_device"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="LGBModel", compute_device="cuda"),
+            )
+
+    def test_rejects_gpu_for_unsupported_model_without_cpu_fallback(self) -> None:
+        with self.assertRaisesRegex(ModelTrainerError, "silently fall back"):
+            self._validate_with_qlib_init(
+                ModelTrainConfig(model_type="XGBModel", compute_device="gpu"),
             )
 
 
@@ -800,6 +831,7 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
 
             config = MagicMock()
             config.model_type = "LGBModel"
+            config.compute_device = "cpu"
             ModelTrainer._write_model_sidecar(
                 model_path, config, best_iter=42, final_val=0.99,
             )
@@ -816,6 +848,7 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
             self.assertEqual(sidecar["best_iteration"], 42)
             self.assertEqual(sidecar["final_valid_loss"], 0.99)
             self.assertEqual(sidecar["model_type"], "LGBModel")
+            self.assertEqual(sidecar["compute_device"], "cpu")
             self.assertIn("trained_at", sidecar)
             self.assertIn("python_version", sidecar)
 
@@ -829,6 +862,7 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
 
             config = MagicMock()
             config.model_type = "XGBModel"
+            config.compute_device = "cpu"
             ModelTrainer._write_model_sidecar(
                 model_path, config, best_iter=None, final_val=None,
             )

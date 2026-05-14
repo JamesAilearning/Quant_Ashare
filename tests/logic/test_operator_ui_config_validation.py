@@ -53,6 +53,16 @@ class ConfigValidationTests(unittest.TestCase):
         } | {"provider_uri", "region"}
         self.assertEqual(WALK_FORWARD_KEYS, expected)
 
+    def test_tushare_provider_keys_match_config_fields(self) -> None:
+        from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
+        from web.operator_ui.config_forms import TUSHARE_PROVIDER_KEYS
+
+        expected = {
+            field.name
+            for field in TushareQlibProviderBundleConfig.__dataclass_fields__.values()
+        }
+        self.assertEqual(TUSHARE_PROVIDER_KEYS, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

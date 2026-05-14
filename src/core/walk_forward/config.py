@@ -13,6 +13,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
 )
+from src.core.model_trainer import GPU_SUPPORTED_MODEL_TYPES, SUPPORTED_COMPUTE_DEVICES
 
 
 class WalkForwardError(RuntimeError):
@@ -104,6 +105,7 @@ class WalkForwardConfig:
     # Reproducibility — seed for numpy/python random/LGB/XGB/CatBoost.
     # Mirrors PipelineConfig.seed.
     seed: int = 42
+    compute_device: str = "cpu"
 
     # Performance attribution per fold.
     # ``run_attribution`` controls whether ``_run_single_fold`` calls
@@ -208,6 +210,20 @@ class WalkForwardConfig:
             raise WalkForwardError(
                 f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
                 f"got {self.adjust_mode!r}."
+            )
+        if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
+            raise WalkForwardError(
+                f"compute_device must be one of {SUPPORTED_COMPUTE_DEVICES}; "
+                f"got {self.compute_device!r}."
+            )
+        if (
+            self.compute_device == "gpu"
+            and self.model_type not in GPU_SUPPORTED_MODEL_TYPES
+        ):
+            raise WalkForwardError(
+                "compute_device='gpu' is currently supported only for "
+                f"{GPU_SUPPORTED_MODEL_TYPES}; got model_type={self.model_type!r}. "
+                "Refusing to silently fall back to CPU."
             )
 
         # Model hyperparameter sanity: reject definitely-wrong values

@@ -25,6 +25,7 @@ class ModelConfigProjectionTests(unittest.TestCase):
             "feature_fraction": 0.8,
             "bagging_fraction": 0.9,
             "bagging_freq": 2,
+            "compute_device": "gpu",
         }
         pipeline_config = PipelineConfig(provider_uri="/tmp/fake", seed=42, **overrides)
         walk_forward_config = WalkForwardConfig(**overrides)
@@ -45,6 +46,7 @@ class ModelConfigProjectionTests(unittest.TestCase):
         self.assertEqual(config.early_stopping_rounds, 50)
         self.assertEqual(config.lambda_l1, 0.0)
         self.assertEqual(config.bagging_freq, 0)
+        self.assertEqual(config.compute_device, "cpu")
 
     def test_missing_required_model_type_is_loud(self) -> None:
         with self.assertRaisesRegex(TypeError, "model_type"):

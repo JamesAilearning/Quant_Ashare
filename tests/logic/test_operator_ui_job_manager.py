@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import yaml
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_PROJECT_ROOT))
@@ -67,6 +69,34 @@ class JobManagerStartTests(unittest.TestCase):
                     self.assertEqual(data["mode"], "pipeline")
                     self.assertIn(data["status"], ("running", "pending"))
                     self.assertEqual(data["pid"], 99999)
+
+    def test_start_tushare_provider_writes_generated_output_paths(self) -> None:
+        config = {
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-31",
+            "data_adjust_mode": "pre_adjusted",
+            "instruments": "all",
+        }
+        job_root = Path(tempfile.mkdtemp())
+        result_root = Path(tempfile.mkdtemp())
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            with patch("web.operator_ui.job_manager.RESULT_ROOT", result_root):
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.pid = 99998
+                    mock_popen.return_value = mock_proc
+                    from web.operator_ui.job_manager import JobManager
+
+                    job_id = JobManager.start(config, "tushare_provider")
+
+        config_path = job_root / job_id / "config.yaml"
+        written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        expected_root = result_root / job_id
+        self.assertEqual(written["output_dir"], str(expected_root / "qlib_provider"))
+        self.assertEqual(written["staging_dir"], str(expected_root / "staging"))
+        self.assertEqual(written["manifest_path"], str(expected_root / "manifest.json"))
+        self.assertEqual(written["validation_path"], str(expected_root / "validation.json"))
+        self.assertNotIn("tushare_token", written)
 
 
 class JobManagerStopTests(unittest.TestCase):

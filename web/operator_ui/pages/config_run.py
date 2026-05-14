@@ -2,25 +2,50 @@
 
 from __future__ import annotations
 
+import os
+
 import streamlit as st
 
+from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_NONE,
+    ADJUST_MODE_POST,
+    ADJUST_MODE_PRE,
+)
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
+    TUSHARE_PROVIDER_KEYS,
     WALK_FORWARD_KEYS,
     validate_config_keys,
     validate_provider_uri,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
 
+
+def _parse_instruments(raw: str) -> str | list[str]:
+    value = str(raw or "").strip()
+    if not value or value.lower() == "all":
+        return "all"
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 st.title("Config & Run")
 
 mode = st.selectbox("Mode", ["pipeline", "walk_forward"])
+
+provider_uri = st.text_input(
+    "provider_uri *",
+    value="",
+    placeholder="D:/qlib_data/my_cn_data",
+    key="training_provider_uri",
+)
+provider_uri_valid = bool(provider_uri and provider_uri.strip())
+if not provider_uri_valid:
+    st.warning("provider_uri is required to run.")
 
 with st.form("run_form"):
     col1, col2 = st.columns(2)
 
     with col1:
-        provider_uri = st.text_input("provider_uri *", value="", placeholder="D:/qlib_data/my_cn_data")
         instruments = st.text_input("instruments", value="csi300")
         feature_handler = st.text_input("feature_handler", value="Alpha158")
 
@@ -42,6 +67,7 @@ with st.form("run_form"):
 
     with col2:
         model_type = st.selectbox("model_type", ["LGBModel", "XGBModel", "CatBoostModel"])
+        compute_device = st.radio("compute_device", ["cpu", "gpu"], horizontal=True)
         num_boost_round = st.number_input("num_boost_round", value=1000, min_value=1)
         early_stopping_rounds = st.number_input("early_stopping_rounds", value=50, min_value=0)
         learning_rate = st.number_input("learning_rate", value=0.005, format="%.4f")
@@ -49,10 +75,6 @@ with st.form("run_form"):
         topk = st.number_input("topk", value=50, min_value=1)
         n_drop = st.number_input("n_drop", value=5, min_value=0)
         signal_to_execution_lag = st.number_input("signal_to_execution_lag", value=1, min_value=0)
-
-    provider_uri_valid = bool(provider_uri and provider_uri.strip())
-    if not provider_uri_valid:
-        st.warning("provider_uri is required to run.")
 
     submitted = st.form_submit_button("Run", disabled=not provider_uri_valid)
 
@@ -62,8 +84,24 @@ if submitted:
     except ValueError as e:
         st.error(str(e))
         st.stop()
+    if compute_device == "gpu" and model_type != "LGBModel":
+        st.error("GPU training is currently supported only for LGBModel.")
+        st.stop()
 
-    config: dict = {"provider_uri": provider_uri, "instruments": instruments, "feature_handler": feature_handler}
+    config: dict = {
+        "provider_uri": provider_uri,
+        "instruments": instruments,
+        "feature_handler": feature_handler,
+        "model_type": model_type,
+        "compute_device": compute_device,
+        "num_boost_round": num_boost_round,
+        "early_stopping_rounds": early_stopping_rounds,
+        "learning_rate": learning_rate,
+        "benchmark_code": benchmark_code,
+        "topk": topk,
+        "n_drop": n_drop,
+        "signal_to_execution_lag": signal_to_execution_lag,
+    }
 
     if mode == "pipeline":
         config.update({
@@ -71,7 +109,7 @@ if submitted:
             "valid_start": valid_start, "valid_end": valid_end,
             "test_start": test_start, "test_end": test_end,
         })
-        validate_config_keys(config, PIPELINE_KEYS)
+        known_keys = PIPELINE_KEYS
     else:
         config.update({
             "overall_start": overall_start, "overall_end": overall_end,
@@ -79,20 +117,51 @@ if submitted:
             "test_months": test_months, "step_months": step_months,
             "ensemble_window": ensemble_window,
         })
-        validate_config_keys(config, WALK_FORWARD_KEYS)
+        known_keys = WALK_FORWARD_KEYS
 
-    config["model_type"] = model_type
-    config["num_boost_round"] = num_boost_round
-    config["early_stopping_rounds"] = early_stopping_rounds
-    config["learning_rate"] = learning_rate
-    config["benchmark_code"] = benchmark_code
-    config["topk"] = topk
-    config["n_drop"] = n_drop
-    config["signal_to_execution_lag"] = signal_to_execution_lag
+    validate_config_keys(config, known_keys)
 
     job_id = JobManager.start(config, mode)
     st.success(f"Job started: {job_id}")
     st.info(f"Watch output/operator_ui/jobs/{job_id}/stdout.log for progress.")
+
+st.divider()
+st.subheader("Tushare Data")
+token_present = bool(os.environ.get("TUSHARE_TOKEN", "").strip())
+if not token_present:
+    st.warning("Set TUSHARE_TOKEN in the environment before pulling Tushare data.")
+
+with st.form("tushare_provider_form"):
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        ts_start_date = st.text_input("start_date", value="2025-01-01")
+        ts_end_date = st.text_input("end_date", value="2025-01-31")
+        ts_instruments = st.text_input("instruments", value="all", help="Use all or comma-separated qlib/Tushare codes.")
+    with tc2:
+        ts_adjust_mode = st.selectbox(
+            "data_adjust_mode",
+            [ADJUST_MODE_PRE, ADJUST_MODE_POST, ADJUST_MODE_NONE],
+        )
+        include_hs300 = st.checkbox("include SH000300 benchmark", value=True)
+        reuse_staged = st.checkbox("reuse_staged", value=True)
+
+    pull_tushare = st.form_submit_button("Pull Tushare Data", disabled=not token_present)
+
+if pull_tushare:
+    tushare_config: dict = {
+        "start_date": ts_start_date,
+        "end_date": ts_end_date,
+        "data_adjust_mode": ts_adjust_mode,
+        "instruments": _parse_instruments(ts_instruments),
+        "benchmark_indexes": {"SH000300": "000300.SH"} if include_hs300 else {},
+        "reuse_staged": reuse_staged,
+        "region": "cn",
+        "freq": "day",
+    }
+    validate_config_keys(tushare_config, TUSHARE_PROVIDER_KEYS)
+    job_id = JobManager.start(tushare_config, "tushare_provider")
+    st.success(f"Tushare ingest job started: {job_id}")
+    st.info(f"After success, use output/operator_ui/results/{job_id}/qlib_provider as provider_uri.")
 
 # Show running jobs
 st.divider()
