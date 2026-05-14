@@ -534,7 +534,8 @@ class TushareQlibProviderPublisher:
         #
         # Previously we wrote ``pct_chg / 100`` directly into ``change``
         # whenever it was present, so in PRE/POST adjust modes the
-        # ``change`` column was on a *different basis* than ``close`` ??        # silently breaking any downstream factor that joins them.
+        # ``change`` column was on a *different basis* than ``close``,
+        # silently breaking any downstream factor that joins them.
         #
         # Fix: in adjusted modes always recompute ``change`` from the
         # already-adjusted ``close`` so the two columns stay on the same

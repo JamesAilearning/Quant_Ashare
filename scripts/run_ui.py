@@ -17,10 +17,11 @@ _APP_PATH = _REPO_ROOT / "web" / "operator_ui" / "app.py"
 
 
 def main() -> None:
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-m", "streamlit", "run", str(_APP_PATH), *sys.argv[1:]],
         cwd=_REPO_ROOT,
     )
+    raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":
