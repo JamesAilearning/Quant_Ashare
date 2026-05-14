@@ -48,6 +48,9 @@ class JobManager:
 
     @staticmethod
     def start(config: dict[str, Any], mode: Literal["pipeline", "walk_forward"]) -> str:
+        # Copy to avoid mutating the caller's dict
+        config = dict(config)
+
         job_id = _generate_job_id(mode)
         job_dir = JOB_ROOT / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
