@@ -28,6 +28,12 @@ scripts/run_ui.py
 
 5. **Explicit provider_uri**: The Config & Run form marks `provider_uri` as mandatory. Empty value disables the Run button and shows a validation error.
 
+6. **Loopback launcher default**: `scripts/run_ui.py` adds `--server.address 127.0.0.1` unless the operator explicitly supplies a Streamlit address flag. Remote access must be a deliberate CLI choice.
+
+7. **Dataclass-derived config key sets**: `config_forms.py` derives accepted keys from `PipelineConfig` and `WalkForwardConfig`, plus the walk-forward qlib runtime keys. This keeps UI validation aligned with CLI config contracts.
+
+8. **Stop failure is explicit**: `JobManager.stop()` raises `JobManagerError` and writes `status: "stop_failed"` if the process tree termination fails or the job has no recorded PID. It only writes `status: "stopped"` after a successful termination command.
+
 ## Module responsibilities
 
 | Module | Responsibility |

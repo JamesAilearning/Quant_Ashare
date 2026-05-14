@@ -16,6 +16,10 @@ JOB_ROOT = Path("output/operator_ui/jobs")
 RESULT_ROOT = Path("output/operator_ui/results")
 
 
+class JobManagerError(RuntimeError):
+    """Raised when a UI job lifecycle transition cannot be completed."""
+
+
 def _generate_job_id(mode: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     tag = uuid.uuid4().hex[:8]
@@ -97,12 +101,41 @@ class JobManager:
         job_dir = JOB_ROOT / job_id
         data = _read_job_json(job_dir)
         pid = data.get("pid")
-        if pid:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                shell=False,
-                capture_output=True,
-            )
+        if not pid:
+            message = f"Cannot stop job {job_id!r}: job.json has no pid."
+            _write_job_json(job_dir, {
+                "status": "stop_failed",
+                "stop_error": message,
+                "stop_failed_at": datetime.now(timezone.utc).isoformat(),
+            })
+            raise JobManagerError(message)
+
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            shell=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            if detail:
+                message = (
+                    f"Failed to stop job {job_id!r} with pid {pid}: "
+                    f"taskkill exited {result.returncode}: {detail}"
+                )
+            else:
+                message = (
+                    f"Failed to stop job {job_id!r} with pid {pid}: "
+                    f"taskkill exited {result.returncode}."
+                )
+            _write_job_json(job_dir, {
+                "status": "stop_failed",
+                "stop_error": message,
+                "stop_returncode": result.returncode,
+                "stop_failed_at": datetime.now(timezone.utc).isoformat(),
+            })
+            raise JobManagerError(message)
+
         _write_job_json(job_dir, {
             "status": "stopped",
             "ended_at": datetime.now(timezone.utc).isoformat(),
