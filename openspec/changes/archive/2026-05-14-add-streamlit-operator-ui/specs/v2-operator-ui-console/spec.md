@@ -25,6 +25,8 @@ back to any machine-local default data bundle path.
 The operator UI SHALL NOT import or call `Pipeline.run()` or
 `WalkForwardEngine.run()` directly. All runs SHALL be executed by
 launching the existing CLI scripts as subprocesses with `shell=False`.
+The Streamlit server launcher SHALL bind to loopback by default unless
+the operator explicitly supplies a different `--server.address`.
 
 #### Scenario: pipeline run is launched
 
@@ -37,6 +39,40 @@ launching the existing CLI scripts as subprocesses with `shell=False`.
 - **WHEN** the operator clicks Run for a walk-forward configuration
 - **THEN** a subprocess is started with arguments `[sys.executable, "scripts/run_walk_forward.py", config_path]`
 - **AND** `shell=False` is used
+
+#### Scenario: UI launcher is started without an explicit address
+
+- **WHEN** the operator runs `python scripts/run_ui.py`
+- **THEN** the Streamlit command includes `--server.address 127.0.0.1`
+- **AND** the UI is not exposed through an external network interface by default
+
+#### Scenario: UI launcher is started with an explicit address
+
+- **WHEN** the operator runs `python scripts/run_ui.py --server.address 0.0.0.0`
+- **THEN** the launcher preserves the explicit address
+- **AND** it does not add a competing default address flag
+
+---
+
+### Requirement: Operator UI SHALL derive accepted config keys from canonical config dataclasses
+
+The operator UI SHALL derive Pipeline and WalkForward accepted config
+keys from `PipelineConfig` and `WalkForwardConfig` rather than keeping
+a hand-maintained duplicate allow-list that can drift from the CLI
+contracts.
+
+#### Scenario: PipelineConfig gains or removes a field
+
+- **WHEN** `PipelineConfig` dataclass fields change
+- **THEN** the UI pipeline config key set reflects the same dataclass fields
+- **AND** unknown UI config keys continue to hard-fail
+
+#### Scenario: WalkForwardConfig gains or removes a field
+
+- **WHEN** `WalkForwardConfig` dataclass fields change
+- **THEN** the UI walk-forward config key set reflects the same dataclass fields
+- **AND** it additionally allows only the qlib runtime keys `provider_uri` and `region`
+- **AND** unknown UI config keys continue to hard-fail
 
 ---
 
@@ -98,13 +134,28 @@ Each UI-launched run SHALL create an isolated job directory under
 
 The operator UI SHALL support stopping a job launched through the UI.
 Stopping SHALL terminate the runner process and its child CLI process
-tree on Windows.
+tree on Windows. The UI SHALL NOT mark a job as `stopped` unless the
+termination command succeeds.
 
 #### Scenario: a running job is stopped
 
 - **WHEN** the operator clicks Stop for a job with status "running"
 - **THEN** `taskkill /F /T /PID <runner_pid>` is executed with `shell=False`
 - **AND** `job.json` is updated to `status: "stopped"` with `ended_at`
+
+#### Scenario: stopping a running job fails
+
+- **WHEN** the termination command exits non-zero
+- **THEN** `JobManager.stop()` raises a typed job manager error
+- **AND** `job.json` is updated to `status: "stop_failed"`
+- **AND** the job is not represented as successfully stopped
+
+#### Scenario: stopping a job without a recorded PID
+
+- **WHEN** `job.json` has no runner process id
+- **THEN** `JobManager.stop()` raises a typed job manager error
+- **AND** `job.json` is updated to `status: "stop_failed"`
+- **AND** no termination command is executed
 
 ---
 

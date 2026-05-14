@@ -37,6 +37,22 @@ class ConfigValidationTests(unittest.TestCase):
                    "test_start": "2025-07-01", "test_end": "2025-12-31"}
         validate_config_keys(config, PIPELINE_KEYS)
 
+    def test_pipeline_keys_match_pipeline_config_fields(self) -> None:
+        from src.core.pipeline import PipelineConfig
+        from web.operator_ui.config_forms import PIPELINE_KEYS
+
+        expected = {field.name for field in PipelineConfig.__dataclass_fields__.values()}
+        self.assertEqual(PIPELINE_KEYS, expected)
+
+    def test_walk_forward_keys_match_config_fields_plus_runtime_keys(self) -> None:
+        from src.core.walk_forward import WalkForwardConfig
+        from web.operator_ui.config_forms import WALK_FORWARD_KEYS
+
+        expected = {
+            field.name for field in WalkForwardConfig.__dataclass_fields__.values()
+        } | {"provider_uri", "region"}
+        self.assertEqual(WALK_FORWARD_KEYS, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

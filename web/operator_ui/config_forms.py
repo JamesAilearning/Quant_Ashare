@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import Any
+
+from src.core.pipeline import PipelineConfig
+from src.core.walk_forward import WalkForwardConfig
 
 
 def validate_provider_uri(uri: str) -> None:
@@ -21,35 +25,9 @@ def validate_config_keys(config: dict[str, Any], known_keys: set[str]) -> None:
         )
 
 
-PIPELINE_KEYS = {
-    "provider_uri", "region",
-    "instruments", "feature_handler",
-    "train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end",
-    "model_type", "num_boost_round", "early_stopping_rounds", "learning_rate",
-    "max_depth", "num_leaves", "lambda_l1", "lambda_l2", "min_data_in_leaf",
-    "feature_fraction", "bagging_fraction", "bagging_freq", "seed",
-    "benchmark_code", "init_cash", "commission_rate", "stamp_tax_bps",
-    "slippage_bps", "min_cost", "execution_price_kind", "adjust_mode",
-    "signal_to_execution_lag", "topk", "n_drop", "limit_threshold",
-    "run_factor_analysis", "factor_forward_period", "factor_top_n", "factor_max_decay_lag",
-    "run_attribution", "industry_artifact_path", "industry_manifest_path",
-    "industry_taxonomy_id", "industry_temporal_mode",
-    "output_dir",
-}
+def _dataclass_field_names(cls: type) -> set[str]:
+    return {field.name for field in fields(cls)}
 
-WALK_FORWARD_KEYS = {
-    "provider_uri", "region",
-    "instruments", "feature_handler",
-    "overall_start", "overall_end",
-    "train_months", "valid_months", "test_months", "step_months",
-    "model_type", "num_boost_round", "early_stopping_rounds", "learning_rate",
-    "max_depth", "num_leaves", "lambda_l1", "lambda_l2", "min_data_in_leaf",
-    "feature_fraction", "bagging_fraction", "bagging_freq", "seed",
-    "ensemble_window",
-    "benchmark_code", "init_cash", "topk", "n_drop",
-    "commission_rate", "stamp_tax_bps", "slippage_bps", "min_cost",
-    "execution_price_kind", "adjust_mode", "signal_to_execution_lag", "limit_threshold",
-    "run_attribution", "industry_artifact_path", "industry_manifest_path",
-    "industry_taxonomy_id", "industry_temporal_mode",
-    "output_dir",
-}
+
+PIPELINE_KEYS = _dataclass_field_names(PipelineConfig)
+WALK_FORWARD_KEYS = _dataclass_field_names(WalkForwardConfig) | {"provider_uri", "region"}

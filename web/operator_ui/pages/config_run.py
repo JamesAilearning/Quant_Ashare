@@ -10,7 +10,7 @@ from web.operator_ui.config_forms import (
     validate_config_keys,
     validate_provider_uri,
 )
-from web.operator_ui.job_manager import JobManager
+from web.operator_ui.job_manager import JobManager, JobManagerError
 
 st.title("Config & Run")
 
@@ -112,5 +112,9 @@ else:
         with col3:
             if status == "running" and j.get("pid"):
                 if st.button("⏹️ Stop", key=f"stop_{j.get('job_id')}"):
-                    JobManager.stop(j["job_id"])
-                    st.rerun()
+                    try:
+                        JobManager.stop(j["job_id"])
+                    except JobManagerError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.rerun()

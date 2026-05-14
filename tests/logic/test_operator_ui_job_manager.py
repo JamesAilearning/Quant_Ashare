@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys as _sys
 import tempfile
 import unittest
@@ -81,6 +82,9 @@ class JobManagerStopTests(unittest.TestCase):
         )
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
             with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=["taskkill"], returncode=0
+                )
                 from web.operator_ui.job_manager import JobManager
                 JobManager.stop("test_job")
                 args = mock_run.call_args[0][0] if mock_run.call_args[0] else []
@@ -97,12 +101,54 @@ class JobManagerStopTests(unittest.TestCase):
             encoding="utf-8",
         )
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
-            with patch("subprocess.run"):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=["taskkill"], returncode=0
+                )
                 from web.operator_ui.job_manager import JobManager
                 JobManager.stop("test_job2")
                 data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
                 self.assertEqual(data["status"], "stopped")
                 self.assertIsNotNone(data["ended_at"])
+
+    def test_stop_failure_does_not_write_stopped_status(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "test_job3"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "test_job3", "status": "running", "pid": 12347}),
+            encoding="utf-8",
+        )
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=["taskkill"],
+                    returncode=128,
+                    stderr="Access is denied.",
+                )
+                from web.operator_ui.job_manager import JobManager, JobManagerError
+                with self.assertRaises(JobManagerError):
+                    JobManager.stop("test_job3")
+                data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+                self.assertEqual(data["status"], "stop_failed")
+                self.assertEqual(data["stop_returncode"], 128)
+                self.assertIn("Access is denied", data["stop_error"])
+
+    def test_stop_without_pid_does_not_write_stopped_status(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "test_job4"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "test_job4", "status": "running", "pid": None}),
+            encoding="utf-8",
+        )
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager, JobManagerError
+            with self.assertRaises(JobManagerError):
+                JobManager.stop("test_job4")
+            data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "stop_failed")
+            self.assertIn("no pid", data["stop_error"])
 
 
 if __name__ == "__main__":
