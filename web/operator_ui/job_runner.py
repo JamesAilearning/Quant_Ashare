@@ -8,11 +8,26 @@ This decouples job lifecycle from Streamlit's rerun cycle.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _runner_env() -> dict[str, str]:
+    env = os.environ.copy()
+    project_root = str(PROJECT_ROOT)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        project_root
+        if not existing
+        else project_root + os.pathsep + existing
+    )
+    return env
 
 
 def _find_run_dir(output_dir: Path) -> str | None:
@@ -90,7 +105,14 @@ def main(argv: list[str] | None = None) -> None:
     _write_job_json(job_dir, {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
 
     with open(stdout_path, "w", encoding="utf-8") as out, open(stderr_path, "w", encoding="utf-8") as err:
-        result = subprocess.run(cmd, stdout=out, stderr=err, cwd=Path.cwd())
+        result = subprocess.run(
+            cmd,
+            stdout=out,
+            stderr=err,
+            cwd=PROJECT_ROOT,
+            env=_runner_env(),
+            shell=False,
+        )
 
     ended = datetime.now(timezone.utc).isoformat()
     if result.returncode == 0:

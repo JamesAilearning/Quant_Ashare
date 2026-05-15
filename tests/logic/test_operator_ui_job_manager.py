@@ -20,6 +20,14 @@ if str(_PROJECT_ROOT) not in _sys.path:
 class JobManagerStartTests(unittest.TestCase):
     """subprocess.Popen is called with shell=False and correct args."""
 
+    def test_default_job_and_result_roots_are_repo_anchored(self) -> None:
+        from web.operator_ui.job_manager import JOB_ROOT, PROJECT_ROOT, RESULT_ROOT
+
+        self.assertTrue(JOB_ROOT.is_absolute())
+        self.assertTrue(RESULT_ROOT.is_absolute())
+        self.assertEqual(JOB_ROOT, PROJECT_ROOT / "output" / "operator_ui" / "jobs")
+        self.assertEqual(RESULT_ROOT, PROJECT_ROOT / "output" / "operator_ui" / "results")
+
     def test_start_pipeline_uses_correct_args(self) -> None:
         config = {"provider_uri": "/data", "instruments": "csi300"}
         with patch("web.operator_ui.job_manager.JOB_ROOT", Path(tempfile.mkdtemp())):
@@ -69,6 +77,29 @@ class JobManagerStartTests(unittest.TestCase):
                     self.assertEqual(data["mode"], "pipeline")
                     self.assertIn(data["status"], ("running", "pending"))
                     self.assertEqual(data["pid"], 99999)
+                    self.assertIn("runner_stdout_path", data)
+                    self.assertIn("runner_stderr_path", data)
+
+    def test_start_captures_runner_logs_and_sets_pythonpath(self) -> None:
+        config = {"provider_uri": "/data"}
+        job_root = Path(tempfile.mkdtemp())
+        result_root = Path(tempfile.mkdtemp())
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            with patch("web.operator_ui.job_manager.RESULT_ROOT", result_root):
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.pid = 99997
+                    mock_popen.return_value = mock_proc
+                    from web.operator_ui.job_manager import PROJECT_ROOT, JobManager
+
+                    job_id = JobManager.start(config, "pipeline")
+
+        job_dir = job_root / job_id
+        self.assertTrue(job_dir.joinpath("runner_stdout.log").is_file())
+        self.assertTrue(job_dir.joinpath("runner_stderr.log").is_file())
+        kwargs = mock_popen.call_args.kwargs
+        self.assertEqual(kwargs["cwd"], PROJECT_ROOT)
+        self.assertIn(str(PROJECT_ROOT), kwargs["env"]["PYTHONPATH"])
 
     def test_start_tushare_provider_writes_generated_output_paths(self) -> None:
         config = {
@@ -100,7 +131,7 @@ class JobManagerStartTests(unittest.TestCase):
 
 
 class JobManagerStopTests(unittest.TestCase):
-    """stop() runs taskkill with correct arguments."""
+    """stop() terminates the UI job on each supported platform."""
 
     def test_stop_runs_taskkill_with_pid(self) -> None:
         job_root = Path(tempfile.mkdtemp())
@@ -111,16 +142,17 @@ class JobManagerStopTests(unittest.TestCase):
             encoding="utf-8",
         )
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=["taskkill"], returncode=0
-                )
-                from web.operator_ui.job_manager import JobManager
-                JobManager.stop("test_job")
-                args = mock_run.call_args[0][0] if mock_run.call_args[0] else []
-                self.assertIn("taskkill", str(args).lower())
-                self.assertIn("/t", str(args).lower())
-                self.assertIn("12345", str(args))
+            with patch("web.operator_ui.job_manager.platform.system", return_value="Windows"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = subprocess.CompletedProcess(
+                        args=["taskkill"], returncode=0
+                    )
+                    from web.operator_ui.job_manager import JobManager
+                    JobManager.stop("test_job")
+                    args = mock_run.call_args[0][0] if mock_run.call_args[0] else []
+                    self.assertIn("taskkill", str(args).lower())
+                    self.assertIn("/t", str(args).lower())
+                    self.assertIn("12345", str(args))
 
     def test_stop_writes_stopped_status(self) -> None:
         job_root = Path(tempfile.mkdtemp())
@@ -131,15 +163,16 @@ class JobManagerStopTests(unittest.TestCase):
             encoding="utf-8",
         )
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=["taskkill"], returncode=0
-                )
-                from web.operator_ui.job_manager import JobManager
-                JobManager.stop("test_job2")
-                data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
-                self.assertEqual(data["status"], "stopped")
-                self.assertIsNotNone(data["ended_at"])
+            with patch("web.operator_ui.job_manager.platform.system", return_value="Windows"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = subprocess.CompletedProcess(
+                        args=["taskkill"], returncode=0
+                    )
+                    from web.operator_ui.job_manager import JobManager
+                    JobManager.stop("test_job2")
+                    data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+                    self.assertEqual(data["status"], "stopped")
+                    self.assertIsNotNone(data["ended_at"])
 
     def test_stop_failure_does_not_write_stopped_status(self) -> None:
         job_root = Path(tempfile.mkdtemp())
@@ -150,19 +183,63 @@ class JobManagerStopTests(unittest.TestCase):
             encoding="utf-8",
         )
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = subprocess.CompletedProcess(
-                    args=["taskkill"],
-                    returncode=128,
-                    stderr="Access is denied.",
-                )
-                from web.operator_ui.job_manager import JobManager, JobManagerError
-                with self.assertRaises(JobManagerError):
-                    JobManager.stop("test_job3")
-                data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
-                self.assertEqual(data["status"], "stop_failed")
-                self.assertEqual(data["stop_returncode"], 128)
-                self.assertIn("Access is denied", data["stop_error"])
+            with patch("web.operator_ui.job_manager.platform.system", return_value="Windows"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = subprocess.CompletedProcess(
+                        args=["taskkill"],
+                        returncode=128,
+                        stderr="Access is denied.",
+                    )
+                    from web.operator_ui.job_manager import JobManager, JobManagerError
+                    with self.assertRaises(JobManagerError):
+                        JobManager.stop("test_job3")
+                    data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+                    self.assertEqual(data["status"], "stop_failed")
+                    self.assertEqual(data["stop_returncode"], 128)
+                    self.assertIn("Access is denied", data["stop_error"])
+
+    def test_stop_non_windows_signals_process_group_when_available(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "test_job_posix"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({
+                "job_id": "test_job_posix",
+                "status": "running",
+                "pid": 12348,
+                "process_group": "own_session",
+            }),
+            encoding="utf-8",
+        )
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            with patch("web.operator_ui.job_manager.platform.system", return_value="Linux"):
+                with patch("web.operator_ui.job_manager.os.getpgid", return_value=54321, create=True) as mock_getpgid:
+                    with patch("web.operator_ui.job_manager.os.killpg", create=True) as mock_killpg:
+                        from web.operator_ui.job_manager import JobManager, signal
+
+                        JobManager.stop("test_job_posix")
+
+        mock_getpgid.assert_called_once_with(12348)
+        mock_killpg.assert_called_once_with(54321, signal.SIGTERM)
+        data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "stopped")
+
+    def test_stop_non_windows_falls_back_to_pid_signal(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "test_job_posix_pid"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "test_job_posix_pid", "status": "running", "pid": 12349}),
+            encoding="utf-8",
+        )
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            with patch("web.operator_ui.job_manager.platform.system", return_value="Linux"):
+                with patch("web.operator_ui.job_manager.os.kill") as mock_kill:
+                    from web.operator_ui.job_manager import JobManager, signal
+
+                    JobManager.stop("test_job_posix_pid")
+
+        mock_kill.assert_called_once_with(12349, signal.SIGTERM)
 
     def test_stop_without_pid_does_not_write_stopped_status(self) -> None:
         job_root = Path(tempfile.mkdtemp())

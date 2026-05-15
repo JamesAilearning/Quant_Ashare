@@ -6,23 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-_ALLOWED_ROOTS = (Path("output").resolve(), Path("output").resolve() / "operator_ui")
-
-
-def _is_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
+from web.operator_ui._path_guard import guard_output_path, output_path
 
 
 def _guard_path(path: Path) -> None:
-    resolved = path.resolve()
-    for root in _ALLOWED_ROOTS:
-        if _is_under(resolved, root):
-            return
-    raise ValueError(f"Path {path} is outside allowed roots {_ALLOWED_ROOTS}")
+    guard_output_path(path)
 
 
 def read_pipeline_report(run_dir: Path) -> dict[str, Any]:
@@ -53,7 +41,7 @@ def read_fold_reports(run_dir: Path) -> list[dict[str, Any]]:
 def read_job_from_catalog(run_dir: Path) -> dict[str, Any]:
     """Read a single job-like entry from the run catalog index."""
     _guard_path(run_dir)
-    index_path = Path("output/runs/_index.jsonl")
+    index_path = output_path("runs", "_index.jsonl")
     if not index_path.is_file():
         return {}
     with open(index_path, encoding="utf-8") as f:
@@ -69,7 +57,7 @@ def read_job_from_catalog(run_dir: Path) -> dict[str, Any]:
 
 def read_all_catalog_entries() -> list[dict[str, Any]]:
     """Read all entries from the run catalog JSONL."""
-    index_path = Path("output/runs/_index.jsonl")
+    index_path = output_path("runs", "_index.jsonl")
     if not index_path.is_file():
         return []
     entries = []
