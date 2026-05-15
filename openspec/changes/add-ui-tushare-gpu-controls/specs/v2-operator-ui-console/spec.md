@@ -25,6 +25,9 @@ Tushare provider config under the UI job directory and launches
 `job_runner.py` with `shell=False`. The UI SHALL NOT store Tushare tokens in
 job config files and SHALL rely on the existing `TUSHARE_TOKEN` environment
 variable boundary.
+The UI job and result roots SHALL be anchored to the repository root so runner
+subprocesses and artifact readers do not depend on the Streamlit process
+current working directory.
 
 #### Scenario: Tushare token is present
 
@@ -32,6 +35,8 @@ variable boundary.
 - **THEN** `JobManager.start()` creates a `tushare_provider` job
 - **AND** `job_runner.py` launches `scripts/ingest_tushare_qlib_provider.py`
 - **AND** the generated config does not contain a token field
+- **AND** the generated job directory and result paths are under the repository
+  `output/operator_ui/` tree
 
 #### Scenario: Tushare token is absent
 

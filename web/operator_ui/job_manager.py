@@ -15,9 +15,9 @@ from typing import Any, Literal
 
 import yaml
 
-JOB_ROOT = Path("output/operator_ui/jobs")
-RESULT_ROOT = Path("output/operator_ui/results")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+JOB_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "jobs"
+RESULT_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "results"
 JobMode = Literal["pipeline", "walk_forward", "tushare_provider"]
 
 

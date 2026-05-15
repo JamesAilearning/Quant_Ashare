@@ -20,6 +20,14 @@ if str(_PROJECT_ROOT) not in _sys.path:
 class JobManagerStartTests(unittest.TestCase):
     """subprocess.Popen is called with shell=False and correct args."""
 
+    def test_default_job_and_result_roots_are_repo_anchored(self) -> None:
+        from web.operator_ui.job_manager import JOB_ROOT, PROJECT_ROOT, RESULT_ROOT
+
+        self.assertTrue(JOB_ROOT.is_absolute())
+        self.assertTrue(RESULT_ROOT.is_absolute())
+        self.assertEqual(JOB_ROOT, PROJECT_ROOT / "output" / "operator_ui" / "jobs")
+        self.assertEqual(RESULT_ROOT, PROJECT_ROOT / "output" / "operator_ui" / "results")
+
     def test_start_pipeline_uses_correct_args(self) -> None:
         config = {"provider_uri": "/data", "instruments": "csi300"}
         with patch("web.operator_ui.job_manager.JOB_ROOT", Path(tempfile.mkdtemp())):
