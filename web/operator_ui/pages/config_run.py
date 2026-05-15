@@ -69,7 +69,7 @@ with st.form("run_form"):
         model_type = st.selectbox("model_type", ["LGBModel", "XGBModel", "CatBoostModel"])
         compute_device = st.radio("compute_device", ["cpu", "gpu"], horizontal=True)
         num_boost_round = st.number_input("num_boost_round", value=1000, min_value=1)
-        early_stopping_rounds = st.number_input("early_stopping_rounds", value=50, min_value=0)
+        early_stopping_rounds = st.number_input("early_stopping_rounds", value=50, min_value=1)
         learning_rate = st.number_input("learning_rate", value=0.005, format="%.4f")
         benchmark_code = st.text_input("benchmark_code", value="SH000300")
         topk = st.number_input("topk", value=50, min_value=1)

@@ -4,23 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_ALLOWED_ROOTS = (Path("output").resolve(), Path("output").resolve() / "operator_ui")
-
-
-def _is_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
+from web.operator_ui._path_guard import guard_output_path
 
 
 def _guard_path(path: Path) -> None:
-    resolved = path.resolve()
-    for root in _ALLOWED_ROOTS:
-        if _is_under(resolved, root):
-            return
-    raise ValueError(f"Path {path} is outside allowed roots {_ALLOWED_ROOTS}")
+    guard_output_path(path)
 
 
 def discover_charts(run_dir: Path) -> dict[str, Path]:

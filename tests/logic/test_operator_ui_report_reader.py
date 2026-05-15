@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys as _sys
 import tempfile
 import unittest
@@ -15,13 +16,27 @@ if str(_PROJECT_ROOT) not in _sys.path:
 
 
 class ReportReaderPathGuardTests(unittest.TestCase):
+    def test_allowed_roots_do_not_depend_on_current_working_directory(self) -> None:
+        from web.operator_ui._path_guard import allowed_output_roots
+
+        original_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as other:
+            with patch("web.operator_ui._path_guard.PROJECT_ROOT", Path(repo)):
+                try:
+                    os.chdir(other)
+                    roots = allowed_output_roots()
+                finally:
+                    os.chdir(original_cwd)
+
+        self.assertEqual(roots[0], (Path(repo) / "output").resolve())
+
     def test_allows_path_under_output(self) -> None:
-        with patch("web.operator_ui.report_reader._ALLOWED_ROOTS", (Path("output").resolve(),)):
+        with patch("web.operator_ui._path_guard._ALLOWED_ROOTS", (Path("output").resolve(),)):
             from web.operator_ui.report_reader import _guard_path
             _guard_path(Path("output/runs/test_run"))
 
     def test_rejects_path_outside_roots(self) -> None:
-        with patch("web.operator_ui.report_reader._ALLOWED_ROOTS", (Path("output").resolve(),)):
+        with patch("web.operator_ui._path_guard._ALLOWED_ROOTS", (Path("output").resolve(),)):
             import tempfile
 
             from web.operator_ui.report_reader import _guard_path
@@ -35,7 +50,7 @@ class ReportReaderReadTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         report = {"risk_analysis": {"excess_return_with_cost": {"annualized_return": 0.12}}}
         tmp.joinpath("pipeline_report.json").write_text(json.dumps(report), encoding="utf-8")
-        with patch("web.operator_ui.report_reader._ALLOWED_ROOTS", (tmp,)):
+        with patch("web.operator_ui._path_guard._ALLOWED_ROOTS", (tmp,)):
             from web.operator_ui.report_reader import read_pipeline_report
             result = read_pipeline_report(tmp)
             self.assertIn("risk_analysis", result)
@@ -44,7 +59,7 @@ class ReportReaderReadTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         report = {"risk_analysis": {}}
         tmp.joinpath("pipeline_report.json").write_text(json.dumps(report), encoding="utf-8")
-        with patch("web.operator_ui.report_reader._ALLOWED_ROOTS", (tmp,)):
+        with patch("web.operator_ui._path_guard._ALLOWED_ROOTS", (tmp,)):
             from web.operator_ui.report_reader import read_pipeline_report
             result = read_pipeline_report(tmp)
             risk = result.get("risk_analysis", {}).get("excess_return_with_cost", {})
@@ -55,7 +70,7 @@ class ReportReaderReadTests(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         tmp.joinpath("fold_00_report.json").write_text('{"fold_index": 0}', encoding="utf-8")
         tmp.joinpath("fold_01_report.json").write_text('{"fold_index": 1}', encoding="utf-8")
-        with patch("web.operator_ui.report_reader._ALLOWED_ROOTS", (tmp,)):
+        with patch("web.operator_ui._path_guard._ALLOWED_ROOTS", (tmp,)):
             from web.operator_ui.report_reader import read_fold_reports
             folds = read_fold_reports(tmp)
             self.assertEqual(len(folds), 2)

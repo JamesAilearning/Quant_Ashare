@@ -19,6 +19,14 @@ class ConfigRunPageSourceTests(unittest.TestCase):
             "provider_uri must stay outside st.form so Run disabled state rerenders.",
         )
 
+    def test_early_stopping_ui_rejects_zero(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'st.number_input("early_stopping_rounds", value=50, min_value=1)',
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

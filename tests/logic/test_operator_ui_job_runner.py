@@ -37,7 +37,10 @@ class JobRunnerDispatchTests(unittest.TestCase):
                 main([str(job_dir), "tushare_provider"])
 
             cmd = mock_run.call_args[0][0]
+            kwargs = mock_run.call_args.kwargs
             self.assertIn("scripts/ingest_tushare_qlib_provider.py", cmd)
+            self.assertFalse(kwargs["shell"])
+            self.assertIn(str(Path(__file__).resolve().parents[2]), kwargs["env"]["PYTHONPATH"])
             data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
             self.assertEqual(data["status"], "success")
             self.assertEqual(data["run_dir"], str(output_dir))

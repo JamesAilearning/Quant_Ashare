@@ -38,3 +38,36 @@ variable boundary.
 - **WHEN** the UI process has no `TUSHARE_TOKEN`
 - **THEN** the Tushare ingest button is disabled or the action fails before starting a job
 - **AND** the UI tells the operator to set `TUSHARE_TOKEN` in the environment
+
+## MODIFIED Requirements
+
+### Requirement: Operator UI SHALL support stopping a running job
+
+The operator UI SHALL support stopping a job launched through the UI.
+Stopping SHALL terminate the runner process and, when the platform and launch
+mode support it, its child CLI process group. Windows SHALL use
+`taskkill /F /T /PID <runner_pid>` with `shell=False`. Non-Windows platforms
+SHALL use POSIX signals rather than Windows-only commands. The UI SHALL NOT
+mark a job as `stopped` unless the termination action succeeds.
+
+#### Scenario: a running job is stopped on Windows
+
+- **WHEN** the operator clicks Stop for a job with status "running"
+- **AND** the UI is running on Windows
+- **THEN** `taskkill /F /T /PID <runner_pid>` is executed with `shell=False`
+- **AND** `job.json` is updated to `status: "stopped"` with `ended_at`
+
+#### Scenario: a running job is stopped on non-Windows
+
+- **WHEN** the operator clicks Stop for a job with status "running"
+- **AND** the UI is running on a non-Windows platform
+- **THEN** a POSIX termination signal is sent to the runner process or its
+  process group
+- **AND** `job.json` is updated to `status: "stopped"` with `ended_at`
+
+#### Scenario: stopping a running job fails
+
+- **WHEN** the platform termination command or signal fails
+- **THEN** `JobManager.stop()` raises a typed job manager error
+- **AND** `job.json` is updated to `status: "stop_failed"`
+- **AND** the job is not represented as successfully stopped

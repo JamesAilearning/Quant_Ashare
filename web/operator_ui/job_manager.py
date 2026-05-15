@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
+import signal
 import subprocess
 import sys
 import uuid
@@ -14,6 +17,7 @@ import yaml
 
 JOB_ROOT = Path("output/operator_ui/jobs")
 RESULT_ROOT = Path("output/operator_ui/results")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 JobMode = Literal["pipeline", "walk_forward", "tushare_provider"]
 
 
@@ -46,6 +50,19 @@ def _read_job_json(job_dir: Path) -> dict[str, Any]:
     if path.is_file():
         return json.loads(path.read_text(encoding="utf-8"))
     return {}
+
+
+def _runner_env() -> dict[str, str]:
+    """Return an environment that can import repo-local ``src.*`` modules."""
+    env = os.environ.copy()
+    project_root = str(PROJECT_ROOT)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        project_root
+        if not existing
+        else project_root + os.pathsep + existing
+    )
+    return env
 
 
 class JobManager:
@@ -92,17 +109,29 @@ class JobManager:
             sys.executable, "-m", "web.operator_ui.job_runner",
             str(job_dir), mode,
         ]
-        proc = subprocess.Popen(
-            runner_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=Path.cwd(),
-            shell=False,
-        )
+        runner_stdout_path = job_dir / "runner_stdout.log"
+        runner_stderr_path = job_dir / "runner_stderr.log"
+        popen_kwargs: dict[str, Any] = {
+            "stdout": None,
+            "stderr": None,
+            "cwd": PROJECT_ROOT,
+            "shell": False,
+            "env": _runner_env(),
+        }
+        if platform.system() != "Windows":
+            popen_kwargs["start_new_session"] = True
+        with open(runner_stdout_path, "w", encoding="utf-8") as runner_stdout:
+            with open(runner_stderr_path, "w", encoding="utf-8") as runner_stderr:
+                popen_kwargs["stdout"] = runner_stdout
+                popen_kwargs["stderr"] = runner_stderr
+                proc = subprocess.Popen(runner_cmd, **popen_kwargs)
 
         _write_job_json(job_dir, {
             "status": "running",
             "pid": proc.pid,
+            "runner_stdout_path": str(runner_stdout_path),
+            "runner_stderr_path": str(runner_stderr_path),
+            "process_group": "own_session" if platform.system() != "Windows" else None,
         })
 
         return job_id
@@ -121,31 +150,49 @@ class JobManager:
             })
             raise JobManagerError(message)
 
-        result = subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid)],
-            shell=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            if detail:
+        if platform.system() == "Windows":
+            result = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                shell=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                if detail:
+                    message = (
+                        f"Failed to stop job {job_id!r} with pid {pid}: "
+                        f"taskkill exited {result.returncode}: {detail}"
+                    )
+                else:
+                    message = (
+                        f"Failed to stop job {job_id!r} with pid {pid}: "
+                        f"taskkill exited {result.returncode}."
+                    )
+                _write_job_json(job_dir, {
+                    "status": "stop_failed",
+                    "stop_error": message,
+                    "stop_returncode": result.returncode,
+                    "stop_failed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                raise JobManagerError(message)
+        else:
+            try:
+                if data.get("process_group") == "own_session":
+                    os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+                else:
+                    os.kill(int(pid), signal.SIGTERM)
+            except OSError as exc:
                 message = (
                     f"Failed to stop job {job_id!r} with pid {pid}: "
-                    f"taskkill exited {result.returncode}: {detail}"
+                    f"{type(exc).__name__}: {exc}"
                 )
-            else:
-                message = (
-                    f"Failed to stop job {job_id!r} with pid {pid}: "
-                    f"taskkill exited {result.returncode}."
-                )
-            _write_job_json(job_dir, {
-                "status": "stop_failed",
-                "stop_error": message,
-                "stop_returncode": result.returncode,
-                "stop_failed_at": datetime.now(timezone.utc).isoformat(),
-            })
-            raise JobManagerError(message)
+                _write_job_json(job_dir, {
+                    "status": "stop_failed",
+                    "stop_error": message,
+                    "stop_failed_at": datetime.now(timezone.utc).isoformat(),
+                })
+                raise JobManagerError(message) from exc
 
         _write_job_json(job_dir, {
             "status": "stopped",
