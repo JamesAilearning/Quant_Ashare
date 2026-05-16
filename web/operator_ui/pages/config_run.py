@@ -19,6 +19,11 @@ from web.operator_ui.config_forms import (
     validate_provider_uri,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
+from web.operator_ui.training_guards import (
+    inspect_provider_metadata,
+    provider_metadata_summary,
+    validate_pipeline_training_inputs,
+)
 
 
 def _parse_instruments(raw: str) -> str | list[str]:
@@ -42,41 +47,73 @@ provider_uri_valid = bool(provider_uri and provider_uri.strip())
 if not provider_uri_valid:
     st.warning("provider_uri is required to run.")
 
-with st.form("run_form"):
-    col1, col2 = st.columns(2)
+col1, col2 = st.columns(2)
 
-    with col1:
-        instruments = st.text_input("instruments", value="csi300")
-        feature_handler = st.text_input("feature_handler", value="Alpha158")
+with col1:
+    instruments = st.text_input("instruments", value="csi300")
+    feature_handler = st.text_input("feature_handler", value="Alpha158")
 
-        if mode == "pipeline":
-            train_start = st.text_input("train_start", value="2022-01-01")
-            train_end = st.text_input("train_end", value="2024-12-31")
-            valid_start = st.text_input("valid_start", value="2025-01-01")
-            valid_end = st.text_input("valid_end", value="2025-06-30")
-            test_start = st.text_input("test_start", value="2025-07-01")
-            test_end = st.text_input("test_end", value="2025-12-31")
-        else:
-            overall_start = st.text_input("overall_start", value="2022-01-01")
-            overall_end = st.text_input("overall_end", value="2026-02-28")
-            train_months = st.number_input("train_months", value=24, min_value=1)
-            valid_months = st.number_input("valid_months", value=3, min_value=1)
-            test_months = st.number_input("test_months", value=3, min_value=1)
-            step_months = st.number_input("step_months", value=3, min_value=1)
-            ensemble_window = st.number_input("ensemble_window", value=1, min_value=1)
+    if mode == "pipeline":
+        train_start = st.text_input("train_start", value="2022-01-01")
+        train_end = st.text_input("train_end", value="2024-12-31")
+        valid_start = st.text_input("valid_start", value="2025-01-01")
+        valid_end = st.text_input("valid_end", value="2025-06-30")
+        test_start = st.text_input("test_start", value="2025-07-01")
+        test_end = st.text_input("test_end", value="2025-12-31")
+    else:
+        overall_start = st.text_input("overall_start", value="2022-01-01")
+        overall_end = st.text_input("overall_end", value="2026-02-28")
+        train_months = st.number_input("train_months", value=24, min_value=1)
+        valid_months = st.number_input("valid_months", value=3, min_value=1)
+        test_months = st.number_input("test_months", value=3, min_value=1)
+        step_months = st.number_input("step_months", value=3, min_value=1)
+        ensemble_window = st.number_input("ensemble_window", value=1, min_value=1)
 
-    with col2:
-        model_type = st.selectbox("model_type", ["LGBModel", "XGBModel", "CatBoostModel"])
-        compute_device = st.radio("compute_device", ["cpu", "gpu"], horizontal=True)
-        num_boost_round = st.number_input("num_boost_round", value=1000, min_value=1)
-        early_stopping_rounds = st.number_input("early_stopping_rounds", value=50, min_value=1)
-        learning_rate = st.number_input("learning_rate", value=0.005, format="%.4f")
-        benchmark_code = st.text_input("benchmark_code", value="SH000300")
-        topk = st.number_input("topk", value=50, min_value=1)
-        n_drop = st.number_input("n_drop", value=5, min_value=0)
-        signal_to_execution_lag = st.number_input("signal_to_execution_lag", value=1, min_value=0)
+with col2:
+    model_type = st.selectbox("model_type", ["LGBModel", "XGBModel", "CatBoostModel"])
+    compute_device = st.radio("compute_device", ["cpu", "gpu"], horizontal=True)
+    num_boost_round = st.number_input("num_boost_round", value=1000, min_value=1)
+    early_stopping_rounds = st.number_input("early_stopping_rounds", value=50, min_value=1)
+    learning_rate = st.number_input("learning_rate", value=0.005, format="%.4f")
+    benchmark_code = st.text_input("benchmark_code", value="SH000300")
+    topk = st.number_input("topk", value=50, min_value=1)
+    n_drop = st.number_input("n_drop", value=5, min_value=0)
+    signal_to_execution_lag = st.number_input("signal_to_execution_lag", value=1, min_value=0)
 
-    submitted = st.form_submit_button("Run", disabled=not provider_uri_valid)
+guard_errors: list[str] = []
+guard_warnings: list[str] = []
+provider_metadata = inspect_provider_metadata(provider_uri)
+
+if provider_uri_valid:
+    st.subheader("Provider Preview")
+    st.json(provider_metadata_summary(provider_metadata))
+
+if mode == "pipeline":
+    guard = validate_pipeline_training_inputs(
+        provider_uri=provider_uri,
+        instruments=instruments,
+        train_start=train_start,
+        train_end=train_end,
+        valid_start=valid_start,
+        valid_end=valid_end,
+        test_start=test_start,
+        test_end=test_end,
+    )
+    guard_errors.extend(guard.errors)
+    guard_warnings.extend(guard.warnings)
+else:
+    guard_errors.extend(provider_metadata.errors)
+    guard_warnings.extend(provider_metadata.warnings)
+
+if compute_device == "gpu" and model_type != "LGBModel":
+    guard_errors.append("GPU training is currently supported only for LGBModel.")
+
+for error in guard_errors:
+    st.error(error)
+for warning in guard_warnings:
+    st.warning(warning)
+
+submitted = st.button("Run", disabled=(not provider_uri_valid or bool(guard_errors)))
 
 if submitted:
     try:

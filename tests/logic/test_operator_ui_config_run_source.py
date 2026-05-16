@@ -7,16 +7,13 @@ from pathlib import Path
 
 
 class ConfigRunPageSourceTests(unittest.TestCase):
-    def test_provider_uri_input_is_outside_run_form(self) -> None:
+    def test_training_controls_are_not_inside_streamlit_form(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
-        provider_input_pos = source.index('"provider_uri *"')
-        run_form_pos = source.index('with st.form("run_form")')
-
-        self.assertLess(
-            provider_input_pos,
-            run_form_pos,
-            "provider_uri must stay outside st.form so Run disabled state rerenders.",
+        self.assertNotIn(
+            'with st.form("run_form")',
+            source,
+            "training controls must stay outside st.form so validation and Run disabled state rerender.",
         )
 
     def test_early_stopping_ui_rejects_zero(self) -> None:
@@ -26,6 +23,12 @@ class ConfigRunPageSourceTests(unittest.TestCase):
             'st.number_input("early_stopping_rounds", value=50, min_value=1)',
             source,
         )
+
+    def test_run_button_is_disabled_by_training_guard_errors(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("validate_pipeline_training_inputs(", source)
+        self.assertIn("disabled=(not provider_uri_valid or bool(guard_errors))", source)
 
 
 if __name__ == "__main__":
