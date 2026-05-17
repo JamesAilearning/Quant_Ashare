@@ -20,6 +20,11 @@ from web.operator_ui.config_forms import (
     validate_provider_uri,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
+from web.operator_ui.provider_catalog import (
+    ProviderCatalogError,
+    delete_provider_catalog_entry,
+    list_provider_catalog_entries,
+)
 from web.operator_ui.training_guards import (
     inspect_provider_metadata,
     provider_metadata_summary,
@@ -46,9 +51,33 @@ st.title("Config & Run")
 
 mode = st.selectbox("Mode", ["pipeline", "walk_forward"])
 
+provider_entries = list_provider_catalog_entries()
+if "training_provider_uri" not in st.session_state:
+    st.session_state["training_provider_uri"] = ""
+
+selected_entry = None
+if provider_entries:
+    provider_options = ["Manual provider_uri"] + [entry.label for entry in provider_entries]
+    provider_by_label = {entry.label: entry for entry in provider_entries}
+    selected_provider = st.selectbox("Saved data source", provider_options)
+    if selected_provider != "Manual provider_uri":
+        selected_entry = provider_by_label[selected_provider]
+        st.session_state["training_provider_uri"] = selected_entry.provider_uri
+        st.caption(f"Using saved qlib provider: {selected_entry.provider_uri}")
+        if st.button("Delete selected saved data source", type="secondary"):
+            try:
+                delete_provider_catalog_entry(selected_entry.job_id)
+            except ProviderCatalogError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["training_provider_uri"] = ""
+                st.success(f"Deleted saved data source: {selected_entry.job_id}")
+                st.rerun()
+else:
+    st.caption("No saved UI-managed qlib providers found yet. Pull Tushare data or enter provider_uri manually.")
+
 provider_uri = st.text_input(
     "provider_uri *",
-    value="",
     placeholder="D:/qlib_data/my_cn_data",
     key="training_provider_uri",
 )
@@ -233,7 +262,7 @@ else:
         label = str(progress.get("label") or status)
         detail = str(progress.get("detail") or "")
 
-        col1, col2, col3 = st.columns([3, 1, 1])
+        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
         with col1:
             st.write(f"{j.get('job_id', '?')} - {j.get('mode', '?')}")
             st.progress(percent, text=f"{percent}% - {label}")
@@ -250,6 +279,21 @@ else:
                         st.error(str(exc))
                     else:
                         st.rerun()
+        with col4:
+            job_id = str(j.get("job_id") or "")
+            if st.button(
+                "Delete",
+                key=f"delete_{job_id}",
+                disabled=status == "running" or not job_id,
+                help="Stop running jobs before deleting their job record and logs.",
+            ):
+                try:
+                    JobManager.delete(job_id)
+                except JobManagerError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"Deleted job: {job_id}")
+                    st.rerun()
 
     if auto_refresh and running_jobs and _has_streamlit_context():
         time.sleep(5)
