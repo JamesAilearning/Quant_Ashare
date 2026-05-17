@@ -80,3 +80,44 @@ job record and logs.
 - **WHEN** a UI job status is `running`
 - **THEN** the delete action is disabled or refused
 - **AND** the running job directory remains present
+
+---
+
+### Requirement: Operator UI SHALL display Tushare provider job artifacts
+
+The operator UI SHALL display validation and manifest artifacts for completed
+UI-managed Tushare provider jobs. The display SHALL be read-only and SHALL NOT
+initialize qlib, call Tushare, or compute official training/backtest metrics.
+The UI SHALL clearly distinguish provider data jobs from pipeline and
+walk-forward training jobs.
+
+#### Scenario: operator selects a completed Tushare provider job
+
+- **WHEN** a completed UI job has mode `tushare_provider`
+- **AND** its `run_dir` contains a generated `qlib_provider`
+- **THEN** Results displays provider coverage, health, row count, instrument count, and calendar count
+- **AND** Results displays validation and manifest JSON artifacts when present
+- **AND** Results states that provider jobs do not produce training charts or official backtest reports
+
+---
+
+### Requirement: Operator UI SHALL constrain training dates to provider trading days
+
+When the selected provider exposes `calendars/day.txt`, the operator UI SHALL
+render training date inputs as trading-day selectors populated only from that
+calendar. The UI SHALL preserve the existing text-entry fallback only when a
+provider calendar is unavailable. The UI SHALL continue to run the existing
+provider coverage and tail-date guards against the final selected dates.
+
+#### Scenario: provider calendar is available
+
+- **WHEN** the selected `provider_uri` contains `calendars/day.txt`
+- **THEN** pipeline train/valid/test dates are selectable only from provider trading days
+- **AND** walk-forward overall start/end dates are selectable only from provider trading days
+- **AND** the selected values are passed to the same pipeline/walk-forward config keys as before
+
+#### Scenario: provider calendar is unavailable
+
+- **WHEN** the selected `provider_uri` does not expose a readable provider calendar
+- **THEN** the UI keeps text-entry date inputs
+- **AND** Provider Preview includes the existing calendar warning

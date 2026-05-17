@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import date
 
 import streamlit as st
 
@@ -26,6 +27,8 @@ from web.operator_ui.provider_catalog import (
     list_provider_catalog_entries,
 )
 from web.operator_ui.training_guards import (
+    FORWARD_RETURN_BUFFER_DAYS,
+    ProviderMetadata,
     inspect_provider_metadata,
     provider_metadata_summary,
     validate_pipeline_training_inputs,
@@ -45,6 +48,86 @@ def _has_streamlit_context() -> bool:
     except ImportError:
         return False
     return get_script_run_ctx() is not None
+
+
+def _trading_day_options(calendar_dates: tuple[date, ...]) -> list[str]:
+    return [calendar_date.isoformat() for calendar_date in calendar_dates]
+
+
+def _option_index(options: list[str], default: str) -> int:
+    if default in options:
+        return options.index(default)
+    return 0
+
+
+def _select_trading_day(
+    label: str,
+    *,
+    default: str,
+    metadata: ProviderMetadata,
+) -> str:
+    if not metadata.calendar_dates:
+        return st.text_input(label, value=default)
+    options = _trading_day_options(metadata.calendar_dates)
+    return st.selectbox(
+        label,
+        options=options,
+        index=_option_index(options, default),
+        help="Only trading days from the selected provider calendar are selectable.",
+    )
+
+
+def _safe_pipeline_last_index(calendar_dates: tuple[date, ...]) -> int:
+    if len(calendar_dates) > FORWARD_RETURN_BUFFER_DAYS + 1:
+        return len(calendar_dates) - FORWARD_RETURN_BUFFER_DAYS - 1
+    return max(0, len(calendar_dates) - 2)
+
+
+def _six_increasing_indices(last_index: int) -> list[int]:
+    if last_index < 5:
+        return [min(index, max(0, last_index)) for index in range(6)]
+    indices = [
+        0,
+        round(last_index * 0.55),
+        round(last_index * 0.65),
+        round(last_index * 0.78),
+        round(last_index * 0.86),
+        last_index,
+    ]
+    for index in range(1, len(indices) - 1):
+        indices[index] = max(indices[index], indices[index - 1] + 1)
+    for index in range(len(indices) - 2, -1, -1):
+        indices[index] = min(indices[index], indices[index + 1] - 1)
+    return indices
+
+
+def _pipeline_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
+    calendar_dates = metadata.calendar_dates
+    if len(calendar_dates) < 6:
+        return {
+            "train_start": "2022-01-01",
+            "train_end": "2024-12-31",
+            "valid_start": "2025-01-01",
+            "valid_end": "2025-06-30",
+            "test_start": "2025-07-01",
+            "test_end": "2025-12-31",
+        }
+    indices = _six_increasing_indices(_safe_pipeline_last_index(calendar_dates))
+    keys = ("train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end")
+    return {
+        key: calendar_dates[index].isoformat()
+        for key, index in zip(keys, indices, strict=True)
+    }
+
+
+def _walk_forward_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
+    calendar_dates = metadata.calendar_dates
+    if len(calendar_dates) >= 2:
+        return {
+            "overall_start": calendar_dates[0].isoformat(),
+            "overall_end": calendar_dates[-1].isoformat(),
+        }
+    return {"overall_start": "2022-01-01", "overall_end": "2026-02-28"}
 
 
 st.title("Config & Run")
@@ -85,6 +168,10 @@ provider_uri_valid = bool(provider_uri and provider_uri.strip())
 if not provider_uri_valid:
     st.warning("provider_uri is required to run.")
 
+provider_metadata = inspect_provider_metadata(provider_uri)
+pipeline_date_defaults = _pipeline_date_defaults(provider_metadata)
+walk_forward_date_defaults = _walk_forward_date_defaults(provider_metadata)
+
 col1, col2 = st.columns(2)
 
 with col1:
@@ -92,15 +179,47 @@ with col1:
     feature_handler = st.text_input("feature_handler", value="Alpha158")
 
     if mode == "pipeline":
-        train_start = st.text_input("train_start", value="2022-01-01")
-        train_end = st.text_input("train_end", value="2024-12-31")
-        valid_start = st.text_input("valid_start", value="2025-01-01")
-        valid_end = st.text_input("valid_end", value="2025-06-30")
-        test_start = st.text_input("test_start", value="2025-07-01")
-        test_end = st.text_input("test_end", value="2025-12-31")
+        train_start = _select_trading_day(
+            "train_start",
+            default=pipeline_date_defaults["train_start"],
+            metadata=provider_metadata,
+        )
+        train_end = _select_trading_day(
+            "train_end",
+            default=pipeline_date_defaults["train_end"],
+            metadata=provider_metadata,
+        )
+        valid_start = _select_trading_day(
+            "valid_start",
+            default=pipeline_date_defaults["valid_start"],
+            metadata=provider_metadata,
+        )
+        valid_end = _select_trading_day(
+            "valid_end",
+            default=pipeline_date_defaults["valid_end"],
+            metadata=provider_metadata,
+        )
+        test_start = _select_trading_day(
+            "test_start",
+            default=pipeline_date_defaults["test_start"],
+            metadata=provider_metadata,
+        )
+        test_end = _select_trading_day(
+            "test_end",
+            default=pipeline_date_defaults["test_end"],
+            metadata=provider_metadata,
+        )
     else:
-        overall_start = st.text_input("overall_start", value="2022-01-01")
-        overall_end = st.text_input("overall_end", value="2026-02-28")
+        overall_start = _select_trading_day(
+            "overall_start",
+            default=walk_forward_date_defaults["overall_start"],
+            metadata=provider_metadata,
+        )
+        overall_end = _select_trading_day(
+            "overall_end",
+            default=walk_forward_date_defaults["overall_end"],
+            metadata=provider_metadata,
+        )
         train_months = st.number_input("train_months", value=24, min_value=1)
         valid_months = st.number_input("valid_months", value=3, min_value=1)
         test_months = st.number_input("test_months", value=3, min_value=1)
@@ -120,7 +239,6 @@ with col2:
 
 guard_errors: list[str] = []
 guard_warnings: list[str] = []
-provider_metadata = inspect_provider_metadata(provider_uri)
 
 if provider_uri_valid:
     st.subheader("Provider Preview")
