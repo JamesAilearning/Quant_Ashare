@@ -66,6 +66,15 @@ feature_fraction: 0.8
 bagging_fraction: 0.8
 bagging_freq: 5
 
+# Cross-fold model ensemble — the default since the ensemble window
+# sweep (research/ensemble_window_sweep.md) showed N=3 has the best
+# point estimates across mean IC, IR, and annualized return, with
+# per-fold IC improvement vs N=1 significant under a paired sign test
+# (7/7 folds, p ≈ 0.008). Cost is +66% wall-clock vs N=1, which is
+# modest for batch training. Override per experiment via the
+# config_walk_n*.yaml sweep configs.
+ensemble_window: 3
+
 # Backtest
 benchmark_code: "SH000300"
 init_cash: 100000000

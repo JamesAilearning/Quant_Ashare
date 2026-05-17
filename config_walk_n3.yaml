@@ -1,10 +1,14 @@
 # Walk-forward N=3 cross-fold ensemble experiment.
 #
-# Inherits everything from config_walk.yaml; only the two fields below
-# differ from the baseline.  See config_walk.yaml for full documentation
-# of every parameter.
+# Inherits everything from config_walk.yaml; the four overrides below
+# pin the experiment parameters explicitly so the config is
+# self-contained (matches the config_walk_n{1,2,5}.yaml pattern).
 
 extends: config_walk.yaml
 
 ensemble_window: 3
 output_dir: "output/walk_forward_industry_n3"
+
+industry_artifact_path: "output/taxonomy/sw_l2.csv"
+industry_manifest_path: "output/taxonomy/sw_l2.json"
+industry_taxonomy_id: "tushare_sw_l2"
