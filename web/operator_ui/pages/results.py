@@ -2,14 +2,27 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
+from web.operator_ui._path_guard import guard_output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.report_reader import read_pipeline_report, read_walk_forward_report
+from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
+
+
+def _read_json_artifact(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    guard_output_path(path)
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 st.title("Results")
 
@@ -21,9 +34,40 @@ run_options = {j["run_dir"]: f"{j.get('job_id', '?')} ({j.get('mode', '?')})" fo
 if not run_options:
     st.warning("No completed runs with artifacts found. Run a pipeline or walk-forward first.")
     st.stop()
+    run_options = {str(Path("output").resolve()): "bare import placeholder"}
 
 selected = st.selectbox("Run", options=list(run_options.keys()), format_func=lambda k: run_options[k])
+if selected is None:
+    selected = next(iter(run_options))
 run_dir = Path(selected)
+selected_job = next((j for j in completed if j.get("run_dir") == selected), {})
+
+if selected_job.get("mode") == "tushare_provider":
+    st.header("Tushare Provider Data")
+    metadata = inspect_provider_metadata(str(run_dir))
+    st.json(provider_metadata_summary(metadata))
+
+    for error in metadata.errors:
+        st.error(error)
+    for warning in metadata.warnings:
+        st.warning(warning)
+
+    validation = _read_json_artifact(metadata.validation_path)
+    if validation:
+        st.subheader("Validation")
+        st.json(validation)
+
+    manifest = _read_json_artifact(metadata.manifest_path)
+    if manifest:
+        st.subheader("Manifest")
+        st.json(manifest)
+
+    st.info(
+        "Tushare provider jobs create qlib data bundles. They do not produce "
+        "pipeline reports, walk-forward reports, or training charts. Use this "
+        "qlib_provider path as provider_uri for a training run."
+    )
+    st.stop()
 
 # Detect report type
 pipeline_report = read_pipeline_report(run_dir)
