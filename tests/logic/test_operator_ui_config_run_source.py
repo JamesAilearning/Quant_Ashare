@@ -44,6 +44,15 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("JobManager.delete(job_id)", source)
         self.assertIn("disabled=status == \"running\" or not job_id", source)
 
+    def test_training_dates_use_provider_trading_day_selectors(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("metadata.calendar_dates", source)
+        self.assertIn("st.selectbox(", source)
+        self.assertIn('"Only trading days from the selected provider calendar are selectable."', source)
+        self.assertIn("_pipeline_date_defaults(provider_metadata)", source)
+        self.assertIn("_walk_forward_date_defaults(provider_metadata)", source)
+
 
 if __name__ == "__main__":
     unittest.main()
