@@ -258,5 +258,49 @@ class JobManagerStopTests(unittest.TestCase):
             self.assertIn("no pid", data["stop_error"])
 
 
+class JobManagerDeleteTests(unittest.TestCase):
+    def test_delete_removes_non_running_job_dir(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "finished_job"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "finished_job", "status": "success", "pid": 12345}),
+            encoding="utf-8",
+        )
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager
+
+            JobManager.delete("finished_job")
+
+        self.assertFalse(job_dir.exists())
+
+    def test_delete_rejects_running_job(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "running_job"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "running_job", "status": "running", "pid": 12345}),
+            encoding="utf-8",
+        )
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager, JobManagerError
+
+            with self.assertRaises(JobManagerError):
+                JobManager.delete("running_job")
+
+        self.assertTrue(job_dir.is_dir())
+
+    def test_delete_rejects_path_traversal_job_id(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager, JobManagerError
+
+            with self.assertRaises(JobManagerError):
+                JobManager.delete("..\\outside")
+
+
 if __name__ == "__main__":
     unittest.main()

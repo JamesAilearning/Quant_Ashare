@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import signal
 import subprocess
 import sys
@@ -71,6 +72,21 @@ def _runner_env() -> dict[str, str]:
         else project_root + os.pathsep + existing
     )
     return env
+
+
+def _resolve_child_dir(root: Path, child_name: str) -> Path:
+    name = str(child_name or "").strip()
+    if not name or Path(name).name != name:
+        raise JobManagerError(f"Invalid UI job id: {child_name!r}.")
+    resolved_root = root.resolve()
+    resolved_path = (root / name).resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise JobManagerError(
+            f"Refusing to delete path outside UI job root: {resolved_path}"
+        ) from exc
+    return resolved_path
 
 
 class JobManager:
@@ -206,6 +222,18 @@ class JobManager:
             "status": "stopped",
             "ended_at": datetime.now(timezone.utc).isoformat(),
         })
+
+    @staticmethod
+    def delete(job_id: str) -> None:
+        job_dir = _resolve_child_dir(JOB_ROOT, job_id)
+        if not job_dir.is_dir():
+            raise JobManagerError(f"Cannot delete job {job_id!r}: job directory not found.")
+        data = _read_job_json(job_dir)
+        if data.get("status") == "running":
+            raise JobManagerError(
+                f"Cannot delete running job {job_id!r}; stop it before deleting."
+            )
+        shutil.rmtree(job_dir)
 
     @staticmethod
     def status(job_id: str) -> dict[str, Any]:
