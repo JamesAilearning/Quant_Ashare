@@ -7,17 +7,15 @@ Same walk-forward configuration (csi300, Alpha158, LGB, 24m train / 3m valid / 3
 | Metric                   | N=1 (baseline) | N=2 | N=3 | N=5 |
 |--------------------------|----------------|-----|-----|-----|
 | mean_ic_1d               | 0.0133 | 0.0195 | 0.0220 | 0.0218 |
-| mean_ic_5d               | — | 0.0297 | — | 0.0315 |
+| std_ic_1d                | 0.0132 | 0.0167 | 0.0135 | 0.0128 |
+| mean_ic_5d               | 0.0179 | 0.0297 | 0.0319 | 0.0315 |
 | mean_annualized_return   | 0.0349 | 0.0678 | 0.0770 | 0.0729 |
 | mean_information_ratio   | −0.0827 | 0.4479 | 0.5788 | 0.5323 |
 | worst_drawdown           | −0.0863 | −0.0881 | −0.0970 | −0.0792 |
-| std_ic_1d                | — | 0.0167 | — | 0.0128 |
-| mean_ic_1d_ci_low        | — | 0.0065 | — | 0.0119 |
-| mean_ic_1d_ci_high       | — | 0.0293 | — | 0.0298 |
-| mean_ir_ci_low           | — | −0.8915 | — | −0.7371 |
-| mean_ir_ci_high          | — | 1.6740 | — | 1.8228 |
-
-(CI columns only available for N=2 and N=5 — the bootstrap CI feature was added after N=1 and N=3 baseline runs. N=1 and N=3 CIs show as `[0.0000, 0.0000]` which is the fallback for old reports without the field.)
+| mean_ic_1d_ci_low        | 0.0033 | 0.0065 | 0.0114 | 0.0119 |
+| mean_ic_1d_ci_high       | 0.0212 | 0.0293 | 0.0296 | 0.0298 |
+| mean_ir_ci_low           | −1.2993 | −0.8915 | −0.7909 | −0.7371 |
+| mean_ir_ci_high          | 1.1227 | 1.6740 | 1.8943 | 1.8228 |
 
 ## Per-fold IC (1-day forward)
 

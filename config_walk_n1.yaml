@@ -1,0 +1,15 @@
+# Walk-forward N=1 baseline — sweep companion to config_walk_n3.yaml.
+#
+# Explicitly pins ensemble_window: 1 to override the new config_walk.yaml
+# default of 3. Includes the three industry_* fields explicitly so the
+# experiment is self-contained and doesn't depend on whether the base
+# has them uncommented.
+
+extends: config_walk.yaml
+
+ensemble_window: 1
+output_dir: "output/walk_forward_industry"
+
+industry_artifact_path: "output/taxonomy/sw_l2.csv"
+industry_manifest_path: "output/taxonomy/sw_l2.json"
+industry_taxonomy_id: "tushare_sw_l2"
