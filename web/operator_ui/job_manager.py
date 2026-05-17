@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 import yaml
 
+from web.operator_ui.progress import build_job_progress
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 JOB_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "jobs"
 RESULT_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "results"
@@ -50,6 +52,12 @@ def _read_job_json(job_dir: Path) -> dict[str, Any]:
     if path.is_file():
         return json.loads(path.read_text(encoding="utf-8"))
     return {}
+
+
+def _with_progress(job_dir: Path, data: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(data)
+    enriched["progress"] = build_job_progress(job_dir, enriched)
+    return enriched
 
 
 def _runner_env() -> dict[str, str]:
@@ -208,7 +216,7 @@ class JobManager:
         # Trust job_runner's own status writes — do not signal the
         # process tree (os.kill is unsafe on Windows).  job_runner
         # writes success/failed + ended_at when the CLI exits.
-        return data
+        return _with_progress(job_dir, data)
 
     @staticmethod
     def list_jobs() -> list[dict[str, Any]]:
@@ -219,5 +227,5 @@ class JobManager:
             if job_dir.is_dir():
                 data = _read_job_json(job_dir)
                 if data:
-                    results.append(data)
+                    results.append(_with_progress(job_dir, data))
         return results
