@@ -1,0 +1,9 @@
+# Walk-forward N=5 cross-fold ensemble experiment (sweep companion to N=3).
+#
+# Inherits everything from config_walk.yaml; only overrides
+# ensemble_window and output_dir.
+
+extends: config_walk.yaml
+
+ensemble_window: 5
+output_dir: "output/walk_forward_industry_n5"
