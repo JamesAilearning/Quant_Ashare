@@ -1,0 +1,368 @@
+"""UI-only guards for training launch inputs.
+
+These helpers read provider metadata and files from disk. They deliberately do
+not initialize qlib, call Tushare, or compute official metrics.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+FORWARD_RETURN_BUFFER_DAYS = 20
+
+
+@dataclass(frozen=True)
+class ProviderMetadata:
+    provider_uri: str
+    provider_path: Path | None
+    metadata_root: Path | None
+    validation_path: Path | None
+    manifest_path: Path | None
+    coverage_start_date: date | None
+    coverage_end_date: date | None
+    calendar_dates: tuple[date, ...]
+    instrument_universes: tuple[str, ...]
+    health: str | None
+    row_count: int | None
+    instrument_count: int | None
+    calendar_count: int | None
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TrainingGuardResult:
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+    provider_metadata: ProviderMetadata
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
+    raw_uri = str(provider_uri or "").strip()
+    if not raw_uri:
+        return ProviderMetadata(
+            provider_uri=raw_uri,
+            provider_path=None,
+            metadata_root=None,
+            validation_path=None,
+            manifest_path=None,
+            coverage_start_date=None,
+            coverage_end_date=None,
+            calendar_dates=(),
+            instrument_universes=(),
+            health=None,
+            row_count=None,
+            instrument_count=None,
+            calendar_count=None,
+            errors=(),
+            warnings=("provider_uri is empty.",),
+        )
+
+    provider_path = Path(raw_uri)
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not provider_path.exists():
+        errors.append(f"provider_uri does not exist: {provider_path}")
+        return ProviderMetadata(
+            provider_uri=raw_uri,
+            provider_path=provider_path,
+            metadata_root=None,
+            validation_path=None,
+            manifest_path=None,
+            coverage_start_date=None,
+            coverage_end_date=None,
+            calendar_dates=(),
+            instrument_universes=(),
+            health=None,
+            row_count=None,
+            instrument_count=None,
+            calendar_count=None,
+            errors=tuple(errors),
+            warnings=tuple(warnings),
+        )
+    if not provider_path.is_dir():
+        errors.append(f"provider_uri must be a directory: {provider_path}")
+
+    metadata_root = _metadata_root(provider_path)
+    validation_path = _first_existing(
+        metadata_root / "validation.json",
+        provider_path / "validation.json",
+    )
+    manifest_path = _first_existing(
+        metadata_root / "manifest.json",
+        provider_path / "manifest.json",
+    )
+    validation = _read_json(validation_path)
+    manifest = _read_json(manifest_path)
+    source = validation or manifest
+
+    coverage_start = _parse_optional_date(source.get("coverage_start_date"))
+    coverage_end = _parse_optional_date(source.get("coverage_end_date"))
+    calendar_dates = _read_calendar_dates(provider_path / "calendars" / "day.txt")
+    if calendar_dates:
+        coverage_start = coverage_start or calendar_dates[0]
+        coverage_end = coverage_end or calendar_dates[-1]
+
+    instrument_universes = _read_instrument_universes(provider_path)
+    if not validation and not manifest:
+        warnings.append(
+            "No adjacent validation.json or manifest.json found; provider coverage preview is limited."
+        )
+    if not calendar_dates:
+        warnings.append(
+            "No calendars/day.txt found; provider tail-date guard is unavailable."
+        )
+    if not instrument_universes:
+        warnings.append(
+            "No instruments/*.txt files found; named-universe guard is unavailable."
+        )
+
+    health = _optional_str(source.get("health") or source.get("validation_health"))
+    return ProviderMetadata(
+        provider_uri=raw_uri,
+        provider_path=provider_path,
+        metadata_root=metadata_root,
+        validation_path=validation_path,
+        manifest_path=manifest_path,
+        coverage_start_date=coverage_start,
+        coverage_end_date=coverage_end,
+        calendar_dates=calendar_dates,
+        instrument_universes=instrument_universes,
+        health=health,
+        row_count=_optional_int(source.get("row_count")),
+        instrument_count=_optional_int(source.get("instrument_count")),
+        calendar_count=_optional_int(source.get("calendar_count")) or len(calendar_dates) or None,
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+    )
+
+
+def validate_pipeline_training_inputs(
+    *,
+    provider_uri: str,
+    instruments: str,
+    train_start: str,
+    train_end: str,
+    valid_start: str,
+    valid_end: str,
+    test_start: str,
+    test_end: str,
+) -> TrainingGuardResult:
+    metadata = inspect_provider_metadata(provider_uri)
+    errors: list[str] = list(metadata.errors)
+    warnings: list[str] = list(metadata.warnings)
+
+    parsed = {
+        "train_start": _parse_required_date("train_start", train_start, errors),
+        "train_end": _parse_required_date("train_end", train_end, errors),
+        "valid_start": _parse_required_date("valid_start", valid_start, errors),
+        "valid_end": _parse_required_date("valid_end", valid_end, errors),
+        "test_start": _parse_required_date("test_start", test_start, errors),
+        "test_end": _parse_required_date("test_end", test_end, errors),
+    }
+
+    if all(parsed.values()):
+        if not parsed["train_start"] < parsed["train_end"]:
+            errors.append("train_start must be strictly before train_end.")
+        if not parsed["train_end"] < parsed["valid_start"]:
+            errors.append(
+                "valid_start must be strictly after train_end "
+                f"(train_end={train_end}, valid_start={valid_start})."
+            )
+        if not parsed["valid_start"] < parsed["valid_end"]:
+            errors.append("valid_start must be strictly before valid_end.")
+        if not parsed["valid_end"] < parsed["test_start"]:
+            errors.append(
+                "test_start must be strictly after valid_end "
+                f"(valid_end={valid_end}, test_start={test_start})."
+            )
+        if not parsed["test_start"] < parsed["test_end"]:
+            errors.append("test_start must be strictly before test_end.")
+
+        _validate_provider_coverage(parsed, metadata, errors, warnings)
+
+    _validate_instruments(instruments, metadata, errors)
+
+    return TrainingGuardResult(
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+        provider_metadata=metadata,
+    )
+
+
+def provider_metadata_summary(metadata: ProviderMetadata) -> dict[str, str]:
+    return {
+        "coverage": _format_coverage(metadata),
+        "health": metadata.health or "unavailable",
+        "calendar_count": str(metadata.calendar_count or "unavailable"),
+        "instrument_count": str(metadata.instrument_count or "unavailable"),
+        "row_count": str(metadata.row_count or "unavailable"),
+        "universes": ", ".join(metadata.instrument_universes) or "unavailable",
+    }
+
+
+def _validate_provider_coverage(
+    parsed: dict[str, date | None],
+    metadata: ProviderMetadata,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    coverage_start = metadata.coverage_start_date
+    coverage_end = metadata.coverage_end_date
+    train_start = parsed["train_start"]
+    test_end = parsed["test_end"]
+    if coverage_start and train_start and train_start < coverage_start:
+        errors.append(
+            f"train_start ({train_start}) is before provider coverage_start "
+            f"({coverage_start})."
+        )
+    if coverage_end:
+        for name, value in parsed.items():
+            if value and value > coverage_end:
+                errors.append(
+                    f"{name} ({value}) is after provider coverage_end ({coverage_end})."
+                )
+
+    calendar = metadata.calendar_dates
+    if not calendar or test_end is None:
+        return
+    calendar_end = calendar[-1]
+    if test_end >= calendar_end:
+        safe_end = calendar[-2] if len(calendar) >= 2 else None
+        suggestion = f" Use test_end <= {safe_end} or pull more provider data." if safe_end else ""
+        errors.append(
+            f"test_end ({test_end}) must be before provider final trading day "
+            f"({calendar_end}) to avoid qlib backtest tail-calendar overflow.{suggestion}"
+        )
+        return
+
+    future_days = sum(1 for day in calendar if day > test_end)
+    if future_days < FORWARD_RETURN_BUFFER_DAYS:
+        warnings.append(
+            f"Only {future_days} provider trading day(s) remain after test_end "
+            f"({test_end}); 20-day forward-return signal summaries near the tail "
+            "may be incomplete. Pull more data or move test_end earlier for full "
+            "tail coverage."
+        )
+
+
+def _validate_instruments(
+    instruments: str,
+    metadata: ProviderMetadata,
+    errors: list[str],
+) -> None:
+    universes = set(metadata.instrument_universes)
+    if not universes:
+        return
+    instrument_name = str(instruments or "").strip()
+    if not instrument_name:
+        errors.append("instruments must be non-empty.")
+        return
+    if "," in instrument_name:
+        return
+    if instrument_name not in universes:
+        errors.append(
+            f"instruments={instrument_name!r} is not available in provider "
+            f"instruments/*.txt. Available universes: {sorted(universes)}."
+        )
+
+
+def _metadata_root(provider_path: Path) -> Path:
+    if provider_path.name == "qlib_provider":
+        return provider_path.parent
+    return provider_path
+
+
+def _first_existing(*paths: Path) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
+def _read_json(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(loaded, dict):
+        return loaded
+    return {}
+
+
+def _read_calendar_dates(path: Path) -> tuple[date, ...]:
+    if not path.is_file():
+        return ()
+    dates: list[date] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            value = line.strip()
+            if value:
+                parsed = _parse_optional_date(value)
+                if parsed is not None:
+                    dates.append(parsed)
+    except OSError:
+        return ()
+    return tuple(sorted(set(dates)))
+
+
+def _read_instrument_universes(provider_path: Path) -> tuple[str, ...]:
+    instruments_dir = provider_path / "instruments"
+    if not instruments_dir.is_dir():
+        return ()
+    try:
+        return tuple(sorted(path.stem for path in instruments_dir.glob("*.txt")))
+    except OSError:
+        return ()
+
+
+def _parse_required_date(name: str, raw: str, errors: list[str]) -> date | None:
+    parsed = _parse_optional_date(raw)
+    if parsed is None:
+        errors.append(f"{name} must be an ISO date in YYYY-MM-DD format; got {raw!r}.")
+    return parsed
+
+
+def _parse_optional_date(raw: Any) -> date | None:
+    text = str(raw or "").strip()
+    if len(text) != 10:
+        return None
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.isoformat() != text:
+        return None
+    return parsed
+
+
+def _optional_str(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _optional_int(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_coverage(metadata: ProviderMetadata) -> str:
+    if metadata.coverage_start_date and metadata.coverage_end_date:
+        return f"{metadata.coverage_start_date} to {metadata.coverage_end_date}"
+    return "unavailable"
