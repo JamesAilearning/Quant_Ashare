@@ -14,7 +14,7 @@ large mean effects driven by 1-2 outlier folds.
 
 3. **通信服务 is the most persistent drag under N=3**: mean total_effect −0.08% across 8 folds, but sign_consistency is only 0.50 (exactly half the folds positive, half negative). This is a true noisy sector — the model has no directional conviction here, and it consistently underperforms relative to the benchmark. Under N=1, it was even worse (−0.86% mean, scT=0.25). Ensemble narrowed the underperformance but still couldn't make it consistently positive — a prime candidate for a sector tilt or exclusion in future strategy configurations.
 
-4. **Fold 5 (2025Q3) losses are concentrated in equipment and telecom sectors**: The fold's worst selection-effect sectors were **通信设备** (−0.71% selection, offset by +0.82% allocation) and **通用设备** (−0.42% selection, −0.36% allocation). Both are in the broader industrial/equipment group. On the allocation side, **通信服务** (−0.44%) and **能源金属** (−0.43%) were the largest negative contributors. The losses are not broad-based — they cluster in specific industrial and telecom sub-sectors, which aligns with the known Q3-2025 regime of compressed cross-section dispersion: the model's stock-ranking signal had no predictive power in these specific sectors during that quarter.
+4. **Fold 5 (2025Q3) losses are concentrated in equipment, metals, and telecom sectors**: The fold's worst selection-effect sectors were **通信设备** (−0.71% selection, offset by +0.82% allocation) and **工业金属** (−0.42% selection, −0.36% allocation). Both are in the broader industrial/commodity group. On the allocation side, **通信服务** (−0.44%) and **能源金属** (−0.43%) were the largest negative contributors; **工业金属** appears in both tables (−0.36% allocation). The losses are not broad-based — they cluster in specific industrial, metal, and telecom sub-sectors, which aligns with the known Q3-2025 regime of compressed cross-section dispersion: the model's stock-ranking signal had no predictive power in these specific sectors during that quarter.
 
 5. **Only 3 sectors have perfect sign consistency (scT=1.0) under N=3 across all 8 folds**: **软件开发** (+0.31%), **股份制银行Ⅱ** (+0.25%), and **医疗器械** (+0.06%). These three sectors are the strongest evidence of genuine, persistent sector-level alpha — every fold, regardless of regime, produced positive total attribution. Under N=1, only **软件开发** and **股份制银行Ⅱ** had scT=1.0; **半导体** joined them under N=3 (scT=0.62→0.75, not quite 1.0 but close). The ensemble made borderline sectors more stable but didn't create new "always-positive" sectors — which is exactly the expected behavior: ensemble reduces noise but doesn't invent alpha.
 
@@ -78,23 +78,23 @@ Fold 5 was the negative-IC outlier in every N. Below is its per-sector Brinson d
 
 | Sector | Selection | Allocation | Total | Port. Wt |
 |---|---|---|---|---|
-| 通信设备 | −0.0071 | +0.0082 | −0.0028 | 0.0542 |
-| 通用设备 | −0.0042 | −0.0036 | −0.0049 | 0.0086 |
-| 工程机械 | −0.0022 | −0.0004 | −0.0021 | 0.0266 |
-| 汽车零部件 | −0.0020 | +0.0004 | −0.0025 | 0.0290 |
-| 游戏Ⅱ | −0.0016 | −0.0010 | −0.0010 | 0.0115 |
+| 通信设备 | −0.0071 | +0.0082 | −0.0028 | 0.0309 |
+| 工业金属 | −0.0042 | −0.0036 | −0.0049 | 0.0074 |
+| 工程机械 | −0.0022 | −0.0004 | −0.0021 | 0.0100 |
+| 汽车零部件 | −0.0020 | +0.0004 | −0.0025 | 0.0237 |
+| 游戏Ⅱ | −0.0016 | −0.0010 | −0.0010 | 0.0000 |
 
 ### Worst 5 allocation-effect sectors — where the portfolio was over/underweight
 
 | Sector | Selection | Allocation | Total | Port. Wt |
 |---|---|---|---|---|
-| 通信服务 | −0.0004 | −0.0044 | −0.0054 | 0.0205 |
-| 能源金属 | +0.0015 | −0.0043 | −0.0039 | 0.0060 |
-| 消费电子 | +0.0073 | −0.0042 | +0.0009 | 0.0365 |
-| 航空港口 | −0.0004 | −0.0039 | −0.0049 | 0.0056 |
-| 通用设备 | −0.0042 | −0.0036 | −0.0049 | 0.0086 |
+| 通信服务 | −0.0004 | −0.0044 | −0.0054 | 0.0359 |
+| 能源金属 | +0.0015 | −0.0043 | −0.0039 | 0.0031 |
+| 消费电子 | +0.0073 | −0.0042 | +0.0009 | 0.0185 |
+| 航运港口 | −0.0004 | −0.0039 | −0.0049 | 0.0572 |
+| 工业金属 | −0.0042 | −0.0036 | −0.0049 | 0.0074 |
 
-The losses cluster in industrial/equipment (**通信设备**, **通用设备**, **工程机械**, **汽车零部件**) and telecom/energy (**通信服务**, **能源金属**). This is consistent with the known Q3-2025 regime of compressed cross-section dispersion: the model's stock-ranking signal had no predictive power in these specific sectors during that quarter, producing both negative selection (wrong stock picks) and negative allocation (wrong sector weight).
+The losses cluster in equipment / metals (**通信设备**, **工业金属**, **工程机械**, **汽车零部件**) and telecom / energy (**通信服务**, **能源金属**). This is consistent with the known Q3-2025 regime of compressed cross-section dispersion: the model's stock-ranking signal had no predictive power in these specific sectors during that quarter, producing both negative selection (wrong stock picks) and negative allocation (wrong sector weight).
 
 ## Ensemble effect: which sectors became more / less consistent under N=3?
 
@@ -104,14 +104,16 @@ Sign-consistency delta = scT(N=3) − scT(N=1). Positive = ensemble made the sec
 
 | Sector | scT N=1 | scT N=3 | Δ |
 |---|---|---|---|
-| 半导体 | 0.6250 | 0.7500 | +0.1250 |
-| 医疗器械 | 0.7500 | 1.0000 | +0.2500 |
-| 通信服务 | 0.2500 | 0.5000 | +0.2500 |
-| 软件开发 | 0.7500 | 1.0000 | +0.2500 |
-| 股份制银行Ⅱ | 1.0000 | 1.0000 | 0.0000 |
-| 影视院线 | 0.6250 | 0.8750 | +0.2500 |
-| 电力 | 0.7500 | 0.7500 | 0.0000 |
-| 城商行Ⅱ | 0.5000 | 0.6250 | +0.1250 |
+| 电力 | 0.2500 | 0.7500 | +0.5000 |
+| 光学光电子 | 0.3750 | 0.6250 | +0.2500 |
+| 农产品加工 | 0.5000 | 0.7500 | +0.2500 |
+| 家电零部件Ⅱ | 0.3750 | 0.6250 | +0.2500 |
+| 油服工程 | 0.5000 | 0.7500 | +0.2500 |
+| 生物制品 | 0.5000 | 0.7500 | +0.2500 |
+| 证券Ⅱ | 0.6250 | 0.8750 | +0.2500 |
+| 通信设备 | 0.5000 | 0.7500 | +0.2500 |
+| 医疗器械 | 0.8750 | 1.0000 | +0.1250 |
+| 股份制银行Ⅱ | 0.8750 | 1.0000 | +0.1250 |
 
 ### Bottom 10 — sectors that became less consistent under N=3
 
@@ -119,16 +121,18 @@ Sign-consistency delta = scT(N=3) − scT(N=1). Positive = ensemble made the sec
 |---|---|---|---|
 | 化学原料 | 0.8750 | 0.5000 | −0.3750 |
 | 白酒Ⅱ | 0.6250 | 0.3750 | −0.2500 |
+| 工业金属 | 0.6250 | 0.3750 | −0.2500 |
+| 广告营销 | 0.7500 | 0.5000 | −0.2500 |
 | 养殖业 | 0.6250 | 0.3750 | −0.2500 |
-| 通用设备 | 0.6250 | 0.3750 | −0.2500 |
-| 家居用品 | 0.6250 | 0.3750 | −0.2500 |
-| 汽车服务 | 0.7500 | 0.5000 | −0.2500 |
-| 电信运营Ⅱ | 0.6250 | 0.3750 | −0.2500 |
-| 专用设备 | 0.6250 | 0.5000 | −0.1250 |
+| 其他电源设备Ⅱ | 0.6250 | 0.3750 | −0.2500 |
+| 元件 | 0.6250 | 0.3750 | −0.2500 |
+| 饮料乳品 | 0.6250 | 0.5000 | −0.1250 |
+| 通信服务 | 0.6250 | 0.5000 | −0.1250 |
+| 轨交设备Ⅱ | 0.6250 | 0.5000 | −0.1250 |
 
 (Full 80-sector delta table available in `output/sector_consistency_ensemble_effect.md`.)
 
-The sectors that improved under N=3 are predominantly the larger, liquid sectors (**半导体**, **医疗器械**, **软件开发**, **股份制银行Ⅱ**) — the ones where cross-model averaging provides the most benefit by smoothing single-fold parameter noise. The sectors that worsened (**化学原料**, **白酒Ⅱ**, **养殖业**, **通用设备**) are smaller and more cyclical, where the "warm ensemble" assumption (cross-fold RobustZScoreNorm is stable enough for prior model replay) appears to break down — the prior models' predictions at slightly different normalisation scales may introduce noise rather than reduce it.
+The sectors that improved under N=3 are concentrated in two groups: **manufacturing** (光学光电子, 家电零部件Ⅱ, 通信设备, 油服工程) and **finance** (证券Ⅱ, 农产品加工). The standout is **电力** (+0.5000), the largest ensemble improvement in the dataset — N=1 had only 2/8 folds with correct sign, N=3 recovered to 6/8. The sectors that worsened (**化学原料**, **白酒Ⅱ**, **工业金属**, **养殖业**) are predominantly commodities and cyclical cyclicals where the warm ensemble assumption (cross-fold RobustZScoreNorm is stable enough for prior model replay) appears to break down. Notably, **白酒Ⅱ** — one of the benchmark's largest sector weights — loses sign consistency under N=3 (Δ=−0.250, from 5/8 to 3/8), suggesting that for high-concentration consumer sectors, the ensemble replay of prior models at slightly different normalisation scales may introduce noise rather than reduce it.
 
 ## Raw data
 
