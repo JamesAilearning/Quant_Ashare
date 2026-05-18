@@ -154,6 +154,15 @@ class JobManagerStopTests(unittest.TestCase):
                     self.assertIn("/t", str(args).lower())
                     self.assertIn("12345", str(args))
 
+    def test_stop_rejects_path_traversal_job_id(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager, JobManagerError
+
+            with self.assertRaises(JobManagerError):
+                JobManager.stop("..\\outside")
+
     def test_stop_writes_stopped_status(self) -> None:
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "test_job2"
@@ -215,9 +224,10 @@ class JobManagerStopTests(unittest.TestCase):
             with patch("web.operator_ui.job_manager.platform.system", return_value="Linux"):
                 with patch("web.operator_ui.job_manager.os.getpgid", return_value=54321, create=True) as mock_getpgid:
                     with patch("web.operator_ui.job_manager.os.killpg", create=True) as mock_killpg:
-                        from web.operator_ui.job_manager import JobManager, signal
+                        with patch("web.operator_ui.job_manager._wait_for_pid_exit", return_value=True):
+                            from web.operator_ui.job_manager import JobManager, signal
 
-                        JobManager.stop("test_job_posix")
+                            JobManager.stop("test_job_posix")
 
         mock_getpgid.assert_called_once_with(12348)
         mock_killpg.assert_called_once_with(54321, signal.SIGTERM)
@@ -235,9 +245,10 @@ class JobManagerStopTests(unittest.TestCase):
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
             with patch("web.operator_ui.job_manager.platform.system", return_value="Linux"):
                 with patch("web.operator_ui.job_manager.os.kill") as mock_kill:
-                    from web.operator_ui.job_manager import JobManager, signal
+                    with patch("web.operator_ui.job_manager._wait_for_pid_exit", return_value=True):
+                        from web.operator_ui.job_manager import JobManager, signal
 
-                    JobManager.stop("test_job_posix_pid")
+                        JobManager.stop("test_job_posix_pid")
 
         mock_kill.assert_called_once_with(12349, signal.SIGTERM)
 
@@ -300,6 +311,17 @@ class JobManagerDeleteTests(unittest.TestCase):
 
             with self.assertRaises(JobManagerError):
                 JobManager.delete("..\\outside")
+
+
+class JobManagerStatusTests(unittest.TestCase):
+    def test_status_rejects_path_traversal_job_id(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager, JobManagerError
+
+            with self.assertRaises(JobManagerError):
+                JobManager.status("..\\outside")
 
 
 if __name__ == "__main__":

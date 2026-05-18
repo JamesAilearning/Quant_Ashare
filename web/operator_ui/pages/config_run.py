@@ -312,9 +312,12 @@ if submitted:
         })
         known_keys = WALK_FORWARD_KEYS
 
-    validate_config_keys(config, known_keys)
-
-    job_id = JobManager.start(config, mode)
+    try:
+        validate_config_keys(config, known_keys)
+        job_id = JobManager.start(config, mode)
+    except (ValueError, JobManagerError) as exc:
+        st.error(str(exc))
+        st.stop()
     st.success(f"Job started: {job_id}")
     st.info(f"Watch output/operator_ui/jobs/{job_id}/stdout.log for logs and progress.")
 
@@ -355,8 +358,12 @@ if pull_tushare:
         "region": "cn",
         "freq": "day",
     }
-    validate_config_keys(tushare_config, TUSHARE_PROVIDER_KEYS)
-    job_id = JobManager.start(tushare_config, "tushare_provider")
+    try:
+        validate_config_keys(tushare_config, TUSHARE_PROVIDER_KEYS)
+        job_id = JobManager.start(tushare_config, "tushare_provider")
+    except (ValueError, JobManagerError) as exc:
+        st.error(str(exc))
+        st.stop()
     st.success(f"Tushare ingest job started: {job_id}")
     st.info(f"After success, use output/operator_ui/results/{job_id}/qlib_provider as provider_uri.")
 

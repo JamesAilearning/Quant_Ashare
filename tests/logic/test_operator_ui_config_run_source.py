@@ -53,6 +53,12 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("_pipeline_date_defaults(provider_metadata)", source)
         self.assertIn("_walk_forward_date_defaults(provider_metadata)", source)
 
+    def test_config_validation_errors_are_displayed_not_raised_raw(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("except (ValueError, JobManagerError) as exc:", source)
+        self.assertIn("st.error(str(exc))", source)
+
 
 if __name__ == "__main__":
     unittest.main()
