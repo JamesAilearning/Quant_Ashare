@@ -66,7 +66,7 @@ def _runner_env() -> dict[str, str]:
 
 def _resolve_child_dir(root: Path, child_name: str) -> Path:
     name = str(child_name or "").strip()
-    if not name or Path(name).name != name:
+    if not name or "/" in name or "\\" in name or Path(name).name != name:
         raise JobManagerError(f"Invalid UI job id: {child_name!r}.")
     resolved_root = root.resolve()
     resolved_path = (root / name).resolve()
@@ -165,6 +165,10 @@ class JobManager:
     @staticmethod
     def stop(job_id: str) -> None:
         job_dir = _resolve_child_dir(JOB_ROOT, job_id)
+        if not job_dir.is_dir():
+            raise JobManagerError(
+                f"Cannot stop job {job_id!r}: job directory not found."
+            )
         data = _read_job_json(job_dir)
         pid = data.get("pid")
         if not pid:
@@ -241,6 +245,8 @@ class JobManager:
     @staticmethod
     def status(job_id: str) -> dict[str, Any]:
         job_dir = _resolve_child_dir(JOB_ROOT, job_id)
+        if not job_dir.is_dir():
+            return {"job_id": job_id, "status": "unknown"}
         data = _read_job_json(job_dir)
         if not data:
             return {"job_id": job_id, "status": "unknown"}

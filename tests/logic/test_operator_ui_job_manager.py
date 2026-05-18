@@ -160,8 +160,21 @@ class JobManagerStopTests(unittest.TestCase):
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
             from web.operator_ui.job_manager import JobManager, JobManagerError
 
+            for bad_job_id in ("..\\outside", "foo\\bar", "foo/bar"):
+                with self.subTest(bad_job_id=bad_job_id):
+                    with self.assertRaises(JobManagerError):
+                        JobManager.stop(bad_job_id)
+
+    def test_stop_missing_job_does_not_create_job_dir(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            from web.operator_ui.job_manager import JobManager, JobManagerError
+
             with self.assertRaises(JobManagerError):
-                JobManager.stop("..\\outside")
+                JobManager.stop("missing_job")
+
+        self.assertFalse((job_root / "missing_job").exists())
 
     def test_stop_writes_stopped_status(self) -> None:
         job_root = Path(tempfile.mkdtemp())
@@ -309,8 +322,10 @@ class JobManagerDeleteTests(unittest.TestCase):
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
             from web.operator_ui.job_manager import JobManager, JobManagerError
 
-            with self.assertRaises(JobManagerError):
-                JobManager.delete("..\\outside")
+            for bad_job_id in ("..\\outside", "foo\\bar", "foo/bar"):
+                with self.subTest(bad_job_id=bad_job_id):
+                    with self.assertRaises(JobManagerError):
+                        JobManager.delete(bad_job_id)
 
 
 class JobManagerStatusTests(unittest.TestCase):
@@ -320,8 +335,10 @@ class JobManagerStatusTests(unittest.TestCase):
         with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
             from web.operator_ui.job_manager import JobManager, JobManagerError
 
-            with self.assertRaises(JobManagerError):
-                JobManager.status("..\\outside")
+            for bad_job_id in ("..\\outside", "foo\\bar", "foo/bar"):
+                with self.subTest(bad_job_id=bad_job_id):
+                    with self.assertRaises(JobManagerError):
+                        JobManager.status(bad_job_id)
 
 
 if __name__ == "__main__":
