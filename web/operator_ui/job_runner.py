@@ -7,15 +7,22 @@ This decouples job lifecycle from Streamlit's rerun cycle.
 
 from __future__ import annotations
 
-import json
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from web.operator_ui.job_io import (
+    write_job_json as _write_job_json,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ACTIVE_JOB_DIR: Path | None = None
 
 
 def _runner_env() -> dict[str, str]:
@@ -48,19 +55,36 @@ def _find_run_dir(output_dir: Path) -> str | None:
     return None
 
 
-def _read_job_json(job_dir: Path) -> dict[str, Any]:
-    path = job_dir / "job.json"
-    if path.is_file():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {}
+def _handle_stop_signal(signum: int, _frame: Any) -> None:
+    if _ACTIVE_JOB_DIR is not None:
+        _write_job_json(
+            _ACTIVE_JOB_DIR,
+            {
+                "status": "stopped",
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "stop_signal": signum,
+            },
+        )
+    raise SystemExit(128 + signum)
 
 
-def _write_job_json(job_dir: Path, updates: dict[str, Any]) -> None:
-    data = _read_job_json(job_dir)
-    data.update(updates)
-    tmp = job_dir / "job.json.tmp"
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(job_dir / "job.json")
+def _install_stop_signal_handler(job_dir: Path) -> None:
+    global _ACTIVE_JOB_DIR
+    _ACTIVE_JOB_DIR = job_dir
+    signal.signal(signal.SIGTERM, _handle_stop_signal)
+
+
+def _read_output_dir(config_path: Path) -> str | None:
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    output_dir = loaded.get("output_dir")
+    if output_dir is None:
+        return None
+    return str(output_dir)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -73,6 +97,7 @@ def main(argv: list[str] | None = None) -> None:
 
     job_dir = Path(argv[0])
     mode = argv[1]  # "pipeline" or "walk_forward"
+    _install_stop_signal_handler(job_dir)
 
     config_path = job_dir / "config.yaml"
     if not config_path.is_file():
@@ -121,17 +146,10 @@ def main(argv: list[str] | None = None) -> None:
         _write_job_json(job_dir, {"status": "failed", "ended_at": ended, "returncode": result.returncode})
 
     # Try to find the run directory
-    data = _read_job_json(job_dir)
-    config_raw = config_path.read_text(encoding="utf-8")
-    output_dir = None
-    for line in config_raw.splitlines():
-        if line.strip().startswith("output_dir:"):
-            output_dir = line.split(":", 1)[1].strip().strip('"').strip("'")
-            break
+    output_dir = _read_output_dir(config_path)
     if output_dir:
         run_dir = _find_run_dir(Path(output_dir))
         if run_dir:
-            data["run_dir"] = run_dir
             _write_job_json(job_dir, {"run_dir": run_dir})
 
 

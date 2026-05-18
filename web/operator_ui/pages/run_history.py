@@ -17,7 +17,7 @@ if jobs:
         "Job ID": j.get("job_id", "?"),
         "Mode": j.get("mode", "?"),
         "Status": j.get("status", "?"),
-        "Started": j.get("started_at", "")[:19],
+        "Started": str(j.get("started_at") or "")[:19],
     } for j in jobs])
     st.dataframe(df, use_container_width=True)
 else:
@@ -31,7 +31,7 @@ if entries:
         "Run ID": e.get("run_id", "")[:40],
         "Engine": e.get("engine", ""),
         "Status": e.get("status", ""),
-        "Completed": e.get("completed_at", "")[:19],
+        "Completed": str(e.get("completed_at") or "")[:19],
     } for e in entries])
     st.dataframe(df, use_container_width=True)
 else:

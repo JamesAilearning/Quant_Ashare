@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import shutil
@@ -16,6 +15,12 @@ from typing import Any, Literal
 
 import yaml
 
+from web.operator_ui.job_io import (
+    read_job_json as _read_job_json,
+)
+from web.operator_ui.job_io import (
+    write_job_json as _write_job_json,
+)
 from web.operator_ui.progress import build_job_progress
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -40,21 +45,6 @@ def _write_config_yaml(config: dict[str, Any], path: Path) -> None:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
 
-def _write_job_json(job_dir: Path, updates: dict[str, Any]) -> None:
-    existing = _read_job_json(job_dir)
-    existing.update(updates)
-    tmp = job_dir / "job.json.tmp"
-    tmp.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(job_dir / "job.json")
-
-
-def _read_job_json(job_dir: Path) -> dict[str, Any]:
-    path = job_dir / "job.json"
-    if path.is_file():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {}
-
-
 def _with_progress(job_dir: Path, data: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(data)
     enriched["progress"] = build_job_progress(job_dir, enriched)
@@ -76,7 +66,7 @@ def _runner_env() -> dict[str, str]:
 
 def _resolve_child_dir(root: Path, child_name: str) -> Path:
     name = str(child_name or "").strip()
-    if not name or Path(name).name != name:
+    if not name or "/" in name or "\\" in name or Path(name).name != name:
         raise JobManagerError(f"Invalid UI job id: {child_name!r}.")
     resolved_root = root.resolve()
     resolved_path = (root / name).resolve()
@@ -84,9 +74,21 @@ def _resolve_child_dir(root: Path, child_name: str) -> Path:
         resolved_path.relative_to(resolved_root)
     except ValueError as exc:
         raise JobManagerError(
-            f"Refusing to delete path outside UI job root: {resolved_path}"
+            f"Refusing to access path outside UI job root: {resolved_path}"
         ) from exc
     return resolved_path
+
+
+def _wait_for_pid_exit(pid: int, *, attempts: int = 10, interval_seconds: float = 0.1) -> bool:
+    import time
+
+    for _ in range(attempts):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(interval_seconds)
+    return False
 
 
 class JobManager:
@@ -162,7 +164,11 @@ class JobManager:
 
     @staticmethod
     def stop(job_id: str) -> None:
-        job_dir = JOB_ROOT / job_id
+        job_dir = _resolve_child_dir(JOB_ROOT, job_id)
+        if not job_dir.is_dir():
+            raise JobManagerError(
+                f"Cannot stop job {job_id!r}: job directory not found."
+            )
         data = _read_job_json(job_dir)
         pid = data.get("pid")
         if not pid:
@@ -217,6 +223,7 @@ class JobManager:
                     "stop_failed_at": datetime.now(timezone.utc).isoformat(),
                 })
                 raise JobManagerError(message) from exc
+        _wait_for_pid_exit(int(pid))
 
         _write_job_json(job_dir, {
             "status": "stopped",
@@ -237,7 +244,9 @@ class JobManager:
 
     @staticmethod
     def status(job_id: str) -> dict[str, Any]:
-        job_dir = JOB_ROOT / job_id
+        job_dir = _resolve_child_dir(JOB_ROOT, job_id)
+        if not job_dir.is_dir():
+            return {"job_id": job_id, "status": "unknown"}
         data = _read_job_json(job_dir)
         if not data:
             return {"job_id": job_id, "status": "unknown"}
