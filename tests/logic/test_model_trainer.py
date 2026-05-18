@@ -362,6 +362,56 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(best_iter)
         self.assertIsNone(final_val)
 
+    def test_refresh_normalizes_xgb_flat_evals_result(self) -> None:
+        class _M:
+            model = None
+
+        evals = {
+            "train-rmse": [0.8, 0.7],
+            "valid-rmse": [0.6, 0.5],
+        }
+        ModelTrainer._refresh_framework_evals_result(_M(), "XGBModel", evals)
+        self.assertEqual(
+            evals,
+            {
+                "train": {"rmse": [0.8, 0.7]},
+                "valid": {"rmse": [0.6, 0.5]},
+            },
+        )
+
+    def test_refresh_reads_xgb_inner_evals_result(self) -> None:
+        class _Inner:
+            def evals_result(self):
+                return {"valid": {"rmse": [0.6, 0.4]}}
+
+        class _M:
+            model = _Inner()
+
+        evals: dict = {}
+        ModelTrainer._refresh_framework_evals_result(_M(), "XGBModel", evals)
+        self.assertEqual(evals, {"valid": {"rmse": [0.6, 0.4]}})
+
+    def test_refresh_reads_catboost_inner_evals_result(self) -> None:
+        class _Inner:
+            def get_evals_result(self):
+                return {
+                    "learn": {"RMSE": [0.9, 0.7]},
+                    "validation": {"RMSE": [0.8, 0.5]},
+                }
+
+        class _M:
+            model = _Inner()
+
+        evals: dict = {}
+        ModelTrainer._refresh_framework_evals_result(_M(), "CatBoostModel", evals)
+        self.assertEqual(
+            evals,
+            {
+                "learn": {"RMSE": [0.9, 0.7]},
+                "validation": {"RMSE": [0.8, 0.5]},
+            },
+        )
+
     def test_final_valid_loss_from_evals_result(self) -> None:
         class _Inner:
             best_iteration = 3
@@ -375,11 +425,38 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         # best_iter=3 → values[2] = 0.3
         self.assertAlmostEqual(final_val, 0.3)
 
+    def test_xgb_final_valid_loss_uses_zero_based_best_iteration(self) -> None:
+        class _Inner:
+            best_iteration = 2
+
+        class _M:
+            model = _Inner()
+
+        evals = {"valid": {"rmse": [0.5, 0.4, 0.3, 0.35]}}
+        best_iter, final_val = ModelTrainer._extract_training_diagnostics(
+            _M(), "XGBModel", evals,
+        )
+        self.assertEqual(best_iter, 2)
+        self.assertAlmostEqual(final_val, 0.3)
+
+    def test_catboost_final_valid_loss_uses_zero_based_best_iteration(self) -> None:
+        class _Inner:
+            def get_best_iteration(self):
+                return 3
+
+        class _M:
+            model = _Inner()
+
+        evals = {"validation": {"RMSE": [0.9, 0.7, 0.5, 0.3]}}
+        best_iter, final_val = ModelTrainer._extract_training_diagnostics(
+            _M(), "CatBoostModel", evals,
+        )
+        self.assertEqual(best_iter, 3)
+        self.assertAlmostEqual(final_val, 0.3)
+
     def test_best_iter_zero_uses_values_index_zero_not_last(self) -> None:
         """best_iter==0 (0-indexed, CatBoost) must select values[0],
-        not fall through the old guard to values[-1].  Before the
-        max(0, best_iter-1) fix, 0 < 0 failed the guard and final_val
-        silently returned the last element."""
+        not fall through to values[-1]."""
         class _Inner:
             def get_best_iteration(self):
                 return 0
@@ -390,7 +467,7 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         evals = {"valid": {"l2": [0.9, 0.7, 0.5, 0.3]}}
         best_iter, final_val = ModelTrainer._extract_training_diagnostics(_M(), "CatBoostModel", evals)
         self.assertEqual(best_iter, 0)
-        # best_iter=0 → max(0, -1)=0 → values[0] = 0.9
+        # best_iter=0 -> values[0] = 0.9
         self.assertAlmostEqual(final_val, 0.9)
 
     def test_diagnostic_extraction_never_raises(self) -> None:
