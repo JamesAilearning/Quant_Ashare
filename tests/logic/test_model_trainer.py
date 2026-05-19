@@ -379,6 +379,14 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             },
         )
 
+    def test_refresh_clears_malformed_evals_result(self) -> None:
+        class _M:
+            model = None
+
+        evals = {"valid": "not a dict"}
+        ModelTrainer._refresh_framework_evals_result(_M(), "LGBModel", evals)
+        self.assertEqual(evals, {})
+
     def test_refresh_reads_xgb_inner_evals_result(self) -> None:
         class _Inner:
             def evals_result(self):

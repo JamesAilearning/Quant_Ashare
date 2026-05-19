@@ -282,12 +282,13 @@ class ModelTrainer:
         history, the completed training run remains valid and diagnostics stay
         empty.
         """
+        had_input_history = bool(evals_result)
         normalized = cls._normalize_evals_result(evals_result)
         framework_result = cls._read_inner_evals_result(model, model_type)
         framework_normalized = cls._normalize_evals_result(framework_result)
         if framework_normalized:
             normalized = framework_normalized
-        if normalized:
+        if had_input_history or framework_normalized:
             evals_result.clear()
             evals_result.update(normalized)
 
