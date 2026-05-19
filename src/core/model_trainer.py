@@ -116,8 +116,8 @@ class ModelTrainResult:
     model_artifact_path : str
         Path to the pickled model.
     train_metrics : mapping
-        Per-dataset evals_result from the framework (best-effort; LGBModel
-        populates it fully, XGB / CatBoost may leave it empty).
+        Per-dataset evals_result from the framework, normalized to
+        ``{dataset_name: {metric_name: [values...]}}`` when available.
     prediction_shape : tuple[int, ...]
     best_iteration : int | None
         Best boosting round per the model's early-stopping decision, or None
@@ -178,6 +178,7 @@ class ModelTrainer:
 
         evals_result: dict = {}
         cls._fit_dispatch(model, dataset, config, evals_result)
+        cls._refresh_framework_evals_result(model, config.model_type, evals_result)
 
         predictions = model.predict(dataset, segment=predict_segment)
 
@@ -264,6 +265,111 @@ class ModelTrainer:
             )
         else:
             model.fit(dataset)
+
+    @classmethod
+    def _refresh_framework_evals_result(
+        cls, model: Any, model_type: str, evals_result: dict,
+    ) -> None:
+        """Normalize framework eval history into one in-process shape.
+
+        qlib wrappers differ in where they expose eval history:
+
+        - LGBModel mutates the caller-provided ``evals_result`` mapping.
+        - XGBModel may expose flat keys such as ``valid-rmse``.
+        - CatBoostModel keeps history on the inner fitted CatBoost object.
+
+        This helper is diagnostic-only. If a wrapper exposes malformed or no
+        history, the completed training run remains valid and diagnostics stay
+        empty.
+        """
+        had_input_history = bool(evals_result)
+        normalized = cls._normalize_evals_result(evals_result)
+        framework_result = cls._read_inner_evals_result(model, model_type)
+        framework_normalized = cls._normalize_evals_result(framework_result)
+        if framework_normalized:
+            normalized = framework_normalized
+        if had_input_history or framework_normalized:
+            evals_result.clear()
+            evals_result.update(normalized)
+
+    @staticmethod
+    def _read_inner_evals_result(model: Any, model_type: str) -> Mapping[str, Any]:
+        inner = getattr(model, "model", None)
+        if inner is None:
+            return {}
+
+        getter_name = None
+        if model_type == "XGBModel":
+            getter_name = "evals_result"
+        elif model_type == "CatBoostModel":
+            getter_name = "get_evals_result"
+        if getter_name is None:
+            return {}
+
+        getter = getattr(inner, getter_name, None)
+        try:
+            result = getter() if callable(getter) else None
+        except Exception:
+            return {}
+        if isinstance(result, Mapping):
+            return result
+        return {}
+
+    @classmethod
+    def _normalize_evals_result(cls, raw: Mapping[str, Any] | None) -> dict[str, dict[str, list[Any]]]:
+        if not isinstance(raw, Mapping):
+            return {}
+
+        normalized: dict[str, dict[str, list[Any]]] = {}
+        for dataset_name, metrics in raw.items():
+            dataset_key = str(dataset_name)
+            if isinstance(metrics, Mapping):
+                metric_dict: dict[str, list[Any]] = {}
+                for metric_name, values in metrics.items():
+                    coerced = cls._coerce_metric_values(values)
+                    if coerced:
+                        metric_dict[str(metric_name)] = coerced
+                if metric_dict:
+                    normalized[dataset_key] = metric_dict
+                continue
+
+            if "-" not in dataset_key:
+                continue
+            split_dataset, split_metric = dataset_key.split("-", 1)
+            coerced = cls._coerce_metric_values(metrics)
+            if coerced:
+                normalized.setdefault(split_dataset, {})[split_metric] = coerced
+
+        return normalized
+
+    @staticmethod
+    def _coerce_metric_values(values: Any) -> list[Any]:
+        if values is None or isinstance(values, (str, bytes)):
+            return []
+        try:
+            return list(values)
+        except TypeError:
+            return []
+
+    @staticmethod
+    def _metric_index_for_best_iteration(
+        model_type: str,
+        best_iter: int | None,
+        value_count: int,
+    ) -> int:
+        if value_count <= 0:
+            raise ValueError("value_count must be positive")
+        if best_iter is None:
+            return value_count - 1
+        if model_type == "LGBModel":
+            index = best_iter - 1
+        else:
+            index = best_iter
+        if index < 0:
+            return 0
+        if index >= value_count:
+            return value_count - 1
+        return index
 
     @staticmethod
     def _write_model_sidecar(
@@ -353,7 +459,7 @@ class ModelTrainer:
         except Exception:
             best_iter = None
 
-        # final_valid_loss from evals_result (LGBModel only, really)
+        # final_valid_loss from normalized evals_result.
         try:
             if evals_result:
                 # evals_result shape: {dataset_name: {metric_name: [values...]}}
@@ -367,10 +473,11 @@ class ModelTrainer:
                     metric_name = next(iter(losses))
                     values = losses[metric_name]
                     if values:
+                        value_index = cls._metric_index_for_best_iteration(
+                            model_type, best_iter, len(values),
+                        )
                         final_val = float(
-                            values[max(0, best_iter - 1)]
-                            if best_iter is not None and best_iter < len(values)
-                            else values[-1]
+                            values[value_index]
                         )
         except Exception:
             final_val = None
