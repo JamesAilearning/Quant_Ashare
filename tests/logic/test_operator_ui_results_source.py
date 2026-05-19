@@ -10,7 +10,7 @@ class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_displays_tushare_provider_artifacts(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn('selected_job.get("mode") == "tushare_provider"', source)
+        self.assertIn('mode == "tushare_provider"', source)
         self.assertIn('"Tushare Provider Data"', source)
         self.assertIn("inspect_provider_metadata(str(run_dir))", source)
         self.assertIn("metadata.validation_path", source)
@@ -22,6 +22,28 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("provider jobs create qlib data bundles", source)
         self.assertNotIn("Pipeline(", source)
         self.assertNotIn("WalkForwardEngine(", source)
+
+    def test_results_page_renders_pipeline_detail_sections(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("Pipeline Result", source)
+        self.assertIn('"Download config.yaml"', source)
+        self.assertIn('"Holdings"', source)
+        self.assertIn('"Trades"', source)
+        self.assertIn('"Config"', source)
+        self.assertIn('"Stage Timings"', source)
+        self.assertIn('"Logs"', source)
+        self.assertIn('"Raw JSON"', source)
+
+    def test_results_page_keeps_pipeline_metrics_artifact_sourced(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("read_pipeline_report(run_dir)", source)
+        self.assertIn("pipeline_report.json is not available yet", source)
+        self.assertIn("No generated PNG charts found yet", source)
+        self.assertNotIn("risk_analysis(", source)
+        self.assertNotIn("PerformanceAttribution", source)
+        self.assertNotIn("SignalAnalyzer", source)
 
 
 if __name__ == "__main__":
