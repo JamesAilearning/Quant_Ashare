@@ -8,8 +8,11 @@
 
 - [x] Add pipeline result artifact writer
 - [x] Wire artifact writer into Pipeline after report/chart generation
+- [x] Persist predictions, standard logs, stage timings, and model artifact paths
 - [x] Copy exact UI config into run directory when a UI job completes
 - [x] Update Results page to prefer structured artifacts
+- [x] Add Results run_id query-param entrypoint
+- [x] Render interactive NAV and drawdown charts from nav.parquet
 - [x] Surface malformed/unreadable artifact errors without recomputing metrics
 
 ## Tests

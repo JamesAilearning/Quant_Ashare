@@ -8,6 +8,7 @@ This decouples job lifecycle from Streamlit's rerun cycle.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -48,10 +49,9 @@ def _find_run_dir(output_dir: Path) -> str | None:
     # Pipeline: run dir is under runs/ subfolder
     runs_dir = output_dir / "runs"
     if runs_dir.is_dir():
-        entries = sorted(runs_dir.iterdir())
-        for entry in entries:
-            if entry.is_dir():
-                return str(entry)
+        entries = [entry for entry in runs_dir.iterdir() if entry.is_dir()]
+        if entries:
+            return str(max(entries, key=lambda path: path.stat().st_mtime))
     return None
 
 
@@ -63,6 +63,33 @@ def _copy_exact_config_to_run_dir(config_path: Path, run_dir: str) -> None:
         # The pipeline's normalized config.yaml remains available if this
         # best-effort exact-copy step fails. Do not flip a successful training
         # job to failed because a post-run UI convenience copy failed.
+        return
+
+
+def _copy_pipeline_logs_to_run_dir(
+    *,
+    stdout_path: Path,
+    stderr_path: Path,
+    run_dir: str,
+) -> None:
+    logs_dir = Path(run_dir) / "logs"
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        target = logs_dir / "pipeline.log"
+        with target.open("w", encoding="utf-8") as out:
+            if stdout_path.is_file():
+                out.write("### stdout.log\n")
+                out.write(stdout_path.read_text(encoding="utf-8", errors="replace"))
+                out.write("\n")
+            if stderr_path.is_file():
+                out.write("### stderr.log\n")
+                out.write(stderr_path.read_text(encoding="utf-8", errors="replace"))
+                out.write("\n")
+        for source_name in ("stdout.log", "stderr.log"):
+            source = stdout_path if source_name == "stdout.log" else stderr_path
+            if source.is_file():
+                shutil.copy2(source, logs_dir / source_name)
+    except OSError:
         return
 
 
@@ -163,6 +190,11 @@ def main(argv: list[str] | None = None) -> None:
         if run_dir:
             if mode == "pipeline":
                 _copy_exact_config_to_run_dir(config_path, run_dir)
+                _copy_pipeline_logs_to_run_dir(
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                    run_dir=run_dir,
+                )
             _write_job_json(job_dir, {"run_dir": run_dir})
 
 

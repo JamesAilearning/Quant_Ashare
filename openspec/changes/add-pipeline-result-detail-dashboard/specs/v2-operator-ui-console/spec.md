@@ -16,6 +16,20 @@ JSON fallback. It SHALL NOT require every artifact to exist before rendering.
 - **AND** generated PNG charts are displayed when present
 - **AND** the raw report remains available in a collapsed Raw JSON panel
 
+#### Scenario: run_id query parameter selects a run
+
+- **WHEN** the operator opens Results with `run_id=<job_id>`
+- **THEN** the UI selects that job directly
+- **AND** an unknown run id displays a page-level error rather than silently
+  falling back to another run
+
+#### Scenario: nav artifact exists
+
+- **WHEN** the selected pipeline run contains `nav.parquet`
+- **THEN** the UI renders interactive NAV and drawdown charts from that
+  artifact
+- **AND** the chart rendering does not recompute official KPI metrics
+
 #### Scenario: pipeline report is not yet available
 
 - **WHEN** the operator opens Results for a running or partially completed

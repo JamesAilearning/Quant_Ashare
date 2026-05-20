@@ -40,6 +40,7 @@ class ResultsPageSourceTests(unittest.TestCase):
 
         self.assertIn('artifact_name="pipeline_report.json"', source)
         self.assertIn('run_dir / "metrics.json"', source)
+        self.assertIn('run_dir / "nav.parquet"', source)
         self.assertIn('run_dir / "holdings.parquet"', source)
         self.assertIn('run_dir / "trades.parquet"', source)
         self.assertIn("pipeline_report.json is not available yet", source)
@@ -62,6 +63,19 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("_read_trades_frame(run_dir, issues)", source)
         self.assertIn("_read_positions(run_dir, issues)", source)
         self.assertIn("trades.parquet exists", source)
+
+    def test_results_page_supports_run_id_and_interactive_nav(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        history_source = Path("web/operator_ui/pages/run_history.py").read_text(encoding="utf-8")
+
+        self.assertIn('st.query_params.get("run_id"', source)
+        self.assertIn("Run not found", source)
+        self.assertIn("plotly.graph_objects", source)
+        self.assertIn("Strategy NAV", source)
+        self.assertIn("Strategy Drawdown", source)
+        self.assertIn("Monthly Returns", source)
+        self.assertIn('st.query_params["run_id"]', history_source)
+        self.assertIn('st.switch_page(str(_PAGES_DIR / "results.py"))', history_source)
 
 
 if __name__ == "__main__":

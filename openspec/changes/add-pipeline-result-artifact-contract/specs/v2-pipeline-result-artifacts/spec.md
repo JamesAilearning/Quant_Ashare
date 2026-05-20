@@ -11,7 +11,9 @@ canonical outputs and SHALL NOT create a competing official metric path.
 
 - **WHEN** a pipeline run has a `CanonicalBacktestOutput`
 - **THEN** the run directory contains `metadata.json`, `metrics.json`,
-  `nav.parquet`, `holdings.parquet`, `trades.parquet`, and `config.yaml`
+  `nav.parquet`, `holdings.parquet`, `trades.parquet`,
+  `predictions.parquet`, `config.yaml`, `logs/pipeline.log`,
+  `logs/stage_timings.json`, and `artifacts/model.pkl`
 - **AND** official metric values in `metrics.json` come from
   `CanonicalBacktestOutput.risk_analysis`
 - **AND** the writer does not call qlib metric helpers or core analyzers

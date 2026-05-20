@@ -90,6 +90,20 @@ class PipelineStructuralTests(unittest.TestCase):
 
 class PipelineResultArtifactTests(unittest.TestCase):
     @staticmethod
+    def _predictions():
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2025-01-02"), "SH600000"),
+                (pd.Timestamp("2025-01-02"), "SZ000001"),
+                (pd.Timestamp("2025-01-03"), "SH600000"),
+            ],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series([0.7, 0.3, 0.6], index=idx, name="score")
+
+    @staticmethod
     def _backtest_output() -> CanonicalBacktestOutput:
         return CanonicalBacktestOutput(
             metric_status="official",
@@ -123,20 +137,38 @@ class PipelineResultArtifactTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
+            model_path = out / "artifacts" / "model.pkl"
+            model_path.parent.mkdir(parents=True)
+            model_path.write_bytes(b"model")
             paths = write_pipeline_result_artifacts(
                 out,
                 config=PipelineConfig(provider_uri="/tmp/fake"),
                 backtest_output=self._backtest_output(),
+                predictions=self._predictions(),
                 started_at="2026-05-20T00:00:00+00:00",
                 report_path=str(out / "pipeline_report.json"),
+                model_artifact_path=str(model_path),
             )
 
-            for name in ("metadata", "metrics", "nav", "holdings", "trades", "config"):
+            for name in (
+                "metadata",
+                "metrics",
+                "nav",
+                "holdings",
+                "trades",
+                "predictions",
+                "config",
+                "pipeline_log",
+                "stage_timings",
+                "model",
+            ):
                 self.assertTrue(Path(paths[name]).exists(), f"missing {name}")
 
             metadata = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(metadata["type"], "pipeline")
             self.assertEqual(metadata["trade_log_status"], TRADES_NOT_PRODUCED_REASON)
+            self.assertIn("predictions", metadata["artifact_paths"])
+            self.assertIn("stage_timings", metadata["artifact_paths"])
 
             metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
             self.assertEqual(metrics["metric_status"], "official")
@@ -144,11 +176,24 @@ class PipelineResultArtifactTests(unittest.TestCase):
                 metrics["performance"]["annual_excess_return_with_cost"],
                 0.12,
             )
+            self.assertAlmostEqual(metrics["performance"]["cumulative_nav_end"], 1.00495)
+            self.assertIn("monthly_returns", metrics)
+            self.assertEqual(metrics["monthly_returns"][0]["month"], "2025-01")
             self.assertEqual(metrics["trading"]["positions_days"], 2)
+            self.assertEqual(metrics["trading"]["n_trades_total"], 0)
 
             nav = pd.read_parquet(out / "nav.parquet")
             self.assertEqual(
-                set(["date", "strategy_return", "strategy_nav", "benchmark_return", "benchmark_nav", "cost"]),
+                {
+                    "date",
+                    "strategy_return",
+                    "strategy_nav",
+                    "strategy_drawdown",
+                    "benchmark_return",
+                    "benchmark_nav",
+                    "benchmark_drawdown",
+                    "cost",
+                },
                 set(nav.columns),
             )
             self.assertEqual(len(nav), 2)
@@ -164,6 +209,10 @@ class PipelineResultArtifactTests(unittest.TestCase):
                 list(trades.columns),
                 ["date", "stock", "side", "shares", "price", "amount", "cost"],
             )
+
+            predictions = pd.read_parquet(out / "predictions.parquet")
+            self.assertEqual(list(predictions.columns), ["date", "stock", "score"])
+            self.assertEqual(len(predictions), 3)
 
     def test_nav_artifact_rejects_non_finite_returns(self) -> None:
         output = self._backtest_output()
@@ -186,6 +235,7 @@ class PipelineResultArtifactTests(unittest.TestCase):
                     Path(tmp),
                     config=PipelineConfig(provider_uri="/tmp/fake"),
                     backtest_output=bad,
+                    predictions=self._predictions(),
                     started_at="2026-05-20T00:00:00+00:00",
                     report_path=str(Path(tmp) / "pipeline_report.json"),
                 )

@@ -452,12 +452,11 @@ def _render_kpis(
     if not isinstance(risk, Mapping):
         risk = {}
 
-    ann_return = _first(
-        metrics,
-        [
-            ("performance", "annual_excess_return_with_cost"),
-        ],
-    )
+    ann_return = _first(metrics, [("performance", "annual_return")])
+    ann_return_label = "Primary: annual return"
+    if ann_return is None:
+        ann_return = _first(metrics, [("performance", "annual_excess_return_with_cost")])
+        ann_return_label = "Primary: annual excess return with cost"
     if ann_return is None:
         ann_return = risk.get("annualized_return")
     max_drawdown = _first(metrics, [("risk", "max_drawdown")])
@@ -485,7 +484,7 @@ def _render_kpis(
             _fmt_percent(ann_return, signed=True),
             _metric_color(ann_return),
             [
-                "Primary: annual excess return with cost",
+                ann_return_label,
                 f"Information Ratio: {_fmt_number(information_ratio)}",
                 f"Sharpe: {_fmt_number(sharpe)}",
                 f"Benchmark: {_fmt_text(benchmark_code)}",
@@ -617,6 +616,12 @@ def _read_trades_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) ->
     return _read_parquet_artifact(run_dir / "trades.parquet", issues, artifact_name="trades.parquet")
 
 
+def _read_nav_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> Any:
+    if run_dir is None:
+        return None
+    return _read_parquet_artifact(run_dir / "nav.parquet", issues, artifact_name="nav.parquet")
+
+
 def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> None:
     if holdings_frame is not None and not holdings_frame.empty:
         dates = sorted(str(value)[:10] for value in holdings_frame["date"].dropna().unique())
@@ -658,6 +663,109 @@ def _render_trades_tab(trades_frame: Any) -> None:
         )
         return
     st.dataframe(trades_frame, use_container_width=True, hide_index=True)
+
+
+def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
+    st.markdown('<div class="qv2-section-title">Net Asset Value</div>', unsafe_allow_html=True)
+    if nav_frame is None or nav_frame.empty:
+        st.markdown(
+            '<div class="qv2-empty">Backtest NAV artifact is not available yet.</div>',
+            unsafe_allow_html=True,
+        )
+        _render_charts(run_dir)
+        return
+
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        st.warning("plotly is not installed; falling back to generated PNG charts.")
+        _render_charts(run_dir)
+        return
+
+    frame = nav_frame.copy()
+    frame["date"] = frame["date"].astype(str).str.slice(0, 10)
+    nav_fig = go.Figure()
+    nav_fig.add_trace(go.Scatter(
+        x=frame["date"],
+        y=frame["strategy_nav"],
+        mode="lines",
+        name="Strategy NAV",
+        line={"width": 2.4, "color": "#3B82F6"},
+    ))
+    if "benchmark_nav" in frame and frame["benchmark_nav"].notna().any():
+        nav_fig.add_trace(go.Scatter(
+            x=frame["date"],
+            y=frame["benchmark_nav"],
+            mode="lines",
+            name="Benchmark NAV",
+            line={"width": 1.8, "color": "#94A3B8", "dash": "dash"},
+        ))
+    nav_fig.update_layout(
+        height=420,
+        hovermode="x unified",
+        margin={"l": 36, "r": 20, "t": 20, "b": 36},
+        yaxis={"title": "NAV", "rangemode": "tozero"},
+        xaxis={
+            "title": "",
+            "rangeselector": {
+                "buttons": [
+                    {"count": 1, "label": "1M", "step": "month", "stepmode": "backward"},
+                    {"count": 3, "label": "3M", "step": "month", "stepmode": "backward"},
+                    {"count": 6, "label": "6M", "step": "month", "stepmode": "backward"},
+                    {"count": 1, "label": "1Y", "step": "year", "stepmode": "backward"},
+                    {"step": "all", "label": "ALL"},
+                ]
+            },
+        },
+        legend={"orientation": "h", "yanchor": "bottom", "y": -0.24, "xanchor": "left", "x": 0},
+    )
+    st.plotly_chart(nav_fig, use_container_width=True)
+
+    st.markdown('<div class="qv2-section-title">Drawdown</div>', unsafe_allow_html=True)
+    dd_fig = go.Figure()
+    if "strategy_drawdown" in frame:
+        dd_fig.add_trace(go.Scatter(
+            x=frame["date"],
+            y=frame["strategy_drawdown"],
+            mode="lines",
+            name="Strategy Drawdown",
+            fill="tozeroy",
+            line={"width": 2.0, "color": "#DC2626"},
+        ))
+    if "benchmark_drawdown" in frame and frame["benchmark_drawdown"].notna().any():
+        dd_fig.add_trace(go.Scatter(
+            x=frame["date"],
+            y=frame["benchmark_drawdown"],
+            mode="lines",
+            name="Benchmark Drawdown",
+            line={"width": 1.5, "color": "#94A3B8", "dash": "dash"},
+        ))
+    dd_fig.update_layout(
+        height=320,
+        hovermode="x unified",
+        margin={"l": 36, "r": 20, "t": 20, "b": 36},
+        yaxis={"title": "Drawdown", "tickformat": ".1%"},
+        xaxis={"title": ""},
+        legend={"orientation": "h", "yanchor": "bottom", "y": -0.28, "xanchor": "left", "x": 0},
+    )
+    st.plotly_chart(dd_fig, use_container_width=True)
+
+
+def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
+    rows = metrics.get("monthly_returns")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or not rows:
+        st.markdown(
+            '<div class="qv2-empty">Monthly returns are not available yet.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    import pandas as pd
+
+    frame = pd.DataFrame(rows)
+    for column in ("strategy", "benchmark"):
+        if column in frame:
+            frame[column] = frame[column].map(lambda value: _fmt_percent(value, signed=True))
+    st.dataframe(frame, use_container_width=True, hide_index=True)
 
 
 def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Mapping[str, Any]) -> None:
@@ -765,6 +873,7 @@ def _render_pipeline_dashboard(
     metrics = _read_metrics(run_dir, issues)
     holdings_frame = _read_holdings_frame(run_dir, issues)
     trades_frame = _read_trades_frame(run_dir, issues)
+    nav_frame = _read_nav_frame(run_dir, issues)
     _render_status_header(
         job=job,
         run_dir=run_dir,
@@ -781,7 +890,9 @@ def _render_pipeline_dashboard(
         )
 
     _render_kpis(report, metrics, positions, config)
-    _render_charts(run_dir)
+    _render_interactive_charts(nav_frame, run_dir)
+    st.markdown('<div class="qv2-section-title">Monthly Returns</div>', unsafe_allow_html=True)
+    _render_monthly_returns(metrics)
 
     tabs = st.tabs(["Holdings", "Trades", "Config", "Stage Timings", "Logs", "Raw JSON"])
     with tabs[0]:
@@ -873,6 +984,28 @@ def _job_label(job: Mapping[str, Any]) -> str:
     return f"{job_id} ({mode}, {status})"
 
 
+def _query_run_id() -> str:
+    value = st.query_params.get("run_id", "")
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+def _default_job_id(jobs: Sequence[Mapping[str, Any]]) -> str:
+    for job in jobs:
+        if str(job.get("status") or "").lower() in {"success", "completed"}:
+            return str(job.get("job_id") or "")
+    return str(jobs[0].get("job_id") or "") if jobs else ""
+
+
+def _render_run_not_found(run_id: str) -> None:
+    st.error(f"Run not found: {run_id}")
+    st.caption("It may have been deleted, or the link is wrong.")
+    if st.button("Back to Jobs"):
+        st.query_params.clear()
+        st.rerun()
+
+
 _install_styles()
 st.title("Results")
 
@@ -886,13 +1019,22 @@ if not viewable_jobs:
     st.warning("No UI-launched jobs found. Run a pipeline, walk-forward, or Tushare provider job first.")
 else:
     job_ids = [str(job.get("job_id")) for job in viewable_jobs if job.get("job_id")]
+    requested_run_id = _query_run_id()
+    if requested_run_id and requested_run_id not in job_ids:
+        _render_run_not_found(requested_run_id)
+        st.stop()
+    default_job_id = requested_run_id or _default_job_id(viewable_jobs)
+    default_index = job_ids.index(default_job_id) if default_job_id in job_ids else 0
     selected_job_id = st.selectbox(
         "Run",
         options=job_ids,
+        index=default_index,
         format_func=lambda value: _job_label(
             next((job for job in viewable_jobs if str(job.get("job_id")) == value), {})
         ),
     )
+    if selected_job_id and selected_job_id != requested_run_id:
+        st.query_params["run_id"] = selected_job_id
     selected_job = next(
         (job for job in viewable_jobs if str(job.get("job_id")) == selected_job_id),
         viewable_jobs[0],

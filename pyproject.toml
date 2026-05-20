@@ -43,6 +43,7 @@ tushare = [
 ]
 ui = [
   "streamlit>=1.36",
+  "plotly>=5.20",
 ]
 
 [tool.setuptools.packages.find]

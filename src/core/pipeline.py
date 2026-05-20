@@ -392,7 +392,7 @@ class Pipeline:
 
         # Step 3: Train model
         _logger.info("Training model...")
-        model_artifact_path = str(output_dir / "model.pkl")
+        model_artifact_path = str(output_dir / "artifacts" / "model.pkl")
         model_result = ModelTrainer.train_and_predict(
             config=build_model_train_config(config),
             dataset=feature_result.dataset,
@@ -655,8 +655,10 @@ class Pipeline:
                 output_dir,
                 config=config,
                 backtest_output=backtest_output,
+                predictions=model_result.predictions,
                 started_at=started_at,
                 report_path=report_path,
+                model_artifact_path=model_result.model_artifact_path,
                 status="completed",
             )
             _logger.info(
