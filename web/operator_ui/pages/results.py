@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -11,69 +10,81 @@ from typing import Any
 import streamlit as st
 import yaml
 
-from web.operator_ui._path_guard import guard_output_path, output_path
+from web.operator_ui import artifact_reader
+from web.operator_ui._path_guard import output_path
+from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
-from web.operator_ui.report_reader import read_pipeline_report, read_walk_forward_report
 from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
 
 MISSING = "N/A"
 LOG_NAMES = ("stdout.log", "stderr.log", "runner_stdout.log", "runner_stderr.log")
 
 
-def _read_json_artifact(path: Path | None) -> dict[str, Any]:
-    if path is None:
-        return {}
-    guard_output_path(path)
-    if not path.is_file():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+def _record_issue(
+    issues: list[ArtifactReadIssue],
+    result: artifact_reader.ArtifactReadResult,
+) -> Any:
+    if result.issue is not None:
+        issues.append(result.issue)
+    return result.value
 
 
-def _read_parquet_artifact(path: Path | None) -> Any:
-    if path is None:
-        return None
-    guard_output_path(path)
-    if not path.is_file():
-        return None
-    try:
-        import pandas as pd
-
-        return pd.read_parquet(path)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _read_text_artifact(path: Path | None, *, tail_chars: int | None = None) -> str:
-    if path is None:
-        return ""
-    guard_output_path(path)
-    if not path.is_file():
-        return ""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    if tail_chars is not None and len(text) > tail_chars:
-        return text[-tail_chars:]
-    return text
+def _read_json_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
+    value = _record_issue(
+        issues,
+        artifact_reader.read_json_artifact(path, artifact_name=artifact_name),
+    )
+    return value if isinstance(value, dict) else {}
 
 
-def _read_bytes_artifact(path: Path | None) -> bytes:
-    if path is None:
-        return b""
-    guard_output_path(path)
-    if not path.is_file():
-        return b""
-    try:
-        return path.read_bytes()
-    except OSError:
-        return b""
+def _read_parquet_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> Any:
+    return _record_issue(
+        issues,
+        artifact_reader.read_parquet_artifact(path, artifact_name=artifact_name),
+    )
+
+
+def _read_text_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+    tail_chars: int | None = None,
+) -> str:
+    value = _record_issue(
+        issues,
+        artifact_reader.read_text_artifact(
+            path,
+            artifact_name=artifact_name,
+            tail_chars=tail_chars,
+        ),
+    )
+    return str(value or "")
+
+
+def _read_bytes_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> bytes:
+    value = _record_issue(
+        issues,
+        artifact_reader.read_bytes_artifact(path, artifact_name=artifact_name),
+    )
+    return value if isinstance(value, bytes) else b""
 
 
 def _job_dir(job: Mapping[str, Any]) -> Path | None:
@@ -95,17 +106,28 @@ def _path_or_none(value: Any) -> Path | None:
     return Path(text)
 
 
-def _read_config(job: Mapping[str, Any]) -> tuple[dict[str, Any], Path | None, bytes]:
+def _read_config(
+    job: Mapping[str, Any],
+    issues: list[ArtifactReadIssue],
+) -> tuple[dict[str, Any], Path | None, bytes]:
     config_path = _path_or_none(job.get("config_path"))
     if config_path is None:
         candidate = _job_dir(job)
         config_path = candidate / "config.yaml" if candidate is not None else None
-    config_bytes = _read_bytes_artifact(config_path)
+    config_bytes = _read_bytes_artifact(config_path, issues, artifact_name="config.yaml")
     if not config_bytes:
         return {}, config_path, b""
     try:
         loaded = yaml.safe_load(config_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError):
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        issues.append(
+            ArtifactReadIssue(
+                artifact_name="config.yaml",
+                path="" if config_path is None else str(config_path),
+                error_type=type(exc).__name__,
+                message=str(exc),
+            )
+        )
         return {}, config_path, config_bytes
     return loaded if isinstance(loaded, dict) else {}, config_path, config_bytes
 
@@ -380,6 +402,21 @@ def _render_status_header(
         )
 
 
+def _render_artifact_issues(issues: Sequence[ArtifactReadIssue]) -> None:
+    if not issues:
+        return
+
+    st.markdown(
+        '<div class="qv2-section-title">Artifact Read Issues</div>',
+        unsafe_allow_html=True,
+    )
+    for issue in issues:
+        st.error(
+            f"{issue.artifact_name}: {issue.error_type}: {issue.message} "
+            f"(path: {issue.path or MISSING})"
+        )
+
+
 def _metric_color(value: Any, *, negative_is_bad: bool = True) -> str:
     number = _finite_float(value)
     if number is None:
@@ -546,34 +583,38 @@ def _render_charts(run_dir: Path | None) -> None:
                 st.image(str(path), use_container_width=True)
 
 
-def _read_positions(run_dir: Path | None) -> dict[str, Any]:
+def _read_positions(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> dict[str, Any]:
     if run_dir is None:
         return {}
-    return _read_json_artifact(run_dir / "positions.json")
+    return _read_json_artifact(run_dir / "positions.json", issues, artifact_name="positions.json")
 
 
-def _read_metadata(run_dir: Path | None) -> dict[str, Any]:
+def _read_metadata(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> dict[str, Any]:
     if run_dir is None:
         return {}
-    return _read_json_artifact(run_dir / "metadata.json")
+    return _read_json_artifact(run_dir / "metadata.json", issues, artifact_name="metadata.json")
 
 
-def _read_metrics(run_dir: Path | None) -> dict[str, Any]:
+def _read_metrics(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> dict[str, Any]:
     if run_dir is None:
         return {}
-    return _read_json_artifact(run_dir / "metrics.json")
+    return _read_json_artifact(run_dir / "metrics.json", issues, artifact_name="metrics.json")
 
 
-def _read_holdings_frame(run_dir: Path | None) -> Any:
+def _read_holdings_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> Any:
     if run_dir is None:
         return None
-    return _read_parquet_artifact(run_dir / "holdings.parquet")
+    return _read_parquet_artifact(
+        run_dir / "holdings.parquet",
+        issues,
+        artifact_name="holdings.parquet",
+    )
 
 
-def _read_trades_frame(run_dir: Path | None) -> Any:
+def _read_trades_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> Any:
     if run_dir is None:
         return None
-    return _read_parquet_artifact(run_dir / "trades.parquet")
+    return _read_parquet_artifact(run_dir / "trades.parquet", issues, artifact_name="trades.parquet")
 
 
 def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> None:
@@ -657,7 +698,7 @@ def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any], metad
     st.json({key: value for key, value in rows.items() if value not in (None, "")})
 
 
-def _render_logs_tab(job: Mapping[str, Any]) -> None:
+def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) -> None:
     job_dir = _job_dir(job)
     if job_dir is None:
         st.info("Job log directory is not available.")
@@ -666,7 +707,7 @@ def _render_logs_tab(job: Mapping[str, Any]) -> None:
     any_log = False
     for name in LOG_NAMES:
         path = job_dir / name
-        text = _read_text_artifact(path, tail_chars=30_000)
+        text = _read_text_artifact(path, issues, artifact_name=name, tail_chars=30_000)
         if not text:
             continue
         any_log = True
@@ -717,12 +758,13 @@ def _render_pipeline_dashboard(
     config: Mapping[str, Any],
     config_path: Path | None,
     config_bytes: bytes,
+    issues: list[ArtifactReadIssue],
 ) -> None:
-    positions = _read_positions(run_dir)
-    metadata = _read_metadata(run_dir)
-    metrics = _read_metrics(run_dir)
-    holdings_frame = _read_holdings_frame(run_dir)
-    trades_frame = _read_trades_frame(run_dir)
+    positions = _read_positions(run_dir, issues)
+    metadata = _read_metadata(run_dir, issues)
+    metrics = _read_metrics(run_dir, issues)
+    holdings_frame = _read_holdings_frame(run_dir, issues)
+    trades_frame = _read_trades_frame(run_dir, issues)
     _render_status_header(
         job=job,
         run_dir=run_dir,
@@ -730,6 +772,7 @@ def _render_pipeline_dashboard(
         metadata=metadata,
         config_bytes=config_bytes,
     )
+    _render_artifact_issues(issues)
 
     if not report:
         st.info(
@@ -750,7 +793,7 @@ def _render_pipeline_dashboard(
     with tabs[3]:
         _render_timings_tab(job, report, metadata)
     with tabs[4]:
-        _render_logs_tab(job)
+        _render_logs_tab(job, issues)
     with tabs[5]:
         _render_raw_tab(job, report, metadata, metrics, positions)
 
@@ -786,7 +829,7 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
         st.dataframe(df, use_container_width=True)
 
 
-def _render_tushare_provider(run_dir: Path | None) -> None:
+def _render_tushare_provider(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> None:
     st.header("Tushare Provider Data")
     if run_dir is None:
         st.info("Provider output directory is not available yet.")
@@ -800,15 +843,21 @@ def _render_tushare_provider(run_dir: Path | None) -> None:
     for warning in metadata.warnings:
         st.warning(warning)
 
-    validation = _read_json_artifact(metadata.validation_path)
+    validation = _read_json_artifact(
+        metadata.validation_path,
+        issues,
+        artifact_name="validation.json",
+    )
     if validation:
         st.subheader("Validation")
         st.json(validation)
 
-    manifest = _read_json_artifact(metadata.manifest_path)
+    manifest = _read_json_artifact(metadata.manifest_path, issues, artifact_name="manifest.json")
     if manifest:
         st.subheader("Manifest")
         st.json(manifest)
+
+    _render_artifact_issues(issues)
 
     st.info(
         "Tushare provider jobs create qlib data bundles. They do not produce "
@@ -849,15 +898,32 @@ else:
         viewable_jobs[0],
     )
 
-    config, config_path, config_bytes = _read_config(selected_job)
+    artifact_issues: list[ArtifactReadIssue] = []
+    config, config_path, config_bytes = _read_config(selected_job, artifact_issues)
     run_dir = _resolve_run_dir(selected_job, config)
     mode = str(selected_job.get("mode") or "")
 
     if mode == "tushare_provider":
-        _render_tushare_provider(run_dir)
+        _render_tushare_provider(run_dir, artifact_issues)
     else:
-        pipeline_report = read_pipeline_report(run_dir) if run_dir is not None else {}
-        wf_report = read_walk_forward_report(run_dir) if run_dir is not None else {}
+        pipeline_report = (
+            _read_json_artifact(
+                run_dir / "pipeline_report.json",
+                artifact_issues,
+                artifact_name="pipeline_report.json",
+            )
+            if run_dir is not None
+            else {}
+        )
+        wf_report = (
+            _read_json_artifact(
+                run_dir / "walk_forward_report.json",
+                artifact_issues,
+                artifact_name="walk_forward_report.json",
+            )
+            if run_dir is not None
+            else {}
+        )
 
         if mode == "pipeline" or pipeline_report:
             _render_pipeline_dashboard(
@@ -867,14 +933,18 @@ else:
                 config=config,
                 config_path=config_path,
                 config_bytes=config_bytes,
+                issues=artifact_issues,
             )
         elif mode == "walk_forward" or wf_report:
             if wf_report:
+                _render_artifact_issues(artifact_issues)
                 _render_walk_forward_summary(wf_report)
                 _render_charts(run_dir)
             else:
+                _render_artifact_issues(artifact_issues)
                 st.warning("No walk_forward_report.json found in this run directory yet.")
                 _render_config_tab(config_path, config_bytes, config)
-                _render_logs_tab(selected_job)
+                _render_logs_tab(selected_job, artifact_issues)
         else:
+            _render_artifact_issues(artifact_issues)
             st.warning("No pipeline_report.json or walk_forward_report.json found in this run directory.")

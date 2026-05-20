@@ -52,3 +52,11 @@ for older or partially completed runs.
 - **THEN** the Results page falls back to existing report and positions
   artifacts where available
 - **AND** missing sections display an empty state rather than fabricated values
+
+#### Scenario: structured artifacts cannot be decoded
+
+- **WHEN** an existing result artifact is malformed, unreadable, or outside the
+  operator UI output boundary
+- **THEN** the Results page displays an artifact read issue for that file
+- **AND** the page continues to display other readable artifacts
+- **AND** the UI does not recompute or fabricate replacement metrics

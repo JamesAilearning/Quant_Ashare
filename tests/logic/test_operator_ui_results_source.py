@@ -38,7 +38,7 @@ class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_keeps_pipeline_metrics_artifact_sourced(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn("read_pipeline_report(run_dir)", source)
+        self.assertIn('artifact_name="pipeline_report.json"', source)
         self.assertIn('run_dir / "metrics.json"', source)
         self.assertIn('run_dir / "holdings.parquet"', source)
         self.assertIn('run_dir / "trades.parquet"', source)
@@ -48,12 +48,19 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertNotIn("PerformanceAttribution", source)
         self.assertNotIn("SignalAnalyzer", source)
 
+    def test_results_page_surfaces_artifact_read_issues(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("ArtifactReadIssue", source)
+        self.assertIn("Artifact Read Issues", source)
+        self.assertIn("_render_artifact_issues(issues)", source)
+
     def test_results_page_prefers_structured_artifacts_with_legacy_fallbacks(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn("_read_holdings_frame(run_dir)", source)
-        self.assertIn("_read_trades_frame(run_dir)", source)
-        self.assertIn("_read_positions(run_dir)", source)
+        self.assertIn("_read_holdings_frame(run_dir, issues)", source)
+        self.assertIn("_read_trades_frame(run_dir, issues)", source)
+        self.assertIn("_read_positions(run_dir, issues)", source)
         self.assertIn("trades.parquet exists", source)
 
 
