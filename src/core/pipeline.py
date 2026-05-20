@@ -46,6 +46,7 @@ from src.core.performance_attribution import (
     PerformanceAttribution,
     PerformanceAttributionError,
 )
+from src.core.pipeline_result_artifacts import write_pipeline_result_artifacts
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
@@ -646,6 +647,26 @@ class Pipeline:
             _logger.warning(
                 "Chart generation skipped after successful report write: "
                 "%s: %s.",
+                type(exc).__name__, exc,
+            )
+
+        try:
+            artifact_paths = write_pipeline_result_artifacts(
+                output_dir,
+                config=config,
+                backtest_output=backtest_output,
+                started_at=started_at,
+                report_path=report_path,
+                status="completed",
+            )
+            _logger.info(
+                "  Result artifacts: %s",
+                ", ".join(sorted(Path(path).name for path in artifact_paths.values())),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Structured result artifact generation skipped after "
+                "successful report write: %s: %s.",
                 type(exc).__name__, exc,
             )
 

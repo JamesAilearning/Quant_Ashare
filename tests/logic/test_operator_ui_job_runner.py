@@ -69,6 +69,29 @@ class JobRunnerDispatchTests(unittest.TestCase):
             data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
             self.assertEqual(data["run_dir"], str(output_dir))
 
+    def test_pipeline_mode_copies_exact_config_to_run_dir(self) -> None:
+        from web.operator_ui.job_runner import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            output_dir = job_dir / "pipeline_output"
+            run_dir = output_dir / "runs" / "pipeline_run"
+            run_dir.mkdir(parents=True)
+            config_text = (
+                f"output_dir: '{output_dir}' # exact UI config\n"
+                "provider_uri: 'D:/qlib_data/my_cn_data'\n"
+            )
+            job_dir.joinpath("config.yaml").write_text(config_text, encoding="utf-8")
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = CompletedProcess(args=[], returncode=0)
+                main([str(job_dir), "pipeline"])
+
+            copied = run_dir.joinpath("config.yaml").read_text(encoding="utf-8")
+            self.assertEqual(copied, config_text)
+            data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["run_dir"], str(run_dir))
+
     def test_stop_signal_handler_marks_job_stopped(self) -> None:
         import web.operator_ui.job_runner as job_runner
 

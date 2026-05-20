@@ -55,6 +55,17 @@ def _find_run_dir(output_dir: Path) -> str | None:
     return None
 
 
+def _copy_exact_config_to_run_dir(config_path: Path, run_dir: str) -> None:
+    target = Path(run_dir) / "config.yaml"
+    try:
+        target.write_bytes(config_path.read_bytes())
+    except OSError:
+        # The pipeline's normalized config.yaml remains available if this
+        # best-effort exact-copy step fails. Do not flip a successful training
+        # job to failed because a post-run UI convenience copy failed.
+        return
+
+
 def _handle_stop_signal(signum: int, _frame: Any) -> None:
     if _ACTIVE_JOB_DIR is not None:
         _write_job_json(
@@ -150,6 +161,8 @@ def main(argv: list[str] | None = None) -> None:
     if output_dir:
         run_dir = _find_run_dir(Path(output_dir))
         if run_dir:
+            if mode == "pipeline":
+                _copy_exact_config_to_run_dir(config_path, run_dir)
             _write_job_json(job_dir, {"run_dir": run_dir})
 
 

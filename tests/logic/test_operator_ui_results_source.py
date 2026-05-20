@@ -39,11 +39,22 @@ class ResultsPageSourceTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn("read_pipeline_report(run_dir)", source)
+        self.assertIn('run_dir / "metrics.json"', source)
+        self.assertIn('run_dir / "holdings.parquet"', source)
+        self.assertIn('run_dir / "trades.parquet"', source)
         self.assertIn("pipeline_report.json is not available yet", source)
         self.assertIn("No generated PNG charts found yet", source)
         self.assertNotIn("risk_analysis(", source)
         self.assertNotIn("PerformanceAttribution", source)
         self.assertNotIn("SignalAnalyzer", source)
+
+    def test_results_page_prefers_structured_artifacts_with_legacy_fallbacks(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("_read_holdings_frame(run_dir)", source)
+        self.assertIn("_read_trades_frame(run_dir)", source)
+        self.assertIn("_read_positions(run_dir)", source)
+        self.assertIn("trades.parquet exists", source)
 
 
 if __name__ == "__main__":

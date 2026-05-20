@@ -13,7 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC, TAXONOMY_MODE_TRADE_DATE
+from src.core.canonical_backtest_contract import CanonicalBacktestOutput
 from src.core.pipeline import Pipeline, PipelineConfig, PipelineError, _sanitize_for_json
+from src.core.pipeline_result_artifacts import (
+    TRADES_NOT_PRODUCED_REASON,
+    PipelineResultArtifactError,
+    write_pipeline_result_artifacts,
+)
 from src.data.taxonomy_artifact_publisher import TaxonomyArtifactPublisher
 
 _QLIB_DATA_DIR = Path(r"D:/qlib_data/my_cn_data")
@@ -80,6 +86,109 @@ class PipelineStructuralTests(unittest.TestCase):
         # Same fingerprint (last token); different uuid tag (second-to-last)
         self.assertEqual(n1.split("_")[-1], n2.split("_")[-1])
         self.assertNotEqual(n1.split("_")[-2], n2.split("_")[-2])
+
+
+class PipelineResultArtifactTests(unittest.TestCase):
+    @staticmethod
+    def _backtest_output() -> CanonicalBacktestOutput:
+        return CanonicalBacktestOutput(
+            metric_status="official",
+            official_backtest_path="qlib.backtest.backtest",
+            return_series={
+                "return": {"2025-01-02": 0.01, "2025-01-03": -0.005},
+                "bench": {"2025-01-02": 0.002, "2025-01-03": 0.003},
+                "cost": {"2025-01-02": 0.0001, "2025-01-03": 0.0002},
+            },
+            risk_analysis={
+                "excess_return_with_cost": {
+                    "annualized_return": 0.12,
+                    "information_ratio": 1.25,
+                    "max_drawdown": -0.04,
+                },
+                "excess_return_without_cost": {
+                    "annualized_return": 0.13,
+                    "max_drawdown": -0.035,
+                },
+            },
+            report={"total_days": 2, "positions_days": 2},
+            provenance={"config_fingerprint": "abc123"},
+            positions={
+                "2025-01-02": {"SH600000": 0.6, "SZ000001": 0.4},
+                "2025-01-03": {"SH600000": 0.5},
+            },
+        )
+
+    def test_write_pipeline_result_artifacts(self) -> None:
+        import pandas as pd
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            paths = write_pipeline_result_artifacts(
+                out,
+                config=PipelineConfig(provider_uri="/tmp/fake"),
+                backtest_output=self._backtest_output(),
+                started_at="2026-05-20T00:00:00+00:00",
+                report_path=str(out / "pipeline_report.json"),
+            )
+
+            for name in ("metadata", "metrics", "nav", "holdings", "trades", "config"):
+                self.assertTrue(Path(paths[name]).exists(), f"missing {name}")
+
+            metadata = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["type"], "pipeline")
+            self.assertEqual(metadata["trade_log_status"], TRADES_NOT_PRODUCED_REASON)
+
+            metrics = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
+            self.assertEqual(metrics["metric_status"], "official")
+            self.assertEqual(
+                metrics["performance"]["annual_excess_return_with_cost"],
+                0.12,
+            )
+            self.assertEqual(metrics["trading"]["positions_days"], 2)
+
+            nav = pd.read_parquet(out / "nav.parquet")
+            self.assertEqual(
+                set(["date", "strategy_return", "strategy_nav", "benchmark_return", "benchmark_nav", "cost"]),
+                set(nav.columns),
+            )
+            self.assertEqual(len(nav), 2)
+
+            holdings = pd.read_parquet(out / "holdings.parquet")
+            self.assertEqual(list(holdings.columns), ["date", "stock", "weight", "rank"])
+            self.assertEqual(len(holdings), 3)
+            self.assertEqual(holdings.iloc[0]["rank"], 1)
+
+            trades = pd.read_parquet(out / "trades.parquet")
+            self.assertTrue(trades.empty)
+            self.assertEqual(
+                list(trades.columns),
+                ["date", "stock", "side", "shares", "price", "amount", "cost"],
+            )
+
+    def test_nav_artifact_rejects_non_finite_returns(self) -> None:
+        output = self._backtest_output()
+        bad = CanonicalBacktestOutput(
+            metric_status=output.metric_status,
+            official_backtest_path=output.official_backtest_path,
+            return_series={
+                "return": {"2025-01-02": float("nan")},
+                "bench": {},
+                "cost": {},
+            },
+            risk_analysis=output.risk_analysis,
+            report=output.report,
+            provenance=output.provenance,
+            positions=output.positions,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(PipelineResultArtifactError, "non-finite"):
+                write_pipeline_result_artifacts(
+                    Path(tmp),
+                    config=PipelineConfig(provider_uri="/tmp/fake"),
+                    backtest_output=bad,
+                    started_at="2026-05-20T00:00:00+00:00",
+                    report_path=str(Path(tmp) / "pipeline_report.json"),
+                )
 
 
 class PipelineConfigPostInitTests(unittest.TestCase):

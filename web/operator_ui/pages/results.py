@@ -35,6 +35,20 @@ def _read_json_artifact(path: Path | None) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _read_parquet_artifact(path: Path | None) -> Any:
+    if path is None:
+        return None
+    guard_output_path(path)
+    if not path.is_file():
+        return None
+    try:
+        import pandas as pd
+
+        return pd.read_parquet(path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _read_text_artifact(path: Path | None, *, tail_chars: int | None = None) -> str:
     if path is None:
         return ""
@@ -309,14 +323,20 @@ def _render_status_header(
     job: Mapping[str, Any],
     run_dir: Path | None,
     report: Mapping[str, Any],
+    metadata: Mapping[str, Any],
     config_bytes: bytes,
 ) -> None:
     job_id = _fmt_text(job.get("job_id"))
-    status = _fmt_text(job.get("status"))
-    started = _fmt_text(job.get("started_at"))
-    ended = _fmt_text(job.get("ended_at"))
-    duration = _fmt_duration(job.get("started_at"), job.get("ended_at"))
-    generated_at = _fmt_text(report.get("generated_at"))
+    status = _fmt_text(metadata.get("status") or job.get("status"))
+    started = _fmt_text(metadata.get("started_at") or job.get("started_at"))
+    ended = _fmt_text(metadata.get("finished_at") or job.get("ended_at"))
+    duration_seconds = _finite_float(metadata.get("duration_seconds"))
+    duration = (
+        f"{int(duration_seconds)}s"
+        if duration_seconds is not None
+        else _fmt_duration(job.get("started_at"), job.get("ended_at"))
+    )
+    generated_at = _fmt_text(metadata.get("finished_at") or report.get("generated_at"))
     status_class = _status_class(status)
     run_dir_text = _fmt_text(run_dir)
 
@@ -385,14 +405,30 @@ def _render_card(title: str, primary: str, primary_class: str, lines: Sequence[s
     )
 
 
-def _render_kpis(report: Mapping[str, Any], positions: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+def _render_kpis(
+    report: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    positions: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> None:
     risk = _nested(report, "risk_analysis", "excess_return_with_cost") or {}
     if not isinstance(risk, Mapping):
         risk = {}
 
-    ann_return = risk.get("annualized_return")
-    max_drawdown = risk.get("max_drawdown")
-    information_ratio = risk.get("information_ratio")
+    ann_return = _first(
+        metrics,
+        [
+            ("performance", "annual_excess_return_with_cost"),
+        ],
+    )
+    if ann_return is None:
+        ann_return = risk.get("annualized_return")
+    max_drawdown = _first(metrics, [("risk", "max_drawdown")])
+    if max_drawdown is None:
+        max_drawdown = risk.get("max_drawdown")
+    information_ratio = _first(metrics, [("performance", "information_ratio")])
+    if information_ratio is None:
+        information_ratio = risk.get("information_ratio")
     volatility = risk.get("annualized_volatility") or risk.get("volatility")
     sharpe = risk.get("sharpe")
 
@@ -412,6 +448,7 @@ def _render_kpis(report: Mapping[str, Any], positions: Mapping[str, Any], config
             _fmt_percent(ann_return, signed=True),
             _metric_color(ann_return),
             [
+                "Primary: annual excess return with cost",
                 f"Information Ratio: {_fmt_number(information_ratio)}",
                 f"Sharpe: {_fmt_number(sharpe)}",
                 f"Benchmark: {_fmt_text(benchmark_code)}",
@@ -429,12 +466,14 @@ def _render_kpis(report: Mapping[str, Any], positions: Mapping[str, Any], config
             ],
         )
     with cols[2]:
-        position_days = len(positions) if positions else None
-        latest_count = None
+        position_days = _first(metrics, [("trading", "positions_days")])
+        if position_days is None:
+            position_days = len(positions) if positions else None
+        latest_count = _first(metrics, [("trading", "latest_holding_count")])
         if positions:
             latest_key = sorted(str(key) for key in positions.keys())[-1]
             latest_positions = positions.get(latest_key)
-            if isinstance(latest_positions, Mapping):
+            if latest_count is None and isinstance(latest_positions, Mapping):
                 latest_count = len(latest_positions)
         _render_card(
             "Trading",
@@ -513,9 +552,42 @@ def _read_positions(run_dir: Path | None) -> dict[str, Any]:
     return _read_json_artifact(run_dir / "positions.json")
 
 
-def _render_holdings_tab(positions: Mapping[str, Any]) -> None:
+def _read_metadata(run_dir: Path | None) -> dict[str, Any]:
+    if run_dir is None:
+        return {}
+    return _read_json_artifact(run_dir / "metadata.json")
+
+
+def _read_metrics(run_dir: Path | None) -> dict[str, Any]:
+    if run_dir is None:
+        return {}
+    return _read_json_artifact(run_dir / "metrics.json")
+
+
+def _read_holdings_frame(run_dir: Path | None) -> Any:
+    if run_dir is None:
+        return None
+    return _read_parquet_artifact(run_dir / "holdings.parquet")
+
+
+def _read_trades_frame(run_dir: Path | None) -> Any:
+    if run_dir is None:
+        return None
+    return _read_parquet_artifact(run_dir / "trades.parquet")
+
+
+def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> None:
+    if holdings_frame is not None and not holdings_frame.empty:
+        dates = sorted(str(value)[:10] for value in holdings_frame["date"].dropna().unique())
+        selected_date = st.selectbox("Position date", dates, index=len(dates) - 1)
+        filtered = holdings_frame[
+            holdings_frame["date"].astype(str).str.slice(0, 10) == selected_date
+        ]
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        return
+
     if not positions:
-        st.info("Holdings will appear after positions.json is written.")
+        st.info("Holdings will appear after holdings.parquet or positions.json is written.")
         return
 
     dates = sorted(str(key) for key in positions.keys())
@@ -532,6 +604,19 @@ def _render_holdings_tab(positions: Mapping[str, Any]) -> None:
         for instrument, weight in sorted(date_positions.items(), key=lambda item: str(item[0]))
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_trades_tab(trades_frame: Any) -> None:
+    if trades_frame is None:
+        st.info("A trade-log artifact is not available for this run yet.")
+        return
+    if trades_frame.empty:
+        st.info(
+            "trades.parquet exists, but the current canonical runtime does "
+            "not expose trade-level fills yet."
+        )
+        return
+    st.dataframe(trades_frame, use_container_width=True, hide_index=True)
 
 
 def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Mapping[str, Any]) -> None:
@@ -556,17 +641,18 @@ def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Ma
     st.code(config_text, language="yaml")
 
 
-def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any]) -> None:
+def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any], metadata: Mapping[str, Any]) -> None:
     progress = job.get("progress") if isinstance(job.get("progress"), Mapping) else {}
     rows = {
-        "status": job.get("status"),
-        "started_at": job.get("started_at"),
-        "ended_at": job.get("ended_at"),
-        "duration": _fmt_duration(job.get("started_at"), job.get("ended_at")),
+        "status": metadata.get("status") or job.get("status"),
+        "started_at": metadata.get("started_at") or job.get("started_at"),
+        "ended_at": metadata.get("finished_at") or job.get("ended_at"),
+        "duration_seconds": metadata.get("duration_seconds"),
         "progress_percent": progress.get("percent"),
         "progress_label": progress.get("label"),
         "progress_detail": progress.get("detail"),
         "report_generated_at": report.get("generated_at"),
+        "stage_timings": metadata.get("stage_timings"),
     }
     st.json({key: value for key, value in rows.items() if value not in (None, "")})
 
@@ -592,7 +678,23 @@ def _render_logs_tab(job: Mapping[str, Any]) -> None:
         st.info("Log files are empty or have not been written yet.")
 
 
-def _render_raw_tab(job: Mapping[str, Any], report: Mapping[str, Any], positions: Mapping[str, Any]) -> None:
+def _render_raw_tab(
+    job: Mapping[str, Any],
+    report: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    positions: Mapping[str, Any],
+) -> None:
+    with st.expander("Raw metadata.json", expanded=False):
+        if metadata:
+            st.json(metadata)
+        else:
+            st.info("metadata.json is not available yet.")
+    with st.expander("Raw metrics.json", expanded=False):
+        if metrics:
+            st.json(metrics)
+        else:
+            st.info("metrics.json is not available yet.")
     with st.expander("Raw pipeline_report.json", expanded=False):
         if report:
             st.json(report)
@@ -617,10 +719,15 @@ def _render_pipeline_dashboard(
     config_bytes: bytes,
 ) -> None:
     positions = _read_positions(run_dir)
+    metadata = _read_metadata(run_dir)
+    metrics = _read_metrics(run_dir)
+    holdings_frame = _read_holdings_frame(run_dir)
+    trades_frame = _read_trades_frame(run_dir)
     _render_status_header(
         job=job,
         run_dir=run_dir,
         report=report,
+        metadata=metadata,
         config_bytes=config_bytes,
     )
 
@@ -630,22 +737,22 @@ def _render_pipeline_dashboard(
             "job metadata, config, logs, and any partial artifacts."
         )
 
-    _render_kpis(report, positions, config)
+    _render_kpis(report, metrics, positions, config)
     _render_charts(run_dir)
 
     tabs = st.tabs(["Holdings", "Trades", "Config", "Stage Timings", "Logs", "Raw JSON"])
     with tabs[0]:
-        _render_holdings_tab(positions)
+        _render_holdings_tab(holdings_frame, positions)
     with tabs[1]:
-        st.info("A trade-log artifact is not produced by the current pipeline runtime.")
+        _render_trades_tab(trades_frame)
     with tabs[2]:
         _render_config_tab(config_path, config_bytes, config)
     with tabs[3]:
-        _render_timings_tab(job, report)
+        _render_timings_tab(job, report, metadata)
     with tabs[4]:
         _render_logs_tab(job)
     with tabs[5]:
-        _render_raw_tab(job, report, positions)
+        _render_raw_tab(job, report, metadata, metrics, positions)
 
 
 def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
