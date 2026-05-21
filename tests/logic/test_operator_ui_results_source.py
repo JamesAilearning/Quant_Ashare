@@ -77,6 +77,37 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn('st.query_params["run_id"]', history_source)
         self.assertIn('st.switch_page(str(_PAGES_DIR / "results.py"))', history_source)
 
+    def test_results_page_exposes_export_and_rerun_actions(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("Re-run with this config", source)
+        self.assertIn("prefill_config_yaml", source)
+        self.assertIn("Export metrics CSV", source)
+        self.assertIn("Export PDF report", source)
+        self.assertIn("Export full bundle", source)
+        self.assertIn("metrics_csv_bytes(metrics)", source)
+        self.assertIn("summary_pdf_bytes(", source)
+        self.assertIn("bundle_zip_bytes(run_dir)", source)
+
+    def test_results_page_exposes_holdings_and_trades_filters(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("Search holdings", source)
+        self.assertIn("Show top holdings", source)
+        self.assertIn("Export holdings CSV", source)
+        self.assertIn("Trade dates", source)
+        self.assertIn("Side", source)
+        self.assertIn("Search trades", source)
+        self.assertIn("Export trades CSV", source)
+
+    def test_results_page_exposes_accessible_status_and_shortcut_help(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn('role="status"', source)
+        self.assertIn('aria-live="polite"', source)
+        self.assertIn("Keyboard shortcuts", source)
+        self.assertIn("Streamlit does not expose global key handlers", source)
+
 
 if __name__ == "__main__":
     unittest.main()

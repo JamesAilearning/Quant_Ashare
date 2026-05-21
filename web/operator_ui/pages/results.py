@@ -16,6 +16,7 @@ from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.result_exports import bundle_zip_bytes, metrics_csv_bytes, summary_pdf_bytes
 from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
 
 MISSING = "N/A"
@@ -369,7 +370,7 @@ def _render_status_header(
             <div>
               <div class="qv2-run-id">
                 Pipeline Result
-                <span class="qv2-badge {status_class}">{_safe_html(status)}</span>
+                <span class="qv2-badge {status_class}" role="status" aria-live="polite">{_safe_html(status)}</span>
               </div>
               <div class="qv2-muted">Job: {_safe_html(job_id)}</div>
               <div class="qv2-muted">Run directory: {_safe_html(run_dir_text)}</div>
@@ -399,6 +400,79 @@ def _render_status_header(
             data=config_bytes,
             file_name="config.yaml",
             mime="text/yaml",
+        )
+
+
+def _render_header_actions(
+    *,
+    job: Mapping[str, Any],
+    run_dir: Path | None,
+    config_bytes: bytes,
+    metrics: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> None:
+    action_cols = st.columns([1, 1, 1, 1])
+    with action_cols[0]:
+        if st.button("Re-run with this config", disabled=not config_bytes):
+            st.session_state["prefill_config_yaml"] = config_bytes.decode("utf-8", errors="replace")
+            st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
+            st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
+    with action_cols[1]:
+        st.download_button(
+            "Export metrics CSV",
+            data=metrics_csv_bytes(metrics),
+            file_name=f"{job.get('job_id', 'pipeline')}_metrics.csv",
+            mime="text/csv",
+            disabled=not metrics,
+        )
+    with action_cols[2]:
+        pdf_bytes = b""
+        pdf_error = ""
+        if metrics:
+            try:
+                pdf_bytes = summary_pdf_bytes(
+                    run_id=str(job.get("job_id") or ""),
+                    status=str(metadata.get("status") or job.get("status") or ""),
+                    metrics=metrics,
+                    metadata=metadata,
+                )
+            except RuntimeError as exc:
+                pdf_error = str(exc)
+        st.download_button(
+            "Export PDF report",
+            data=pdf_bytes,
+            file_name=f"{job.get('job_id', 'pipeline')}_summary.pdf",
+            mime="application/pdf",
+            disabled=not pdf_bytes,
+            help=pdf_error or None,
+        )
+    with action_cols[3]:
+        bundle_bytes = b""
+        if run_dir is not None:
+            try:
+                bundle_bytes = bundle_zip_bytes(run_dir)
+            except (OSError, ValueError):
+                bundle_bytes = b""
+        st.download_button(
+            "Export full bundle",
+            data=bundle_bytes,
+            file_name=f"{job.get('job_id', 'pipeline')}_bundle.zip",
+            mime="application/zip",
+            disabled=not bundle_bytes,
+        )
+
+    with st.expander("Keyboard shortcuts", expanded=False):
+        st.markdown(
+            """
+            - `?`: open shortcut help in this section.
+            - `j` / `k`: move to the next / previous job from the Run selector.
+            - `r`: re-run this job from the Config & Run page.
+            - `e`: use the export buttons above.
+            - `1`-`5`: switch between Holdings, Trades, Config, Stage Timings, and Logs.
+
+            Streamlit does not expose global key handlers without a custom
+            component, so these are mirrored as visible buttons and tabs.
+            """
         )
 
 
@@ -626,10 +700,23 @@ def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> N
     if holdings_frame is not None and not holdings_frame.empty:
         dates = sorted(str(value)[:10] for value in holdings_frame["date"].dropna().unique())
         selected_date = st.selectbox("Position date", dates, index=len(dates) - 1)
+        search = st.text_input("Search holdings", value="", placeholder="Stock code")
+        top_n = st.number_input("Show top holdings", value=100, min_value=1, max_value=1000)
         filtered = holdings_frame[
             holdings_frame["date"].astype(str).str.slice(0, 10) == selected_date
         ]
+        if search.strip():
+            filtered = filtered[
+                filtered["stock"].astype(str).str.contains(search.strip(), case=False, na=False)
+            ]
+        filtered = filtered.sort_values("rank", kind="stable").head(int(top_n))
         st.dataframe(filtered, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Export holdings CSV",
+            data=filtered.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"holdings_{selected_date}.csv",
+            mime="text/csv",
+        )
         return
 
     if not positions:
@@ -662,7 +749,27 @@ def _render_trades_tab(trades_frame: Any) -> None:
             "not expose trade-level fills yet."
         )
         return
-    st.dataframe(trades_frame, use_container_width=True, hide_index=True)
+    frame = trades_frame.copy()
+    if "date" in frame and not frame.empty:
+        dates = sorted(str(value)[:10] for value in frame["date"].dropna().unique())
+        selected_dates = st.multiselect("Trade dates", dates, default=dates)
+        if selected_dates:
+            frame = frame[frame["date"].astype(str).str.slice(0, 10).isin(selected_dates)]
+    if "side" in frame and not frame.empty:
+        sides = sorted(str(value) for value in frame["side"].dropna().unique())
+        selected_sides = st.multiselect("Side", sides, default=sides)
+        if selected_sides:
+            frame = frame[frame["side"].astype(str).isin(selected_sides)]
+    search = st.text_input("Search trades", value="", placeholder="Stock code")
+    if search.strip() and "stock" in frame:
+        frame = frame[frame["stock"].astype(str).str.contains(search.strip(), case=False, na=False)]
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Export trades CSV",
+        data=frame.to_csv(index=False).encode("utf-8-sig"),
+        file_name="trades.csv",
+        mime="text/csv",
+    )
 
 
 def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
@@ -882,6 +989,13 @@ def _render_pipeline_dashboard(
         config_bytes=config_bytes,
     )
     _render_artifact_issues(issues)
+    _render_header_actions(
+        job=job,
+        run_dir=run_dir,
+        config_bytes=config_bytes,
+        metrics=metrics,
+        metadata=metadata,
+    )
 
     if not report:
         st.info(

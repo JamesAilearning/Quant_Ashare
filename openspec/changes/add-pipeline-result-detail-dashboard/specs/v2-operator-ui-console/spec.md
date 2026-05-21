@@ -45,9 +45,42 @@ JSON fallback. It SHALL NOT require every artifact to exist before rendering.
 - **THEN** the Results page allows the operator to download those exact bytes
 - **AND** the UI does not rewrite or normalize the config before download
 
+#### Scenario: operator re-runs a pipeline from existing config
+
+- **WHEN** the UI job directory contains `config.yaml`
+- **THEN** the Results page offers a re-run action that pre-fills Config & Run
+  from those exact bytes
+- **AND** the operator must review and submit the config explicitly
+- **AND** the Results page does not launch a new runtime job directly
+
+#### Scenario: operator exports pipeline detail artifacts
+
+- **WHEN** metrics, report, config, or artifact files are available in the run
+  directory
+- **THEN** the Results page offers downloads for metrics CSV, a summary PDF
+  when the UI PDF dependency is installed, and a full run bundle ZIP
+- **AND** exported metrics are copied from existing artifacts without
+  recomputing official metrics
+
 #### Scenario: optional detail artifacts are absent
 
 - **WHEN** positions, trade logs, generated charts, or log files are absent
 - **THEN** the corresponding dashboard section displays an empty state
 - **AND** the rest of the page continues to render
+
+#### Scenario: holdings and trades artifacts are available
+
+- **WHEN** `holdings.parquet` or `trades.parquet` exists
+- **THEN** the Results page provides artifact-level search, filtering, and CSV
+  export controls for those tables
+- **AND** filtering changes only the displayed table/export rows, not official
+  metrics or stored artifacts
+
+#### Scenario: accessibility helpers are displayed
+
+- **WHEN** the Results page renders a pipeline run
+- **THEN** status badges expose a live status role for assistive technologies
+- **AND** keyboard shortcut help is visible as operator guidance
+- **AND** missing global key handlers are not hidden behind undocumented
+  behavior
 

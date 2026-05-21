@@ -19,8 +19,10 @@ class ConfigRunPageSourceTests(unittest.TestCase):
     def test_early_stopping_ui_rejects_zero(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
+        self.assertIn('"early_stopping_rounds"', source)
+        self.assertIn('min_value=1', source)
         self.assertIn(
-            'st.number_input("early_stopping_rounds", value=50, min_value=1)',
+            'value=int(_prefill("early_stopping_rounds", 50))',
             source,
         )
 
@@ -58,6 +60,15 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         self.assertIn("except (ValueError, JobManagerError) as exc:", source)
         self.assertIn("st.error(str(exc))", source)
+
+    def test_config_page_consumes_rerun_prefill_without_provider_value_binding(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("prefill_config_yaml", source)
+        self.assertIn("yaml.safe_load", source)
+        self.assertIn('st.session_state["training_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])', source)
+        self.assertIn("prefill_config_applied_token", source)
+        self.assertNotIn('value=str(_prefill("provider_uri"', source)
 
 
 if __name__ == "__main__":

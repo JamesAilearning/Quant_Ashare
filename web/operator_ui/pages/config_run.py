@@ -7,6 +7,7 @@ import time
 from datetime import date
 
 import streamlit as st
+import yaml
 
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_NONE,
@@ -134,6 +135,32 @@ st.title("Config & Run")
 
 mode = st.selectbox("Mode", ["pipeline", "walk_forward"])
 
+
+def _prefill_config() -> dict:
+    raw = st.session_state.get("prefill_config_yaml")
+    if not raw:
+        return {}
+    try:
+        loaded = yaml.safe_load(str(raw))
+    except yaml.YAMLError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+PREFILL_CONFIG = _prefill_config()
+if PREFILL_CONFIG:
+    source_job = st.session_state.get("prefill_config_source_job", "")
+    st.info(f"Prefilled from previous run {source_job}. Review settings before launching.")
+    prefill_token = f"{source_job}:{hash(str(st.session_state.get('prefill_config_yaml', '')))}"
+    if st.session_state.get("prefill_config_applied_token") != prefill_token:
+        if PREFILL_CONFIG.get("provider_uri"):
+            st.session_state["training_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])
+        st.session_state["prefill_config_applied_token"] = prefill_token
+
+
+def _prefill(name: str, default):
+    return PREFILL_CONFIG.get(name, default)
+
 provider_entries = list_provider_catalog_entries()
 if "training_provider_uri" not in st.session_state:
     st.session_state["training_provider_uri"] = ""
@@ -175,38 +202,38 @@ walk_forward_date_defaults = _walk_forward_date_defaults(provider_metadata)
 col1, col2 = st.columns(2)
 
 with col1:
-    instruments = st.text_input("instruments", value="csi300")
-    feature_handler = st.text_input("feature_handler", value="Alpha158")
+    instruments = st.text_input("instruments", value=str(_prefill("instruments", "csi300")))
+    feature_handler = st.text_input("feature_handler", value=str(_prefill("feature_handler", "Alpha158")))
 
     if mode == "pipeline":
         train_start = _select_trading_day(
             "train_start",
-            default=pipeline_date_defaults["train_start"],
+            default=str(_prefill("train_start", pipeline_date_defaults["train_start"])),
             metadata=provider_metadata,
         )
         train_end = _select_trading_day(
             "train_end",
-            default=pipeline_date_defaults["train_end"],
+            default=str(_prefill("train_end", pipeline_date_defaults["train_end"])),
             metadata=provider_metadata,
         )
         valid_start = _select_trading_day(
             "valid_start",
-            default=pipeline_date_defaults["valid_start"],
+            default=str(_prefill("valid_start", pipeline_date_defaults["valid_start"])),
             metadata=provider_metadata,
         )
         valid_end = _select_trading_day(
             "valid_end",
-            default=pipeline_date_defaults["valid_end"],
+            default=str(_prefill("valid_end", pipeline_date_defaults["valid_end"])),
             metadata=provider_metadata,
         )
         test_start = _select_trading_day(
             "test_start",
-            default=pipeline_date_defaults["test_start"],
+            default=str(_prefill("test_start", pipeline_date_defaults["test_start"])),
             metadata=provider_metadata,
         )
         test_end = _select_trading_day(
             "test_end",
-            default=pipeline_date_defaults["test_end"],
+            default=str(_prefill("test_end", pipeline_date_defaults["test_end"])),
             metadata=provider_metadata,
         )
     else:
@@ -227,15 +254,35 @@ with col1:
         ensemble_window = st.number_input("ensemble_window", value=1, min_value=1)
 
 with col2:
-    model_type = st.selectbox("model_type", ["LGBModel", "XGBModel", "CatBoostModel"])
-    compute_device = st.radio("compute_device", ["cpu", "gpu"], horizontal=True)
-    num_boost_round = st.number_input("num_boost_round", value=1000, min_value=1)
-    early_stopping_rounds = st.number_input("early_stopping_rounds", value=50, min_value=1)
-    learning_rate = st.number_input("learning_rate", value=0.005, format="%.4f")
-    benchmark_code = st.text_input("benchmark_code", value="SH000300")
-    topk = st.number_input("topk", value=50, min_value=1)
-    n_drop = st.number_input("n_drop", value=5, min_value=0)
-    signal_to_execution_lag = st.number_input("signal_to_execution_lag", value=1, min_value=0)
+    model_options = ["LGBModel", "XGBModel", "CatBoostModel"]
+    model_default = str(_prefill("model_type", "LGBModel"))
+    model_type = st.selectbox(
+        "model_type",
+        model_options,
+        index=model_options.index(model_default) if model_default in model_options else 0,
+    )
+    device_default = str(_prefill("compute_device", "cpu"))
+    compute_device = st.radio(
+        "compute_device",
+        ["cpu", "gpu"],
+        index=1 if device_default == "gpu" else 0,
+        horizontal=True,
+    )
+    num_boost_round = st.number_input("num_boost_round", value=int(_prefill("num_boost_round", 1000)), min_value=1)
+    early_stopping_rounds = st.number_input(
+        "early_stopping_rounds",
+        value=int(_prefill("early_stopping_rounds", 50)),
+        min_value=1,
+    )
+    learning_rate = st.number_input("learning_rate", value=float(_prefill("learning_rate", 0.005)), format="%.4f")
+    benchmark_code = st.text_input("benchmark_code", value=str(_prefill("benchmark_code", "SH000300")))
+    topk = st.number_input("topk", value=int(_prefill("topk", 50)), min_value=1)
+    n_drop = st.number_input("n_drop", value=int(_prefill("n_drop", 5)), min_value=0)
+    signal_to_execution_lag = st.number_input(
+        "signal_to_execution_lag",
+        value=int(_prefill("signal_to_execution_lag", 1)),
+        min_value=0,
+    )
 
 guard_errors: list[str] = []
 guard_warnings: list[str] = []
