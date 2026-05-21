@@ -75,8 +75,10 @@ def filter_log_text(
 
     search_term = str(search or "").strip().lower()
     selected = {str(level).upper() for level in levels if str(level).strip()}
+    if not selected:
+        return ""
     all_levels = set(LOG_LEVEL_OPTIONS)
-    apply_level_filter = bool(selected) and selected != all_levels
+    apply_level_filter = selected != all_levels
 
     kept: list[str] = []
     for line in str(text or "").splitlines():

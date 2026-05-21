@@ -33,4 +33,5 @@ without recomputing official metrics or mutating stored runtime artifacts.
 - **THEN** the Logs tab lets the operator search log text and filter by
   severity level
 - **AND** filtering changes only displayed log lines
+- **AND** clearing all severity levels displays no log lines
 - **AND** missing logs continue to show an empty state

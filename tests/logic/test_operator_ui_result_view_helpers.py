@@ -51,6 +51,15 @@ class ResultViewHelperTests(unittest.TestCase):
 
         self.assertEqual(filtered, text)
 
+    def test_filter_log_text_empty_severity_selection_returns_no_matches(self) -> None:
+        from web.operator_ui.result_view_helpers import filter_log_text
+
+        text = "INFO started\nERROR failed\nplain context"
+
+        filtered = filter_log_text(text, levels=())
+
+        self.assertEqual(filtered, "")
+
 
 if __name__ == "__main__":
     unittest.main()
