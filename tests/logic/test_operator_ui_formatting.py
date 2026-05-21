@@ -17,6 +17,16 @@ class OperatorUiFormattingTests(unittest.TestCase):
         self.assertEqual(format_percent(float("nan")), "unavailable")
         self.assertEqual(format_percent(float("inf")), "unavailable")
 
+    def test_format_percent_without_plus_still_preserves_negative_sign(self) -> None:
+        from web.operator_ui.formatting import format_percent
+
+        self.assertEqual(format_percent(0.1834, signed=False), "18.34%")
+        self.assertEqual(format_percent(-0.0245, signed=False), "-2.45%")
+        self.assertEqual(
+            format_percent(-0.0245, signed=False, parens_negative=True),
+            "(2.45%)",
+        )
+
     def test_format_number_handles_grouping_abbreviation_and_missing(self) -> None:
         from web.operator_ui.formatting import format_number
 

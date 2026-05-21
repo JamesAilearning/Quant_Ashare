@@ -45,8 +45,10 @@ def format_percent(
         body = f"{abs(percent):.{decimals}f}%"
         rendered = f"({body})"
     else:
-        if signed:
-            sign = "+" if percent >= 0 else "-"
+        if percent < 0:
+            sign = "-"
+        elif signed:
+            sign = "+"
         rendered = f"{sign}{abs(percent):.{decimals}f}%"
     if arrow:
         rendered += " up" if parsed >= 0 else " down"
