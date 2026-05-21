@@ -17,6 +17,13 @@ from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.result_exports import bundle_zip_bytes, metrics_csv_bytes, summary_pdf_bytes
+from web.operator_ui.result_view_helpers import (
+    LOG_LEVEL_OPTIONS,
+    TIME_RANGE_OPTIONS,
+    filter_log_text,
+    filter_nav_frame_by_range,
+    nav_y_range,
+)
 from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
 
 MISSING = "N/A"
@@ -253,11 +260,15 @@ def _install_styles() -> None:
         <style>
         .qv2-page {max-width: 1440px; margin: 0 auto;}
         .qv2-header {
+            position: sticky;
+            top: 0.75rem;
+            z-index: 10;
             border: 1px solid #e5e7eb;
             border-radius: 12px;
             padding: 18px 20px;
             background: #ffffff;
             margin-bottom: 18px;
+            box-shadow: 0 1px 6px rgba(15, 23, 42, 0.08);
         }
         .qv2-header-row {
             display: flex;
@@ -397,6 +408,24 @@ def _render_status_header(
             unsafe_allow_html=True,
         )
 
+    nav_cols = st.columns([1, 2, 3])
+    with nav_cols[0]:
+        if st.button("Back to Jobs"):
+            st.query_params.clear()
+            st.switch_page(str(Path(__file__).resolve().parent / "run_history.py"))
+    with nav_cols[1]:
+        st.text_input(
+            "Run ID (copyable)",
+            value="" if job_id == MISSING else job_id,
+            key=f"copy_run_id_{job_id}",
+        )
+    with nav_cols[2]:
+        st.text_input(
+            "Run directory (copyable)",
+            value="" if run_dir_text == MISSING else run_dir_text,
+            key=f"copy_run_dir_{job_id}",
+        )
+
     if config_bytes:
         st.download_button(
             "Download config.yaml",
@@ -472,6 +501,7 @@ def _render_header_actions(
             - `r`: re-run this job from the Config & Run page.
             - `e`: use the export buttons above.
             - `1`-`5`: switch between Holdings, Trades, Config, Stage Timings, and Logs.
+            - `/`: use Search holdings, Search trades, or Search logs fields.
 
             Streamlit does not expose global key handlers without a custom
             component, so these are mirrored as visible buttons and tabs.
@@ -505,11 +535,18 @@ def _metric_color(value: Any, *, negative_is_bad: bool = True) -> str:
     return ""
 
 
-def _render_card(title: str, primary: str, primary_class: str, lines: Sequence[str]) -> None:
+def _render_card(
+    title: str,
+    primary: str,
+    primary_class: str,
+    lines: Sequence[str],
+    *,
+    help_text: str,
+) -> None:
     line_html = "<br>".join(_safe_html(line) for line in lines)
     st.markdown(
         f"""
-        <div class="qv2-card">
+        <div class="qv2-card" title="{_safe_html(help_text)}">
           <div class="qv2-card-title">{_safe_html(title)}</div>
           <div class="qv2-primary{primary_class}">{_safe_html(primary)}</div>
           <div class="qv2-secondary">{line_html}</div>
@@ -566,6 +603,7 @@ def _render_kpis(
                 f"Sharpe: {_fmt_number(sharpe)}",
                 f"Benchmark: {_fmt_text(benchmark_code)}",
             ],
+            help_text="Performance card: return and risk-adjusted metrics copied from existing run artifacts.",
         )
     with cols[1]:
         _render_card(
@@ -577,6 +615,7 @@ def _render_kpis(
                 f"Metric status: {_fmt_text(report.get('metric_status'))}",
                 f"Official path: {_fmt_text(report.get('official_backtest_path'))}",
             ],
+            help_text="Risk card: drawdown and volatility fields copied from metrics/report artifacts.",
         )
     with cols[2]:
         position_days = _first(metrics, [("trading", "positions_days")])
@@ -597,6 +636,7 @@ def _render_kpis(
                 f"Position days: {_fmt_int(position_days)}",
                 f"Latest holdings: {_fmt_int(latest_count)}",
             ],
+            help_text="Trading card: displayed position metadata only; no trades are reconstructed in the UI.",
         )
 
 
@@ -792,8 +832,20 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
         _render_charts(run_dir)
         return
 
-    frame = nav_frame.copy()
-    frame["date"] = frame["date"].astype(str).str.slice(0, 10)
+    range_label = st.radio(
+        "Displayed time range",
+        TIME_RANGE_OPTIONS,
+        horizontal=True,
+        key="pipeline_result_time_range",
+    )
+    frame = filter_nav_frame_by_range(nav_frame, range_label)
+    if frame is None or frame.empty:
+        st.markdown(
+            '<div class="qv2-empty">No NAV rows are available for the selected time range.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
     nav_fig = go.Figure()
     nav_fig.add_trace(go.Scatter(
         x=frame["date"],
@@ -810,23 +862,16 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             name="Benchmark NAV",
             line={"width": 1.8, "color": "#94A3B8", "dash": "dash"},
         ))
+    nav_axis: dict[str, Any] = {"title": "NAV"}
+    y_range = nav_y_range(frame)
+    if y_range is not None:
+        nav_axis["range"] = y_range
     nav_fig.update_layout(
         height=420,
         hovermode="x unified",
         margin={"l": 36, "r": 20, "t": 20, "b": 36},
-        yaxis={"title": "NAV", "rangemode": "tozero"},
-        xaxis={
-            "title": "",
-            "rangeselector": {
-                "buttons": [
-                    {"count": 1, "label": "1M", "step": "month", "stepmode": "backward"},
-                    {"count": 3, "label": "3M", "step": "month", "stepmode": "backward"},
-                    {"count": 6, "label": "6M", "step": "month", "stepmode": "backward"},
-                    {"count": 1, "label": "1Y", "step": "year", "stepmode": "backward"},
-                    {"step": "all", "label": "ALL"},
-                ]
-            },
-        },
+        yaxis=nav_axis,
+        xaxis={"title": ""},
         legend={"orientation": "h", "yanchor": "bottom", "y": -0.24, "xanchor": "left", "x": 0},
     )
     st.plotly_chart(nav_fig, use_container_width=True)
@@ -872,10 +917,53 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
     import pandas as pd
 
     frame = pd.DataFrame(rows)
+    if {"month", "strategy"}.issubset(frame.columns):
+        try:
+            import plotly.graph_objects as go
+
+            period_index = pd.PeriodIndex(frame["month"].astype(str), freq="M")
+            heatmap_frame = frame.assign(
+                year=period_index.year,
+                month_label=period_index.strftime("%b"),
+            )
+            month_order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            pivot = heatmap_frame.pivot_table(
+                index="year",
+                columns="month_label",
+                values="strategy",
+                aggfunc="first",
+            ).reindex(columns=month_order)
+            text = pivot.apply(lambda col: col.map(lambda value: _fmt_percent(value, signed=True)))
+            fig = go.Figure(data=go.Heatmap(
+                z=pivot.values,
+                x=list(pivot.columns),
+                y=[str(value) for value in pivot.index],
+                text=text.values,
+                texttemplate="%{text}",
+                colorscale=[
+                    [0.0, "#dc2626"],
+                    [0.5, "#f8fafc"],
+                    [1.0, "#16a34a"],
+                ],
+                zmid=0,
+                colorbar={"tickformat": ".1%"},
+                hovertemplate="Year %{y}<br>Month %{x}<br>Strategy %{z:.2%}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=260,
+                margin={"l": 36, "r": 20, "t": 10, "b": 30},
+                xaxis={"title": ""},
+                yaxis={"title": ""},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except (ImportError, ValueError, TypeError):
+            st.info("Monthly heatmap is unavailable; showing the artifact rows as a table.")
+
+    display = frame.copy()
     for column in ("strategy", "benchmark"):
-        if column in frame:
-            frame[column] = frame[column].map(lambda value: _fmt_percent(value, signed=True))
-    st.dataframe(frame, use_container_width=True, hide_index=True)
+        if column in display:
+            display[column] = display[column].map(lambda value: _fmt_percent(value, signed=True))
+    st.dataframe(display, use_container_width=True, hide_index=True)
 
 
 def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Mapping[str, Any]) -> None:
@@ -922,19 +1010,38 @@ def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) ->
         st.info("Job log directory is not available.")
         return
 
+    search = st.text_input("Search logs", value="", placeholder="Type text to filter log lines")
+    levels = st.multiselect(
+        "Severity",
+        LOG_LEVEL_OPTIONS,
+        default=list(LOG_LEVEL_OPTIONS),
+        help="When all levels are selected, untagged log lines remain visible.",
+    )
     any_log = False
+    any_match = False
     for name in LOG_NAMES:
         path = job_dir / name
         text = _read_text_artifact(path, issues, artifact_name=name, tail_chars=30_000)
         if not text:
             continue
         any_log = True
+        filtered_text = filter_log_text(text, search=search, levels=levels)
+        if filtered_text:
+            any_match = True
         with st.expander(name, expanded=name in {"stderr.log", "runner_stderr.log"}):
             st.caption(str(path))
-            st.code(text, language="text")
+            st.caption(
+                f"Showing {len(filtered_text.splitlines())} of {len(text.splitlines())} log lines."
+            )
+            if filtered_text:
+                st.code(filtered_text, language="text")
+            else:
+                st.info("No log lines match the current filters.")
 
     if not any_log:
         st.info("Log files are empty or have not been written yet.")
+    elif not any_match:
+        st.info("No logs match the current search and severity filters.")
 
 
 def _render_raw_tab(
