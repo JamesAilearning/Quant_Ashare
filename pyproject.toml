@@ -42,7 +42,7 @@ tushare = [
   "tushare>=1.4",
 ]
 ui = [
-  "streamlit>=1.36",
+  "streamlit>=1.57",
   "plotly>=5.20",
   "reportlab>=4.0",
 ]
