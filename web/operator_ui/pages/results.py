@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -11,55 +10,82 @@ from typing import Any
 import streamlit as st
 import yaml
 
-from web.operator_ui._path_guard import guard_output_path, output_path
+from web.operator_ui import artifact_reader
+from web.operator_ui._path_guard import output_path
+from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
-from web.operator_ui.report_reader import read_pipeline_report, read_walk_forward_report
+from web.operator_ui.result_exports import bundle_zip_bytes, metrics_csv_bytes, summary_pdf_bytes
 from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
 
 MISSING = "N/A"
 LOG_NAMES = ("stdout.log", "stderr.log", "runner_stdout.log", "runner_stderr.log")
 
 
-def _read_json_artifact(path: Path | None) -> dict[str, Any]:
-    if path is None:
-        return {}
-    guard_output_path(path)
-    if not path.is_file():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+def _record_issue(
+    issues: list[ArtifactReadIssue],
+    result: artifact_reader.ArtifactReadResult,
+) -> Any:
+    if result.issue is not None:
+        issues.append(result.issue)
+    return result.value
 
 
-def _read_text_artifact(path: Path | None, *, tail_chars: int | None = None) -> str:
-    if path is None:
-        return ""
-    guard_output_path(path)
-    if not path.is_file():
-        return ""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    if tail_chars is not None and len(text) > tail_chars:
-        return text[-tail_chars:]
-    return text
+def _read_json_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
+    value = _record_issue(
+        issues,
+        artifact_reader.read_json_artifact(path, artifact_name=artifact_name),
+    )
+    return value if isinstance(value, dict) else {}
 
 
-def _read_bytes_artifact(path: Path | None) -> bytes:
-    if path is None:
-        return b""
-    guard_output_path(path)
-    if not path.is_file():
-        return b""
-    try:
-        return path.read_bytes()
-    except OSError:
-        return b""
+def _read_parquet_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> Any:
+    return _record_issue(
+        issues,
+        artifact_reader.read_parquet_artifact(path, artifact_name=artifact_name),
+    )
+
+
+def _read_text_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+    tail_chars: int | None = None,
+) -> str:
+    value = _record_issue(
+        issues,
+        artifact_reader.read_text_artifact(
+            path,
+            artifact_name=artifact_name,
+            tail_chars=tail_chars,
+        ),
+    )
+    return str(value or "")
+
+
+def _read_bytes_artifact(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> bytes:
+    value = _record_issue(
+        issues,
+        artifact_reader.read_bytes_artifact(path, artifact_name=artifact_name),
+    )
+    return value if isinstance(value, bytes) else b""
 
 
 def _job_dir(job: Mapping[str, Any]) -> Path | None:
@@ -81,17 +107,28 @@ def _path_or_none(value: Any) -> Path | None:
     return Path(text)
 
 
-def _read_config(job: Mapping[str, Any]) -> tuple[dict[str, Any], Path | None, bytes]:
+def _read_config(
+    job: Mapping[str, Any],
+    issues: list[ArtifactReadIssue],
+) -> tuple[dict[str, Any], Path | None, bytes]:
     config_path = _path_or_none(job.get("config_path"))
     if config_path is None:
         candidate = _job_dir(job)
         config_path = candidate / "config.yaml" if candidate is not None else None
-    config_bytes = _read_bytes_artifact(config_path)
+    config_bytes = _read_bytes_artifact(config_path, issues, artifact_name="config.yaml")
     if not config_bytes:
         return {}, config_path, b""
     try:
         loaded = yaml.safe_load(config_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError):
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        issues.append(
+            ArtifactReadIssue(
+                artifact_name="config.yaml",
+                path="" if config_path is None else str(config_path),
+                error_type=type(exc).__name__,
+                message=str(exc),
+            )
+        )
         return {}, config_path, config_bytes
     return loaded if isinstance(loaded, dict) else {}, config_path, config_bytes
 
@@ -100,6 +137,9 @@ def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path 
     run_dir = _path_or_none(job.get("run_dir"))
     if run_dir is not None:
         return run_dir
+    job_status = str(job.get("status") or "").lower()
+    if job_status not in {"success", "completed", "ok"}:
+        return None
     output_dir = _path_or_none(config.get("output_dir"))
     if output_dir is None:
         return None
@@ -309,14 +349,20 @@ def _render_status_header(
     job: Mapping[str, Any],
     run_dir: Path | None,
     report: Mapping[str, Any],
+    metadata: Mapping[str, Any],
     config_bytes: bytes,
 ) -> None:
     job_id = _fmt_text(job.get("job_id"))
-    status = _fmt_text(job.get("status"))
-    started = _fmt_text(job.get("started_at"))
-    ended = _fmt_text(job.get("ended_at"))
-    duration = _fmt_duration(job.get("started_at"), job.get("ended_at"))
-    generated_at = _fmt_text(report.get("generated_at"))
+    status = _fmt_text(job.get("status") or metadata.get("status"))
+    started = _fmt_text(job.get("started_at") or metadata.get("started_at"))
+    ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))
+    duration_seconds = _finite_float(metadata.get("duration_seconds"))
+    duration = (
+        f"{int(duration_seconds)}s"
+        if duration_seconds is not None and str(job.get("status") or "").lower() in {"success", "completed", "ok"}
+        else _fmt_duration(job.get("started_at"), job.get("ended_at"))
+    )
+    generated_at = _fmt_text(metadata.get("finished_at") or report.get("generated_at"))
     status_class = _status_class(status)
     run_dir_text = _fmt_text(run_dir)
 
@@ -327,7 +373,7 @@ def _render_status_header(
             <div>
               <div class="qv2-run-id">
                 Pipeline Result
-                <span class="qv2-badge {status_class}">{_safe_html(status)}</span>
+                <span class="qv2-badge {status_class}" role="status" aria-live="polite">{_safe_html(status)}</span>
               </div>
               <div class="qv2-muted">Job: {_safe_html(job_id)}</div>
               <div class="qv2-muted">Run directory: {_safe_html(run_dir_text)}</div>
@@ -344,7 +390,7 @@ def _render_status_header(
         unsafe_allow_html=True,
     )
 
-    if status.lower() == "failed":
+    if str(job.get("status") or status).lower() == "failed":
         error = job.get("error") or job.get("stop_error") or f"returncode={job.get('returncode')}"
         st.markdown(
             f"<div class='qv2-error'>This job failed: {_safe_html(error)}</div>",
@@ -357,6 +403,94 @@ def _render_status_header(
             data=config_bytes,
             file_name="config.yaml",
             mime="text/yaml",
+        )
+
+
+def _render_header_actions(
+    *,
+    job: Mapping[str, Any],
+    run_dir: Path | None,
+    config_bytes: bytes,
+    metrics: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> None:
+    action_cols = st.columns([1, 1, 1, 1])
+    with action_cols[0]:
+        if st.button("Re-run with this config", disabled=not config_bytes):
+            st.session_state["prefill_config_yaml"] = config_bytes.decode("utf-8", errors="replace")
+            st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
+            st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
+    with action_cols[1]:
+        st.download_button(
+            "Export metrics CSV",
+            data=metrics_csv_bytes(metrics),
+            file_name=f"{job.get('job_id', 'pipeline')}_metrics.csv",
+            mime="text/csv",
+            disabled=not metrics,
+        )
+    with action_cols[2]:
+        pdf_bytes = b""
+        pdf_error = ""
+        if metrics:
+            try:
+                pdf_bytes = summary_pdf_bytes(
+                    run_id=str(job.get("job_id") or ""),
+                    status=str(job.get("status") or metadata.get("status") or ""),
+                    metrics=metrics,
+                    metadata=metadata,
+                )
+            except RuntimeError as exc:
+                pdf_error = str(exc)
+        st.download_button(
+            "Export PDF report",
+            data=pdf_bytes,
+            file_name=f"{job.get('job_id', 'pipeline')}_summary.pdf",
+            mime="application/pdf",
+            disabled=not pdf_bytes,
+            help=pdf_error or None,
+        )
+    with action_cols[3]:
+        bundle_bytes = b""
+        if run_dir is not None:
+            try:
+                bundle_bytes = bundle_zip_bytes(run_dir)
+            except (OSError, ValueError):
+                bundle_bytes = b""
+        st.download_button(
+            "Export full bundle",
+            data=bundle_bytes,
+            file_name=f"{job.get('job_id', 'pipeline')}_bundle.zip",
+            mime="application/zip",
+            disabled=not bundle_bytes,
+        )
+
+    with st.expander("Keyboard shortcuts", expanded=False):
+        st.markdown(
+            """
+            - `?`: open shortcut help in this section.
+            - `j` / `k`: move to the next / previous job from the Run selector.
+            - `r`: re-run this job from the Config & Run page.
+            - `e`: use the export buttons above.
+            - `1`-`5`: switch between Holdings, Trades, Config, Stage Timings, and Logs.
+
+            Streamlit does not expose global key handlers without a custom
+            component, so these are mirrored as visible buttons and tabs.
+            """
+        )
+
+
+def _render_artifact_issues(issues: Sequence[ArtifactReadIssue]) -> None:
+    if not issues:
+        return
+
+    st.markdown(
+        '<div class="qv2-section-title">Artifact Read Issues</div>',
+        unsafe_allow_html=True,
+    )
+    for issue in issues:
+        st.error(
+            f"{issue.artifact_name}: {issue.error_type}: {issue.message} "
+            f"(path: {issue.path or MISSING})"
         )
 
 
@@ -385,14 +519,29 @@ def _render_card(title: str, primary: str, primary_class: str, lines: Sequence[s
     )
 
 
-def _render_kpis(report: Mapping[str, Any], positions: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+def _render_kpis(
+    report: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    positions: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> None:
     risk = _nested(report, "risk_analysis", "excess_return_with_cost") or {}
     if not isinstance(risk, Mapping):
         risk = {}
 
-    ann_return = risk.get("annualized_return")
-    max_drawdown = risk.get("max_drawdown")
-    information_ratio = risk.get("information_ratio")
+    ann_return = _first(metrics, [("performance", "annual_return")])
+    ann_return_label = "Primary: annual return"
+    if ann_return is None:
+        ann_return = _first(metrics, [("performance", "annual_excess_return_with_cost")])
+        ann_return_label = "Primary: annual excess return with cost"
+    if ann_return is None:
+        ann_return = risk.get("annualized_return")
+    max_drawdown = _first(metrics, [("risk", "max_drawdown")])
+    if max_drawdown is None:
+        max_drawdown = risk.get("max_drawdown")
+    information_ratio = _first(metrics, [("performance", "information_ratio")])
+    if information_ratio is None:
+        information_ratio = risk.get("information_ratio")
     volatility = risk.get("annualized_volatility") or risk.get("volatility")
     sharpe = risk.get("sharpe")
 
@@ -412,6 +561,7 @@ def _render_kpis(report: Mapping[str, Any], positions: Mapping[str, Any], config
             _fmt_percent(ann_return, signed=True),
             _metric_color(ann_return),
             [
+                ann_return_label,
                 f"Information Ratio: {_fmt_number(information_ratio)}",
                 f"Sharpe: {_fmt_number(sharpe)}",
                 f"Benchmark: {_fmt_text(benchmark_code)}",
@@ -429,12 +579,14 @@ def _render_kpis(report: Mapping[str, Any], positions: Mapping[str, Any], config
             ],
         )
     with cols[2]:
-        position_days = len(positions) if positions else None
-        latest_count = None
+        position_days = _first(metrics, [("trading", "positions_days")])
+        if position_days is None:
+            position_days = len(positions) if positions else None
+        latest_count = _first(metrics, [("trading", "latest_holding_count")])
         if positions:
             latest_key = sorted(str(key) for key in positions.keys())[-1]
             latest_positions = positions.get(latest_key)
-            if isinstance(latest_positions, Mapping):
+            if latest_count is None and isinstance(latest_positions, Mapping):
                 latest_count = len(latest_positions)
         _render_card(
             "Trading",
@@ -507,15 +659,71 @@ def _render_charts(run_dir: Path | None) -> None:
                 st.image(str(path), use_container_width=True)
 
 
-def _read_positions(run_dir: Path | None) -> dict[str, Any]:
+def _read_positions(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> dict[str, Any]:
     if run_dir is None:
         return {}
-    return _read_json_artifact(run_dir / "positions.json")
+    return _read_json_artifact(run_dir / "positions.json", issues, artifact_name="positions.json")
 
 
-def _render_holdings_tab(positions: Mapping[str, Any]) -> None:
+def _read_metadata(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> dict[str, Any]:
+    if run_dir is None:
+        return {}
+    return _read_json_artifact(run_dir / "metadata.json", issues, artifact_name="metadata.json")
+
+
+def _read_metrics(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> dict[str, Any]:
+    if run_dir is None:
+        return {}
+    return _read_json_artifact(run_dir / "metrics.json", issues, artifact_name="metrics.json")
+
+
+def _read_holdings_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> Any:
+    if run_dir is None:
+        return None
+    return _read_parquet_artifact(
+        run_dir / "holdings.parquet",
+        issues,
+        artifact_name="holdings.parquet",
+    )
+
+
+def _read_trades_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> Any:
+    if run_dir is None:
+        return None
+    return _read_parquet_artifact(run_dir / "trades.parquet", issues, artifact_name="trades.parquet")
+
+
+def _read_nav_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> Any:
+    if run_dir is None:
+        return None
+    return _read_parquet_artifact(run_dir / "nav.parquet", issues, artifact_name="nav.parquet")
+
+
+def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> None:
+    if holdings_frame is not None and not holdings_frame.empty:
+        dates = sorted(str(value)[:10] for value in holdings_frame["date"].dropna().unique())
+        selected_date = st.selectbox("Position date", dates, index=len(dates) - 1)
+        search = st.text_input("Search holdings", value="", placeholder="Stock code")
+        top_n = st.number_input("Show top holdings", value=100, min_value=1, max_value=1000)
+        filtered = holdings_frame[
+            holdings_frame["date"].astype(str).str.slice(0, 10) == selected_date
+        ]
+        if search.strip():
+            filtered = filtered[
+                filtered["stock"].astype(str).str.contains(search.strip(), case=False, na=False)
+            ]
+        filtered = filtered.sort_values("rank", kind="stable").head(int(top_n))
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Export holdings CSV",
+            data=filtered.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"holdings_{selected_date}.csv",
+            mime="text/csv",
+        )
+        return
+
     if not positions:
-        st.info("Holdings will appear after positions.json is written.")
+        st.info("Holdings will appear after holdings.parquet or positions.json is written.")
         return
 
     dates = sorted(str(key) for key in positions.keys())
@@ -532,6 +740,142 @@ def _render_holdings_tab(positions: Mapping[str, Any]) -> None:
         for instrument, weight in sorted(date_positions.items(), key=lambda item: str(item[0]))
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_trades_tab(trades_frame: Any) -> None:
+    if trades_frame is None:
+        st.info("A trade-log artifact is not available for this run yet.")
+        return
+    if trades_frame.empty:
+        st.info(
+            "trades.parquet exists, but the current canonical runtime does "
+            "not expose trade-level fills yet."
+        )
+        return
+    frame = trades_frame.copy()
+    if "date" in frame and not frame.empty:
+        dates = sorted(str(value)[:10] for value in frame["date"].dropna().unique())
+        selected_dates = st.multiselect("Trade dates", dates, default=dates)
+        if selected_dates:
+            frame = frame[frame["date"].astype(str).str.slice(0, 10).isin(selected_dates)]
+    if "side" in frame and not frame.empty:
+        sides = sorted(str(value) for value in frame["side"].dropna().unique())
+        selected_sides = st.multiselect("Side", sides, default=sides)
+        if selected_sides:
+            frame = frame[frame["side"].astype(str).isin(selected_sides)]
+    search = st.text_input("Search trades", value="", placeholder="Stock code")
+    if search.strip() and "stock" in frame:
+        frame = frame[frame["stock"].astype(str).str.contains(search.strip(), case=False, na=False)]
+    st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Export trades CSV",
+        data=frame.to_csv(index=False).encode("utf-8-sig"),
+        file_name="trades.csv",
+        mime="text/csv",
+    )
+
+
+def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
+    st.markdown('<div class="qv2-section-title">Net Asset Value</div>', unsafe_allow_html=True)
+    if nav_frame is None or nav_frame.empty:
+        st.markdown(
+            '<div class="qv2-empty">Backtest NAV artifact is not available yet.</div>',
+            unsafe_allow_html=True,
+        )
+        _render_charts(run_dir)
+        return
+
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        st.warning("plotly is not installed; falling back to generated PNG charts.")
+        _render_charts(run_dir)
+        return
+
+    frame = nav_frame.copy()
+    frame["date"] = frame["date"].astype(str).str.slice(0, 10)
+    nav_fig = go.Figure()
+    nav_fig.add_trace(go.Scatter(
+        x=frame["date"],
+        y=frame["strategy_nav"],
+        mode="lines",
+        name="Strategy NAV",
+        line={"width": 2.4, "color": "#3B82F6"},
+    ))
+    if "benchmark_nav" in frame and frame["benchmark_nav"].notna().any():
+        nav_fig.add_trace(go.Scatter(
+            x=frame["date"],
+            y=frame["benchmark_nav"],
+            mode="lines",
+            name="Benchmark NAV",
+            line={"width": 1.8, "color": "#94A3B8", "dash": "dash"},
+        ))
+    nav_fig.update_layout(
+        height=420,
+        hovermode="x unified",
+        margin={"l": 36, "r": 20, "t": 20, "b": 36},
+        yaxis={"title": "NAV", "rangemode": "tozero"},
+        xaxis={
+            "title": "",
+            "rangeselector": {
+                "buttons": [
+                    {"count": 1, "label": "1M", "step": "month", "stepmode": "backward"},
+                    {"count": 3, "label": "3M", "step": "month", "stepmode": "backward"},
+                    {"count": 6, "label": "6M", "step": "month", "stepmode": "backward"},
+                    {"count": 1, "label": "1Y", "step": "year", "stepmode": "backward"},
+                    {"step": "all", "label": "ALL"},
+                ]
+            },
+        },
+        legend={"orientation": "h", "yanchor": "bottom", "y": -0.24, "xanchor": "left", "x": 0},
+    )
+    st.plotly_chart(nav_fig, use_container_width=True)
+
+    st.markdown('<div class="qv2-section-title">Drawdown</div>', unsafe_allow_html=True)
+    dd_fig = go.Figure()
+    if "strategy_drawdown" in frame:
+        dd_fig.add_trace(go.Scatter(
+            x=frame["date"],
+            y=frame["strategy_drawdown"],
+            mode="lines",
+            name="Strategy Drawdown",
+            fill="tozeroy",
+            line={"width": 2.0, "color": "#DC2626"},
+        ))
+    if "benchmark_drawdown" in frame and frame["benchmark_drawdown"].notna().any():
+        dd_fig.add_trace(go.Scatter(
+            x=frame["date"],
+            y=frame["benchmark_drawdown"],
+            mode="lines",
+            name="Benchmark Drawdown",
+            line={"width": 1.5, "color": "#94A3B8", "dash": "dash"},
+        ))
+    dd_fig.update_layout(
+        height=320,
+        hovermode="x unified",
+        margin={"l": 36, "r": 20, "t": 20, "b": 36},
+        yaxis={"title": "Drawdown", "tickformat": ".1%"},
+        xaxis={"title": ""},
+        legend={"orientation": "h", "yanchor": "bottom", "y": -0.28, "xanchor": "left", "x": 0},
+    )
+    st.plotly_chart(dd_fig, use_container_width=True)
+
+
+def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
+    rows = metrics.get("monthly_returns")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or not rows:
+        st.markdown(
+            '<div class="qv2-empty">Monthly returns are not available yet.</div>',
+            unsafe_allow_html=True,
+        )
+        return
+    import pandas as pd
+
+    frame = pd.DataFrame(rows)
+    for column in ("strategy", "benchmark"):
+        if column in frame:
+            frame[column] = frame[column].map(lambda value: _fmt_percent(value, signed=True))
+    st.dataframe(frame, use_container_width=True, hide_index=True)
 
 
 def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Mapping[str, Any]) -> None:
@@ -556,22 +900,23 @@ def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Ma
     st.code(config_text, language="yaml")
 
 
-def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any]) -> None:
+def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any], metadata: Mapping[str, Any]) -> None:
     progress = job.get("progress") if isinstance(job.get("progress"), Mapping) else {}
     rows = {
-        "status": job.get("status"),
-        "started_at": job.get("started_at"),
-        "ended_at": job.get("ended_at"),
-        "duration": _fmt_duration(job.get("started_at"), job.get("ended_at")),
+        "status": job.get("status") or metadata.get("status"),
+        "started_at": job.get("started_at") or metadata.get("started_at"),
+        "ended_at": job.get("ended_at") or metadata.get("finished_at"),
+        "duration_seconds": metadata.get("duration_seconds"),
         "progress_percent": progress.get("percent"),
         "progress_label": progress.get("label"),
         "progress_detail": progress.get("detail"),
         "report_generated_at": report.get("generated_at"),
+        "stage_timings": metadata.get("stage_timings"),
     }
     st.json({key: value for key, value in rows.items() if value not in (None, "")})
 
 
-def _render_logs_tab(job: Mapping[str, Any]) -> None:
+def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) -> None:
     job_dir = _job_dir(job)
     if job_dir is None:
         st.info("Job log directory is not available.")
@@ -580,7 +925,7 @@ def _render_logs_tab(job: Mapping[str, Any]) -> None:
     any_log = False
     for name in LOG_NAMES:
         path = job_dir / name
-        text = _read_text_artifact(path, tail_chars=30_000)
+        text = _read_text_artifact(path, issues, artifact_name=name, tail_chars=30_000)
         if not text:
             continue
         any_log = True
@@ -592,7 +937,23 @@ def _render_logs_tab(job: Mapping[str, Any]) -> None:
         st.info("Log files are empty or have not been written yet.")
 
 
-def _render_raw_tab(job: Mapping[str, Any], report: Mapping[str, Any], positions: Mapping[str, Any]) -> None:
+def _render_raw_tab(
+    job: Mapping[str, Any],
+    report: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    positions: Mapping[str, Any],
+) -> None:
+    with st.expander("Raw metadata.json", expanded=False):
+        if metadata:
+            st.json(metadata)
+        else:
+            st.info("metadata.json is not available yet.")
+    with st.expander("Raw metrics.json", expanded=False):
+        if metrics:
+            st.json(metrics)
+        else:
+            st.info("metrics.json is not available yet.")
     with st.expander("Raw pipeline_report.json", expanded=False):
         if report:
             st.json(report)
@@ -615,13 +976,28 @@ def _render_pipeline_dashboard(
     config: Mapping[str, Any],
     config_path: Path | None,
     config_bytes: bytes,
+    issues: list[ArtifactReadIssue],
 ) -> None:
-    positions = _read_positions(run_dir)
+    positions = _read_positions(run_dir, issues)
+    metadata = _read_metadata(run_dir, issues)
+    metrics = _read_metrics(run_dir, issues)
+    holdings_frame = _read_holdings_frame(run_dir, issues)
+    trades_frame = _read_trades_frame(run_dir, issues)
+    nav_frame = _read_nav_frame(run_dir, issues)
     _render_status_header(
         job=job,
         run_dir=run_dir,
         report=report,
+        metadata=metadata,
         config_bytes=config_bytes,
+    )
+    _render_artifact_issues(issues)
+    _render_header_actions(
+        job=job,
+        run_dir=run_dir,
+        config_bytes=config_bytes,
+        metrics=metrics,
+        metadata=metadata,
     )
 
     if not report:
@@ -630,22 +1006,24 @@ def _render_pipeline_dashboard(
             "job metadata, config, logs, and any partial artifacts."
         )
 
-    _render_kpis(report, positions, config)
-    _render_charts(run_dir)
+    _render_kpis(report, metrics, positions, config)
+    _render_interactive_charts(nav_frame, run_dir)
+    st.markdown('<div class="qv2-section-title">Monthly Returns</div>', unsafe_allow_html=True)
+    _render_monthly_returns(metrics)
 
     tabs = st.tabs(["Holdings", "Trades", "Config", "Stage Timings", "Logs", "Raw JSON"])
     with tabs[0]:
-        _render_holdings_tab(positions)
+        _render_holdings_tab(holdings_frame, positions)
     with tabs[1]:
-        st.info("A trade-log artifact is not produced by the current pipeline runtime.")
+        _render_trades_tab(trades_frame)
     with tabs[2]:
         _render_config_tab(config_path, config_bytes, config)
     with tabs[3]:
-        _render_timings_tab(job, report)
+        _render_timings_tab(job, report, metadata)
     with tabs[4]:
-        _render_logs_tab(job)
+        _render_logs_tab(job, issues)
     with tabs[5]:
-        _render_raw_tab(job, report, positions)
+        _render_raw_tab(job, report, metadata, metrics, positions)
 
 
 def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
@@ -679,7 +1057,7 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
         st.dataframe(df, use_container_width=True)
 
 
-def _render_tushare_provider(run_dir: Path | None) -> None:
+def _render_tushare_provider(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> None:
     st.header("Tushare Provider Data")
     if run_dir is None:
         st.info("Provider output directory is not available yet.")
@@ -693,15 +1071,21 @@ def _render_tushare_provider(run_dir: Path | None) -> None:
     for warning in metadata.warnings:
         st.warning(warning)
 
-    validation = _read_json_artifact(metadata.validation_path)
+    validation = _read_json_artifact(
+        metadata.validation_path,
+        issues,
+        artifact_name="validation.json",
+    )
     if validation:
         st.subheader("Validation")
         st.json(validation)
 
-    manifest = _read_json_artifact(metadata.manifest_path)
+    manifest = _read_json_artifact(metadata.manifest_path, issues, artifact_name="manifest.json")
     if manifest:
         st.subheader("Manifest")
         st.json(manifest)
+
+    _render_artifact_issues(issues)
 
     st.info(
         "Tushare provider jobs create qlib data bundles. They do not produce "
@@ -717,6 +1101,28 @@ def _job_label(job: Mapping[str, Any]) -> str:
     return f"{job_id} ({mode}, {status})"
 
 
+def _query_run_id() -> str:
+    value = st.query_params.get("run_id", "")
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
+def _default_job_id(jobs: Sequence[Mapping[str, Any]]) -> str:
+    for job in jobs:
+        if str(job.get("status") or "").lower() in {"success", "completed"}:
+            return str(job.get("job_id") or "")
+    return str(jobs[0].get("job_id") or "") if jobs else ""
+
+
+def _render_run_not_found(run_id: str) -> None:
+    st.error(f"Run not found: {run_id}")
+    st.caption("It may have been deleted, or the link is wrong.")
+    if st.button("Back to Jobs"):
+        st.query_params.clear()
+        st.rerun()
+
+
 _install_styles()
 st.title("Results")
 
@@ -730,27 +1136,53 @@ if not viewable_jobs:
     st.warning("No UI-launched jobs found. Run a pipeline, walk-forward, or Tushare provider job first.")
 else:
     job_ids = [str(job.get("job_id")) for job in viewable_jobs if job.get("job_id")]
+    requested_run_id = _query_run_id()
+    if requested_run_id and requested_run_id not in job_ids:
+        _render_run_not_found(requested_run_id)
+        st.stop()
+    default_job_id = requested_run_id or _default_job_id(viewable_jobs)
+    default_index = job_ids.index(default_job_id) if default_job_id in job_ids else 0
     selected_job_id = st.selectbox(
         "Run",
         options=job_ids,
+        index=default_index,
         format_func=lambda value: _job_label(
             next((job for job in viewable_jobs if str(job.get("job_id")) == value), {})
         ),
     )
+    if selected_job_id and selected_job_id != requested_run_id:
+        st.query_params["run_id"] = selected_job_id
     selected_job = next(
         (job for job in viewable_jobs if str(job.get("job_id")) == selected_job_id),
         viewable_jobs[0],
     )
 
-    config, config_path, config_bytes = _read_config(selected_job)
+    artifact_issues: list[ArtifactReadIssue] = []
+    config, config_path, config_bytes = _read_config(selected_job, artifact_issues)
     run_dir = _resolve_run_dir(selected_job, config)
     mode = str(selected_job.get("mode") or "")
 
     if mode == "tushare_provider":
-        _render_tushare_provider(run_dir)
+        _render_tushare_provider(run_dir, artifact_issues)
     else:
-        pipeline_report = read_pipeline_report(run_dir) if run_dir is not None else {}
-        wf_report = read_walk_forward_report(run_dir) if run_dir is not None else {}
+        pipeline_report = (
+            _read_json_artifact(
+                run_dir / "pipeline_report.json",
+                artifact_issues,
+                artifact_name="pipeline_report.json",
+            )
+            if run_dir is not None
+            else {}
+        )
+        wf_report = (
+            _read_json_artifact(
+                run_dir / "walk_forward_report.json",
+                artifact_issues,
+                artifact_name="walk_forward_report.json",
+            )
+            if run_dir is not None
+            else {}
+        )
 
         if mode == "pipeline" or pipeline_report:
             _render_pipeline_dashboard(
@@ -760,14 +1192,18 @@ else:
                 config=config,
                 config_path=config_path,
                 config_bytes=config_bytes,
+                issues=artifact_issues,
             )
         elif mode == "walk_forward" or wf_report:
             if wf_report:
+                _render_artifact_issues(artifact_issues)
                 _render_walk_forward_summary(wf_report)
                 _render_charts(run_dir)
             else:
+                _render_artifact_issues(artifact_issues)
                 st.warning("No walk_forward_report.json found in this run directory yet.")
                 _render_config_tab(config_path, config_bytes, config)
-                _render_logs_tab(selected_job)
+                _render_logs_tab(selected_job, artifact_issues)
         else:
+            _render_artifact_issues(artifact_issues)
             st.warning("No pipeline_report.json or walk_forward_report.json found in this run directory.")

@@ -46,6 +46,7 @@ from src.core.performance_attribution import (
     PerformanceAttribution,
     PerformanceAttributionError,
 )
+from src.core.pipeline_result_artifacts import write_pipeline_result_artifacts
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
@@ -391,7 +392,7 @@ class Pipeline:
 
         # Step 3: Train model
         _logger.info("Training model...")
-        model_artifact_path = str(output_dir / "model.pkl")
+        model_artifact_path = str(output_dir / "artifacts" / "model.pkl")
         model_result = ModelTrainer.train_and_predict(
             config=build_model_train_config(config),
             dataset=feature_result.dataset,
@@ -646,6 +647,28 @@ class Pipeline:
             _logger.warning(
                 "Chart generation skipped after successful report write: "
                 "%s: %s.",
+                type(exc).__name__, exc,
+            )
+
+        try:
+            artifact_paths = write_pipeline_result_artifacts(
+                output_dir,
+                config=config,
+                backtest_output=backtest_output,
+                predictions=model_result.predictions,
+                started_at=started_at,
+                report_path=report_path,
+                model_artifact_path=model_result.model_artifact_path,
+                status="completed",
+            )
+            _logger.info(
+                "  Result artifacts: %s",
+                ", ".join(sorted(Path(path).name for path in artifact_paths.values())),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Structured result artifact generation skipped after "
+                "successful report write: %s: %s.",
                 type(exc).__name__, exc,
             )
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.report_reader import read_all_catalog_entries
 
 st.title("Run History")
+
+_PAGES_DIR = Path(__file__).resolve().parent
 
 st.header("UI Jobs")
 jobs = JobManager.list_jobs()
@@ -20,6 +24,11 @@ if jobs:
         "Started": str(j.get("started_at") or "")[:19],
     } for j in jobs])
     st.dataframe(df, use_container_width=True)
+    job_ids = [str(j.get("job_id")) for j in jobs if j.get("job_id")]
+    selected_job_id = st.selectbox("Open job detail", job_ids)
+    if st.button("Open selected job in Results"):
+        st.query_params["run_id"] = selected_job_id
+        st.switch_page(str(_PAGES_DIR / "results.py"))
 else:
     st.info("No UI-launched jobs found.")
 

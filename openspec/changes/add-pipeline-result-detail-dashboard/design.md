@@ -11,14 +11,27 @@
   expanders for exact inspection.
 - Generated config download uses the exact bytes from the UI job's
   `config.yaml` when available.
+- Re-run prefill copies the exact `config.yaml` bytes into Streamlit session
+  state and redirects to Config & Run. The operator still reviews and submits
+  a new job explicitly.
+- `job.json` is the selected UI job's lifecycle source of truth. Run artifact
+  metadata can enrich a completed job, but it must not override a failed,
+  stopped, or running job's current status.
+- When a pipeline CLI fails, the UI runner does not infer a run directory from
+  a reused `output_dir/runs` folder. This avoids copying exact config bytes or
+  logs into an unrelated historical run.
+- CSV, PDF, and ZIP exports are display/export helpers only. They copy values
+  from existing artifacts and never compute replacement official metrics.
+- Streamlit does not provide global keyboard shortcuts without a custom
+  component in this codebase, so shortcut coverage is exposed as visible
+  operator guidance and mirrored by buttons/tabs.
 
 ## Compatibility
 
-The product spec describes a future richer backend schema (`metrics.json`,
-`nav.parquet`, `holdings.parquet`, `trades.parquet`). This change deliberately
-does not invent those files. The dashboard presents the current artifact
-contract and uses clear empty states for artifacts that are not produced yet
-(for example trade logs).
+The product spec describes richer backend artifacts (`metrics.json`,
+`nav.parquet`, `holdings.parquet`, `trades.parquet`). This change consumes
+those artifacts when present and uses clear empty states when a current run or
+runtime path has not produced one yet.
 
 ## Governance
 
