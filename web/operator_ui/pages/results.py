@@ -137,6 +137,9 @@ def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path 
     run_dir = _path_or_none(job.get("run_dir"))
     if run_dir is not None:
         return run_dir
+    job_status = str(job.get("status") or "").lower()
+    if job_status not in {"success", "completed", "ok"}:
+        return None
     output_dir = _path_or_none(config.get("output_dir"))
     if output_dir is None:
         return None
@@ -350,13 +353,13 @@ def _render_status_header(
     config_bytes: bytes,
 ) -> None:
     job_id = _fmt_text(job.get("job_id"))
-    status = _fmt_text(metadata.get("status") or job.get("status"))
-    started = _fmt_text(metadata.get("started_at") or job.get("started_at"))
-    ended = _fmt_text(metadata.get("finished_at") or job.get("ended_at"))
+    status = _fmt_text(job.get("status") or metadata.get("status"))
+    started = _fmt_text(job.get("started_at") or metadata.get("started_at"))
+    ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))
     duration_seconds = _finite_float(metadata.get("duration_seconds"))
     duration = (
         f"{int(duration_seconds)}s"
-        if duration_seconds is not None
+        if duration_seconds is not None and str(job.get("status") or "").lower() in {"success", "completed", "ok"}
         else _fmt_duration(job.get("started_at"), job.get("ended_at"))
     )
     generated_at = _fmt_text(metadata.get("finished_at") or report.get("generated_at"))
@@ -387,7 +390,7 @@ def _render_status_header(
         unsafe_allow_html=True,
     )
 
-    if status.lower() == "failed":
+    if str(job.get("status") or status).lower() == "failed":
         error = job.get("error") or job.get("stop_error") or f"returncode={job.get('returncode')}"
         st.markdown(
             f"<div class='qv2-error'>This job failed: {_safe_html(error)}</div>",
@@ -432,7 +435,7 @@ def _render_header_actions(
             try:
                 pdf_bytes = summary_pdf_bytes(
                     run_id=str(job.get("job_id") or ""),
-                    status=str(metadata.get("status") or job.get("status") or ""),
+                    status=str(job.get("status") or metadata.get("status") or ""),
                     metrics=metrics,
                     metadata=metadata,
                 )
@@ -900,9 +903,9 @@ def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Ma
 def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any], metadata: Mapping[str, Any]) -> None:
     progress = job.get("progress") if isinstance(job.get("progress"), Mapping) else {}
     rows = {
-        "status": metadata.get("status") or job.get("status"),
-        "started_at": metadata.get("started_at") or job.get("started_at"),
-        "ended_at": metadata.get("finished_at") or job.get("ended_at"),
+        "status": job.get("status") or metadata.get("status"),
+        "started_at": job.get("started_at") or metadata.get("started_at"),
+        "ended_at": job.get("ended_at") or metadata.get("finished_at"),
         "duration_seconds": metadata.get("duration_seconds"),
         "progress_percent": progress.get("percent"),
         "progress_label": progress.get("label"),

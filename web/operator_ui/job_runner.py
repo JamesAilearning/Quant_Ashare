@@ -178,14 +178,17 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     ended = datetime.now(timezone.utc).isoformat()
-    if result.returncode == 0:
+    succeeded = result.returncode == 0
+    if succeeded:
         _write_job_json(job_dir, {"status": "success", "ended_at": ended})
     else:
         _write_job_json(job_dir, {"status": "failed", "ended_at": ended, "returncode": result.returncode})
 
-    # Try to find the run directory
+    # Try to find the run directory only after successful CLI completion.
+    # Failed runs can leave old directories under a reused output_dir; binding
+    # those to this job would pollute historical artifacts and hide the failure.
     output_dir = _read_output_dir(config_path)
-    if output_dir:
+    if succeeded and output_dir:
         run_dir = _find_run_dir(Path(output_dir))
         if run_dir:
             if mode == "pipeline":

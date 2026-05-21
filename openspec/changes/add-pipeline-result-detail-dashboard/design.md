@@ -14,6 +14,12 @@
 - Re-run prefill copies the exact `config.yaml` bytes into Streamlit session
   state and redirects to Config & Run. The operator still reviews and submits
   a new job explicitly.
+- `job.json` is the selected UI job's lifecycle source of truth. Run artifact
+  metadata can enrich a completed job, but it must not override a failed,
+  stopped, or running job's current status.
+- When a pipeline CLI fails, the UI runner does not infer a run directory from
+  a reused `output_dir/runs` folder. This avoids copying exact config bytes or
+  logs into an unrelated historical run.
 - CSV, PDF, and ZIP exports are display/export helpers only. They copy values
   from existing artifacts and never compute replacement official metrics.
 - Streamlit does not provide global keyboard shortcuts without a custom

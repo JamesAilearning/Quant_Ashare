@@ -108,6 +108,15 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("Keyboard shortcuts", source)
         self.assertIn("Streamlit does not expose global key handlers", source)
 
+    def test_results_page_does_not_let_stale_run_metadata_mask_job_failure(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn('job_status not in {"success", "completed", "ok"}', source)
+        self.assertIn('status = _fmt_text(job.get("status") or metadata.get("status"))', source)
+        self.assertIn('started = _fmt_text(job.get("started_at") or metadata.get("started_at"))', source)
+        self.assertIn('ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))', source)
+        self.assertIn('if str(job.get("status") or status).lower() == "failed":', source)
+
 
 if __name__ == "__main__":
     unittest.main()

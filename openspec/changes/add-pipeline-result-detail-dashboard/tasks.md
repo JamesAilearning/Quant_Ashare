@@ -14,6 +14,7 @@
 - [x] Add re-run action that pre-fills Config & Run from exact config bytes
 - [x] Add artifact-level holdings and trades filters with CSV exports
 - [x] Add accessibility status role and keyboard shortcut guidance
+- [x] Prevent failed pipeline jobs from binding stale run directories or masking failures with stale metadata
 - [x] Preserve Tushare provider artifact rendering
 - [x] Preserve walk-forward summary rendering
 

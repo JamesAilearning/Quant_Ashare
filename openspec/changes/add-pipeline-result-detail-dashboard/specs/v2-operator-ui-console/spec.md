@@ -39,6 +39,17 @@ JSON fallback. It SHALL NOT require every artifact to exist before rendering.
 - **AND** report-dependent sections show `N/A` or an empty-state message
 - **AND** no substitute metric is computed by the UI
 
+#### Scenario: current job status conflicts with stale run artifact metadata
+
+- **WHEN** the selected UI job has status `failed`, `running`, `stopped`, or
+  any non-success status
+- **THEN** the Results page treats `job.json` as the current status source of
+  truth
+- **AND** it does not infer a pipeline run directory from `output_dir/runs`
+  unless the current job itself completed successfully
+- **AND** stale `metadata.json` from an older run cannot hide the selected
+  job's failure banner
+
 #### Scenario: exact runtime config is available
 
 - **WHEN** the UI job directory contains `config.yaml`
