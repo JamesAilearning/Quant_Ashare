@@ -108,6 +108,32 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("Keyboard shortcuts", source)
         self.assertIn("Streamlit does not expose global key handlers", source)
 
+    def test_results_page_exposes_polished_header_navigation(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("position: sticky", source)
+        self.assertIn("Back to Jobs", source)
+        self.assertIn("Run ID (copyable)", source)
+        self.assertIn("Run directory (copyable)", source)
+        self.assertIn('st.switch_page(str(Path(__file__).resolve().parent / "run_history.py"))', source)
+
+    def test_results_page_uses_shared_nav_drawdown_time_range(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("TIME_RANGE_OPTIONS", source)
+        self.assertIn("Displayed time range", source)
+        self.assertIn("filter_nav_frame_by_range(nav_frame, range_label)", source)
+        self.assertIn("nav_y_range(frame)", source)
+
+    def test_results_page_renders_monthly_heatmap_and_log_filters(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("go.Heatmap(", source)
+        self.assertIn("Monthly heatmap is unavailable", source)
+        self.assertIn("Search logs", source)
+        self.assertIn("LOG_LEVEL_OPTIONS", source)
+        self.assertIn("filter_log_text(text, search=search, levels=levels)", source)
+
     def test_results_page_does_not_let_stale_run_metadata_mask_job_failure(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
