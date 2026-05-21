@@ -1,0 +1,312 @@
+/*
+ * Operator UI design tokens.
+ * This file is the single visual-token source for Streamlit UI PRs.
+ */
+
+:root {
+  color-scheme: light;
+
+  --bg-page: #FAFAFA;
+  --bg-card: #FFFFFF;
+  --bg-subtle: #F5F5F7;
+  --bg-elevated: #FFFFFF;
+  --bg-overlay: rgba(15, 23, 42, 0.50);
+
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-tertiary: #94A3B8;
+  --text-inverse: #FFFFFF;
+  --text-link: #3B82F6;
+  --text-link-hover: #2563EB;
+
+  --border-subtle: #E5E7EB;
+  --border-medium: #D1D5DB;
+  --border-strong: #9CA3AF;
+  --border-focus: #3B82F6;
+
+  --brand-primary: #3B82F6;
+  --brand-primary-hover: #2563EB;
+  --brand-primary-bg: #DBEAFE;
+
+  --positive: #16A34A;
+  --positive-bg: #DCFCE7;
+  --positive-text: #166534;
+  --negative: #DC2626;
+  --negative-bg: #FEE2E2;
+  --negative-text: #991B1B;
+  --warning: #EAB308;
+  --warning-bg: #FEF3C7;
+  --warning-text: #92400E;
+  --info: #3B82F6;
+  --info-bg: #DBEAFE;
+  --info-text: #1E40AF;
+  --neutral: #6B7280;
+  --neutral-bg: #F3F4F6;
+  --neutral-text: #374151;
+
+  --chart-strategy: #3B82F6;
+  --chart-benchmark: #94A3B8;
+  --chart-drawdown: #DC2626;
+  --chart-grid: #E5E7EB;
+  --chart-axis: #94A3B8;
+  --chart-cat-1: #3B82F6;
+  --chart-cat-2: #10B981;
+  --chart-cat-3: #F59E0B;
+  --chart-cat-4: #8B5CF6;
+  --chart-cat-5: #EC4899;
+  --chart-cat-6: #14B8A6;
+  --chart-cat-7: #F97316;
+  --chart-cat-8: #6366F1;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  --tracking-normal: 0;
+  --tracking-wide: 0.025em;
+  --tracking-wider: 0.05em;
+
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  --radius-none: 0;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 1px 3px 0 rgba(0, 0, 0, 0.10), 0 1px 2px -1px rgba(0, 0, 0, 0.10);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.10), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+
+  --duration-instant: 75ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root[data-qv2-color-convention="chinese"] {
+  --positive: #DC2626;
+  --positive-bg: #FEE2E2;
+  --positive-text: #991B1B;
+  --negative: #16A34A;
+  --negative-bg: #DCFCE7;
+  --negative-text: #166534;
+}
+
+:root[data-qv2-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-page: #0F172A;
+  --bg-card: #1E293B;
+  --bg-subtle: #0F172A;
+  --bg-elevated: #1E293B;
+  --bg-overlay: rgba(0, 0, 0, 0.70);
+
+  --text-primary: #F1F5F9;
+  --text-secondary: #94A3B8;
+  --text-tertiary: #64748B;
+  --text-inverse: #0F172A;
+  --text-link: #60A5FA;
+  --text-link-hover: #93C5FD;
+
+  --border-subtle: #334155;
+  --border-medium: #475569;
+  --border-strong: #64748B;
+  --border-focus: #60A5FA;
+
+  --brand-primary: #60A5FA;
+  --brand-primary-hover: #93C5FD;
+  --brand-primary-bg: #1E3A8A;
+
+  --positive: #22C55E;
+  --positive-bg: #14532D;
+  --positive-text: #BBF7D0;
+  --negative: #EF4444;
+  --negative-bg: #7F1D1D;
+  --negative-text: #FECACA;
+  --warning: #FACC15;
+  --warning-bg: #78350F;
+  --warning-text: #FDE68A;
+  --info: #60A5FA;
+  --info-bg: #1E3A8A;
+  --info-text: #BFDBFE;
+  --neutral: #94A3B8;
+  --neutral-bg: #374151;
+  --neutral-text: #D1D5DB;
+
+  --chart-grid: #334155;
+  --chart-axis: #64748B;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 1px 3px 0 rgba(0, 0, 0, 0.40), 0 1px 2px -1px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 4px 6px -1px rgba(0, 0, 0, 0.40), 0 2px 4px -2px rgba(0, 0, 0, 0.30);
+}
+
+:root[data-qv2-theme="dark"][data-qv2-color-convention="chinese"] {
+  --positive: #EF4444;
+  --positive-bg: #7F1D1D;
+  --positive-text: #FECACA;
+  --negative: #22C55E;
+  --negative-bg: #14532D;
+  --negative-text: #BBF7D0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-qv2-theme="auto"] {
+    color-scheme: dark;
+    --bg-page: #0F172A;
+    --bg-card: #1E293B;
+    --bg-subtle: #0F172A;
+    --bg-elevated: #1E293B;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --text-tertiary: #64748B;
+    --border-subtle: #334155;
+    --border-medium: #475569;
+    --positive: #22C55E;
+    --positive-bg: #14532D;
+    --positive-text: #BBF7D0;
+    --negative: #EF4444;
+    --negative-bg: #7F1D1D;
+    --negative-text: #FECACA;
+    --warning: #FACC15;
+    --warning-bg: #78350F;
+    --warning-text: #FDE68A;
+    --info: #60A5FA;
+    --info-bg: #1E3A8A;
+    --info-text: #BFDBFE;
+    --neutral: #94A3B8;
+    --neutral-bg: #374151;
+    --neutral-text: #D1D5DB;
+    --chart-grid: #334155;
+    --chart-axis: #64748B;
+  }
+
+  :root[data-qv2-theme="auto"][data-qv2-color-convention="chinese"] {
+    --positive: #EF4444;
+    --positive-bg: #7F1D1D;
+    --positive-text: #FECACA;
+    --negative: #22C55E;
+    --negative-bg: #14532D;
+    --negative-text: #BBF7D0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+  }
+}
+
+.stApp {
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+.qv2-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-4);
+}
+
+.qv2-text-page-title {
+  color: var(--text-primary);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+}
+
+.qv2-text-card-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.qv2-text-metric-primary {
+  color: var(--text-primary);
+  font-size: var(--text-3xl);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+}
+
+.qv2-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.qv2-positive {
+  color: var(--positive);
+}
+
+.qv2-negative {
+  color: var(--negative);
+}
+
+.qv2-muted {
+  color: var(--text-secondary);
+}
+
+.qv2-token-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.qv2-swatch {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.qv2-swatch-color {
+  height: 44px;
+}
+
+.qv2-swatch-label {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-2);
+}

@@ -6,7 +6,12 @@ from pathlib import Path
 
 import streamlit as st
 
+from web.operator_ui.theme import inject_theme, load_preferences, render_appearance_controls
+
 st.set_page_config(page_title="Qlib Trading System", layout="wide")
+
+_preferences = render_appearance_controls(load_preferences())
+inject_theme(_preferences)
 
 st.title("Qlib Trading System V2")
 
@@ -22,6 +27,9 @@ pg = st.navigation({
     ],
     "History": [
         st.Page(str(_PAGES_DIR / "run_history.py"), title="Run History"),
+    ],
+    "System": [
+        st.Page(str(_PAGES_DIR / "design_system.py"), title="Design System"),
     ],
 })
 
