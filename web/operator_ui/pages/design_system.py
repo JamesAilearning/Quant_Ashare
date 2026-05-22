@@ -7,11 +7,24 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from web.operator_ui.components import (
+    render_accordion,
     render_badge,
+    render_button,
+    render_card,
     render_empty_state,
     render_error_state,
+    render_field,
+    render_icon_button,
+    render_modal,
+    render_progress_bar,
     render_skeleton,
+    render_spinner,
     render_stat_card,
+    render_table,
+    render_tabs,
+    render_tag,
+    render_toast,
+    render_tooltip,
 )
 from web.operator_ui.formatting import (
     format_date_absolute,
@@ -21,7 +34,6 @@ from web.operator_ui.formatting import (
     format_percent,
     format_relative_time,
 )
-
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 
 render_breadcrumbs([("System", None)])
@@ -157,6 +169,67 @@ render_error_state(
     error="KeyError: run_id='pipeline_xxxx_yyyy'",
     on_retry="window.location.reload()",
     variant="inline",
+)
+
+st.header("Controls")
+control_cols = st.columns(4)
+with control_cols[0]:
+    render_button("Run", variant="primary", icon=">")
+with control_cols[1]:
+    render_button("Cancel", variant="secondary")
+with control_cols[2]:
+    render_icon_button("R", "Refresh")
+with control_cols[3]:
+    render_button("Delete", variant="danger", disabled=True)
+
+st.header("Tags and Tooltip")
+tag_cols = st.columns(4)
+with tag_cols[0]:
+    render_tag("UI", variant="info")
+with tag_cols[1]:
+    render_tag("CLI", variant="neutral")
+with tag_cols[2]:
+    render_tag("Failed", variant="danger", removable=True)
+with tag_cols[3]:
+    render_tooltip("IR", "Information ratio from canonical qlib output.")
+
+st.header("Card / Tabs / Accordion")
+render_card("Reusable Card", ["Token-backed surface", "No runtime data access"])
+render_tabs(["Holdings", "Trades", "Config"], active_index=1)
+render_accordion("Advanced options", "Accordion content uses native details/summary markup.")
+
+st.header("Feedback")
+feedback_cols = st.columns(3)
+with feedback_cols[0]:
+    render_toast("Configuration copied.", title="Copied", variant="success")
+with feedback_cols[1]:
+    render_progress_bar(62, label="Training progress")
+with feedback_cols[2]:
+    render_spinner("Starting job")
+
+st.header("Form Field")
+render_field(
+    "Provider URI",
+    '<input class="qv2-field-control" value="D:/qlib_data/cn" aria-label="Provider URI" />',
+    help_text="Presentation-only demo field.",
+    required=True,
+)
+
+st.header("Table")
+render_table(
+    ["Run", "Status", "Source"],
+    [
+        ["pipeline_54f50f26", "completed", "UI"],
+        ["walk_forward_bea7395", "running", "CLI"],
+    ],
+    caption="Design-system table example",
+)
+
+st.header("Modal")
+render_modal(
+    "Confirm delete",
+    "Static modal preview. Page-level workflows attach Streamlit actions.",
+    footer="Cancel | Delete",
 )
 
 # ---------------------------------------------------------------------------

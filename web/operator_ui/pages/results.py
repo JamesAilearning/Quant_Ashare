@@ -31,6 +31,12 @@ from web.operator_ui.training_guards import inspect_provider_metadata, provider_
 
 MISSING = "N/A"
 LOG_NAMES = ("stdout.log", "stderr.log", "runner_stdout.log", "runner_stderr.log")
+PLOTLY_STRATEGY_COLOR = "royalblue"
+PLOTLY_BENCHMARK_COLOR = "lightslategray"
+PLOTLY_DRAWDOWN_COLOR = "firebrick"
+PLOTLY_POSITIVE_COLOR = "seagreen"
+PLOTLY_NEGATIVE_COLOR = "firebrick"
+PLOTLY_NEUTRAL_COLOR = "white"
 
 
 def _record_issue(
@@ -266,67 +272,67 @@ def _install_styles() -> None:
             position: sticky;
             top: 0.75rem;
             z-index: 10;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 18px 20px;
-            background: #ffffff;
-            margin-bottom: 18px;
-            box-shadow: 0 1px 6px rgba(15, 23, 42, 0.08);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            padding: var(--space-4) var(--space-5);
+            background: var(--bg-card);
+            margin-bottom: var(--space-5);
+            box-shadow: var(--shadow-md);
         }
         .qv2-header-row {
             display: flex;
             align-items: flex-start;
             justify-content: space-between;
-            gap: 16px;
+            gap: var(--space-4);
             flex-wrap: wrap;
         }
         .qv2-run-id {
             font-size: 1.25rem;
-            font-weight: 700;
-            color: #0f172a;
+            font-weight: var(--weight-bold);
+            color: var(--text-primary);
         }
-        .qv2-muted {color: #64748b; font-size: 0.9rem;}
+        .qv2-muted {color: var(--text-secondary); font-size: var(--text-sm);}
         .qv2-badge {
             display: inline-flex;
             align-items: center;
             border-radius: 999px;
             padding: 4px 10px;
-            font-weight: 700;
+            font-weight: var(--weight-bold);
             font-size: 0.8rem;
-            margin-left: 8px;
+            margin-left: var(--space-2);
         }
-        .status-success {background: #dcfce7; color: #166534;}
-        .status-running {background: #dbeafe; color: #1e40af;}
-        .status-failed {background: #fee2e2; color: #991b1b;}
-        .status-warning {background: #fef3c7; color: #92400e;}
-        .status-muted {background: #f3f4f6; color: #4b5563;}
+        .status-success {background: var(--positive-bg); color: var(--positive-text);}
+        .status-running {background: var(--info-bg); color: var(--info-text);}
+        .status-failed {background: var(--negative-bg); color: var(--negative-text);}
+        .status-warning {background: var(--warning-bg); color: var(--warning-text);}
+        .status-muted {background: var(--neutral-bg); color: var(--neutral-text);}
         .qv2-card {
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            background: #ffffff;
-            padding: 18px;
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            background: var(--bg-card);
+            padding: var(--space-5);
             min-height: 150px;
-            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+            box-shadow: var(--shadow-sm);
         }
         .qv2-card-title {
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: var(--tracking-wider);
             font-size: 0.78rem;
-            color: #64748b;
-            font-weight: 700;
-            margin-bottom: 10px;
+            color: var(--text-secondary);
+            font-weight: var(--weight-bold);
+            margin-bottom: var(--space-3);
         }
         .qv2-primary {
             font-size: 2rem;
             line-height: 1.15;
             font-weight: 800;
-            color: #0f172a;
-            margin-bottom: 4px;
+            color: var(--text-primary);
+            margin-bottom: var(--space-1);
         }
-        .qv2-positive {color: #16a34a;}
-        .qv2-negative {color: #dc2626;}
+        .qv2-positive {color: var(--positive);}
+        .qv2-negative {color: var(--negative);}
         .qv2-secondary {
-            color: #475569;
+            color: var(--text-secondary);
             font-size: 0.92rem;
             line-height: 1.65;
         }
@@ -335,22 +341,22 @@ def _install_styles() -> None:
             margin-bottom: 10px;
             font-size: 1.15rem;
             font-weight: 800;
-            color: #0f172a;
+            color: var(--text-primary);
         }
         .qv2-empty {
-            border: 1px dashed #cbd5e1;
-            border-radius: 12px;
-            padding: 20px;
-            color: #64748b;
-            background: #f8fafc;
+            border: 1px dashed var(--border-medium);
+            border-radius: var(--radius-lg);
+            padding: var(--space-5);
+            color: var(--text-secondary);
+            background: var(--bg-subtle);
         }
         .qv2-error {
-            border-radius: 12px;
-            padding: 14px 16px;
-            color: #991b1b;
-            background: #fee2e2;
-            border: 1px solid #fecaca;
-            margin: 12px 0 18px;
+            border-radius: var(--radius-lg);
+            padding: var(--space-3) var(--space-4);
+            color: var(--negative-text);
+            background: var(--negative-bg);
+            border: 1px solid var(--negative);
+            margin: var(--space-3) 0 var(--space-5);
         }
         </style>
         """,
@@ -855,7 +861,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
         y=frame["strategy_nav"],
         mode="lines",
         name="Strategy NAV",
-        line={"width": 2.4, "color": "#3B82F6"},
+        line={"width": 2.4, "color": PLOTLY_STRATEGY_COLOR},
     ))
     if "benchmark_nav" in frame and frame["benchmark_nav"].notna().any():
         nav_fig.add_trace(go.Scatter(
@@ -863,7 +869,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             y=frame["benchmark_nav"],
             mode="lines",
             name="Benchmark NAV",
-            line={"width": 1.8, "color": "#94A3B8", "dash": "dash"},
+            line={"width": 1.8, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dash"},
         ))
     nav_axis: dict[str, Any] = {"title": "NAV"}
     y_range = nav_y_range(frame)
@@ -888,7 +894,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             mode="lines",
             name="Strategy Drawdown",
             fill="tozeroy",
-            line={"width": 2.0, "color": "#DC2626"},
+            line={"width": 2.0, "color": PLOTLY_DRAWDOWN_COLOR},
         ))
     if "benchmark_drawdown" in frame and frame["benchmark_drawdown"].notna().any():
         dd_fig.add_trace(go.Scatter(
@@ -896,7 +902,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             y=frame["benchmark_drawdown"],
             mode="lines",
             name="Benchmark Drawdown",
-            line={"width": 1.5, "color": "#94A3B8", "dash": "dash"},
+            line={"width": 1.5, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dash"},
         ))
     dd_fig.update_layout(
         height=320,
@@ -944,9 +950,9 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
                 text=text.values,
                 texttemplate="%{text}",
                 colorscale=[
-                    [0.0, "#dc2626"],
-                    [0.5, "#f8fafc"],
-                    [1.0, "#16a34a"],
+                    [0.0, PLOTLY_NEGATIVE_COLOR],
+                    [0.5, PLOTLY_NEUTRAL_COLOR],
+                    [1.0, PLOTLY_POSITIVE_COLOR],
                 ],
                 zmid=0,
                 colorbar={"tickformat": ".1%"},

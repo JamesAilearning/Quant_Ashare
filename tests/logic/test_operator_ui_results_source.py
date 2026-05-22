@@ -142,6 +142,15 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("LOG_LEVEL_OPTIONS", source)
         self.assertIn("filter_log_text(text, search=search, levels=levels)", source)
 
+    def test_plotly_trace_colors_use_valid_literals_not_css_variables(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("PLOTLY_STRATEGY_COLOR", source)
+        self.assertIn("PLOTLY_BENCHMARK_COLOR", source)
+        self.assertIn("PLOTLY_DRAWDOWN_COLOR", source)
+        self.assertNotIn('"color": "var(--', source)
+        self.assertNotIn('[0.0, "var(--', source)
+
     def test_results_page_does_not_let_stale_run_metadata_mask_job_failure(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
