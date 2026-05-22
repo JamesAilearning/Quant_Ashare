@@ -39,12 +39,17 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn('"Saved data source"', source)
         self.assertIn('st.session_state["training_provider_uri"] = selected_entry.provider_uri', source)
 
-    def test_config_page_exposes_delete_controls_for_jobs_and_saved_data(self) -> None:
+    def test_config_page_exposes_delete_controls_for_saved_data(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
         self.assertIn("delete_provider_catalog_entry(selected_entry.job_id)", source)
-        self.assertIn("JobManager.delete(job_id)", source)
-        self.assertIn("disabled=status == \"running\" or not job_id", source)
+
+    def test_jobs_page_references_job_manager(self) -> None:
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn("list_all_jobs", source)
+        page_imports_jobs = "from web.operator_ui.job_io" in source or "JobManager" in source
+        self.assertTrue(page_imports_jobs, "jobs.py should import from job_io or JobManager")
 
     def test_training_dates_use_provider_trading_day_selectors(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")

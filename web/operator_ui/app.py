@@ -34,10 +34,10 @@ elif _failed:
     _status_text = "1 job failed" if _failed == 1 else f"{_failed} jobs failed"
 
 _ICON_MAP = {
+    "Jobs": "\U0001f4cb",            # 📋
     "Config & Run": "\U0001f680",   # 🚀
     "Results": "\U0001f4c8",        # 📈
     "Walk-Forward": "\U0001f501",   # 🔁
-    "Run History": "\U0001f4da",    # 📚
     "Design System": "\U0001f3a8",  # 🎨
 }
 _ICON_SCRIPT = """
@@ -107,14 +107,12 @@ _PAGES_DIR = Path(__file__).resolve().parent / "pages"
 pg = st.navigation(
     {
         "Run": [
+            st.Page(str(_PAGES_DIR / "jobs.py"), title="Jobs"),
             st.Page(str(_PAGES_DIR / "config_run.py"), title="Config & Run"),
         ],
         "Analyze": [
             st.Page(str(_PAGES_DIR / "results.py"), title="Results"),
             st.Page(str(_PAGES_DIR / "walk_forward.py"), title="Walk-Forward"),
-        ],
-        "History": [
-            st.Page(str(_PAGES_DIR / "run_history.py"), title="Run History"),
         ],
         "System": [
             st.Page(str(_PAGES_DIR / "design_system.py"), title="Design System"),

@@ -66,7 +66,7 @@ class ResultsPageSourceTests(unittest.TestCase):
 
     def test_results_page_supports_run_id_and_interactive_nav(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
-        history_source = Path("web/operator_ui/pages/run_history.py").read_text(encoding="utf-8")
+        jobs_source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
 
         self.assertIn('st.query_params.get("run_id"', source)
         self.assertIn("Run not found", source)
@@ -74,8 +74,8 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("Strategy NAV", source)
         self.assertIn("Strategy Drawdown", source)
         self.assertIn("Monthly Returns", source)
-        self.assertIn('st.query_params["run_id"]', history_source)
-        self.assertIn('st.switch_page(str(_PAGES_DIR / "results.py"))', history_source)
+        self.assertIn('st.query_params["run_id"]', jobs_source)
+        self.assertIn('pages/results.py', jobs_source)
 
     def test_results_page_exposes_export_and_rerun_actions(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
