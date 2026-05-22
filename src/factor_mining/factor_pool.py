@@ -1,0 +1,257 @@
+"""Factor pool: dedup-by-hash, novelty scoring, parquet+JSON persistence.
+
+Implements ``factor_mining_design.md`` §6.2 pool format:
+
+- ``factor_pool.parquet`` — one row per ``PoolEntry``, columns =
+  scalar metrics + ``expr_hash``. Fast to query with pandas /
+  pyarrow.
+- ``factor_expressions.json`` — mapping ``expr_hash`` → serialised
+  expression dict. Human-inspectable; the AST is small enough that
+  JSON is the right choice.
+
+No qlib import, no ``src.pit`` import. Pure dedup + correlation +
+serialisation arithmetic.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from .evaluator import EvaluationResult
+from .expression import Expression
+
+POOL_PARQUET_FILENAME = "factor_pool.parquet"
+POOL_EXPR_JSON_FILENAME = "factor_expressions.json"
+
+
+@dataclass(frozen=True)
+class PoolEntry:
+    """A single entry in the factor pool.
+
+    The structural ``expr_hash`` is the dedup key. Metric scalars are
+    persisted to parquet; the ``Expression`` is persisted to JSON via
+    ``Expression.to_dict``.
+    """
+
+    expr: Expression
+    fitness: float
+    ic_mean: float
+    ic_std: float
+    ir: float
+    rank_ic_mean: float
+    rank_ic_std: float
+    rank_ir: float
+    turnover_daily: float
+    coverage: float
+    n_obs_per_day_min: int
+    expr_size: int
+    expr_hash: int
+
+    @classmethod
+    def from_result(
+        cls,
+        expr: Expression,
+        result: EvaluationResult,
+        fitness: float,
+        expr_size: int,
+    ) -> PoolEntry:
+        return cls(
+            expr=expr,
+            fitness=float(fitness),
+            ic_mean=float(result.ic_mean),
+            ic_std=float(result.ic_std),
+            ir=float(result.ir),
+            rank_ic_mean=float(result.rank_ic_mean),
+            rank_ic_std=float(result.rank_ic_std),
+            rank_ir=float(result.rank_ir),
+            turnover_daily=float(result.turnover_daily),
+            coverage=float(result.coverage),
+            n_obs_per_day_min=int(result.n_obs_per_day_min),
+            expr_size=int(expr_size),
+            expr_hash=hash(expr),
+        )
+
+
+class FactorPool:
+    """Dedup-by-hash factor pool with parquet+JSON persistence."""
+
+    def __init__(self) -> None:
+        self._entries: dict[int, PoolEntry] = {}
+
+    # ------------------------------------------------------------------
+    # Mutators
+    # ------------------------------------------------------------------
+
+    def add(self, entry: PoolEntry) -> bool:
+        """Add ``entry`` if not previously added (by structural hash).
+
+        Returns True if the entry was added, False if it was a
+        duplicate. Commutative-equivalent expressions (e.g.
+        ``add($volume, $money)`` vs ``add($money, $volume)``) hash
+        identically per Phase 1's structural-hash contract, so the
+        second add is dropped here.
+        """
+        if entry.expr_hash in self._entries:
+            return False
+        self._entries[entry.expr_hash] = entry
+        return True
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __contains__(self, expr_hash: object) -> bool:
+        return isinstance(expr_hash, int) and expr_hash in self._entries
+
+    def all_entries(self) -> list[PoolEntry]:
+        return list(self._entries.values())
+
+    def top_k(self, k: int, by: str = "fitness") -> list[PoolEntry]:
+        """Top-``k`` entries by the named scalar attribute (default
+        ``"fitness"``). Larger is better."""
+        entries = list(self._entries.values())
+        if not hasattr(PoolEntry, by) and by not in PoolEntry.__dataclass_fields__:
+            raise ValueError(f"Unknown sort key: {by!r}")
+        entries.sort(key=lambda e: getattr(e, by), reverse=True)
+        return entries[: max(0, int(k))]
+
+    def correlation_with(
+        self,
+        factor_values: pd.DataFrame,
+        existing_values: Mapping[int, pd.DataFrame] | None = None,
+    ) -> float:
+        """Max absolute Pearson correlation between ``factor_values``
+        and the supplied ``existing_values`` mapping (expr_hash →
+        factor DataFrame).
+
+        Returns 0.0 if the pool is empty or no overlapping cells are
+        available. The novelty term of fitness uses this value (the
+        GP engine in Phase 3 maintains ``existing_values`` as a cache
+        of recently-scored factor values).
+        """
+        if not existing_values or factor_values.empty:
+            return 0.0
+        max_abs = 0.0
+        new_stack = factor_values.stack(future_stack=True)
+        if new_stack.empty:
+            return 0.0
+        for _hash, other in existing_values.items():
+            if other is None or other.empty:
+                continue
+            other_stack = other.stack(future_stack=True)
+            joined = pd.concat({"new": new_stack, "old": other_stack}, axis=1).dropna()
+            if len(joined) < 3:
+                continue
+            corr = joined["new"].corr(joined["old"])
+            if not np.isfinite(corr):
+                continue
+            max_abs = max(max_abs, abs(float(corr)))
+        return max_abs
+
+    # ------------------------------------------------------------------
+    # Persistence (v1 §6.2 format)
+    # ------------------------------------------------------------------
+
+    def save(self, dir_path: str | Path) -> Path:
+        """Write the pool to ``dir_path/{factor_pool.parquet,factor_expressions.json}``.
+
+        Returns the resolved directory path.
+        """
+        d = Path(dir_path)
+        d.mkdir(parents=True, exist_ok=True)
+        entries = list(self._entries.values())
+        if entries:
+            metrics = pd.DataFrame(
+                [
+                    {
+                        "expr_hash": str(e.expr_hash),
+                        "fitness": e.fitness,
+                        "ic_mean": e.ic_mean,
+                        "ic_std": e.ic_std,
+                        "ir": e.ir,
+                        "rank_ic_mean": e.rank_ic_mean,
+                        "rank_ic_std": e.rank_ic_std,
+                        "rank_ir": e.rank_ir,
+                        "turnover_daily": e.turnover_daily,
+                        "coverage": e.coverage,
+                        "n_obs_per_day_min": e.n_obs_per_day_min,
+                        "expr_size": e.expr_size,
+                    }
+                    for e in entries
+                ]
+            )
+        else:
+            metrics = pd.DataFrame(
+                columns=[
+                    "expr_hash", "fitness", "ic_mean", "ic_std", "ir",
+                    "rank_ic_mean", "rank_ic_std", "rank_ir",
+                    "turnover_daily", "coverage", "n_obs_per_day_min",
+                    "expr_size",
+                ]
+            )
+        metrics.to_parquet(d / POOL_PARQUET_FILENAME, index=False)
+        expr_map = {
+            str(e.expr_hash): e.expr.to_dict()
+            for e in entries
+        }
+        with (d / POOL_EXPR_JSON_FILENAME).open("w", encoding="utf-8") as fh:
+            json.dump(expr_map, fh, indent=2, sort_keys=True)
+        return d
+
+    @classmethod
+    def load(cls, dir_path: str | Path) -> FactorPool:
+        """Reconstruct a pool from ``dir_path``.
+
+        Asserts that every ``expr_hash`` in the parquet has a matching
+        AST in the JSON, and that hashing the reconstructed
+        ``Expression`` produces the same ``expr_hash``.
+        """
+        d = Path(dir_path)
+        metrics_path = d / POOL_PARQUET_FILENAME
+        json_path = d / POOL_EXPR_JSON_FILENAME
+        if not metrics_path.exists():
+            raise FileNotFoundError(f"{metrics_path} does not exist")
+        if not json_path.exists():
+            raise FileNotFoundError(f"{json_path} does not exist")
+        metrics = pd.read_parquet(metrics_path)
+        with json_path.open("r", encoding="utf-8") as fh:
+            expr_map = json.load(fh)
+        pool = cls()
+        for _, row in metrics.iterrows():
+            h_key = str(row["expr_hash"])
+            if h_key not in expr_map:
+                raise ValueError(
+                    f"pool integrity: expr_hash {h_key} present in parquet "
+                    "but missing from JSON"
+                )
+            expr = Expression.from_dict(expr_map[h_key])
+            actual_hash = hash(expr)
+            entry = PoolEntry(
+                expr=expr,
+                fitness=float(row["fitness"]),
+                ic_mean=float(row["ic_mean"]),
+                ic_std=float(row["ic_std"]),
+                ir=float(row["ir"]),
+                rank_ic_mean=float(row["rank_ic_mean"]),
+                rank_ic_std=float(row["rank_ic_std"]),
+                rank_ir=float(row["rank_ir"]),
+                turnover_daily=float(row["turnover_daily"]),
+                coverage=float(row["coverage"]),
+                n_obs_per_day_min=int(row["n_obs_per_day_min"]),
+                expr_size=int(row["expr_size"]),
+                expr_hash=actual_hash,
+            )
+            pool.add(entry)
+        return pool

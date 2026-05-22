@@ -1,0 +1,47 @@
+# Factor Mining default config (Phase 2).
+#
+# `pit_provider_uri` and `delisted_registry_path` are operator-set
+# values that must point at the built PIT bundle (see
+# docs/factor_mining/inventory.md §F.3 — the operator must run
+# src/data/pit/qlib_bin_builder.py to produce the bundle, then fill
+# these in).
+#
+# Code that consumes this config MUST raise an explicit error when
+# `pit_provider_uri` or `delisted_registry_path` are empty strings.
+
+data:
+  pit_provider_uri: ""                # OPERATOR-FILL — see inventory.md §F.3
+  delisted_registry_path: ""          # OPERATOR-FILL — see inventory.md §F.3
+  universe_name: "csi300"
+  start_date: "2018-01-01"
+  end_date: "2025-12-31"
+  features:                           # decisions.md D3 — the six PIT bin fields
+    - "$open"
+    - "$high"
+    - "$low"
+    - "$close"
+    - "$volume"
+    - "$money"
+  forward_horizon: 1                  # T+1 buy / T+2 sell per decisions.md D1
+
+fitness:
+  # v1 factor_mining_design.md §5.1 weights
+  w_ic: 1.0
+  w_ir: 0.5
+  w_rankic: 0.5
+  w_turnover: 0.2
+  w_corr: 0.8
+  w_complexity: 0.01
+
+  # decisions.md D1 — locked annualised round-trip cost
+  cost_rate: 0.003
+
+  # v1 factor_mining_design.md §5.2 hard-constraint thresholds
+  coverage_min: 0.8
+  variance_days_frac_min: 0.7
+  variance_min: 1.0e-6
+  extreme_outlier_frac_max: 0.05
+  extreme_outlier_magnitude: 1.0e8
+
+compute:
+  backend: "cpu"                      # CPU until Phase 4 proves GPU equivalence
