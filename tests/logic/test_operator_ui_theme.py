@@ -100,7 +100,11 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("qv2SetAppearancePreference", script)
 
     def test_python_ui_sources_do_not_hardcode_hex_colors(self) -> None:
-        pattern = re.compile(r"#[0-9A-Fa-f]{3,8}")
+        # Match a hex literal *inside quotes* — the form actually used for
+        # color strings (``"#ffaa00"``, ``'#fff'``, etc.).  Bare ``#NNN``
+        # tokens in comments / docstrings (PR refs, issue numbers, anchor
+        # links) are not color literals and SHALL NOT trip this guard.
+        pattern = re.compile(r"""['"]#[0-9A-Fa-f]{3,8}['"]""")
 
         offenders: list[str] = []
         for path in Path("web/operator_ui").rglob("*.py"):
@@ -162,6 +166,84 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("st.dialog", source)
         self.assertIn('"Settings"', source)
         self.assertIn("save_preferences", source)
+
+    def test_reset_settings_dialog_state_clears_all_widget_keys(self) -> None:
+        """Save AND Cancel SHALL drop the dialog's transient widget keys
+        from ``st.session_state`` so the next open rehydrates from
+        persisted preferences (regression guard for Codex PR #116 P2)."""
+
+        import sys
+        import types
+
+        from web.operator_ui import theme
+
+        # Inject a minimal fake streamlit so _reset_settings_dialog_state
+        # can pop keys from a session_state-like mapping without needing a
+        # real ScriptRunContext.
+        fake_state: dict[str, object] = {
+            "qv2_settings_theme": "dark",
+            "qv2_settings_color_convention": "western",
+            "qv2_settings_sidebar_collapsed": True,
+            "unrelated_key": "kept",
+        }
+        fake_st = types.SimpleNamespace(session_state=fake_state)
+        original = sys.modules.get("streamlit")
+        sys.modules["streamlit"] = fake_st  # type: ignore[assignment]
+        try:
+            theme._reset_settings_dialog_state()
+        finally:
+            if original is not None:
+                sys.modules["streamlit"] = original
+            else:
+                sys.modules.pop("streamlit", None)
+
+        self.assertNotIn("qv2_settings_theme", fake_state)
+        self.assertNotIn("qv2_settings_color_convention", fake_state)
+        self.assertNotIn("qv2_settings_sidebar_collapsed", fake_state)
+        self.assertEqual(fake_state.get("unrelated_key"), "kept")
+
+    def test_render_settings_dialog_resets_on_both_save_and_cancel(self) -> None:
+        """Source-level guard: every exit path from the dialog SHALL call
+        ``_reset_settings_dialog_state`` so closed dialog state never
+        leaks into the next opening (Codex PR #116 P2)."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        # Locate the dialog body and look for the reset call near both
+        # ``save_clicked`` and ``cancel_clicked`` branches.
+        self.assertIn("_reset_settings_dialog_state", source)
+        save_idx = source.index("if save_clicked:")
+        cancel_idx = source.index("elif cancel_clicked:")
+        end_idx = source.index("_dialog()", cancel_idx)
+        save_block = source[save_idx:cancel_idx]
+        cancel_block = source[cancel_idx:end_idx]
+        self.assertIn(
+            "_reset_settings_dialog_state",
+            save_block,
+            "Save path must reset dialog widget state",
+        )
+        self.assertIn(
+            "_reset_settings_dialog_state",
+            cancel_block,
+            "Cancel path must reset dialog widget state",
+        )
+
+    def test_render_topbar_emits_marker_and_decorator_script(self) -> None:
+        """``render_topbar`` SHALL emit the host marker plus a JS snippet
+        that tags the enclosing container with ``.qv2-topbar``,
+        ``data-qv2-topbar-host="true"`` and the trailing column with
+        ``.qv2-topbar-actions`` so the shell CSS actually applies
+        (Codex PR #116 P2 — CSS-without-host bug)."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        self.assertIn("qv2-topbar-host-marker", source)
+        self.assertIn('data-qv2-topbar-host', source)
+        self.assertIn("qv2-topbar-actions", source)
+        # The decorator script SHALL look at stVerticalBlock + stColumn
+        # so it targets Streamlit's actual DOM, not arbitrary nodes.
+        self.assertIn("stVerticalBlock", source)
+        self.assertIn("stColumn", source)
 
 
 if __name__ == "__main__":

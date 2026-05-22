@@ -265,6 +265,39 @@ def render_skip_link() -> None:
     st.html(SKIP_LINK_HTML, width="content", unsafe_allow_javascript=False)
 
 
+_TOPBAR_HOST_MARKER_CLASS = "qv2-topbar-host-marker"
+_TOPBAR_TAG_SCRIPT = """
+<script>
+(function() {
+  var attempts = 0;
+  function decorate() {
+    var markers = window.parent.document.querySelectorAll('.qv2-topbar-host-marker');
+    if (markers.length === 0 && attempts < 10) {
+      attempts++;
+      setTimeout(decorate, 100);
+      return;
+    }
+    markers.forEach(function(marker) {
+      // Walk up to the enclosing Streamlit vertical block that wraps the
+      // st.container our render_topbar emits.
+      var host = marker.closest('[data-testid="stVerticalBlock"]');
+      if (!host || host.hasAttribute('data-qv2-topbar-host')) return;
+      host.setAttribute('data-qv2-topbar-host', 'true');
+      host.classList.add('qv2-topbar');
+      // Tag the action column (the last stColumn inside the topbar row)
+      // so .qv2-topbar-actions styling applies to the Settings button.
+      var action = host.querySelector(
+        '[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child'
+      );
+      if (action) action.classList.add('qv2-topbar-actions');
+    });
+  }
+  decorate();
+})();
+</script>
+"""
+
+
 def render_topbar(
     *,
     title: str = "Qlib Trading System",
@@ -273,14 +306,33 @@ def render_topbar(
 ) -> bool:
     """Render the sticky top bar.
 
-    Returns ``True`` when the user clicked the settings button on this run.
-    Callers (typically :mod:`web.operator_ui.app`) should open the settings
-    dialog in response.
+    The bar uses real Streamlit widgets so the Settings button is a
+    first-class :func:`streamlit.button` (returns ``True`` on the click
+    rerun).  Because :func:`streamlit.container` and
+    :func:`streamlit.columns` do not accept custom classes, a small
+    post-render script (:data:`_TOPBAR_TAG_SCRIPT`) walks up from a
+    marker element and adds the ``.qv2-topbar`` /
+    ``data-qv2-topbar-host="true"`` attributes to the enclosing vertical
+    block, plus ``.qv2-topbar-actions`` to the trailing column.  This
+    matches the JS-tagging pattern used by the sidebar nav-icon
+    injection in :mod:`web.operator_ui.app`, and makes the shell CSS
+    selectors (defined in ``static/theme.css``) actually apply.
+
+    Returns ``True`` when the user clicked the settings button on this
+    run.  Callers (typically :mod:`web.operator_ui.app`) should open
+    the settings dialog in response.
     """
 
     import streamlit as st
 
     with st.container():
+        # Marker for the post-render decorator script. ``display:none``
+        # keeps it out of layout; the marker itself carries no styling.
+        st.html(
+            f'<div class="{_TOPBAR_HOST_MARKER_CLASS}" style="display:none"></div>',
+            width="content",
+            unsafe_allow_javascript=False,
+        )
         title_col, action_col = st.columns([8, 2], vertical_alignment="center")
         with title_col:
             subtitle_html = (
@@ -303,7 +355,35 @@ def render_topbar(
                 help="Theme, color convention, and sidebar defaults",
                 use_container_width=True,
             )
+    st.html(_TOPBAR_TAG_SCRIPT, width="content", unsafe_allow_javascript=True)
     return bool(opened)
+
+
+_SETTINGS_DIALOG_WIDGET_KEYS: tuple[str, ...] = (
+    "qv2_settings_theme",
+    "qv2_settings_color_convention",
+    "qv2_settings_sidebar_collapsed",
+)
+
+
+def _reset_settings_dialog_state() -> None:
+    """Drop the dialog's transient widget keys from session_state.
+
+    Without this, a Cancel (or unsaved close) leaves the radios /
+    checkbox bound to the user's transient edits in session_state.  The
+    next time the dialog opens, Streamlit's widget keys win over the
+    ``index=`` / ``value=`` arguments derived from persisted preferences,
+    so the radios appear to "remember" the canceled values.  Clicking
+    Save would then commit values the user explicitly canceled.
+
+    Resetting on both Save and Cancel guarantees the dialog always
+    re-hydrates from :func:`load_preferences` the next time it opens.
+    """
+
+    import streamlit as st
+
+    for key in _SETTINGS_DIALOG_WIDGET_KEYS:
+        st.session_state.pop(key, None)
 
 
 def render_settings_dialog(preferences: UserPreferences) -> None:
@@ -312,7 +392,10 @@ def render_settings_dialog(preferences: UserPreferences) -> None:
     The dialog is decorated with :func:`streamlit.dialog` and shows controls
     for theme, color convention, and sidebar default state.  Changes are
     persisted to :data:`PREFERENCES_PATH` when the user clicks **Save**;
-    the page is then rerun so the new tokens apply immediately.
+    the page is then rerun so the new tokens apply immediately.  Both
+    Save and Cancel reset the dialog's widget state so a subsequent
+    opening rehydrates from persisted preferences (see Codex P2 review
+    follow-up on the shell PR for the cancel-then-save regression).
     """
 
     import streamlit as st
@@ -367,8 +450,10 @@ def render_settings_dialog(preferences: UserPreferences) -> None:
             )
             if updated != preferences:
                 save_preferences(updated)
+            _reset_settings_dialog_state()
             st.rerun()
         elif cancel_clicked:
+            _reset_settings_dialog_state()
             st.rerun()
 
     _dialog()
