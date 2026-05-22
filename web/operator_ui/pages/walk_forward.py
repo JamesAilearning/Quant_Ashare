@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
+from web.operator_ui._path_guard import output_path
+from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import (
     render_empty_state,
     render_error_state,
     render_stat_card,
 )
 from web.operator_ui.formatting import (
-    format_date_absolute,
-    format_duration,
     format_number,
     format_percent,
-    format_relative_time,
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
@@ -54,43 +53,59 @@ def _get_metrics(entry: dict, *keys: str) -> float | None:
     return _finite_float(cur)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
+def _first_metric(entry: dict, *paths: tuple[str, ...]) -> float | None:
+    for path in paths:
+        value = _get_metrics(entry, *path)
+        if value is not None:
+            return value
+    return None
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _ratio_fraction(text: str) -> float:
+    if "/" not in text:
+        return 0.0
+    numerator, denominator = text.split("/", maxsplit=1)
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+        parsed_denominator = float(denominator)
+        if parsed_denominator == 0:
+            return 0.0
+        return float(numerator) / parsed_denominator
+    except ValueError:
+        return 0.0
 
 
-def _read_summary(run_dir: Path) -> dict[str, Any]:
-    return _read_json(run_dir / "walk_forward_summary.json")
+def _stop_artifact_error(title: str, exc: Exception) -> None:
+    render_error_state(
+        title,
+        "The selected walk-forward artifact could not be read.",
+        error=f"{type(exc).__name__}: {exc}",
+        variant="page",
+    )
+    st.stop()
 
 
-def _read_fold_metrics(fold_dir: Path) -> dict[str, Any]:
-    return _read_json(fold_dir / "metrics.json")
-
-
-def _compute_stability_score(sharpe_list: list[float], dd_list: list[float]) -> tuple[float, dict]:
+def _compute_stability_score(ir_list: list[float], dd_list: list[float]) -> tuple[float, dict]:
     """Compute a composite stability score (0-1) from fold metrics."""
-    n = len(sharpe_list)
+    n = len(ir_list)
     if n < 2:
         return 0.0, {"error": "Need at least 2 folds"}
 
-    mean_s = sum(sharpe_list) / n
-    var_s = sum((s - mean_s) ** 2 for s in sharpe_list) / n
+    mean_s = sum(ir_list) / n
+    var_s = sum((s - mean_s) ** 2 for s in ir_list) / n
     std_s = math.sqrt(var_s)
     cv = std_s / abs(mean_s) if mean_s != 0 else 1.0
     cv_clamped = min(cv, 1.0)
 
-    n_positive = sum(1 for s in sharpe_list if s > 0)
-    n_above_1 = sum(1 for s in sharpe_list if s > 1.0)
+    n_positive = sum(1 for s in ir_list if s > 0)
+    n_above_1 = sum(1 for s in ir_list if s > 1.0)
 
     # DD concentration: how concentrated is the worst drawdown?
     if len(dd_list) >= 2:
         worst = min(dd_list)  # most negative
-        dd_range = max(dd_list) - worst if max(dd_list) != worst else 1.0
         dd_concentration = 1.0 - (abs(worst) / (abs(max(dd_list)) + 0.0001))
         dd_concentration = max(0.0, min(1.0, dd_concentration))
     else:
@@ -98,13 +113,13 @@ def _compute_stability_score(sharpe_list: list[float], dd_list: list[float]) -> 
 
     # Spearman trend: are later folds worse?
     if n >= 3:
-        ranks = sorted(range(n), key=lambda i: sharpe_list[i])
+        ranks = sorted(range(n), key=lambda i: ir_list[i])
         rank_map = {idx: rank for rank, idx in enumerate(ranks)}
         fold_ids = list(range(1, n + 1))
         fold_ranks = [rank_map[i] for i in range(n)]
         mean_fold = (n + 1) / 2
         mean_rank = (n - 1) / 2
-        cov = sum((f - mean_fold) * (r - mean_rank) for f, r in zip(fold_ids, fold_ranks)) / n
+        cov = sum((f - mean_fold) * (r - mean_rank) for f, r in zip(fold_ids, fold_ranks, strict=True)) / n
         std_f = math.sqrt(sum((f - mean_fold) ** 2 for f in fold_ids) / n)
         std_r = math.sqrt(sum((r - mean_rank) ** 2 for r in fold_ranks) / n)
         if std_f > 0 and std_r > 0:
@@ -122,9 +137,9 @@ def _compute_stability_score(sharpe_list: list[float], dd_list: list[float]) -> 
         + 0.1 * (1.0 if trend_stable else 0.0)
     )
     details = {
-        "sharpe_cv": cv,
+        "ir_cv": cv,
         "positive_folds": f"{n_positive}/{n}",
-        "above_sharpe_1": f"{n_above_1}/{n}",
+        "above_ir_1": f"{n_above_1}/{n}",
         "dd_concentration": dd_concentration,
         "spearman": spearman,
         "trend_stable": trend_stable,
@@ -162,10 +177,7 @@ render_page_header("Walk-Forward Detail", "Fold-by-fold results, stability analy
 # Data
 # ---------------------------------------------------------------------------
 jobs = JobManager.list_jobs()
-wf_jobs = [
-    j for j in jobs
-    if j.get("mode") == "walk_forward" and j.get("run_dir")
-]
+wf_jobs = [j for j in jobs if j.get("mode") == "walk_forward" and j.get("run_dir")]
 run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run_dir")}
 
 if not run_options:
@@ -174,17 +186,20 @@ if not run_options:
         "No walk-forward runs yet",
         "Walk-forward validation tests your strategy's robustness by training "
         "on rolling time windows and evaluating each on out-of-sample data.",
-        action_label="Config & Run",
     )
+    if st.button("Config & Run"):
+        st.switch_page("pages/config_run.py")
     st.stop()
-
-selected = st.selectbox(
-    "Run",
-    options=list(run_options.keys()),
-    format_func=lambda k: run_options[k],
-)
-if not selected:
-    st.stop()
+    selected = str(output_path())
+else:
+    selected = st.selectbox(
+        "Run",
+        options=list(run_options.keys()),
+        format_func=lambda k: run_options[k],
+    )
+    if not selected:
+        st.stop()
+        selected = str(output_path())
 
 # In bare-Python (no Streamlit context), st.selectbox returns None
 # which causes Path() to fail.  Always coerce to string first so the
@@ -196,16 +211,18 @@ run_dir = Path(str(selected))
 # ---------------------------------------------------------------------------
 try:
     wf_report = read_walk_forward_report(run_dir)
-except (ValueError, OSError):
-    wf_report = {}
+except (ValueError, OSError) as exc:
+    _stop_artifact_error("Unable to read walk-forward report", exc)
+    wf_report = {"folds": []}
 folds = wf_report.get("folds", [])
 
 # Try to read folds from fold directories if not in report
 if not folds:
     try:
         fold_reports = read_fold_reports(run_dir)
-    except (ValueError, OSError):
-        fold_reports = []
+    except (ValueError, OSError) as exc:
+        _stop_artifact_error("Unable to read fold reports", exc)
+        fold_reports = None
     if fold_reports:
         folds = fold_reports
 
@@ -216,42 +233,41 @@ if not folds:
         "Fold reports will appear once the walk-forward run completes.",
     )
     try:
-        charts = __import__("web.operator_ui.chart_reader", fromlist=["discover_charts"]).discover_charts(run_dir)
-    except (ValueError, OSError):
-        charts = {}
+        charts = discover_charts(run_dir)
+    except (ValueError, OSError) as exc:
+        _stop_artifact_error("Unable to discover walk-forward charts", exc)
+        charts = None
     if charts:
         st.header("Charts")
-        for label, path in charts.items():
+        for _label, path in charts.items():
             st.image(str(path), use_container_width=True)
     st.stop()
 
-# Try to read summary for stability metrics
-try:
-    summary = _read_summary(run_dir)
-except (ValueError, OSError):
-    summary = {}
-stitched = summary.get("stitched_metrics", {}) if isinstance(summary.get("stitched_metrics"), dict) else {}
-stability = summary.get("stability_metrics", {}) if isinstance(summary.get("stability_metrics"), dict) else {}
+aggregate_metrics = wf_report.get("aggregate_metrics")
+aggregate = aggregate_metrics if isinstance(aggregate_metrics, dict) else {}
 
 # ---------------------------------------------------------------------------
 # Collect fold metrics
 # ---------------------------------------------------------------------------
 fold_data = []
-sharpe_list: list[float] = []
+ir_list: list[float] = []
 return_list: list[float] = []
 dd_list: list[float] = []
+drawdown_by_fold: list[tuple[Any, float]] = []
 turnover_list: list[float] = []
 win_rate_list: list[float] = []
-trade_count_list: list[int] = []
 
 for i, fold_entry in enumerate(folds):
-    fd: dict[str, Any] = {"index": i + 1}
+    fd: dict[str, Any] = {
+        "index": fold_entry.get("fold_index", i + 1),
+        "ordinal": i + 1,
+    }
 
     # Direct fold entry fields from walk_forward_report.json
-    fd["annual_return"] = _get_metrics(fold_entry, "annual_return") or _get_metrics(fold_entry, "annualized_return")
-    fd["sharpe"] = _get_metrics(fold_entry, "sharpe") or _get_metrics(fold_entry, "sharpe_ratio")
+    fd["annual_return"] = _first_metric(fold_entry, ("annualized_return",), ("annual_return",))
+    fd["information_ratio"] = _first_metric(fold_entry, ("information_ratio",))
     fd["max_drawdown"] = _get_metrics(fold_entry, "max_drawdown")
-    fd["turnover"] = _get_metrics(fold_entry, "turnover_daily") or _get_metrics(fold_entry, "turnover")
+    fd["turnover"] = _first_metric(fold_entry, ("turnover_daily",), ("turnover",))
     fd["win_rate"] = _get_metrics(fold_entry, "win_rate")
     fd["n_trades"] = fold_entry.get("n_trades")
 
@@ -259,61 +275,47 @@ for i, fold_entry in enumerate(folds):
     m = fold_entry.get("metrics") if isinstance(fold_entry.get("metrics"), dict) else {}
     if m:
         if fd["annual_return"] is None:
-            fd["annual_return"] = _get_metrics(m, "annual_return") or _get_metrics(m, "annualized_return")
-        if fd["sharpe"] is None:
-            fd["sharpe"] = _get_metrics(m, "sharpe") or _get_metrics(m, "sharpe_ratio")
+            fd["annual_return"] = _first_metric(m, ("annualized_return",), ("annual_return",))
+        if fd["information_ratio"] is None:
+            fd["information_ratio"] = _first_metric(m, ("information_ratio",))
         if fd["max_drawdown"] is None:
             fd["max_drawdown"] = _get_metrics(m, "max_drawdown")
         if fd["turnover"] is None:
-            fd["turnover"] = _get_metrics(m, "turnover_daily") or _get_metrics(m, "turnover")
+            fd["turnover"] = _first_metric(m, ("turnover_daily",), ("turnover",))
         if fd["win_rate"] is None:
             fd["win_rate"] = _get_metrics(m, "win_rate")
         if fd["n_trades"] is None:
             fd["n_trades"] = m.get("n_trades")
 
     # Train/test period labels
+    fd["train_period"] = fold_entry.get("train_period", "")
+    fd["test_period"] = fold_entry.get("test_period", "")
     fd["train_start"] = fold_entry.get("train_start", "")
     fd["test_start"] = fold_entry.get("test_start", "")
     fd["test_end"] = fold_entry.get("test_end", "")
-    period = ""
+    period = str(fd["test_period"] or "")
     if fd["test_start"] and fd["test_end"]:
         period = f"{str(fd['test_start'])[:7]} \u2192 {str(fd['test_end'])[:7]}"
     fd["period"] = period
 
     fold_data.append(fd)
-    if fd["sharpe"] is not None:
-        sharpe_list.append(fd["sharpe"])
+    if fd["information_ratio"] is not None:
+        ir_list.append(fd["information_ratio"])
     if fd["annual_return"] is not None:
         return_list.append(fd["annual_return"])
     if fd["max_drawdown"] is not None:
         dd_list.append(fd["max_drawdown"])
+        drawdown_by_fold.append((fd["index"], fd["max_drawdown"]))
     if fd["turnover"] is not None:
         turnover_list.append(fd["turnover"])
     if fd["win_rate"] is not None:
         win_rate_list.append(fd["win_rate"])
-    if fd["n_trades"] is not None:
-        trade_count_list.append(fd["n_trades"])
 
 # ---------------------------------------------------------------------------
 # Stability score
 # ---------------------------------------------------------------------------
-if sharpe_list and dd_list:
-    score, score_details = _compute_stability_score(sharpe_list, dd_list)
-    # Prefer summary if available
-    if isinstance(stability.get("sharpe"), dict):
-        cv_from_summary = _finite_float(stability["sharpe"].get("cv"))
-        if cv_from_summary is not None:
-            score_details["sharpe_cv"] = cv_from_summary
-        n_pos = stability["sharpe"].get("n_positive_folds")
-        if n_pos is not None:
-            score_details["positive_folds"] = f"{n_pos}/{len(folds)}"
-        n_above = stability["sharpe"].get("n_above_threshold")
-        if n_above is not None:
-            score_details["above_sharpe_1"] = f"{n_above}/{len(folds)}"
-    if isinstance(summary.get("consistency"), dict):
-        ss = _finite_float(summary["consistency"].get("stability_score"))
-        if ss is not None:
-            score = ss
+if ir_list and dd_list:
+    score, score_details = _compute_stability_score(ir_list, dd_list)
 else:
     score = -1.0
     score_details = {}
@@ -321,11 +323,11 @@ else:
 n_folds = len(fold_data)
 
 # ---------------------------------------------------------------------------
-# Stitched metrics
+# Aggregate metrics
 # ---------------------------------------------------------------------------
-stitched_ar = _finite_float(stitched.get("annual_return"))
-stitched_sharpe = _finite_float(stitched.get("sharpe_ratio"))
-stitched_dd = _finite_float(stitched.get("max_drawdown"))
+aggregate_ar = _finite_float(aggregate.get("mean_annualized_return"))
+aggregate_ir = _finite_float(aggregate.get("mean_information_ratio"))
+aggregate_dd = _finite_float(aggregate.get("worst_drawdown"))
 
 # ---------------------------------------------------------------------------
 # Display
@@ -351,80 +353,90 @@ if score >= 0:
 # --- KPI row ---
 kpi_cols = st.columns(4)
 with kpi_cols[0]:
-    mean_s = sum(sharpe_list) / len(sharpe_list) if sharpe_list else 0
-    std_s = math.sqrt(sum((s - mean_s) ** 2 for s in sharpe_list) / len(sharpe_list)) if len(sharpe_list) > 1 else 0
+    mean_ir = _mean(ir_list)
+    displayed_mean_ir = mean_ir if mean_ir is not None else 0
+    std_ir = math.sqrt(sum((s - displayed_mean_ir) ** 2 for s in ir_list) / len(ir_list)) if len(ir_list) > 1 else 0
     render_stat_card(
-        "MEAN SHARPE",
-        f"{mean_s:.2f}",
-        secondary=[("\u00b1 Std", f"{std_s:.2f}"), ("Range", f"{min(sharpe_list):.2f} to {max(sharpe_list):.2f}" if sharpe_list else MISSING)],
-        tooltip="Average Sharpe ratio across all folds. Lower std = more consistent.",
+        "MEAN IR",
+        f"{displayed_mean_ir:.2f}" if mean_ir is not None else MISSING,
+        secondary=[
+            ("\u00b1 Std", f"{std_ir:.2f}" if ir_list else MISSING),
+            ("Range", f"{min(ir_list):.2f} to {max(ir_list):.2f}" if ir_list else MISSING),
+        ],
+        tooltip="Average information ratio across all folds. Lower std = more consistent.",
     )
 with kpi_cols[1]:
-    worst_dd = min(dd_list) if dd_list else 0
-    worst_idx = dd_list.index(worst_dd) + 1 if dd_list else 0
+    worst_idx, worst_dd = min(drawdown_by_fold, key=lambda item: item[1]) if drawdown_by_fold else (None, None)
     render_stat_card(
         "WORST DRAWDOWN",
-        format_percent(worst_dd),
-        value_color="negative",
-        secondary=[("Fold", str(worst_idx) if worst_idx else MISSING)],
+        format_percent(worst_dd) if worst_dd is not None else MISSING,
+        value_color="negative" if worst_dd is not None else "default",
+        secondary=[("Fold", str(worst_idx) if worst_idx is not None else MISSING)],
         tooltip="Maximum drawdown across all folds. Identifies the weakest period.",
     )
 with kpi_cols[2]:
     render_stat_card(
-        "STITCHED OOS",
-        format_percent(stitched_ar) if stitched_ar is not None else MISSING,
-        value_color="positive" if (stitched_ar or 0) > 0 else "negative",
+        "AGGREGATE OOS",
+        format_percent(aggregate_ar) if aggregate_ar is not None else MISSING,
+        value_color=("default" if aggregate_ar is None else "positive" if aggregate_ar > 0 else "negative"),
         secondary=[
-            ("Sharpe", format_number(stitched_sharpe) if stitched_sharpe is not None else MISSING),
-            ("Max DD", format_percent(stitched_dd) if stitched_dd is not None else MISSING),
+            ("IR", format_number(aggregate_ir) if aggregate_ir is not None else MISSING),
+            ("Worst DD", format_percent(aggregate_dd) if aggregate_dd is not None else MISSING),
         ],
-        tooltip="Performance of the concatenated out-of-sample test periods. This is the true evaluation.",
+        tooltip="Cross-fold aggregate metrics from walk_forward_report.json.",
     )
 with kpi_cols[3]:
-    all_pos = all(s > 0 for s in sharpe_list) if sharpe_list else False
-    above_1 = sum(1 for s in sharpe_list if s > 1.0) if sharpe_list else 0
+    all_pos = all(s > 0 for s in ir_list) if ir_list else False
+    above_1 = sum(1 for s in ir_list if s > 1.0) if ir_list else 0
     trend = "Stable" if score >= 0 and score_details.get("trend_stable", True) else "Declining"
     render_stat_card(
         "ROBUSTNESS",
         "\u2713 Yes" if all_pos else "\u2717 No",
         value_color="positive" if all_pos else "negative",
         secondary=[
-            (f"Above Sharpe 1.0", f"{above_1}/{n_folds}"),
+            ("Above IR 1.0", f"{above_1}/{n_folds}"),
             ("Trend", trend),
         ],
-        tooltip="All positive = every fold made money. Above 1.0 = most folds beat threshold.",
+        tooltip="All positive = every fold had positive IR. Above 1.0 = most folds beat threshold.",
     )
 
 # --- Fold comparison table ---
 st.markdown("---")
 st.subheader(f"Fold Comparison ({n_folds} folds)")
 
-import pandas as pd
-
 table_rows = []
 for fd in fold_data:
-    table_rows.append({
-        "Fold": f"F{fd['index']}",
-        "Test Period": fd.get("period", MISSING),
-        "AR": format_percent(fd.get("annual_return")) if fd.get("annual_return") is not None else MISSING,
-        "Sharpe": format_number(fd.get("sharpe")) if fd.get("sharpe") is not None else MISSING,
-        "Max DD": format_percent(fd.get("max_drawdown")) if fd.get("max_drawdown") is not None else MISSING,
-        "Turnover": format_number(fd.get("turnover")) if fd.get("turnover") is not None else MISSING,
-        "Win Rate": format_percent(fd.get("win_rate")) if fd.get("win_rate") is not None else MISSING,
-        "Trades": str(fd.get("n_trades") or MISSING),
-    })
+    table_rows.append(
+        {
+            "Fold": f"F{fd['index']}",
+            "Test Period": fd.get("period", MISSING),
+            "AR": format_percent(fd.get("annual_return")) if fd.get("annual_return") is not None else MISSING,
+            "IR": format_number(fd.get("information_ratio")) if fd.get("information_ratio") is not None else MISSING,
+            "Max DD": format_percent(fd.get("max_drawdown")) if fd.get("max_drawdown") is not None else MISSING,
+            "Turnover": format_number(fd.get("turnover")) if fd.get("turnover") is not None else MISSING,
+            "Win Rate": format_percent(fd.get("win_rate")) if fd.get("win_rate") is not None else MISSING,
+            "Trades": str(fd.get("n_trades")) if fd.get("n_trades") is not None else MISSING,
+        }
+    )
 
 # Summary rows
-if return_list:
-    table_rows.append({
-        "Fold": "\u03bc", "Test Period": "",
-        "AR": format_percent(sum(return_list) / len(return_list)),
-        "Sharpe": format_number(sum(sharpe_list) / len(sharpe_list)),
-        "Max DD": format_percent(sum(dd_list) / len(dd_list)),
-        "Turnover": format_number(sum(turnover_list) / len(turnover_list)) if turnover_list else MISSING,
-        "Win Rate": format_percent(sum(win_rate_list) / len(win_rate_list)) if win_rate_list else MISSING,
-        "Trades": "",
-    })
+if return_list or ir_list or dd_list or turnover_list or win_rate_list:
+    mean_dd = _mean(dd_list)
+    mean_turnover = _mean(turnover_list)
+    mean_win_rate = _mean(win_rate_list)
+    mean_return = _mean(return_list)
+    table_rows.append(
+        {
+            "Fold": "\u03bc",
+            "Test Period": "",
+            "AR": format_percent(mean_return) if mean_return is not None else MISSING,
+            "IR": format_number(_mean(ir_list)) if ir_list else MISSING,
+            "Max DD": format_percent(mean_dd) if mean_dd is not None else MISSING,
+            "Turnover": format_number(mean_turnover) if mean_turnover is not None else MISSING,
+            "Win Rate": format_percent(mean_win_rate) if mean_win_rate is not None else MISSING,
+            "Trades": "",
+        }
+    )
 
 df = pd.DataFrame(table_rows)
 st.dataframe(df, hide_index=True, height=400)
@@ -434,22 +446,22 @@ if score >= 0:
     with st.expander("Stability Breakdown", expanded=False):
         b_cols = st.columns(2)
         with b_cols[0]:
-            cv = score_details.get("sharpe_cv", 0)
-            st.caption("Sharpe CV (lower is better)")
+            cv = score_details.get("ir_cv", 0)
+            st.caption("IR CV (lower is better)")
             st.progress(min(1.0, max(0.0, 1.0 - cv)), text=f"CV = {cv:.2f}")
 
             st.caption("Positive folds")
             pos_str = score_details.get("positive_folds", "?/?")
-            pos_ratio = float(pos_str.split("/")[0]) / float(pos_str.split("/")[1]) if "/" in pos_str else 0
+            pos_ratio = _ratio_fraction(pos_str)
             st.progress(pos_ratio, text=pos_str)
         with b_cols[1]:
             dc = score_details.get("dd_concentration", 0.5)
             st.caption("DD concentration")
             st.progress(dc, text=f"{dc:.2f}")
 
-            st.caption("Above Sharpe 1.0")
-            abv_str = score_details.get("above_sharpe_1", "?/?")
-            abv_ratio = float(abv_str.split("/")[0]) / float(abv_str.split("/")[1]) if "/" in abv_str else 0
+            st.caption("Above IR 1.0")
+            abv_str = score_details.get("above_ir_1", "?/?")
+            abv_ratio = _ratio_fraction(abv_str)
             st.progress(abv_ratio, text=abv_str)
 
 # --- Per-fold detail cards ---
@@ -459,20 +471,25 @@ st.subheader("Per-Fold Detail")
 for fd in fold_data:
     with st.expander(
         f"Fold {fd['index']}  \u00b7  {fd.get('period', MISSING)}",
-        expanded=(fd["index"] == 1),
+        expanded=(fd["ordinal"] == 1),
     ):
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
             st.metric("Annual Return", format_percent(fd.get("annual_return")))
         with fc2:
-            st.metric("Sharpe", format_number(fd.get("sharpe")))
+            st.metric("IR", format_number(fd.get("information_ratio")))
         with fc3:
             st.metric("Max Drawdown", format_percent(fd.get("max_drawdown")))
         with fc4:
             st.metric("Turnover", format_number(fd.get("turnover")))
 
-        if fd.get("train_start"):
-            st.caption(f"Train: {fd['train_start']} \u2192 {fd.get('test_start', '?')}  |  Test: {fd.get('test_start', '?')} \u2192 {fd.get('test_end', '?')}")
+        if fd.get("train_period") or fd.get("test_period"):
+            st.caption(f"Train: {fd.get('train_period', MISSING)}  |  Test: {fd.get('test_period', MISSING)}")
+        elif fd.get("train_start"):
+            st.caption(
+                f"Train: {fd['train_start']} \u2192 {fd.get('test_start', '?')}  |  "
+                f"Test: {fd.get('test_start', '?')} \u2192 {fd.get('test_end', '?')}"
+            )
 
 # --- Config tab ---
 st.markdown("---")
@@ -495,11 +512,12 @@ with st.expander("Raw JSON", expanded=False):
 
 # --- Charts ---
 try:
-    charts = __import__("web.operator_ui.chart_reader", fromlist=["discover_charts"]).discover_charts(run_dir)
-except (ValueError, OSError):
-    charts = {}
+    charts = discover_charts(run_dir)
+except (ValueError, OSError) as exc:
+    _stop_artifact_error("Unable to discover walk-forward charts", exc)
+    charts = None
 if charts:
     st.divider()
     st.header("Generated Charts")
-    for label, path in charts.items():
+    for _label, path in charts.items():
         st.image(str(path), use_container_width=True)
