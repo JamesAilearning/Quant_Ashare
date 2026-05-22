@@ -583,3 +583,256 @@ section[data-testid="stSidebar"] [data-testid="stSidebarNav"] > span {
     font-size: var(--text-xs);
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Badge                                                             */
+/* ------------------------------------------------------------------ */
+.qv2-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.qv2-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: none;
+}
+
+.qv2-badge[data-qv2-pulse="true"] .qv2-badge-dot {
+  display: inline-block;
+  animation: qv2-pulse-dot 2s ease-in-out infinite;
+}
+
+.qv2-badge--neutral  { background: var(--neutral-bg);  color: var(--neutral-text); }
+.qv2-badge--info     { background: var(--info-bg);     color: var(--info-text); }
+.qv2-badge--success  { background: var(--positive-bg); color: var(--positive-text); }
+.qv2-badge--warning  { background: var(--warning-bg);  color: var(--warning-text); }
+.qv2-badge--danger   { background: var(--negative-bg); color: var(--negative-text); }
+
+.qv2-badge--neutral  .qv2-badge-dot { background: var(--neutral); }
+.qv2-badge--info     .qv2-badge-dot { background: var(--info); }
+.qv2-badge--success  .qv2-badge-dot { background: var(--positive); }
+.qv2-badge--warning  .qv2-badge-dot { background: var(--warning); }
+.qv2-badge--danger   .qv2-badge-dot { background: var(--negative); }
+
+/* ------------------------------------------------------------------ */
+/*  StatCard (KPI)                                                    */
+/* ------------------------------------------------------------------ */
+.qv2-stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  min-width: 0;
+}
+
+.qv2-stat-card-tooltip {
+  color: var(--text-tertiary);
+  cursor: help;
+  font-size: var(--text-xs);
+  margin-left: var(--space-1);
+}
+
+.qv2-stat-card-secondary {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+  gap: var(--space-3);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Skeleton                                                          */
+/* ------------------------------------------------------------------ */
+.qv2-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-subtle) 25%,
+    var(--bg-card) 50%,
+    var(--bg-subtle) 75%
+  );
+  background-size: 200% 100%;
+  animation: qv2-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+}
+
+.qv2-skeleton-text {
+  height: 1em;
+  border-radius: var(--radius-sm);
+}
+
+.qv2-skeleton-rect {
+  border-radius: var(--radius-md);
+}
+
+.qv2-skeleton-circle {
+  border-radius: 50%;
+}
+
+@keyframes qv2-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ------------------------------------------------------------------ */
+/*  EmptyState                                                        */
+/* ------------------------------------------------------------------ */
+.qv2-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  gap: var(--space-3);
+}
+
+.qv2-empty-state-icon {
+  font-size: 2.5rem;
+  margin-bottom: var(--space-2);
+}
+
+.qv2-empty-state-title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.qv2-empty-state-desc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  max-width: 360px;
+  line-height: var(--leading-relaxed);
+}
+
+.qv2-empty-state-action {
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ */
+/*  ErrorState                                                        */
+/* ------------------------------------------------------------------ */
+.qv2-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-3);
+  padding: var(--space-8) var(--space-4);
+}
+
+.qv2-error-state--page {
+  padding: var(--space-16) var(--space-6);
+}
+
+.qv2-error-state-icon {
+  font-size: 2rem;
+  margin-bottom: var(--space-1);
+}
+
+.qv2-error-state-title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.qv2-error-state-desc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  max-width: 400px;
+  line-height: var(--leading-relaxed);
+}
+
+.qv2-error-state-details {
+  max-width: 480px;
+  width: 100%;
+  text-align: left;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.qv2-error-state-details pre {
+  background: var(--bg-subtle);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  max-height: 160px;
+}
+
+.qv2-error-state-retry {
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Table enhancements                                                */
+/* ------------------------------------------------------------------ */
+.qv2-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.qv2-table th {
+  text-align: left;
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-medium);
+  white-space: nowrap;
+}
+
+.qv2-table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.qv2-table tbody tr:hover td {
+  background: var(--bg-subtle);
+}
+
+.qv2-table--compact th,
+.qv2-table--compact td {
+  padding: var(--space-2) var(--space-3);
+}
+
+.qv2-table--loading tbody {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qv2-skeleton {
+    animation: none;
+  }
+  .qv2-badge[data-qv2-pulse="true"] .qv2-badge-dot {
+    animation: none;
+  }
+}
