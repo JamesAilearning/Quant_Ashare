@@ -829,7 +829,7 @@ section[data-testid="stSidebar"] [data-testid="stSidebarNav"] > span {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .qv2-shimmer {
+  .qv2-skeleton {
     animation: none;
   }
   .qv2-badge[data-qv2-pulse="true"] .qv2-badge-dot {

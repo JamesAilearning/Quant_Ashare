@@ -7,6 +7,7 @@ business logic — only display concerns.
 
 from __future__ import annotations
 
+import html
 from typing import Literal
 
 import streamlit as st
@@ -193,7 +194,7 @@ def render_error_state(
         parts.append(
             '<details class="qv2-error-state-details">'
             "<summary>Technical details</summary>"
-            f'<pre class="qv2-mono" style="font-size:var(--text-xs);overflow:auto;">{error}</pre>'
+            f'<pre class="qv2-mono" style="font-size:var(--text-xs);overflow:auto;">{html.escape(error)}</pre>'
             "</details>"
         )
     if on_retry:
