@@ -279,11 +279,18 @@ class DelistedRegistryBuilder:
                 f"{path}: expected a YAML mapping at top level, got "
                 f"{type(data).__name__}"
             )
-        raw_entries = data.get("overrides") or []
-        if not isinstance(raw_entries, list):
+        # Validate the raw value BEFORE any coercion. The previous
+        # `data.get("overrides") or []` silently swallowed falsy non-list
+        # types (``overrides: {}``, ``overrides: ""``) — an operator typo
+        # would coerce to empty list and the build proceeded without
+        # applying the intended overrides. Codex P1 on PR #107.
+        raw_entries = data.get("overrides")
+        if raw_entries is None:
+            raw_entries = []
+        elif not isinstance(raw_entries, list):
             raise DelistedRegistryError(
-                f"{path}: 'overrides' must be a YAML list, got "
-                f"{type(raw_entries).__name__}"
+                f"{path}: 'overrides' must be a YAML list (or null / missing "
+                f"for no overrides), got {type(raw_entries).__name__}"
             )
 
         validated: list[dict] = []

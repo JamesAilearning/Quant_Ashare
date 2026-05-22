@@ -608,6 +608,56 @@ class ManualOverridesTests(unittest.TestCase):
             ).build()
             self.assertEqual(result.row_count, 3)
 
+    def test_overrides_value_dict_raises(self) -> None:
+        """Codex P1 on PR #107: ``overrides: {}`` is a YAML mapping
+        (falsy), the old code coerced it to ``[]`` via ``... or []`` and
+        the build silently proceeded. Now must raise so operator typos
+        surface."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text("overrides: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"must be a YAML list"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_overrides_value_empty_string_raises(self) -> None:
+        """Same as above for ``overrides: """ "" """`` (also falsy, also a typo)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text('overrides: ""\n', encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"must be a YAML list"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_overrides_value_null_is_silent(self) -> None:
+        """Explicit ``overrides: null`` (or missing key) IS a valid way to
+        say "no overrides" — only non-list, non-null values raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text("overrides: null\n", encoding="utf-8")
+            DelistedRegistryBuilder(
+                tushare_dir=tmp_path,
+                reference_cases_path=tmp_path / "refs.yaml",
+                output_path=tmp_path / "out.parquet",
+                manual_overrides_path=overrides_path,
+            ).build()  # no raise
+
     def test_none_overrides_path_is_silent(self) -> None:
         """Explicit None path also means no overrides — the default."""
         with tempfile.TemporaryDirectory() as tmp:
