@@ -422,10 +422,22 @@ class PITValidator:
         return result
 
     def _check_e_index_membership(self, references: dict) -> CheckResult:
-        """E: known intra-period boundary cases. Currently expected to
-        produce warnings (not errors) because the Phase 0.2 reference
-        YAML's index_membership_cases were committed without per-row
-        Tushare verification (see PR #102 finding)."""
+        """E: known CSI300 enter / leave boundary cases.
+
+        The reference YAML's ``index_membership_cases.csi300`` rows
+        were Tushare-verified in the follow-up to PR #102; each row's
+        ``cite_tushare`` block names the actual snapshot transition
+        observed in the index_weight pulls. This validator surface
+        currently reports the cases-present count as a warning rather
+        than running an end-to-end assertion — the proper E2E check
+        would parse ``<provider_dir>/instruments/csi300.txt`` (Phase
+        A.4 output) and re-run the same enter/leave match the
+        resolver does. Wiring that into Phase B.3 is a separate small
+        change (the resolver's logic is already in
+        ``IndexMembershipResolver._validate_references`` — needs an
+        adapter that consumes a written instruments file instead of
+        an in-memory snapshot DataFrame).
+        """
         result = CheckResult(
             name="Index membership references", code="E", passed=True,
         )
@@ -435,13 +447,12 @@ class PITValidator:
                 "No index_membership_cases.csi300 in reference YAML; check skipped."
             )
             return result
-        # Until reference YAML is corrected, this check just reports the
-        # presence of references and defers actual validation to the
-        # Phase A.4 resolver's own validator (used independently).
         result.warnings.append(
-            f"{len(cases)} index membership reference case(s) present; "
-            "validation deferred to Phase A.4 resolver pending YAML correction "
-            "PR (see PR #102 finding)."
+            f"{len(cases)} index membership reference case(s) present "
+            "(Tushare-verified per row). End-to-end validation against "
+            "the built instruments/csi300.txt is a Phase B.3 follow-up; "
+            "use IndexMembershipResolver directly against the built "
+            "provider for now."
         )
         result.details["case_count"] = len(cases)
         return result
