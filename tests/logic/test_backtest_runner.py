@@ -237,6 +237,158 @@ class SignalLagTests(unittest.TestCase):
             BacktestRunner._apply_lag(predictions, 1)
 
 
+class BacktestRunnerPITAlignmentTests(unittest.TestCase):
+    """Phase D.3 wiring — when a PIT provider is supplied,
+    ``BacktestRunner.run`` MUST assert the canonical qlib config's
+    provider_uri matches. Catches the same operator footgun Phase D.2
+    guarded for training: silent survivorship bias on the most
+    consequential code path (real money decisions).
+    """
+
+    def setUp(self) -> None:
+        _reset_canonical_qlib_runtime_for_tests()
+
+    def tearDown(self) -> None:
+        _reset_canonical_qlib_runtime_for_tests()
+
+    def _pin_canonical(self, provider_uri: str) -> None:
+        from src.core import qlib_runtime as _rt
+        _rt._CANONICAL_CONFIG = QlibRuntimeConfig(
+            provider_uri=provider_uri,
+            region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        _rt._CANONICAL_QLIB_INITIALIZED = True
+
+    def _make_pit_provider_stub(self, provider_uri: str) -> object:
+        class _Stub:
+            pass
+        stub = _Stub()
+        stub._provider_uri = provider_uri  # type: ignore[attr-defined]
+        return stub
+
+    def test_pit_provider_mismatch_raises(self) -> None:
+        self._pin_canonical("/qlib/legacy_provider")
+        pit = self._make_pit_provider_stub("/qlib/pit_provider")
+        with self.assertRaisesRegex(BacktestRunnerError, "provider_uri mismatch"):
+            BacktestRunner.run(
+                request=_make_request(),
+                predictions="dummy",
+                pit_provider=pit,
+            )
+
+    def test_pit_provider_missing_attr_raises(self) -> None:
+        self._pin_canonical("/qlib/pit_provider")
+
+        class _Bare:
+            pass
+
+        with self.assertRaisesRegex(BacktestRunnerError, "_provider_uri"):
+            BacktestRunner.run(
+                request=_make_request(),
+                predictions="dummy",
+                pit_provider=_Bare(),
+            )
+
+    def test_pit_provider_aligned_passes_guard(self) -> None:
+        """When provider_uri aligns, the guard passes and the call
+        proceeds. We just assert no provider_uri mismatch error fires;
+        downstream qlib failures (no real provider on disk) are
+        tolerated."""
+        from src.core.qlib_runtime import _normalize_provider_uri
+        provider_uri = "/qlib/pit_provider"
+        self._pin_canonical(provider_uri)
+        pit = self._make_pit_provider_stub(_normalize_provider_uri(provider_uri))
+        try:
+            BacktestRunner.run(
+                request=_make_request(),
+                predictions="dummy",
+                pit_provider=pit,
+            )
+        except BacktestRunnerError as exc:
+            msg = str(exc)
+            self.assertNotIn("provider_uri mismatch", msg)
+            self.assertNotIn("_provider_uri", msg)
+
+
+class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
+    """The actual data-path swap in D.3: when a PIT provider is
+    supplied, ``_compute_equalweight_baseline`` routes the close-panel
+    fetch through ``pit_provider.get_features`` instead of direct
+    ``D.features``. Mock the provider to verify routing without a
+    running qlib.
+    """
+
+    def test_pit_provider_call_args(self) -> None:
+        from unittest.mock import MagicMock
+
+        import pandas as pd
+
+        # Predictions: 2 dates × 3 tickers, fixed scores so daily topk=2
+        # selects ticker A and B (both dates).
+        dates = pd.to_datetime(["2025-10-01", "2025-10-02"])
+        tickers = ["SH600519", "SH600087", "SZ000001"]
+        idx = pd.MultiIndex.from_product([dates, tickers],
+                                          names=["datetime", "instrument"])
+        scores = [3.0, 2.0, 1.0, 3.0, 2.0, 1.0]
+        predictions = pd.Series(scores, index=idx)
+
+        # Mock PIT provider returns a close panel for the chosen tickers
+        close_idx = pd.MultiIndex.from_product(
+            [["SH600519", "SH600087"], dates], names=["instrument", "datetime"],
+        )
+        close = pd.DataFrame({"$close": [10.0, 11.0, 20.0, 21.0]}, index=close_idx)
+        pit = MagicMock()
+        pit.get_features.return_value = close
+
+        BacktestRunner._compute_equalweight_baseline(
+            predictions=predictions, topk=2,
+            evaluation_start="2025-10-01", evaluation_end="2025-10-02",
+            pit_provider=pit,
+        )
+        self.assertEqual(pit.get_features.call_count, 1)
+        args, kwargs = pit.get_features.call_args
+        fields_arg = args[0] if args else kwargs.get("fields")
+        self.assertEqual(fields_arg, ["$close"])
+        instruments_arg = kwargs.get("instruments")
+        self.assertIsNotNone(instruments_arg,
+                             "pit_provider.get_features must be called with "
+                             "explicit instruments= kwarg")
+        # Top-2 by score on both days picks SH600519 (3.0) and SH600087 (2.0)
+        self.assertEqual(sorted(instruments_arg),
+                         ["SH600087", "SH600519"])
+
+    def test_legacy_path_when_no_pit_provider(self) -> None:
+        """``pit_provider=None`` (default) falls through to direct
+        qlib.D.features — the existing legacy behaviour."""
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mpatch
+
+        import pandas as pd
+
+        dates = pd.to_datetime(["2025-10-01", "2025-10-02"])
+        idx = pd.MultiIndex.from_product(
+            [dates, ["SH600519", "SH600087"]],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([3.0, 2.0, 3.0, 2.0], index=idx)
+
+        close_idx = pd.MultiIndex.from_product(
+            [["SH600519", "SH600087"], dates], names=["instrument", "datetime"],
+        )
+        close = pd.DataFrame({"$close": [10.0, 11.0, 20.0, 21.0]}, index=close_idx)
+
+        mock_D = MagicMock()
+        mock_D.features.return_value = close
+        with mpatch.dict("sys.modules", {"qlib.data": MagicMock(D=mock_D)}):
+            BacktestRunner._compute_equalweight_baseline(
+                predictions=predictions, topk=2,
+                evaluation_start="2025-10-01", evaluation_end="2025-10-02",
+                pit_provider=None,
+            )
+        self.assertEqual(mock_D.features.call_count, 1)
+
+
 class BacktestRunnerNDropValidationTests(unittest.TestCase):
     """``BacktestRunner.run`` must reject ``n_drop >= topk`` even when
     callers bypass ``WalkForwardConfig`` / ``PipelineConfig``. Without
