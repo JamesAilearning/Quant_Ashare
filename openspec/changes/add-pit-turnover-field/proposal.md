@@ -36,7 +36,7 @@ the grammar or operator engine being touched.
 
 - **Add new requirement to `v2-ashare-survivorship-correction`**: the
   PIT qlib bins SHALL include a `turn` field representing daily
-  turnover rate (percent of free float traded), populated from
+  turnover rate (percent of total shares traded), populated from
   Tushare's `daily_basic.turnover_rate`, NaN past `delist_date`,
   and NaN where Tushare returned no row for a (ticker, date) cell.
 - **Extend `TushareFetcher.ENDPOINTS`** from 6 to 7 to include
