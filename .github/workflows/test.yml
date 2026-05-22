@@ -51,3 +51,25 @@ jobs:
         run: pytest tests/regression/ -q --tb=short
         env:
           RUN_E2E: "0"
+
+      # PIT data-pipeline + query-layer tests live in their own
+      # directories. We run them as SEPARATE pytest invocations
+      # (not added to the directories above) for two reasons:
+      #   1. The qlib canonical runtime is a process-singleton —
+      #      `tests/pit/test_query_layer.py` initialises it with a
+      #      tempdir provider, which would collide with
+      #      `tests/governance/test_qlib_init_singleton.py` if both
+      #      ran in the same pytest invocation. Separate invocations
+      #      isolate the singleton.
+      #   2. PIT scaffolding (Phases A-D) is opt-in for the existing
+      #      pipeline; keeping its tests in their own runs makes it
+      #      obvious which suite a regression came from.
+      - name: Run PIT data-pipeline tests
+        run: pytest tests/data_pipeline/ -q --tb=short
+        env:
+          RUN_E2E: "0"
+
+      - name: Run PIT query-layer tests
+        run: pytest tests/pit/ -q --tb=short
+        env:
+          RUN_E2E: "0"
