@@ -115,7 +115,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("Back to Jobs", source)
         self.assertIn("Run ID (copyable)", source)
         self.assertIn("Run directory (copyable)", source)
-        self.assertIn('st.switch_page(str(Path(__file__).resolve().parent / "run_history.py"))', source)
+        self.assertIn('pages/jobs.py', source)
 
     def test_results_page_uses_shared_nav_drawdown_time_range(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
