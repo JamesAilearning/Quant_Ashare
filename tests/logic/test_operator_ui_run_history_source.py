@@ -66,6 +66,31 @@ class JobsSourceTests(unittest.TestCase):
         self.assertIn('pages/results.py', source)
         self.assertIn('pages/walk_forward.py', source)
 
+    def test_jobs_page_uses_canonical_run_id_query_param(self) -> None:
+        """Row click SHALL set ``st.query_params["run_id"]`` — the key that
+        ``results.py._query_run_id`` and ``walk_forward.py`` consume.
+
+        Regression guard for Codex PR #118 P1: prior implementation set
+        ``st.query_params["run"]`` which neither detail page read, so the
+        selected run did not survive ``st.switch_page``.
+        """
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn('st.query_params["run_id"]', source)
+        self.assertNotIn('st.query_params["run"] =', source)
+
+    def test_walk_forward_page_honours_query_param_run_selection(self) -> None:
+        """walk_forward.py SHALL pre-select the run named in
+        ``st.query_params["run_id"]`` so click-through from the Jobs hub
+        lands on the operator's chosen run, not the most recent one."""
+
+        source = Path("web/operator_ui/pages/walk_forward.py").read_text(encoding="utf-8")
+
+        self.assertIn('st.query_params.get("run_id"', source)
+        self.assertIn("wf_selected_run", source)
+        self.assertIn("_default_index", source)
+
     def test_jobs_page_offers_active_filter_chips(self) -> None:
         """Each non-default filter SHALL surface as a removable chip
         (TICKET-A "filter chips") and there SHALL be a Clear-all action."""

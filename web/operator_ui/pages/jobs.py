@@ -420,13 +420,16 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                 type="primary",
                 use_container_width=True,
             ):
+                # results.py reads ``st.query_params["run_id"]`` via
+                # ``_query_run_id`` and walk_forward.py picks up the same
+                # key (added in this PR). Use the canonical key so the
+                # detail page lands on the row the operator clicked.
+                st.query_params["run_id"] = selected.run_id
                 if selected.type == "walk_forward":
                     st.session_state["wf_selected_run"] = selected.run_id
-                    st.query_params["run"] = selected.run_id
                     st.switch_page("pages/walk_forward.py")
                 else:
                     st.session_state["results_selected_run"] = selected.run_id
-                    st.query_params["run"] = selected.run_id
                     st.switch_page("pages/results.py")
         with act_copy:
             copy_id = f"jobs_copy_field_{quote_plus(selected.run_id)}"

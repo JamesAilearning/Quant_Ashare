@@ -192,10 +192,27 @@ if not run_options:
     st.stop()
     selected = str(output_path())
 else:
+    # If the operator clicked through from the Jobs hub, the selected
+    # run id is in ``st.query_params["run_id"]`` (or stashed in
+    # ``st.session_state["wf_selected_run"]`` as a fallback for clients
+    # that strip query strings). Pre-select the matching run so the
+    # detail page lands on the row the operator clicked, not the most
+    # recent run.
+    _requested_run_id = st.query_params.get("run_id", "") or str(
+        st.session_state.get("wf_selected_run", "") or ""
+    )
+    _default_index = 0
+    if _requested_run_id:
+        _keys = list(run_options.keys())
+        for idx, key in enumerate(_keys):
+            if run_options[key] == _requested_run_id:
+                _default_index = idx
+                break
     selected = st.selectbox(
         "Run",
         options=list(run_options.keys()),
         format_func=lambda k: run_options[k],
+        index=_default_index,
     )
     if not selected:
         st.stop()
