@@ -1,8 +1,8 @@
 ## MODIFIED Requirements
 
-### Requirement: Factor-mining code SHALL NOT access qlib directly; only `pit_adapter.py` MAY use the PIT data door
+### Requirement: Phase 1 SHALL NOT access qlib, PIT data, or any data source
 
-Code under `src/factor_mining/` SHALL NOT import from `qlib`, SHALL NOT call `qlib.init`, and SHALL NOT reference `qlib.data.D`. A repository-wide grep for `qlib\.data`, `qlib\.init`, or `from qlib` under `src/factor_mining/` MUST return zero matches. The PIT layer SHALL be reached only through `src/factor_mining/pit_adapter.py`, which is the designated data door; only `pit_adapter.py` MAY import `PITDataProvider` from `src.pit.query`. All other modules under `src/factor_mining/` SHALL NOT import `src.pit` directly. This implements the strict data gate D5 from `docs/factor_mining/decisions.md` while making the Phase 2 PIT-adapter boundary explicit.
+Code under `src/factor_mining/` SHALL NOT import from `qlib`, SHALL NOT call `qlib.init`, and SHALL NOT reference `qlib.data.D`. A repository-wide grep for `qlib\.data`, `qlib\.init`, or `from qlib` under `src/factor_mining/` MUST return zero matches. The PIT layer SHALL be reached only through `src/factor_mining/pit_adapter.py`, which is the designated data door; only `pit_adapter.py` MAY import `PITDataProvider` from `src.pit.query`. All other modules under `src/factor_mining/` SHALL NOT import `src.pit` directly. This requirement extends the original Phase 1 strict gate D5 (from `docs/factor_mining/decisions.md`) to acknowledge the Phase 2 `pit_adapter.py` data door; the qlib direct-import ban remains absolute for the entire subpackage including `pit_adapter.py`.
 
 #### Scenario: a developer runs the strict data-gate grep
 - **WHEN** a developer runs `grep -rn "qlib\.data\|qlib\.init\|from qlib" src/factor_mining/`
