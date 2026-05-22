@@ -1,0 +1,13 @@
+# Default preset — standard run (15-30 min)
+mode: pipeline
+instruments: csi800
+feature_handler: Alpha158
+model_type: LGBModel
+compute_device: cpu
+num_boost_round: 1000
+early_stopping_rounds: 50
+learning_rate: 0.005
+benchmark_code: SH000300
+topk: 50
+n_drop: 5
+signal_to_execution_lag: 1

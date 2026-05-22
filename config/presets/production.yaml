@@ -1,0 +1,13 @@
+# Production preset — full run (30-90 min)
+mode: pipeline
+instruments: all
+feature_handler: Alpha158
+model_type: LGBModel
+compute_device: cpu
+num_boost_round: 2000
+early_stopping_rounds: 100
+learning_rate: 0.005
+benchmark_code: SH000300
+topk: 50
+n_drop: 5
+signal_to_execution_lag: 1
