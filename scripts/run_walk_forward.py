@@ -7,6 +7,13 @@ Reads a YAML mapping into :class:`WalkForwardConfig` and runs
 :meth:`WalkForwardEngine.run`. Mirrors :mod:`main.py` for the single-fold
 pipeline; kept as a separate script because the walk-forward engine
 has its own config dataclass with different fields.
+
+When the YAML selects ``feature_handler: "MinedFactor"``, this script
+also binds the MinedFactor handler (per Phase 5's lazy-bind contract
+in ``v2-feature-handler-registry``) before the engine runs. The
+required top-level YAML keys for that path are documented in
+``docs/factor_mining/user_guide.md`` and listed below in
+``_MINED_FACTOR_YAML_KEYS``.
 """
 
 from __future__ import annotations
@@ -27,17 +34,35 @@ from src.core.walk_forward import (  # noqa: E402
     WalkForwardConfig,
     WalkForwardEngine,
 )
+from src.data.mined_factor_handler import (  # noqa: E402
+    MinedFactorBundle,
+    register_mined_factor_handler,
+)
 
 _logger = get_logger(__name__)
+
+
+# Top-level YAML keys consumed by this script's MinedFactor wiring.
+# These are allowed in any walk-forward YAML (so an operator template
+# can prefill them) but are only *required* when feature_handler is
+# "MinedFactor". See docs/factor_mining/user_guide.md and the spec
+# v2-factor-mining-walk-forward.
+_MINED_FACTOR_YAML_KEYS: tuple[str, ...] = (
+    "mined_factor_pool_dir",
+    "mined_factor_delisted_registry_path",
+    "mined_factor_pit_provider_uri",
+    "mined_factor_universe_name_override",
+)
 
 
 def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
     """Load walk-forward + qlib runtime config from a YAML mapping.
 
     The YAML may carry a top-level ``provider_uri`` and ``region``
-    used to initialise qlib; everything else is funnelled into
-    :class:`WalkForwardConfig`. Unknown keys raise a hard error
-    (mirrors ``main.py``'s behaviour).
+    used to initialise qlib; the four ``mined_factor_*`` keys
+    (consumed separately by ``_maybe_build_mined_factor_bundle``);
+    everything else is funnelled into :class:`WalkForwardConfig`.
+    Unknown keys raise a hard error (mirrors ``main.py``'s behaviour).
     """
     config_path = Path(path)
     if not config_path.exists():
@@ -52,7 +77,8 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
 
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}
     qlib_keys = {"provider_uri", "region"}
-    unknown = sorted(set(raw) - valid_fields - qlib_keys)
+    mined_factor_keys = set(_MINED_FACTOR_YAML_KEYS)
+    unknown = sorted(set(raw) - valid_fields - qlib_keys - mined_factor_keys)
     if unknown:
         # Reject unknown keys hard. Previously we logged a WARNING and
         # silently dropped them, which masked typos like ``top_k`` /
@@ -62,7 +88,8 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
         raise ValueError(
             f"Unknown config keys in {config_path}: {unknown}. "
             f"Valid WalkForwardConfig fields: {sorted(valid_fields)}; "
-            f"plus qlib runtime keys: {sorted(qlib_keys)}. "
+            f"plus qlib runtime keys: {sorted(qlib_keys)}; "
+            f"plus mined-factor keys: {sorted(mined_factor_keys)}. "
             "Refusing to run with potentially-typo'd keys."
         )
 
@@ -83,14 +110,84 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
     return wf_config, qlib_cfg
 
 
+def _maybe_build_mined_factor_bundle(
+    raw: dict,
+    wf_config: WalkForwardConfig,
+    provider_uri: str,
+) -> MinedFactorBundle | None:
+    """Extract a ``MinedFactorBundle`` from the raw YAML when the
+    handler is ``"MinedFactor"``; else return ``None``.
+
+    Raises ``ValueError`` when ``feature_handler == "MinedFactor"``
+    and one of the two required keys (``mined_factor_pool_dir``,
+    ``mined_factor_delisted_registry_path``) is missing or empty.
+    Logs a WARNING when ``mined_factor_pit_provider_uri`` is set to a
+    value distinct from the top-level ``provider_uri``.
+    """
+    if wf_config.feature_handler != "MinedFactor":
+        return None
+    pool_dir = str(raw.get("mined_factor_pool_dir") or "").strip()
+    registry_path = str(raw.get("mined_factor_delisted_registry_path") or "").strip()
+    if not pool_dir:
+        raise ValueError(
+            "feature_handler='MinedFactor' requires the YAML to set "
+            "mined_factor_pool_dir to the directory of a promoted factor "
+            "pool (e.g. research/mined_factors/production/v1). See "
+            "docs/factor_mining/user_guide.md for the bind workflow."
+        )
+    if not registry_path:
+        raise ValueError(
+            "feature_handler='MinedFactor' requires the YAML to set "
+            "mined_factor_delisted_registry_path to the PIT delisted "
+            "registry parquet. See docs/factor_mining/user_guide.md."
+        )
+    pit_uri_raw = str(raw.get("mined_factor_pit_provider_uri") or "").strip()
+    pit_uri = pit_uri_raw or provider_uri
+    if pit_uri_raw and pit_uri_raw != provider_uri:
+        _logger.warning(
+            "mined_factor_pit_provider_uri (%s) differs from the walk-forward "
+            "provider_uri (%s). The MinedFactor handler will re-evaluate "
+            "factors on a different PIT vintage than the qlib runtime uses "
+            "for training data. This is legitimate for cross-vintage "
+            "comparison but is usually an operator mistake.",
+            pit_uri_raw, provider_uri,
+        )
+    universe_override = raw.get("mined_factor_universe_name_override")
+    universe_override_norm = (
+        str(universe_override).strip() if universe_override else None
+    )
+    return MinedFactorBundle(
+        pool_dir=Path(pool_dir),
+        pit_provider_uri=pit_uri,
+        delisted_registry_path=registry_path,
+        universe_name_override=universe_override_norm or None,
+    )
+
+
 def main() -> None:
     setup_logging()
     config_file = sys.argv[1] if len(sys.argv) > 1 else "config_walk.yaml"
     _logger.info("Loading walk-forward config from %s", config_file)
+    raw_yaml = load_yaml_with_inheritance(Path(config_file))
     wf_config, qlib_config = _load_config(config_file)
+    mined_factor_bundle = _maybe_build_mined_factor_bundle(
+        raw_yaml, wf_config, qlib_config.provider_uri,
+    )
 
     _logger.info("Initialising qlib runtime (provider_uri=%s)", qlib_config.provider_uri)
     init_qlib_canonical(qlib_config)
+
+    if mined_factor_bundle is not None:
+        _logger.info(
+            "Binding MinedFactor handler (pool_dir=%s)",
+            mined_factor_bundle.pool_dir,
+        )
+        # replace=True so re-runs in the same Python process re-bind
+        # the registry slot to the new bundle without raising
+        # "already registered". The spec
+        # v2-feature-handler-registry's "registered via explicit bind"
+        # requirement names this script as an authorised bind site.
+        register_mined_factor_handler(mined_factor_bundle, replace=True)
 
     result = WalkForwardEngine.run(wf_config)
 
