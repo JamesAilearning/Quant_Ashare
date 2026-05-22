@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,8 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("--text-primary", css)
         self.assertIn("--positive", css)
         self.assertIn("--negative", css)
+        self.assertIn('data-theme="dark"', css)
+        self.assertIn('data-color-convention="chinese"', css)
         self.assertIn('data-qv2-theme="dark"', css)
         self.assertIn('data-qv2-color-convention="chinese"', css)
         self.assertIn("font-variant-numeric: tabular-nums", css)
@@ -51,9 +54,29 @@ class OperatorUiThemeTests(unittest.TestCase):
         )
 
         self.assertIn("data-qv2-theme", script)
+        self.assertIn("data-theme", script)
         self.assertIn('"dark"', script)
         self.assertIn("data-qv2-color-convention", script)
+        self.assertIn("data-color-convention", script)
         self.assertIn('"western"', script)
+        self.assertIn("localStorage", script)
+        self.assertIn("qv2.theme", script)
+        self.assertIn("qv2.colorConvention", script)
+        self.assertIn("qv2.serverTheme", script)
+        self.assertIn("qv2.serverColorConvention", script)
+        self.assertIn("serverPreferenceChanged", script)
+        self.assertIn("qv2SetAppearancePreference", script)
+
+    def test_python_ui_sources_do_not_hardcode_hex_colors(self) -> None:
+        pattern = re.compile(r"#[0-9A-Fa-f]{3,8}")
+
+        offenders: list[str] = []
+        for path in Path("web/operator_ui").rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if pattern.search(text):
+                offenders.append(str(path))
+
+        self.assertEqual(offenders, [], "Python UI sources should use CSS tokens")
 
     def test_app_registers_design_system_page_and_theme_injection(self) -> None:
         source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")

@@ -15,6 +15,10 @@ ColorConvention = Literal["chinese", "western"]
 
 THEME_OPTIONS: tuple[ThemeMode, ...] = ("auto", "light", "dark")
 COLOR_CONVENTION_OPTIONS: tuple[ColorConvention, ...] = ("chinese", "western")
+THEME_STORAGE_KEY = "qv2.theme"
+COLOR_CONVENTION_STORAGE_KEY = "qv2.colorConvention"
+SERVER_THEME_STORAGE_KEY = "qv2.serverTheme"
+SERVER_COLOR_CONVENTION_STORAGE_KEY = "qv2.serverColorConvention"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 THEME_CSS_PATH = STATIC_DIR / "theme.css"
 PREFERENCES_PATH = output_path("operator_ui", "preferences.json")
@@ -91,14 +95,65 @@ def preference_attribute_script(preferences: UserPreferences) -> str:
 
     theme = json.dumps(preferences.theme)
     convention = json.dumps(preferences.color_convention)
+    theme_options = json.dumps(THEME_OPTIONS)
+    convention_options = json.dumps(COLOR_CONVENTION_OPTIONS)
+    theme_storage_key = json.dumps(THEME_STORAGE_KEY)
+    convention_storage_key = json.dumps(COLOR_CONVENTION_STORAGE_KEY)
+    server_theme_storage_key = json.dumps(SERVER_THEME_STORAGE_KEY)
+    server_convention_storage_key = json.dumps(SERVER_COLOR_CONVENTION_STORAGE_KEY)
     return f"""
 <script>
 (function() {{
   var root = window.parent.document.documentElement;
-  var theme = {theme};
-  var convention = {convention};
+  var themeOptions = {theme_options};
+  var conventionOptions = {convention_options};
+  var themeStorageKey = {theme_storage_key};
+  var conventionStorageKey = {convention_storage_key};
+  var serverThemeStorageKey = {server_theme_storage_key};
+  var serverConventionStorageKey = {server_convention_storage_key};
+  var fallbackTheme = {theme};
+  var fallbackConvention = {convention};
+
+  function safeGet(key) {{
+    try {{
+      return window.parent.localStorage.getItem(key);
+    }} catch (e) {{
+      return null;
+    }}
+  }}
+
+  function safeSet(key, value) {{
+    try {{
+      window.parent.localStorage.setItem(key, value);
+    }} catch (e) {{}}
+  }}
+
+  function supported(value, options, fallback) {{
+    return options.indexOf(value) >= 0 ? value : fallback;
+  }}
+
+  var previousServerTheme = safeGet(serverThemeStorageKey);
+  var previousServerConvention = safeGet(serverConventionStorageKey);
+  var serverPreferenceChanged = (
+    (previousServerTheme !== null && previousServerTheme !== fallbackTheme) ||
+    (
+      previousServerConvention !== null &&
+      previousServerConvention !== fallbackConvention
+    )
+  );
+  var theme = fallbackTheme;
+  var convention = fallbackConvention;
+  if (!serverPreferenceChanged) {{
+    theme = supported(safeGet(themeStorageKey), themeOptions, fallbackTheme);
+    convention = supported(
+      safeGet(conventionStorageKey),
+      conventionOptions,
+      fallbackConvention
+    );
+  }}
 
   function applyTheme(t) {{
+    root.setAttribute("data-theme", t);
     root.setAttribute("data-qv2-theme", t);
   }}
 
@@ -112,7 +167,24 @@ def preference_attribute_script(preferences: UserPreferences) -> str:
     applyTheme(theme);
   }}
 
+  root.setAttribute("data-color-convention", convention);
   root.setAttribute("data-qv2-color-convention", convention);
+  safeSet(themeStorageKey, theme);
+  safeSet(conventionStorageKey, convention);
+  safeSet(serverThemeStorageKey, fallbackTheme);
+  safeSet(serverConventionStorageKey, fallbackConvention);
+
+  window.parent.qv2SetAppearancePreference = function(nextTheme, nextConvention) {{
+    var resolvedTheme = supported(nextTheme, themeOptions, theme);
+    var resolvedConvention = supported(nextConvention, conventionOptions, convention);
+    safeSet(themeStorageKey, resolvedTheme);
+    safeSet(conventionStorageKey, resolvedConvention);
+    safeSet(serverThemeStorageKey, resolvedTheme);
+    safeSet(serverConventionStorageKey, resolvedConvention);
+    applyTheme(resolvedTheme);
+    root.setAttribute("data-color-convention", resolvedConvention);
+    root.setAttribute("data-qv2-color-convention", resolvedConvention);
+  }};
 }})();
 </script>
 """
