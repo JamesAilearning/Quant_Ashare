@@ -5,6 +5,18 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+# Some CI cells (ubuntu-3.10 / ubuntu-3.12) install streamlit via a step that
+# has ``continue-on-error: true`` and may or may not succeed.  Source-level
+# tests (read .py as text) don't need streamlit, but the LastNDaysSplitTests
+# class imports a function from a page module that loads ``streamlit`` at
+# import time.  Skip that class cleanly rather than fail the cell.
+try:
+    import streamlit as _streamlit  # noqa: F401
+
+    _HAS_STREAMLIT = True
+except ImportError:
+    _HAS_STREAMLIT = False
+
 
 class ConfigRunPageSourceTests(unittest.TestCase):
     def test_training_controls_are_not_inside_streamlit_form(self) -> None:
@@ -108,6 +120,147 @@ class ConfigRunPageSourceTests(unittest.TestCase):
                 (presets_dir / f"{name}.yaml").is_file(),
                 f"Missing preset: {name}.yaml",
             )
+
+    def test_tushare_extracted_to_dedicated_page(self) -> None:
+        """Tushare ingestion SHALL live on its own page (pages/tushare.py)
+        so model-run config never mixes with data-ingestion controls
+        (TICKET-C polish — Codex review on PR1)."""
+
+        config_run = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+        tushare_page = Path("web/operator_ui/pages/tushare.py")
+
+        self.assertTrue(tushare_page.is_file(), "pages/tushare.py SHALL exist")
+        tushare_src = tushare_page.read_text(encoding="utf-8")
+
+        # The dedicated page owns the form and the token gating.
+        self.assertIn('st.form("tushare_provider_form")', tushare_src)
+        self.assertIn('TUSHARE_TOKEN', tushare_src)
+        self.assertIn('JobManager.start', tushare_src)
+        self.assertIn('"tushare_provider"', tushare_src)
+
+        # Config & Run no longer carries Tushare-specific imports or wiring.
+        self.assertNotIn('st.form("tushare_provider_form")', config_run)
+        self.assertNotIn('TUSHARE_PROVIDER_KEYS', config_run)
+        self.assertNotIn('ADJUST_MODE_PRE', config_run)
+        self.assertNotIn('"tushare_provider"', config_run)
+
+    def test_tushare_token_never_appears_in_yaml_or_preview(self) -> None:
+        """Hard rule: the token is environment-only and SHALL NOT appear
+        in any YAML preview, st.code rendering, or persisted state on the
+        Tushare page (project secrets policy)."""
+
+        tushare_src = Path("web/operator_ui/pages/tushare.py").read_text(encoding="utf-8")
+
+        # The page reads the env var to gate, but never copies it into
+        # st.code / st.text / config dict / session_state.
+        self.assertNotIn("st.code(", tushare_src)
+        self.assertNotIn('TUSHARE_TOKEN"]', tushare_src.replace("os.environ.get(", "X"))
+        # Token is referenced only via os.environ.get(... ).strip() bool check.
+        self.assertIn('os.environ.get("TUSHARE_TOKEN"', tushare_src)
+        # Token name SHALL NOT show up in any user-facing value:
+        # the only allowed occurrences are env-var reference + caption /
+        # warning copy. None of them write the token's value anywhere.
+
+    def test_app_nav_includes_tushare_page(self) -> None:
+        """The Tushare page SHALL be reachable from the sidebar nav."""
+
+        app_src = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
+        self.assertIn('tushare.py', app_src)
+        self.assertIn('"Tushare Data"', app_src)
+
+    def test_yaml_preview_offers_copy_and_diff(self) -> None:
+        """The YAML preview pane SHALL surface a Copy button and a
+        ``Show diff vs preset`` toggle (TICKET-C polish)."""
+
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("📋 Copy YAML", source)
+        self.assertIn("cr_copy_yaml_btn", source)
+        self.assertIn("cr_show_diff_toggle", source)
+        self.assertIn("Show diff vs preset", source)
+        # Diff is computed via stdlib difflib against the active preset.
+        self.assertIn("difflib", source)
+        self.assertIn("unified_diff", source)
+        # The toast confirms the copy action.
+        self.assertIn('st.toast("YAML copied', source)
+
+    def test_guard_errors_surface_auto_fix_buttons(self) -> None:
+        """When a guard error has a known mechanical resolution, the
+        status panel SHALL render a one-click fix alongside it."""
+
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("auto_fixes", source)
+        # The GPU + non-LGBModel combo is the canonical example registered
+        # in this PR; its fix label is documented here so the auto-fix
+        # plumbing has at least one concrete attach point.
+        self.assertIn("Switch model → LGBModel", source)
+        self.assertIn("_fix_gpu_model", source)
+
+    def test_pipeline_dates_offer_quick_range_presets(self) -> None:
+        """The pipeline date block SHALL surface quick range buttons
+        (Full history / Last 5y / Last 3y / Reset to preset)."""
+
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("Quick date range presets", source)
+        self.assertIn("Full history", source)
+        self.assertIn("Last 5y", source)
+        self.assertIn("Last 3y", source)
+        self.assertIn("Reset to preset", source)
+        self.assertIn("_last_n_days_split(", source)
+
+
+@unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
+class LastNDaysSplitTests(unittest.TestCase):
+    def test_returns_none_for_empty_calendar(self) -> None:
+        import types
+
+        from web.operator_ui.pages.config_run import _last_n_days_split
+
+        metadata = types.SimpleNamespace(calendar_dates=())
+        self.assertIsNone(_last_n_days_split(metadata, 252 * 5))
+
+    def test_returns_none_for_undersized_calendar(self) -> None:
+        import types
+        from datetime import date as _d
+
+        from web.operator_ui.pages.config_run import _last_n_days_split
+
+        # Below the 50-day floor: return None rather than guess.
+        cal = tuple(_d(2026, 1, 1).fromordinal(_d(2026, 1, 1).toordinal() + i) for i in range(20))
+        metadata = types.SimpleNamespace(calendar_dates=cal)
+        self.assertIsNone(_last_n_days_split(metadata, 252 * 5))
+
+    def test_split_produces_six_monotone_dates(self) -> None:
+        import types
+        from datetime import date as _d
+
+        from web.operator_ui.pages.config_run import _last_n_days_split
+
+        # Build a 1000-day synthetic calendar (real provider would be a
+        # trading-day calendar; the helper doesn't care about gaps).
+        base = _d(2020, 1, 1)
+        cal = tuple(_d.fromordinal(base.toordinal() + i) for i in range(1000))
+        metadata = types.SimpleNamespace(calendar_dates=cal)
+
+        result = _last_n_days_split(metadata, 252 * 5)  # 1260 -> capped to 1000
+        self.assertIsNotNone(result)
+        assert result is not None  # for type-checker
+        ordered = [
+            result["train_start"], result["train_end"],
+            result["valid_start"], result["valid_end"],
+            result["test_start"], result["test_end"],
+        ]
+        # Monotone non-decreasing.
+        # ``strict=False`` because zipping ``[1..6]`` with ``[2..6]`` deliberately
+        # has unequal lengths — we want all consecutive pairs.
+        for earlier, later in zip(ordered, ordered[1:], strict=False):
+            self.assertLessEqual(earlier, later)
+        # Train/Valid/Test ranges are non-empty.
+        self.assertLess(result["train_start"], result["train_end"])
+        self.assertLess(result["valid_start"], result["valid_end"])
+        self.assertLess(result["test_start"], result["test_end"])
 
 
 if __name__ == "__main__":
