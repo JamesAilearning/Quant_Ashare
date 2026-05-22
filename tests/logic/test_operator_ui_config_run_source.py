@@ -77,10 +77,29 @@ class ConfigRunPageSourceTests(unittest.TestCase):
     def test_config_page_has_preset_system(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
-        self.assertIn("_PRESET_NAMES", source)
+        self.assertIn("_preset_options", source)
+        self.assertIn("list_preset_names", source)
         self.assertIn("_apply_preset", source)
         self.assertIn("_detect_preset", source)
         self.assertIn('"Custom"', source)
+
+    def test_config_page_initializes_default_preset_fields(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn('"cr_preset_initialized"', source)
+        self.assertIn('_apply_preset("Default")', source)
+        self.assertIn('value=_cr("instruments", "csi300")', source)
+        self.assertIn('value=_cr("feature_handler", "Alpha158")', source)
+
+    def test_runtime_config_excludes_ui_mode_key(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("if submitted:", source)
+        self.assertIn('preview_config = {"mode": mode, **config_dict}', source)
+        self.assertIn("validate_config_keys(config_dict, known_keys)", source)
+        self.assertIn("JobManager.start(config_dict, mode)", source)
+        self.assertNotIn("validate_config_keys(preview_config", source)
+        self.assertNotIn("JobManager.start(preview_config", source)
 
     def test_preset_yaml_files_exist(self) -> None:
         presets_dir = Path("config/presets")
