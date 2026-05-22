@@ -1,0 +1,167 @@
+# PIT reference cases — Phase 0.2 user-curated seed
+#
+# This file is the test oracle for the v2-ashare-survivorship-correction
+# capability. Every row in this file is hand-verified by the user against
+# Tushare API responses pulled on 2026-05-22 (5000-point Pro tier).
+#
+# Coverage matrix (from docs/pit/pit_universe_design.md §9.2):
+#
+#   Pre-2020 financial delisting              → SH600087 退市长油
+#   2020-2022 *ST → 退市 mainstream era       → SH600247 *ST成城退
+#   2024+ post-退市新规 strict era            → SZ000023 *ST深天退
+#   ChiNext delisting                          → SZ300297 蓝盾退
+#   STAR board delisting                       → SH688086 退市紫晶
+#   Same-day multi-stock batch delisting       → batch_20220622 (6 stocks)
+#   Active stock negative control              → SH600519 贵州茅台
+#   CSI300 constituent change — enter          → SZ002594 BYD 2019-12-13
+#   CSI300 constituent change — leave          → SH600015 华夏银行 2022-06-13
+#
+# Hard rule (§14.7): future additions to this file MUST cite the Tushare
+# API response (stock_basic / namechange / index_weight row) in the PR
+# body, per row. PRs with uncited reference rows are rejected.
+
+pure_delisting_cases:
+  - ticker: SH600087
+    last_company_name: 退市长油
+    list_date: 1997-06-12
+    delist_date: 2014-06-05
+    delist_reason: financial
+    era: pre-2020 financial delisting
+    cite_tushare: |
+      stock_basic(list_status='D') row, 2026-05-22 pull:
+        ts_code='600087.SH', symbol='600087', name='退市长油(退)',
+        list_date='19970612', delist_date='20140605',
+        list_status='D', market='主板'
+
+  - ticker: SH600247
+    last_company_name: '*ST成城退'
+    list_date: 2000-11-23
+    delist_date: 2021-03-22
+    delist_reason: financial
+    era: 2020-2022 *ST -> 退市 mainstream
+    cite_tushare: |
+      stock_basic(list_status='D') row, 2026-05-22 pull:
+        ts_code='600247.SH', symbol='600247', name='*ST成城(退)',
+        list_date='20001123', delist_date='20210322',
+        list_status='D', market='主板'
+
+  - ticker: SZ000023
+    last_company_name: '*ST深天退'
+    list_date: 1993-04-29
+    delist_date: 2024-09-02
+    delist_reason: major_violation
+    era: 2024+ post-退市新规 strict
+    cite_tushare: |
+      stock_basic(list_status='D') row, 2026-05-22 pull:
+        ts_code='000023.SZ', symbol='000023', name='*ST深天(退)',
+        list_date='19930429', delist_date='20240902',
+        list_status='D', market='主板'
+
+  - ticker: SZ300297
+    last_company_name: 蓝盾退
+    list_date: 2012-03-15
+    delist_date: 2023-07-31
+    delist_reason: financial
+    era: ChiNext financial-fraud delisting
+    board: chinext
+    cite_tushare: |
+      stock_basic(list_status='D') row, 2026-05-22 pull:
+        ts_code='300297.SZ', symbol='300297', name='蓝盾退(退)',
+        list_date='20120315', delist_date='20230731',
+        list_status='D', market='创业板'
+
+  - ticker: SH688086
+    last_company_name: 退市紫晶
+    list_date: 2020-02-26
+    delist_date: 2023-07-07
+    delist_reason: financial
+    era: STAR board first-wave forced delisting (financial fraud)
+    board: star
+    cite_tushare: |
+      stock_basic(list_status='D') row, 2026-05-22 pull:
+        ts_code='688086.SH', symbol='688086', name='退市紫晶(退)',
+        list_date='20200226', delist_date='20230707',
+        list_status='D', market='科创板'
+      namechange(ts_code='688086.SH'), 2026-05-22 pull:
+        20200226-20220504 紫晶存储  -> 20220505-20230607 *ST紫晶
+        -> 20230608- 退市紫晶 (reason='终止上市')
+
+batch_delisting_cases:
+  - batch_date: 2022-06-22
+    note: |
+      退市新规首批集中退市批次。6 stocks delisted on the same trading day.
+      Tests SHALL assert all 6 tickers are in delisted_registry with
+      delist_date=2022-06-22.
+    tickers:
+      - ticker: SZ002473
+        last_company_name: 圣莱退
+        list_date: 2010-09-10
+      - ticker: SZ002618
+        last_company_name: 丹邦退
+        list_date: 2011-09-20
+      - ticker: SZ300178
+        last_company_name: 腾邦退
+        list_date: 2011-02-15
+      - ticker: SH600209
+        last_company_name: 退市罗顿
+        list_date: 1999-03-25
+      - ticker: SH600275
+        last_company_name: 退市昌鱼
+        list_date: 2000-08-10
+      - ticker: SH600856
+        last_company_name: 退市中天
+        list_date: 1994-04-25
+    cite_tushare: |
+      stock_basic(list_status='D'), 2026-05-22 pull, grouped by delist_date:
+        delist_date=20220622 -> 6 rows:
+          002473.SZ 圣莱退(退)    list=20100910
+          002618.SZ 丹邦退(退)    list=20110920
+          300178.SZ 腾邦退(退)    list=20110215
+          600209.SH 退市罗顿(退)  list=19990325
+          600275.SH 退市昌鱼(退)  list=20000810
+          600856.SH 退市中天(退)  list=19940425
+
+active_control_cases:
+  - ticker: SH600519
+    name: 贵州茅台
+    list_date: 2001-08-27
+    note: |
+      Active stock negative control. SHALL NOT appear in
+      delisted_registry. Public common knowledge — no Tushare cite
+      required (registry builder asserts list_status='L', which any
+      Tushare stock_basic pull confirms; future agent additions of
+      negative controls SHOULD cite to keep the discipline uniform).
+
+index_membership_cases:
+  csi300:
+    - ticker: SZ002594
+      action: enter
+      date: 2019-12-13
+      note: BYD entered CSI300
+      cite_tushare: |
+        index_weight(index_code='000300.SH', start_date='20191201',
+                     end_date='20191231'), 2026-05-22 pull:
+          snapshot dates returned: ['20191231']
+          20191231: 002594.SZ PRESENT, weight=0.313
+        (Tushare returns monthly snapshots; the entry day 2019-12-13
+        falls between the 2019-11-30 absence and the 2019-12-31
+        presence, so the entry-boundary assertion is "absent on
+        20191130 snapshot, present on 20191231 snapshot".)
+
+    - ticker: SH600015
+      action: leave
+      date: 2022-06-13
+      note: 华夏银行 dropped from CSI300
+      cite_tushare: |
+        index_weight(index_code='000300.SH', start_date='20220601',
+                     end_date='20220630'), 2026-05-22 pull:
+          snapshot dates returned: ['20220601', '20220630']
+          20220601: 600015.SH PRESENT, weight=0.1793
+          20220630: 600015.SH PRESENT, weight=0.153
+        (Membership flipped intra-month around the asserted 2022-06-13
+        leave date but both bracketing snapshots show presence; the
+        index_weight resolver in Phase A.4 needs to consult Tushare's
+        actual entry/exit announcements for sub-monthly precision.
+        Recorded here as a known data-granularity caveat — Phase A.4
+        SHALL surface this in the test failure message rather than
+        silently passing.)
