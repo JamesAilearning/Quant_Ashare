@@ -15,7 +15,10 @@ from web.operator_ui.formatting import (
     format_relative_time,
 )
 
-st.title("Design System")
+from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+
+render_breadcrumbs([("System", None)])
+render_page_header("Design System")
 st.caption("Operator UI visual tokens and display-format examples.")
 
 st.header("Color Tokens")
