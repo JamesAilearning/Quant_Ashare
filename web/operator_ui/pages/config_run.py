@@ -27,6 +27,7 @@ from web.operator_ui.provider_catalog import (
     delete_provider_catalog_entry,
     list_provider_catalog_entries,
 )
+from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 from web.operator_ui.training_guards import (
     FORWARD_RETURN_BUFFER_DAYS,
     ProviderMetadata,
@@ -131,7 +132,11 @@ def _walk_forward_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
     return {"overall_start": "2022-01-01", "overall_end": "2026-02-28"}
 
 
-st.title("Config & Run")
+render_breadcrumbs([("Run", None)])
+render_page_header(
+    "Config & Run",
+    "Configure and launch pipeline, walk-forward, or data provider runs.",
+)
 
 mode = st.selectbox("Mode", ["pipeline", "walk_forward"])
 

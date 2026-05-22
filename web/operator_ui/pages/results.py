@@ -16,6 +16,7 @@ from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 from web.operator_ui.result_exports import bundle_zip_bytes, metrics_csv_bytes, summary_pdf_bytes
 from web.operator_ui.result_view_helpers import (
     LOG_LEVEL_OPTIONS,
@@ -1231,7 +1232,8 @@ def _render_run_not_found(run_id: str) -> None:
 
 
 _install_styles()
-st.title("Results")
+render_breadcrumbs([("Analyze", None)])
+render_page_header("Results", "Inspect pipeline, walk-forward, and data provider run artifacts.")
 
 jobs = JobManager.list_jobs()
 viewable_jobs = [

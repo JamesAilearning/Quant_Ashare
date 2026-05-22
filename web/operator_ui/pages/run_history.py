@@ -7,9 +7,11 @@ from pathlib import Path
 import streamlit as st
 
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 from web.operator_ui.report_reader import read_all_catalog_entries
 
-st.title("Run History")
+render_breadcrumbs([("History", None)])
+render_page_header("Run History", "Browse catalog entries and UI-launched jobs.")
 
 _PAGES_DIR = Path(__file__).resolve().parent
 

@@ -9,9 +9,11 @@ import streamlit as st
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 from web.operator_ui.report_reader import read_fold_reports, read_walk_forward_report
 
-st.title("Walk-Forward Detail")
+render_breadcrumbs([("Analyze", None)])
+render_page_header("Walk-Forward Detail", "Fold-by-fold results and stability analysis.")
 
 jobs = JobManager.list_jobs()
 wf_jobs = [j for j in jobs if j.get("mode") == "walk_forward" and j.get("run_dir")]
