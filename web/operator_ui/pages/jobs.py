@@ -202,13 +202,3 @@ if _showing < total:
     if st.button(f"Load more ({total - _showing} remaining)", key="jobs_load_more"):
         st.session_state["jobs_page"] = _page + 1
         st.rerun()
-
-# ---------------------------------------------------------------------------
-# Actions — click row to navigate (via query param)
-# ---------------------------------------------------------------------------
-with st.expander("Open detail", expanded=False):
-    run_ids = [item.run_id for item in items]
-    selected = st.selectbox("Select a run", run_ids, key="jobs_detail_select")
-    if st.button("View details", key="jobs_view_btn"):
-        st.query_params["run_id"] = selected
-        st.switch_page("pages/results.py")

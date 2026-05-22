@@ -204,7 +204,7 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
 def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
     run_id = str(raw.get("run_id") or "")[:40]
     engine = str(raw.get("engine") or "")
-    etype = engine.replace("_", " ") if engine else "unknown"
+    etype = engine if engine else "unknown"
     status = str(raw.get("status") or "completed")
     created = str(raw.get("completed_at") or "")
     dur = raw.get("duration_seconds") if isinstance(raw.get("duration_seconds"), (int, float)) else None
@@ -260,10 +260,9 @@ def list_all_jobs(
     # Filter
     filtered = _apply_filters(all_items, type_filter, status_filter, source_filter, search)
 
-    # Paginate
+    # Paginate — cumulative for load-more UX (page N returns first N*size items)
     total = len(filtered)
-    start = (page - 1) * page_size
-    page_items = filtered[start : start + page_size]
+    page_items = filtered[: page * page_size]
 
     return page_items, total
 

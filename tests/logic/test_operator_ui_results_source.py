@@ -74,8 +74,8 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("Strategy NAV", source)
         self.assertIn("Strategy Drawdown", source)
         self.assertIn("Monthly Returns", source)
-        self.assertIn('st.query_params["run_id"]', jobs_source)
-        self.assertIn('pages/results.py', jobs_source)
+        self.assertIn("Load more", jobs_source)
+        self.assertIn("list_all_jobs", jobs_source)
 
     def test_results_page_exposes_export_and_rerun_actions(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
