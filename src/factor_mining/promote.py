@@ -320,15 +320,18 @@ def main(argv=None) -> int:
     except FileNotFoundError as exc:
         print(f"Promotion failed: {exc}", file=sys.stderr)
         return 1
+    # Use ASCII arrow ("->") in stdout so Windows cp1252 consoles do not
+    # raise UnicodeEncodeError when this CLI prints (the Phase 6 PR's
+    # initial round caught this on the windows-latest CI matrix).
     if args.dry_run:
         print(
             f"Promotion (dry-run): {report.n_kept_after_correlation}/{report.n_pool} "
-            f"factors would be kept → production/{report.version}/"
+            f"factors would be kept -> production/{report.version}/"
         )
     else:
         print(
             f"Promotion complete: {report.n_kept_after_correlation}/{report.n_pool} "
-            f"factors kept → {report.output_dir}"
+            f"factors kept -> {report.output_dir}"
         )
     return 0
 
