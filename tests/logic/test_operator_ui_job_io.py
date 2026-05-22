@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 
 from web.operator_ui.job_io import (
-    JobSummary,
     SORT_OPTIONS,
+    JobSummary,
     _apply_filters,
     _apply_sort,
     _parse_date_or_raise,

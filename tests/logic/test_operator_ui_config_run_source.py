@@ -240,7 +240,9 @@ class LastNDaysSplitTests(unittest.TestCase):
             result["test_start"], result["test_end"],
         ]
         # Monotone non-decreasing.
-        for earlier, later in zip(ordered, ordered[1:]):
+        # ``strict=False`` because zipping ``[1..6]`` with ``[2..6]`` deliberately
+        # has unequal lengths — we want all consecutive pairs.
+        for earlier, later in zip(ordered, ordered[1:], strict=False):
             self.assertLessEqual(earlier, later)
         # Train/Valid/Test ranges are non-empty.
         self.assertLess(result["train_start"], result["train_end"])
