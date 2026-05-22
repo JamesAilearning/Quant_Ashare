@@ -277,13 +277,20 @@ class TushareFetcher:
     def _fetch_index_weight(self) -> TushareFetchResult:
         """Pull index_weight per configured index across the date range.
 
-        Tushare returns monthly snapshots so one ``start_date``/``end_date``
-        call returns all snapshots in range for one index.
+        Tushare returns monthly snapshots, BUT the ``index_weight`` endpoint
+        caps the per-call payload at ~6000 rows. CSI300 with ~300
+        constituents per snapshot fits ~20 snapshots per call, so a
+        multi-year date range would silently truncate to the most recent
+        ~20 months (discovered during Phase A.4 smoke test against real
+        Tushare). We chunk by year and concat to defeat the cap, writing
+        one parquet per index as the contract still requires.
         """
         written = 0
         rows = 0
         skipped = 0
         out_root = self._config.output_dir / "index_weight"
+        start_year = int(self._config.start_date[:4])
+        end_year = int(self._config.end_date[:4])
         for idx in self._config.indices:
             path = out_root / f"{idx}.parquet"
             if path.exists():
@@ -291,17 +298,39 @@ class TushareFetcher:
                 skipped += 1
                 continue
             if self._config.dry_run:
-                _logger.info("  [dry-run] would write %s", path)
+                _logger.info("  [dry-run] would write %s (chunked %d-%d)",
+                             path, start_year, end_year)
                 continue
-            df = self._safe_call(
-                "index_weight",
-                index_code=idx,
-                start_date=self._config.start_date,
-                end_date=self._config.end_date,
-                fields="index_code,con_code,trade_date,weight",
-            )
+            chunks: list[pd.DataFrame] = []
+            for year in range(start_year, end_year + 1):
+                y_start = f"{year}0101"
+                y_end = f"{year}1231"
+                if y_start < self._config.start_date:
+                    y_start = self._config.start_date
+                if y_end > self._config.end_date:
+                    y_end = self._config.end_date
+                chunk = self._safe_call(
+                    "index_weight",
+                    index_code=idx,
+                    start_date=y_start,
+                    end_date=y_end,
+                    fields="index_code,con_code,trade_date,weight",
+                )
+                if not chunk.empty:
+                    chunks.append(chunk)
+            if not chunks:
+                # No data across the whole range — write empty parquet so
+                # resume on a subsequent run skips this index.
+                df = pd.DataFrame(
+                    columns=["index_code", "con_code", "trade_date", "weight"]
+                )
+            else:
+                df = pd.concat(chunks, ignore_index=True)
             self._atomic_write_parquet(df, path)
-            _logger.info("  wrote %d rows to %s", len(df), path)
+            _logger.info(
+                "  wrote %d rows to %s (across %d yearly chunks)",
+                len(df), path, len(chunks),
+            )
             written += 1
             rows += len(df)
         return TushareFetchResult("index_weight", written, rows, skipped)
