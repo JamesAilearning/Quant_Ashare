@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import time
 from datetime import date
 
 import streamlit as st
@@ -42,14 +41,6 @@ def _parse_instruments(raw: str) -> str | list[str]:
     if not value or value.lower() == "all":
         return "all"
     return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _has_streamlit_context() -> bool:
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-    except ImportError:
-        return False
-    return get_script_run_ctx() is not None
 
 
 def _trading_day_options(calendar_dates: tuple[date, ...]) -> list[str]:
@@ -418,60 +409,3 @@ if pull_tushare:
         st.stop()
     st.success(f"Tushare ingest job started: {job_id}")
     st.info(f"After success, use output/operator_ui/results/{job_id}/qlib_provider as provider_uri.")
-
-st.divider()
-st.subheader("Recent Jobs")
-jobs = JobManager.list_jobs()
-if not jobs:
-    st.write("No jobs yet.")
-else:
-    running_jobs = [j for j in jobs[:10] if j.get("status") == "running"]
-    auto_refresh = st.checkbox(
-        "Auto-refresh running jobs every 5 seconds",
-        value=bool(running_jobs),
-        disabled=not running_jobs,
-    )
-
-    for j in jobs[:10]:
-        status = j.get("status", "unknown")
-        progress = j.get("progress") if isinstance(j.get("progress"), dict) else {}
-        percent = int(progress.get("percent", 0) or 0)
-        label = str(progress.get("label") or status)
-        detail = str(progress.get("detail") or "")
-
-        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-        with col1:
-            st.write(f"{j.get('job_id', '?')} - {j.get('mode', '?')}")
-            st.progress(percent, text=f"{percent}% - {label}")
-            if detail:
-                st.caption(detail)
-        with col2:
-            st.write(status)
-        with col3:
-            if status == "running" and j.get("pid"):
-                if st.button("Stop", key=f"stop_{j.get('job_id')}"):
-                    try:
-                        JobManager.stop(j["job_id"])
-                    except JobManagerError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.rerun()
-        with col4:
-            job_id = str(j.get("job_id") or "")
-            if st.button(
-                "Delete",
-                key=f"delete_{job_id}",
-                disabled=status == "running" or not job_id,
-                help="Stop running jobs before deleting their job record and logs.",
-            ):
-                try:
-                    JobManager.delete(job_id)
-                except JobManagerError as exc:
-                    st.error(str(exc))
-                else:
-                    st.success(f"Deleted job: {job_id}")
-                    st.rerun()
-
-    if auto_refresh and running_jobs and _has_streamlit_context():
-        time.sleep(5)
-        st.rerun()

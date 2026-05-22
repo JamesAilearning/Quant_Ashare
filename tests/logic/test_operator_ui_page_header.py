@@ -39,6 +39,9 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         for path in sorted(pages_dir.glob("*.py")):
             if path.name.startswith("_") or path.name == "__init__.py":
                 continue
+            # Redirect stubs don't need a header
+            if path.name == "run_history.py":
+                continue
             source = path.read_text(encoding="utf-8")
             self.assertIn(
                 "render_page_header",
