@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,10 @@ def _apply_preset(preset_name: str) -> None:
     if not preset:
         return
     for key, value in preset.items():
+        # Never overwrite the Mode widget — it is already instantiated
+        # and Streamlit forbids writing to keys that have active widgets.
+        if key == "mode":
+            continue
         st.session_state[f"cr_{key}"] = value
     st.session_state["cr_preset"] = preset_name
 
@@ -477,32 +482,28 @@ with form_col:
 
     with btn_col:
         submitted = st.button("🚀 Run", disabled=(not provider_uri_valid or bool(guard_errors)), use_container_width=True)
-        save_btn = st.button("💾 Save as preset", use_container_width=True)
+        if st.button("💾 Save as preset", use_container_width=True):
+            st.session_state["cr_saving_preset"] = True
 
-    if submitted:
-        try:
-            validate_provider_uri(provider_uri)
-        except ValueError as e:
-            st.error(str(e))
-            st.stop()
-        if compute_device == "gpu" and model_type != "LGBModel":
-            st.error("GPU training is currently supported only for LGBModel.")
-            st.stop()
-        try:
-            validate_config_keys(config_dict, known_keys)
-            job_id = JobManager.start(config_dict, mode)
-        except (ValueError, JobManagerError) as exc:
-            st.error(str(exc))
-            st.stop()
-        st.success(f"Job started: {job_id}")
-        st.info(f"Watch output/operator_ui/jobs/{job_id}/stdout.log for logs and progress.")
-
-    if save_btn:
+    if st.session_state.get("cr_saving_preset"):
         save_name = st.text_input("Preset name", value="my_preset", key="cr_save_name")
-        if st.button("Save", key="cr_save_confirm"):
-            save_path = _PRESETS_DIR / f"{save_name.lower()}.yaml"
-            save_path.write_text(yaml.dump(config_dict, default_flow_style=False, allow_unicode=True), encoding="utf-8")
-            st.success(f"Saved as {save_name}")
+        if st.button("Confirm save", key="cr_save_confirm"):
+            # Sanitise to prevent path traversal
+            safe = re.sub(r"[^a-zA-Z0-9_-]", "", save_name).strip("_-")
+            if not safe:
+                st.error("Preset name must contain at least one letter or digit.")
+            else:
+                save_path = _PRESETS_DIR / f"{safe.lower()}.yaml"
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                save_path.write_text(
+                    yaml.dump(config_dict, default_flow_style=False, allow_unicode=True),
+                    encoding="utf-8",
+                )
+                st.success(f"Saved as {safe}")
+                st.session_state["cr_saving_preset"] = False
+                st.rerun()
+        if st.button("Cancel", key="cr_save_cancel"):
+            st.session_state["cr_saving_preset"] = False
             st.rerun()
 
 # ===== RIGHT: Live YAML preview =====
