@@ -448,6 +448,229 @@ class TickerNormalisationTests(unittest.TestCase):
                                  f"ticker {t!r} still in Tushare suffix format")
 
 
+class ManualOverridesTests(unittest.TestCase):
+    """data/manual_delistings.yaml — per-ticker exchange-cited overrides
+    for delist_reason and optional delist_date corrections (design §13 q2).
+    """
+
+    def _common_setup(self, tmp_path: Path) -> None:
+        _write_delisted_parquet(
+            tmp_path / "delisted_stocks.parquet", _minimal_delisted_rows())
+        _write_active_parquet(tmp_path / "active_stocks.parquet", ["600519.SH"])
+        _write_refs(tmp_path / "refs.yaml", _minimal_refs())
+
+    def test_reason_override_wins_over_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            # SH600087 is in reference_cases as 'financial'.
+            # The manual override re-classifies it as 'major_violation'.
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text(yaml.safe_dump({
+                "overrides": [
+                    {"ticker": "SH600087", "delist_reason": "major_violation",
+                     "cite_url": "https://www.sse.com.cn/disclosure/...",
+                     "note": "SSE notice cites violation"},
+                ]
+            }, allow_unicode=True), encoding="utf-8")
+
+            DelistedRegistryBuilder(
+                tushare_dir=tmp_path,
+                reference_cases_path=tmp_path / "refs.yaml",
+                output_path=tmp_path / "out.parquet",
+                manual_overrides_path=overrides_path,
+            ).build()
+
+            out = pd.read_parquet(tmp_path / "out.parquet")
+            sh087 = out[out["ticker"] == "SH600087"].iloc[0]
+            self.assertEqual(sh087["delist_reason"], "major_violation")
+
+    def test_delist_date_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            # Tushare returned delist_date=2014-06-05 for SH600087.
+            # Suppose the SSE announcement actually says 2014-06-04;
+            # the override corrects it.
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text(yaml.safe_dump({
+                "overrides": [
+                    {"ticker": "SH600087", "delist_date": "2014-06-04",
+                     "cite_url": "https://www.sse.com.cn/disclosure/..."},
+                ]
+            }, allow_unicode=True), encoding="utf-8")
+
+            # The reference still expects 2014-06-05, so the validator
+            # will reject the override — that's the correct behavior:
+            # the user must update BOTH override and reference together
+            # to avoid silent drift.
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"SH600087.*mismatch"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_override_missing_cite_url_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text(yaml.safe_dump({
+                "overrides": [
+                    {"ticker": "SH600087", "delist_reason": "major_violation"},
+                ]
+            }, allow_unicode=True), encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError, "cite_url"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_override_invalid_reason_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text(yaml.safe_dump({
+                "overrides": [
+                    {"ticker": "SH600087", "delist_reason": "fabricated",
+                     "cite_url": "https://example.com/"},
+                ]
+            }, allow_unicode=True), encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        "invalid delist_reason"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_override_ticker_not_in_registry_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text(yaml.safe_dump({
+                "overrides": [
+                    {"ticker": "SH999999", "delist_reason": "financial",
+                     "cite_url": "https://example.com/"},
+                ]
+            }, allow_unicode=True), encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"SH999999.*not in the Tushare"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_override_duplicate_ticker_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text(yaml.safe_dump({
+                "overrides": [
+                    {"ticker": "SH600087", "delist_reason": "voluntary",
+                     "cite_url": "https://a.example.com/"},
+                    {"ticker": "SH600087", "delist_reason": "financial",
+                     "cite_url": "https://b.example.com/"},
+                ]
+            }, allow_unicode=True), encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        "duplicate ticker"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_missing_overrides_file_is_silent(self) -> None:
+        """Overrides path is optional — missing file just means no
+        overrides, NOT an error. The build proceeds with reference-cases-
+        only classification."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            result = DelistedRegistryBuilder(
+                tushare_dir=tmp_path,
+                reference_cases_path=tmp_path / "refs.yaml",
+                output_path=tmp_path / "out.parquet",
+                manual_overrides_path=tmp_path / "absent.yaml",
+            ).build()
+            self.assertEqual(result.row_count, 3)
+
+    def test_overrides_value_dict_raises(self) -> None:
+        """Codex P1 on PR #107: ``overrides: {}`` is a YAML mapping
+        (falsy), the old code coerced it to ``[]`` via ``... or []`` and
+        the build silently proceeded. Now must raise so operator typos
+        surface."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text("overrides: {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"must be a YAML list"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_overrides_value_empty_string_raises(self) -> None:
+        """Same as above for ``overrides: """ "" """`` (also falsy, also a typo)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text('overrides: ""\n', encoding="utf-8")
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"must be a YAML list"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                    manual_overrides_path=overrides_path,
+                ).build()
+
+    def test_overrides_value_null_is_silent(self) -> None:
+        """Explicit ``overrides: null`` (or missing key) IS a valid way to
+        say "no overrides" — only non-list, non-null values raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            overrides_path = tmp_path / "manual.yaml"
+            overrides_path.write_text("overrides: null\n", encoding="utf-8")
+            DelistedRegistryBuilder(
+                tushare_dir=tmp_path,
+                reference_cases_path=tmp_path / "refs.yaml",
+                output_path=tmp_path / "out.parquet",
+                manual_overrides_path=overrides_path,
+            ).build()  # no raise
+
+    def test_none_overrides_path_is_silent(self) -> None:
+        """Explicit None path also means no overrides — the default."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._common_setup(tmp_path)
+            DelistedRegistryBuilder(
+                tushare_dir=tmp_path,
+                reference_cases_path=tmp_path / "refs.yaml",
+                output_path=tmp_path / "out.parquet",
+                manual_overrides_path=None,
+            ).build()  # no raise
+
+
 class ConstantsTests(unittest.TestCase):
 
     def test_valid_reasons_matches_design_doc(self) -> None:

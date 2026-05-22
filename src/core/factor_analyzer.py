@@ -85,6 +85,7 @@ class FactorAnalyzer:
         config: FactorAnalysisConfig | None = None,
         *,
         dataset: Any | None = None,
+        pit_provider: Any | None = None,
     ) -> FactorAnalysisResult:
         """Run complete factor analysis.
 
@@ -97,6 +98,16 @@ class FactorAnalyzer:
             When provided, we skip the expensive Alpha158 rebuild.  The
             "test" segment is prepared from this dataset.  When None, a new
             handler+dataset is built from ``config``.
+        pit_provider : PITDataProvider, optional
+            When supplied, ``_fetch_close_unstacked`` routes through
+            ``pit_provider.get_features`` instead of calling
+            :class:`qlib.data.D` directly. The PIT layer adds the
+            §4.3.2 post-delist mask and the bounded LRU cache, but the
+            DataFrame shape is identical so downstream IC / decay math
+            is unaffected. Phase D.1 opt-in wiring; default ``None``
+            falls through to direct qlib (legacy behaviour preserved
+            for backwards compatibility — Phase D doesn't force the
+            PIT swap).
 
         Steps:
           1. Get factor values (from provided dataset or fresh build)
@@ -134,7 +145,9 @@ class FactorAnalyzer:
         # truncated and IC goes NaN. (P1 regression fix.)
         max_lag = max(config.forward_period, config.max_decay_lag)
         _logger.info("Fetching close prices + building forward-return cache (max_lag=%d)...", max_lag)
-        close_unstacked = cls._fetch_close_unstacked(factor_df, max_lag)
+        close_unstacked = cls._fetch_close_unstacked(
+            factor_df, max_lag, pit_provider=pit_provider,
+        )
         forward_ret_cache = cls._build_forward_ret_cache(
             close_unstacked, factor_df.index,
             lags=sorted({config.forward_period, *range(1, config.max_decay_lag + 1)}),
@@ -312,24 +325,38 @@ class FactorAnalyzer:
         return df
 
     @classmethod
-    def _fetch_close_unstacked(cls, factor_df: Any, max_lag: int) -> Any:
+    def _fetch_close_unstacked(
+        cls, factor_df: Any, max_lag: int,
+        pit_provider: Any | None = None,
+    ) -> Any:
         """Fetch $close for all instruments and return a date × instrument matrix.
 
         End date is extended by ``max_lag`` *trading* days (via D.calendar),
         falling back to ``max_lag * 3`` calendar days if the calendar lookup
         fails. This prevents holiday clusters (Spring Festival etc.) from
         starving the forward-return computation.
-        """
-        from qlib.data import D
 
+        When ``pit_provider`` is supplied, the close-panel fetch routes
+        through ``PITDataProvider.get_features`` — applying the
+        post-delist mask (§4.3.2) and using the bounded LRU cache.
+        Otherwise, falls through to direct :class:`qlib.data.D` calls
+        for backwards compatibility with the pre-PIT pipeline.
+        """
         instruments = factor_df.index.get_level_values("instrument").unique().tolist()
         start = str(factor_df.index.get_level_values("datetime").min().date())
         end_dt = factor_df.index.get_level_values("datetime").max()
         end_extended = cls._extend_end_trading_days(end_dt, max_lag)
 
-        close = D.features(
-            instruments, ["$close"], start_time=start, end_time=end_extended
-        )
+        if pit_provider is not None:
+            close = pit_provider.get_features(
+                ["$close"], start, end_extended,
+                instruments=instruments,
+            )
+        else:
+            from qlib.data import D
+            close = D.features(
+                instruments, ["$close"], start_time=start, end_time=end_extended,
+            )
         # qlib returns (instrument, datetime) — swap to
         # (datetime, instrument) and sort so shift(-lag) moves by
         # trading-day order, not physical row order.  Missing sort

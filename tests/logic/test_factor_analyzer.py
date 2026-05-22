@@ -16,6 +16,85 @@ from src.core.factor_analyzer import (
 )
 
 
+class FactorAnalyzerPITWiringTests(unittest.TestCase):
+    """Phase D.1 wiring — when a pit_provider is supplied,
+    ``_fetch_close_unstacked`` MUST route through
+    ``pit_provider.get_features`` instead of calling ``qlib.data.D``
+    directly. Default (no pit_provider) preserves the legacy direct-qlib
+    path so existing callers and tests stay green.
+    """
+
+    def _make_factor_df(self) -> Any:
+        import pandas as pd
+        # 3 tickers × 5 trading days; values irrelevant for the wiring check
+        dates = pd.to_datetime(
+            ["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08"],
+        )
+        tickers = ["SH600519", "SH600087", "SZ000001"]
+        idx = pd.MultiIndex.from_product([dates, tickers],
+                                          names=["datetime", "instrument"])
+        return pd.DataFrame({"KLEN": [0.1] * len(idx)}, index=idx)
+
+    def _make_synth_close_panel(self, factor_df: Any) -> Any:
+        """A close panel in the (instrument, datetime) -> $close shape that
+        qlib's D.features returns. We use deterministic values so the test
+        can assert against the unstacked result."""
+        import pandas as pd
+        idx = factor_df.swaplevel().sort_index().index
+        return pd.DataFrame(
+            {"$close": [10.0 + i * 0.1 for i in range(len(idx))]},
+            index=pd.MultiIndex.from_tuples(idx.to_list(),
+                                             names=["instrument", "datetime"]),
+        )
+
+    def test_pit_provider_call_args(self) -> None:
+        from unittest.mock import MagicMock
+
+        factor_df = self._make_factor_df()
+        close = self._make_synth_close_panel(factor_df)
+        pit = MagicMock()
+        pit.get_features.return_value = close
+
+        result = FactorAnalyzer._fetch_close_unstacked(
+            factor_df, max_lag=2, pit_provider=pit,
+        )
+        self.assertEqual(pit.get_features.call_count, 1)
+        args, kwargs = pit.get_features.call_args
+        # Fields list and start/end as positional or keyword — accept either.
+        # The qlib-style $close field MUST be requested.
+        fields_arg = args[0] if args else kwargs.get("fields")
+        self.assertEqual(fields_arg, ["$close"])
+        # instruments kwarg must contain the factor_df's tickers
+        instruments_arg = kwargs.get("instruments")
+        self.assertIsNotNone(
+            instruments_arg,
+            "pit_provider.get_features must be called with explicit "
+            "instruments= kwarg so the PIT mask applies to the right tickers",
+        )
+        self.assertEqual(
+            sorted(instruments_arg),
+            ["SH600087", "SH600519", "SZ000001"],
+        )
+        # Result is a (date × ticker) panel
+        import pandas as pd
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertEqual(sorted(result.columns), ["SH600087", "SH600519", "SZ000001"])
+
+    def test_legacy_path_when_no_pit_provider(self) -> None:
+        """Without pit_provider, the function calls qlib's D.features and
+        does NOT touch any PITDataProvider surface."""
+        from unittest.mock import MagicMock, patch
+
+        factor_df = self._make_factor_df()
+        close = self._make_synth_close_panel(factor_df)
+        mock_D = MagicMock()
+        mock_D.features.return_value = close
+
+        with patch.dict("sys.modules", {"qlib.data": MagicMock(D=mock_D)}):
+            FactorAnalyzer._fetch_close_unstacked(factor_df, max_lag=2)
+        self.assertEqual(mock_D.features.call_count, 1)
+
+
 class FactorAnalyzerStructuralTests(unittest.TestCase):
     """Tests that don't require qlib data."""
 

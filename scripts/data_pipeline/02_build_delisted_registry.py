@@ -65,6 +65,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--output", required=True, type=Path,
         help="Output path for delisted_registry.parquet.",
     )
+    p.add_argument(
+        "--manual-overrides", type=Path, default=None,
+        help="Optional path to data/manual_delistings.yaml — per-ticker "
+             "overrides for delist_reason / delist_date (design §13 q2). "
+             "Each entry must carry a cite_url.",
+    )
     return p
 
 
@@ -76,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         tushare_dir=args.tushare_dir,
         reference_cases_path=args.reference_cases,
         output_path=args.output,
+        manual_overrides_path=args.manual_overrides,
     )
 
     try:

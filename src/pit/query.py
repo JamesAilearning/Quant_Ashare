@@ -58,7 +58,7 @@ from src.pit.cache import LRUCache
 
 _logger = get_logger(__name__)
 
-CacheKey = tuple[str, str, str, frozenset[str]]
+CacheKey = tuple[str, str, str, frozenset[str], frozenset[str] | None]
 
 
 class PITDataProviderError(RuntimeError):
@@ -158,6 +158,7 @@ class PITDataProvider:
         end: str | pd.Timestamp,
         universe_name: str = "all",
         align: str = "universe",
+        instruments: list[str] | None = None,
     ) -> pd.DataFrame:
         """PIT-correct feature query.
 
@@ -169,7 +170,8 @@ class PITDataProvider:
         start, end
             ISO date strings or pandas Timestamps. Inclusive bounds.
         universe_name
-            qlib instruments name; default ``"all"``.
+            qlib instruments name; default ``"all"``. Ignored when
+            ``instruments`` is provided.
         align
             ``"universe"`` (default) — returns the full panel; positions
             outside the universe on a given date are dropped from the
@@ -177,6 +179,13 @@ class PITDataProvider:
             ``"tradable_only"`` — same shape, equivalent semantics; the
             distinction is reserved for downstream PIT filters in Phase
             D. For now both modes produce the same output.
+        instruments
+            Explicit list of qlib-style ticker codes (e.g. ``["SH600519",
+            "SH600087"]``). When supplied, takes precedence over
+            ``universe_name`` and the query targets exactly those
+            tickers. Phase D wiring uses this form so caller-resolved
+            ticker lists (e.g. from a factor DataFrame index) can be
+            routed through the PIT mask.
 
         Returns
         -------
@@ -196,15 +205,20 @@ class PITDataProvider:
                 f"start ({ts_start.date()}) > end ({ts_end.date()})"
             )
 
-        key: CacheKey = (universe_name, str(ts_start.date()), str(ts_end.date()),
-                         frozenset(fields))
+        # Cache key — frozenset(instruments) so caller-order doesn't
+        # fragment cache entries the way frozenset(fields) doesn't.
+        instruments_key = frozenset(instruments) if instruments is not None else None
+        key: CacheKey = (
+            universe_name, str(ts_start.date()), str(ts_end.date()),
+            frozenset(fields), instruments_key,
+        )
         cached = self._cache.get(key)
         if cached is not None:
             return cached.copy()  # defensive copy so consumers can mutate freely
 
         df = self._fetch_qlib_features(
             fields=fields, start=ts_start, end=ts_end,
-            universe_name=universe_name,
+            universe_name=universe_name, instruments=instruments,
         )
         df = self._mask_post_delist(df)
         self._cache.put(key, df)
@@ -221,16 +235,26 @@ class PITDataProvider:
         start: pd.Timestamp,
         end: pd.Timestamp,
         universe_name: str,
+        instruments: list[str] | None = None,
     ) -> pd.DataFrame:
         from qlib.data import D  # type: ignore[import-not-found]
+        # Specific-instrument queries skip the universe lookup so callers
+        # that already resolved a ticker list (factor mining, backtest)
+        # can use the PIT mask without translating through a universe
+        # name they don't have. Phase D wiring uses this form.
+        target = instruments if instruments is not None else D.instruments(universe_name)
         try:
             return D.features(
-                D.instruments(universe_name), fields,
+                target, fields,
                 start_time=start, end_time=end,
             )
         except Exception as exc:
+            descriptor = (
+                f"instruments={instruments[:3]}..." if instruments is not None
+                else f"universe={universe_name!r}"
+            )
             raise PITDataProviderError(
-                f"qlib.features failed for ({universe_name!r}, "
+                f"qlib.features failed for ({descriptor}, "
                 f"{fields}, {start.date()}, {end.date()}): {exc}"
             ) from exc
 
