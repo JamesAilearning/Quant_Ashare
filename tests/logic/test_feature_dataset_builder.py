@@ -77,6 +77,155 @@ class FeatureDatasetBuilderStructuralTests(unittest.TestCase):
             with self.assertRaisesRegex(FeatureDatasetBuilderError, "feature_handler"):
                 FeatureDatasetBuilder.build(self._config(feature_handler="CustomHandler"))
 
+
+class PITProviderAlignmentTests(unittest.TestCase):
+    """Phase D.2 wiring guard — when a PIT provider is supplied, the
+    canonical qlib runtime MUST already be initialised with the same
+    provider_uri. Catches the operator footgun of training on legacy
+    survivorship-biased bins while believing PIT is active.
+    """
+
+    def _config(self) -> FeatureDatasetConfig:
+        return FeatureDatasetConfig(
+            instruments="csi300",
+            feature_handler="Alpha158",
+            train_start="2024-01-01", train_end="2024-12-31",
+            valid_start="2025-01-01", valid_end="2025-06-30",
+            test_start="2025-07-01", test_end="2025-12-31",
+        )
+
+    def _make_pit_provider_stub(self, provider_uri: str) -> object:
+        """Minimal stub — the alignment check only reads `_provider_uri`."""
+        class _Stub:
+            pass
+        stub = _Stub()
+        stub._provider_uri = provider_uri  # type: ignore[attr-defined]
+        return stub
+
+    def _patch_canonical(
+        self, *, initialized: bool, config: object | None = None,
+    ):
+        """Patch BOTH the data-side import (used by _validate) and the
+        core-side import (used by _validate_pit_provider_alignment) so
+        tests can drive the two checks independently. Returns a context
+        manager."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        # _validate reads through the module-level binding
+        stack.enter_context(patch(
+            "src.data.feature_dataset_builder.is_canonical_qlib_initialized",
+            return_value=initialized,
+        ))
+        # _validate_pit_provider_alignment lazy-imports — patch the
+        # canonical runtime symbol directly
+        stack.enter_context(patch(
+            "src.core.qlib_runtime.is_canonical_qlib_initialized",
+            return_value=initialized,
+        ))
+        if config is not None:
+            stack.enter_context(patch(
+                "src.core.qlib_runtime.get_canonical_qlib_config",
+                return_value=config,
+            ))
+        return stack
+
+    def test_pit_provider_without_qlib_init_raises(self) -> None:
+        # _validate passes (mock says initialized) so the alignment
+        # check runs; the alignment check then sees a fresh
+        # is_canonical_qlib_initialized() result. To drive the alignment
+        # check's failure path, patch only the core-side to False while
+        # keeping the data-side True so we get past _validate.
+        with patch(
+            "src.data.feature_dataset_builder.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch(
+            "src.core.qlib_runtime.is_canonical_qlib_initialized",
+            return_value=False,
+        ):
+            with self.assertRaisesRegex(
+                FeatureDatasetBuilderError,
+                "canonical qlib runtime is not initialised",
+            ):
+                FeatureDatasetBuilder.build(
+                    self._config(),
+                    pit_provider=self._make_pit_provider_stub("/tmp/pit_dir"),
+                )
+
+    def test_pit_provider_mismatch_raises(self) -> None:
+        from src.core.canonical_backtest_contract import ADJUST_MODE_PRE
+        from src.core.qlib_runtime import QlibRuntimeConfig
+
+        canonical = QlibRuntimeConfig(
+            provider_uri="/qlib/legacy_provider",
+            region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with self._patch_canonical(initialized=True, config=canonical):
+            with self.assertRaisesRegex(
+                FeatureDatasetBuilderError,
+                "provider_uri mismatch",
+            ):
+                FeatureDatasetBuilder.build(
+                    self._config(),
+                    pit_provider=self._make_pit_provider_stub("/qlib/pit_provider"),
+                )
+
+    def test_pit_provider_aligned_passes_through_to_validate(self) -> None:
+        """When provider_uri aligns, the alignment check passes and the
+        call proceeds. We then catch the downstream qlib-internal failure
+        (no real provider on disk) and just assert the alignment
+        check did NOT raise its own error."""
+        from src.core.canonical_backtest_contract import ADJUST_MODE_PRE
+        from src.core.qlib_runtime import (
+            QlibRuntimeConfig,
+            _normalize_provider_uri,
+        )
+
+        provider_uri = "/qlib/pit_provider"
+        normalised = _normalize_provider_uri(provider_uri)
+        canonical = QlibRuntimeConfig(
+            provider_uri=provider_uri,
+            region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        self.assertEqual(canonical.provider_uri, normalised)
+
+        with self._patch_canonical(initialized=True, config=canonical):
+            try:
+                FeatureDatasetBuilder.build(
+                    self._config(),
+                    pit_provider=self._make_pit_provider_stub(provider_uri),
+                )
+            except FeatureDatasetBuilderError as exc:
+                msg = str(exc)
+                self.assertNotIn("provider_uri mismatch", msg)
+                self.assertNotIn("not initialised", msg)
+            except Exception:
+                # qlib-internal error fine — alignment check did not raise.
+                pass
+
+    def test_pit_provider_missing_provider_uri_attr_raises(self) -> None:
+        from src.core.canonical_backtest_contract import ADJUST_MODE_PRE
+        from src.core.qlib_runtime import QlibRuntimeConfig
+
+        class _Bare:
+            pass
+
+        canonical = QlibRuntimeConfig(
+            provider_uri="/qlib/pit_provider",
+            region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with self._patch_canonical(initialized=True, config=canonical):
+            with self.assertRaisesRegex(
+                FeatureDatasetBuilderError,
+                "_provider_uri",
+            ):
+                FeatureDatasetBuilder.build(
+                    self._config(),
+                    pit_provider=_Bare(),
+                )
+
     def test_bad_iso_date_rejected(self) -> None:
         with patch("src.data.feature_dataset_builder.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(FeatureDatasetBuilderError, "Invalid ISO"):

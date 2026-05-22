@@ -135,8 +135,37 @@ class FeatureDatasetBuilder:
     """
 
     @classmethod
-    def build(cls, config: FeatureDatasetConfig) -> FeatureDatasetResult:
+    def build(
+        cls,
+        config: FeatureDatasetConfig,
+        *,
+        pit_provider: Any | None = None,
+    ) -> FeatureDatasetResult:
+        """Build a qlib DatasetH for the given config.
+
+        Parameters
+        ----------
+        config
+            Frozen dataset config (instruments, handler, date splits).
+        pit_provider
+            Optional :class:`src.pit.query.PITDataProvider`. When
+            supplied, the builder asserts that the canonical qlib
+            config's ``provider_uri`` matches the PIT provider's
+            ``_provider_uri`` and raises if they disagree. The dataset
+            itself is still built via qlib's ``DatasetH`` (qlib is the
+            feature handler contract — we don't reach inside it), so
+            this acts as a **PIT-correctness guard rather than a
+            functional swap**: it catches the operator footgun of
+            calling ``init_qlib_canonical(provider_uri=legacy_dir)``
+            while passing a PIT-corrected provider to the trainer,
+            which would silently train on legacy survivorship-biased
+            bins. Phase D.2 opt-in; default ``None`` preserves legacy
+            behaviour.
+        """
         cls._validate(config)
+
+        if pit_provider is not None:
+            cls._validate_pit_provider_alignment(pit_provider)
 
         try:
             from qlib.data.dataset import DatasetH  # type: ignore[import-not-found]
@@ -182,6 +211,58 @@ class FeatureDatasetBuilder:
             test_shape=(test_df.shape[0], test_df.shape[1]),
             feature_columns=tuple(str(c) for c in train_df.columns),
         )
+
+    @classmethod
+    def _validate_pit_provider_alignment(cls, pit_provider: Any) -> None:
+        """When the caller passes a PIT provider, the qlib canonical
+        runtime MUST already be initialised AND its ``provider_uri``
+        MUST match the PIT provider's. Otherwise the operator
+        accidentally trains on the legacy survivorship-biased bins
+        while *thinking* they're using the PIT-corrected provider.
+        Phase D.2 guard.
+        """
+        from src.core.qlib_runtime import (
+            get_canonical_qlib_config,
+            is_canonical_qlib_initialized,
+        )
+
+        if not is_canonical_qlib_initialized():
+            raise FeatureDatasetBuilderError(
+                "pit_provider was supplied but canonical qlib runtime is "
+                "not initialised. Call init_qlib_canonical(...) with the "
+                "PIT-corrected provider_uri before building a PIT dataset."
+            )
+        canonical = get_canonical_qlib_config()
+        if canonical is None:
+            # Should not happen given is_canonical_qlib_initialized()
+            # above, but defensive.
+            raise FeatureDatasetBuilderError(
+                "Canonical qlib config is unavailable despite "
+                "is_canonical_qlib_initialized() == True. Internal "
+                "inconsistency — investigate qlib_runtime state."
+            )
+        # Normalise both paths the same way init_qlib_canonical does
+        # (case-insensitive on Windows, realpath, etc.). The simplest
+        # safe comparison: resolve absolute path with the same
+        # _normalize_provider_uri pipeline qlib_runtime uses.
+        from src.core.qlib_runtime import _normalize_provider_uri
+        live_norm = canonical.provider_uri  # already normalised at init
+        pit_uri_raw = str(getattr(pit_provider, "_provider_uri", ""))
+        if not pit_uri_raw:
+            raise FeatureDatasetBuilderError(
+                "pit_provider has no readable _provider_uri attribute "
+                f"(got {pit_provider!r}). Expected a PITDataProvider."
+            )
+        pit_norm = _normalize_provider_uri(pit_uri_raw)
+        if live_norm != pit_norm:
+            raise FeatureDatasetBuilderError(
+                "PIT provider / qlib provider_uri mismatch — training "
+                "would silently use the wrong provider. "
+                f"qlib canonical provider_uri = {live_norm!r}; "
+                f"pit_provider._provider_uri = {pit_norm!r}. "
+                "Re-init qlib with the PIT-corrected provider before "
+                "passing pit_provider to build()."
+            )
 
     @classmethod
     def _validate(cls, config: FeatureDatasetConfig) -> None:
