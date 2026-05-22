@@ -7,12 +7,31 @@ from pathlib import Path
 import streamlit as st
 
 from web.operator_ui.job_manager import JobManager
-from web.operator_ui.theme import inject_theme, load_preferences, render_appearance_controls
+from web.operator_ui.theme import (
+    inject_theme,
+    load_preferences,
+    render_settings_dialog,
+    render_skip_link,
+    render_topbar,
+)
 
-st.set_page_config(page_title="Qlib Trading System", layout="wide")
+_preferences = load_preferences()
+st.set_page_config(
+    page_title="Qlib Trading System",
+    layout="wide",
+    initial_sidebar_state="collapsed" if _preferences.sidebar_collapsed else "expanded",
+)
 
-_preferences = render_appearance_controls(load_preferences())
 inject_theme(_preferences)
+render_skip_link()
+
+# ---------------------------------------------------------------------------
+# Sticky top bar — page title slot + settings gear.
+# The gear opens the settings modal (theme / color convention / sidebar
+# default), replacing the legacy sidebar Appearance expander.
+# ---------------------------------------------------------------------------
+if render_topbar(subtitle="Operator console"):
+    render_settings_dialog(_preferences)
 
 # ---------------------------------------------------------------------------
 # Sidebar — brand header, global status indicator, nav icon injection

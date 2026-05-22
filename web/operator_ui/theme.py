@@ -30,6 +30,7 @@ class UserPreferences:
 
     theme: ThemeMode = "auto"
     color_convention: ColorConvention = "chinese"
+    sidebar_collapsed: bool = False
 
     @classmethod
     def from_mapping(cls, values: object) -> UserPreferences:
@@ -37,6 +38,7 @@ class UserPreferences:
             return cls()
         theme = values.get("theme")
         color_convention = values.get("color_convention")
+        sidebar_collapsed = values.get("sidebar_collapsed", False)
         return cls(
             theme=theme if theme in THEME_OPTIONS else "auto",
             color_convention=(
@@ -44,12 +46,16 @@ class UserPreferences:
                 if color_convention in COLOR_CONVENTION_OPTIONS
                 else "chinese"
             ),
+            sidebar_collapsed=(
+                sidebar_collapsed if isinstance(sidebar_collapsed, bool) else False
+            ),
         )
 
-    def to_json_dict(self) -> dict[str, str]:
+    def to_json_dict(self) -> dict[str, str | bool]:
         return {
             "theme": self.theme,
             "color_convention": self.color_convention,
+            "sidebar_collapsed": self.sidebar_collapsed,
         }
 
 
@@ -202,7 +208,12 @@ def inject_theme(preferences: UserPreferences | None = None) -> UserPreferences:
 
 
 def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
-    """Render sidebar controls and persist changes."""
+    """Render sidebar appearance controls — kept for compatibility.
+
+    New code should prefer :func:`render_settings_dialog`, which surfaces the
+    same preferences inside a modal launched from the topbar.  This helper is
+    retained so tests and embeds that import it keep working.
+    """
 
     import streamlit as st
 
@@ -222,7 +233,142 @@ def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
             key="qv2_color_convention",
             help="Chinese convention uses red for positive outcomes.",
         )
-    updated = UserPreferences(theme=theme, color_convention=color_convention)
+    updated = UserPreferences(
+        theme=theme,
+        color_convention=color_convention,
+        sidebar_collapsed=preferences.sidebar_collapsed,
+    )
     if updated != preferences:
         save_preferences(updated)
     return updated
+
+
+# ---------------------------------------------------------------------------
+# App shell helpers — skip link, topbar, settings dialog
+# ---------------------------------------------------------------------------
+
+SKIP_LINK_HTML = (
+    '<a class="qv2-skip-link" href="#qv2-main-content">Skip to content</a>'
+    '<a id="qv2-main-content" tabindex="-1" class="qv2-sr-only">Main content</a>'
+)
+
+
+def render_skip_link() -> None:
+    """Inject a keyboard-accessible "skip to content" affordance.
+
+    The link is visually hidden until focused; pressing Tab on a fresh page
+    surfaces it and Enter scrolls to the main content anchor.
+    """
+
+    import streamlit as st
+
+    st.html(SKIP_LINK_HTML, width="content", unsafe_allow_javascript=False)
+
+
+def render_topbar(
+    *,
+    title: str = "Qlib Trading System",
+    subtitle: str = "",
+    on_open_settings_key: str = "qv2_open_settings",
+) -> bool:
+    """Render the sticky top bar.
+
+    Returns ``True`` when the user clicked the settings button on this run.
+    Callers (typically :mod:`web.operator_ui.app`) should open the settings
+    dialog in response.
+    """
+
+    import streamlit as st
+
+    with st.container():
+        title_col, action_col = st.columns([8, 2], vertical_alignment="center")
+        with title_col:
+            subtitle_html = (
+                f'<span class="qv2-topbar-subtitle">{subtitle}</span>'
+                if subtitle
+                else ""
+            )
+            st.markdown(
+                (
+                    '<div class="qv2-topbar-title">'
+                    f'<span>{title}</span>{subtitle_html}'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+        with action_col:
+            opened = st.button(
+                "⚙️ Settings",
+                key=on_open_settings_key,
+                help="Theme, color convention, and sidebar defaults",
+                use_container_width=True,
+            )
+    return bool(opened)
+
+
+def render_settings_dialog(preferences: UserPreferences) -> None:
+    """Open the settings modal.
+
+    The dialog is decorated with :func:`streamlit.dialog` and shows controls
+    for theme, color convention, and sidebar default state.  Changes are
+    persisted to :data:`PREFERENCES_PATH` when the user clicks **Save**;
+    the page is then rerun so the new tokens apply immediately.
+    """
+
+    import streamlit as st
+
+    @st.dialog("Settings")
+    def _dialog() -> None:
+        st.markdown(
+            '<div class="qv2-settings-section-title">Appearance</div>',
+            unsafe_allow_html=True,
+        )
+        theme = st.radio(
+            "Theme",
+            options=THEME_OPTIONS,
+            index=THEME_OPTIONS.index(preferences.theme),
+            horizontal=True,
+            key="qv2_settings_theme",
+        )
+        color_convention = st.radio(
+            "Color convention",
+            options=COLOR_CONVENTION_OPTIONS,
+            index=COLOR_CONVENTION_OPTIONS.index(preferences.color_convention),
+            horizontal=True,
+            key="qv2_settings_color_convention",
+            help="Chinese convention uses red for positive outcomes.",
+        )
+        st.markdown(
+            '<div class="qv2-settings-section-title" '
+            'style="margin-top: var(--space-3);">Layout</div>',
+            unsafe_allow_html=True,
+        )
+        sidebar_collapsed = st.checkbox(
+            "Start with sidebar collapsed",
+            value=preferences.sidebar_collapsed,
+            key="qv2_settings_sidebar_collapsed",
+            help="Applies on the next page load.",
+        )
+        st.divider()
+        save_col, cancel_col = st.columns(2)
+        with save_col:
+            save_clicked = st.button(
+                "Save", key="qv2_settings_save", type="primary", use_container_width=True
+            )
+        with cancel_col:
+            cancel_clicked = st.button(
+                "Cancel", key="qv2_settings_cancel", use_container_width=True
+            )
+        if save_clicked:
+            updated = UserPreferences(
+                theme=theme,
+                color_convention=color_convention,
+                sidebar_collapsed=sidebar_collapsed,
+            )
+            if updated != preferences:
+                save_preferences(updated)
+            st.rerun()
+        elif cancel_clicked:
+            st.rerun()
+
+    _dialog()

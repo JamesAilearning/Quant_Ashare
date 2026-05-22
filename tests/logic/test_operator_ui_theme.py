@@ -15,7 +15,9 @@ class OperatorUiThemeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "preferences.json"
-            expected = UserPreferences(theme="dark", color_convention="western")
+            expected = UserPreferences(
+                theme="dark", color_convention="western", sidebar_collapsed=True
+            )
 
             save_preferences(expected, path)
 
@@ -26,8 +28,26 @@ class OperatorUiThemeTests(unittest.TestCase):
         from web.operator_ui.theme import UserPreferences
 
         self.assertEqual(
-            UserPreferences.from_mapping({"theme": "sepia", "color_convention": "other"}),
+            UserPreferences.from_mapping(
+                {"theme": "sepia", "color_convention": "other", "sidebar_collapsed": "yes"}
+            ),
             UserPreferences(),
+        )
+
+    def test_preferences_legacy_payload_without_sidebar_field(self) -> None:
+        """Pre-shell preference files SHALL load without raising, defaulting
+        ``sidebar_collapsed`` to False (additive schema migration)."""
+
+        from web.operator_ui.theme import UserPreferences
+
+        loaded = UserPreferences.from_mapping(
+            {"theme": "dark", "color_convention": "western"}
+        )
+        self.assertEqual(
+            loaded,
+            UserPreferences(
+                theme="dark", color_convention="western", sidebar_collapsed=False
+            ),
         )
 
     def test_theme_css_contains_required_token_selectors(self) -> None:
@@ -45,6 +65,18 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn('data-qv2-color-convention="chinese"', css)
         self.assertIn("font-variant-numeric: tabular-nums", css)
         self.assertIn("prefers-reduced-motion", css)
+
+    def test_theme_css_contains_app_shell_classes(self) -> None:
+        from web.operator_ui.theme import load_theme_css
+
+        css = load_theme_css()
+
+        self.assertIn(".qv2-skip-link", css)
+        self.assertIn(".qv2-topbar", css)
+        self.assertIn(".qv2-topbar-title", css)
+        self.assertIn(".qv2-topbar-actions", css)
+        self.assertIn(".qv2-settings-section", css)
+        self.assertIn(".qv2-mobile-only", css)
 
     def test_preference_script_sets_document_attributes(self) -> None:
         from web.operator_ui.theme import UserPreferences, preference_attribute_script
@@ -82,8 +114,54 @@ class OperatorUiThemeTests(unittest.TestCase):
         source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
 
         self.assertIn("inject_theme", source)
-        self.assertIn("render_appearance_controls", source)
         self.assertIn("design_system.py", source)
+
+    def test_app_uses_shell_helpers_not_legacy_sidebar_expander(self) -> None:
+        """App entry SHALL drive appearance from the topbar settings dialog
+        rather than the legacy sidebar expander."""
+
+        source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
+
+        self.assertIn("render_skip_link", source)
+        self.assertIn("render_topbar", source)
+        self.assertIn("render_settings_dialog", source)
+        # Legacy expander entry MUST NOT be in the main shell flow.
+        self.assertNotIn("render_appearance_controls", source)
+
+    def test_app_passes_sidebar_default_to_page_config(self) -> None:
+        """Saved ``sidebar_collapsed`` SHALL drive ``initial_sidebar_state``
+        so the user's stored preference applies on first load."""
+
+        source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
+
+        self.assertIn("initial_sidebar_state", source)
+        self.assertIn("sidebar_collapsed", source)
+
+    def test_skip_link_html_targets_main_anchor(self) -> None:
+        from web.operator_ui.theme import SKIP_LINK_HTML
+
+        self.assertIn('href="#qv2-main-content"', SKIP_LINK_HTML)
+        self.assertIn('id="qv2-main-content"', SKIP_LINK_HTML)
+        self.assertIn("qv2-skip-link", SKIP_LINK_HTML)
+
+    def test_render_settings_dialog_is_importable(self) -> None:
+        """The dialog helper is exported and callable. We do not run it
+        (no Streamlit ScriptRunContext in a unittest harness), but the
+        callable surface SHALL exist and be wired through st.dialog."""
+
+        from web.operator_ui import theme
+
+        self.assertTrue(callable(theme.render_settings_dialog))
+        self.assertTrue(callable(theme.render_topbar))
+        self.assertTrue(callable(theme.render_skip_link))
+
+        # Source-level check: the dialog uses st.dialog and persists via
+        # save_preferences. This guards against accidental regression to
+        # the legacy sidebar-expander pattern.
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+        self.assertIn("st.dialog", source)
+        self.assertIn('"Settings"', source)
+        self.assertIn("save_preferences", source)
 
 
 if __name__ == "__main__":
