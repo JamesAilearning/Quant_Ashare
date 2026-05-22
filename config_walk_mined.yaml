@@ -1,0 +1,42 @@
+# Walk-forward backtest with the MinedFactor handler.
+#
+# Operator workflow (per docs/factor_mining/user_guide.md):
+#   1. Build the PIT bundle (inventory.md §F.3).
+#   2. Run the miner:
+#        python -m src.factor_mining.miner config/factor_mining/default.yaml
+#   3. Promote a run:
+#        python -m src.factor_mining.promote --run research/mined_factors/runs/<id> --to v1
+#   4. Fill in the pool_dir / delisted_registry_path placeholders below.
+#   5. Run this config:
+#        python scripts/run_walk_forward.py config_walk_mined.yaml
+#   6. Compare vs Alpha158 baseline:
+#        python scripts/compare_factor_handlers.py \
+#            output/walk_forward/walk_forward_report.json \
+#            output/walk_forward_mined/walk_forward_report.json \
+#            --out output/walk_forward_compare/compare.json
+#
+# The compare CLI's summary.design_doc_ir_threshold_met flag encodes
+# the design doc §10 success criterion ("OOS Sharpe >= 10% vs
+# Alpha158 baseline"). Paste it into the bake-off issue / PR body.
+
+extends: config_walk.yaml
+
+feature_handler: "MinedFactor"
+output_dir: "output/walk_forward_mined"
+
+# Operator-fill — point at the promoted pool from step 3 above.
+# Empty strings cause scripts/run_walk_forward.py to raise an explicit
+# error pointing at docs/factor_mining/user_guide.md.
+mined_factor_pool_dir: "research/mined_factors/production/v1"
+mined_factor_delisted_registry_path: ""   # OPERATOR-FILL: PIT delisted registry parquet
+
+# Optional — defaults to the top-level provider_uri (above). Set only
+# if you want the MinedFactor handler to re-evaluate factors against
+# a different PIT vintage than the qlib runtime uses for training
+# data (a divergent value triggers a WARNING in the run log).
+# mined_factor_pit_provider_uri: ""
+
+# Optional — defaults to the top-level instruments. Set only if you
+# want the MinedFactor handler's panel to span a different universe
+# than the training instruments (e.g. mine on `all`, train on `csi300`).
+# mined_factor_universe_name_override: ""
