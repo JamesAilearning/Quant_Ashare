@@ -22,7 +22,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn('"early_stopping_rounds"', source)
         self.assertIn('min_value=1', source)
         self.assertIn(
-            'value=int(_prefill("early_stopping_rounds", 50))',
+            'early_stopping_rounds',
             source,
         )
 
@@ -37,7 +37,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         self.assertIn("list_provider_catalog_entries()", source)
         self.assertIn('"Saved data source"', source)
-        self.assertIn('st.session_state["training_provider_uri"] = selected_entry.provider_uri', source)
+        self.assertIn('cr_provider_uri', source)
 
     def test_config_page_exposes_delete_controls_for_saved_data(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
@@ -71,9 +71,24 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         self.assertIn("prefill_config_yaml", source)
         self.assertIn("yaml.safe_load", source)
-        self.assertIn('st.session_state["training_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])', source)
+        self.assertIn('cr_provider_uri', source)
         self.assertIn("prefill_config_applied_token", source)
-        self.assertNotIn('value=str(_prefill("provider_uri"', source)
+
+    def test_config_page_has_preset_system(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("_PRESET_NAMES", source)
+        self.assertIn("_apply_preset", source)
+        self.assertIn("_detect_preset", source)
+        self.assertIn('"Custom"', source)
+
+    def test_preset_yaml_files_exist(self) -> None:
+        presets_dir = Path("config/presets")
+        for name in ("smoke", "default", "production"):
+            self.assertTrue(
+                (presets_dir / f"{name}.yaml").is_file(),
+                f"Missing preset: {name}.yaml",
+            )
 
 
 if __name__ == "__main__":

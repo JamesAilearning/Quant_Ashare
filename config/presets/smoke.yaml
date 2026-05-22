@@ -1,0 +1,13 @@
+# Smoke preset — quick sanity check (5-10 min)
+mode: pipeline
+instruments: csi300
+feature_handler: Alpha158
+model_type: LGBModel
+compute_device: cpu
+num_boost_round: 200
+early_stopping_rounds: 30
+learning_rate: 0.05
+benchmark_code: SH000300
+topk: 30
+n_drop: 3
+signal_to_execution_lag: 1
