@@ -6,14 +6,23 @@ import inspect
 import unittest
 from pathlib import Path
 
+try:
+    import streamlit  # noqa: F401
+
+    _HAS_STREAMLIT = True
+except ImportError:
+    _HAS_STREAMLIT = False
+
 
 class OperatorUiPageHeaderTests(unittest.TestCase):
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_module_exports_public_api(self) -> None:
         from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 
         self.assertTrue(callable(render_page_header))
         self.assertTrue(callable(render_breadcrumbs))
 
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_render_breadcrumbs_generates_semantic_html(self) -> None:
         source = inspect.getsource(
             __import__(
@@ -60,6 +69,7 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         self.assertIn("qv2-sidebar-status", css)
         self.assertIn("@media (max-width: 768px)", css)
 
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_page_header_module_imports_without_streamlit_context(self) -> None:
         """Module-level import should succeed even without a running Streamlit app."""
         try:

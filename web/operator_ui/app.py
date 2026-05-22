@@ -15,50 +15,11 @@ _preferences = render_appearance_controls(load_preferences())
 inject_theme(_preferences)
 
 # ---------------------------------------------------------------------------
-# Sidebar brand header
+# Sidebar — brand header, global status indicator, nav icon injection
+# All rendered in the sidebar *before* pg.run() so they survive st.stop()
+# calls on empty-state pages.
 # ---------------------------------------------------------------------------
-st.html(
-    """
-<div class="qv2-sidebar-brand">
-  <span class="qv2-sidebar-logo">📈</span>
-  <span class="qv2-sidebar-brand-text">
-    Qlib Trading<br>
-    <span class="qv2-brand-version">System V2</span>
-  </span>
-</div>
-""",
-    width="content",
-    unsafe_allow_javascript=False,
-)
 
-# ---------------------------------------------------------------------------
-# Navigation
-# ---------------------------------------------------------------------------
-_PAGES_DIR = Path(__file__).resolve().parent / "pages"
-
-pg = st.navigation(
-    {
-        "Run": [
-            st.Page(str(_PAGES_DIR / "config_run.py"), title="Config & Run"),
-        ],
-        "Analyze": [
-            st.Page(str(_PAGES_DIR / "results.py"), title="Results"),
-            st.Page(str(_PAGES_DIR / "walk_forward.py"), title="Walk-Forward"),
-        ],
-        "History": [
-            st.Page(str(_PAGES_DIR / "run_history.py"), title="Run History"),
-        ],
-        "System": [
-            st.Page(str(_PAGES_DIR / "design_system.py"), title="Design System"),
-        ],
-    },
-)
-
-pg.run()
-
-# ---------------------------------------------------------------------------
-# Sidebar footer — global status indicator
-# ---------------------------------------------------------------------------
 _jobs = JobManager.list_jobs()
 _running = sum(1 for j in _jobs if j.get("status") == "running")
 _failed = sum(1 for j in _jobs if j.get("status") == "failed" and _running == 0)
@@ -72,22 +33,6 @@ elif _failed:
     _status_class = "error"
     _status_text = "1 job failed" if _failed == 1 else f"{_failed} jobs failed"
 
-st.html(
-    f"""
-<div class="qv2-sidebar-footer">
-  <div class="qv2-sidebar-status qv2-sidebar-status--{_status_class}">
-    <span class="qv2-status-dot"></span>
-    <span class="qv2-status-label">{_status_text}</span>
-  </div>
-</div>
-""",
-    width="content",
-    unsafe_allow_javascript=False,
-)
-
-# ---------------------------------------------------------------------------
-# Nav icon injection (runs once after the sidebar DOM is ready)
-# ---------------------------------------------------------------------------
 _ICON_MAP = {
     "Config & Run": "\U0001f680",   # 🚀
     "Results": "\U0001f4c8",        # 📈
@@ -123,4 +68,58 @@ _ICON_SCRIPT = """
 })();
 </script>
 """ % str(_ICON_MAP).replace("'", '"')
-st.html(_ICON_SCRIPT, width="content", unsafe_allow_javascript=True)
+
+with st.sidebar:
+    st.html(
+        """
+<div class="qv2-sidebar-brand">
+  <span class="qv2-sidebar-logo">📈</span>
+  <span class="qv2-sidebar-brand-text">
+    Qlib Trading<br>
+    <span class="qv2-brand-version">System V2</span>
+  </span>
+</div>
+""",
+        width="content",
+        unsafe_allow_javascript=False,
+    )
+
+    st.html(
+        f"""
+<div class="qv2-sidebar-footer">
+  <div class="qv2-sidebar-status qv2-sidebar-status--{_status_class}">
+    <span class="qv2-status-dot"></span>
+    <span class="qv2-status-label">{_status_text}</span>
+  </div>
+</div>
+""",
+        width="content",
+        unsafe_allow_javascript=False,
+    )
+
+    st.html(_ICON_SCRIPT, width="content", unsafe_allow_javascript=True)
+
+# ---------------------------------------------------------------------------
+# Navigation
+# ---------------------------------------------------------------------------
+_PAGES_DIR = Path(__file__).resolve().parent / "pages"
+
+pg = st.navigation(
+    {
+        "Run": [
+            st.Page(str(_PAGES_DIR / "config_run.py"), title="Config & Run"),
+        ],
+        "Analyze": [
+            st.Page(str(_PAGES_DIR / "results.py"), title="Results"),
+            st.Page(str(_PAGES_DIR / "walk_forward.py"), title="Walk-Forward"),
+        ],
+        "History": [
+            st.Page(str(_PAGES_DIR / "run_history.py"), title="Run History"),
+        ],
+        "System": [
+            st.Page(str(_PAGES_DIR / "design_system.py"), title="Design System"),
+        ],
+    },
+)
+
+pg.run()
