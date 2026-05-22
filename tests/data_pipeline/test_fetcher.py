@@ -240,14 +240,22 @@ class NamechangeAndSuspendDFetchTests(unittest.TestCase):
 
 class IndexWeightFetchTests(unittest.TestCase):
 
-    def test_one_file_per_index(self) -> None:
-        seen = []
+    def test_one_file_per_index_with_year_chunking(self) -> None:
+        """The fetcher chunks index_weight calls by year and concats into
+        one parquet per index. Phase A.4 smoke test discovered Tushare's
+        per-call row cap silently truncating multi-year ranges, so a
+        single (start_date, end_date) call missed most history.
+        Regression asserts: (a) per-(index, year) calls happen,
+        (b) the concatenated rows all land in one ``{index}.parquet``.
+        """
+        calls = []
 
         def side_effect(api, **p):
-            seen.append(p["index_code"])
+            calls.append((p["index_code"], p["start_date"], p["end_date"]))
+            # Return one row per call; concat should sum across years
             return pd.DataFrame({"index_code": [p["index_code"]],
                                  "con_code": ["600519.SH"],
-                                 "trade_date": ["20200101"],
+                                 "trade_date": [f"{p['start_date'][:4]}1231"],
                                  "weight": [1.0]})
 
         client = _make_client(side_effect)
@@ -255,14 +263,57 @@ class IndexWeightFetchTests(unittest.TestCase):
             cfg = TushareFetcherConfig(
                 output_dir=Path(tmp), endpoints=("index_weight",),
                 indices=("000300.SH", "000905.SH"),
+                start_date="20200101", end_date="20221231",  # 3 years
                 rate_limit_sleep_ms=0,
             )
             results = TushareFetcher(client, cfg).fetch()
-            self.assertTrue((Path(tmp) / "index_weight" / "000300.SH.parquet").exists())
-            self.assertTrue((Path(tmp) / "index_weight" / "000905.SH.parquet").exists())
+            for idx in ("000300.SH", "000905.SH"):
+                path = Path(tmp) / "index_weight" / f"{idx}.parquet"
+                self.assertTrue(path.exists())
+                df = pd.read_parquet(path)
+                # Per-index chunks concatenated: 3 yearly chunks × 1 row each
+                self.assertEqual(len(df), 3,
+                                 f"{idx}: expected 3 chunks concatenated, got {len(df)}")
+                self.assertEqual(set(df["trade_date"]),
+                                 {"20201231", "20211231", "20221231"})
 
         self.assertEqual(results[0].files_written, 2)
-        self.assertEqual(sorted(seen), ["000300.SH", "000905.SH"])
+        # 2 indices × 3 years = 6 calls
+        self.assertEqual(len(calls), 6)
+        # Each year called for each index
+        year_starts = {(c[0], c[1]) for c in calls}
+        self.assertEqual(year_starts, {
+            ("000300.SH", "20200101"),
+            ("000300.SH", "20210101"),
+            ("000300.SH", "20220101"),
+            ("000905.SH", "20200101"),
+            ("000905.SH", "20210101"),
+            ("000905.SH", "20220101"),
+        })
+
+    def test_empty_response_writes_empty_parquet_placeholder(self) -> None:
+        """If Tushare returns no rows across the whole range (e.g. an
+        index code with no historical data), write an empty parquet so
+        resume on a subsequent run skips this index instead of redoing
+        all the year-chunk calls.
+        """
+        client = _make_client(
+            lambda api, **p: pd.DataFrame(
+                columns=["index_code", "con_code", "trade_date", "weight"]
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("index_weight",),
+                indices=("000300.SH",),
+                start_date="20200101", end_date="20201231",
+                rate_limit_sleep_ms=0,
+            )
+            TushareFetcher(client, cfg).fetch()
+            path = Path(tmp) / "index_weight" / "000300.SH.parquet"
+            self.assertTrue(path.exists())
+            df = pd.read_parquet(path)
+            self.assertEqual(len(df), 0)
 
 
 class DailyAndAdjFactorTests(unittest.TestCase):
