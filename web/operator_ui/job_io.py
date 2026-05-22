@@ -229,23 +229,63 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
     )
 
 
+SORT_OPTIONS: tuple[str, ...] = (
+    "created_at",
+    "duration",
+    "status",
+    "type",
+    "run_id",
+)
+SORT_DIRECTIONS: tuple[str, ...] = ("desc", "asc")
+
+
 def list_all_jobs(
     *,
     type_filter: str = "all",
     status_filter: str = "all",
     source_filter: str = "all",
     search: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
     page: int = 1,
     page_size: int = 25,
 ) -> tuple[list[JobSummary], int]:
     """Return a page of unified job summaries plus the total matched count.
-    
-    Filters are applied *before* pagination.  ``type_filter`` accepts
-    ``"all"`` or one of ``"pipeline"``, ``"walk_forward"``, ``"provider"``.
+
+    Filters are applied *before* sort, sort before pagination.
+
+    ``type_filter`` accepts ``"all"`` or one of ``"pipeline"``,
+    ``"walk_forward"``, ``"provider"``.
+
     ``status_filter`` accepts ``"all"``, ``"queued"``, ``"running"``,
     ``"completed"``, ``"failed"``, ``"cancelled"``.
+
     ``source_filter`` accepts ``"all"``, ``"ui"``, ``"cli"``.
+
+    ``date_from`` / ``date_to`` are inclusive ISO-8601 date strings
+    (``YYYY-MM-DD``).  Empty strings disable that side of the range.  The
+    range is applied against each job's ``created_at`` (UI jobs) or
+    ``completed_at`` (CLI catalog) timestamp.  Malformed dates are
+    rejected loudly so caller bugs do not silently widen the result set
+    (AGENTS.md #8 "no silent fallback").
+
+    ``sort_by`` is one of :data:`SORT_OPTIONS`; ``sort_dir`` is one of
+    :data:`SORT_DIRECTIONS`.  Unknown values raise :class:`ValueError`.
     """
+    if sort_by not in SORT_OPTIONS:
+        raise ValueError(
+            f"sort_by={sort_by!r} not in {SORT_OPTIONS}; "
+            "extend SORT_OPTIONS if a new key is required."
+        )
+    if sort_dir not in SORT_DIRECTIONS:
+        raise ValueError(
+            f"sort_dir={sort_dir!r} not in {SORT_DIRECTIONS}."
+        )
+    _parse_date_or_raise(date_from, field="date_from")
+    _parse_date_or_raise(date_to, field="date_to")
+
     # Load raw data
     ui_raw = _load_ui_jobs()
     cli_raw = _load_cli_entries()
@@ -258,13 +298,48 @@ def list_all_jobs(
         all_items.append(_normalise_cli_entry(raw))
 
     # Filter
-    filtered = _apply_filters(all_items, type_filter, status_filter, source_filter, search)
+    filtered = _apply_filters(
+        all_items,
+        type_filter,
+        status_filter,
+        source_filter,
+        search,
+        date_from,
+        date_to,
+    )
+
+    # Sort
+    sorted_items = _apply_sort(filtered, sort_by, sort_dir)
 
     # Paginate — cumulative for load-more UX (page N returns first N*size items)
-    total = len(filtered)
-    page_items = filtered[: page * page_size]
+    total = len(sorted_items)
+    page_items = sorted_items[: page * page_size]
 
     return page_items, total
+
+
+def _parse_date_or_raise(value: str, *, field: str) -> None:
+    """Validate ISO-date string; raise on malformed input (no silent fallback)."""
+    if not value:
+        return
+    from datetime import date
+
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field}={value!r} is not a valid ISO date (YYYY-MM-DD): {exc}"
+        ) from exc
+
+
+def _job_timestamp(item: JobSummary) -> str:
+    """Return the canonical date-stamp for filter / sort purposes.
+
+    For UI jobs prefer ``created_at``; for CLI catalog entries the
+    timestamp lives in ``finished_at`` (the catalog records
+    ``completed_at`` which is normalised into both).
+    """
+    return item.created_at or item.finished_at or ""
 
 
 def _apply_filters(
@@ -273,6 +348,8 @@ def _apply_filters(
     status_filter: str,
     source_filter: str,
     search: str,
+    date_from: str = "",
+    date_to: str = "",
 ) -> list[JobSummary]:
     result: list[JobSummary] = []
     search_lower = search.strip().lower()
@@ -283,6 +360,17 @@ def _apply_filters(
             continue
         if source_filter != "all" and item.source != source_filter:
             continue
+        if date_from or date_to:
+            stamp = _job_timestamp(item)
+            if not stamp:
+                # No timestamp at all — drop on any date filter so the
+                # date range is honoured rather than silently widened.
+                continue
+            day = stamp[:10]
+            if date_from and day < date_from:
+                continue
+            if date_to and day > date_to:
+                continue
         if search_lower:
             combined = (
                 f"{item.run_id} {item.type} {item.status} "
@@ -293,3 +381,44 @@ def _apply_filters(
                 continue
         result.append(item)
     return result
+
+
+def _apply_sort(
+    items: list[JobSummary], sort_by: str, sort_dir: str
+) -> list[JobSummary]:
+    """Return a new sorted list.
+
+    For ``duration`` and ``created_at``, missing values are always
+    rendered at the bottom regardless of ``sort_dir``.  Operationally
+    "unknown" is never the most/least valued row — it just sits below
+    the known rows so it never crowds the active comparison.
+    """
+    reverse = sort_dir == "desc"
+
+    if sort_by == "duration":
+        has = [x for x in items if x.duration_seconds is not None]
+        missing = [x for x in items if x.duration_seconds is None]
+        return (
+            sorted(has, key=lambda x: float(x.duration_seconds or 0.0), reverse=reverse)
+            + missing
+        )
+
+    if sort_by == "created_at":
+        has = [x for x in items if _job_timestamp(x)]
+        missing = [x for x in items if not _job_timestamp(x)]
+        return (
+            sorted(has, key=lambda x: _job_timestamp(x), reverse=reverse)
+            + missing
+        )
+
+    key_fn: Any
+    if sort_by == "status":
+        key_fn = lambda x: x.status  # noqa: E731
+    elif sort_by == "type":
+        key_fn = lambda x: x.type  # noqa: E731
+    elif sort_by == "run_id":
+        key_fn = lambda x: x.run_id  # noqa: E731
+    else:  # pragma: no cover — guarded earlier in list_all_jobs
+        raise ValueError(f"sort_by={sort_by!r} not supported")
+
+    return sorted(items, key=key_fn, reverse=reverse)

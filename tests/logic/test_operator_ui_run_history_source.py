@@ -27,6 +27,88 @@ class JobsSourceTests(unittest.TestCase):
         self.assertIn('jobs.py', source)
         self.assertNotIn('"Run History"', source)
 
+    def test_jobs_page_syncs_state_to_url(self) -> None:
+        """Filters / sort / page SHALL be mirrored into st.query_params so
+        reload preserves state and the URL is shareable (TICKET-A)."""
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn("st.query_params", source)
+        self.assertIn("_qp_write", source)
+        self.assertIn("_seed_session_from_url", source)
+
+    def test_jobs_page_supports_date_range_and_sort(self) -> None:
+        """The Jobs hub SHALL pass date_from/date_to and sort_by/sort_dir
+        through to list_all_jobs (TICKET-A new contract)."""
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn("date_from", source)
+        self.assertIn("date_to", source)
+        self.assertIn("sort_by", source)
+        self.assertIn("sort_dir", source)
+        # The five quick-range buttons.
+        self.assertIn("Today", source)
+        self.assertIn("Last 7d", source)
+        self.assertIn("Last 30d", source)
+        self.assertIn("This year", source)
+        self.assertIn("Clear dates", source)
+
+    def test_jobs_page_routes_row_click_via_switch_page(self) -> None:
+        """Row selection SHALL navigate to results.py or walk_forward.py via
+        ``st.switch_page`` and seed the run id in session_state / query_params."""
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn("on_select=", source)
+        self.assertIn("selection_mode=", source)
+        self.assertIn("st.switch_page", source)
+        self.assertIn('pages/results.py', source)
+        self.assertIn('pages/walk_forward.py', source)
+
+    def test_jobs_page_uses_canonical_run_id_query_param(self) -> None:
+        """Row click SHALL set ``st.query_params["run_id"]`` — the key that
+        ``results.py._query_run_id`` and ``walk_forward.py`` consume.
+
+        Regression guard for Codex PR #118 P1: prior implementation set
+        ``st.query_params["run"]`` which neither detail page read, so the
+        selected run did not survive ``st.switch_page``.
+        """
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn('st.query_params["run_id"]', source)
+        self.assertNotIn('st.query_params["run"] =', source)
+
+    def test_walk_forward_page_honours_query_param_run_selection(self) -> None:
+        """walk_forward.py SHALL pre-select the run named in
+        ``st.query_params["run_id"]`` so click-through from the Jobs hub
+        lands on the operator's chosen run, not the most recent one."""
+
+        source = Path("web/operator_ui/pages/walk_forward.py").read_text(encoding="utf-8")
+
+        self.assertIn('st.query_params.get("run_id"', source)
+        self.assertIn("wf_selected_run", source)
+        self.assertIn("_default_index", source)
+
+    def test_jobs_page_offers_active_filter_chips(self) -> None:
+        """Each non-default filter SHALL surface as a removable chip
+        (TICKET-A "filter chips") and there SHALL be a Clear-all action."""
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn("jobs_chip_clear_", source)
+        self.assertIn("Clear all", source)
+
+    def test_jobs_page_offers_running_job_autorefresh(self) -> None:
+        """When at least one job is running, the page SHALL surface an
+        explicit auto-refresh control (TICKET-A "polling")."""
+
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+
+        self.assertIn("Auto-refresh", source)
+        self.assertIn("running_count", source)
+
 
 if __name__ == "__main__":
     unittest.main()
