@@ -1,0 +1,47 @@
+# Smoke configuration for the factor-mining miner CLI.
+#
+# Designed for a sub-30-second end-to-end CPU run using a synthetic
+# OHLCV panel — no PIT bundle required. Useful for verifying the GP
+# loop works end-to-end and that the output artefacts land in the
+# expected layout.
+#
+# Run via:
+#   python -m src.factor_mining.miner config/factor_mining/smoke.yaml
+
+run_id: null                          # autogen if null
+output_dir: "research/mined_factors"
+
+data:
+  mode: synthetic                     # 'synthetic' (no PIT bundle needed) | 'pit'
+  synthetic_n_tickers: 30
+  synthetic_n_dates: 100
+  synthetic_seed: 1234
+
+gp:
+  population_size: 20
+  n_generations: 3
+  tournament_size: 3
+  elite_frac: 0.05
+  p_crossover: 0.7
+  p_mutate_subtree: 0.15
+  p_mutate_point: 0.10
+  p_mutate_const: 0.05
+  max_depth: 4
+  min_depth: 2
+  target_kind: "CSF"
+  target_taint: "PURE"
+  seed: 42
+
+fitness:
+  w_ic: 1.0
+  w_ir: 0.5
+  w_rankic: 0.5
+  w_turnover: 0.2
+  w_corr: 0.8
+  w_complexity: 0.01
+  cost_rate: 0.003
+  coverage_min: 0.8
+  variance_days_frac_min: 0.7
+  variance_min: 1.0e-6
+  extreme_outlier_frac_max: 0.05
+  extreme_outlier_magnitude: 1.0e+8

@@ -1,0 +1,7 @@
+# Mined-factor output artefacts (per factor_mining_claude_code_design.md §3.1).
+# Only the top-level README and this .gitignore are checked in; everything
+# under runs/, candidates/, and production/ is intentionally untracked.
+
+runs/
+candidates/
+production/
