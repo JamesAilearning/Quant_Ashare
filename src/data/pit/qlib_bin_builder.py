@@ -186,6 +186,7 @@ class QlibBinBuilder:
 
         try:
             self._write_calendar(calendar, staging)
+            self._write_instruments_all(active_df, delisted_df, staging)
             for qlib_ticker, df in per_ticker.items():
                 self._write_one_ticker_bins(qlib_ticker, df, calendar, calendar_index, staging)
             # Promote staging to final location
@@ -396,6 +397,45 @@ class QlibBinBuilder:
         (calendars_dir / "day.txt").write_text(
             "\n".join(calendar) + "\n", encoding="utf-8",
         )
+
+    @staticmethod
+    def _write_instruments_all(
+        active_df: pd.DataFrame, delisted_df: pd.DataFrame, output_dir: Path,
+    ) -> None:
+        """Write ``instruments/all.txt`` inside the staging dir so the
+        atomic rename swap produces a complete qlib provider in one
+        shot. Without this, a normal ``04 -> 05 -> 06`` pipeline run
+        loses Phase B.1's all.txt the moment B.2's swap fires, and
+        the validator's sanity check then refuses to run. Codex P1
+        review on PR #103.
+        """
+        rows: list[tuple[str, str, str]] = []
+        for _, r in active_df.iterrows():
+            ticker = _to_qlib_ticker(str(r["ts_code"]))
+            ld = str(r.get("list_date", "")) if "list_date" in r else ""
+            if len(ld) == 8 and ld.isdigit():
+                rows.append((ticker, f"{ld[:4]}-{ld[4:6]}-{ld[6:8]}", "2099-12-31"))
+            # Active rows with malformed list_date silently fall through —
+            # the universe builder Phase B.1 (when run separately) would
+            # surface this loudly; here we are defensive.
+        for _, r in delisted_df.iterrows():
+            ticker = str(r["ticker"])
+            list_dt = pd.Timestamp(r["list_date"])
+            delist_dt = pd.Timestamp(r["delist_date"])
+            if pd.isna(list_dt) or pd.isna(delist_dt):
+                continue
+            rows.append((
+                ticker,
+                list_dt.strftime("%Y-%m-%d"),
+                delist_dt.strftime("%Y-%m-%d"),
+            ))
+        rows.sort(key=lambda r: r[0])
+
+        instr_dir = output_dir / "instruments"
+        instr_dir.mkdir(parents=True, exist_ok=True)
+        with (instr_dir / "all.txt").open("w", encoding="utf-8", newline="\n") as fh:
+            for ticker, start, end in rows:
+                fh.write(f"{ticker}\t{start}\t{end}\n")
 
     @staticmethod
     def _write_one_ticker_bins(

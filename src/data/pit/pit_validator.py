@@ -263,9 +263,27 @@ class PITValidator:
         return result
 
     def _check_b_delist_boundary(self, registry: pd.DataFrame) -> CheckResult:
-        """Full sweep: every registry ticker has NaN strictly after delist."""
+        """Full sweep: every registry ticker has data within
+        ``TRUNCATION_TOLERANCE_DAYS`` of delist_date AND NaN strictly
+        after delist_date.
+
+        The two-sided check catches both bin-pipeline failure modes:
+
+        - Extension (data past delist_date) — any non-NaN close past
+          delist = NaN-after-delist violation.
+        - Truncation (data ends well before delist_date) — if the
+          last valid trading day for this ticker is more than
+          ``TRUNCATION_TOLERANCE_DAYS`` before delist, the bin lost
+          the delist tail. Codex P1 on PR #103.
+
+        The 7-day tolerance accommodates the Tushare convention where
+        the official ``delist_date`` can be one trading day after the
+        last actual trade (e.g. SH600087 delist_date=2014-06-05 but
+        last trade 2014-06-04) plus long-weekend gaps.
+        """
         from qlib.data import D  # type: ignore[import-not-found]
 
+        TRUNCATION_TOLERANCE_DAYS = 7
         result = CheckResult(name="Delist boundary sweep", code="B", passed=True)
         violations: list[str] = []
         checked = 0
@@ -273,21 +291,43 @@ class PITValidator:
         for _, row in registry.iterrows():
             ticker = str(row["ticker"])
             delist = pd.Timestamp(row["delist_date"])
-            after_start = (delist + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-            after_end = (delist + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+            window_start = (delist - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+            window_end = (delist + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
             try:
-                df = D.features([ticker], ["$close"], after_start, after_end)
+                df = D.features([ticker], ["$close"], window_start, window_end)
             except Exception:
                 skipped += 1
                 continue
             if df.empty:
-                checked += 1
-                continue
-            non_nan = df["$close"].dropna()
-            if not non_nan.empty:
                 violations.append(
-                    f"{ticker}: {len(non_nan)} non-NaN value(s) in "
-                    f"[{after_start}, {after_end}] past delist_date={delist.date()}"
+                    f"{ticker}: no data in [{window_start}, {window_end}] — "
+                    f"ticker is entirely missing from the provider"
+                )
+                continue
+            valid = df["$close"].dropna()
+            if valid.empty:
+                violations.append(
+                    f"{ticker}: all-NaN in [{window_start}, {window_end}] — "
+                    f"bin is empty around delist_date={delist.date()}"
+                )
+                continue
+            last_valid = valid.index.get_level_values("datetime").max()
+            days_before_delist = (delist - last_valid).days
+            if days_before_delist > TRUNCATION_TOLERANCE_DAYS:
+                violations.append(
+                    f"{ticker}: last valid trade {last_valid.date()} is "
+                    f"{days_before_delist}d BEFORE delist_date={delist.date()} "
+                    f"(tolerance: {TRUNCATION_TOLERANCE_DAYS}d) — truncation"
+                )
+            after_mask = df.index.get_level_values("datetime") > delist
+            non_nan_after = (
+                df.loc[after_mask, "$close"].dropna()
+                if after_mask.any() else pd.Series([], dtype=float)
+            )
+            if not non_nan_after.empty:
+                violations.append(
+                    f"{ticker}: {len(non_nan_after)} non-NaN value(s) "
+                    f"past delist_date={delist.date()}"
                 )
             checked += 1
         result.details["checked"] = checked
@@ -295,7 +335,6 @@ class PITValidator:
         result.details["violation_count"] = len(violations)
         if violations:
             result.passed = False
-            # Cap message to first 5 violations to keep the report readable.
             result.errors.extend(violations[:5])
             if len(violations) > 5:
                 result.errors.append(

@@ -253,6 +253,42 @@ class HappyPathTests(unittest.TestCase):
             ])
 
 
+class InstrumentsAllTests(unittest.TestCase):
+    """Codex P1 on PR #103: the atomic swap MUST emit
+    ``instruments/all.txt`` so a normal ``04 -> 05 -> 06`` flow does
+    not lose Phase B.1's universe file."""
+
+    def test_staging_includes_instruments_all_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_registry(tmp_path / "registry.parquet", [
+                {"ticker": "SH600087", "list_date": "2010-01-01",
+                 "delist_date": "2014-06-05"},
+            ])
+            _write_daily_year(tmp_path, 2020, "600519.SH", ["20200102"], close=10.0)
+            _write_daily_year(tmp_path, 2014, "600087.SH", ["20140604"], close=5.0)
+
+            out = tmp_path / "provider"
+            QlibBinBuilder(
+                tushare_dir=tmp_path,
+                delisted_registry_path=tmp_path / "registry.parquet",
+                output_dir=out,
+            ).build()
+
+            inst = out / "instruments" / "all.txt"
+            self.assertTrue(inst.exists(),
+                            "B.2 must emit instruments/all.txt in its staging")
+            lines = inst.read_text(encoding="utf-8").splitlines()
+            tickers = {L.split("\t")[0] for L in lines}
+            self.assertIn("SH600519", tickers)
+            self.assertIn("SH600087", tickers)
+            sh087_line = next(L for L in lines if L.startswith("SH600087"))
+            self.assertEqual(sh087_line.split("\t")[2], "2014-06-05")
+            sh519_line = next(L for L in lines if L.startswith("SH600519"))
+            self.assertEqual(sh519_line.split("\t")[2], "2099-12-31")
+
+
 class FailureTests(unittest.TestCase):
 
     def test_missing_active_raises(self) -> None:
