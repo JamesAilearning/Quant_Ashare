@@ -63,6 +63,7 @@ class BacktestRunner:
         topk: int = 50,
         n_drop: int = 5,
         compute_baselines: bool = True,
+        pit_provider: Any | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -102,6 +103,16 @@ class BacktestRunner:
                 "src.core.qlib_runtime.init_qlib_canonical(...) before "
                 "running official backtests."
             )
+
+        # Phase D.3 alignment guard: if the caller supplied a PIT
+        # provider, the canonical qlib config's provider_uri MUST
+        # match. Otherwise the backtest reads features through qlib
+        # against a legacy provider while the operator believes PIT
+        # mode is active — a silent survivorship bias on the most
+        # consequential code path (real money decisions).
+        if pit_provider is not None:
+            cls._validate_pit_provider_alignment(pit_provider)
+
         runtime_config = get_canonical_qlib_config()
         if runtime_config is None:
             raise BacktestRunnerError(
@@ -237,6 +248,7 @@ class BacktestRunner:
                     topk=topk,
                     evaluation_start=request.evaluation_start,
                     evaluation_end=request.evaluation_end,
+                    pit_provider=pit_provider,
                 )
                 if eqw_returns:
                     return_series["equalweight_topk"] = eqw_returns
@@ -274,6 +286,7 @@ class BacktestRunner:
         topk: int,
         evaluation_start: str,
         evaluation_end: str,
+        pit_provider: Any | None = None,
     ) -> dict[str, float]:
         """Post-hoc equal-weight top-k daily return series.
 
@@ -287,14 +300,21 @@ class BacktestRunner:
         evaluation window. Each rebalance day picks the ``topk``
         highest-scored instruments; the day's equal-weight return is the
         arithmetic mean of those instruments' close-to-close returns.
+
+        When ``pit_provider`` is supplied, the close-panel fetch routes
+        through ``PITDataProvider.get_features`` so post-delist positions
+        return NaN (mask applied at the query layer per §4.3.2), and the
+        per-day equal-weight mean correctly excludes delisted tickers
+        instead of silently consuming forward-filled stale values.
+        Phase D.3 opt-in; default ``None`` falls through to direct
+        ``qlib.data.D.features`` preserving the legacy behaviour.
         """
         try:
             import numpy as np
             import pandas as pd
-            from qlib.data import D
         except ImportError as exc:
             raise BacktestRunnerError(
-                "qlib is not importable; cannot compute equal-weight baseline."
+                "numpy / pandas not importable; cannot compute baseline."
             ) from exc
 
         if not isinstance(predictions, pd.Series) or predictions.empty:
@@ -324,13 +344,20 @@ class BacktestRunner:
             {inst for names in daily_topk.values() for inst in names}
         )
         try:
-            close = D.features(
-                all_instruments,
-                ["$close"],
-                start_time=evaluation_start,
-                end_time=evaluation_end,
-                freq="day",
-            )
+            if pit_provider is not None:
+                close = pit_provider.get_features(
+                    ["$close"], evaluation_start, evaluation_end,
+                    instruments=all_instruments,
+                )
+            else:
+                from qlib.data import D
+                close = D.features(
+                    all_instruments,
+                    ["$close"],
+                    start_time=evaluation_start,
+                    end_time=evaluation_end,
+                    freq="day",
+                )
         except Exception as exc:
             raise BacktestRunnerError(
                 "qlib D.features() failed for equal-weight baseline: "
@@ -366,6 +393,44 @@ class BacktestRunner:
             result[str(dt.date())] = float(np.nanmean(valid))
 
         return result
+
+    @classmethod
+    def _validate_pit_provider_alignment(cls, pit_provider: Any) -> None:
+        """Phase D.3 alignment guard — identical contract to Phase D.2's
+        :meth:`src.data.feature_dataset_builder.FeatureDatasetBuilder
+        ._validate_pit_provider_alignment`. When a PIT provider is
+        supplied, the canonical qlib runtime's ``provider_uri`` MUST
+        match. The duplication is intentional: backtest_runner and
+        feature_dataset_builder enforce the same invariant from two
+        independent entry points, so a future refactor changing one
+        cannot silently weaken the other.
+        """
+        from src.core.qlib_runtime import _normalize_provider_uri
+
+        canonical = get_canonical_qlib_config()
+        if canonical is None:
+            raise BacktestRunnerError(
+                "pit_provider was supplied but the canonical qlib config "
+                "is unavailable despite is_canonical_qlib_initialized() "
+                "returning True. Internal inconsistency — investigate "
+                "qlib_runtime state."
+            )
+        pit_uri_raw = str(getattr(pit_provider, "_provider_uri", ""))
+        if not pit_uri_raw:
+            raise BacktestRunnerError(
+                "pit_provider has no readable _provider_uri attribute "
+                f"(got {pit_provider!r}). Expected a PITDataProvider."
+            )
+        pit_norm = _normalize_provider_uri(pit_uri_raw)
+        if canonical.provider_uri != pit_norm:
+            raise BacktestRunnerError(
+                "PIT provider / qlib provider_uri mismatch — backtest "
+                "would silently consume features from the wrong provider. "
+                f"qlib canonical provider_uri = {canonical.provider_uri!r}; "
+                f"pit_provider._provider_uri = {pit_norm!r}. "
+                "Re-init qlib with the PIT-corrected provider before "
+                "passing pit_provider to BacktestRunner.run()."
+            )
 
     @staticmethod
     def _apply_lag(predictions: Any, lag: int) -> Any:
