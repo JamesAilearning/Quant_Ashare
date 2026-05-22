@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,12 @@ from web.operator_ui.config_forms import (
     validate_config_keys,
     validate_provider_uri,
 )
+from web.operator_ui.config_presets import (
+    CUSTOM_PRESET_NAME,
+    list_preset_names,
+    load_preset,
+    sanitise_preset_name,
+)
 from web.operator_ui.job_manager import JobManager, JobManagerError
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 from web.operator_ui.provider_catalog import (
@@ -40,11 +45,10 @@ from web.operator_ui.training_guards import (
 )
 
 # ---------------------------------------------------------------------------
-# Helpers (unchanged from original)
+# Helpers
 # ---------------------------------------------------------------------------
 
 _PRESETS_DIR = Path(__file__).resolve().parents[3] / "config" / "presets"
-_PRESET_NAMES = ("Smoke", "Default", "Production", "Custom")
 
 
 def _parse_instruments(raw: str) -> str | list[str]:
@@ -119,32 +123,28 @@ def _walk_forward_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
 
 
 def _load_preset(name: str) -> dict[str, Any]:
-    path = _PRESETS_DIR / f"{name.lower()}.yaml"
-    if not path.is_file():
-        return {}
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError:
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+    return load_preset(_PRESETS_DIR, name)
+
+
+def _preset_options() -> tuple[str, ...]:
+    return list_preset_names(_PRESETS_DIR)
 
 
 def _apply_preset(preset_name: str) -> None:
+    """Apply preset values before matching widgets are instantiated."""
     preset = _load_preset(preset_name)
     if not preset:
         return
     for key, value in preset.items():
-        # Never overwrite the Mode widget — it is already instantiated
-        # and Streamlit forbids writing to keys that have active widgets.
-        if key == "mode":
-            continue
         st.session_state[f"cr_{key}"] = value
     st.session_state["cr_preset"] = preset_name
 
 
 def _detect_preset() -> str:
     """Return the preset name whose values match all current fields, or 'Custom'."""
-    for name in ["Smoke", "Default", "Production"]:
+    for name in _preset_options():
+        if name == CUSTOM_PRESET_NAME:
+            continue
         preset = _load_preset(name)
         if not preset:
             continue
@@ -244,31 +244,38 @@ def _cr(key: str, default=None):
         st.session_state[session_key] = default
     return st.session_state[session_key]
 
+
+if "cr_preset_initialized" not in st.session_state:
+    if not PREFILL_CONFIG:
+        _apply_preset("Default")
+    st.session_state["cr_preset_initialized"] = True
+
 # ---------------------------------------------------------------------------
 # Mode & Preset bar
 # ---------------------------------------------------------------------------
 bar_col1, bar_col2 = st.columns(2)
+with bar_col2:
+    preset_options = _preset_options()
+    preset_idx = 1  # Default
+    current_preset = st.session_state.get("cr_preset", "Default")
+    if current_preset in preset_options:
+        preset_idx = preset_options.index(current_preset)
+    preset_choice = st.selectbox(
+        "Preset",
+        preset_options,
+        index=preset_idx,
+        key="cr_preset_selector",
+        help="Smoke = quick test. Default = standard. Production = full. Custom = your own.",
+    )
+    if preset_choice != current_preset and preset_choice != CUSTOM_PRESET_NAME:
+        _apply_preset(preset_choice)
+
 with bar_col1:
     mode = st.selectbox(
         "Mode", ["pipeline", "walk_forward"],
         key="cr_mode",
         help="Pipeline = single train/test split. Walk-Forward = rolling folds.",
     )
-
-with bar_col2:
-    preset_idx = 1  # Default
-    current_preset = st.session_state.get("cr_preset", "Default")
-    if current_preset in _PRESET_NAMES:
-        preset_idx = _PRESET_NAMES.index(current_preset)
-    preset_choice = st.selectbox(
-        "Preset",
-        _PRESET_NAMES,
-        index=preset_idx,
-        key="cr_preset_selector",
-        help="Smoke = quick test. Default = standard. Production = full. Custom = your own.",
-    )
-    if preset_choice != current_preset and preset_choice != "Custom":
-        _apply_preset(preset_choice)
 
 # Auto-detect custom when fields diverge
 _detected = _detect_preset()
@@ -315,9 +322,13 @@ with form_col:
         )
         provider_uri_valid = bool(provider_uri and provider_uri.strip())
 
-        instruments = st.text_input("instruments", key="cr_instruments")
+        instruments = st.text_input("instruments", value=_cr("instruments", "csi300"), key="cr_instruments")
 
-        feature_handler = st.text_input("feature_handler", key="cr_feature_handler")
+        feature_handler = st.text_input(
+            "feature_handler",
+            value=_cr("feature_handler", "Alpha158"),
+            key="cr_feature_handler",
+        )
 
         provider_metadata = inspect_provider_metadata(provider_uri)
         pipeline_date_defaults = _pipeline_date_defaults(provider_metadata)
@@ -431,9 +442,9 @@ with form_col:
     if compute_device == "gpu" and model_type != "LGBModel":
         guard_errors.append("GPU training is currently supported only for LGBModel.")
 
-    # Build config dict for YAML preview and estimate
+    # Build run config separately from the UI preview; mode is selected outside
+    # the runtime config schema and passed to JobManager.start as its own value.
     config_dict: dict = {
-        "mode": mode,
         "provider_uri": provider_uri,
         "instruments": instruments,
         "feature_handler": feature_handler,
@@ -463,8 +474,9 @@ with form_col:
         })
         known_keys = WALK_FORWARD_KEYS
 
-    yaml_text = yaml.dump({k: v for k, v in config_dict.items() if v != ""}, default_flow_style=False, allow_unicode=True)
-    estimated = _estimate_duration(config_dict)
+    preview_config = {"mode": mode, **config_dict}
+    yaml_text = yaml.dump({k: v for k, v in preview_config.items() if v != ""}, default_flow_style=False, allow_unicode=True)
+    estimated = _estimate_duration(preview_config)
 
     # --- Sticky run bar ---
     st.divider()
@@ -485,21 +497,39 @@ with form_col:
         if st.button("💾 Save as preset", use_container_width=True):
             st.session_state["cr_saving_preset"] = True
 
+    if submitted:
+        try:
+            validate_provider_uri(provider_uri)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+        if compute_device == "gpu" and model_type != "LGBModel":
+            st.error("GPU training is currently supported only for LGBModel.")
+            st.stop()
+        try:
+            validate_config_keys(config_dict, known_keys)
+            job_id = JobManager.start(config_dict, mode)
+        except (ValueError, JobManagerError) as exc:
+            st.error(str(exc))
+            st.stop()
+        st.success(f"Job started: {job_id}")
+        st.info(f"Watch output/operator_ui/jobs/{job_id}/stdout.log for logs and progress.")
+
     if st.session_state.get("cr_saving_preset"):
         save_name = st.text_input("Preset name", value="my_preset", key="cr_save_name")
         if st.button("Confirm save", key="cr_save_confirm"):
-            # Sanitise to prevent path traversal
-            safe = re.sub(r"[^a-zA-Z0-9_-]", "", save_name).strip("_-")
+            safe = sanitise_preset_name(save_name).lower()
             if not safe:
                 st.error("Preset name must contain at least one letter or digit.")
             else:
-                save_path = _PRESETS_DIR / f"{safe.lower()}.yaml"
+                save_path = _PRESETS_DIR / f"{safe}.yaml"
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 save_path.write_text(
-                    yaml.dump(config_dict, default_flow_style=False, allow_unicode=True),
+                    yaml.dump(preview_config, default_flow_style=False, allow_unicode=True),
                     encoding="utf-8",
                 )
                 st.success(f"Saved as {safe}")
+                st.session_state["cr_preset"] = safe
                 st.session_state["cr_saving_preset"] = False
                 st.rerun()
         if st.button("Cancel", key="cr_save_cancel"):
