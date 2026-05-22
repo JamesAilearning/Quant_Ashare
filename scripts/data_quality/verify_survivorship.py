@@ -17,7 +17,7 @@ agent-fabricated facts. Cross-checking against Tushare
   never been delisted, only renamed through ST/*ST cycles. The
   ``SH600753 = 庞大集团`` claim was the most clearly fabricated row:
   600753's namechange history shows the ticker continuously listed since
-  1996 under 冰熊股份 → 东方银星 → 庚星股份 → \*ST海钦, and was never named
+  1996 under 冰熊股份 → 东方银星 → 庚星股份 → *ST海钦, and was never named
   "庞大集团" (the real 庞大集团 trades under ticker 601258).
 - The remaining 3 entries (SH600087, SH600247, SZ000023) ARE delisted but
   had ``delist_date`` wrong by 1.5-5 years compared with Tushare.
@@ -28,11 +28,11 @@ their true delist_date and post-delisting Tushare display name. See PR
 the updated PIT design baseline.
 """
 
-import qlib
-from qlib.data import D
-import pandas as pd
 import sys
 
+import pandas as pd
+import qlib
+from qlib.data import D
 
 # ============================================
 # CONFIG
