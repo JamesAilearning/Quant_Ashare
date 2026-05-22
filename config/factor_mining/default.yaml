@@ -41,7 +41,7 @@ fitness:
   variance_days_frac_min: 0.7
   variance_min: 1.0e-6
   extreme_outlier_frac_max: 0.05
-  extreme_outlier_magnitude: 1.0e8
+  extreme_outlier_magnitude: 1.0e+8
 
 compute:
   backend: "cpu"                      # CPU until Phase 4 proves GPU equivalence
