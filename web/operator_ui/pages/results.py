@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -1225,9 +1226,10 @@ def _default_job_id(jobs: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _render_run_not_found(run_id: str) -> None:
+    escaped_run_id = html.escape(run_id, quote=True)
     render_error_state(
         "Run not found",
-        f"We couldn't find a run with ID \"{run_id}\". It may have been deleted, or the link is wrong.",
+        f"We couldn't find a run with ID \"{escaped_run_id}\". It may have been deleted, or the link is wrong.",
         variant="page",
     )
     if st.button("Back to Jobs"):
@@ -1265,9 +1267,9 @@ if not viewable_jobs:
         "📄",
         "No pipeline runs yet",
         "Run a pipeline, walk-forward, or Tushare provider job first.",
-        action_label="Config & Run",
-        action_on_click=f"window.location.href='{str(Path(__file__).resolve().parent / 'config_run.py')}'",
     )
+    if st.button("Config & Run"):
+        st.switch_page("pages/config_run.py")
 else:
     job_ids = [str(job.get("job_id")) for job in viewable_jobs if job.get("job_id")]
     requested_run_id = _query_run_id()

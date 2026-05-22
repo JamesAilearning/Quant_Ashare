@@ -7,8 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from web.operator_ui.config_presets import (
-    CUSTOM_PRESET_NAME,
     BUILT_IN_PRESET_NAMES,
+    CUSTOM_PRESET_NAME,
     list_preset_names,
     load_preset,
     sanitise_preset_name,
