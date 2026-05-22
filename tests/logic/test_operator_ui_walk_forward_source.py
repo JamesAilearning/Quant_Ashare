@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 from pathlib import Path
 
@@ -194,6 +195,39 @@ class WalkForwardSynthesisHelperTests(unittest.TestCase):
         self.assertEqual(timeline, [])
         self.assertEqual(nav, [])
         self.assertEqual(bands, [])
+
+    def test_synthesised_nav_skips_folds_with_below_minus_100pct_return(self) -> None:
+        """Regression for Codex PR #133 P1: when annual_return < -1
+        and the test window is a non-integer year, ``(1+ar)**years``
+        returns a *complex* number in Python (not ValueError /
+        OverflowError), which Plotly then chokes on at render time
+        and blanks the entire Walk-Forward page. Reject such folds
+        cleanly instead.
+        """
+
+        from web.operator_ui.pages.walk_forward import _synthesised_stitched_nav
+
+        fold_data = [
+            {  # well-formed positive fold
+                "ordinal": 1,
+                "test_start": "2024-01-01",
+                "test_end": "2024-06-30",
+                "annual_return": 0.10,
+            },
+            {  # impossible -120% fold — must be skipped, not turn complex
+                "ordinal": 2,
+                "test_start": "2024-07-01",
+                "test_end": "2024-12-31",
+                "annual_return": -1.20,
+            },
+        ]
+        timeline, nav, bands = _synthesised_stitched_nav(fold_data)
+        # Only fold 1 survives.
+        self.assertEqual(len(bands), 1)
+        # No complex / non-real NAV values leaked through.
+        for value in nav:
+            self.assertIsInstance(value, (int, float))
+            self.assertTrue(math.isfinite(value))
 
     def test_read_log_files_truncates_large_logs(self) -> None:
         import tempfile

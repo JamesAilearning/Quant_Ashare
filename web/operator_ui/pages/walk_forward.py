@@ -167,9 +167,27 @@ def _synthesised_stitched_nav(
             continue
         days = (end - start).days
         years = days / 365.0
+        # Reject ``annual_return <= -1.0`` *before* exponentiation.
+        # Python's ``a ** b`` returns a **complex** number when the base
+        # is negative and the exponent is non-integer (rather than
+        # raising ValueError / OverflowError), and Plotly then errors
+        # at render time, blanking the Walk-Forward page. A return of
+        # -100% or worse over a fold also has no sensible NAV
+        # interpretation for a long-only synthetic stitched curve, so
+        # we skip the fold rather than guess.
+        base = 1.0 + float(ar)
+        if base < 0.0:
+            continue
         try:
-            end_nav = current_nav * (1.0 + float(ar)) ** years
+            end_nav = current_nav * (base ** years)
         except (ValueError, OverflowError):
+            continue
+        # Defence-in-depth: still type/finiteness-check the result —
+        # `base == 0` with ``years <= 0`` (degenerate test window) or
+        # NumPy-imported floats with surprising semantics could slip
+        # through, and we never want a complex / inf / nan to reach
+        # Plotly.
+        if not isinstance(end_nav, (int, float)) or not math.isfinite(end_nav):
             continue
         # Use simple linear interpolation between fold start and end so
         # adjacent folds connect visually; without this each fold would
