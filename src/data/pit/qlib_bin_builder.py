@@ -1,0 +1,450 @@
+"""Build qlib bin storage from Tushare daily + adj_factor + delisted_registry.
+
+Pipeline (Phase B.2, per docs/pit/pit_universe_design.md §5 Stage 5)
+-------------------------------------------------------------------
+::
+
+    <tushare_dir>/daily/{year}/{ticker}.parquet
+    <tushare_dir>/adj_factor/{year}/{ticker}.parquet
+    <tushare_dir>/active_stocks.parquet
+    <delisted_registry_path>
+       -> <output_dir>/calendars/day.txt
+       -> <output_dir>/features/<ticker_lower>/{open,high,low,close,volume,money}.day.bin
+
+qlib bin format (matches src/data/tushare/provider_bundle/publisher.py
+``_write_qlib_bundle``):
+
+- ``calendars/day.txt`` — one ISO date per line, sorted.
+- ``features/<lowercase_ticker>/<field>.day.bin`` — little-endian
+  float32 sequence. First element is the ``start_index`` (offset into
+  the calendar where this ticker's data begins). Subsequent elements
+  are the field values aligned to consecutive calendar dates from
+  ``start_index`` to ``start_index + len-1``.
+
+NaN-after-delist invariant
+--------------------------
+For delisted tickers, the ticker's bin contains valid values from
+``list_date`` to ``delist_date`` and NaN for every calendar date
+strictly after ``delist_date``. This is the structural defence in
+docs/pit/pit_universe_design.md §4.3.
+
+For active tickers, valid values extend to the latest calendar date
+in the Tushare daily dump.
+
+Borrow-shell tickers (e.g. ``SH600145``) are NOT in delisted_registry
+and so get a continuous data run. Their continuity is implicit (no
+NaN-padding logic touches them); §4.6.
+
+Adjusted-price contract
+-----------------------
+The bin stores PRE-ADJUSTED prices (close × adj_factor and same for
+open/high/low). adj_factor is Tushare's as-of-today snapshot per
+§4.3.1, so absolute adjusted prices are NOT PIT-correct features.
+Downstream consumers MUST use within-ticker ratios / returns only
+(the contract is enforced at the Phase C query layer).
+
+Scope (Phase B.2)
+-----------------
+- 6 fields: open, high, low, close, volume, money.
+- Volume in Tushare's ``vol`` (lots / 手, ×100 to shares).
+- Amount in Tushare's ``amount`` (千元, ×1000 to yuan).
+- Per-ticker DataFrame load and reindex to a global calendar.
+- Atomic-rename of the final provider directory (no half-written
+  partial provider visible to qlib mid-write).
+
+Out of scope
+------------
+- vwap / factor / change derived fields (computable in qlib
+  expressions; can land in a follow-up).
+- Sub-snapshot timing for borrow-shell restructure annotation
+  (attribution-layer concern per §4.6).
+- Manual delist_date overrides (design §13 q2 backlog).
+"""
+
+from __future__ import annotations
+
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from src.core.logger import get_logger
+
+_logger = get_logger(__name__)
+
+
+# qlib bin field set this builder produces. Order is documentational only —
+# each field becomes its own .bin file.
+BIN_FEATURE_FIELDS: tuple[str, ...] = (
+    "open", "high", "low", "close", "volume", "money",
+)
+
+# Tushare unit conversions (per src/data/tushare/provider_bundle/_types).
+TUSHARE_VOL_LOTS_TO_SHARES = 100  # vol is in 手 (100 shares)
+TUSHARE_AMOUNT_KYUAN_TO_YUAN = 1000  # amount is in 千元
+
+
+def _to_qlib_ticker(ts_code: str) -> str:
+    if "." not in ts_code:
+        return ts_code
+    code, exchange = ts_code.split(".", 1)
+    if len(code) == 6 and code.isdigit() and len(exchange) == 2 and exchange.isalpha():
+        return f"{exchange.upper()}{code}"
+    return ts_code
+
+
+def _to_iso_date(yyyymmdd: str) -> str:
+    s = str(yyyymmdd)
+    if len(s) != 8 or not s.isdigit():
+        raise ValueError(f"expected YYYYMMDD, got {yyyymmdd!r}")
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+
+
+class QlibBinBuilderError(RuntimeError):
+    """Raised when bin construction fails."""
+
+
+@dataclass(frozen=True)
+class QlibBinBuilderResult:
+    output_dir: Path
+    calendar_days: int
+    ticker_count: int
+    delisted_ticker_count: int
+    skipped_no_data: int  # tickers with no daily data in tushare_dir
+
+
+class QlibBinBuilder:
+    """Build a qlib provider directory from Tushare dumps + delisted registry.
+
+    Construction is cheap; ``build()`` does the work. Idempotent given
+    identical inputs.
+    """
+
+    def __init__(
+        self,
+        tushare_dir: Path,
+        delisted_registry_path: Path,
+        output_dir: Path,
+    ) -> None:
+        self._tushare_dir = tushare_dir
+        self._delisted_registry_path = delisted_registry_path
+        self._output_dir = output_dir
+
+    # ------------------------------------------------------------------
+    # Public orchestrator
+    # ------------------------------------------------------------------
+
+    def build(self) -> QlibBinBuilderResult:
+        active_df = self._load_active_stocks()
+        delisted_df = self._load_delisted_registry()
+
+        active_tickers = self._tickers_from_active(active_df)
+        delisted_tickers = self._tickers_from_delisted(delisted_df)
+        universe = active_tickers | set(delisted_tickers.keys())
+        _logger.info(
+            "Universe: %d tickers (%d active, %d delisted)",
+            len(universe), len(active_tickers), len(delisted_tickers),
+        )
+
+        # Load all per-ticker data into memory first so we can compute
+        # the calendar (union of all observed trade dates) before
+        # writing. For a real backfill the universe is ~5500 tickers
+        # × ~6000 days ≈ 33M rows; with 6 float32 columns ≈ 800 MB.
+        # Acceptable on a workstation; in a memory-constrained
+        # environment we'd stream this differently.
+        per_ticker: dict[str, pd.DataFrame] = {}
+        skipped = 0
+        for qlib_ticker in sorted(universe):
+            tushare_code = self._qlib_to_tushare(qlib_ticker)
+            df = self._load_ticker_history(tushare_code)
+            if df is None or df.empty:
+                skipped += 1
+                continue
+            df = self._apply_adjustment(df, tushare_code)
+            df = self._clip_to_listing_window(df, qlib_ticker, delisted_tickers)
+            if df.empty:
+                skipped += 1
+                continue
+            per_ticker[qlib_ticker] = df
+
+        if not per_ticker:
+            raise QlibBinBuilderError(
+                "No ticker produced any rows after listing-window clipping. "
+                "Check that Phase A.1 daily/ parquets are populated."
+            )
+
+        calendar = self._build_global_calendar(per_ticker)
+        calendar_index = {d: i for i, d in enumerate(calendar)}
+
+        # Write atomically: first to a temp dir, then rename.
+        staging = self._output_dir.parent / f".{self._output_dir.name}.tmp"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self._write_calendar(calendar, staging)
+            for qlib_ticker, df in per_ticker.items():
+                self._write_one_ticker_bins(qlib_ticker, df, calendar, calendar_index, staging)
+            # Promote staging to final location
+            if self._output_dir.exists():
+                # Backup pattern: rename existing to .bak before swap
+                backup = self._output_dir.parent / f".{self._output_dir.name}.bak"
+                if backup.exists():
+                    shutil.rmtree(backup)
+                self._output_dir.rename(backup)
+            staging.rename(self._output_dir)
+            # Clean up backup on success
+            backup = self._output_dir.parent / f".{self._output_dir.name}.bak"
+            if backup.exists():
+                shutil.rmtree(backup)
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+        _logger.info(
+            "Wrote provider %s: %d tickers across %d calendar days (skipped: %d)",
+            self._output_dir, len(per_ticker), len(calendar), skipped,
+        )
+        return QlibBinBuilderResult(
+            output_dir=self._output_dir,
+            calendar_days=len(calendar),
+            ticker_count=len(per_ticker),
+            delisted_ticker_count=len(delisted_tickers),
+            skipped_no_data=skipped,
+        )
+
+    # ------------------------------------------------------------------
+    # Loaders
+    # ------------------------------------------------------------------
+
+    def _load_active_stocks(self) -> pd.DataFrame:
+        path = self._tushare_dir / "active_stocks.parquet"
+        if not path.exists():
+            raise QlibBinBuilderError(
+                f"Missing {path}; run Phase A.1 with --endpoints stock_basic."
+            )
+        df = pd.read_parquet(path)
+        if "ts_code" not in df.columns:
+            raise QlibBinBuilderError(
+                f"{path} missing required column 'ts_code'"
+            )
+        return df
+
+    def _load_delisted_registry(self) -> pd.DataFrame:
+        path = self._delisted_registry_path
+        if not path.exists():
+            raise QlibBinBuilderError(
+                f"Missing {path}; run Phase A.2 (02_build_delisted_registry.py)."
+            )
+        df = pd.read_parquet(path)
+        required = {"ticker", "list_date", "delist_date"}
+        missing = required - set(df.columns)
+        if missing:
+            raise QlibBinBuilderError(
+                f"{path} missing required columns: {sorted(missing)}"
+            )
+        return df
+
+    @staticmethod
+    def _tickers_from_active(df: pd.DataFrame) -> set[str]:
+        return {_to_qlib_ticker(str(t)) for t in df["ts_code"]}
+
+    @staticmethod
+    def _tickers_from_delisted(df: pd.DataFrame) -> dict[str, pd.Timestamp]:
+        """Map qlib-style ticker -> delist_date Timestamp."""
+        return {
+            str(r["ticker"]): pd.Timestamp(r["delist_date"])
+            for _, r in df.iterrows()
+        }
+
+    @staticmethod
+    def _qlib_to_tushare(qlib_ticker: str) -> str:
+        """``SH600519`` -> ``600519.SH``. Inverse of _to_qlib_ticker."""
+        if len(qlib_ticker) >= 8 and qlib_ticker[:2].isalpha() and qlib_ticker[2:].isdigit():
+            return f"{qlib_ticker[2:]}.{qlib_ticker[:2]}"
+        return qlib_ticker  # already Tushare-style or unknown
+
+    def _load_ticker_history(self, tushare_code: str) -> pd.DataFrame | None:
+        """Load and concatenate all per-year daily parquets for one ticker.
+
+        Returns None if no parquets exist (ticker may have been added to
+        the universe but never pulled — common for short Phase A.1 runs).
+        """
+        daily_root = self._tushare_dir / "daily"
+        if not daily_root.exists():
+            raise QlibBinBuilderError(
+                f"Missing {daily_root}; run Phase A.1 with --endpoints daily."
+            )
+        chunks: list[pd.DataFrame] = []
+        for year_dir in sorted(daily_root.iterdir()):
+            if not year_dir.is_dir():
+                continue
+            ticker_path = year_dir / f"{tushare_code}.parquet"
+            if not ticker_path.exists():
+                continue
+            chunk = pd.read_parquet(ticker_path)
+            if not chunk.empty:
+                chunks.append(chunk)
+        if not chunks:
+            return None
+        df = pd.concat(chunks, ignore_index=True)
+        df["trade_date"] = df["trade_date"].astype(str)
+        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+
+    def _load_adj_factor(self, tushare_code: str) -> pd.DataFrame | None:
+        """Same shape as _load_ticker_history but for the adj_factor dump."""
+        adj_root = self._tushare_dir / "adj_factor"
+        if not adj_root.exists():
+            return None
+        chunks: list[pd.DataFrame] = []
+        for year_dir in sorted(adj_root.iterdir()):
+            if not year_dir.is_dir():
+                continue
+            ticker_path = year_dir / f"{tushare_code}.parquet"
+            if not ticker_path.exists():
+                continue
+            chunk = pd.read_parquet(ticker_path)
+            if not chunk.empty:
+                chunks.append(chunk)
+        if not chunks:
+            return None
+        df = pd.concat(chunks, ignore_index=True)
+        df["trade_date"] = df["trade_date"].astype(str)
+        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # Per-ticker transforms
+    # ------------------------------------------------------------------
+
+    def _apply_adjustment(
+        self, daily: pd.DataFrame, tushare_code: str,
+    ) -> pd.DataFrame:
+        """Multiply OHLC by adj_factor (or 1.0 if adj_factor is missing).
+
+        Forward-fills adj_factor across days where it's not reported,
+        which matches qlib convention and avoids inserting NaN into
+        price columns when only the factor row is sparse.
+        """
+        adj = self._load_adj_factor(tushare_code)
+        out = daily.copy()
+        if adj is None or adj.empty:
+            # No adjustment data — keep raw prices.
+            out["adj_factor"] = 1.0
+        else:
+            out = out.merge(
+                adj[["trade_date", "adj_factor"]],
+                on="trade_date", how="left",
+            )
+            out["adj_factor"] = out["adj_factor"].ffill().fillna(1.0)
+        for col in ("open", "high", "low", "close"):
+            if col in out.columns:
+                out[col] = pd.to_numeric(out[col], errors="coerce") * out["adj_factor"]
+        # Volume in shares (Tushare returns lots).
+        if "vol" in out.columns:
+            out["volume"] = pd.to_numeric(out["vol"], errors="coerce") * TUSHARE_VOL_LOTS_TO_SHARES
+        # Money in yuan (Tushare returns kyuan).
+        if "amount" in out.columns:
+            out["money"] = pd.to_numeric(out["amount"], errors="coerce") * TUSHARE_AMOUNT_KYUAN_TO_YUAN
+        return out
+
+    @staticmethod
+    def _clip_to_listing_window(
+        df: pd.DataFrame, qlib_ticker: str,
+        delisted_tickers: dict[str, pd.Timestamp],
+    ) -> pd.DataFrame:
+        """Drop rows strictly after ``delist_date`` for delisted tickers.
+
+        Active tickers pass through unchanged. Delisted tickers get
+        their post-delist tail removed before the per-ticker DataFrame
+        is reindexed against the global calendar — the reindex then
+        naturally produces NaN for those post-delist calendar days.
+        """
+        if qlib_ticker not in delisted_tickers:
+            return df
+        delist_dt = delisted_tickers[qlib_ticker]
+        ts = pd.to_datetime(df["trade_date"], format="%Y%m%d", errors="coerce")
+        keep = ts <= delist_dt
+        return df[keep].copy()
+
+    # ------------------------------------------------------------------
+    # Global calendar
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_global_calendar(
+        per_ticker: dict[str, pd.DataFrame],
+    ) -> list[str]:
+        """Union of every observed trade_date across all tickers, ISO format."""
+        dates: set[str] = set()
+        for df in per_ticker.values():
+            dates.update(df["trade_date"].astype(str))
+        return sorted(_to_iso_date(d) for d in dates)
+
+    # ------------------------------------------------------------------
+    # Bin writers (matches src/data/tushare/provider_bundle/publisher
+    #              ::_write_qlib_bundle)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_calendar(calendar: list[str], output_dir: Path) -> None:
+        calendars_dir = output_dir / "calendars"
+        calendars_dir.mkdir(parents=True, exist_ok=True)
+        (calendars_dir / "day.txt").write_text(
+            "\n".join(calendar) + "\n", encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_one_ticker_bins(
+        qlib_ticker: str,
+        df: pd.DataFrame,
+        calendar: list[str],
+        calendar_index: dict[str, int],
+        output_dir: Path,
+    ) -> None:
+        """Write all 6 .day.bin files for one ticker, aligned to ``calendar``.
+
+        The bin file layout matches qlib's native format and
+        ``src/data/tushare/provider_bundle/publisher.py``: first
+        ``float32`` is ``start_index`` (offset into the calendar
+        where this ticker's data begins), followed by one value per
+        consecutive calendar day from ``start_index`` to ``start_index +
+        len(values) - 1``.
+        """
+        # Reindex to ISO dates so we can map to calendar indices.
+        iso_dates = [_to_iso_date(d) for d in df["trade_date"]]
+        ticker_df = df.copy()
+        ticker_df["iso_date"] = iso_dates
+        ticker_df = ticker_df.drop_duplicates("iso_date").set_index("iso_date").sort_index()
+
+        start = ticker_df.index.min()
+        start_idx = calendar_index[start]
+        # The bin extends from this ticker's first observed date to the
+        # LAST calendar date, NaN-padding the tail. For delisted tickers
+        # the tail is the post-delist NaN window — qlib reads NaN, not
+        # "no data", so D.features returns the NaN row instead of an
+        # empty DataFrame. For active tickers the tail is usually empty
+        # (last observed date == last calendar date) so the NaN-padding
+        # is a no-op. Discovered during Phase B smoke against real
+        # Tushare: the prior end_idx = calendar_index[end] truncation
+        # made qlib return empty for any post-delist query.
+        date_slice = calendar[start_idx:]
+        aligned = ticker_df.reindex(date_slice)
+
+        feats_dir = output_dir / "features" / qlib_ticker.lower()
+        feats_dir.mkdir(parents=True, exist_ok=True)
+
+        start_index = float(start_idx)
+        for field in BIN_FEATURE_FIELDS:
+            if field in aligned.columns:
+                values = pd.to_numeric(aligned[field], errors="coerce").astype("float32").to_numpy()
+            else:
+                # Field missing from source (e.g. no 'money' if Tushare
+                # didn't return amount). Write NaN for every aligned day
+                # so the bin shape is still consistent across tickers.
+                values = np.full(len(aligned), np.nan, dtype="float32")
+            payload = np.hstack([[start_index], values]).astype("<f4")
+            payload.tofile(feats_dir / f"{field}.day.bin")
