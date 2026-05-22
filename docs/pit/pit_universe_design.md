@@ -942,7 +942,7 @@ Parametrized tests pass for 50+ dates. Reference cases match.
 | **D.1** Wire factor_mining to PIT layer | ~150 | `src/factor_mining/evaluator.py` |
 | **D.2** Wire training pipeline | ~100 | `src/training/` updates |
 | **D.3** Wire backtester | ~200 | `src/backtest/` updates |
-| **D.4** Migration guide | — | `docs/pit-migration-guide.md` |
+| **D.4** Migration guide | — | [`docs/pit/migration_guide.md`](migration_guide.md) — operator-facing runbook covering build sequence, opt-in workflows, calibration, rollback, and caveat reference |
 | **D.5** Calibration run + benchmark | — | Side-by-side comparison report |
 
 **Acceptance**: Full pipeline run on PIT data completes. Factor mining
