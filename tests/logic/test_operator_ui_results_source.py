@@ -5,6 +5,13 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+try:
+    import streamlit as _streamlit  # noqa: F401
+
+    _HAS_STREAMLIT = True
+except ImportError:
+    _HAS_STREAMLIT = False
+
 
 class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_displays_tushare_provider_artifacts(self) -> None:
@@ -159,6 +166,68 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn('started = _fmt_text(job.get("started_at") or metadata.get("started_at"))', source)
         self.assertIn('ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))', source)
         self.assertIn('if str(job.get("status") or status).lower() == "failed":', source)
+
+    def test_raw_json_tab_offers_substring_search(self) -> None:
+        """The Raw JSON tab SHALL surface a search input that narrows
+        each expander's payload (TICKET-R3 polish)."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        self.assertIn("Search Raw JSON", source)
+        self.assertIn("_filter_json_by_query", source)
+        self.assertIn("results_raw_json_query", source)
+
+    def test_status_header_offers_one_click_copy_buttons(self) -> None:
+        """The status header SHALL render one-click 📋 Copy buttons next
+        to Run ID and Run directory (TICKET-R3 polish)."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        self.assertIn('copy_run_id_btn_', source)
+        self.assertIn('copy_run_dir_btn_', source)
+        self.assertIn('st.toast(', source)
+        self.assertIn('results_clipboard_payload', source)
+
+
+@unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
+class FilterJsonByQueryTests(unittest.TestCase):
+    def test_empty_query_returns_object_unchanged(self) -> None:
+        from web.operator_ui.pages.results import _filter_json_by_query
+
+        payload = {"a": 1, "b": {"c": 2}}
+        self.assertEqual(_filter_json_by_query(payload, ""), payload)
+
+    def test_matches_dict_key(self) -> None:
+        from web.operator_ui.pages.results import _filter_json_by_query
+
+        payload = {"sharpe_ratio": 1.5, "max_drawdown": -0.12, "annual": 0.20}
+        result = _filter_json_by_query(payload, "sharpe")
+        self.assertEqual(result, {"sharpe_ratio": 1.5})
+
+    def test_matches_nested_dict(self) -> None:
+        from web.operator_ui.pages.results import _filter_json_by_query
+
+        payload = {
+            "metrics": {"sharpe": 1.5, "ic_1d": 0.04},
+            "config": {"model": "LGB"},
+        }
+        result = _filter_json_by_query(payload, "sharpe")
+        self.assertEqual(result, {"metrics": {"sharpe": 1.5}})
+
+    def test_matches_scalar_value(self) -> None:
+        from web.operator_ui.pages.results import _filter_json_by_query
+
+        # Only entries whose key OR value contain the query (substring,
+        # case-insensitive) survive. "LGB" is a substring of "LGBModel"
+        # but NOT of "lightgbm" — engine is therefore pruned.
+        payload = {"model_type": "LGBModel", "engine": "lightgbm"}
+        result = _filter_json_by_query(payload, "LGB")
+        self.assertEqual(result, {"model_type": "LGBModel"})
+
+    def test_no_match_returns_none(self) -> None:
+        from web.operator_ui.pages.results import _filter_json_by_query
+
+        payload = {"a": 1, "b": "hello"}
+        result = _filter_json_by_query(payload, "zzzz")
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

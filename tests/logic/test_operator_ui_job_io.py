@@ -121,6 +121,41 @@ class ParseDateTests(unittest.TestCase):
         self.assertIn("date_from", str(ctx.exception))
 
 
+class NormaliseJobIdLengthTests(unittest.TestCase):
+    """Regression: prior to PR5 the ``_normalise_*`` helpers truncated
+    ``run_id`` to 40 chars for display, but jobs.py uses ``run_id`` as
+    the canonical routing key when handing off to results.py /
+    walk_forward.py. Truncation broke exact-match selectbox lookup for
+    any id longer than 40 chars. The full id MUST survive normalisation.
+    """
+
+    def test_ui_job_keeps_full_run_id_even_when_longer_than_40_chars(self) -> None:
+        from web.operator_ui.job_io import _normalise_ui_job
+
+        long_id = "pipeline_" + "x" * 64  # 73 chars, well past the old ceiling
+        raw = {
+            "job_id": long_id,
+            "mode": "pipeline",
+            "status": "completed",
+            "created_at": "2026-05-22T12:00:00+00:00",
+        }
+        result = _normalise_ui_job(raw)
+        self.assertEqual(result.run_id, long_id)
+
+    def test_cli_entry_keeps_full_run_id_even_when_longer_than_40_chars(self) -> None:
+        from web.operator_ui.job_io import _normalise_cli_entry
+
+        long_id = "walk_forward_" + "y" * 64
+        raw = {
+            "run_id": long_id,
+            "engine": "walk_forward",
+            "status": "completed",
+            "completed_at": "2026-05-22T12:00:00+00:00",
+        }
+        result = _normalise_cli_entry(raw)
+        self.assertEqual(result.run_id, long_id)
+
+
 class ListAllJobsContractTests(unittest.TestCase):
     def test_unknown_sort_by_raises_before_loading_data(self) -> None:
         from web.operator_ui.job_io import list_all_jobs
