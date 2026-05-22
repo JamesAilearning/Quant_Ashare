@@ -30,6 +30,7 @@ class UserPreferences:
 
     theme: ThemeMode = "auto"
     color_convention: ColorConvention = "chinese"
+    sidebar_collapsed: bool = False
 
     @classmethod
     def from_mapping(cls, values: object) -> UserPreferences:
@@ -37,6 +38,7 @@ class UserPreferences:
             return cls()
         theme = values.get("theme")
         color_convention = values.get("color_convention")
+        sidebar_collapsed = values.get("sidebar_collapsed", False)
         return cls(
             theme=theme if theme in THEME_OPTIONS else "auto",
             color_convention=(
@@ -44,12 +46,16 @@ class UserPreferences:
                 if color_convention in COLOR_CONVENTION_OPTIONS
                 else "chinese"
             ),
+            sidebar_collapsed=(
+                sidebar_collapsed if isinstance(sidebar_collapsed, bool) else False
+            ),
         )
 
-    def to_json_dict(self) -> dict[str, str]:
+    def to_json_dict(self) -> dict[str, str | bool]:
         return {
             "theme": self.theme,
             "color_convention": self.color_convention,
+            "sidebar_collapsed": self.sidebar_collapsed,
         }
 
 
@@ -202,7 +208,12 @@ def inject_theme(preferences: UserPreferences | None = None) -> UserPreferences:
 
 
 def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
-    """Render sidebar controls and persist changes."""
+    """Render sidebar appearance controls — kept for compatibility.
+
+    New code should prefer :func:`render_settings_dialog`, which surfaces the
+    same preferences inside a modal launched from the topbar.  This helper is
+    retained so tests and embeds that import it keep working.
+    """
 
     import streamlit as st
 
@@ -222,7 +233,227 @@ def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
             key="qv2_color_convention",
             help="Chinese convention uses red for positive outcomes.",
         )
-    updated = UserPreferences(theme=theme, color_convention=color_convention)
+    updated = UserPreferences(
+        theme=theme,
+        color_convention=color_convention,
+        sidebar_collapsed=preferences.sidebar_collapsed,
+    )
     if updated != preferences:
         save_preferences(updated)
     return updated
+
+
+# ---------------------------------------------------------------------------
+# App shell helpers — skip link, topbar, settings dialog
+# ---------------------------------------------------------------------------
+
+SKIP_LINK_HTML = (
+    '<a class="qv2-skip-link" href="#qv2-main-content">Skip to content</a>'
+    '<a id="qv2-main-content" tabindex="-1" class="qv2-sr-only">Main content</a>'
+)
+
+
+def render_skip_link() -> None:
+    """Inject a keyboard-accessible "skip to content" affordance.
+
+    The link is visually hidden until focused; pressing Tab on a fresh page
+    surfaces it and Enter scrolls to the main content anchor.
+    """
+
+    import streamlit as st
+
+    st.html(SKIP_LINK_HTML, width="content", unsafe_allow_javascript=False)
+
+
+_TOPBAR_HOST_MARKER_CLASS = "qv2-topbar-host-marker"
+_TOPBAR_TAG_SCRIPT = """
+<script>
+(function() {
+  var attempts = 0;
+  function decorate() {
+    var markers = window.parent.document.querySelectorAll('.qv2-topbar-host-marker');
+    if (markers.length === 0 && attempts < 10) {
+      attempts++;
+      setTimeout(decorate, 100);
+      return;
+    }
+    markers.forEach(function(marker) {
+      // Walk up to the enclosing Streamlit vertical block that wraps the
+      // st.container our render_topbar emits.
+      var host = marker.closest('[data-testid="stVerticalBlock"]');
+      if (!host || host.hasAttribute('data-qv2-topbar-host')) return;
+      host.setAttribute('data-qv2-topbar-host', 'true');
+      host.classList.add('qv2-topbar');
+      // Tag the action column (the last stColumn inside the topbar row)
+      // so .qv2-topbar-actions styling applies to the Settings button.
+      var action = host.querySelector(
+        '[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child'
+      );
+      if (action) action.classList.add('qv2-topbar-actions');
+    });
+  }
+  decorate();
+})();
+</script>
+"""
+
+
+def render_topbar(
+    *,
+    title: str = "Qlib Trading System",
+    subtitle: str = "",
+    on_open_settings_key: str = "qv2_open_settings",
+) -> bool:
+    """Render the sticky top bar.
+
+    The bar uses real Streamlit widgets so the Settings button is a
+    first-class :func:`streamlit.button` (returns ``True`` on the click
+    rerun).  Because :func:`streamlit.container` and
+    :func:`streamlit.columns` do not accept custom classes, a small
+    post-render script (:data:`_TOPBAR_TAG_SCRIPT`) walks up from a
+    marker element and adds the ``.qv2-topbar`` /
+    ``data-qv2-topbar-host="true"`` attributes to the enclosing vertical
+    block, plus ``.qv2-topbar-actions`` to the trailing column.  This
+    matches the JS-tagging pattern used by the sidebar nav-icon
+    injection in :mod:`web.operator_ui.app`, and makes the shell CSS
+    selectors (defined in ``static/theme.css``) actually apply.
+
+    Returns ``True`` when the user clicked the settings button on this
+    run.  Callers (typically :mod:`web.operator_ui.app`) should open
+    the settings dialog in response.
+    """
+
+    import streamlit as st
+
+    with st.container():
+        # Marker for the post-render decorator script. ``display:none``
+        # keeps it out of layout; the marker itself carries no styling.
+        st.html(
+            f'<div class="{_TOPBAR_HOST_MARKER_CLASS}" style="display:none"></div>',
+            width="content",
+            unsafe_allow_javascript=False,
+        )
+        title_col, action_col = st.columns([8, 2], vertical_alignment="center")
+        with title_col:
+            subtitle_html = (
+                f'<span class="qv2-topbar-subtitle">{subtitle}</span>'
+                if subtitle
+                else ""
+            )
+            st.markdown(
+                (
+                    '<div class="qv2-topbar-title">'
+                    f'<span>{title}</span>{subtitle_html}'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+        with action_col:
+            opened = st.button(
+                "⚙️ Settings",
+                key=on_open_settings_key,
+                help="Theme, color convention, and sidebar defaults",
+                use_container_width=True,
+            )
+    st.html(_TOPBAR_TAG_SCRIPT, width="content", unsafe_allow_javascript=True)
+    return bool(opened)
+
+
+_SETTINGS_DIALOG_WIDGET_KEYS: tuple[str, ...] = (
+    "qv2_settings_theme",
+    "qv2_settings_color_convention",
+    "qv2_settings_sidebar_collapsed",
+)
+
+
+def _reset_settings_dialog_state() -> None:
+    """Drop the dialog's transient widget keys from session_state.
+
+    Without this, a Cancel (or unsaved close) leaves the radios /
+    checkbox bound to the user's transient edits in session_state.  The
+    next time the dialog opens, Streamlit's widget keys win over the
+    ``index=`` / ``value=`` arguments derived from persisted preferences,
+    so the radios appear to "remember" the canceled values.  Clicking
+    Save would then commit values the user explicitly canceled.
+
+    Resetting on both Save and Cancel guarantees the dialog always
+    re-hydrates from :func:`load_preferences` the next time it opens.
+    """
+
+    import streamlit as st
+
+    for key in _SETTINGS_DIALOG_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+
+
+def render_settings_dialog(preferences: UserPreferences) -> None:
+    """Open the settings modal.
+
+    The dialog is decorated with :func:`streamlit.dialog` and shows controls
+    for theme, color convention, and sidebar default state.  Changes are
+    persisted to :data:`PREFERENCES_PATH` when the user clicks **Save**;
+    the page is then rerun so the new tokens apply immediately.  Both
+    Save and Cancel reset the dialog's widget state so a subsequent
+    opening rehydrates from persisted preferences (see Codex P2 review
+    follow-up on the shell PR for the cancel-then-save regression).
+    """
+
+    import streamlit as st
+
+    @st.dialog("Settings")
+    def _dialog() -> None:
+        st.markdown(
+            '<div class="qv2-settings-section-title">Appearance</div>',
+            unsafe_allow_html=True,
+        )
+        theme = st.radio(
+            "Theme",
+            options=THEME_OPTIONS,
+            index=THEME_OPTIONS.index(preferences.theme),
+            horizontal=True,
+            key="qv2_settings_theme",
+        )
+        color_convention = st.radio(
+            "Color convention",
+            options=COLOR_CONVENTION_OPTIONS,
+            index=COLOR_CONVENTION_OPTIONS.index(preferences.color_convention),
+            horizontal=True,
+            key="qv2_settings_color_convention",
+            help="Chinese convention uses red for positive outcomes.",
+        )
+        st.markdown(
+            '<div class="qv2-settings-section-title" '
+            'style="margin-top: var(--space-3);">Layout</div>',
+            unsafe_allow_html=True,
+        )
+        sidebar_collapsed = st.checkbox(
+            "Start with sidebar collapsed",
+            value=preferences.sidebar_collapsed,
+            key="qv2_settings_sidebar_collapsed",
+            help="Applies on the next page load.",
+        )
+        st.divider()
+        save_col, cancel_col = st.columns(2)
+        with save_col:
+            save_clicked = st.button(
+                "Save", key="qv2_settings_save", type="primary", use_container_width=True
+            )
+        with cancel_col:
+            cancel_clicked = st.button(
+                "Cancel", key="qv2_settings_cancel", use_container_width=True
+            )
+        if save_clicked:
+            updated = UserPreferences(
+                theme=theme,
+                color_convention=color_convention,
+                sidebar_collapsed=sidebar_collapsed,
+            )
+            if updated != preferences:
+                save_preferences(updated)
+            _reset_settings_dialog_state()
+            st.rerun()
+        elif cancel_clicked:
+            _reset_settings_dialog_state()
+            st.rerun()
+
+    _dialog()

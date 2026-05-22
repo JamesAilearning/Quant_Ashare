@@ -15,7 +15,9 @@ class OperatorUiThemeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "preferences.json"
-            expected = UserPreferences(theme="dark", color_convention="western")
+            expected = UserPreferences(
+                theme="dark", color_convention="western", sidebar_collapsed=True
+            )
 
             save_preferences(expected, path)
 
@@ -26,8 +28,26 @@ class OperatorUiThemeTests(unittest.TestCase):
         from web.operator_ui.theme import UserPreferences
 
         self.assertEqual(
-            UserPreferences.from_mapping({"theme": "sepia", "color_convention": "other"}),
+            UserPreferences.from_mapping(
+                {"theme": "sepia", "color_convention": "other", "sidebar_collapsed": "yes"}
+            ),
             UserPreferences(),
+        )
+
+    def test_preferences_legacy_payload_without_sidebar_field(self) -> None:
+        """Pre-shell preference files SHALL load without raising, defaulting
+        ``sidebar_collapsed`` to False (additive schema migration)."""
+
+        from web.operator_ui.theme import UserPreferences
+
+        loaded = UserPreferences.from_mapping(
+            {"theme": "dark", "color_convention": "western"}
+        )
+        self.assertEqual(
+            loaded,
+            UserPreferences(
+                theme="dark", color_convention="western", sidebar_collapsed=False
+            ),
         )
 
     def test_theme_css_contains_required_token_selectors(self) -> None:
@@ -45,6 +65,18 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn('data-qv2-color-convention="chinese"', css)
         self.assertIn("font-variant-numeric: tabular-nums", css)
         self.assertIn("prefers-reduced-motion", css)
+
+    def test_theme_css_contains_app_shell_classes(self) -> None:
+        from web.operator_ui.theme import load_theme_css
+
+        css = load_theme_css()
+
+        self.assertIn(".qv2-skip-link", css)
+        self.assertIn(".qv2-topbar", css)
+        self.assertIn(".qv2-topbar-title", css)
+        self.assertIn(".qv2-topbar-actions", css)
+        self.assertIn(".qv2-settings-section", css)
+        self.assertIn(".qv2-mobile-only", css)
 
     def test_preference_script_sets_document_attributes(self) -> None:
         from web.operator_ui.theme import UserPreferences, preference_attribute_script
@@ -68,7 +100,11 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("qv2SetAppearancePreference", script)
 
     def test_python_ui_sources_do_not_hardcode_hex_colors(self) -> None:
-        pattern = re.compile(r"#[0-9A-Fa-f]{3,8}")
+        # Match a hex literal *inside quotes* — the form actually used for
+        # color strings (``"#ffaa00"``, ``'#fff'``, etc.).  Bare ``#NNN``
+        # tokens in comments / docstrings (PR refs, issue numbers, anchor
+        # links) are not color literals and SHALL NOT trip this guard.
+        pattern = re.compile(r"""['"]#[0-9A-Fa-f]{3,8}['"]""")
 
         offenders: list[str] = []
         for path in Path("web/operator_ui").rglob("*.py"):
@@ -82,8 +118,132 @@ class OperatorUiThemeTests(unittest.TestCase):
         source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
 
         self.assertIn("inject_theme", source)
-        self.assertIn("render_appearance_controls", source)
         self.assertIn("design_system.py", source)
+
+    def test_app_uses_shell_helpers_not_legacy_sidebar_expander(self) -> None:
+        """App entry SHALL drive appearance from the topbar settings dialog
+        rather than the legacy sidebar expander."""
+
+        source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
+
+        self.assertIn("render_skip_link", source)
+        self.assertIn("render_topbar", source)
+        self.assertIn("render_settings_dialog", source)
+        # Legacy expander entry MUST NOT be in the main shell flow.
+        self.assertNotIn("render_appearance_controls", source)
+
+    def test_app_passes_sidebar_default_to_page_config(self) -> None:
+        """Saved ``sidebar_collapsed`` SHALL drive ``initial_sidebar_state``
+        so the user's stored preference applies on first load."""
+
+        source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
+
+        self.assertIn("initial_sidebar_state", source)
+        self.assertIn("sidebar_collapsed", source)
+
+    def test_skip_link_html_targets_main_anchor(self) -> None:
+        from web.operator_ui.theme import SKIP_LINK_HTML
+
+        self.assertIn('href="#qv2-main-content"', SKIP_LINK_HTML)
+        self.assertIn('id="qv2-main-content"', SKIP_LINK_HTML)
+        self.assertIn("qv2-skip-link", SKIP_LINK_HTML)
+
+    def test_render_settings_dialog_is_importable(self) -> None:
+        """The dialog helper is exported and callable. We do not run it
+        (no Streamlit ScriptRunContext in a unittest harness), but the
+        callable surface SHALL exist and be wired through st.dialog."""
+
+        from web.operator_ui import theme
+
+        self.assertTrue(callable(theme.render_settings_dialog))
+        self.assertTrue(callable(theme.render_topbar))
+        self.assertTrue(callable(theme.render_skip_link))
+
+        # Source-level check: the dialog uses st.dialog and persists via
+        # save_preferences. This guards against accidental regression to
+        # the legacy sidebar-expander pattern.
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+        self.assertIn("st.dialog", source)
+        self.assertIn('"Settings"', source)
+        self.assertIn("save_preferences", source)
+
+    def test_reset_settings_dialog_state_clears_all_widget_keys(self) -> None:
+        """Save AND Cancel SHALL drop the dialog's transient widget keys
+        from ``st.session_state`` so the next open rehydrates from
+        persisted preferences (regression guard for Codex PR #116 P2)."""
+
+        import sys
+        import types
+
+        from web.operator_ui import theme
+
+        # Inject a minimal fake streamlit so _reset_settings_dialog_state
+        # can pop keys from a session_state-like mapping without needing a
+        # real ScriptRunContext.
+        fake_state: dict[str, object] = {
+            "qv2_settings_theme": "dark",
+            "qv2_settings_color_convention": "western",
+            "qv2_settings_sidebar_collapsed": True,
+            "unrelated_key": "kept",
+        }
+        fake_st = types.SimpleNamespace(session_state=fake_state)
+        original = sys.modules.get("streamlit")
+        sys.modules["streamlit"] = fake_st  # type: ignore[assignment]
+        try:
+            theme._reset_settings_dialog_state()
+        finally:
+            if original is not None:
+                sys.modules["streamlit"] = original
+            else:
+                sys.modules.pop("streamlit", None)
+
+        self.assertNotIn("qv2_settings_theme", fake_state)
+        self.assertNotIn("qv2_settings_color_convention", fake_state)
+        self.assertNotIn("qv2_settings_sidebar_collapsed", fake_state)
+        self.assertEqual(fake_state.get("unrelated_key"), "kept")
+
+    def test_render_settings_dialog_resets_on_both_save_and_cancel(self) -> None:
+        """Source-level guard: every exit path from the dialog SHALL call
+        ``_reset_settings_dialog_state`` so closed dialog state never
+        leaks into the next opening (Codex PR #116 P2)."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        # Locate the dialog body and look for the reset call near both
+        # ``save_clicked`` and ``cancel_clicked`` branches.
+        self.assertIn("_reset_settings_dialog_state", source)
+        save_idx = source.index("if save_clicked:")
+        cancel_idx = source.index("elif cancel_clicked:")
+        end_idx = source.index("_dialog()", cancel_idx)
+        save_block = source[save_idx:cancel_idx]
+        cancel_block = source[cancel_idx:end_idx]
+        self.assertIn(
+            "_reset_settings_dialog_state",
+            save_block,
+            "Save path must reset dialog widget state",
+        )
+        self.assertIn(
+            "_reset_settings_dialog_state",
+            cancel_block,
+            "Cancel path must reset dialog widget state",
+        )
+
+    def test_render_topbar_emits_marker_and_decorator_script(self) -> None:
+        """``render_topbar`` SHALL emit the host marker plus a JS snippet
+        that tags the enclosing container with ``.qv2-topbar``,
+        ``data-qv2-topbar-host="true"`` and the trailing column with
+        ``.qv2-topbar-actions`` so the shell CSS actually applies
+        (Codex PR #116 P2 — CSS-without-host bug)."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        self.assertIn("qv2-topbar-host-marker", source)
+        self.assertIn('data-qv2-topbar-host', source)
+        self.assertIn("qv2-topbar-actions", source)
+        # The decorator script SHALL look at stVerticalBlock + stColumn
+        # so it targets Streamlit's actual DOM, not arbitrary nodes.
+        self.assertIn("stVerticalBlock", source)
+        self.assertIn("stColumn", source)
 
 
 if __name__ == "__main__":
