@@ -285,11 +285,16 @@ manual investigation before any production promotion.
   modified** by any PIT phase. Phase B.2's bin builder writes to a
   new directory via atomic rename; the legacy directory stays
   byte-identical throughout.
-- All Phase A-B scripts have `--dry-run` for inspection without
-  filesystem writes.
-- Per-file existence checkpointing (Phase A.1 daily / adj_factor)
-  means resuming an interrupted backfill never re-fetches completed
-  files.
+- Phase A.1 (`01_fetch_tushare.py`) supports `--dry-run` for
+  inspection without filesystem writes. The other Phase A / B
+  scripts (A.2 / A.4 / B.2 / B.3) don't currently expose a
+  `--dry-run` flag — they're cheap to run end-to-end against a
+  test output directory if you want a dry rehearsal.
+- Per-file existence checkpointing in Phase A.1 (`daily/` and
+  `adj_factor/` per-(year,ticker) parquets, plus the single-file
+  endpoints) means resuming an interrupted backfill never re-fetches
+  completed files. Resume is automatic on rerun — there is no
+  `--resume` flag to set.
 
 ### 4.2 Rollback
 
@@ -319,8 +324,11 @@ Check B failed:
    - Tushare returned a wrong `delist_date` for a ticker. Add a
      `data/manual_delistings.yaml` override (Phase D.1) citing the
      exchange announcement.
-   - Local Tushare cache is stale. Re-run Phase A.1 with `--resume`
-     and let it re-pull recently-changed files.
+   - Local Tushare cache is stale. Delete the affected parquet
+     files (e.g. `<tushare_dir>/daily/2025/*.parquet` for current-
+     year data) and rerun `01_fetch_tushare.py` — the fetcher's
+     per-file existence check will re-pull only the deleted files
+     and skip everything else.
    - The reference YAML disagrees with current Tushare data. Run
      the cross-check in `scripts/data_quality/verify_survivorship.py`
      against the legacy provider first to confirm which side is
