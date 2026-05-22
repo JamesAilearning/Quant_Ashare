@@ -13,8 +13,8 @@
 #   STAR board delisting                       → SH688086 退市紫晶
 #   Same-day multi-stock batch delisting       → batch_20220622 (6 stocks)
 #   Active stock negative control              → SH600519 贵州茅台
-#   CSI300 constituent change — enter          → SZ002594 BYD 2019-12-13
-#   CSI300 constituent change — leave          → SH600015 华夏银行 2022-06-13
+#   CSI300 constituent change — enter          → SH601816 京沪高铁 2020-06-30
+#   CSI300 constituent change — leave          → SH600100 同方股份 2020-06-30
 #
 # Hard rule (§14.7): future additions to this file MUST cite the Tushare
 # API response (stock_basic / namechange / index_weight row) in the PR
@@ -134,34 +134,40 @@ active_control_cases:
 
 index_membership_cases:
   csi300:
-    - ticker: SZ002594
-      action: enter
-      date: 2019-12-13
-      note: BYD entered CSI300
-      cite_tushare: |
-        index_weight(index_code='000300.SH', start_date='20191201',
-                     end_date='20191231'), 2026-05-22 pull:
-          snapshot dates returned: ['20191231']
-          20191231: 002594.SZ PRESENT, weight=0.313
-        (Tushare returns monthly snapshots; the entry day 2019-12-13
-        falls between the 2019-11-30 absence and the 2019-12-31
-        presence, so the entry-boundary assertion is "absent on
-        20191130 snapshot, present on 20191231 snapshot".)
+    # Replaces the earlier SZ002594 (BYD) / SH600015 (华夏银行) rows
+    # which a Tushare 2010-2024 full-history pull (see PR addressing
+    # PR #102 follow-up) showed were CONTINUOUSLY in CSI300 across
+    # every snapshot in the window — i.e. neither had the asserted
+    # enter / leave event in any Tushare-observable timeframe. The
+    # original rows were committed in PR #97 with cite_tushare blocks
+    # that asserted "absent on date X" without actually pulling that
+    # snapshot, so Tushare never validated the claims. Replaced here
+    # with two CSI300 rebalance events from 2020-06 whose Tushare
+    # presence transitions ARE directly verifiable.
 
-    - ticker: SH600015
-      action: leave
-      date: 2022-06-13
-      note: 华夏银行 dropped from CSI300
+    - ticker: SH601816
+      action: enter
+      date: 2020-06-30
+      note: 京沪高铁 entered CSI300 (2020-01 IPO; first rebalance inclusion in 2020-06 review)
       cite_tushare: |
-        index_weight(index_code='000300.SH', start_date='20220601',
-                     end_date='20220630'), 2026-05-22 pull:
-          snapshot dates returned: ['20220601', '20220630']
-          20220601: 600015.SH PRESENT, weight=0.1793
-          20220630: 600015.SH PRESENT, weight=0.153
-        (Membership flipped intra-month around the asserted 2022-06-13
-        leave date but both bracketing snapshots show presence; the
-        index_weight resolver in Phase A.4 needs to consult Tushare's
-        actual entry/exit announcements for sub-monthly precision.
-        Recorded here as a known data-granularity caveat — Phase A.4
-        SHALL surface this in the test failure message rather than
-        silently passing.)
+        index_weight(index_code='000300.SH', start_date='20100101',
+                     end_date='20241231'), pulled in yearly chunks
+        on 2026-05-22:
+          148 monthly snapshots over the window.
+          SH601816 first appears on 20200630 snapshot.
+          SH601816 NOT in 20200608 snapshot.
+        Tushare snapshot transition: ABSENT 2020-06-08 -> PRESENT
+        2020-06-30. The Phase A.4 resolver's ±35d tolerance matches
+        this against the asserted enter date.
+
+    - ticker: SH600100
+      action: leave
+      date: 2020-06-30
+      note: 同方股份 dropped from CSI300 in the 2020-06 review
+      cite_tushare: |
+        Same 2010-2024 yearly-chunk pull, 2026-05-22:
+          SH600100 last appears on 20200608 snapshot.
+          SH600100 NOT in 20200630 snapshot.
+        Tushare snapshot transition: PRESENT 2020-06-08 -> ABSENT
+        2020-06-30. Resolver's ±35d tolerance matches against the
+        asserted leave date.
