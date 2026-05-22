@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -14,6 +15,7 @@ from web.operator_ui import artifact_reader
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
+from web.operator_ui.components import render_empty_state, render_error_state
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
@@ -413,7 +415,7 @@ def _render_status_header(
     with nav_cols[0]:
         if st.button("Back to Jobs"):
             st.query_params.clear()
-            st.switch_page(str(Path(__file__).resolve().parent / "run_history.py"))
+            st.switch_page("pages/jobs.py")
     with nav_cols[1]:
         st.text_input(
             "Run ID (copyable)",
@@ -1224,16 +1226,35 @@ def _default_job_id(jobs: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _render_run_not_found(run_id: str) -> None:
-    st.error(f"Run not found: {run_id}")
-    st.caption("It may have been deleted, or the link is wrong.")
+    escaped_run_id = html.escape(run_id, quote=True)
+    render_error_state(
+        "Run not found",
+        f"We couldn't find a run with ID \"{escaped_run_id}\". It may have been deleted, or the link is wrong.",
+        variant="page",
+    )
     if st.button("Back to Jobs"):
         st.query_params.clear()
-        st.rerun()
+        st.switch_page("pages/jobs.py")
 
 
 _install_styles()
 render_breadcrumbs([("Analyze", None)])
 render_page_header("Results", "Inspect pipeline, walk-forward, and data provider run artifacts.")
+
+# Detect current theme for Plotly charts
+theme_detect_script = """
+<script>
+(function() {
+  var root = window.parent.document.documentElement;
+  var theme = root.getAttribute('data-qv2-theme') || 'auto';
+  if (theme === 'auto' && window.matchMedia) {
+    theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  window._qv2_resolved_theme = theme;
+})();
+</script>
+"""
+st.html(theme_detect_script, width="content", unsafe_allow_javascript=True)
 
 jobs = JobManager.list_jobs()
 viewable_jobs = [
@@ -1242,7 +1263,13 @@ viewable_jobs = [
 ]
 
 if not viewable_jobs:
-    st.warning("No UI-launched jobs found. Run a pipeline, walk-forward, or Tushare provider job first.")
+    render_empty_state(
+        "📄",
+        "No pipeline runs yet",
+        "Run a pipeline, walk-forward, or Tushare provider job first.",
+    )
+    if st.button("Config & Run"):
+        st.switch_page("pages/config_run.py")
 else:
     job_ids = [str(job.get("job_id")) for job in viewable_jobs if job.get("job_id")]
     requested_run_id = _query_run_id()
@@ -1270,6 +1297,13 @@ else:
     config, config_path, config_bytes = _read_config(selected_job, artifact_issues)
     run_dir = _resolve_run_dir(selected_job, config)
     mode = str(selected_job.get("mode") or "")
+
+    # Auto-refresh for running jobs
+    if str(selected_job.get("status", "")).lower() == "running":
+        import time as _time
+        st.info("Job is still running — auto-refreshing every 5 seconds.")
+        _time.sleep(5)
+        st.rerun()
 
     if mode == "tushare_provider":
         _render_tushare_provider(run_dir, artifact_issues)

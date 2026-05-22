@@ -70,12 +70,20 @@ class ResultsPageSourceTests(unittest.TestCase):
 
         self.assertIn('st.query_params.get("run_id"', source)
         self.assertIn("Run not found", source)
+        self.assertIn("html.escape(run_id", source)
         self.assertIn("plotly.graph_objects", source)
         self.assertIn("Strategy NAV", source)
         self.assertIn("Strategy Drawdown", source)
         self.assertIn("Monthly Returns", source)
         self.assertIn("Load more", jobs_source)
         self.assertIn("list_all_jobs", jobs_source)
+
+    def test_results_empty_state_uses_streamlit_navigation(self) -> None:
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn('st.button("Config & Run")', source)
+        self.assertIn('st.switch_page("pages/config_run.py")', source)
+        self.assertNotIn("window.location.href", source)
 
     def test_results_page_exposes_export_and_rerun_actions(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
@@ -115,7 +123,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("Back to Jobs", source)
         self.assertIn("Run ID (copyable)", source)
         self.assertIn("Run directory (copyable)", source)
-        self.assertIn('st.switch_page(str(Path(__file__).resolve().parent / "run_history.py"))', source)
+        self.assertIn('pages/jobs.py', source)
 
     def test_results_page_uses_shared_nav_drawdown_time_range(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
