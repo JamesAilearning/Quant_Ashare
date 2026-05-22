@@ -69,6 +69,35 @@ class OperatorUiFormattingTests(unittest.TestCase):
             "2026-05-21 10:30",
         )
 
+    def test_format_percent_arrow_uses_symbols(self) -> None:
+        from web.operator_ui.formatting import format_percent
+
+        self.assertEqual(format_percent(0.1834, arrow=True), "+18.34% \u2197")
+        self.assertEqual(format_percent(-0.0245, arrow=True), "-2.45% \u2198")
+        self.assertEqual(format_percent(0, arrow=True), "+0.00% \u2197")
+        self.assertEqual(format_percent(None, arrow=True), "unavailable")
+
+    def test_format_duration_drops_seconds_when_total_exceeds_10_minutes(self) -> None:
+        from web.operator_ui.formatting import format_duration
+
+        self.assertEqual(format_duration(630), "10m")
+        self.assertEqual(format_duration(90), "1m 30s")
+        self.assertEqual(format_duration(600), "10m")
+        self.assertEqual(format_duration(599), "9m 59s")
+
+    def test_format_percent_handles_zero_and_negative_zero_as_positive(self) -> None:
+        from web.operator_ui.formatting import format_percent
+
+        self.assertEqual(format_percent(0.0), "+0.00%")
+        self.assertEqual(format_percent(float("-0.0")), "+0.00%")
+
+    def test_format_number_abbreviate_respects_thresholds(self) -> None:
+        from web.operator_ui.formatting import format_number
+
+        self.assertEqual(format_number(999, abbreviate=True), "999.00")
+        self.assertEqual(format_number(1_000, abbreviate=True), "1.00k")
+        self.assertEqual(format_number(1_234_567, abbreviate=True), "1.23M")
+
     def test_legacy_fmt_metric_stays_available(self) -> None:
         from web.operator_ui.formatting import fmt_metric
 

@@ -51,7 +51,7 @@ def format_percent(
             sign = "+"
         rendered = f"{sign}{abs(percent):.{decimals}f}%"
     if arrow:
-        rendered += " up" if parsed >= 0 else " down"
+        rendered += " \u2197" if parsed >= 0 else " \u2198"
     return rendered
 
 
@@ -113,6 +113,8 @@ def format_duration(value: Any, *, missing: str = UNAVAILABLE) -> str:
     if hours:
         return f"{hours}h {minutes}m"
     if minutes:
+        if total >= 600:
+            return f"{minutes}m"
         return f"{minutes}m {secs}s"
     return f"{secs}s"
 

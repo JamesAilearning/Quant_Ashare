@@ -83,16 +83,36 @@ def load_theme_css(path: Path = THEME_CSS_PATH) -> str:
 
 
 def preference_attribute_script(preferences: UserPreferences) -> str:
-    """Return a small script that applies theme attributes to the document."""
+    """Return a small script that applies theme attributes to the document.
+
+    When ``theme`` is ``"auto"`` the script detects the OS color-scheme
+    synchronously before first paint and listens for runtime changes.
+    """
 
     theme = json.dumps(preferences.theme)
     convention = json.dumps(preferences.color_convention)
     return f"""
 <script>
 (function() {{
-  const root = window.parent.document.documentElement;
-  root.setAttribute("data-qv2-theme", {theme});
-  root.setAttribute("data-qv2-color-convention", {convention});
+  var root = window.parent.document.documentElement;
+  var theme = {theme};
+  var convention = {convention};
+
+  function applyTheme(t) {{
+    root.setAttribute("data-qv2-theme", t);
+  }}
+
+  if (theme === "auto" && window.matchMedia) {{
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    applyTheme(mq.matches ? "dark" : "light");
+    mq.addEventListener("change", function(e) {{
+      applyTheme(e.matches ? "dark" : "light");
+    }});
+  }} else {{
+    applyTheme(theme);
+  }}
+
+  root.setAttribute("data-qv2-color-convention", convention);
 }})();
 </script>
 """
