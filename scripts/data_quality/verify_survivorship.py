@@ -63,9 +63,22 @@ def main():
     print(f"Checking {len(KNOWN_DELISTED)} Tushare-verified delisted stocks")
     print()
 
+    # Bucket semantics:
+    #   good          — last data point is within +/- BOUNDARY_DAYS of
+    #                   the known delist_date (correct boundary).
+    #   bad_extended  — last data point is >= +BOUNDARY_DAYS past delist
+    #                   (stale local bin OR mislabelled delisting).
+    #   truncated     — last data point is <= -BOUNDARY_DAYS BEFORE the
+    #                   known delist date (local bin missing the
+    #                   delisting tail; previously misreported as GOOD
+    #                   when days_past was a large negative number).
+    #   missing       — no data for the ticker at all (survivorship).
+    #   error         — query raised.
+    BOUNDARY_DAYS = 90
     results = {
         "good": [],
         "bad_extended": [],
+        "truncated": [],
         "missing": [],
         "error": [],
     }
@@ -87,16 +100,23 @@ def main():
             expected_dt = pd.Timestamp(expected_delist_date)
             days_past = (last_date - expected_dt).days
 
-            if days_past < 90:
+            if -BOUNDARY_DAYS <= days_past < BOUNDARY_DAYS:
                 results["good"].append((code, last_date, expected_dt))
                 print(f"GOOD:  {code}  data ends {last_date.date()}, "
                       f"delisted {expected_dt.date()} ({days_past:+d}d)  "
                       f"[{reason}]")
-            else:
+            elif days_past >= BOUNDARY_DAYS:
                 results["bad_extended"].append((code, last_date, expected_dt))
                 print(f"BAD:   {code}  data ends {last_date.date()}, "
                       f"delisted {expected_dt.date()} "
                       f"({days_past:+d}d — extended too long!)  "
+                      f"[{reason}]")
+            else:
+                # days_past <= -BOUNDARY_DAYS — data truncated before delist
+                results["truncated"].append((code, last_date, expected_dt))
+                print(f"TRUNC: {code}  data ends {last_date.date()}, "
+                      f"delisted {expected_dt.date()} "
+                      f"({days_past:+d}d — data ends BEFORE delisting!)  "
                       f"[{reason}]")
 
         except Exception as e:
@@ -110,11 +130,13 @@ def main():
 
     n_good = len(results["good"])
     n_extended = len(results["bad_extended"])
+    n_truncated = len(results["truncated"])
     n_missing = len(results["missing"])
     n_total = len(KNOWN_DELISTED)
 
     print(f"  Properly delisted:    {n_good}/{n_total}")
     print(f"  Data extended (bad):  {n_extended}/{n_total}")
+    print(f"  Data truncated (bad): {n_truncated}/{n_total}")
     print(f"  Missing from dataset: {n_missing}/{n_total}")
     print(f"  Errors:               {len(results['error'])}/{n_total}")
     print()
@@ -122,6 +144,11 @@ def main():
     if n_extended > n_total / 2:
         print("VERDICT: BAD — data extends past delisting dates.")
         print("   Local bin is stale; see add-ashare-survivorship-correction.")
+        return 2
+    elif n_truncated > n_total / 2:
+        print("VERDICT: BAD — data truncated before delisting dates.")
+        print("   Local bin is missing recent history for delisted tickers;")
+        print("   rebuild required (do NOT trust GOOD verdict from prior runs)." )
         return 2
     elif n_missing > n_total / 2:
         print("VERDICT: SURVIVORSHIP BIAS — most delisted stocks missing.")
