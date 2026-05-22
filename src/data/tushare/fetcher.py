@@ -192,7 +192,10 @@ class TushareFetcher:
         resume from the failing endpoint (file-existence checkpoint
         means already-written files are skipped).
         """
-        self._config.output_dir.mkdir(parents=True, exist_ok=True)
+        # Honour --dry-run: do NOT create output_dir (Codex review #99
+        # PR comment). dry-run promises no filesystem side-effects.
+        if not self._config.dry_run:
+            self._config.output_dir.mkdir(parents=True, exist_ok=True)
         results: list[TushareFetchResult] = []
         for endpoint in ENDPOINTS:
             if endpoint not in self._config.endpoints:
@@ -415,13 +418,24 @@ class TushareFetcher:
                 if not self._is_rate_limit_error(exc):
                     # Non-rate-limit failure: re-raise immediately
                     raise
-                wait = RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1)
-                _logger.warning(
-                    "  Rate-limit on %s attempt %d/%d, sleeping %ds: %s",
-                    api_name, attempt + 1, MAX_RATE_LIMIT_RETRIES, wait, exc,
-                )
-                time.sleep(wait)
                 last_err = exc
+                # Only back off if another attempt remains. Sleeping after
+                # the final attempt would waste a full backoff period
+                # (currently up to ~300s) before raising — bad in the
+                # per-ticker/year loops where exhaustion compounds (Codex
+                # review #99 PR comment).
+                if attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                    wait = RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1)
+                    _logger.warning(
+                        "  Rate-limit on %s attempt %d/%d, sleeping %ds: %s",
+                        api_name, attempt + 1, MAX_RATE_LIMIT_RETRIES, wait, exc,
+                    )
+                    time.sleep(wait)
+                else:
+                    _logger.warning(
+                        "  Rate-limit on %s attempt %d/%d (final): %s",
+                        api_name, attempt + 1, MAX_RATE_LIMIT_RETRIES, exc,
+                    )
         raise TushareFetcherError(
             f"Tushare {api_name} hit rate limit "
             f"{MAX_RATE_LIMIT_RETRIES} times; aborting. Last error: {last_err}"

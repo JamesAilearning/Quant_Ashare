@@ -182,6 +182,27 @@ class StockBasicFetchTests(unittest.TestCase):
         r = results[0]
         self.assertEqual(r.files_written, 0)
 
+    def test_dry_run_does_not_create_missing_output_dir(self) -> None:
+        """Regression for Codex review on PR #99: dry-run promises no
+        filesystem side-effects, so a non-existent output_dir MUST NOT
+        be created by fetch(). Previously fetch() unconditionally
+        mkdir'd output_dir before checking dry_run.
+        """
+        client = _make_client(lambda api, **p: _stock_basic_df(p["list_status"]))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does_not_exist_yet"
+            self.assertFalse(missing.exists())
+
+            cfg = TushareFetcherConfig(
+                output_dir=missing, endpoints=("stock_basic",),
+                rate_limit_sleep_ms=0, dry_run=True,
+            )
+            TushareFetcher(client, cfg).fetch()
+
+            # The directory MUST still not exist — dry-run cannot create it.
+            self.assertFalse(missing.exists())
+
 
 class NamechangeAndSuspendDFetchTests(unittest.TestCase):
 
@@ -394,6 +415,38 @@ class RateLimitTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(TushareFetcherError, "rate limit"):
                     TushareFetcher(client, cfg).fetch()
+
+    def test_no_sleep_after_final_rate_limit_attempt(self) -> None:
+        """Regression for Codex review on PR #99: the final allowed retry
+        attempt MUST NOT sleep before raising — otherwise an exhausted
+        call wastes a full backoff period (~300s) before surfacing the
+        failure, compounding badly inside per-ticker loops.
+        """
+        from src.data.tushare.fetcher import MAX_RATE_LIMIT_RETRIES
+
+        client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                TushareClientError("returned None — rate limit exceeded")
+            )
+        )
+
+        with patch("src.data.tushare.fetcher.time.sleep") as mock_sleep:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("stock_basic",),
+                    rate_limit_sleep_ms=0,  # disable per-call sleep
+                )
+                with self.assertRaises(TushareFetcherError):
+                    TushareFetcher(client, cfg).fetch()
+
+        # Sleep called exactly MAX_RATE_LIMIT_RETRIES - 1 times for the
+        # exhausted bucket (no sleep after the final attempt). The
+        # rate_limit_sleep_ms=0 path is short-circuited so per-call
+        # sleep contributes 0 to the count.
+        self.assertEqual(mock_sleep.call_count, MAX_RATE_LIMIT_RETRIES - 1)
+        # Client was called MAX_RATE_LIMIT_RETRIES times (each attempt
+        # makes one network call).
+        self.assertEqual(client.call.call_count, MAX_RATE_LIMIT_RETRIES)
 
 
 class AtomicWriteTests(unittest.TestCase):
