@@ -55,6 +55,7 @@ elif _failed:
 _ICON_MAP = {
     "Jobs": "\U0001f4cb",            # 📋
     "Config & Run": "\U0001f680",   # 🚀
+    "Tushare Data": "\U0001f4e6",   # 📦
     "Results": "\U0001f4c8",        # 📈
     "Walk-Forward": "\U0001f501",   # 🔁
     "Design System": "\U0001f3a8",  # 🎨
@@ -128,6 +129,7 @@ pg = st.navigation(
         "Run": [
             st.Page(str(_PAGES_DIR / "jobs.py"), title="Jobs"),
             st.Page(str(_PAGES_DIR / "config_run.py"), title="Config & Run"),
+            st.Page(str(_PAGES_DIR / "tushare.py"), title="Tushare Data"),
         ],
         "Analyze": [
             st.Page(str(_PAGES_DIR / "results.py"), title="Results"),

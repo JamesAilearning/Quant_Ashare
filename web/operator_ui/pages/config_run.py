@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import difflib
 import math
-import os
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -11,14 +12,8 @@ from typing import Any
 import streamlit as st
 import yaml
 
-from src.core.canonical_backtest_contract import (
-    ADJUST_MODE_NONE,
-    ADJUST_MODE_POST,
-    ADJUST_MODE_PRE,
-)
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
-    TUSHARE_PROVIDER_KEYS,
     WALK_FORWARD_KEYS,
     validate_config_keys,
     validate_provider_uri,
@@ -49,13 +44,6 @@ from web.operator_ui.training_guards import (
 # ---------------------------------------------------------------------------
 
 _PRESETS_DIR = Path(__file__).resolve().parents[3] / "config" / "presets"
-
-
-def _parse_instruments(raw: str) -> str | list[str]:
-    value = str(raw or "").strip()
-    if not value or value.lower() == "all":
-        return "all"
-    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _trading_day_options(calendar_dates: tuple[date, ...]) -> list[str]:
@@ -113,6 +101,42 @@ def _pipeline_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
     indices = _six_increasing_indices(_safe_pipeline_last_index(calendar_dates))
     keys = ("train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end")
     return {key: calendar_dates[index].isoformat() for key, index in zip(keys, indices, strict=True)}
+
+
+def _last_n_days_split(
+    metadata: ProviderMetadata,
+    n_days: int,
+    ratios: tuple[float, float, float] = (0.6, 0.2, 0.2),
+) -> dict[str, str] | None:
+    """Split the last ``n_days`` trading days of the calendar into
+    train/valid/test segments by ``ratios`` (must sum to 1.0).
+
+    Returns ``None`` when the calendar is too short or empty.  No
+    silent fallback — callers SHALL treat ``None`` as "preset
+    unavailable" rather than guess.
+    """
+
+    cal = metadata.calendar_dates
+    if not cal or len(cal) < 50:
+        return None
+    take = min(len(cal), n_days)
+    sub = cal[-take:]
+    n = len(sub)
+    if n < 6:
+        return None
+    train_end_i = max(0, int(n * ratios[0]) - 1)
+    valid_end_i = max(train_end_i + 1, train_end_i + int(n * ratios[1]))
+    if valid_end_i >= n - 1:
+        valid_end_i = n - 2
+    test_end_i = n - 1
+    return {
+        "train_start": sub[0].isoformat(),
+        "train_end": sub[train_end_i].isoformat(),
+        "valid_start": sub[min(train_end_i + 1, n - 1)].isoformat(),
+        "valid_end": sub[valid_end_i].isoformat(),
+        "test_start": sub[min(valid_end_i + 1, n - 1)].isoformat(),
+        "test_end": sub[test_end_i].isoformat(),
+    }
 
 
 def _walk_forward_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
@@ -335,6 +359,72 @@ with form_col:
         walk_forward_date_defaults = _walk_forward_date_defaults(provider_metadata)
 
         if mode == "pipeline":
+            # --- Quick date presets ----------------------------------------
+            # Mechanical helpers for common operator needs. Each preset
+            # writes the six pipeline date keys to session_state and reruns
+            # so the date widgets pick up the new values on next render.
+            st.caption("Quick date range presets:")
+            qd_cols = st.columns(4)
+
+            def _apply_pipeline_dates(values: dict[str, str] | None) -> None:
+                if not values:
+                    return
+                for k, v in values.items():
+                    st.session_state[f"cr_{k}"] = v
+
+            with qd_cols[0]:
+                if st.button(
+                    "Full history",
+                    key="cr_qd_full",
+                    use_container_width=True,
+                    help="Use the provider's full calendar with a 55/65/78/86 ratio split.",
+                ):
+                    _apply_pipeline_dates(_pipeline_date_defaults(provider_metadata))
+                    st.rerun()
+            with qd_cols[1]:
+                if st.button(
+                    "Last 5y (3+1+1)",
+                    key="cr_qd_5y",
+                    use_container_width=True,
+                    help="Last 5 trading years, 60/20/20 train/valid/test split.",
+                ):
+                    _apply_pipeline_dates(_last_n_days_split(provider_metadata, 252 * 5))
+                    st.rerun()
+            with qd_cols[2]:
+                if st.button(
+                    "Last 3y (1.8+0.6+0.6)",
+                    key="cr_qd_3y",
+                    use_container_width=True,
+                    help="Last 3 trading years, 60/20/20 train/valid/test split.",
+                ):
+                    _apply_pipeline_dates(_last_n_days_split(provider_metadata, 252 * 3))
+                    st.rerun()
+            with qd_cols[3]:
+                if st.button(
+                    "Reset to preset",
+                    key="cr_qd_reset",
+                    use_container_width=True,
+                    help="Reload date values from the active preset.",
+                ):
+                    _active_preset = st.session_state.get("cr_preset", "Default")
+                    if _active_preset != CUSTOM_PRESET_NAME:
+                        _preset_values = _load_preset(_active_preset) or {}
+                        _date_only = {
+                            k: v
+                            for k, v in _preset_values.items()
+                            if k
+                            in (
+                                "train_start",
+                                "train_end",
+                                "valid_start",
+                                "valid_end",
+                                "test_start",
+                                "test_end",
+                            )
+                        }
+                        _apply_pipeline_dates(_date_only)
+                        st.rerun()
+
             dc1, dc2 = st.columns(2)
             with dc1:
                 train_start = _select_trading_day(
@@ -425,6 +515,12 @@ with form_col:
     # --- Validation ---
     guard_errors: list[str] = []
     guard_warnings: list[str] = []
+    # ``auto_fixes`` is parallel to guard_errors: when an error has a known
+    # mechanical resolution, we register a (label, callable) pair so the
+    # status panel can render a single-click fix. This keeps the existing
+    # guard_errors list-of-strings API intact while letting the UI offer
+    # to apply common fixes.
+    auto_fixes: dict[str, tuple[str, Any]] = {}
 
     if mode == "pipeline":
         guard = validate_pipeline_training_inputs(
@@ -439,8 +535,14 @@ with form_col:
         guard_errors.extend(provider_metadata.errors)
         guard_warnings.extend(provider_metadata.warnings)
 
+    _GPU_ONLY_LGB_MSG = "GPU training is currently supported only for LGBModel."
     if compute_device == "gpu" and model_type != "LGBModel":
-        guard_errors.append("GPU training is currently supported only for LGBModel.")
+        guard_errors.append(_GPU_ONLY_LGB_MSG)
+
+        def _fix_gpu_model() -> None:
+            st.session_state["cr_model_type"] = "LGBModel"
+
+        auto_fixes[_GPU_ONLY_LGB_MSG] = ("Switch model → LGBModel", _fix_gpu_model)
 
     # Build run config separately from the UI preview; mode is selected outside
     # the runtime config schema and passed to JobManager.start as its own value.
@@ -485,9 +587,26 @@ with form_col:
         if guard_errors:
             st.error(f"✗ {len(guard_errors)} error(s) — fix before running")
             for err in guard_errors:
-                st.caption(f"  • {err}")
+                fix = auto_fixes.get(err)
+                if fix is None:
+                    st.caption(f"  • {err}")
+                else:
+                    fix_label, fix_callable = fix
+                    err_col, fix_col = st.columns([4, 2])
+                    with err_col:
+                        st.caption(f"  • {err}")
+                    with fix_col:
+                        if st.button(
+                            fix_label,
+                            key=f"cr_fix_{abs(hash(err)) % 10_000_000}",
+                            use_container_width=True,
+                        ):
+                            fix_callable()
+                            st.rerun()
         elif guard_warnings:
             st.warning(f"⚠ {len(guard_warnings)} warning(s)")
+            for warn in guard_warnings:
+                st.caption(f"  • {warn}")
         else:
             st.success("✓ Config is valid")
         st.caption(f"Est. duration: {estimated}")
@@ -539,7 +658,92 @@ with form_col:
 # ===== RIGHT: Live YAML preview =====
 with preview_col:
     st.markdown("#### Config Preview")
+
+    # --- Preview actions: copy + diff toggle ---------------------------------
+    # Two buttons; both bind directly to session_state flags consumed below
+    # the YAML rendering. We snapshot the YAML at click time so a later widget
+    # change doesn't shift the copied payload.
+    preview_a, preview_b = st.columns(2)
+    with preview_a:
+        copy_clicked = st.button(
+            "📋 Copy YAML",
+            key="cr_copy_yaml_btn",
+            use_container_width=True,
+            help="Copy the YAML preview to the clipboard.",
+        )
+    with preview_b:
+        show_diff = st.toggle(
+            "Show diff vs preset",
+            key="cr_show_diff_toggle",
+            value=st.session_state.get("cr_show_diff_toggle", False),
+            help=(
+                "Show a unified diff between the current YAML and the active "
+                "preset. Useful to see exactly what you've changed."
+            ),
+        )
+
+    if copy_clicked:
+        st.session_state["cr_copy_yaml_payload"] = base64.b64encode(
+            yaml_text.encode("utf-8")
+        ).decode("ascii")
+
     st.code(yaml_text, language="yaml")
+
+    # --- Diff vs preset ------------------------------------------------------
+    if show_diff:
+        _diff_baseline = _load_preset(st.session_state.get("cr_preset", "Default"))
+        if not _diff_baseline:
+            st.caption(
+                "Diff unavailable — current preset is Custom or could not be loaded."
+            )
+        else:
+            _baseline_preview = {"mode": mode, **_diff_baseline}
+            baseline_yaml = yaml.dump(
+                {k: v for k, v in _baseline_preview.items() if v != ""},
+                default_flow_style=False,
+                allow_unicode=True,
+            )
+            diff_lines = list(
+                difflib.unified_diff(
+                    baseline_yaml.splitlines(),
+                    yaml_text.splitlines(),
+                    fromfile=f"{st.session_state.get('cr_preset', 'Default')}.yaml",
+                    tofile="current",
+                    lineterm="",
+                )
+            )
+            if not diff_lines:
+                st.caption("✓ No changes vs preset.")
+            else:
+                st.code("\n".join(diff_lines), language="diff")
+
+    # --- Clipboard write (after the preview so the toast follows the action) -
+    if st.session_state.get("cr_copy_yaml_payload"):
+        _payload = st.session_state.pop("cr_copy_yaml_payload")
+        st.html(
+            (
+                "<script>"
+                "(function(){"
+                f"var b64='{_payload}';"
+                "try {"
+                "  var yaml=atob(b64);"
+                "  if (navigator.clipboard) {"
+                "    navigator.clipboard.writeText(yaml).catch(function(){});"
+                "  } else {"
+                "    var ta=window.parent.document.createElement('textarea');"
+                "    ta.value=yaml; ta.style.position='fixed'; ta.style.left='-9999px';"
+                "    window.parent.document.body.appendChild(ta); ta.select();"
+                "    try{document.execCommand('copy');}catch(e){}"
+                "    window.parent.document.body.removeChild(ta);"
+                "  }"
+                "} catch(e) {}"
+                "})()"
+                "</script>"
+            ),
+            width="content",
+            unsafe_allow_javascript=True,
+        )
+        st.toast("YAML copied to clipboard", icon="📋")
 
 # ---------------------------------------------------------------------------
 # Provider Preview (below main form)
@@ -549,45 +753,9 @@ if provider_uri_valid:
         st.json(provider_metadata_summary(provider_metadata))
 
 # ---------------------------------------------------------------------------
-# Tushare Data (collapsed)
+# Tushare ingestion lives on its own page now (pages/tushare.py) — extracted
+# from this file in the Config & Run polish PR so data ingestion never bleeds
+# into the model-run form. Use the sidebar's "Tushare Data" entry to pull a
+# fresh bin store, then come back here and paste the resulting path into
+# ``provider_uri``.
 # ---------------------------------------------------------------------------
-with st.expander("📦 Tushare Data", expanded=False):
-    token_present = bool(os.environ.get("TUSHARE_TOKEN", "").strip())
-    if not token_present:
-        st.warning("Set TUSHARE_TOKEN in the environment before pulling Tushare data.")
-
-    with st.form("tushare_provider_form"):
-        tc1, tc2 = st.columns(2)
-        with tc1:
-            ts_start_date = st.text_input("start_date", value="2025-01-01")
-            ts_end_date = st.text_input("end_date", value="2025-01-31")
-            ts_instruments = st.text_input(
-                "instruments", value="all",
-                help="Use all or comma-separated qlib/Tushare codes.",
-            )
-        with tc2:
-            ts_adjust_mode = st.selectbox(
-                "data_adjust_mode",
-                [ADJUST_MODE_PRE, ADJUST_MODE_POST, ADJUST_MODE_NONE],
-            )
-            include_hs300 = st.checkbox("include SH000300 benchmark", value=True)
-            reuse_staged = st.checkbox("reuse_staged", value=True)
-        pull_tushare = st.form_submit_button("Pull Tushare Data", disabled=not token_present)
-
-    if pull_tushare:
-        tushare_config: dict = {
-            "start_date": ts_start_date, "end_date": ts_end_date,
-            "data_adjust_mode": ts_adjust_mode,
-            "instruments": _parse_instruments(ts_instruments),
-            "benchmark_indexes": {"SH000300": "000300.SH"} if include_hs300 else {},
-            "reuse_staged": reuse_staged,
-            "region": "cn", "freq": "day",
-        }
-        try:
-            validate_config_keys(tushare_config, TUSHARE_PROVIDER_KEYS)
-            job_id = JobManager.start(tushare_config, "tushare_provider")
-        except (ValueError, JobManagerError) as exc:
-            st.error(str(exc))
-            st.stop()
-        st.success(f"Tushare ingest job started: {job_id}")
-        st.info(f"After success, use output/operator_ui/results/{job_id}/qlib_provider as provider_uri.")
