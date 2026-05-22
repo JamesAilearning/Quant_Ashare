@@ -5,6 +5,18 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+# Some CI cells (ubuntu-3.10 / ubuntu-3.12) install streamlit via a step that
+# has ``continue-on-error: true`` and may or may not succeed.  Source-level
+# tests (read .py as text) don't need streamlit, but the LastNDaysSplitTests
+# class imports a function from a page module that loads ``streamlit`` at
+# import time.  Skip that class cleanly rather than fail the cell.
+try:
+    import streamlit as _streamlit  # noqa: F401
+
+    _HAS_STREAMLIT = True
+except ImportError:
+    _HAS_STREAMLIT = False
+
 
 class ConfigRunPageSourceTests(unittest.TestCase):
     def test_training_controls_are_not_inside_streamlit_form(self) -> None:
@@ -199,6 +211,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("_last_n_days_split(", source)
 
 
+@unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
 class LastNDaysSplitTests(unittest.TestCase):
     def test_returns_none_for_empty_calendar(self) -> None:
         import types
