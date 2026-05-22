@@ -286,6 +286,50 @@ class ValidationFailureTests(unittest.TestCase):
                     output_path=tmp_path / "out.parquet",
                 ).build()
 
+    def test_unparseable_list_date_raises(self) -> None:
+        """Codex P1 on PR #100: NaT list_date silently passed
+        the `delist_date < list_date` invariant because NaT compares False.
+        Regression test asserts unparseable list_date is rejected.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            rows = _minimal_delisted_rows()
+            rows[0]["list_date"] = "rotten"
+            _write_delisted_parquet(tmp_path / "delisted_stocks.parquet", rows)
+            _write_active_parquet(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_refs(tmp_path / "refs.yaml", _minimal_refs())
+
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"unparseable list_date"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                ).build()
+
+    def test_active_stocks_missing_ts_code_column_raises(self) -> None:
+        """Codex P2 on PR #100: raw KeyError if active_stocks
+        parquet has wrong schema (Tushare drift / corruption); should
+        be wrapped in DelistedRegistryError so the CLI returns the
+        controlled exit code.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_delisted_parquet(
+                tmp_path / "delisted_stocks.parquet", _minimal_delisted_rows())
+            # Active parquet with WRONG schema (no ts_code column)
+            bad = pd.DataFrame({"wrong_column": ["x"]})
+            bad.to_parquet(tmp_path / "active_stocks.parquet", index=False)
+            _write_refs(tmp_path / "refs.yaml", _minimal_refs())
+
+            with self.assertRaisesRegex(DelistedRegistryError,
+                                        r"missing required column 'ts_code'"):
+                DelistedRegistryBuilder(
+                    tushare_dir=tmp_path,
+                    reference_cases_path=tmp_path / "refs.yaml",
+                    output_path=tmp_path / "out.parquet",
+                ).build()
+
 
 class MissingInputTests(unittest.TestCase):
 

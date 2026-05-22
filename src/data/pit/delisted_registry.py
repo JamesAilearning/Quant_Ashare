@@ -205,7 +205,17 @@ class DelistedRegistryBuilder:
                 "rows are not in the delisted bucket. Run Phase A.1 with "
                 "--endpoints stock_basic first."
             )
-        return pd.read_parquet(path)
+        df = pd.read_parquet(path)
+        # Guard the schema explicitly — without this, a Tushare schema drift
+        # (or a corrupted snapshot) would surface as a raw KeyError from the
+        # active-control validator rather than the intended controlled
+        # DelistedRegistryError path. Codex review on PR #100.
+        if "ts_code" not in df.columns:
+            raise DelistedRegistryError(
+                f"{path} missing required column 'ts_code' "
+                f"(found columns: {sorted(df.columns)})"
+            )
+        return df
 
     def _load_reference_cases(self) -> dict:
         path = self._reference_cases_path
@@ -257,6 +267,17 @@ class DelistedRegistryBuilder:
             raise DelistedRegistryError(
                 f"{len(missing_delist)} delisted rows have unparseable "
                 f"delist_date (sample: {missing_delist['ticker'].head(3).tolist()}). "
+                "Tushare returned a malformed value; investigate before proceeding."
+            )
+        # list_date NaT slips past `delist_date < list_date` (NaT comparisons
+        # are False), so unparseable list_date rows would silently land in
+        # the registry and corrupt downstream date logic. Codex review on
+        # PR #100.
+        missing_list = out[out["list_date"].isna()]
+        if not missing_list.empty:
+            raise DelistedRegistryError(
+                f"{len(missing_list)} delisted rows have unparseable "
+                f"list_date (sample: {missing_list['ticker'].head(3).tolist()}). "
                 "Tushare returned a malformed value; investigate before proceeding."
             )
 
