@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+from web.operator_ui.components import (
+    render_badge,
+    render_empty_state,
+    render_error_state,
+    render_skeleton,
+    render_stat_card,
+)
 from web.operator_ui.formatting import (
     format_date_absolute,
     format_duration,
@@ -91,6 +98,68 @@ examples = [
 
 st.dataframe(examples, width="stretch", hide_index=True)
 
+# ---------------------------------------------------------------------------
+# Component showcase
+# ---------------------------------------------------------------------------
+st.header("Badges")
+
+badge_cols = st.columns(5)
+for idx, (variant, label, icon, pulse) in enumerate(
+    [
+        ("neutral", "Queued", "⏸", False),
+        ("info", "Running", "", True),
+        ("success", "Completed", "✅", False),
+        ("warning", "Cancelled", "⊘", False),
+        ("danger", "Failed", "❌", False),
+    ]
+):
+    with badge_cols[idx]:
+        render_badge(variant, label, icon=icon, pulse=pulse)
+
+st.header("StatCard (KPI)")
+
+sc_cols = st.columns(3)
+with sc_cols[0]:
+    render_stat_card("ANNUAL RETURN", "+18.34%", trend="up", value_color="positive")
+with sc_cols[1]:
+    render_stat_card(
+        "MAX DRAWDOWN",
+        "-12.45%",
+        trend="down",
+        value_color="negative",
+        secondary=[("Volatility", "16.0%"), ("Duration", "28 days")],
+    )
+with sc_cols[2]:
+    render_stat_card(
+        "SHARPE RATIO",
+        "1.83",
+        tooltip="Risk-adjusted return. Higher is better; > 1 is good.",
+    )
+
+st.header("Skeleton")
+render_skeleton("rect", height="48px")
+render_skeleton("text", width="60%")
+render_skeleton("text", width="80%")
+render_skeleton("text", width="40%")
+
+st.header("EmptyState")
+render_empty_state(
+    "🔁",
+    "No walk-forward runs yet",
+    "Validate your strategy across rolling time windows.",
+    action_label="Start a Run",
+)
+
+st.header("ErrorState")
+render_error_state(
+    "Run not found",
+    "We couldn't find a run with that ID. It may have been deleted.",
+    error="KeyError: run_id='pipeline_xxxx_yyyy'",
+    on_retry="window.location.reload()",
+    variant="inline",
+)
+
+# ---------------------------------------------------------------------------
 st.info(
     "This page is a QA/demo surface only. It does not read runtime artifacts "
     "or compute official metrics."
