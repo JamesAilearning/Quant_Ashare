@@ -48,9 +48,9 @@ from web.operator_ui.report_reader import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MISSING = "\u2014"
+MISSING = "—"
 
-# Plotly does not resolve CSS custom properties (``var(--\u2026)``) \u2014 passing
+# Plotly does not resolve CSS custom properties (``var(--…)``) — passing
 # them yields an unstyled chart. Mirror the convention from results.py:
 # use literal CSS named colours so the trace styles work even though the
 # rest of the design system runs on tokens.
@@ -302,12 +302,12 @@ def _compute_stability_score(ir_list: list[float], dd_list: list[float]) -> tupl
 
 def _stability_label(score: float) -> str:
     if score >= 0.8:
-        return "Highly stable"
+        return "高度稳定"
     if score >= 0.6:
-        return "Reasonably stable"
+        return "较稳定"
     if score >= 0.3:
-        return "Inconsistent"
-    return "Unstable"
+        return "不稳定"
+    return "极不稳定"
 
 
 def _stability_color(score: float) -> str:
@@ -323,8 +323,8 @@ def _stability_color(score: float) -> str:
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-render_breadcrumbs([("Analyze", None)])
-render_page_header("Walk-Forward Detail", "Fold-by-fold results, stability analysis, and out-of-sample NAV.")
+render_breadcrumbs([("分析", None)])
+render_page_header("滚动验证详情", "单折结果、稳定性分析以及样本外净值。")
 
 # ---------------------------------------------------------------------------
 # Data
@@ -336,11 +336,11 @@ run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run
 if not run_options:
     render_empty_state(
         "\U0001f501",
-        "No walk-forward runs yet",
-        "Walk-forward validation tests your strategy's robustness by training "
-        "on rolling time windows and evaluating each on out-of-sample data.",
+        "暂无滚动验证记录",
+        "滚动验证（Walk-Forward）通过在滚动时间窗上反复训练并在样本外测试，"
+        "评估策略的鲁棒性。",
     )
-    if st.button("Config & Run"):
+    if st.button("配置运行"):
         st.switch_page("pages/config_run.py")
     st.stop()
     selected = str(output_path())
@@ -362,7 +362,7 @@ else:
                 _default_index = idx
                 break
     selected = st.selectbox(
-        "Run",
+        "运行",
         options=list(run_options.keys()),
         format_func=lambda k: run_options[k],
         index=_default_index,
@@ -382,7 +382,7 @@ run_dir = Path(str(selected))
 try:
     wf_report = read_walk_forward_report(run_dir)
 except (ValueError, OSError) as exc:
-    _stop_artifact_error("Unable to read walk-forward report", exc)
+    _stop_artifact_error("无法读取滚动验证报告", exc)
     wf_report = {"folds": []}
 folds = wf_report.get("folds", [])
 
@@ -391,7 +391,7 @@ if not folds:
     try:
         fold_reports = read_fold_reports(run_dir)
     except (ValueError, OSError) as exc:
-        _stop_artifact_error("Unable to read fold reports", exc)
+        _stop_artifact_error("无法读取单折报告", exc)
         fold_reports = None
     if fold_reports:
         folds = fold_reports
@@ -399,16 +399,16 @@ if not folds:
 if not folds:
     render_empty_state(
         "\U0001f4ca",
-        "No fold data yet",
-        "Fold reports will appear once the walk-forward run completes.",
+        "暂无单折数据",
+        "滚动验证作业完成后，单折报告会出现在这里。",
     )
     try:
         charts = discover_charts(run_dir)
     except (ValueError, OSError) as exc:
-        _stop_artifact_error("Unable to discover walk-forward charts", exc)
+        _stop_artifact_error("无法发现滚动验证图表", exc)
         charts = None
     if charts:
-        st.header("Charts")
+        st.header("图表")
         for _label, path in charts.items():
             st.image(str(path), use_container_width=True)
     st.stop()
@@ -465,7 +465,7 @@ for i, fold_entry in enumerate(folds):
     fd["test_end"] = fold_entry.get("test_end", "")
     period = str(fd["test_period"] or "")
     if fd["test_start"] and fd["test_end"]:
-        period = f"{str(fd['test_start'])[:7]} \u2192 {str(fd['test_end'])[:7]}"
+        period = f"{str(fd['test_start'])[:7]} → {str(fd['test_end'])[:7]}"
     fd["period"] = period
 
     fold_data.append(fd)
@@ -508,10 +508,10 @@ if score >= 0:
     label = _stability_label(score)
     color = _stability_color(score)
     bar_len = int(score * 20)
-    bar = "\u2588" * bar_len + "\u2591" * (20 - bar_len)
+    bar = "█" * bar_len + "░" * (20 - bar_len)
     st.markdown(
         f"""<div style="margin-bottom:24px;">
-        <span class="qv2-text-card-label">STABILITY SCORE</span><br>
+        <span class="qv2-text-card-label">稳定性评分</span><br>
         <span style="font-size:2rem;font-weight:800;color:var(--{color});">{score:.2f}</span>
         <span style="color:var(--text-secondary);font-size:1rem;"> / 1.00</span>
         <span style="margin-left:12px;color:var(--text-tertiary);font-size:0.9rem;">{label}</span>
@@ -527,65 +527,65 @@ with kpi_cols[0]:
     displayed_mean_ir = mean_ir if mean_ir is not None else 0
     std_ir = math.sqrt(sum((s - displayed_mean_ir) ** 2 for s in ir_list) / len(ir_list)) if len(ir_list) > 1 else 0
     render_stat_card(
-        "MEAN IR",
+        "平均 IR",
         f"{displayed_mean_ir:.2f}" if mean_ir is not None else MISSING,
         secondary=[
-            ("\u00b1 Std", f"{std_ir:.2f}" if ir_list else MISSING),
-            ("Range", f"{min(ir_list):.2f} to {max(ir_list):.2f}" if ir_list else MISSING),
+            ("± 标准差", f"{std_ir:.2f}" if ir_list else MISSING),
+            ("区间", f"{min(ir_list):.2f} ~ {max(ir_list):.2f}" if ir_list else MISSING),
         ],
-        tooltip="Average information ratio across all folds. Lower std = more consistent.",
+        tooltip="所有折的平均信息比率。标准差越小越一致。",
     )
 with kpi_cols[1]:
     worst_idx, worst_dd = min(drawdown_by_fold, key=lambda item: item[1]) if drawdown_by_fold else (None, None)
     render_stat_card(
-        "WORST DRAWDOWN",
+        "最差回撤",
         format_percent(worst_dd) if worst_dd is not None else MISSING,
         value_color="negative" if worst_dd is not None else "default",
-        secondary=[("Fold", str(worst_idx) if worst_idx is not None else MISSING)],
-        tooltip="Maximum drawdown across all folds. Identifies the weakest period.",
+        secondary=[("出现于折", str(worst_idx) if worst_idx is not None else MISSING)],
+        tooltip="所有折中的最大回撤，定位最薄弱的窗口。",
     )
 with kpi_cols[2]:
     render_stat_card(
-        "AGGREGATE OOS",
+        "整体样本外",
         format_percent(aggregate_ar) if aggregate_ar is not None else MISSING,
         value_color=("default" if aggregate_ar is None else "positive" if aggregate_ar > 0 else "negative"),
         secondary=[
             ("IR", format_number(aggregate_ir) if aggregate_ir is not None else MISSING),
-            ("Worst DD", format_percent(aggregate_dd) if aggregate_dd is not None else MISSING),
+            ("最差回撤", format_percent(aggregate_dd) if aggregate_dd is not None else MISSING),
         ],
-        tooltip="Cross-fold aggregate metrics from walk_forward_report.json.",
+        tooltip="walk_forward_report.json 里的跨折聚合指标。",
     )
 with kpi_cols[3]:
     all_pos = all(s > 0 for s in ir_list) if ir_list else False
     above_1 = sum(1 for s in ir_list if s > 1.0) if ir_list else 0
-    trend = "Stable" if score >= 0 and score_details.get("trend_stable", True) else "Declining"
+    trend = "稳定" if score >= 0 and score_details.get("trend_stable", True) else "下行"
     render_stat_card(
-        "ROBUSTNESS",
-        "\u2713 Yes" if all_pos else "\u2717 No",
+        "鲁棒性",
+        "✓ 是" if all_pos else "✗ 否",
         value_color="positive" if all_pos else "negative",
         secondary=[
-            ("Above IR 1.0", f"{above_1}/{n_folds}"),
-            ("Trend", trend),
+            ("IR > 1.0 折数", f"{above_1}/{n_folds}"),
+            ("趋势", trend),
         ],
-        tooltip="All positive = every fold had positive IR. Above 1.0 = most folds beat threshold.",
+        tooltip="全部正 = 每一折的 IR 都为正；IR > 1.0 = 多数折超过阈值。",
     )
 
 # --- Fold comparison table ---
 st.markdown("---")
-st.subheader(f"Fold Comparison ({n_folds} folds)")
+st.subheader(f"折间对比（共 {n_folds} 折）")
 
 table_rows = []
 for fd in fold_data:
     table_rows.append(
         {
-            "Fold": f"F{fd['index']}",
-            "Test Period": fd.get("period", MISSING),
-            "AR": format_percent(fd.get("annual_return")) if fd.get("annual_return") is not None else MISSING,
+            "折次": f"F{fd['index']}",
+            "测试期": fd.get("period", MISSING),
+            "年化收益": format_percent(fd.get("annual_return")) if fd.get("annual_return") is not None else MISSING,
             "IR": format_number(fd.get("information_ratio")) if fd.get("information_ratio") is not None else MISSING,
-            "Max DD": format_percent(fd.get("max_drawdown")) if fd.get("max_drawdown") is not None else MISSING,
-            "Turnover": format_number(fd.get("turnover")) if fd.get("turnover") is not None else MISSING,
-            "Win Rate": format_percent(fd.get("win_rate")) if fd.get("win_rate") is not None else MISSING,
-            "Trades": str(fd.get("n_trades")) if fd.get("n_trades") is not None else MISSING,
+            "最大回撤": format_percent(fd.get("max_drawdown")) if fd.get("max_drawdown") is not None else MISSING,
+            "换手率": format_number(fd.get("turnover")) if fd.get("turnover") is not None else MISSING,
+            "胜率": format_percent(fd.get("win_rate")) if fd.get("win_rate") is not None else MISSING,
+            "交易笔数": str(fd.get("n_trades")) if fd.get("n_trades") is not None else MISSING,
         }
     )
 
@@ -597,14 +597,14 @@ if return_list or ir_list or dd_list or turnover_list or win_rate_list:
     mean_return = _mean(return_list)
     table_rows.append(
         {
-            "Fold": "\u03bc",
-            "Test Period": "",
-            "AR": format_percent(mean_return) if mean_return is not None else MISSING,
+            "折次": "均值",
+            "测试期": "",
+            "年化收益": format_percent(mean_return) if mean_return is not None else MISSING,
             "IR": format_number(_mean(ir_list)) if ir_list else MISSING,
-            "Max DD": format_percent(mean_dd) if mean_dd is not None else MISSING,
-            "Turnover": format_number(mean_turnover) if mean_turnover is not None else MISSING,
-            "Win Rate": format_percent(mean_win_rate) if mean_win_rate is not None else MISSING,
-            "Trades": "",
+            "最大回撤": format_percent(mean_dd) if mean_dd is not None else MISSING,
+            "换手率": format_number(mean_turnover) if mean_turnover is not None else MISSING,
+            "胜率": format_percent(mean_win_rate) if mean_win_rate is not None else MISSING,
+            "交易笔数": "",
         }
     )
 
@@ -613,41 +613,41 @@ st.dataframe(df, hide_index=True, height=400)
 
 # --- Stability Breakdown ---
 if score >= 0:
-    with st.expander("Stability Breakdown", expanded=False):
+    with st.expander("稳定性分解", expanded=False):
         b_cols = st.columns(2)
         with b_cols[0]:
             cv = score_details.get("ir_cv", 0)
-            st.caption("IR CV (lower is better)")
+            st.caption("IR 变异系数（越低越好）")
             st.progress(min(1.0, max(0.0, 1.0 - cv)), text=f"CV = {cv:.2f}")
 
-            st.caption("Positive folds")
+            st.caption("正收益折数")
             pos_str = score_details.get("positive_folds", "?/?")
             pos_ratio = _ratio_fraction(pos_str)
             st.progress(pos_ratio, text=pos_str)
         with b_cols[1]:
             dc = score_details.get("dd_concentration", 0.5)
-            st.caption("DD concentration")
+            st.caption("回撤集中度")
             st.progress(dc, text=f"{dc:.2f}")
 
-            st.caption("Above IR 1.0")
+            st.caption("IR > 1.0 折数")
             abv_str = score_details.get("above_ir_1", "?/?")
             abv_ratio = _ratio_fraction(abv_str)
             st.progress(abv_ratio, text=abv_str)
 
 # ---------------------------------------------------------------------------
-# Bottom section \u2014 tabs (TICKET-B reorg)
+# Bottom section — tabs (TICKET-B reorg)
 # ---------------------------------------------------------------------------
 st.markdown("---")
 
 wf_tabs = st.tabs(
     [
-        "Stitched OOS NAV",
-        "Per-Fold Detail",
-        "Metric Bars",
-        "Logs",
-        "Config",
-        "Raw JSON",
-        "Charts",
+        "拼接样本外净值",
+        "单折详情",
+        "指标柱图",
+        "日志",
+        "配置",
+        "原始 JSON",
+        "图表",
     ]
 )
 
@@ -657,9 +657,8 @@ with wf_tabs[0]:
     if not timeline:
         render_empty_state(
             "\U0001f4c8",
-            "Stitched NAV unavailable",
-            "At least one fold is missing its test window or annualised "
-            "return; the OOS curve cannot be synthesised without these.",
+            "无法生成拼接净值",
+            "至少一折缺少测试窗或年化收益，缺少这些字段就无法合成样本外净值曲线。",
         )
     else:
         try:
@@ -695,38 +694,37 @@ with wf_tabs[0]:
             fig.update_layout(
                 height=380,
                 margin={"t": 10, "b": 36, "l": 40, "r": 12},
-                xaxis_title="Test window",
-                yaxis_title="OOS NAV (\u00d7)",
+                xaxis_title="测试窗",
+                yaxis_title="样本外净值（×）",
                 showlegend=False,
                 title={
-                    "text": "Synthesised stitched OOS NAV",
+                    "text": "拼接样本外净值（合成）",
                     "font": {"size": 12},
                     "x": 0,
                 },
             )
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
-                "Synthesised from each fold's annualised return and test "
-                "window length \u2014 actual intra-fold path is not available "
-                "(walk-forward engine does not emit per-fold nav.parquet)."
+                "由每折的年化收益与测试窗长度合成 —— 折内路径不可得"
+                "（滚动验证引擎没有按折落盘 nav.parquet）。"
             )
         except ImportError:
-            st.info("Plotly not available; NAV plot disabled.")
+            st.info("未安装 Plotly，净值图不可用。")
 
 # --- Per-Fold Detail tab ------------------------------------------------------
 with wf_tabs[1]:
     if not fold_data:
         render_empty_state(
             "\U0001f4ca",
-            "No fold data",
-            "Fold reports were not loaded.",
+            "暂无单折数据",
+            "未加载到单折报告。",
         )
     else:
         # Selector lets the operator focus on one fold at a time instead
         # of scrolling through every expander. Default: fold 1.
-        fold_pick_options = [f"Fold {fd['index']}  \u00b7  {fd.get('period', MISSING)}" for fd in fold_data]
+        fold_pick_options = [f"第 {fd['index']} 折  ·  {fd.get('period', MISSING)}" for fd in fold_data]
         picked_idx = st.selectbox(
-            "Select fold",
+            "选择折",
             options=list(range(len(fold_data))),
             format_func=lambda i: fold_pick_options[i],
             key="wf_fold_picker",
@@ -735,26 +733,26 @@ with wf_tabs[1]:
 
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
-            st.metric("Annual Return", format_percent(fd.get("annual_return")))
+            st.metric("年化收益", format_percent(fd.get("annual_return")))
         with fc2:
             st.metric("IR", format_number(fd.get("information_ratio")))
         with fc3:
-            st.metric("Max Drawdown", format_percent(fd.get("max_drawdown")))
+            st.metric("最大回撤", format_percent(fd.get("max_drawdown")))
         with fc4:
-            st.metric("Turnover", format_number(fd.get("turnover")))
+            st.metric("换手率", format_number(fd.get("turnover")))
 
         if fd.get("train_period") or fd.get("test_period"):
             st.caption(
-                f"Train: {fd.get('train_period', MISSING)}  |  "
-                f"Test: {fd.get('test_period', MISSING)}"
+                f"训练期：{fd.get('train_period', MISSING)}  |  "
+                f"测试期：{fd.get('test_period', MISSING)}"
             )
         elif fd.get("train_start"):
             st.caption(
-                f"Train: {fd['train_start']} \u2192 {fd.get('test_start', '?')}  |  "
-                f"Test: {fd.get('test_start', '?')} \u2192 {fd.get('test_end', '?')}"
+                f"训练期：{fd['train_start']} → {fd.get('test_start', '?')}  |  "
+                f"测试期：{fd.get('test_start', '?')} → {fd.get('test_end', '?')}"
             )
 
-        with st.expander("Raw fold report", expanded=False):
+        with st.expander("单折原始报告", expanded=False):
             st.json(dict(folds[picked_idx]) if picked_idx < len(folds) else {})
 
 # --- Metric Bars tab ----------------------------------------------------------
@@ -786,7 +784,7 @@ with wf_tabs[2]:
             f_ar.update_layout(
                 height=220,
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
-                title={"text": "Annual Return", "font": {"size": 12}, "x": 0},
+                title={"text": "年化收益", "font": {"size": 12}, "x": 0},
                 yaxis={"tickformat": ".0%"},
             )
             st.plotly_chart(f_ar, use_container_width=True)
@@ -807,7 +805,7 @@ with wf_tabs[2]:
             f_ir.update_layout(
                 height=220,
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
-                title={"text": "Information Ratio", "font": {"size": 12}, "x": 0},
+                title={"text": "信息比率（IR）", "font": {"size": 12}, "x": 0},
             )
             st.plotly_chart(f_ir, use_container_width=True)
         with bar_cols[2]:
@@ -822,12 +820,12 @@ with wf_tabs[2]:
             f_dd.update_layout(
                 height=220,
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
-                title={"text": "Max Drawdown", "font": {"size": 12}, "x": 0},
+                title={"text": "最大回撤", "font": {"size": 12}, "x": 0},
                 yaxis={"tickformat": ".0%"},
             )
             st.plotly_chart(f_dd, use_container_width=True)
     except ImportError:
-        st.info("Plotly not available; metric bars disabled.")
+        st.info("未安装 Plotly，指标柱图不可用。")
 
 # --- Logs tab -----------------------------------------------------------------
 with wf_tabs[3]:
@@ -835,15 +833,14 @@ with wf_tabs[3]:
     if not logs:
         render_empty_state(
             "\U0001f4dc",
-            "No logs available",
-            "The walk-forward run directory does not contain any stdout / "
-            "stderr / runner log files yet.",
+            "暂无日志",
+            "该滚动验证运行目录下还没有 stdout / stderr / runner 日志文件。",
         )
     else:
         log_tabs = st.tabs([name for name, _ in logs])
         for idx, (_name, text) in enumerate(logs):
             with log_tabs[idx]:
-                st.code(text or "(empty)", language="text")
+                st.code(text or "（空）", language="text")
 
 # --- Config tab ---------------------------------------------------------------
 with wf_tabs[4]:
@@ -852,13 +849,13 @@ with wf_tabs[4]:
         config_text = config_path.read_text(encoding="utf-8")
         st.code(config_text, language="yaml")
         st.download_button(
-            "Download config.yaml",
+            "下载 config.yaml",
             data=config_text.encode(),
             file_name="config.yaml",
             mime="text/yaml",
         )
     else:
-        st.info("config.yaml not found.")
+        st.info("未找到 config.yaml。")
 
 # --- Raw JSON tab -------------------------------------------------------------
 with wf_tabs[5]:
@@ -866,17 +863,17 @@ with wf_tabs[5]:
     if raw_data:
         st.json(raw_data)
     else:
-        st.info("No raw data available.")
+        st.info("暂无原始数据可显示。")
 
 # --- Charts tab ---------------------------------------------------------------
 with wf_tabs[6]:
     try:
         charts = discover_charts(run_dir)
     except (ValueError, OSError) as exc:
-        _stop_artifact_error("Unable to discover walk-forward charts", exc)
+        _stop_artifact_error("无法发现滚动验证图表", exc)
         charts = None
     if charts:
         for _label, path in charts.items():
             st.image(str(path), use_container_width=True)
     else:
-        st.info("No generated charts found in this run directory.")
+        st.info("该运行目录下未发现已生成的图表。")
