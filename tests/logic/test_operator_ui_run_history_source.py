@@ -48,11 +48,11 @@ class JobsSourceTests(unittest.TestCase):
         self.assertIn("sort_by", source)
         self.assertIn("sort_dir", source)
         # The five quick-range buttons.
-        self.assertIn("Today", source)
-        self.assertIn("Last 7d", source)
-        self.assertIn("Last 30d", source)
-        self.assertIn("This year", source)
-        self.assertIn("Clear dates", source)
+        self.assertIn("今天", source)
+        self.assertIn("最近 7 天", source)
+        self.assertIn("最近 30 天", source)
+        self.assertIn("本年至今", source)
+        self.assertIn("清除日期", source)
 
     def test_jobs_page_routes_row_click_via_switch_page(self) -> None:
         """Row selection SHALL navigate to results.py or walk_forward.py via
@@ -98,7 +98,7 @@ class JobsSourceTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
 
         self.assertIn("jobs_chip_clear_", source)
-        self.assertIn("Clear all", source)
+        self.assertIn("清除全部", source)
 
     def test_jobs_page_offers_running_job_autorefresh(self) -> None:
         """When at least one job is running, the page SHALL surface an
@@ -106,7 +106,7 @@ class JobsSourceTests(unittest.TestCase):
 
         source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
 
-        self.assertIn("Auto-refresh", source)
+        self.assertIn("自动刷新", source)
         self.assertIn("running_count", source)
 
 

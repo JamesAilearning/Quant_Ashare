@@ -79,10 +79,49 @@ _seed_session_from_url(list(_DEFAULTS.keys()))
 
 
 # ---------------------------------------------------------------------------
+# 中文标签映射（保留英文值用于 URL / 后端契约，仅在 UI 展示时换中文）
+# ---------------------------------------------------------------------------
+_TYPE_LABELS: dict[str, str] = {
+    "all": "全部",
+    "pipeline": "流水线",
+    "walk_forward": "滚动验证",
+    "provider": "数据源",
+}
+_STATUS_LABELS: dict[str, str] = {
+    "all": "全部",
+    "queued": "排队中",
+    "running": "运行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+_SOURCE_LABELS: dict[str, str] = {
+    "all": "全部",
+    "ui": "UI",
+    "cli": "CLI",
+}
+_SORT_BY_LABELS: dict[str, str] = {
+    "created_at": "创建时间",
+    "duration": "耗时",
+    "status": "状态",
+    "type": "类型",
+    "run_id": "运行 ID",
+}
+_FILTER_KEY_LABELS: dict[str, str] = {
+    "type": "类型",
+    "status": "状态",
+    "source": "来源",
+    "search": "搜索",
+    "date_from": "起始",
+    "date_to": "结束",
+}
+
+
+# ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-render_breadcrumbs([("Run", None)])
-render_page_header("Jobs", "All pipeline, walk-forward, and data provider runs.")
+render_breadcrumbs([("运行", None)])
+render_page_header("作业", "所有流水线、滚动验证及数据源的运行记录。")
 
 # ---------------------------------------------------------------------------
 # Filter row 1: type / status / source / search
@@ -90,25 +129,28 @@ render_page_header("Jobs", "All pipeline, walk-forward, and data provider runs."
 fcol1, fcol2, fcol3, fcol4 = st.columns(4)
 with fcol1:
     type_filter = st.selectbox(
-        "Type",
+        "类型",
         ["all", "pipeline", "walk_forward", "provider"],
         key="jobs_type",
+        format_func=lambda v: _TYPE_LABELS.get(v, v),
     )
 with fcol2:
     status_filter = st.selectbox(
-        "Status",
+        "状态",
         ["all", "queued", "running", "completed", "failed", "cancelled"],
         key="jobs_status",
+        format_func=lambda v: _STATUS_LABELS.get(v, v),
     )
 with fcol3:
     source_filter = st.selectbox(
-        "Source",
+        "来源",
         ["all", "ui", "cli"],
         key="jobs_source",
+        format_func=lambda v: _SOURCE_LABELS.get(v, v),
     )
 with fcol4:
     search = st.text_input(
-        "Search", placeholder="Run ID, model, error…", key="jobs_search"
+        "搜索", placeholder="运行 ID、模型、错误信息…", key="jobs_search"
     )
 
 # ---------------------------------------------------------------------------
@@ -128,27 +170,27 @@ def _iso_to_date(value: str) -> date | None:
 
 with dcol1:
     df_default = _iso_to_date(st.session_state.get("jobs_date_from", ""))
-    df_val = st.date_input("From", value=df_default, key="jobs_date_from_widget")
+    df_val = st.date_input("起始日期", value=df_default, key="jobs_date_from_widget")
     date_from_iso = df_val.isoformat() if isinstance(df_val, date) else ""
     st.session_state["jobs_date_from"] = date_from_iso
 with dcol2:
     dt_default = _iso_to_date(st.session_state.get("jobs_date_to", ""))
-    dt_val = st.date_input("To", value=dt_default, key="jobs_date_to_widget")
+    dt_val = st.date_input("结束日期", value=dt_default, key="jobs_date_to_widget")
     date_to_iso = dt_val.isoformat() if isinstance(dt_val, date) else ""
     st.session_state["jobs_date_to"] = date_to_iso
 with dcol3:
     sort_by = st.selectbox(
-        "Sort by",
+        "排序方式",
         SORT_OPTIONS,
         key="jobs_sort_by",
-        format_func=lambda x: x.replace("_", " ").title(),
+        format_func=lambda x: _SORT_BY_LABELS.get(x, x),
     )
 with dcol4:
     sort_dir = st.selectbox(
-        "Direction",
+        "排序方向",
         ["desc", "asc"],
         key="jobs_sort_dir",
-        format_func=lambda x: "Newest first" if x == "desc" else "Oldest first",
+        format_func=lambda x: "最新优先" if x == "desc" else "最旧优先",
     )
 
 # Quick date presets
@@ -166,19 +208,19 @@ def _apply_quick_range(start: date | None, end: date | None) -> None:
 
 
 with qp_col1:
-    if st.button("Today", key="jobs_qp_today", use_container_width=True):
+    if st.button("今天", key="jobs_qp_today", use_container_width=True):
         _apply_quick_range(_today, _today)
 with qp_col2:
-    if st.button("Last 7d", key="jobs_qp_7d", use_container_width=True):
+    if st.button("最近 7 天", key="jobs_qp_7d", use_container_width=True):
         _apply_quick_range(_today - timedelta(days=6), _today)
 with qp_col3:
-    if st.button("Last 30d", key="jobs_qp_30d", use_container_width=True):
+    if st.button("最近 30 天", key="jobs_qp_30d", use_container_width=True):
         _apply_quick_range(_today - timedelta(days=29), _today)
 with qp_col4:
-    if st.button("This year", key="jobs_qp_year", use_container_width=True):
+    if st.button("本年至今", key="jobs_qp_year", use_container_width=True):
         _apply_quick_range(date(_today.year, 1, 1), _today)
 with qp_col5:
-    if st.button("Clear dates", key="jobs_qp_clear", use_container_width=True):
+    if st.button("清除日期", key="jobs_qp_clear", use_container_width=True):
         _apply_quick_range(None, None)
 
 # Reset to page 1 whenever filters change.
@@ -211,16 +253,22 @@ _qp_write("page", st.session_state.get("jobs_page", "1"))
 # Active filter chips
 # ---------------------------------------------------------------------------
 _active: list[tuple[str, str]] = []  # (label, key)
+_VALUE_LABEL_MAPS: dict[str, dict[str, str]] = {
+    "type": _TYPE_LABELS,
+    "status": _STATUS_LABELS,
+    "source": _SOURCE_LABELS,
+}
 for k in ("type", "status", "source"):
     v = st.session_state[f"jobs_{k}"]
     if v != "all":
-        _active.append((f"{k}: {v}", k))
+        label_value = _VALUE_LABEL_MAPS[k].get(v, v)
+        _active.append((f"{_FILTER_KEY_LABELS[k]}: {label_value}", k))
 if search.strip():
-    _active.append((f"search: {search.strip()}", "search"))
+    _active.append((f"{_FILTER_KEY_LABELS['search']}: {search.strip()}", "search"))
 if date_from_iso:
-    _active.append((f"from: {date_from_iso}", "date_from"))
+    _active.append((f"{_FILTER_KEY_LABELS['date_from']}: {date_from_iso}", "date_from"))
 if date_to_iso:
-    _active.append((f"to: {date_to_iso}", "date_to"))
+    _active.append((f"{_FILTER_KEY_LABELS['date_to']}: {date_to_iso}", "date_to"))
 
 if _active:
     chip_cols = st.columns(len(_active) + 1)
@@ -243,7 +291,7 @@ if _active:
                     st.session_state["jobs_date_to_widget"] = None
                 st.rerun()
     with chip_cols[-1]:
-        if st.button("Clear all", key="jobs_chips_clear_all", use_container_width=True):
+        if st.button("清除全部", key="jobs_chips_clear_all", use_container_width=True):
             for k in ("type", "status", "source"):
                 st.session_state[f"jobs_{k}"] = "all"
             st.session_state["jobs_search"] = ""
@@ -277,8 +325,8 @@ try:
     )
 except Exception as exc:
     render_error_state(
-        "Couldn't load jobs",
-        "The job list service didn't respond.",
+        "无法加载作业列表",
+        "作业列表服务暂时无响应。",
         error=str(exc),
         on_retry="window.location.reload()",
     )
@@ -292,11 +340,13 @@ if total > 0:
     by_type: dict[str, int] = {}
     for item in items:
         by_type[item.type] = by_type.get(item.type, 0) + 1
-    summary_parts = [f"{count} {t}" for t, count in sorted(by_type.items())]
+    summary_parts = [
+        f"{count} 个{_TYPE_LABELS.get(t, t)}" for t, count in sorted(by_type.items())
+    ]
     st.caption(
-        f"Showing {len(items)} of {total} · "
+        f"显示 {len(items)} / {total} 条 · "
         + " · ".join(summary_parts)
-        + (f" · {running_count} running" if running_count else "")
+        + (f" · {running_count} 个运行中" if running_count else "")
     )
 
 # ---------------------------------------------------------------------------
@@ -305,9 +355,9 @@ if total > 0:
 if total == 0 and not _active:
     render_empty_state(
         "\U0001f4cb",
-        "No jobs yet",
-        "Get started by running your first pipeline or fetching data.",
-        action_label="Config & Run",
+        "暂无作业",
+        "通过「配置运行」启动你的第一个流水线，或在「Tushare 数据」拉取数据。",
+        action_label="配置运行",
         action_on_click="window.location.href='/config_run'",
     )
     st.stop()
@@ -315,8 +365,8 @@ if total == 0 and not _active:
 if total == 0:
     render_empty_state(
         "\U0001f50d",
-        "No jobs match your filters",
-        "Try widening your filters or clearing the search.",
+        "没有符合筛选条件的作业",
+        "请放宽筛选条件或清除搜索关键字。",
     )
     st.stop()
 
@@ -342,20 +392,20 @@ rows: list[dict[str, Any]] = []
 for item in items:
     rows.append(
         {
-            "Status": f"{_STATUS_ICONS.get(item.status, '')} {item.status}",
-            "Run ID": item.run_id[:14] + ("…" if len(item.run_id) > 14 else ""),
-            "Type": f"{_TYPE_ICONS.get(item.type, '')} {item.type.replace('_', ' ').title()}",
-            "Created": format_relative_time(item.created_at) if item.created_at else "—",
-            "Duration": (
+            "状态": f"{_STATUS_ICONS.get(item.status, '')} {_STATUS_LABELS.get(item.status, item.status)}",
+            "运行 ID": item.run_id[:14] + ("…" if len(item.run_id) > 14 else ""),
+            "类型": f"{_TYPE_ICONS.get(item.type, '')} {_TYPE_LABELS.get(item.type, item.type)}",
+            "创建时间": format_relative_time(item.created_at) if item.created_at else "—",
+            "耗时": (
                 format_duration(item.duration_seconds) if item.duration_seconds else ""
             ),
-            "Key Metric": (
+            "关键指标": (
                 f"{item.key_metric_label}: {item.key_metric_value}"
                 if item.key_metric_label
                 else "—"
             ),
-            "Config": " · ".join(item.config_summary.values()) if item.config_summary else "—",
-            "Source": item.source.upper(),
+            "配置": " · ".join(item.config_summary.values()) if item.config_summary else "—",
+            "来源": item.source.upper(),
         }
     )
 
@@ -367,14 +417,14 @@ df = pd.DataFrame(rows)
 event = st.dataframe(
     df,
     column_config={
-        "Status": st.column_config.TextColumn("Status", width="small"),
-        "Run ID": st.column_config.TextColumn("Run ID", width="small"),
-        "Type": st.column_config.TextColumn("Type", width="small"),
-        "Created": st.column_config.TextColumn("Created", width="small"),
-        "Duration": st.column_config.TextColumn("Duration", width="small"),
-        "Key Metric": st.column_config.TextColumn("Key Metric"),
-        "Config": st.column_config.TextColumn("Config"),
-        "Source": st.column_config.TextColumn("Source", width="small"),
+        "状态": st.column_config.TextColumn("状态", width="small"),
+        "运行 ID": st.column_config.TextColumn("运行 ID", width="small"),
+        "类型": st.column_config.TextColumn("类型", width="small"),
+        "创建时间": st.column_config.TextColumn("创建时间", width="small"),
+        "耗时": st.column_config.TextColumn("耗时", width="small"),
+        "关键指标": st.column_config.TextColumn("关键指标"),
+        "配置": st.column_config.TextColumn("配置"),
+        "来源": st.column_config.TextColumn("来源", width="small"),
     },
     hide_index=True,
     height=480,
@@ -402,9 +452,10 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
     st.markdown("---")
     sel_col1, sel_col2 = st.columns([6, 6])
     with sel_col1:
-        render_badge("info", f"Selected: {selected.run_id}")
+        render_badge("info", f"已选: {selected.run_id}")
         st.caption(
-            f"{selected.type} · {selected.status} · created "
+            f"{_TYPE_LABELS.get(selected.type, selected.type)} · "
+            f"{_STATUS_LABELS.get(selected.status, selected.status)} · 创建于 "
             + (
                 format_date_absolute(selected.created_at, style="datetime")
                 if selected.created_at
@@ -415,7 +466,7 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
         act_open, act_copy = st.columns(2)
         with act_open:
             if st.button(
-                "▶ Open detail",
+                "▶ 查看详情",
                 key=f"jobs_open_{selected.run_id}",
                 type="primary",
                 use_container_width=True,
@@ -439,7 +490,7 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     'type="button" onclick="(function() {'
                     f'const el = window.parent.document.getElementById({copy_id!r});'
                     "if (el) { el.select(); document.execCommand && document.execCommand('copy'); }"
-                    '})()">📋 Copy Run ID</button>'
+                    '})()">📋 复制运行 ID</button>'
                     f'<input id={copy_id!r} class="qv2-sr-only" readonly '
                     f'value="{selected.run_id}" />'
                 ),
@@ -452,7 +503,7 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
 # ---------------------------------------------------------------------------
 _showing = _page * _page_size
 if _showing < total:
-    if st.button(f"Load more ({total - _showing} remaining)", key="jobs_load_more"):
+    if st.button(f"加载更多（剩余 {total - _showing} 条）", key="jobs_load_more"):
         st.session_state["jobs_page"] = str(_page + 1)
         st.rerun()
 
@@ -461,8 +512,7 @@ if _showing < total:
 # ---------------------------------------------------------------------------
 if running_count > 0:
     autorefresh = st.checkbox(
-        f"Auto-refresh every 5s while {running_count} job"
-        f"{'s' if running_count != 1 else ''} running",
+        f"{running_count} 个作业运行中 · 每 5 秒自动刷新",
         value=st.session_state.get("jobs_autorefresh", "0") == "1",
         key="jobs_autorefresh_widget",
     )

@@ -34,11 +34,11 @@ def _parse_instruments(raw: str) -> str | list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-render_breadcrumbs([("Run", None)])
+render_breadcrumbs([("运行", None)])
 render_page_header(
-    "Tushare Data",
-    "Pull A-share daily data into a local qlib bin store. "
-    "Use the resulting path as ``provider_uri`` on the Config & Run page.",
+    "Tushare 数据",
+    "把 A 股日频数据拉到本地 qlib bin 存储里。完成后将产出的目录路径填到"
+    "「配置运行」页面的 ``provider_uri`` 字段。",
 )
 
 # ---------------------------------------------------------------------------
@@ -49,20 +49,19 @@ token_present = bool(os.environ.get("TUSHARE_TOKEN", "").strip())
 if not token_present:
     render_empty_state(
         "\U0001f6e1",
-        "TUSHARE_TOKEN not set",
-        "Set TUSHARE_TOKEN in the operator's environment before pulling data. "
-        "The token must never appear in YAML, config files, or commits.",
+        "未设置 TUSHARE_TOKEN",
+        "拉取数据前请在运维环境里设置 TUSHARE_TOKEN。"
+        "该令牌严禁出现在 YAML、配置文件或提交记录中。",
     )
     st.caption(
-        "Tip: add `TUSHARE_TOKEN=…` to your `.env` (already gitignored) "
-        "and restart `streamlit run`."
+        "提示：把 `TUSHARE_TOKEN=…` 加进 `.env`（已在 .gitignore 中），"
+        "然后重启 `streamlit run`。"
     )
     st.stop()
 
-render_badge("success", "TUSHARE_TOKEN present")
+render_badge("success", "TUSHARE_TOKEN 已配置")
 st.caption(
-    "The token stays in the operator's environment. Pull requests, "
-    "logs, and saved artifacts never reproduce its value."
+    "令牌只保留在运维环境里。Pull request、日志、产物里都不会再现它的值。"
 )
 
 # ---------------------------------------------------------------------------
@@ -72,37 +71,37 @@ with st.form("tushare_provider_form"):
     tc1, tc2 = st.columns(2)
     with tc1:
         ts_start_date = st.text_input(
-            "start_date",
+            "起始日期 (start_date)",
             value="2025-01-01",
-            help="Inclusive ISO date.",
+            help="ISO 日期，含本日。",
         )
         ts_end_date = st.text_input(
-            "end_date",
+            "结束日期 (end_date)",
             value="2025-01-31",
-            help="Inclusive ISO date.",
+            help="ISO 日期，含本日。",
         )
         ts_instruments = st.text_input(
-            "instruments",
+            "标的池 (instruments)",
             value="all",
-            help="Use ``all`` or comma-separated qlib/Tushare codes (e.g. SH600519,SZ300750).",
+            help="填 ``all`` 表示全市场，或逗号分隔 qlib/Tushare 代码（例：SH600519,SZ300750）。",
         )
     with tc2:
         ts_adjust_mode = st.selectbox(
-            "data_adjust_mode",
+            "复权模式 (data_adjust_mode)",
             [ADJUST_MODE_PRE, ADJUST_MODE_POST, ADJUST_MODE_NONE],
-            help="Pre / post / none corresponds to qlib's adjust modes.",
+            help="前复权 / 后复权 / 不复权，对应 qlib 的 adjust mode。",
         )
         include_hs300 = st.checkbox(
-            "include SH000300 benchmark",
+            "包含沪深 300 基准 (SH000300)",
             value=True,
-            help="Adds the CSI300 index series to the bin store under SH000300.",
+            help="在 bin 存储里同时写入沪深 300 指数序列，作为基准。",
         )
         reuse_staged = st.checkbox(
-            "reuse_staged",
+            "复用已暂存的 Parquet (reuse_staged)",
             value=True,
-            help="Reuse previously staged Parquet files when possible.",
+            help="如果存在之前已下载的 Parquet 快照，跳过重复下载直接复用。",
         )
-    pull_tushare = st.form_submit_button("Pull Tushare Data")
+    pull_tushare = st.form_submit_button("拉取 Tushare 数据")
 
 if pull_tushare:
     tushare_config: dict = {
@@ -121,8 +120,8 @@ if pull_tushare:
     except (ValueError, JobManagerError) as exc:
         st.error(str(exc))
         st.stop()
-    st.success(f"Tushare ingest job started: {job_id}")
+    st.success(f"Tushare 拉取作业已启动：{job_id}")
     st.info(
-        f"After success, use ``output/operator_ui/results/{job_id}/qlib_provider`` "
-        "as ``provider_uri`` on the Config & Run page."
+        f"完成后，把 ``output/operator_ui/results/{job_id}/qlib_provider`` "
+        "作为「配置运行」页的 ``provider_uri``。"
     )

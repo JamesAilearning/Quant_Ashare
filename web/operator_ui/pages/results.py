@@ -392,17 +392,17 @@ def _render_status_header(
           <div class="qv2-header-row">
             <div>
               <div class="qv2-run-id">
-                Pipeline Result
+                流水线结果
                 <span class="qv2-badge {status_class}" role="status" aria-live="polite">{_safe_html(status)}</span>
               </div>
-              <div class="qv2-muted">Job: {_safe_html(job_id)}</div>
-              <div class="qv2-muted">Run directory: {_safe_html(run_dir_text)}</div>
+              <div class="qv2-muted">作业：{_safe_html(job_id)}</div>
+              <div class="qv2-muted">运行目录：{_safe_html(run_dir_text)}</div>
             </div>
             <div class="qv2-muted">
-              <div>Started: {_safe_html(started)}</div>
-              <div>Ended: {_safe_html(ended)}</div>
-              <div>Duration: {_safe_html(duration)}</div>
-              <div>Report generated: {_safe_html(generated_at)}</div>
+              <div>开始：{_safe_html(started)}</div>
+              <div>结束：{_safe_html(ended)}</div>
+              <div>耗时：{_safe_html(duration)}</div>
+              <div>报告生成于：{_safe_html(generated_at)}</div>
             </div>
           </div>
         </div>
@@ -413,20 +413,20 @@ def _render_status_header(
     if str(job.get("status") or status).lower() == "failed":
         error = job.get("error") or job.get("stop_error") or f"returncode={job.get('returncode')}"
         st.markdown(
-            f"<div class='qv2-error'>This job failed: {_safe_html(error)}</div>",
+            f"<div class='qv2-error'>此作业已失败：{_safe_html(error)}</div>",
             unsafe_allow_html=True,
         )
 
     nav_cols = st.columns([1, 2, 3])
     with nav_cols[0]:
-        if st.button("Back to Jobs"):
+        if st.button("返回作业列表"):
             st.query_params.clear()
             st.switch_page("pages/jobs.py")
     with nav_cols[1]:
         rid_cols = st.columns([4, 1])
         with rid_cols[0]:
             st.text_input(
-                "Run ID (copyable)",
+                "运行 ID（可复制）",
                 value="" if job_id == MISSING else job_id,
                 key=f"copy_run_id_{job_id}",
             )
@@ -438,16 +438,16 @@ def _render_status_header(
             if st.button(
                 "📋",
                 key=f"copy_run_id_btn_{job_id}",
-                help="Copy Run ID to clipboard",
+                help="复制运行 ID 到剪贴板",
                 use_container_width=True,
             ):
                 st.session_state["results_clipboard_payload"] = job_id
-                st.session_state["results_clipboard_toast"] = "Run ID copied"
+                st.session_state["results_clipboard_toast"] = "已复制运行 ID"
     with nav_cols[2]:
         rd_cols = st.columns([4, 1])
         with rd_cols[0]:
             st.text_input(
-                "Run directory (copyable)",
+                "运行目录（可复制）",
                 value="" if run_dir_text == MISSING else run_dir_text,
                 key=f"copy_run_dir_{job_id}",
             )
@@ -459,11 +459,11 @@ def _render_status_header(
             if st.button(
                 "📋",
                 key=f"copy_run_dir_btn_{job_id}",
-                help="Copy run directory path to clipboard",
+                help="复制运行目录路径到剪贴板",
                 use_container_width=True,
             ):
                 st.session_state["results_clipboard_payload"] = run_dir_text
-                st.session_state["results_clipboard_toast"] = "Run directory copied"
+                st.session_state["results_clipboard_toast"] = "已复制运行目录"
 
     # Clipboard write + toast — drained on next render after a copy button click.
     _clipboard_payload = st.session_state.pop("results_clipboard_payload", "")
@@ -500,7 +500,7 @@ def _render_status_header(
 
     if config_bytes:
         st.download_button(
-            "Download config.yaml",
+            "下载 config.yaml",
             data=config_bytes,
             file_name="config.yaml",
             mime="text/yaml",
@@ -517,13 +517,13 @@ def _render_header_actions(
 ) -> None:
     action_cols = st.columns([1, 1, 1, 1])
     with action_cols[0]:
-        if st.button("Re-run with this config", disabled=not config_bytes):
+        if st.button("用此配置重跑", disabled=not config_bytes):
             st.session_state["prefill_config_yaml"] = config_bytes.decode("utf-8", errors="replace")
             st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
             st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
     with action_cols[1]:
         st.download_button(
-            "Export metrics CSV",
+            "导出指标 CSV",
             data=metrics_csv_bytes(metrics),
             file_name=f"{job.get('job_id', 'pipeline')}_metrics.csv",
             mime="text/csv",
@@ -543,7 +543,7 @@ def _render_header_actions(
             except RuntimeError as exc:
                 pdf_error = str(exc)
         st.download_button(
-            "Export PDF report",
+            "导出 PDF 报告",
             data=pdf_bytes,
             file_name=f"{job.get('job_id', 'pipeline')}_summary.pdf",
             mime="application/pdf",
@@ -558,25 +558,25 @@ def _render_header_actions(
             except (OSError, ValueError):
                 bundle_bytes = b""
         st.download_button(
-            "Export full bundle",
+            "导出完整压缩包",
             data=bundle_bytes,
             file_name=f"{job.get('job_id', 'pipeline')}_bundle.zip",
             mime="application/zip",
             disabled=not bundle_bytes,
         )
 
-    with st.expander("Keyboard shortcuts", expanded=False):
+    with st.expander("键盘快捷键", expanded=False):
         st.markdown(
             """
-            - `?`: open shortcut help in this section.
-            - `j` / `k`: move to the next / previous job from the Run selector.
-            - `r`: re-run this job from the Config & Run page.
-            - `e`: use the export buttons above.
-            - `1`-`5`: switch between Holdings, Trades, Config, Stage Timings, and Logs.
-            - `/`: use Search holdings, Search trades, or Search logs fields.
+            - `?`：在此处打开快捷键帮助。
+            - `j` / `k`：在「运行」选择器里跳到下一个 / 上一个作业。
+            - `r`：跳到「配置运行」页面用此作业重跑。
+            - `e`：使用上方的导出按钮。
+            - `1`-`5`：在「持仓 / 交易 / 配置 / 阶段耗时 / 日志」之间切换。
+            - `/`：聚焦到「搜索持仓 / 搜索交易 / 搜索日志」输入框。
 
-            Streamlit does not expose global key handlers without a custom
-            component, so these are mirrored as visible buttons and tabs.
+            Streamlit 没有暴露全局键盘事件接口，因此这些快捷键以可见按钮和
+            标签的形式呈现，需要用鼠标点击。
             """
         )
 
@@ -586,13 +586,13 @@ def _render_artifact_issues(issues: Sequence[ArtifactReadIssue]) -> None:
         return
 
     st.markdown(
-        '<div class="qv2-section-title">Artifact Read Issues</div>',
+        '<div class="qv2-section-title">产物读取问题</div>',
         unsafe_allow_html=True,
     )
     for issue in issues:
         st.error(
             f"{issue.artifact_name}: {issue.error_type}: {issue.message} "
-            f"(path: {issue.path or MISSING})"
+            f"(路径：{issue.path or MISSING})"
         )
 
 
@@ -639,10 +639,10 @@ def _render_kpis(
         risk = {}
 
     ann_return = _first(metrics, [("performance", "annual_return")])
-    ann_return_label = "Primary: annual return"
+    ann_return_label = "主指标：年化收益"
     if ann_return is None:
         ann_return = _first(metrics, [("performance", "annual_excess_return_with_cost")])
-        ann_return_label = "Primary: annual excess return with cost"
+        ann_return_label = "主指标：扣费后年化超额收益"
     if ann_return is None:
         ann_return = risk.get("annualized_return")
     max_drawdown = _first(metrics, [("risk", "max_drawdown")])
@@ -666,28 +666,28 @@ def _render_kpis(
     cols = st.columns(3)
     with cols[0]:
         _render_card(
-            "Performance",
+            "收益",
             _fmt_percent(ann_return, signed=True),
             _metric_color(ann_return),
             [
                 ann_return_label,
-                f"Information Ratio: {_fmt_number(information_ratio)}",
-                f"Sharpe: {_fmt_number(sharpe)}",
-                f"Benchmark: {_fmt_text(benchmark_code)}",
+                f"信息比率（IR）：{_fmt_number(information_ratio)}",
+                f"夏普比率：{_fmt_number(sharpe)}",
+                f"基准：{_fmt_text(benchmark_code)}",
             ],
-            help_text="Performance card: return and risk-adjusted metrics copied from existing run artifacts.",
+            help_text="收益卡片：年化收益、信息比率、夏普等指标，全部来源于运行产物。",
         )
     with cols[1]:
         _render_card(
-            "Risk",
+            "风险",
             _fmt_percent(max_drawdown, signed=True),
             " qv2-negative" if _finite_float(max_drawdown) is not None else "",
             [
-                f"Annual volatility: {_fmt_percent(volatility)}",
-                f"Metric status: {_fmt_text(report.get('metric_status'))}",
-                f"Official path: {_fmt_text(report.get('official_backtest_path'))}",
+                f"年化波动率：{_fmt_percent(volatility)}",
+                f"指标状态：{_fmt_text(report.get('metric_status'))}",
+                f"官方回测路径：{_fmt_text(report.get('official_backtest_path'))}",
             ],
-            help_text="Risk card: drawdown and volatility fields copied from metrics/report artifacts.",
+            help_text="风险卡片：最大回撤与波动率字段，来源于 metrics / report 产物。",
         )
     with cols[2]:
         position_days = _first(metrics, [("trading", "positions_days")])
@@ -700,15 +700,15 @@ def _render_kpis(
             if latest_count is None and isinstance(latest_positions, Mapping):
                 latest_count = len(latest_positions)
         _render_card(
-            "Trading",
+            "交易",
             f"TopK {_fmt_text(config_section.get('topk') if config_section else config.get('topk'))}",
             "",
             [
-                f"N drop: {_fmt_text(config_section.get('n_drop') if config_section else config.get('n_drop'))}",
-                f"Position days: {_fmt_int(position_days)}",
-                f"Latest holdings: {_fmt_int(latest_count)}",
+                f"换出数（n_drop）：{_fmt_text(config_section.get('n_drop') if config_section else config.get('n_drop'))}",
+                f"持仓天数：{_fmt_int(position_days)}",
+                f"最新持仓数：{_fmt_int(latest_count)}",
             ],
-            help_text="Trading card: displayed position metadata only; no trades are reconstructed in the UI.",
+            help_text="交易卡片：仅展示持仓元数据，UI 不在本地重建交易序列。",
         )
 
 
@@ -722,10 +722,10 @@ def _chart_by_token(charts: Mapping[str, Path], *tokens: str) -> tuple[str, Path
 
 
 def _render_charts(run_dir: Path | None) -> None:
-    st.markdown('<div class="qv2-section-title">Charts</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-section-title">图表</div>', unsafe_allow_html=True)
     if run_dir is None:
         st.markdown(
-            '<div class="qv2-empty">Charts will appear after the run directory is created.</div>',
+            '<div class="qv2-empty">作业运行目录尚未创建，图表暂不可用。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -733,7 +733,7 @@ def _render_charts(run_dir: Path | None) -> None:
     charts = discover_charts(run_dir)
     if not charts:
         st.markdown(
-            '<div class="qv2-empty">No generated PNG charts found yet.</div>',
+            '<div class="qv2-empty">尚未发现已生成的 PNG 图表。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -746,7 +746,7 @@ def _render_charts(run_dir: Path | None) -> None:
     if equity is not None:
         label, path = equity
         used.add(label)
-        st.subheader("Net Asset Value")
+        st.subheader("净值曲线")
         st.image(str(path), use_container_width=True)
 
     chart_cols = st.columns(2)
@@ -754,18 +754,18 @@ def _render_charts(run_dir: Path | None) -> None:
         label, path = drawdown
         used.add(label)
         with chart_cols[0]:
-            st.subheader("Drawdown")
+            st.subheader("回撤")
             st.image(str(path), use_container_width=True)
     if monthly is not None:
         label, path = monthly
         used.add(label)
         with chart_cols[1]:
-            st.subheader("Monthly Returns")
+            st.subheader("月度收益")
             st.image(str(path), use_container_width=True)
 
     remaining = [(label, path) for label, path in charts.items() if label not in used]
     if remaining:
-        with st.expander("Other generated charts", expanded=False):
+        with st.expander("其他已生成的图表", expanded=False):
             for label, path in remaining:
                 st.subheader(label)
                 st.image(str(path), use_container_width=True)
@@ -814,9 +814,9 @@ def _read_nav_frame(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> An
 def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> None:
     if holdings_frame is not None and not holdings_frame.empty:
         dates = sorted(str(value)[:10] for value in holdings_frame["date"].dropna().unique())
-        selected_date = st.selectbox("Position date", dates, index=len(dates) - 1)
-        search = st.text_input("Search holdings", value="", placeholder="Stock code")
-        top_n = st.number_input("Show top holdings", value=100, min_value=1, max_value=1000)
+        selected_date = st.selectbox("持仓日期", dates, index=len(dates) - 1)
+        search = st.text_input("搜索持仓", value="", placeholder="股票代码")
+        top_n = st.number_input("显示前 N 大持仓", value=100, min_value=1, max_value=1000)
         filtered = holdings_frame[
             holdings_frame["date"].astype(str).str.slice(0, 10) == selected_date
         ]
@@ -827,7 +827,7 @@ def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> N
         filtered = filtered.sort_values("rank", kind="stable").head(int(top_n))
         st.dataframe(filtered, use_container_width=True, hide_index=True)
         st.download_button(
-            "Export holdings CSV",
+            "导出持仓 CSV",
             data=filtered.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"holdings_{selected_date}.csv",
             mime="text/csv",
@@ -835,20 +835,20 @@ def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> N
         return
 
     if not positions:
-        st.info("Holdings will appear after holdings.parquet or positions.json is written.")
+        st.info("等 holdings.parquet 或 positions.json 落盘后，持仓数据会出现在这里。")
         return
 
     dates = sorted(str(key) for key in positions.keys())
-    selected_date = st.selectbox("Position date", dates, index=len(dates) - 1)
+    selected_date = st.selectbox("持仓日期", dates, index=len(dates) - 1)
     date_positions = positions.get(selected_date)
     if not isinstance(date_positions, Mapping) or not date_positions:
-        st.info("No holdings for the selected date.")
+        st.info("该日期没有持仓记录。")
         return
 
     import pandas as pd
 
     rows = [
-        {"Instrument": str(instrument), "Weight": _finite_float(weight)}
+        {"标的": str(instrument), "权重": _finite_float(weight)}
         for instrument, weight in sorted(date_positions.items(), key=lambda item: str(item[0]))
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -856,31 +856,30 @@ def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> N
 
 def _render_trades_tab(trades_frame: Any) -> None:
     if trades_frame is None:
-        st.info("A trade-log artifact is not available for this run yet.")
+        st.info("本次运行尚未生成交易日志产物。")
         return
     if trades_frame.empty:
         st.info(
-            "trades.parquet exists, but the current canonical runtime does "
-            "not expose trade-level fills yet."
+            "trades.parquet 文件存在，但当前规范化运行时还未导出逐笔成交。"
         )
         return
     frame = trades_frame.copy()
     if "date" in frame and not frame.empty:
         dates = sorted(str(value)[:10] for value in frame["date"].dropna().unique())
-        selected_dates = st.multiselect("Trade dates", dates, default=dates)
+        selected_dates = st.multiselect("交易日期", dates, default=dates)
         if selected_dates:
             frame = frame[frame["date"].astype(str).str.slice(0, 10).isin(selected_dates)]
     if "side" in frame and not frame.empty:
         sides = sorted(str(value) for value in frame["side"].dropna().unique())
-        selected_sides = st.multiselect("Side", sides, default=sides)
+        selected_sides = st.multiselect("方向", sides, default=sides)
         if selected_sides:
             frame = frame[frame["side"].astype(str).isin(selected_sides)]
-    search = st.text_input("Search trades", value="", placeholder="Stock code")
+    search = st.text_input("搜索交易", value="", placeholder="股票代码")
     if search.strip() and "stock" in frame:
         frame = frame[frame["stock"].astype(str).str.contains(search.strip(), case=False, na=False)]
     st.dataframe(frame, use_container_width=True, hide_index=True)
     st.download_button(
-        "Export trades CSV",
+        "导出交易 CSV",
         data=frame.to_csv(index=False).encode("utf-8-sig"),
         file_name="trades.csv",
         mime="text/csv",
@@ -888,10 +887,10 @@ def _render_trades_tab(trades_frame: Any) -> None:
 
 
 def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
-    st.markdown('<div class="qv2-section-title">Net Asset Value</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-section-title">净值曲线</div>', unsafe_allow_html=True)
     if nav_frame is None or nav_frame.empty:
         st.markdown(
-            '<div class="qv2-empty">Backtest NAV artifact is not available yet.</div>',
+            '<div class="qv2-empty">回测 NAV 产物尚未生成。</div>',
             unsafe_allow_html=True,
         )
         _render_charts(run_dir)
@@ -900,12 +899,12 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     try:
         import plotly.graph_objects as go
     except ImportError:
-        st.warning("plotly is not installed; falling back to generated PNG charts.")
+        st.warning("未安装 plotly，回退到生成的 PNG 图表。")
         _render_charts(run_dir)
         return
 
     range_label = st.radio(
-        "Displayed time range",
+        "显示时间范围",
         TIME_RANGE_OPTIONS,
         horizontal=True,
         key="pipeline_result_time_range",
@@ -913,7 +912,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     frame = filter_nav_frame_by_range(nav_frame, range_label)
     if frame is None or frame.empty:
         st.markdown(
-            '<div class="qv2-empty">No NAV rows are available for the selected time range.</div>',
+            '<div class="qv2-empty">所选时间范围内没有净值数据。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -923,7 +922,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
         x=frame["date"],
         y=frame["strategy_nav"],
         mode="lines",
-        name="Strategy NAV",
+        name="策略净值",
         line={"width": 2.4, "color": PLOTLY_STRATEGY_COLOR},
     ))
     if "benchmark_nav" in frame and frame["benchmark_nav"].notna().any():
@@ -931,7 +930,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             x=frame["date"],
             y=frame["benchmark_nav"],
             mode="lines",
-            name="Benchmark NAV",
+            name="基准净值",
             line={"width": 1.8, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dash"},
         ))
     nav_axis: dict[str, Any] = {"title": "NAV"}
@@ -948,14 +947,14 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     )
     st.plotly_chart(nav_fig, use_container_width=True)
 
-    st.markdown('<div class="qv2-section-title">Drawdown</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-section-title">回撤</div>', unsafe_allow_html=True)
     dd_fig = go.Figure()
     if "strategy_drawdown" in frame:
         dd_fig.add_trace(go.Scatter(
             x=frame["date"],
             y=frame["strategy_drawdown"],
             mode="lines",
-            name="Strategy Drawdown",
+            name="策略回撤",
             fill="tozeroy",
             line={"width": 2.0, "color": PLOTLY_DRAWDOWN_COLOR},
         ))
@@ -964,14 +963,14 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             x=frame["date"],
             y=frame["benchmark_drawdown"],
             mode="lines",
-            name="Benchmark Drawdown",
+            name="基准回撤",
             line={"width": 1.5, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dash"},
         ))
     dd_fig.update_layout(
         height=320,
         hovermode="x unified",
         margin={"l": 36, "r": 20, "t": 20, "b": 36},
-        yaxis={"title": "Drawdown", "tickformat": ".1%"},
+        yaxis={"title": "回撤", "tickformat": ".1%"},
         xaxis={"title": ""},
         legend={"orientation": "h", "yanchor": "bottom", "y": -0.28, "xanchor": "left", "x": 0},
     )
@@ -982,7 +981,7 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
     rows = metrics.get("monthly_returns")
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or not rows:
         st.markdown(
-            '<div class="qv2-empty">Monthly returns are not available yet.</div>',
+            '<div class="qv2-empty">月度收益数据暂不可用。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -1019,7 +1018,7 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
                 ],
                 zmid=0,
                 colorbar={"tickformat": ".1%"},
-                hovertemplate="Year %{y}<br>Month %{x}<br>Strategy %{z:.2%}<extra></extra>",
+                hovertemplate="年份 %{y}<br>月份 %{x}<br>策略 %{z:.2%}<extra></extra>",
             ))
             fig.update_layout(
                 height=260,
@@ -1029,7 +1028,7 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
             )
             st.plotly_chart(fig, use_container_width=True)
         except (ImportError, ValueError, TypeError):
-            st.info("Monthly heatmap is unavailable; showing the artifact rows as a table.")
+            st.info("月度热力图暂不可用，以下以表格形式展示原始数据。")
 
     display = frame.copy()
     for column in ("strategy", "benchmark"):
@@ -1040,19 +1039,19 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
 
 def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Mapping[str, Any]) -> None:
     if not config_bytes:
-        st.info("config.yaml is not available for this job.")
+        st.info("本作业的 config.yaml 暂不可用。")
         if config:
             st.json(config)
         return
 
     st.download_button(
-        "Download exact runtime config",
+        "下载精确运行配置",
         data=config_bytes,
         file_name="config.yaml",
         mime="text/yaml",
         key="detail_config_download",
     )
-    st.caption(f"Source: {_fmt_text(config_path)}")
+    st.caption(f"来源：{_fmt_text(config_path)}")
     try:
         config_text = config_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -1079,15 +1078,15 @@ def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any], metad
 def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) -> None:
     job_dir = _job_dir(job)
     if job_dir is None:
-        st.info("Job log directory is not available.")
+        st.info("作业日志目录暂不可用。")
         return
 
-    search = st.text_input("Search logs", value="", placeholder="Type text to filter log lines")
+    search = st.text_input("搜索日志", value="", placeholder="输入文本过滤日志行")
     levels = st.multiselect(
-        "Severity",
+        "严重等级",
         LOG_LEVEL_OPTIONS,
         default=list(LOG_LEVEL_OPTIONS),
-        help="When all levels are selected, untagged log lines remain visible.",
+        help="全选时不带等级标签的日志行也会显示。",
     )
     any_log = False
     any_match = False
@@ -1103,17 +1102,17 @@ def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) ->
         with st.expander(name, expanded=name in {"stderr.log", "runner_stderr.log"}):
             st.caption(str(path))
             st.caption(
-                f"Showing {len(filtered_text.splitlines())} of {len(text.splitlines())} log lines."
+                f"显示 {len(filtered_text.splitlines())} / {len(text.splitlines())} 行日志。"
             )
             if filtered_text:
                 st.code(filtered_text, language="text")
             else:
-                st.info("No log lines match the current filters.")
+                st.info("没有日志行符合当前筛选条件。")
 
     if not any_log:
-        st.info("Log files are empty or have not been written yet.")
+        st.info("日志文件尚未生成或为空。")
     elif not any_match:
-        st.info("No logs match the current search and severity filters.")
+        st.info("没有日志符合当前搜索关键字和严重等级筛选。")
 
 
 def _filter_json_by_query(obj: Any, query: str) -> Any:
@@ -1169,31 +1168,28 @@ def _render_raw_tab(
     # the reports for a single metric like "sharpe" or "max_drawdown"
     # without wanting to dig through every artifact tree by hand.
     raw_query = st.text_input(
-        "Search Raw JSON",
+        "搜索原始 JSON",
         key="results_raw_json_query",
-        placeholder="e.g. sharpe, drawdown, fold_…",
-        help=(
-            "Case-insensitive substring filter applied across all keys "
-            "and scalar values. Empty input shows everything."
-        ),
+        placeholder="例如：sharpe、drawdown、fold_…",
+        help="不区分大小写的子串过滤，覆盖所有 key 与标量值。留空显示全部。",
     )
 
     def _render_panel(label: str, payload: Mapping[str, Any] | None, empty_msg: str) -> None:
-        with st.expander(f"Raw {label}", expanded=False):
+        with st.expander(f"原始 {label}", expanded=False):
             if not payload:
                 st.info(empty_msg)
                 return
             shown = _filter_json_by_query(dict(payload), raw_query)
             if raw_query and not shown:
-                st.caption(f"No matches for '{raw_query}' in {label}.")
+                st.caption(f"在 {label} 里没有匹配 '{raw_query}' 的内容。")
             else:
                 st.json(shown if shown is not None else {})
 
-    _render_panel("metadata.json", metadata, "metadata.json is not available yet.")
-    _render_panel("metrics.json", metrics, "metrics.json is not available yet.")
-    _render_panel("pipeline_report.json", report, "pipeline_report.json is not available yet.")
-    _render_panel("job metadata", dict(job), "Job metadata is not available yet.")
-    _render_panel("positions.json", positions, "positions.json is not available yet.")
+    _render_panel("metadata.json", metadata, "metadata.json 暂不可用。")
+    _render_panel("metrics.json", metrics, "metrics.json 暂不可用。")
+    _render_panel("pipeline_report.json", report, "pipeline_report.json 暂不可用。")
+    _render_panel("作业元数据", dict(job), "作业元数据暂不可用。")
+    _render_panel("positions.json", positions, "positions.json 暂不可用。")
 
 
 def _render_pipeline_dashboard(
@@ -1236,10 +1232,10 @@ def _render_pipeline_dashboard(
 
     _render_kpis(report, metrics, positions, config)
     _render_interactive_charts(nav_frame, run_dir)
-    st.markdown('<div class="qv2-section-title">Monthly Returns</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-section-title">月度收益</div>', unsafe_allow_html=True)
     _render_monthly_returns(metrics)
 
-    tabs = st.tabs(["Holdings", "Trades", "Config", "Stage Timings", "Logs", "Raw JSON"])
+    tabs = st.tabs(["持仓", "交易", "配置", "阶段耗时", "日志", "原始 JSON"])
     with tabs[0]:
         _render_holdings_tab(holdings_frame, positions)
     with tabs[1]:
@@ -1255,30 +1251,30 @@ def _render_pipeline_dashboard(
 
 
 def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
-    st.header("Walk-Forward Report")
+    st.header("滚动验证报告")
     agg = wf_report.get("aggregate_metrics", {}) if isinstance(wf_report.get("aggregate_metrics"), Mapping) else {}
-    st.subheader("Aggregate Metrics")
+    st.subheader("聚合指标")
     cols = st.columns(4)
-    cols[0].metric("Mean IC (1d)", fmt_metric(agg.get("mean_ic_1d")))
-    cols[1].metric("Mean IR", fmt_metric(agg.get("mean_information_ratio")))
-    cols[2].metric("Mean Return", fmt_metric(agg.get("mean_annualized_return")))
-    cols[3].metric("Worst DD", fmt_metric(agg.get("worst_drawdown")))
+    cols[0].metric("平均 IC (1d)", fmt_metric(agg.get("mean_ic_1d")))
+    cols[1].metric("平均 IR", fmt_metric(agg.get("mean_information_ratio")))
+    cols[2].metric("平均收益", fmt_metric(agg.get("mean_annualized_return")))
+    cols[3].metric("最差回撤", fmt_metric(agg.get("worst_drawdown")))
 
-    st.subheader("Coverage")
+    st.subheader("覆盖区间")
     st.json(wf_report.get("test_window_coverage", {}))
 
     folds = wf_report.get("folds", [])
     if folds:
-        st.subheader("Per-Fold Summary")
+        st.subheader("单折概览")
         import pandas as pd
 
         df = pd.DataFrame([
             {
-                "Fold": f["fold_index"],
+                "折次": f["fold_index"],
                 "IC(1d)": fmt_metric(f.get("ic_1d")),
                 "IR": fmt_metric(f.get("information_ratio")),
-                "Return": fmt_metric(f.get("annualized_return")),
-                "MaxDD": fmt_metric(f.get("max_drawdown")),
+                "年化收益": fmt_metric(f.get("annualized_return")),
+                "最大回撤": fmt_metric(f.get("max_drawdown")),
             }
             for f in folds
         ])
@@ -1286,9 +1282,9 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
 
 
 def _render_tushare_provider(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> None:
-    st.header("Tushare Provider Data")
+    st.header("Tushare 数据源产物")
     if run_dir is None:
-        st.info("Provider output directory is not available yet.")
+        st.info("数据源产物目录暂不可用。")
         return
 
     metadata = inspect_provider_metadata(str(run_dir))
@@ -1305,20 +1301,19 @@ def _render_tushare_provider(run_dir: Path | None, issues: list[ArtifactReadIssu
         artifact_name="validation.json",
     )
     if validation:
-        st.subheader("Validation")
+        st.subheader("校验")
         st.json(validation)
 
     manifest = _read_json_artifact(metadata.manifest_path, issues, artifact_name="manifest.json")
     if manifest:
-        st.subheader("Manifest")
+        st.subheader("清单")
         st.json(manifest)
 
     _render_artifact_issues(issues)
 
     st.info(
-        "Tushare provider jobs create qlib data bundles. They do not produce "
-        "pipeline reports, walk-forward reports, or training charts. Use this "
-        "qlib_provider path as provider_uri for a training run."
+        "Tushare 数据源作业产出的是 qlib 数据包，不会生成流水线 / 滚动验证 / "
+        "训练图表。把这里的 qlib_provider 路径填到训练运行的 provider_uri 即可。"
     )
 
 
@@ -1346,18 +1341,18 @@ def _default_job_id(jobs: Sequence[Mapping[str, Any]]) -> str:
 def _render_run_not_found(run_id: str) -> None:
     escaped_run_id = html.escape(run_id, quote=True)
     render_error_state(
-        "Run not found",
-        f"We couldn't find a run with ID \"{escaped_run_id}\". It may have been deleted, or the link is wrong.",
+        "运行未找到",
+        f"没有找到 ID 为 \"{escaped_run_id}\" 的运行记录。可能已被删除，或链接有误。",
         variant="page",
     )
-    if st.button("Back to Jobs"):
+    if st.button("返回作业列表"):
         st.query_params.clear()
         st.switch_page("pages/jobs.py")
 
 
 _install_styles()
-render_breadcrumbs([("Analyze", None)])
-render_page_header("Results", "Inspect pipeline, walk-forward, and data provider run artifacts.")
+render_breadcrumbs([("分析", None)])
+render_page_header("结果", "查看流水线、滚动验证及数据源运行的产物。")
 
 # Detect current theme for Plotly charts
 theme_detect_script = """
@@ -1383,10 +1378,10 @@ viewable_jobs = [
 if not viewable_jobs:
     render_empty_state(
         "📄",
-        "No pipeline runs yet",
-        "Run a pipeline, walk-forward, or Tushare provider job first.",
+        "暂无可查看的运行",
+        "请先运行流水线、滚动验证或 Tushare 数据源作业。",
     )
-    if st.button("Config & Run"):
+    if st.button("配置运行"):
         st.switch_page("pages/config_run.py")
 else:
     job_ids = [str(job.get("job_id")) for job in viewable_jobs if job.get("job_id")]
@@ -1397,7 +1392,7 @@ else:
     default_job_id = requested_run_id or _default_job_id(viewable_jobs)
     default_index = job_ids.index(default_job_id) if default_job_id in job_ids else 0
     selected_job_id = st.selectbox(
-        "Run",
+        "运行",
         options=job_ids,
         index=default_index,
         format_func=lambda value: _job_label(
@@ -1419,7 +1414,7 @@ else:
     # Auto-refresh for running jobs
     if str(selected_job.get("status", "")).lower() == "running":
         import time as _time
-        st.info("Job is still running — auto-refreshing every 5 seconds.")
+        st.info("作业仍在运行 — 每 5 秒自动刷新一次。")
         _time.sleep(5)
         st.rerun()
 
@@ -1462,9 +1457,9 @@ else:
                 _render_charts(run_dir)
             else:
                 _render_artifact_issues(artifact_issues)
-                st.warning("No walk_forward_report.json found in this run directory yet.")
+                st.warning("此运行目录里还没有 walk_forward_report.json。")
                 _render_config_tab(config_path, config_bytes, config)
                 _render_logs_tab(selected_job, artifact_issues)
         else:
             _render_artifact_issues(artifact_issues)
-            st.warning("No pipeline_report.json or walk_forward_report.json found in this run directory.")
+            st.warning("此运行目录里既没有 pipeline_report.json 也没有 walk_forward_report.json。")

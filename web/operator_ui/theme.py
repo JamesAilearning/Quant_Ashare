@@ -217,21 +217,23 @@ def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
 
     import streamlit as st
 
-    with st.sidebar.expander("Appearance", expanded=False):
+    with st.sidebar.expander("外观", expanded=False):
         theme = st.radio(
-            "Theme",
+            "主题",
             options=THEME_OPTIONS,
             index=THEME_OPTIONS.index(preferences.theme),
             horizontal=True,
             key="qv2_theme_mode",
+            format_func=_theme_label,
         )
         color_convention = st.radio(
-            "Color convention",
+            "涨跌色规约",
             options=COLOR_CONVENTION_OPTIONS,
             index=COLOR_CONVENTION_OPTIONS.index(preferences.color_convention),
             horizontal=True,
             key="qv2_color_convention",
-            help="Chinese convention uses red for positive outcomes.",
+            format_func=_color_convention_label,
+            help="中国习惯：红涨绿跌；西方习惯：绿涨红跌。",
         )
     updated = UserPreferences(
         theme=theme,
@@ -248,8 +250,8 @@ def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
 # ---------------------------------------------------------------------------
 
 SKIP_LINK_HTML = (
-    '<a class="qv2-skip-link" href="#qv2-main-content">Skip to content</a>'
-    '<a id="qv2-main-content" tabindex="-1" class="qv2-sr-only">Main content</a>'
+    '<a class="qv2-skip-link" href="#qv2-main-content">跳到主内容</a>'
+    '<a id="qv2-main-content" tabindex="-1" class="qv2-sr-only">主内容</a>'
 )
 
 
@@ -298,9 +300,28 @@ _TOPBAR_TAG_SCRIPT = """
 """
 
 
+_THEME_LABELS: dict[str, str] = {
+    "auto": "跟随系统",
+    "light": "浅色",
+    "dark": "深色",
+}
+_COLOR_CONVENTION_LABELS: dict[str, str] = {
+    "chinese": "中国（红涨绿跌）",
+    "western": "西方（绿涨红跌）",
+}
+
+
+def _theme_label(value: str) -> str:
+    return _THEME_LABELS.get(value, value)
+
+
+def _color_convention_label(value: str) -> str:
+    return _COLOR_CONVENTION_LABELS.get(value, value)
+
+
 def render_topbar(
     *,
-    title: str = "Qlib Trading System",
+    title: str = "Qlib 量化交易系统",
     subtitle: str = "",
     on_open_settings_key: str = "qv2_open_settings",
 ) -> bool:
@@ -350,9 +371,9 @@ def render_topbar(
             )
         with action_col:
             opened = st.button(
-                "⚙️ Settings",
+                "⚙️ 设置",
                 key=on_open_settings_key,
-                help="Theme, color convention, and sidebar defaults",
+                help="主题、涨跌色规约、侧栏默认状态等",
                 use_container_width=True,
             )
     st.html(_TOPBAR_TAG_SCRIPT, width="content", unsafe_allow_javascript=True)
@@ -400,47 +421,49 @@ def render_settings_dialog(preferences: UserPreferences) -> None:
 
     import streamlit as st
 
-    @st.dialog("Settings")
+    @st.dialog("设置")
     def _dialog() -> None:
         st.markdown(
-            '<div class="qv2-settings-section-title">Appearance</div>',
+            '<div class="qv2-settings-section-title">外观</div>',
             unsafe_allow_html=True,
         )
         theme = st.radio(
-            "Theme",
+            "主题",
             options=THEME_OPTIONS,
             index=THEME_OPTIONS.index(preferences.theme),
             horizontal=True,
             key="qv2_settings_theme",
+            format_func=_theme_label,
         )
         color_convention = st.radio(
-            "Color convention",
+            "涨跌色规约",
             options=COLOR_CONVENTION_OPTIONS,
             index=COLOR_CONVENTION_OPTIONS.index(preferences.color_convention),
             horizontal=True,
             key="qv2_settings_color_convention",
-            help="Chinese convention uses red for positive outcomes.",
+            format_func=_color_convention_label,
+            help="中国习惯：红涨绿跌；西方习惯：绿涨红跌。",
         )
         st.markdown(
             '<div class="qv2-settings-section-title" '
-            'style="margin-top: var(--space-3);">Layout</div>',
+            'style="margin-top: var(--space-3);">布局</div>',
             unsafe_allow_html=True,
         )
         sidebar_collapsed = st.checkbox(
-            "Start with sidebar collapsed",
+            "下次打开时默认收起侧栏",
             value=preferences.sidebar_collapsed,
             key="qv2_settings_sidebar_collapsed",
-            help="Applies on the next page load.",
+            help="下次页面加载时生效。",
         )
         st.divider()
         save_col, cancel_col = st.columns(2)
         with save_col:
             save_clicked = st.button(
-                "Save", key="qv2_settings_save", type="primary", use_container_width=True
+                "保存", key="qv2_settings_save", type="primary", use_container_width=True
             )
         with cancel_col:
             cancel_clicked = st.button(
-                "Cancel", key="qv2_settings_cancel", use_container_width=True
+                "取消", key="qv2_settings_cancel", use_container_width=True
             )
         if save_clicked:
             updated = UserPreferences(

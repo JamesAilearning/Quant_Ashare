@@ -18,7 +18,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn('mode == "tushare_provider"', source)
-        self.assertIn('"Tushare Provider Data"', source)
+        self.assertIn("Tushare 数据源产物", source)
         self.assertIn("inspect_provider_metadata(str(run_dir))", source)
         self.assertIn("metadata.validation_path", source)
         self.assertIn("metadata.manifest_path", source)
@@ -26,21 +26,21 @@ class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_keeps_provider_jobs_read_only(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn("provider jobs create qlib data bundles", source)
+        self.assertIn("Tushare 数据源作业产出的是 qlib 数据包", source)
         self.assertNotIn("Pipeline(", source)
         self.assertNotIn("WalkForwardEngine(", source)
 
     def test_results_page_renders_pipeline_detail_sections(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn("Pipeline Result", source)
-        self.assertIn('"Download config.yaml"', source)
-        self.assertIn('"Holdings"', source)
-        self.assertIn('"Trades"', source)
-        self.assertIn('"Config"', source)
-        self.assertIn('"Stage Timings"', source)
-        self.assertIn('"Logs"', source)
-        self.assertIn('"Raw JSON"', source)
+        self.assertIn("流水线结果", source)
+        self.assertIn('"下载 config.yaml"', source)
+        self.assertIn('"持仓"', source)
+        self.assertIn('"交易"', source)
+        self.assertIn('"配置"', source)
+        self.assertIn('"阶段耗时"', source)
+        self.assertIn('"日志"', source)
+        self.assertIn('"原始 JSON"', source)
 
     def test_results_page_keeps_pipeline_metrics_artifact_sourced(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
@@ -50,8 +50,8 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn('run_dir / "nav.parquet"', source)
         self.assertIn('run_dir / "holdings.parquet"', source)
         self.assertIn('run_dir / "trades.parquet"', source)
-        self.assertIn("pipeline_report.json is not available yet", source)
-        self.assertIn("No generated PNG charts found yet", source)
+        self.assertIn("pipeline_report.json 暂不可用", source)
+        self.assertIn("尚未发现已生成的 PNG 图表", source)
         self.assertNotIn("risk_analysis(", source)
         self.assertNotIn("PerformanceAttribution", source)
         self.assertNotIn("SignalAnalyzer", source)
@@ -60,7 +60,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn("ArtifactReadIssue", source)
-        self.assertIn("Artifact Read Issues", source)
+        self.assertIn("产物读取问题", source)
         self.assertIn("_render_artifact_issues(issues)", source)
 
     def test_results_page_prefers_structured_artifacts_with_legacy_fallbacks(self) -> None:
@@ -69,37 +69,37 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("_read_holdings_frame(run_dir, issues)", source)
         self.assertIn("_read_trades_frame(run_dir, issues)", source)
         self.assertIn("_read_positions(run_dir, issues)", source)
-        self.assertIn("trades.parquet exists", source)
+        self.assertIn("trades.parquet 文件存在", source)
 
     def test_results_page_supports_run_id_and_interactive_nav(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
         jobs_source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
 
         self.assertIn('st.query_params.get("run_id"', source)
-        self.assertIn("Run not found", source)
+        self.assertIn("运行未找到", source)
         self.assertIn("html.escape(run_id", source)
         self.assertIn("plotly.graph_objects", source)
-        self.assertIn("Strategy NAV", source)
-        self.assertIn("Strategy Drawdown", source)
-        self.assertIn("Monthly Returns", source)
-        self.assertIn("Load more", jobs_source)
+        self.assertIn("策略净值", source)
+        self.assertIn("策略回撤", source)
+        self.assertIn("月度收益", source)
+        self.assertIn("加载更多", jobs_source)
         self.assertIn("list_all_jobs", jobs_source)
 
     def test_results_empty_state_uses_streamlit_navigation(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn('st.button("Config & Run")', source)
+        self.assertIn('st.button("配置运行")', source)
         self.assertIn('st.switch_page("pages/config_run.py")', source)
         self.assertNotIn("window.location.href", source)
 
     def test_results_page_exposes_export_and_rerun_actions(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn("Re-run with this config", source)
+        self.assertIn("用此配置重跑", source)
         self.assertIn("prefill_config_yaml", source)
-        self.assertIn("Export metrics CSV", source)
-        self.assertIn("Export PDF report", source)
-        self.assertIn("Export full bundle", source)
+        self.assertIn("导出指标 CSV", source)
+        self.assertIn("导出 PDF 报告", source)
+        self.assertIn("导出完整压缩包", source)
         self.assertIn("metrics_csv_bytes(metrics)", source)
         self.assertIn("summary_pdf_bytes(", source)
         self.assertIn("bundle_zip_bytes(run_dir)", source)
@@ -107,36 +107,36 @@ class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_exposes_holdings_and_trades_filters(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
-        self.assertIn("Search holdings", source)
-        self.assertIn("Show top holdings", source)
-        self.assertIn("Export holdings CSV", source)
-        self.assertIn("Trade dates", source)
-        self.assertIn("Side", source)
-        self.assertIn("Search trades", source)
-        self.assertIn("Export trades CSV", source)
+        self.assertIn("搜索持仓", source)
+        self.assertIn("显示前 N 大持仓", source)
+        self.assertIn("导出持仓 CSV", source)
+        self.assertIn("交易日期", source)
+        self.assertIn("方向", source)
+        self.assertIn("搜索交易", source)
+        self.assertIn("导出交易 CSV", source)
 
     def test_results_page_exposes_accessible_status_and_shortcut_help(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn('role="status"', source)
         self.assertIn('aria-live="polite"', source)
-        self.assertIn("Keyboard shortcuts", source)
-        self.assertIn("Streamlit does not expose global key handlers", source)
+        self.assertIn("键盘快捷键", source)
+        self.assertIn("Streamlit 没有暴露全局键盘事件接口", source)
 
     def test_results_page_exposes_polished_header_navigation(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn("position: sticky", source)
-        self.assertIn("Back to Jobs", source)
-        self.assertIn("Run ID (copyable)", source)
-        self.assertIn("Run directory (copyable)", source)
+        self.assertIn("返回作业列表", source)
+        self.assertIn("运行 ID（可复制）", source)
+        self.assertIn("运行目录（可复制）", source)
         self.assertIn('pages/jobs.py', source)
 
     def test_results_page_uses_shared_nav_drawdown_time_range(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn("TIME_RANGE_OPTIONS", source)
-        self.assertIn("Displayed time range", source)
+        self.assertIn("显示时间范围", source)
         self.assertIn("filter_nav_frame_by_range(nav_frame, range_label)", source)
         self.assertIn("nav_y_range(frame)", source)
 
@@ -144,8 +144,8 @@ class ResultsPageSourceTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn("go.Heatmap(", source)
-        self.assertIn("Monthly heatmap is unavailable", source)
-        self.assertIn("Search logs", source)
+        self.assertIn("月度热力图暂不可用", source)
+        self.assertIn("搜索日志", source)
         self.assertIn("LOG_LEVEL_OPTIONS", source)
         self.assertIn("filter_log_text(text, search=search, levels=levels)", source)
 
@@ -172,7 +172,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         each expander's payload (TICKET-R3 polish)."""
 
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
-        self.assertIn("Search Raw JSON", source)
+        self.assertIn("搜索原始 JSON", source)
         self.assertIn("_filter_json_by_query", source)
         self.assertIn("results_raw_json_query", source)
 

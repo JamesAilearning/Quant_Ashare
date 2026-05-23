@@ -17,7 +17,7 @@ from web.operator_ui.theme import (
 
 _preferences = load_preferences()
 st.set_page_config(
-    page_title="Qlib Trading System",
+    page_title="Qlib 量化交易系统",
     layout="wide",
     initial_sidebar_state="collapsed" if _preferences.sidebar_collapsed else "expanded",
 )
@@ -30,7 +30,7 @@ render_skip_link()
 # The gear opens the settings modal (theme / color convention / sidebar
 # default), replacing the legacy sidebar Appearance expander.
 # ---------------------------------------------------------------------------
-if render_topbar(subtitle="Operator console"):
+if render_topbar(title="Qlib 量化交易系统", subtitle="运维控制台"):
     render_settings_dialog(_preferences)
 
 # ---------------------------------------------------------------------------
@@ -44,21 +44,21 @@ _running = sum(1 for j in _jobs if j.get("status") == "running")
 _failed = sum(1 for j in _jobs if j.get("status") == "failed" and _running == 0)
 
 _status_class = "idle"
-_status_text = "All idle"
+_status_text = "全部空闲"
 if _running:
     _status_class = "running"
-    _status_text = "1 job running" if _running == 1 else f"{_running} jobs running"
+    _status_text = f"{_running} 个作业运行中"
 elif _failed:
     _status_class = "error"
-    _status_text = "1 job failed" if _failed == 1 else f"{_failed} jobs failed"
+    _status_text = f"{_failed} 个作业失败"
 
 _ICON_MAP = {
-    "Jobs": "\U0001f4cb",            # 📋
-    "Config & Run": "\U0001f680",   # 🚀
-    "Tushare Data": "\U0001f4e6",   # 📦
-    "Results": "\U0001f4c8",        # 📈
-    "Walk-Forward": "\U0001f501",   # 🔁
-    "Design System": "\U0001f3a8",  # 🎨
+    "作业": "\U0001f4cb",            # 📋
+    "配置运行": "\U0001f680",        # 🚀
+    "Tushare 数据": "\U0001f4e6",   # 📦
+    "结果": "\U0001f4c8",            # 📈
+    "滚动验证": "\U0001f501",        # 🔁
+    "设计系统": "\U0001f3a8",        # 🎨
 }
 _ICON_SCRIPT = """
 <script>
@@ -95,8 +95,8 @@ with st.sidebar:
 <div class="qv2-sidebar-brand">
   <span class="qv2-sidebar-logo">📈</span>
   <span class="qv2-sidebar-brand-text">
-    Qlib Trading<br>
-    <span class="qv2-brand-version">System V2</span>
+    Qlib 量化交易<br>
+    <span class="qv2-brand-version">系统 V2</span>
   </span>
 </div>
 """,
@@ -126,17 +126,17 @@ _PAGES_DIR = Path(__file__).resolve().parent / "pages"
 
 pg = st.navigation(
     {
-        "Run": [
-            st.Page(str(_PAGES_DIR / "jobs.py"), title="Jobs"),
-            st.Page(str(_PAGES_DIR / "config_run.py"), title="Config & Run"),
-            st.Page(str(_PAGES_DIR / "tushare.py"), title="Tushare Data"),
+        "运行": [
+            st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
+            st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
+            st.Page(str(_PAGES_DIR / "tushare.py"), title="Tushare 数据"),
         ],
-        "Analyze": [
-            st.Page(str(_PAGES_DIR / "results.py"), title="Results"),
-            st.Page(str(_PAGES_DIR / "walk_forward.py"), title="Walk-Forward"),
+        "分析": [
+            st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
+            st.Page(str(_PAGES_DIR / "walk_forward.py"), title="滚动验证"),
         ],
-        "System": [
-            st.Page(str(_PAGES_DIR / "design_system.py"), title="Design System"),
+        "系统": [
+            st.Page(str(_PAGES_DIR / "design_system.py"), title="设计系统"),
         ],
     },
 )

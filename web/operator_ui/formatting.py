@@ -6,7 +6,7 @@ import math
 from datetime import date, datetime, timezone
 from typing import Any
 
-UNAVAILABLE = "unavailable"
+UNAVAILABLE = "—"
 
 
 def _finite_float(value: Any) -> float | None:
@@ -104,19 +104,19 @@ def format_duration(value: Any, *, missing: str = UNAVAILABLE) -> str:
         return missing
     total = int(seconds)
     if seconds < 1:
-        return "< 1s"
+        return "<1 秒"
     days, remainder = divmod(total, 86_400)
     hours, remainder = divmod(remainder, 3_600)
     minutes, secs = divmod(remainder, 60)
     if days:
-        return f"{days}d {hours}h"
+        return f"{days}天 {hours}小时"
     if hours:
-        return f"{hours}h {minutes}m"
+        return f"{hours}小时 {minutes}分"
     if minutes:
         if total >= 600:
-            return f"{minutes}m"
-        return f"{minutes}m {secs}s"
-    return f"{secs}s"
+            return f"{minutes}分"
+        return f"{minutes}分 {secs}秒"
+    return f"{secs}秒"
 
 
 def format_relative_time(
@@ -136,26 +136,26 @@ def format_relative_time(
     future = seconds < 0
     seconds = abs(seconds)
     if seconds < 60:
-        return "just now" if not future else "in <1m"
+        return "刚刚" if not future else "<1 分钟后"
     minutes = seconds // 60
     if minutes < 60:
-        return _relative_label(minutes, "m", future)
+        return _relative_label(minutes, "分钟", future)
     hours = minutes // 60
     if hours < 24:
-        return _relative_label(hours, "h", future)
+        return _relative_label(hours, "小时", future)
     days = hours // 24
     if days == 1 and not future:
-        return "Yesterday"
+        return "昨天"
     if days < 7:
-        return _relative_label(days, "d", future)
+        return _relative_label(days, "天", future)
     weeks = days // 7
     if days < 30:
-        return _relative_label(weeks, "w", future)
+        return _relative_label(weeks, "周", future)
     months = days // 30
     if days < 365:
-        return _relative_label(months, "mo", future)
+        return _relative_label(months, "个月", future)
     years = days // 365
-    return _relative_label(years, "y", future)
+    return _relative_label(years, "年", future)
 
 
 def format_date_absolute(
@@ -208,5 +208,5 @@ def _align_timezones(left: datetime, right: datetime) -> tuple[datetime, datetim
 
 def _relative_label(value: int, unit: str, future: bool) -> str:
     if future:
-        return f"in {value}{unit}"
-    return f"{value}{unit} ago"
+        return f"{value} {unit}后"
+    return f"{value} {unit}前"

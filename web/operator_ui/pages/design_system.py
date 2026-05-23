@@ -36,11 +36,11 @@ from web.operator_ui.formatting import (
 )
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 
-render_breadcrumbs([("System", None)])
-render_page_header("Design System")
-st.caption("Operator UI visual tokens and display-format examples.")
+render_breadcrumbs([("系统", None)])
+render_page_header("设计系统")
+st.caption("运维 UI 的视觉 token 与展示格式示例。")
 
-st.header("Color Tokens")
+st.header("颜色 Token")
 
 _SWATCHES = (
     ("--bg-page", "var(--bg-page)"),
@@ -68,44 +68,44 @@ for label, color in _SWATCHES:
 swatch_html.append("</div>")
 st.markdown("\n".join(swatch_html), unsafe_allow_html=True)
 
-st.header("Typography")
+st.header("排版")
 st.markdown(
     """
 <div class="qv2-card">
-  <div class="qv2-text-page-title">Page title token</div>
-  <div class="qv2-text-card-label">CARD LABEL TOKEN</div>
+  <div class="qv2-text-page-title">页面标题样式</div>
+  <div class="qv2-text-card-label">卡片标签样式</div>
   <div class="qv2-text-metric-primary">1,234.56</div>
-  <div class="qv2-muted">Secondary copy uses muted text tokens.</div>
+  <div class="qv2-muted">辅助文本使用 muted token。</div>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-st.header("Formatting Helpers")
+st.header("格式化辅助函数")
 
 now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
 examples = [
-    {"Helper": "format_percent", "Input": "0.1834", "Output": format_percent(0.1834)},
-    {"Helper": "format_percent", "Input": "-0.0245", "Output": format_percent(-0.0245)},
-    {"Helper": "format_number", "Input": "1234567", "Output": format_number(1_234_567)},
+    {"函数": "format_percent", "输入": "0.1834", "输出": format_percent(0.1834)},
+    {"函数": "format_percent", "输入": "-0.0245", "输出": format_percent(-0.0245)},
+    {"函数": "format_number", "输入": "1234567", "输出": format_number(1_234_567)},
     {
-        "Helper": "format_number(abbreviate)",
-        "Input": "1234567",
-        "Output": format_number(1_234_567, abbreviate=True),
+        "函数": "format_number(abbreviate)",
+        "输入": "1234567",
+        "输出": format_number(1_234_567, abbreviate=True),
     },
-    {"Helper": "format_money", "Input": "1234567.5", "Output": format_money(1_234_567.5)},
-    {"Helper": "format_duration", "Input": "3725", "Output": format_duration(3725)},
+    {"函数": "format_money", "输入": "1234567.5", "输出": format_money(1_234_567.5)},
+    {"函数": "format_duration", "输入": "3725", "输出": format_duration(3725)},
     {
-        "Helper": "format_relative_time",
-        "Input": "2026-05-21T10:30:00+00:00",
-        "Output": format_relative_time("2026-05-21T10:30:00+00:00", now=now),
+        "函数": "format_relative_time",
+        "输入": "2026-05-21T10:30:00+00:00",
+        "输出": format_relative_time("2026-05-21T10:30:00+00:00", now=now),
     },
     {
-        "Helper": "format_date_absolute",
-        "Input": "2026-05-21T10:30:00+00:00",
-        "Output": format_date_absolute("2026-05-21T10:30:00+00:00", style="datetime"),
+        "函数": "format_date_absolute",
+        "输入": "2026-05-21T10:30:00+00:00",
+        "输出": format_date_absolute("2026-05-21T10:30:00+00:00", style="datetime"),
     },
-    {"Helper": "missing value", "Input": "None", "Output": format_number(None)},
+    {"函数": "缺失值", "输入": "None", "输出": format_number(None)},
 ]
 
 st.dataframe(examples, width="stretch", hide_index=True)
@@ -113,127 +113,126 @@ st.dataframe(examples, width="stretch", hide_index=True)
 # ---------------------------------------------------------------------------
 # Component showcase
 # ---------------------------------------------------------------------------
-st.header("Badges")
+st.header("徽章 Badge")
 
 badge_cols = st.columns(5)
 for idx, (variant, label, icon, pulse) in enumerate(
     [
-        ("neutral", "Queued", "⏸", False),
-        ("info", "Running", "", True),
-        ("success", "Completed", "✅", False),
-        ("warning", "Cancelled", "⊘", False),
-        ("danger", "Failed", "❌", False),
+        ("neutral", "排队中", "⏸", False),
+        ("info", "运行中", "", True),
+        ("success", "已完成", "✅", False),
+        ("warning", "已取消", "⊘", False),
+        ("danger", "失败", "❌", False),
     ]
 ):
     with badge_cols[idx]:
         render_badge(variant, label, icon=icon, pulse=pulse)
 
-st.header("StatCard (KPI)")
+st.header("指标卡 StatCard")
 
 sc_cols = st.columns(3)
 with sc_cols[0]:
-    render_stat_card("ANNUAL RETURN", "+18.34%", trend="up", value_color="positive")
+    render_stat_card("年化收益", "+18.34%", trend="up", value_color="positive")
 with sc_cols[1]:
     render_stat_card(
-        "MAX DRAWDOWN",
+        "最大回撤",
         "-12.45%",
         trend="down",
         value_color="negative",
-        secondary=[("Volatility", "16.0%"), ("Duration", "28 days")],
+        secondary=[("波动率", "16.0%"), ("持续天数", "28 天")],
     )
 with sc_cols[2]:
     render_stat_card(
-        "SHARPE RATIO",
+        "夏普比率",
         "1.83",
-        tooltip="Risk-adjusted return. Higher is better; > 1 is good.",
+        tooltip="风险调整收益。越高越好；> 1 即为优秀。",
     )
 
-st.header("Skeleton")
+st.header("骨架屏 Skeleton")
 render_skeleton("rect", height="48px")
 render_skeleton("text", width="60%")
 render_skeleton("text", width="80%")
 render_skeleton("text", width="40%")
 
-st.header("EmptyState")
+st.header("空状态 EmptyState")
 render_empty_state(
     "🔁",
-    "No walk-forward runs yet",
-    "Validate your strategy across rolling time windows.",
-    action_label="Start a Run",
+    "暂无滚动验证记录",
+    "在滚动时间窗上验证你的策略稳定性。",
+    action_label="启动一次运行",
 )
 
-st.header("ErrorState")
+st.header("错误状态 ErrorState")
 render_error_state(
-    "Run not found",
-    "We couldn't find a run with that ID. It may have been deleted.",
+    "运行未找到",
+    "未找到对应 ID 的运行记录，可能已被删除。",
     error="KeyError: run_id='pipeline_xxxx_yyyy'",
     on_retry="window.location.reload()",
     variant="inline",
 )
 
-st.header("Controls")
+st.header("按钮控件")
 control_cols = st.columns(4)
 with control_cols[0]:
-    render_button("Run", variant="primary", icon=">")
+    render_button("运行", variant="primary", icon=">")
 with control_cols[1]:
-    render_button("Cancel", variant="secondary")
+    render_button("取消", variant="secondary")
 with control_cols[2]:
-    render_icon_button("R", "Refresh")
+    render_icon_button("R", "刷新")
 with control_cols[3]:
-    render_button("Delete", variant="danger", disabled=True)
+    render_button("删除", variant="danger", disabled=True)
 
-st.header("Tags and Tooltip")
+st.header("标签 Tag 与 Tooltip")
 tag_cols = st.columns(4)
 with tag_cols[0]:
     render_tag("UI", variant="info")
 with tag_cols[1]:
     render_tag("CLI", variant="neutral")
 with tag_cols[2]:
-    render_tag("Failed", variant="danger", removable=True)
+    render_tag("失败", variant="danger", removable=True)
 with tag_cols[3]:
-    render_tooltip("IR", "Information ratio from canonical qlib output.")
+    render_tooltip("IR", "信息比率，来源于 qlib 规范化输出。")
 
-st.header("Card / Tabs / Accordion")
-render_card("Reusable Card", ["Token-backed surface", "No runtime data access"])
-render_tabs(["Holdings", "Trades", "Config"], active_index=1)
-render_accordion("Advanced options", "Accordion content uses native details/summary markup.")
+st.header("卡片 / 选项卡 / 折叠面板")
+render_card("可复用卡片", ["基于设计 token", "不直接读运行时数据"])
+render_tabs(["持仓", "交易", "配置"], active_index=1)
+render_accordion("高级选项", "折叠面板内容使用原生 details/summary 标签。")
 
-st.header("Feedback")
+st.header("反馈组件 Feedback")
 feedback_cols = st.columns(3)
 with feedback_cols[0]:
-    render_toast("Configuration copied.", title="Copied", variant="success")
+    render_toast("配置已复制。", title="已复制", variant="success")
 with feedback_cols[1]:
-    render_progress_bar(62, label="Training progress")
+    render_progress_bar(62, label="训练进度")
 with feedback_cols[2]:
-    render_spinner("Starting job")
+    render_spinner("正在启动作业")
 
-st.header("Form Field")
+st.header("表单字段 Form Field")
 render_field(
     "Provider URI",
     '<input class="qv2-field-control" value="D:/qlib_data/cn" aria-label="Provider URI" />',
-    help_text="Presentation-only demo field.",
+    help_text="仅演示字段，无真实交互。",
     required=True,
 )
 
-st.header("Table")
+st.header("表格 Table")
 render_table(
-    ["Run", "Status", "Source"],
+    ["运行", "状态", "来源"],
     [
-        ["pipeline_54f50f26", "completed", "UI"],
-        ["walk_forward_bea7395", "running", "CLI"],
+        ["pipeline_54f50f26", "已完成", "UI"],
+        ["walk_forward_bea7395", "运行中", "CLI"],
     ],
-    caption="Design-system table example",
+    caption="设计系统表格示例",
 )
 
-st.header("Modal")
+st.header("弹窗 Modal")
 render_modal(
-    "Confirm delete",
-    "Static modal preview. Page-level workflows attach Streamlit actions.",
-    footer="Cancel | Delete",
+    "确认删除",
+    "静态弹窗预览。页面级流程会接上实际的 Streamlit 操作。",
+    footer="取消 | 删除",
 )
 
 # ---------------------------------------------------------------------------
 st.info(
-    "This page is a QA/demo surface only. It does not read runtime artifacts "
-    "or compute official metrics."
+    "本页面仅供 QA / 设计演示。不读取任何运行时产物，也不计算任何官方指标。"
 )

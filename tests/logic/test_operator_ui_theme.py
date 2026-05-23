@@ -164,7 +164,7 @@ class OperatorUiThemeTests(unittest.TestCase):
         # the legacy sidebar-expander pattern.
         source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
         self.assertIn("st.dialog", source)
-        self.assertIn('"Settings"', source)
+        self.assertIn('"设置"', source)
         self.assertIn("save_preferences", source)
 
     def test_reset_settings_dialog_state_clears_all_widget_keys(self) -> None:

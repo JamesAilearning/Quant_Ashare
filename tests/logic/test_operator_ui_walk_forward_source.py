@@ -16,7 +16,7 @@ class WalkForwardPageSourceTests(unittest.TestCase):
 
         self.assertIn('"information_ratio"', source)
         self.assertIn('"mean_information_ratio"', source)
-        self.assertIn('"MEAN IR"', source)
+        self.assertIn('"平均 IR"', source)
         self.assertIn('"IR"', source)
         self.assertNotIn('"MEAN SHARPE"', source)
         self.assertNotIn('"Sharpe"', source)
@@ -42,17 +42,17 @@ class WalkForwardPageSourceTests(unittest.TestCase):
     def test_walk_forward_empty_state_uses_streamlit_navigation(self) -> None:
         source = self._source()
 
-        self.assertIn('st.button("Config & Run")', source)
+        self.assertIn('st.button("配置运行")', source)
         self.assertIn('st.switch_page("pages/config_run.py")', source)
-        self.assertNotIn('action_label="Config & Run"', source)
+        self.assertNotIn('action_label="配置运行"', source)
 
     def test_walk_forward_page_surfaces_artifact_read_errors(self) -> None:
         source = self._source()
 
         self.assertIn("_stop_artifact_error", source)
-        self.assertIn("Unable to read walk-forward report", source)
-        self.assertIn("Unable to read fold reports", source)
-        self.assertIn("Unable to discover walk-forward charts", source)
+        self.assertIn("无法读取滚动验证报告", source)
+        self.assertIn("无法读取单折报告", source)
+        self.assertIn("无法发现滚动验证图表", source)
         self.assertNotIn("wf_report = {}", source)
         self.assertNotIn("fold_reports = []", source)
         self.assertNotIn("charts = {}", source)
@@ -81,13 +81,13 @@ class WalkForwardPageSourceTests(unittest.TestCase):
 
         source = self._source()
         for label in (
-            '"Stitched OOS NAV"',
-            '"Per-Fold Detail"',
-            '"Metric Bars"',
-            '"Logs"',
-            '"Config"',
-            '"Raw JSON"',
-            '"Charts"',
+            '"拼接样本外净值"',
+            '"单折详情"',
+            '"指标柱图"',
+            '"日志"',
+            '"配置"',
+            '"原始 JSON"',
+            '"图表"',
         ):
             self.assertIn(label, source, f"Missing tab label {label}")
         self.assertIn("st.tabs(", source)

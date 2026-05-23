@@ -66,7 +66,7 @@ def _select_trading_day(
         label,
         options=options,
         index=_option_index(options, default),
-        help="Only trading days from the selected provider calendar are selectable.",
+        help="仅可在所选数据源日历内的交易日中选择。",
     )
 
 
@@ -221,8 +221,8 @@ def _estimate_duration(config: dict) -> str:
     if est_minutes >= 60:
         h = est_minutes // 60
         m = est_minutes % 60
-        return f"~{h}h {m}m"
-    return f"~{est_minutes} min"
+        return f"约 {h} 小时 {m} 分"
+    return f"约 {est_minutes} 分钟"
 
 
 def _prefill_config() -> dict:
@@ -239,8 +239,8 @@ def _prefill_config() -> dict:
 # ---------------------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------------------
-render_breadcrumbs([("Run", None)])
-render_page_header("Config & Run", "Configure and launch pipeline or walk-forward runs.")
+render_breadcrumbs([("运行", None)])
+render_page_header("配置运行", "配置并启动流水线或滚动验证作业。")
 
 # ---------------------------------------------------------------------------
 # Prefill from previous run
@@ -248,7 +248,7 @@ render_page_header("Config & Run", "Configure and launch pipeline or walk-forwar
 PREFILL_CONFIG = _prefill_config()
 if PREFILL_CONFIG:
     source_job = st.session_state.get("prefill_config_source_job", "")
-    st.info(f"Prefilled from previous run {source_job}. Review settings before launching.")
+    st.info(f"已从上一次运行 {source_job} 预填配置。启动前请核对参数。")
     prefill_token = f"{source_job}:{hash(str(st.session_state.get('prefill_config_yaml', '')))}"
     if st.session_state.get("prefill_config_applied_token") != prefill_token:
         if PREFILL_CONFIG.get("provider_uri"):
@@ -285,20 +285,22 @@ with bar_col2:
     if current_preset in preset_options:
         preset_idx = preset_options.index(current_preset)
     preset_choice = st.selectbox(
-        "Preset",
+        "预设方案",
         preset_options,
         index=preset_idx,
         key="cr_preset_selector",
-        help="Smoke = quick test. Default = standard. Production = full. Custom = your own.",
+        help="Smoke = 快速冒烟；Default = 标准；Production = 全量生产；Custom = 自定义。",
     )
     if preset_choice != current_preset and preset_choice != CUSTOM_PRESET_NAME:
         _apply_preset(preset_choice)
 
 with bar_col1:
     mode = st.selectbox(
-        "Mode", ["pipeline", "walk_forward"],
+        "模式",
+        ["pipeline", "walk_forward"],
         key="cr_mode",
-        help="Pipeline = single train/test split. Walk-Forward = rolling folds.",
+        format_func=lambda v: "流水线" if v == "pipeline" else "滚动验证",
+        help="流水线 = 单次训练/测试划分；滚动验证 = 多折滚动。",
     )
 
 # Auto-detect custom when fields diverge
@@ -314,30 +316,30 @@ form_col, preview_col = st.columns([0.62, 0.38])
 with form_col:
 
     # --- Data section ---
-    with st.expander("📊 Data", expanded=True):
+    with st.expander("📊 数据", expanded=True):
         provider_entries = list_provider_catalog_entries()
         selected_entry = None
         if provider_entries:
-            provider_options = ["Manual provider_uri"] + [e.label for e in provider_entries]
+            provider_options = ["手动填写 provider_uri"] + [e.label for e in provider_entries]
             provider_by_label = {e.label: e for e in provider_entries}
-            selected_label = st.selectbox("Saved data source", provider_options, key="cr_provider_label")
-            if selected_label != "Manual provider_uri":
+            selected_label = st.selectbox("已保存的数据源", provider_options, key="cr_provider_label")
+            if selected_label != "手动填写 provider_uri":
                 selected_entry = provider_by_label[selected_label]
                 st.session_state["cr_provider_uri"] = selected_entry.provider_uri
-                st.caption(f"Using: {selected_entry.provider_uri}")
-                if st.button("🗑 Delete selected data source", key="cr_del_provider"):
+                st.caption(f"使用：{selected_entry.provider_uri}")
+                if st.button("🗑 删除该已保存数据源", key="cr_del_provider"):
                     try:
                         delete_provider_catalog_entry(selected_entry.job_id)
                     except ProviderCatalogError as exc:
                         st.error(str(exc))
                     else:
                         st.session_state["cr_provider_uri"] = ""
-                        st.success("Deleted.")
+                        st.success("已删除。")
                         st.rerun()
             else:
                 selected_entry = None
         else:
-            st.caption("No saved providers. Enter URI manually or fetch Tushare data below.")
+            st.caption("尚无已保存的数据源。请手动填写 URI，或先到「Tushare 数据」页拉取数据。")
 
         provider_uri = st.text_input(
             "provider_uri *",
@@ -363,7 +365,7 @@ with form_col:
             # Mechanical helpers for common operator needs. Each preset
             # writes the six pipeline date keys to session_state and reruns
             # so the date widgets pick up the new values on next render.
-            st.caption("Quick date range presets:")
+            st.caption("日期范围快捷预设：")
             qd_cols = st.columns(4)
 
             def _apply_pipeline_dates(values: dict[str, str] | None) -> None:
@@ -374,37 +376,37 @@ with form_col:
 
             with qd_cols[0]:
                 if st.button(
-                    "Full history",
+                    "全部历史",
                     key="cr_qd_full",
                     use_container_width=True,
-                    help="Use the provider's full calendar with a 55/65/78/86 ratio split.",
+                    help="使用数据源全量日历，按 55/65/78/86 比例切分。",
                 ):
                     _apply_pipeline_dates(_pipeline_date_defaults(provider_metadata))
                     st.rerun()
             with qd_cols[1]:
                 if st.button(
-                    "Last 5y (3+1+1)",
+                    "最近 5 年 (3+1+1)",
                     key="cr_qd_5y",
                     use_container_width=True,
-                    help="Last 5 trading years, 60/20/20 train/valid/test split.",
+                    help="最近 5 个交易年，按 60/20/20 切分训练/验证/测试。",
                 ):
                     _apply_pipeline_dates(_last_n_days_split(provider_metadata, 252 * 5))
                     st.rerun()
             with qd_cols[2]:
                 if st.button(
-                    "Last 3y (1.8+0.6+0.6)",
+                    "最近 3 年 (1.8+0.6+0.6)",
                     key="cr_qd_3y",
                     use_container_width=True,
-                    help="Last 3 trading years, 60/20/20 train/valid/test split.",
+                    help="最近 3 个交易年，按 60/20/20 切分训练/验证/测试。",
                 ):
                     _apply_pipeline_dates(_last_n_days_split(provider_metadata, 252 * 3))
                     st.rerun()
             with qd_cols[3]:
                 if st.button(
-                    "Reset to preset",
+                    "重置为预设值",
                     key="cr_qd_reset",
                     use_container_width=True,
-                    help="Reload date values from the active preset.",
+                    help="重新读取当前预设方案的日期值。",
                 ):
                     _active_preset = st.session_state.get("cr_preset", "Default")
                     if _active_preset != CUSTOM_PRESET_NAME:
@@ -477,40 +479,47 @@ with form_col:
                 ensemble_window = st.number_input("ensemble_window", value=_cr("ensemble_window", 1), min_value=1, key="cr_ensemble_window")
 
     # --- Model section ---
-    with st.expander("🧠 Model", expanded=True):
+    with st.expander("🧠 模型", expanded=True):
         model_options = ["LGBModel", "XGBModel", "CatBoostModel"]
         model_default = _cr("model_type", "LGBModel")
         model_type = st.selectbox(
-            "model_type", model_options,
+            "模型类型 (model_type)",
+            model_options,
             index=model_options.index(model_default) if model_default in model_options else 0,
             key="cr_model_type",
         )
-        with st.expander("Advanced parameters", expanded=False):
+        with st.expander("高级参数", expanded=False):
             ac1, ac2 = st.columns(2)
             with ac1:
-                num_boost_round = st.number_input("num_boost_round", value=_cr("num_boost_round", 1000), min_value=1, key="cr_num_boost_round")
-                early_stopping_rounds = st.number_input("early_stopping_rounds", value=_cr("early_stopping_rounds", 50), min_value=1, key="cr_early_stopping_rounds")
+                num_boost_round = st.number_input("迭代轮数 (num_boost_round)", value=_cr("num_boost_round", 1000), min_value=1, key="cr_num_boost_round")
+                early_stopping_rounds = st.number_input("早停轮数 (early_stopping_rounds)", value=_cr("early_stopping_rounds", 50), min_value=1, key="cr_early_stopping_rounds")
             with ac2:
-                learning_rate = st.number_input("learning_rate", value=_cr("learning_rate", 0.005), format="%.4f", key="cr_learning_rate")
+                learning_rate = st.number_input("学习率 (learning_rate)", value=_cr("learning_rate", 0.005), format="%.4f", key="cr_learning_rate")
 
     # --- Strategy section ---
-    with st.expander("💹 Strategy", expanded=True):
+    with st.expander("💹 策略", expanded=True):
         sc1, sc2 = st.columns(2)
         with sc1:
-            topk = st.number_input("topk", value=_cr("topk", 50), min_value=1, key="cr_topk")
-            n_drop = st.number_input("n_drop", value=_cr("n_drop", 5), min_value=0, key="cr_n_drop")
+            topk = st.number_input("持仓数 (topk)", value=_cr("topk", 50), min_value=1, key="cr_topk")
+            n_drop = st.number_input("调仓换出数 (n_drop)", value=_cr("n_drop", 5), min_value=0, key="cr_n_drop")
         with sc2:
-            signal_to_execution_lag = st.number_input("signal_to_execution_lag", value=_cr("signal_to_execution_lag", 1), min_value=0, key="cr_signal_to_execution_lag")
-            benchmark_code = st.text_input("benchmark_code", value=_cr("benchmark_code", "SH000300"), key="cr_benchmark_code")
+            signal_to_execution_lag = st.number_input("信号到执行延迟 (signal_to_execution_lag)", value=_cr("signal_to_execution_lag", 1), min_value=0, key="cr_signal_to_execution_lag")
+            benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300"), key="cr_benchmark_code")
 
     # --- Compute section ---
-    with st.expander("⚙️ Compute", expanded=True):
+    with st.expander("⚙️ 算力", expanded=True):
         cc1, cc2 = st.columns(2)
         with cc1:
             device_default = _cr("compute_device", "cpu")
-            compute_device = st.radio("compute_device", ["cpu", "gpu"], index=1 if device_default == "gpu" else 0, horizontal=True, key="cr_compute_device")
+            compute_device = st.radio(
+                "计算设备 (compute_device)",
+                ["cpu", "gpu"],
+                index=1 if device_default == "gpu" else 0,
+                horizontal=True,
+                key="cr_compute_device",
+            )
         with cc2:
-            st.caption("Workers: auto")
+            st.caption("Workers：auto")
 
     # --- Validation ---
     guard_errors: list[str] = []
@@ -535,14 +544,14 @@ with form_col:
         guard_errors.extend(provider_metadata.errors)
         guard_warnings.extend(provider_metadata.warnings)
 
-    _GPU_ONLY_LGB_MSG = "GPU training is currently supported only for LGBModel."
+    _GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
     if compute_device == "gpu" and model_type != "LGBModel":
         guard_errors.append(_GPU_ONLY_LGB_MSG)
 
         def _fix_gpu_model() -> None:
             st.session_state["cr_model_type"] = "LGBModel"
 
-        auto_fixes[_GPU_ONLY_LGB_MSG] = ("Switch model → LGBModel", _fix_gpu_model)
+        auto_fixes[_GPU_ONLY_LGB_MSG] = ("切换为 LGBModel", _fix_gpu_model)
 
     # Build run config separately from the UI preview; mode is selected outside
     # the runtime config schema and passed to JobManager.start as its own value.
@@ -585,7 +594,7 @@ with form_col:
     status_col, btn_col = st.columns([3, 2])
     with status_col:
         if guard_errors:
-            st.error(f"✗ {len(guard_errors)} error(s) — fix before running")
+            st.error(f"✗ 共 {len(guard_errors)} 个错误 — 运行前请先修复")
             for err in guard_errors:
                 fix = auto_fixes.get(err)
                 if fix is None:
@@ -604,16 +613,16 @@ with form_col:
                             fix_callable()
                             st.rerun()
         elif guard_warnings:
-            st.warning(f"⚠ {len(guard_warnings)} warning(s)")
+            st.warning(f"⚠ 共 {len(guard_warnings)} 个警告")
             for warn in guard_warnings:
                 st.caption(f"  • {warn}")
         else:
-            st.success("✓ Config is valid")
-        st.caption(f"Est. duration: {estimated}")
+            st.success("✓ 配置有效")
+        st.caption(f"预估耗时：{estimated}")
 
     with btn_col:
-        submitted = st.button("🚀 Run", disabled=(not provider_uri_valid or bool(guard_errors)), use_container_width=True)
-        if st.button("💾 Save as preset", use_container_width=True):
+        submitted = st.button("🚀 运行", disabled=(not provider_uri_valid or bool(guard_errors)), use_container_width=True)
+        if st.button("💾 保存为预设", use_container_width=True):
             st.session_state["cr_saving_preset"] = True
 
     if submitted:
@@ -623,7 +632,7 @@ with form_col:
             st.error(str(e))
             st.stop()
         if compute_device == "gpu" and model_type != "LGBModel":
-            st.error("GPU training is currently supported only for LGBModel.")
+            st.error("目前仅 LGBModel 支持 GPU 训练。")
             st.stop()
         try:
             validate_config_keys(config_dict, known_keys)
@@ -631,15 +640,15 @@ with form_col:
         except (ValueError, JobManagerError) as exc:
             st.error(str(exc))
             st.stop()
-        st.success(f"Job started: {job_id}")
-        st.info(f"Watch output/operator_ui/jobs/{job_id}/stdout.log for logs and progress.")
+        st.success(f"作业已启动：{job_id}")
+        st.info(f"日志和进度请关注 output/operator_ui/jobs/{job_id}/stdout.log")
 
     if st.session_state.get("cr_saving_preset"):
-        save_name = st.text_input("Preset name", value="my_preset", key="cr_save_name")
-        if st.button("Confirm save", key="cr_save_confirm"):
+        save_name = st.text_input("预设名称", value="my_preset", key="cr_save_name")
+        if st.button("确认保存", key="cr_save_confirm"):
             safe = sanitise_preset_name(save_name).lower()
             if not safe:
-                st.error("Preset name must contain at least one letter or digit.")
+                st.error("预设名称至少需要一个字母或数字。")
             else:
                 save_path = _PRESETS_DIR / f"{safe}.yaml"
                 save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -647,17 +656,17 @@ with form_col:
                     yaml.dump(preview_config, default_flow_style=False, allow_unicode=True),
                     encoding="utf-8",
                 )
-                st.success(f"Saved as {safe}")
+                st.success(f"已保存为 {safe}")
                 st.session_state["cr_preset"] = safe
                 st.session_state["cr_saving_preset"] = False
                 st.rerun()
-        if st.button("Cancel", key="cr_save_cancel"):
+        if st.button("取消", key="cr_save_cancel"):
             st.session_state["cr_saving_preset"] = False
             st.rerun()
 
 # ===== RIGHT: Live YAML preview =====
 with preview_col:
-    st.markdown("#### Config Preview")
+    st.markdown("#### 配置预览")
 
     # --- Preview actions: copy + diff toggle ---------------------------------
     # Two buttons; both bind directly to session_state flags consumed below
@@ -666,20 +675,17 @@ with preview_col:
     preview_a, preview_b = st.columns(2)
     with preview_a:
         copy_clicked = st.button(
-            "📋 Copy YAML",
+            "📋 复制 YAML",
             key="cr_copy_yaml_btn",
             use_container_width=True,
-            help="Copy the YAML preview to the clipboard.",
+            help="把预览中的 YAML 复制到剪贴板。",
         )
     with preview_b:
         show_diff = st.toggle(
-            "Show diff vs preset",
+            "与预设差异对比",
             key="cr_show_diff_toggle",
             value=st.session_state.get("cr_show_diff_toggle", False),
-            help=(
-                "Show a unified diff between the current YAML and the active "
-                "preset. Useful to see exactly what you've changed."
-            ),
+            help="对比当前 YAML 和活跃预设的差异，便于看清你改了哪些字段。",
         )
 
     if copy_clicked:
@@ -694,7 +700,7 @@ with preview_col:
         _diff_baseline = _load_preset(st.session_state.get("cr_preset", "Default"))
         if not _diff_baseline:
             st.caption(
-                "Diff unavailable — current preset is Custom or could not be loaded."
+                "无法对比 — 当前预设为 Custom 或加载失败。"
             )
         else:
             _baseline_preview = {"mode": mode, **_diff_baseline}
@@ -713,7 +719,7 @@ with preview_col:
                 )
             )
             if not diff_lines:
-                st.caption("✓ No changes vs preset.")
+                st.caption("✓ 与预设无差异。")
             else:
                 st.code("\n".join(diff_lines), language="diff")
 
@@ -743,13 +749,13 @@ with preview_col:
             width="content",
             unsafe_allow_javascript=True,
         )
-        st.toast("YAML copied to clipboard", icon="📋")
+        st.toast("已复制 YAML 到剪贴板", icon="📋")
 
 # ---------------------------------------------------------------------------
 # Provider Preview (below main form)
 # ---------------------------------------------------------------------------
 if provider_uri_valid:
-    with st.expander("📋 Provider Preview", expanded=False):
+    with st.expander("📋 数据源信息预览", expanded=False):
         st.json(provider_metadata_summary(provider_metadata))
 
 # ---------------------------------------------------------------------------

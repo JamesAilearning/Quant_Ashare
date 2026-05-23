@@ -48,7 +48,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
         self.assertIn("list_provider_catalog_entries()", source)
-        self.assertIn('"Saved data source"', source)
+        self.assertIn('"已保存的数据源"', source)
         self.assertIn('cr_provider_uri', source)
 
     def test_config_page_exposes_delete_controls_for_saved_data(self) -> None:
@@ -68,7 +68,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         self.assertIn("metadata.calendar_dates", source)
         self.assertIn("st.selectbox(", source)
-        self.assertIn('"Only trading days from the selected provider calendar are selectable."', source)
+        self.assertIn('"仅可在所选数据源日历内的交易日中选择。"', source)
         self.assertIn("_pipeline_date_defaults(provider_metadata)", source)
         self.assertIn("_walk_forward_date_defaults(provider_metadata)", source)
 
@@ -166,7 +166,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         app_src = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
         self.assertIn('tushare.py', app_src)
-        self.assertIn('"Tushare Data"', app_src)
+        self.assertIn('"Tushare 数据"', app_src)
 
     def test_yaml_preview_offers_copy_and_diff(self) -> None:
         """The YAML preview pane SHALL surface a Copy button and a
@@ -174,15 +174,15 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
-        self.assertIn("📋 Copy YAML", source)
+        self.assertIn("📋 复制 YAML", source)
         self.assertIn("cr_copy_yaml_btn", source)
         self.assertIn("cr_show_diff_toggle", source)
-        self.assertIn("Show diff vs preset", source)
+        self.assertIn("与预设差异对比", source)
         # Diff is computed via stdlib difflib against the active preset.
         self.assertIn("difflib", source)
         self.assertIn("unified_diff", source)
         # The toast confirms the copy action.
-        self.assertIn('st.toast("YAML copied', source)
+        self.assertIn('st.toast("已复制 YAML', source)
 
     def test_guard_errors_surface_auto_fix_buttons(self) -> None:
         """When a guard error has a known mechanical resolution, the
@@ -194,7 +194,7 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         # The GPU + non-LGBModel combo is the canonical example registered
         # in this PR; its fix label is documented here so the auto-fix
         # plumbing has at least one concrete attach point.
-        self.assertIn("Switch model → LGBModel", source)
+        self.assertIn("切换为 LGBModel", source)
         self.assertIn("_fix_gpu_model", source)
 
     def test_pipeline_dates_offer_quick_range_presets(self) -> None:
@@ -203,11 +203,11 @@ class ConfigRunPageSourceTests(unittest.TestCase):
 
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
 
-        self.assertIn("Quick date range presets", source)
-        self.assertIn("Full history", source)
-        self.assertIn("Last 5y", source)
-        self.assertIn("Last 3y", source)
-        self.assertIn("Reset to preset", source)
+        self.assertIn("日期范围快捷预设", source)
+        self.assertIn("全部历史", source)
+        self.assertIn("最近 5 年", source)
+        self.assertIn("最近 3 年", source)
+        self.assertIn("重置为预设值", source)
         self.assertIn("_last_n_days_split(", source)
 
 
