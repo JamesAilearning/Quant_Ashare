@@ -1,4 +1,22 @@
-"""Walk-Forward page — fold-by-fold results, stability analysis, and OOS NAV."""
+"""Walk-Forward page — fold-by-fold results, stability analysis, and OOS NAV.
+
+TICKET-B contract (Option B, confirmed by the operator on 2026-05-22):
+
+The page reads the canonical walk-forward artifacts produced by
+``src.core.walk_forward.engine`` — ``walk_forward_report.json`` plus
+per-fold ``fold_NN_report.json`` files (see PR #108 for the contract).
+
+The original TICKET-B draft asked for an additional ``stitched_nav.parquet``
+and a ``folds/fold_N/`` directory layout. We chose not to introduce a new
+artifact contract: the existing per-fold JSONs already carry annualised
+return + test windows, which is enough to **synthesise** a stitched OOS NAV
+on the UI side (``_synthesised_stitched_nav``). The synthesis ignores
+intra-fold path but preserves segment endpoints and final value — the
+information operators actually use for stability inspection. A true
+path-faithful NAV would require the walk-forward engine to emit
+``nav.parquet`` per fold; that is intentionally deferred until/unless a
+concrete need surfaces.
+"""
 
 from __future__ import annotations
 
@@ -31,6 +49,17 @@ from web.operator_ui.report_reader import (
 # Constants
 # ---------------------------------------------------------------------------
 MISSING = "\u2014"
+
+# Plotly does not resolve CSS custom properties (``var(--\u2026)``) \u2014 passing
+# them yields an unstyled chart. Mirror the convention from results.py:
+# use literal CSS named colours so the trace styles work even though the
+# rest of the design system runs on tokens.
+PLOTLY_STRATEGY_COLOR = "royalblue"
+PLOTLY_POSITIVE_COLOR = "seagreen"
+PLOTLY_NEGATIVE_COLOR = "firebrick"
+PLOTLY_INFO_COLOR = "steelblue"
+PLOTLY_FOLD_BAND_DARK = "rgba(99, 102, 241, 0.06)"
+PLOTLY_FOLD_BAND_LIGHT = "rgba(99, 102, 241, 0.02)"
 
 
 def _finite_float(value: Any) -> float | None:
@@ -83,9 +112,133 @@ def _stop_artifact_error(title: str, exc: Exception) -> None:
         title,
         "The selected walk-forward artifact could not be read.",
         error=f"{type(exc).__name__}: {exc}",
+        on_retry="window.location.reload()",
         variant="page",
     )
     st.stop()
+
+
+# ---------------------------------------------------------------------------
+# Stitched OOS NAV (synthesised — TICKET-B contract option B, see PR #108).
+# We do NOT have per-fold ``nav.parquet`` artifacts — the walk-forward engine
+# writes only the aggregate report + per-fold metrics JSON. To draw a
+# continuous OOS view we synthesise NAV: each fold's segment grows from the
+# previous fold's terminal NAV at the fold's annualised return, compounded
+# over the actual test-window length. This is an approximation — it ignores
+# intra-fold path, but it preserves the relative shape and final value
+# operators care about for stability inspection.
+# ---------------------------------------------------------------------------
+
+
+def _synthesised_stitched_nav(
+    fold_data: list[dict[str, Any]],
+) -> tuple[list[Any], list[float], list[tuple[Any, Any, int]]]:
+    """Return (timeline, nav, fold_bands).
+
+    ``timeline`` is the X-axis dates (pd.Timestamp), ``nav`` is the
+    accumulated NAV starting from 1.0, and ``fold_bands`` is a list of
+    ``(start, end, ordinal)`` for shading per-fold regions.
+
+    Folds without parseable ``test_start`` / ``test_end`` or without an
+    ``annual_return`` are skipped — never silently treated as zero (which
+    would distort the curve). Skipped folds are surfaced to the caller
+    via the empty timeline / empty bands so the UI shows an empty state.
+    """
+
+    if not fold_data:
+        return [], [], []
+
+    timeline: list[Any] = []
+    nav: list[float] = []
+    bands: list[tuple[Any, Any, int]] = []
+    current_nav = 1.0
+    for fd in fold_data:
+        ts = fd.get("test_start") or ""
+        te = fd.get("test_end") or ""
+        ar = fd.get("annual_return")
+        if not ts or not te or ar is None:
+            continue
+        try:
+            start = pd.Timestamp(str(ts))
+            end = pd.Timestamp(str(te))
+        except (ValueError, TypeError):
+            continue
+        if end <= start:
+            continue
+        days = (end - start).days
+        years = days / 365.0
+        # Reject ``annual_return <= -1.0`` *before* exponentiation.
+        # Python's ``a ** b`` returns a **complex** number when the base
+        # is negative and the exponent is non-integer (rather than
+        # raising ValueError / OverflowError), and Plotly then errors
+        # at render time, blanking the Walk-Forward page. A return of
+        # -100% or worse over a fold also has no sensible NAV
+        # interpretation for a long-only synthetic stitched curve, so
+        # we skip the fold rather than guess.
+        base = 1.0 + float(ar)
+        if base < 0.0:
+            continue
+        try:
+            end_nav = current_nav * (base ** years)
+        except (ValueError, OverflowError):
+            continue
+        # Defence-in-depth: still type/finiteness-check the result —
+        # `base == 0` with ``years <= 0`` (degenerate test window) or
+        # NumPy-imported floats with surprising semantics could slip
+        # through, and we never want a complex / inf / nan to reach
+        # Plotly.
+        if not isinstance(end_nav, (int, float)) or not math.isfinite(end_nav):
+            continue
+        # Use simple linear interpolation between fold start and end so
+        # adjacent folds connect visually; without this each fold would
+        # look like a step function.
+        timeline.append(start)
+        nav.append(current_nav)
+        timeline.append(end)
+        nav.append(end_nav)
+        bands.append((start, end, int(fd.get("ordinal") or 0)))
+        current_nav = end_nav
+    return timeline, nav, bands
+
+
+# ---------------------------------------------------------------------------
+# Logs reader (TICKET-B "Logs tab"). Reads the standard log filenames
+# already used by the pipeline / walk-forward runners.
+# ---------------------------------------------------------------------------
+_LOG_NAMES: tuple[str, ...] = (
+    "stdout.log",
+    "stderr.log",
+    "runner_stdout.log",
+    "runner_stderr.log",
+)
+
+
+def _read_log_files(run_dir: Path) -> list[tuple[str, str]]:
+    """Return ``(name, text)`` pairs for any log files that exist.
+
+    Reads with ``errors='replace'`` so a partial-encoding tail does not
+    crash the UI. Truncates each file to the trailing 64 KiB — the head
+    is rarely useful to an operator triaging a fold and the renderer
+    cost scales linearly with size.
+    """
+
+    out: list[tuple[str, str]] = []
+    if not run_dir.is_dir():
+        return out
+    for name in _LOG_NAMES:
+        candidate = run_dir / name
+        if not candidate.is_file():
+            continue
+        try:
+            data = candidate.read_bytes()
+        except OSError:
+            continue
+        tail = data[-64 * 1024:] if len(data) > 64 * 1024 else data
+        text = tail.decode("utf-8", errors="replace")
+        if len(data) > 64 * 1024:
+            text = "[truncated to last 64 KiB]\n" + text
+        out.append((name, text))
+    return out
 
 
 def _compute_stability_score(ir_list: list[float], dd_list: list[float]) -> tuple[float, dict]:
@@ -481,15 +634,105 @@ if score >= 0:
             abv_ratio = _ratio_fraction(abv_str)
             st.progress(abv_ratio, text=abv_str)
 
-# --- Per-fold detail cards ---
+# ---------------------------------------------------------------------------
+# Bottom section \u2014 tabs (TICKET-B reorg)
+# ---------------------------------------------------------------------------
 st.markdown("---")
-st.subheader("Per-Fold Detail")
 
-for fd in fold_data:
-    with st.expander(
-        f"Fold {fd['index']}  \u00b7  {fd.get('period', MISSING)}",
-        expanded=(fd["ordinal"] == 1),
-    ):
+wf_tabs = st.tabs(
+    [
+        "Stitched OOS NAV",
+        "Per-Fold Detail",
+        "Metric Bars",
+        "Logs",
+        "Config",
+        "Raw JSON",
+        "Charts",
+    ]
+)
+
+# --- Stitched OOS NAV tab -----------------------------------------------------
+with wf_tabs[0]:
+    timeline, nav_values, fold_bands = _synthesised_stitched_nav(fold_data)
+    if not timeline:
+        render_empty_state(
+            "\U0001f4c8",
+            "Stitched NAV unavailable",
+            "At least one fold is missing its test window or annualised "
+            "return; the OOS curve cannot be synthesised without these.",
+        )
+    else:
+        try:
+            import plotly.graph_objects as go
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=timeline,
+                    y=nav_values,
+                    mode="lines",
+                    name="OOS NAV (synthesised)",
+                    line={"width": 2.4, "color": PLOTLY_STRATEGY_COLOR},
+                )
+            )
+            # Alternating fold shading so the operator can see the fold
+            # boundaries at a glance. Light/dark alternation keeps it
+            # readable without fighting the chart colours.
+            for index, (fb_start, fb_end, ordinal) in enumerate(fold_bands):
+                fig.add_vrect(
+                    x0=fb_start,
+                    x1=fb_end,
+                    fillcolor=(
+                        PLOTLY_FOLD_BAND_DARK
+                        if index % 2 == 0
+                        else PLOTLY_FOLD_BAND_LIGHT
+                    ),
+                    line_width=0,
+                    annotation_text=f"F{ordinal}",
+                    annotation_position="top left",
+                    annotation_font_size=10,
+                )
+            fig.update_layout(
+                height=380,
+                margin={"t": 10, "b": 36, "l": 40, "r": 12},
+                xaxis_title="Test window",
+                yaxis_title="OOS NAV (\u00d7)",
+                showlegend=False,
+                title={
+                    "text": "Synthesised stitched OOS NAV",
+                    "font": {"size": 12},
+                    "x": 0,
+                },
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "Synthesised from each fold's annualised return and test "
+                "window length \u2014 actual intra-fold path is not available "
+                "(walk-forward engine does not emit per-fold nav.parquet)."
+            )
+        except ImportError:
+            st.info("Plotly not available; NAV plot disabled.")
+
+# --- Per-Fold Detail tab ------------------------------------------------------
+with wf_tabs[1]:
+    if not fold_data:
+        render_empty_state(
+            "\U0001f4ca",
+            "No fold data",
+            "Fold reports were not loaded.",
+        )
+    else:
+        # Selector lets the operator focus on one fold at a time instead
+        # of scrolling through every expander. Default: fold 1.
+        fold_pick_options = [f"Fold {fd['index']}  \u00b7  {fd.get('period', MISSING)}" for fd in fold_data]
+        picked_idx = st.selectbox(
+            "Select fold",
+            options=list(range(len(fold_data))),
+            format_func=lambda i: fold_pick_options[i],
+            key="wf_fold_picker",
+        )
+        fd = fold_data[picked_idx]
+
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
             st.metric("Annual Return", format_percent(fd.get("annual_return")))
@@ -501,40 +744,139 @@ for fd in fold_data:
             st.metric("Turnover", format_number(fd.get("turnover")))
 
         if fd.get("train_period") or fd.get("test_period"):
-            st.caption(f"Train: {fd.get('train_period', MISSING)}  |  Test: {fd.get('test_period', MISSING)}")
+            st.caption(
+                f"Train: {fd.get('train_period', MISSING)}  |  "
+                f"Test: {fd.get('test_period', MISSING)}"
+            )
         elif fd.get("train_start"):
             st.caption(
                 f"Train: {fd['train_start']} \u2192 {fd.get('test_start', '?')}  |  "
                 f"Test: {fd.get('test_start', '?')} \u2192 {fd.get('test_end', '?')}"
             )
 
-# --- Config tab ---
-st.markdown("---")
-with st.expander("Config Used", expanded=False):
+        with st.expander("Raw fold report", expanded=False):
+            st.json(dict(folds[picked_idx]) if picked_idx < len(folds) else {})
+
+# --- Metric Bars tab ----------------------------------------------------------
+with wf_tabs[2]:
+    try:
+        import plotly.graph_objects as go
+
+        fold_labels = [f"F{fd['index']}" for fd in fold_data]
+        ar_vals = [fd.get("annual_return") for fd in fold_data]
+        ir_vals = [fd.get("information_ratio") for fd in fold_data]
+        dd_vals = [fd.get("max_drawdown") for fd in fold_data]
+
+        # Three side-by-side bar charts so the operator can eyeball
+        # per-metric consistency. Drawdown rendered as positive bars
+        # pointing down via negative y to match the convention.
+        bar_cols = st.columns(3)
+        with bar_cols[0]:
+            f_ar = go.Figure()
+            f_ar.add_trace(
+                go.Bar(
+                    x=fold_labels,
+                    y=[v if v is not None else 0 for v in ar_vals],
+                    marker_color=[
+                        PLOTLY_POSITIVE_COLOR if (v is not None and v > 0) else PLOTLY_NEGATIVE_COLOR
+                        for v in ar_vals
+                    ],
+                )
+            )
+            f_ar.update_layout(
+                height=220,
+                margin={"t": 28, "b": 24, "l": 36, "r": 12},
+                title={"text": "Annual Return", "font": {"size": 12}, "x": 0},
+                yaxis={"tickformat": ".0%"},
+            )
+            st.plotly_chart(f_ar, use_container_width=True)
+        with bar_cols[1]:
+            f_ir = go.Figure()
+            f_ir.add_trace(
+                go.Bar(
+                    x=fold_labels,
+                    y=[v if v is not None else 0 for v in ir_vals],
+                    marker_color=[
+                        PLOTLY_POSITIVE_COLOR if (v is not None and v >= 1.0)
+                        else PLOTLY_INFO_COLOR if (v is not None and v > 0)
+                        else PLOTLY_NEGATIVE_COLOR
+                        for v in ir_vals
+                    ],
+                )
+            )
+            f_ir.update_layout(
+                height=220,
+                margin={"t": 28, "b": 24, "l": 36, "r": 12},
+                title={"text": "Information Ratio", "font": {"size": 12}, "x": 0},
+            )
+            st.plotly_chart(f_ir, use_container_width=True)
+        with bar_cols[2]:
+            f_dd = go.Figure()
+            f_dd.add_trace(
+                go.Bar(
+                    x=fold_labels,
+                    y=[v if v is not None else 0 for v in dd_vals],
+                    marker_color=PLOTLY_NEGATIVE_COLOR,
+                )
+            )
+            f_dd.update_layout(
+                height=220,
+                margin={"t": 28, "b": 24, "l": 36, "r": 12},
+                title={"text": "Max Drawdown", "font": {"size": 12}, "x": 0},
+                yaxis={"tickformat": ".0%"},
+            )
+            st.plotly_chart(f_dd, use_container_width=True)
+    except ImportError:
+        st.info("Plotly not available; metric bars disabled.")
+
+# --- Logs tab -----------------------------------------------------------------
+with wf_tabs[3]:
+    logs = _read_log_files(run_dir)
+    if not logs:
+        render_empty_state(
+            "\U0001f4dc",
+            "No logs available",
+            "The walk-forward run directory does not contain any stdout / "
+            "stderr / runner log files yet.",
+        )
+    else:
+        log_tabs = st.tabs([name for name, _ in logs])
+        for idx, (_name, text) in enumerate(logs):
+            with log_tabs[idx]:
+                st.code(text or "(empty)", language="text")
+
+# --- Config tab ---------------------------------------------------------------
+with wf_tabs[4]:
     config_path = run_dir / "config.yaml"
     if config_path.is_file():
         config_text = config_path.read_text(encoding="utf-8")
         st.code(config_text, language="yaml")
-        st.download_button("Download config.yaml", data=config_text.encode(), file_name="config.yaml", mime="text/yaml")
+        st.download_button(
+            "Download config.yaml",
+            data=config_text.encode(),
+            file_name="config.yaml",
+            mime="text/yaml",
+        )
     else:
         st.info("config.yaml not found.")
 
-# --- Raw JSON ---
-with st.expander("Raw JSON", expanded=False):
+# --- Raw JSON tab -------------------------------------------------------------
+with wf_tabs[5]:
     raw_data = wf_report if wf_report else {}
     if raw_data:
         st.json(raw_data)
     else:
         st.info("No raw data available.")
 
-# --- Charts ---
-try:
-    charts = discover_charts(run_dir)
-except (ValueError, OSError) as exc:
-    _stop_artifact_error("Unable to discover walk-forward charts", exc)
-    charts = None
-if charts:
-    st.divider()
-    st.header("Generated Charts")
-    for _label, path in charts.items():
-        st.image(str(path), use_container_width=True)
+# --- Charts tab ---------------------------------------------------------------
+with wf_tabs[6]:
+    try:
+        charts = discover_charts(run_dir)
+    except (ValueError, OSError) as exc:
+        _stop_artifact_error("Unable to discover walk-forward charts", exc)
+        charts = None
+    if charts:
+        for _label, path in charts.items():
+            st.image(str(path), use_container_width=True)
+    else:
+        st.info("No generated charts found in this run directory.")

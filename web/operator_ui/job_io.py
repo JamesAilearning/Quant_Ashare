@@ -186,7 +186,12 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     error_msg = str(raw.get("stop_error") or raw.get("error") or "")
 
     return JobSummary(
-        run_id=job_id[:40],
+        # ``run_id`` is the canonical full id used for routing (st.switch_page
+        # carries it via query_params / session_state). Display surfaces are
+        # responsible for their own truncation; we MUST NOT truncate here, or
+        # the walk-forward detail page's exact-match selectbox lookup misses
+        # any job whose full id exceeds the old 40-char ceiling.
+        run_id=job_id,
         type=mode,
         status=status,
         source="ui",
@@ -202,7 +207,8 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
 
 
 def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
-    run_id = str(raw.get("run_id") or "")[:40]
+    # See `_normalise_ui_job` — keep the full run id; display layer truncates.
+    run_id = str(raw.get("run_id") or "")
     engine = str(raw.get("engine") or "")
     etype = engine if engine else "unknown"
     status = str(raw.get("status") or "completed")

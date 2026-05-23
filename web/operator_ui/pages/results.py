@@ -423,17 +423,80 @@ def _render_status_header(
             st.query_params.clear()
             st.switch_page("pages/jobs.py")
     with nav_cols[1]:
-        st.text_input(
-            "Run ID (copyable)",
-            value="" if job_id == MISSING else job_id,
-            key=f"copy_run_id_{job_id}",
-        )
+        rid_cols = st.columns([4, 1])
+        with rid_cols[0]:
+            st.text_input(
+                "Run ID (copyable)",
+                value="" if job_id == MISSING else job_id,
+                key=f"copy_run_id_{job_id}",
+            )
+        with rid_cols[1]:
+            st.markdown(
+                "<div style='visibility: hidden; height: 28px;'>spacer</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "📋",
+                key=f"copy_run_id_btn_{job_id}",
+                help="Copy Run ID to clipboard",
+                use_container_width=True,
+            ):
+                st.session_state["results_clipboard_payload"] = job_id
+                st.session_state["results_clipboard_toast"] = "Run ID copied"
     with nav_cols[2]:
-        st.text_input(
-            "Run directory (copyable)",
-            value="" if run_dir_text == MISSING else run_dir_text,
-            key=f"copy_run_dir_{job_id}",
+        rd_cols = st.columns([4, 1])
+        with rd_cols[0]:
+            st.text_input(
+                "Run directory (copyable)",
+                value="" if run_dir_text == MISSING else run_dir_text,
+                key=f"copy_run_dir_{job_id}",
+            )
+        with rd_cols[1]:
+            st.markdown(
+                "<div style='visibility: hidden; height: 28px;'>spacer</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "📋",
+                key=f"copy_run_dir_btn_{job_id}",
+                help="Copy run directory path to clipboard",
+                use_container_width=True,
+            ):
+                st.session_state["results_clipboard_payload"] = run_dir_text
+                st.session_state["results_clipboard_toast"] = "Run directory copied"
+
+    # Clipboard write + toast — drained on next render after a copy button click.
+    _clipboard_payload = st.session_state.pop("results_clipboard_payload", "")
+    _clipboard_toast = st.session_state.pop("results_clipboard_toast", "")
+    if _clipboard_payload:
+        import base64 as _b64
+
+        _payload_b64 = _b64.b64encode(_clipboard_payload.encode("utf-8")).decode("ascii")
+        st.html(
+            (
+                "<script>"
+                "(function(){"
+                f"var b64='{_payload_b64}';"
+                "try {"
+                "  var txt=atob(b64);"
+                "  if (navigator.clipboard) {"
+                "    navigator.clipboard.writeText(txt).catch(function(){});"
+                "  } else {"
+                "    var ta=window.parent.document.createElement('textarea');"
+                "    ta.value=txt; ta.style.position='fixed'; ta.style.left='-9999px';"
+                "    window.parent.document.body.appendChild(ta); ta.select();"
+                "    try{document.execCommand('copy');}catch(e){}"
+                "    window.parent.document.body.removeChild(ta);"
+                "  }"
+                "} catch(e) {}"
+                "})()"
+                "</script>"
+            ),
+            width="content",
+            unsafe_allow_javascript=True,
         )
+        if _clipboard_toast:
+            st.toast(_clipboard_toast, icon="📋")
 
     if config_bytes:
         st.download_button(
@@ -1053,6 +1116,48 @@ def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) ->
         st.info("No logs match the current search and severity filters.")
 
 
+def _filter_json_by_query(obj: Any, query: str) -> Any:
+    """Recursive substring filter for nested JSON.
+
+    Returns a subtree containing only branches where some key, string
+    value, or numeric value contains ``query`` (case-insensitive).
+    Returns ``None`` when nothing matches; the caller treats ``None`` /
+    empty result as "no hits".
+
+    Designed to keep the Raw JSON tab usable on large pipeline reports
+    by letting the operator narrow to a key like ``sharpe`` or
+    ``drawdown`` without scrolling through hundreds of lines.
+    """
+
+    q = query.strip().lower()
+    if not q:
+        return obj
+
+    if isinstance(obj, dict):
+        kept: dict[str, Any] = {}
+        for key, value in obj.items():
+            if q in str(key).lower():
+                kept[key] = value
+                continue
+            filtered = _filter_json_by_query(value, query)
+            if filtered not in (None, {}, []):
+                kept[key] = filtered
+        return kept or None
+
+    if isinstance(obj, list):
+        out = []
+        for entry in obj:
+            filtered = _filter_json_by_query(entry, query)
+            if filtered not in (None, {}, []):
+                out.append(filtered)
+        return out or None
+
+    # Scalar leaves.
+    if obj is None:
+        return None
+    return obj if q in str(obj).lower() else None
+
+
 def _render_raw_tab(
     job: Mapping[str, Any],
     report: Mapping[str, Any],
@@ -1060,28 +1165,35 @@ def _render_raw_tab(
     metrics: Mapping[str, Any],
     positions: Mapping[str, Any],
 ) -> None:
-    with st.expander("Raw metadata.json", expanded=False):
-        if metadata:
-            st.json(metadata)
-        else:
-            st.info("metadata.json is not available yet.")
-    with st.expander("Raw metrics.json", expanded=False):
-        if metrics:
-            st.json(metrics)
-        else:
-            st.info("metrics.json is not available yet.")
-    with st.expander("Raw pipeline_report.json", expanded=False):
-        if report:
-            st.json(report)
-        else:
-            st.info("pipeline_report.json is not available yet.")
-    with st.expander("Raw job metadata", expanded=False):
-        st.json(dict(job))
-    with st.expander("Raw positions.json", expanded=False):
-        if positions:
-            st.json(dict(positions))
-        else:
-            st.info("positions.json is not available yet.")
+    # Searchable Raw JSON (TICKET-R3 polish). Operators frequently grep
+    # the reports for a single metric like "sharpe" or "max_drawdown"
+    # without wanting to dig through every artifact tree by hand.
+    raw_query = st.text_input(
+        "Search Raw JSON",
+        key="results_raw_json_query",
+        placeholder="e.g. sharpe, drawdown, fold_…",
+        help=(
+            "Case-insensitive substring filter applied across all keys "
+            "and scalar values. Empty input shows everything."
+        ),
+    )
+
+    def _render_panel(label: str, payload: Mapping[str, Any] | None, empty_msg: str) -> None:
+        with st.expander(f"Raw {label}", expanded=False):
+            if not payload:
+                st.info(empty_msg)
+                return
+            shown = _filter_json_by_query(dict(payload), raw_query)
+            if raw_query and not shown:
+                st.caption(f"No matches for '{raw_query}' in {label}.")
+            else:
+                st.json(shown if shown is not None else {})
+
+    _render_panel("metadata.json", metadata, "metadata.json is not available yet.")
+    _render_panel("metrics.json", metrics, "metrics.json is not available yet.")
+    _render_panel("pipeline_report.json", report, "pipeline_report.json is not available yet.")
+    _render_panel("job metadata", dict(job), "Job metadata is not available yet.")
+    _render_panel("positions.json", positions, "positions.json is not available yet.")
 
 
 def _render_pipeline_dashboard(
