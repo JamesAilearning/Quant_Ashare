@@ -24,13 +24,13 @@ def build_job_progress(job_dir: Path, job: Mapping[str, Any]) -> Progress:
     config = _read_config(job_dir, job)
 
     if status == "success":
-        return _progress(100, "Completed", _terminal_detail(job))
+        return _progress(100, "已完成", _terminal_detail(job))
     if status == "stopped":
-        return _progress(_estimate_percent(job_dir, mode, config), "Stopped", _terminal_detail(job))
+        return _progress(_estimate_percent(job_dir, mode, config), "已停止", _terminal_detail(job))
     if status == "failed":
-        return _progress(_estimate_percent(job_dir, mode, config), "Failed", _terminal_detail(job))
+        return _progress(_estimate_percent(job_dir, mode, config), "失败", _terminal_detail(job))
     if status == "stop_failed":
-        return _progress(_estimate_percent(job_dir, mode, config), "Stop failed", _terminal_detail(job))
+        return _progress(_estimate_percent(job_dir, mode, config), "停止失败", _terminal_detail(job))
 
     if mode == "tushare_provider":
         return _estimate_tushare_provider(job_dir, config)
@@ -39,8 +39,8 @@ def build_job_progress(job_dir: Path, job: Mapping[str, Any]) -> Progress:
     if mode == "walk_forward":
         return _estimate_walk_forward(job_dir, config, job)
     if status == "pending":
-        return _progress(0, "Pending", "Waiting for runner process.")
-    return _progress(5, "Running", _log_detail(job_dir))
+        return _progress(0, "等待中", "等待运行进程启动。")
+    return _progress(5, "运行中", _log_detail(job_dir))
 
 
 def _estimate_percent(job_dir: Path, mode: str, config: Mapping[str, Any]) -> int:
@@ -55,40 +55,40 @@ def _estimate_percent(job_dir: Path, mode: str, config: Mapping[str, Any]) -> in
 
 def _estimate_tushare_provider(job_dir: Path, config: Mapping[str, Any]) -> Progress:
     percent = 5
-    label = "Starting Tushare ingest"
+    label = "正在启动 Tushare 拉取"
     detail = _log_detail(job_dir)
 
     if _has_logs(job_dir):
         percent = 15
-        label = "Tushare CLI running"
+        label = "Tushare CLI 运行中"
 
     staging_dir = _optional_path(config.get("staging_dir"))
     if staging_dir and _has_any_file(staging_dir):
         percent = max(percent, 30)
-        label = "Fetched staged Tushare payloads"
+        label = "已下载 Tushare 暂存数据"
         detail = f"staging_dir={staging_dir}"
 
     output_dir = _optional_path(config.get("output_dir"))
     if output_dir and output_dir.is_dir():
         percent = max(percent, 40)
-        label = "Preparing qlib provider"
+        label = "正在准备 qlib 数据源"
         detail = f"output_dir={output_dir}"
         if (output_dir / "calendars").is_dir():
             percent = max(percent, 50)
-            label = "Wrote qlib calendar"
+            label = "已写入 qlib 日历"
         features_dir = output_dir / "features"
         if features_dir.is_dir():
             feature_files = _count_files(features_dir, cap=5000)
             percent = max(percent, min(90, 55 + feature_files // 150))
-            label = "Writing qlib feature files"
+            label = "正在写入 qlib 特征文件"
             suffix = "+" if feature_files >= 5000 else ""
-            detail = f"{feature_files}{suffix} feature files detected"
+            detail = f"已检测到 {feature_files}{suffix} 个特征文件"
 
     manifest_path = _optional_path(config.get("manifest_path"))
     validation_path = _optional_path(config.get("validation_path"))
     if (manifest_path and manifest_path.is_file()) or (validation_path and validation_path.is_file()):
         percent = max(percent, 95)
-        label = "Generated provider validation artifacts"
+        label = "已生成数据源校验产物"
         detail = _validation_detail(manifest_path, validation_path) or detail
 
     return _progress(percent, label, detail)
@@ -96,55 +96,55 @@ def _estimate_tushare_provider(job_dir: Path, config: Mapping[str, Any]) -> Prog
 
 def _estimate_pipeline(job_dir: Path, config: Mapping[str, Any], job: Mapping[str, Any]) -> Progress:
     percent = 5
-    label = "Starting pipeline"
+    label = "正在启动流水线"
     detail = _log_detail(job_dir)
 
     if _has_logs(job_dir):
         percent = 20
-        label = "Pipeline CLI running"
+        label = "流水线 CLI 运行中"
 
     run_dir = _run_dir_from_job(job) or _find_pipeline_run_dir(_optional_path(config.get("output_dir")))
     if run_dir and run_dir.is_dir():
         percent = max(percent, 35)
-        label = "Pipeline run directory created"
+        label = "已创建流水线运行目录"
         detail = f"run_dir={run_dir}"
         if (run_dir / "model.pkl").is_file():
             percent = max(percent, 55)
-            label = "Model artifact written"
+            label = "已写入模型产物"
         if (run_dir / "positions.json").is_file():
             percent = max(percent, 70)
-            label = "Backtest positions written"
+            label = "已写入回测持仓"
         if (run_dir / "pipeline_report.json").is_file():
             percent = max(percent, 92)
-            label = "Pipeline report written"
+            label = "已写入流水线报告"
         if _has_any_file(run_dir / "charts"):
             percent = max(percent, 95)
-            label = "Charts written"
+            label = "已写入图表"
 
     return _progress(percent, label, detail)
 
 
 def _estimate_walk_forward(job_dir: Path, config: Mapping[str, Any], job: Mapping[str, Any]) -> Progress:
     percent = 5
-    label = "Starting walk-forward"
+    label = "正在启动滚动验证"
     detail = _log_detail(job_dir)
 
     if _has_logs(job_dir):
         percent = 20
-        label = "Walk-forward CLI running"
+        label = "滚动验证 CLI 运行中"
 
     output_dir = _run_dir_from_job(job) or _optional_path(config.get("output_dir"))
     if output_dir and output_dir.is_dir():
         percent = max(percent, 30)
-        label = "Walk-forward output directory created"
+        label = "已创建滚动验证输出目录"
         fold_reports = list(output_dir.glob("fold_*_report.json"))
         if fold_reports:
             percent = max(percent, min(88, 35 + len(fold_reports) * 8))
-            label = "Fold reports written"
-            detail = f"{len(fold_reports)} fold reports detected"
+            label = "已写入单折报告"
+            detail = f"已检测到 {len(fold_reports)} 份单折报告"
         if (output_dir / "walk_forward_report.json").is_file():
             percent = max(percent, 95)
-            label = "Walk-forward aggregate report written"
+            label = "已写入滚动验证汇总报告"
             detail = f"run_dir={output_dir}"
 
     return _progress(percent, label, detail)
@@ -198,7 +198,7 @@ def _log_detail(job_dir: Path) -> str:
         path = job_dir / name
         if _has_nonempty_file(path):
             parts.append(f"{name}={path.stat().st_size} bytes")
-    return ", ".join(parts) if parts else "Waiting for job logs."
+    return ", ".join(parts) if parts else "等待作业日志生成。"
 
 
 def _terminal_detail(job: Mapping[str, Any]) -> str:

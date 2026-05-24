@@ -26,7 +26,7 @@ class OperatorUiProgressTests(unittest.TestCase):
             )
 
         self.assertEqual(progress["percent"], 100)
-        self.assertEqual(progress["label"], "Completed")
+        self.assertEqual(progress["label"], "已完成")
         self.assertIn("run_dir=", progress["detail"])
 
     def test_tushare_progress_uses_provider_artifacts(self) -> None:
@@ -66,7 +66,7 @@ class OperatorUiProgressTests(unittest.TestCase):
             )
 
         self.assertGreaterEqual(progress["percent"], 95)
-        self.assertEqual(progress["label"], "Generated provider validation artifacts")
+        self.assertEqual(progress["label"], "已生成数据源校验产物")
         self.assertIn("validation_health=ok", progress["detail"])
 
     def test_pipeline_progress_detects_report_artifact(self) -> None:
@@ -93,7 +93,7 @@ class OperatorUiProgressTests(unittest.TestCase):
             )
 
         self.assertGreaterEqual(progress["percent"], 92)
-        self.assertEqual(progress["label"], "Pipeline report written")
+        self.assertEqual(progress["label"], "已写入流水线报告")
 
     def test_job_manager_status_attaches_progress(self) -> None:
         job_root = Path(tempfile.mkdtemp())
@@ -110,7 +110,7 @@ class OperatorUiProgressTests(unittest.TestCase):
             status = JobManager.status("test_job")
 
         self.assertEqual(status["progress"]["percent"], 100)
-        self.assertEqual(status["progress"]["label"], "Completed")
+        self.assertEqual(status["progress"]["label"], "已完成")
 
 
 if __name__ == "__main__":

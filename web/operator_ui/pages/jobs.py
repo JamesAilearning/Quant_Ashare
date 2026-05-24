@@ -90,10 +90,17 @@ _TYPE_LABELS: dict[str, str] = {
 _STATUS_LABELS: dict[str, str] = {
     "all": "全部",
     "queued": "排队中",
+    "pending": "等待中",
     "running": "运行中",
     "completed": "已完成",
+    "success": "已完成",
+    "ok": "已完成",
+    "partial": "部分完成",
     "failed": "失败",
     "cancelled": "已取消",
+    "stopped": "已停止",
+    "stop_failed": "停止失败",
+    "unknown": "未知",
 }
 _SOURCE_LABELS: dict[str, str] = {
     "all": "全部",

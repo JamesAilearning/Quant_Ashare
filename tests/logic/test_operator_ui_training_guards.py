@@ -79,7 +79,7 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
             )
 
         self.assertFalse(result.ok)
-        self.assertTrue(any("valid_start must be strictly after train_end" in item for item in result.errors))
+        self.assertTrue(any("valid_start 必须严格晚于 train_end" in item for item in result.errors))
 
     def test_pipeline_guard_rejects_provider_final_trading_day_as_test_end(self) -> None:
         from web.operator_ui.training_guards import validate_pipeline_training_inputs
@@ -98,8 +98,8 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
             )
 
         self.assertFalse(result.ok)
-        self.assertTrue(any("must be before provider final trading day" in item for item in result.errors))
-        self.assertTrue(any("test_end <= 2025-12-30" in item for item in result.errors))
+        self.assertTrue(any("必须早于数据源最后一个交易日" in item for item in result.errors))
+        self.assertTrue(any("test_end 设为 ≤ 2025-12-30" in item for item in result.errors))
 
     def test_pipeline_guard_warns_when_forward_buffer_is_short(self) -> None:
         from web.operator_ui.training_guards import validate_pipeline_training_inputs
@@ -118,7 +118,7 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertTrue(any("20-day forward-return" in item for item in result.warnings))
+        self.assertTrue(any("20 日前向收益" in item for item in result.warnings))
 
     def test_pipeline_guard_rejects_missing_named_universe(self) -> None:
         from web.operator_ui.training_guards import validate_pipeline_training_inputs
@@ -137,7 +137,7 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
             )
 
         self.assertFalse(result.ok)
-        self.assertTrue(any("instruments='csi300' is not available" in item for item in result.errors))
+        self.assertTrue(any("instruments='csi300' 不在数据源的" in item for item in result.errors))
 
 
 if __name__ == "__main__":
