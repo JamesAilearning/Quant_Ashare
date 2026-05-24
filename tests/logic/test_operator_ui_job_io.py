@@ -156,6 +156,97 @@ class NormaliseJobIdLengthTests(unittest.TestCase):
         self.assertEqual(result.run_id, long_id)
 
 
+class ExtractFailureDetailTests(unittest.TestCase):
+    """Regression tests for ``_extract_failure_detail`` — the helper that
+    surfaces the real error line in the Jobs table when a job fails.
+    Operators need this to triage without opening stderr.log by hand.
+    """
+
+    def _job_dir(self, tmp: str, stderr_text: str | None):
+        from pathlib import Path as _P
+
+        job_dir = _P(tmp) / "job"
+        job_dir.mkdir()
+        if stderr_text is not None:
+            (job_dir / "stderr.log").write_text(stderr_text, encoding="utf-8")
+        return job_dir
+
+    def test_returns_empty_when_stderr_log_missing(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import _extract_failure_detail
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = self._job_dir(tmp, stderr_text=None)
+            self.assertEqual(_extract_failure_detail(job_dir), "")
+
+    def test_returns_empty_for_empty_stderr(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import _extract_failure_detail
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = self._job_dir(tmp, stderr_text="")
+            self.assertEqual(_extract_failure_detail(job_dir), "")
+
+    def test_prefers_last_line_with_error_token(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import _extract_failure_detail
+
+        log = (
+            "INFO  starting up\n"
+            "INFO  loaded config\n"
+            "ValueError: features not exists: /path/instruments/csi800.txt\n"
+            "INFO  shutting down\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = self._job_dir(tmp, stderr_text=log)
+            self.assertEqual(
+                _extract_failure_detail(job_dir),
+                "ValueError: features not exists: /path/instruments/csi800.txt",
+            )
+
+    def test_falls_back_to_last_nonempty_line_when_no_error_token(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import _extract_failure_detail
+
+        log = "step 1\nstep 2\n  \nstep 3 final\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = self._job_dir(tmp, stderr_text=log)
+            self.assertEqual(_extract_failure_detail(job_dir), "step 3 final")
+
+    def test_truncates_overlong_line_to_max_chars(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import _extract_failure_detail
+
+        long_msg = "ValueError: " + ("x" * 500)
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = self._job_dir(tmp, stderr_text=long_msg + "\n")
+            result = _extract_failure_detail(job_dir, max_chars=120)
+            self.assertEqual(len(result), 120)
+            self.assertTrue(result.startswith("ValueError:"))
+
+    def test_reads_only_tail_of_huge_log(self) -> None:
+        """A multi-megabyte stderr.log MUST NOT be fully loaded — the
+        helper only peeks at the trailing 8 KiB."""
+        import tempfile
+
+        from web.operator_ui.job_io import _extract_failure_detail
+
+        # 1 MiB of innocuous prelude + a real error at the very end.
+        prelude = ("INFO  noise line\n" * 70_000)
+        log = prelude + "ValueError: tail error\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = self._job_dir(tmp, stderr_text=log)
+            self.assertEqual(
+                _extract_failure_detail(job_dir),
+                "ValueError: tail error",
+            )
+
+
 class ListAllJobsContractTests(unittest.TestCase):
     def test_unknown_sort_by_raises_before_loading_data(self) -> None:
         from web.operator_ui.job_io import list_all_jobs
