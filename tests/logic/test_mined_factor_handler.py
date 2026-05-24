@@ -141,12 +141,32 @@ def test_make_features_returns_multiindex_dataframe(tmp_path):
     panel = _synthetic_panel()
     features = make_mined_factor_features(bundle, _config(), panel=panel)
     assert isinstance(features, pd.DataFrame)
-    assert features.index.names == ["instrument", "datetime"]
+    assert features.index.names == ["datetime", "instrument"]
     assert features.shape[1] == 3  # 3 pool entries
     # Each column is named mf_<16 hex chars>
     for col in features.columns:
         assert col.startswith("mf_")
         assert len(col) == 3 + 16
+
+
+def test_make_features_index_order_is_datetime_then_instrument(tmp_path):
+    """Regression for the qlib StaticDataLoader integration bug:
+    qlib's ``StaticDataLoader.load(instruments, start, end)`` runs
+    ``df.loc(axis=0)[:, instruments]``, which treats level 0 as
+    datetime and level 1 as the instrument-filter axis. The original
+    implementation produced (instrument, datetime) order, which made
+    pandas try to look up ticker codes against the datetime level and
+    raise ``KeyError: 'SH600000'`` deep inside a fold."""
+    _seed_pool(tmp_path / "pool")
+    bundle = MinedFactorBundle(pool_dir=tmp_path / "pool")
+    panel = _synthetic_panel()
+    features = make_mined_factor_features(bundle, _config(), panel=panel)
+    assert features.index.names == ["datetime", "instrument"]
+    # Level 0 values are pandas Timestamps, level 1 are ticker strings.
+    assert isinstance(features.index.get_level_values(0)[0], pd.Timestamp)
+    assert isinstance(features.index.get_level_values(1)[0], str)
+    # And the index is sorted, as StaticDataLoader assumes.
+    assert features.index.is_monotonic_increasing
 
 
 def test_make_features_column_order_is_fitness_desc(tmp_path):
@@ -254,6 +274,145 @@ def test_importing_module_does_not_pull_qlib():
         f"qlib unexpectedly imported by mined_factor_handler module: "
         f"{[k for k in sys.modules if k.startswith('qlib')]}"
     )
+
+
+def test_factory_resolves_universe_name_to_ticker_list(monkeypatch):
+    """Regression for the qlib StaticDataLoader integration bug:
+    ``StaticDataLoader.load(instruments, ...)`` treats ``instruments``
+    as a ticker-list filter, NOT a qlib universe name. Passing
+    ``"csi300"`` raises ``KeyError: 'csi300'`` deep inside pandas
+    MultiIndex lookup. The handler factory MUST resolve the universe
+    string via ``qlib.data.D.list_instruments`` and pass the resolved
+    list to ``DataHandlerLP``.
+
+    Verified here by stubbing qlib so the test runs without qlib
+    installed and without touching the real registry."""
+    import types
+
+    import pandas as pd
+
+    captured: dict = {}
+
+    class _FakeD:
+        @staticmethod
+        def instruments(name):
+            return {"_universe_name": name}
+
+        @staticmethod
+        def list_instruments(spec, start_time=None, end_time=None, as_list=True):
+            captured["resolved_universe_spec"] = spec
+            captured["resolve_start"] = start_time
+            captured["resolve_end"] = end_time
+            return ["SH600000", "SH600519", "SZ000001"]
+
+    class _FakeStaticDataLoader:
+        def __init__(self, config):
+            captured["loader_config_keys"] = sorted(config.keys())
+
+    class _FakeDataHandlerLP:
+        def __init__(self, *, instruments, start_time, end_time, data_loader):
+            captured["handler_instruments"] = instruments
+            captured["handler_start"] = start_time
+            captured["handler_end"] = end_time
+
+    qlib_data_mod = types.ModuleType("qlib.data")
+    qlib_data_mod.D = _FakeD
+    qlib_handler_mod = types.ModuleType("qlib.data.dataset.handler")
+    qlib_handler_mod.DataHandlerLP = _FakeDataHandlerLP
+    qlib_loader_mod = types.ModuleType("qlib.data.dataset.loader")
+    qlib_loader_mod.StaticDataLoader = _FakeStaticDataLoader
+
+    monkeypatch.setitem(sys.modules, "qlib.data", qlib_data_mod)
+    monkeypatch.setitem(sys.modules, "qlib.data.dataset.handler", qlib_handler_mod)
+    monkeypatch.setitem(sys.modules, "qlib.data.dataset.loader", qlib_loader_mod)
+
+    from src.data.feature_dataset_builder import FeatureDatasetConfig
+    from src.data.mined_factor_handler import _make_qlib_handler
+
+    features = pd.DataFrame(
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2024-01-02"), "SH600000")],
+            names=["datetime", "instrument"],
+        ),
+        data={"mf_x": [0.1]},
+    )
+    cfg = FeatureDatasetConfig(
+        instruments="csi300", feature_handler="MinedFactor",
+        train_start="2024-01-01", train_end="2024-06-30",
+        valid_start="2024-07-01", valid_end="2024-08-31",
+        test_start="2024-09-01", test_end="2024-12-31",
+    )
+    _make_qlib_handler(features, None, cfg)
+
+    # The handler must NOT receive the raw "csi300" string. It must
+    # receive the resolved ticker list returned by D.list_instruments.
+    assert captured["handler_instruments"] == ["SH600000", "SH600519", "SZ000001"]
+    assert captured["resolve_start"] == "2024-01-01"
+    assert captured["resolve_end"] == "2024-12-31"
+
+
+def test_factory_passes_through_explicit_ticker_list(monkeypatch):
+    """When the caller already gave a list of tickers (not a universe
+    name), the handler MUST pass the list through unchanged — no
+    re-resolution via D.list_instruments."""
+    import types
+
+    import pandas as pd
+
+    captured: dict = {}
+
+    class _FakeD:
+        @staticmethod
+        def list_instruments(*args, **kwargs):
+            captured["unexpected_resolve"] = True
+            return []
+
+    class _FakeStaticDataLoader:
+        def __init__(self, config):
+            pass
+
+    class _FakeDataHandlerLP:
+        def __init__(self, *, instruments, start_time, end_time, data_loader):
+            captured["handler_instruments"] = instruments
+
+    qlib_data_mod = types.ModuleType("qlib.data")
+    qlib_data_mod.D = _FakeD
+    qlib_handler_mod = types.ModuleType("qlib.data.dataset.handler")
+    qlib_handler_mod.DataHandlerLP = _FakeDataHandlerLP
+    qlib_loader_mod = types.ModuleType("qlib.data.dataset.loader")
+    qlib_loader_mod.StaticDataLoader = _FakeStaticDataLoader
+
+    monkeypatch.setitem(sys.modules, "qlib.data", qlib_data_mod)
+    monkeypatch.setitem(sys.modules, "qlib.data.dataset.handler", qlib_handler_mod)
+    monkeypatch.setitem(sys.modules, "qlib.data.dataset.loader", qlib_loader_mod)
+
+    from src.data.feature_dataset_builder import FeatureDatasetConfig
+    from src.data.mined_factor_handler import _make_qlib_handler
+
+    features = pd.DataFrame(
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2024-01-02"), "SH600000")],
+            names=["datetime", "instrument"],
+        ),
+        data={"mf_x": [0.1]},
+    )
+    # Construct a config whose `instruments` is non-str (a list).
+    # FeatureDatasetConfig type hints `str` but our handler is
+    # defensive: if it gets a non-string, pass through without
+    # re-resolution.
+    cfg = object.__new__(FeatureDatasetConfig)
+    object.__setattr__(cfg, "instruments", ["SH600519", "SH600036"])
+    object.__setattr__(cfg, "feature_handler", "MinedFactor")
+    object.__setattr__(cfg, "train_start", "2024-01-01")
+    object.__setattr__(cfg, "train_end", "2024-06-30")
+    object.__setattr__(cfg, "valid_start", "2024-07-01")
+    object.__setattr__(cfg, "valid_end", "2024-08-31")
+    object.__setattr__(cfg, "test_start", "2024-09-01")
+    object.__setattr__(cfg, "test_end", "2024-12-31")
+
+    _make_qlib_handler(features, None, cfg)
+    assert captured["handler_instruments"] == ["SH600519", "SH600036"]
+    assert "unexpected_resolve" not in captured
 
 
 def test_module_source_has_no_top_level_qlib_import():
