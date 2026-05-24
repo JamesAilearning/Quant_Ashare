@@ -993,11 +993,16 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
             import plotly.graph_objects as go
 
             period_index = pd.PeriodIndex(frame["month"].astype(str), freq="M")
+            # 月份在 X 轴上显示。strftime("%b") 在 Windows / Linux 不同
+            # locale 下输出不一致，所以这里手动把 period_index 的月份号
+            # （1..12）映射成中文标签，避免依赖系统 locale。
+            _MONTH_LABELS_ZH = ("1月", "2月", "3月", "4月", "5月", "6月",
+                                 "7月", "8月", "9月", "10月", "11月", "12月")
+            month_order = list(_MONTH_LABELS_ZH)
             heatmap_frame = frame.assign(
                 year=period_index.year,
-                month_label=period_index.strftime("%b"),
+                month_label=[_MONTH_LABELS_ZH[m - 1] for m in period_index.month],
             )
-            month_order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
             pivot = heatmap_frame.pivot_table(
                 index="year",
                 columns="month_label",

@@ -114,15 +114,15 @@ def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
     instrument_universes = _read_instrument_universes(provider_path)
     if not validation and not manifest:
         warnings.append(
-            "No adjacent validation.json or manifest.json found; provider coverage preview is limited."
+            "未找到相邻的 validation.json 或 manifest.json，数据源覆盖预览功能受限。"
         )
     if not calendar_dates:
         warnings.append(
-            "No calendars/day.txt found; provider tail-date guard is unavailable."
+            "未找到 calendars/day.txt，数据源末日校验不可用。"
         )
     if not instrument_universes:
         warnings.append(
-            "No instruments/*.txt files found; named-universe guard is unavailable."
+            "未找到 instruments/*.txt，命名标的池校验不可用。"
         )
 
     health = _optional_str(source.get("health") or source.get("validation_health"))
@@ -171,21 +171,21 @@ def validate_pipeline_training_inputs(
 
     if all(parsed.values()):
         if not parsed["train_start"] < parsed["train_end"]:
-            errors.append("train_start must be strictly before train_end.")
+            errors.append("train_start 必须严格早于 train_end。")
         if not parsed["train_end"] < parsed["valid_start"]:
             errors.append(
-                "valid_start must be strictly after train_end "
-                f"(train_end={train_end}, valid_start={valid_start})."
+                "valid_start 必须严格晚于 train_end "
+                f"（train_end={train_end}, valid_start={valid_start}）。"
             )
         if not parsed["valid_start"] < parsed["valid_end"]:
-            errors.append("valid_start must be strictly before valid_end.")
+            errors.append("valid_start 必须严格早于 valid_end。")
         if not parsed["valid_end"] < parsed["test_start"]:
             errors.append(
-                "test_start must be strictly after valid_end "
-                f"(valid_end={valid_end}, test_start={test_start})."
+                "test_start 必须严格晚于 valid_end "
+                f"（valid_end={valid_end}, test_start={test_start}）。"
             )
         if not parsed["test_start"] < parsed["test_end"]:
-            errors.append("test_start must be strictly before test_end.")
+            errors.append("test_start 必须严格早于 test_end。")
 
         _validate_provider_coverage(parsed, metadata, errors, warnings)
 
@@ -201,11 +201,11 @@ def validate_pipeline_training_inputs(
 def provider_metadata_summary(metadata: ProviderMetadata) -> dict[str, str]:
     return {
         "coverage": _format_coverage(metadata),
-        "health": metadata.health or "unavailable",
-        "calendar_count": str(metadata.calendar_count or "unavailable"),
-        "instrument_count": str(metadata.instrument_count or "unavailable"),
-        "row_count": str(metadata.row_count or "unavailable"),
-        "universes": ", ".join(metadata.instrument_universes) or "unavailable",
+        "health": metadata.health or "暂无数据",
+        "calendar_count": str(metadata.calendar_count or "暂无数据"),
+        "instrument_count": str(metadata.instrument_count or "暂无数据"),
+        "row_count": str(metadata.row_count or "暂无数据"),
+        "universes": ", ".join(metadata.instrument_universes) or "暂无数据",
     }
 
 
@@ -221,14 +221,14 @@ def _validate_provider_coverage(
     test_end = parsed["test_end"]
     if coverage_start and train_start and train_start < coverage_start:
         errors.append(
-            f"train_start ({train_start}) is before provider coverage_start "
-            f"({coverage_start})."
+            f"train_start（{train_start}）早于数据源 coverage_start "
+            f"（{coverage_start}）。"
         )
     if coverage_end:
         for name, value in parsed.items():
             if value and value > coverage_end:
                 errors.append(
-                    f"{name} ({value}) is after provider coverage_end ({coverage_end})."
+                    f"{name}（{value}）晚于数据源 coverage_end（{coverage_end}）。"
                 )
 
     calendar = metadata.calendar_dates
@@ -237,20 +237,19 @@ def _validate_provider_coverage(
     calendar_end = calendar[-1]
     if test_end >= calendar_end:
         safe_end = calendar[-2] if len(calendar) >= 2 else None
-        suggestion = f" Use test_end <= {safe_end} or pull more provider data." if safe_end else ""
+        suggestion = f" 请将 test_end 设为 ≤ {safe_end}，或拉取更多数据。" if safe_end else ""
         errors.append(
-            f"test_end ({test_end}) must be before provider final trading day "
-            f"({calendar_end}) to avoid qlib backtest tail-calendar overflow.{suggestion}"
+            f"test_end（{test_end}）必须早于数据源最后一个交易日"
+            f"（{calendar_end}），否则会触发 qlib 回测日历越界。{suggestion}"
         )
         return
 
     future_days = sum(1 for day in calendar if day > test_end)
     if future_days < FORWARD_RETURN_BUFFER_DAYS:
         warnings.append(
-            f"Only {future_days} provider trading day(s) remain after test_end "
-            f"({test_end}); 20-day forward-return signal summaries near the tail "
-            "may be incomplete. Pull more data or move test_end earlier for full "
-            "tail coverage."
+            f"test_end（{test_end}）之后只剩 {future_days} 个交易日；"
+            "末尾的 20 日前向收益信号摘要可能不完整。"
+            "请拉取更多数据或把 test_end 往前移以保证尾部完整。"
         )
 
 
@@ -264,14 +263,14 @@ def _validate_instruments(
         return
     instrument_name = str(instruments or "").strip()
     if not instrument_name:
-        errors.append("instruments must be non-empty.")
+        errors.append("instruments 不能为空。")
         return
     if "," in instrument_name:
         return
     if instrument_name not in universes:
         errors.append(
-            f"instruments={instrument_name!r} is not available in provider "
-            f"instruments/*.txt. Available universes: {sorted(universes)}."
+            f"instruments={instrument_name!r} 不在数据源的 instruments/*.txt 中。"
+            f"可选标的池：{sorted(universes)}。"
         )
 
 
@@ -329,7 +328,7 @@ def _read_instrument_universes(provider_path: Path) -> tuple[str, ...]:
 def _parse_required_date(name: str, raw: str, errors: list[str]) -> date | None:
     parsed = _parse_optional_date(raw)
     if parsed is None:
-        errors.append(f"{name} must be an ISO date in YYYY-MM-DD format; got {raw!r}.")
+        errors.append(f"{name} 必须是 YYYY-MM-DD 格式的 ISO 日期；当前为 {raw!r}。")
     return parsed
 
 

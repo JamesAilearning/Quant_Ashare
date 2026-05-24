@@ -324,7 +324,7 @@ def render_progress_bar(
     _emit(markup)
 
 
-def render_spinner(label: str = "Loading") -> None:
+def render_spinner(label: str = "加载中") -> None:
     """Render an indeterminate loading spinner."""
 
     markup = (
@@ -385,7 +385,7 @@ def render_empty_state(
 
 
 def render_error_state(
-    title: str = "Something went wrong",
+    title: str = "出错了",
     description: str = "",
     *,
     error: str = "",
@@ -403,13 +403,13 @@ def render_error_state(
     if error:
         parts.append(
             '<details class="qv2-error-state-details">'
-            "<summary>Technical details</summary>"
+            "<summary>详细信息</summary>"
             f'<pre class="qv2-mono" style="font-size:var(--text-xs);overflow:auto;">{html.escape(error)}</pre>'
             "</details>"
         )
     if on_retry:
         parts.append(
-            f'<button class="qv2-error-state-retry" onclick="{html.escape(on_retry, quote=True)}">Retry</button>'
+            f'<button class="qv2-error-state-retry" onclick="{html.escape(on_retry, quote=True)}">重试</button>'
         )
     parts.append("</div>")
     _emit("\n".join(parts), allow_javascript=bool(on_retry))

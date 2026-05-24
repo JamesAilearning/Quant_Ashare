@@ -13,7 +13,7 @@ from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
 def validate_provider_uri(uri: str) -> None:
     """Raise ValueError if provider_uri is empty or whitespace-only."""
     if not str(uri or "").strip():
-        raise ValueError("provider_uri is required for canonical qlib init.")
+        raise ValueError("provider_uri 不能为空，规范化 qlib 初始化需要它。")
 
 
 def validate_config_keys(config: dict[str, Any], known_keys: set[str]) -> None:
@@ -21,8 +21,8 @@ def validate_config_keys(config: dict[str, Any], known_keys: set[str]) -> None:
     unknown = set(config) - known_keys
     if unknown:
         raise ValueError(
-            f"Unknown config keys: {sorted(unknown)}. "
-            f"Allowed: {sorted(known_keys)}."
+            f"配置中含有未知字段：{sorted(unknown)}。"
+            f"允许的字段：{sorted(known_keys)}。"
         )
 
 

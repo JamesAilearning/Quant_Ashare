@@ -156,14 +156,14 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     key_label, key_value = "", ""
     if status == "running":
         progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
-        key_label = "Stage"
+        key_label = "阶段"
         key_value = str(progress.get("label") or status)
     elif status == "completed":
-        key_label = "Result"
+        key_label = "结果"
         key_value = "✓"
     elif status == "failed":
         progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
-        key_label = "Failed at"
+        key_label = "失败于"
         key_value = str(progress.get("label") or "?")
 
     config = raw.get("config")
@@ -217,7 +217,7 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
 
     key_label, key_value = "", ""
     if status == "completed":
-        key_label = "Result"
+        key_label = "结果"
         key_value = "✓"
 
     cfg_summary: dict[str, str] = {}
