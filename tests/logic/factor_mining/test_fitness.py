@@ -120,6 +120,86 @@ def test_invalid_sanity_fails():
     assert not passes_validity(r, FitnessConfig())
 
 
+def test_sanity_does_not_count_nan_as_outlier():
+    """A factor with 30 % NaN cells but no magnitude outliers should
+    pass the sanity check — the coverage check (separate, also 0.80)
+    is what enforces the NaN budget. The earlier implementation
+    double-counted NaN into ``_extreme_outlier_frac`` and made the
+    default ``extreme_outlier_frac_max=0.05`` effectively require
+    coverage ≥ 0.95, which is a stricter constraint than
+    ``coverage_min=0.80``."""
+    rng = np.random.default_rng(11)
+    arr = rng.normal(0, 1, size=(100, 50))
+    # Mask ~30% of cells as NaN — finite values are all bounded.
+    nan_mask = rng.random(arr.shape) < 0.30
+    arr[nan_mask] = np.nan
+    df = pd.DataFrame(
+        arr,
+        index=pd.date_range("2024-01-01", periods=100),
+        columns=[f"T{i}" for i in range(50)],
+    )
+    # Coverage ≈ 0.70 — fails the default coverage_min=0.80, but the
+    # sanity check should NOT also reject.
+    r = _make_result(factor_values=df, coverage=0.70)
+    # Sanity (outlier check) alone must NOT reject this factor.
+    cfg_no_coverage_check = FitnessConfig(
+        coverage_min=0.0,
+        variance_days_frac_min=0.0,
+    )
+    assert passes_validity(r, cfg_no_coverage_check), (
+        "30% NaN + 70% in-range finite must pass when sanity is the only check"
+    )
+
+
+def test_sanity_extreme_outliers_in_finite_cells_still_fail():
+    """The finite-cells-only denominator must still flag magnitude
+    outliers when they cluster among the finite fraction."""
+    rng = np.random.default_rng(12)
+    arr = rng.normal(0, 1, size=(100, 50))
+    # 30% NaN
+    nan_mask = rng.random(arr.shape) < 0.30
+    arr[nan_mask] = np.nan
+    # Of the remaining ~70% finite cells, set ~10% to 1e10 — that's
+    # ~7% of all cells but ~10% of FINITE cells, which exceeds
+    # extreme_outlier_frac_max=0.05.
+    finite_idx = np.argwhere(~nan_mask)
+    n_outliers = int(0.10 * len(finite_idx))
+    rng.shuffle(finite_idx)
+    for i, j in finite_idx[:n_outliers]:
+        arr[i, j] = 1e10
+    df = pd.DataFrame(
+        arr,
+        index=pd.date_range("2024-01-01", periods=100),
+        columns=[f"T{i}" for i in range(50)],
+    )
+    r = _make_result(factor_values=df, coverage=0.70)
+    cfg_no_coverage_check = FitnessConfig(
+        coverage_min=0.0,
+        variance_days_frac_min=0.0,
+        extreme_outlier_frac_max=0.05,
+    )
+    assert not passes_validity(r, cfg_no_coverage_check)
+
+
+def test_sanity_all_nan_factor_returns_zero_outlier_frac():
+    """An all-NaN factor must not crash the sanity check. Coverage is 0
+    so the coverage check rejects; sanity should report 0% outliers
+    (the metric is undefined; we report 0 so coverage is binding)."""
+    all_nan = pd.DataFrame(
+        np.full((100, 50), np.nan),
+        index=pd.date_range("2024-01-01", periods=100),
+        columns=[f"T{i}" for i in range(50)],
+    )
+    r = _make_result(factor_values=all_nan, coverage=0.0)
+    cfg_no_coverage_check = FitnessConfig(
+        coverage_min=0.0,
+        variance_days_frac_min=0.0,
+    )
+    # Sanity alone does not reject — coverage_min would (here we
+    # disabled coverage so we can isolate the sanity outcome).
+    assert passes_validity(r, cfg_no_coverage_check)
+
+
 # ---------------------------------------------------------------------------
 # compute_fitness — formula correctness
 # ---------------------------------------------------------------------------

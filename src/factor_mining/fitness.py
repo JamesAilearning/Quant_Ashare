@@ -59,14 +59,30 @@ def _variance_days_frac(result: EvaluationResult, variance_min: float) -> float:
 
 
 def _extreme_outlier_frac(result: EvaluationResult, magnitude: float) -> float:
-    """Fraction of cells in ``factor_values`` that are non-finite OR
-    whose absolute value exceeds the sanity bound ``magnitude``."""
+    """Fraction of FINITE cells in ``factor_values`` whose absolute
+    value exceeds the sanity bound ``magnitude``.
+
+    The denominator is the count of finite cells, NOT the total cell
+    count. This separates the sanity check from the coverage check
+    (which is what `_coverage` / `coverage_min` already enforce); the
+    earlier implementation counted NaN cells as "outliers", which
+    double-penalised any factor that didn't fully clear `coverage_min`
+    and made `extreme_outlier_frac_max=0.05` (the default) effectively
+    require coverage ≥ 0.95. See the v1 §5.2 §"Sanity" requirement
+    in v2-factor-mining-foundations — the original intent was a
+    magnitude check on the finite values.
+    """
     arr = result.factor_values.to_numpy()
     if arr.size == 0:
         return 0.0
     finite = np.isfinite(arr)
-    extreme = ~finite | (np.abs(np.where(finite, arr, 0.0)) > magnitude)
-    return float(extreme.sum()) / float(arr.size)
+    finite_count = int(finite.sum())
+    if finite_count == 0:
+        # All-NaN factor: outlier fraction is undefined; report 0 so
+        # the coverage check (already 0) is the binding rejection.
+        return 0.0
+    finite_extreme = finite & (np.abs(np.where(finite, arr, 0.0)) > magnitude)
+    return float(finite_extreme.sum()) / float(finite_count)
 
 
 def passes_validity(result: EvaluationResult, config: FitnessConfig) -> bool:

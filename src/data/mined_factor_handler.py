@@ -200,14 +200,19 @@ def make_mined_factor_features(
             )
         stacked = result.stack(future_stack=True)
         stacked.index = stacked.index.set_names(["datetime", "instrument"])
-        # Re-order to (instrument, datetime) per the qlib convention
-        stacked = stacked.reorder_levels(["instrument", "datetime"]).sort_index()
+        # qlib's StaticDataLoader expects the MultiIndex order
+        # (datetime, instrument) — its load() does
+        # df.loc(axis=0)[:, instruments] which treats level 0 as datetime
+        # and level 1 as the instrument filter. The original
+        # (instrument, datetime) order made pandas try to look up
+        # SH600000 in the datetime level and raise KeyError.
+        stacked = stacked.reorder_levels(["datetime", "instrument"]).sort_index()
         columns.append(stacked)
         column_names.append(_column_name_for(entry))
 
     features = pd.concat(columns, axis=1, keys=column_names)
     features.columns = column_names
-    features.index = features.index.set_names(["instrument", "datetime"])
+    features.index = features.index.set_names(["datetime", "instrument"])
     return features
 
 
@@ -219,7 +224,12 @@ def _build_label_dataframe(
         return None
     stacked = forward_return.stack(future_stack=True)
     stacked.index = stacked.index.set_names(["datetime", "instrument"])
-    stacked = stacked.reorder_levels(["instrument", "datetime"]).sort_index()
+    # qlib's StaticDataLoader expects the MultiIndex order
+    # (datetime, instrument) — its load() does df.loc(axis=0)[:, instruments]
+    # which treats level 0 as datetime and level 1 as the instrument filter.
+    # The original (instrument, datetime) order made pandas try to look up
+    # SH600000 in the datetime level and raise KeyError.
+    stacked = stacked.reorder_levels(["datetime", "instrument"]).sort_index()
     return stacked.to_frame(name="LABEL0")
 
 
@@ -234,16 +244,35 @@ def _make_qlib_handler(
     DataFrame in a qlib ``StaticDataLoader`` and returns a
     ``DataHandlerLP`` instance. qlib is imported INSIDE this function
     so importing the parent module never pulls qlib.
+
+    Note on ``instruments``: ``StaticDataLoader.load(instruments, ...)``
+    treats ``instruments`` as a list of ticker codes to ``df.loc[:,
+    instruments]``-filter, NOT as a qlib universe name. Passing
+    ``"csi300"`` directly raises ``KeyError: 'csi300'`` deep inside
+    pandas MultiIndex lookup. We resolve the universe name to a
+    concrete ticker list via ``qlib.data.D.list_instruments`` first.
     """
+    from qlib.data import D  # noqa: PLC0415
     from qlib.data.dataset.handler import DataHandlerLP  # noqa: PLC0415
     from qlib.data.dataset.loader import StaticDataLoader  # noqa: PLC0415
+
+    instruments = config.instruments
+    if isinstance(instruments, str):
+        # Resolve qlib universe name (e.g. "csi300") to the list of
+        # tickers active in [train_start, test_end].
+        instruments = D.list_instruments(
+            D.instruments(instruments),
+            start_time=config.train_start,
+            end_time=config.test_end,
+            as_list=True,
+        )
 
     data_dict: dict[str, pd.DataFrame] = {"feature": features}
     if label is not None:
         data_dict["label"] = label
     loader = StaticDataLoader(config=data_dict)
     return DataHandlerLP(
-        instruments=config.instruments,
+        instruments=instruments,
         start_time=config.train_start,
         end_time=config.test_end,
         data_loader=loader,
