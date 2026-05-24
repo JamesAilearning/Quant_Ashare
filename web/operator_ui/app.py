@@ -41,7 +41,10 @@ if render_topbar(title="Qlib 量化交易系统", subtitle="运维控制台"):
 
 _jobs = JobManager.list_jobs()
 _running = sum(1 for j in _jobs if j.get("status") == "running")
-_failed = sum(1 for j in _jobs if j.get("status") == "failed" and _running == 0)
+_failed = sum(1 for j in _jobs if j.get("status") == "failed")
+_completed = sum(
+    1 for j in _jobs if j.get("status") in ("success", "completed", "ok")
+)
 
 _status_class = "idle"
 _status_text = "全部空闲"
@@ -49,8 +52,13 @@ if _running:
     _status_class = "running"
     _status_text = f"{_running} 个作业运行中"
 elif _failed:
+    # Surface both counts so the indicator stays informative after the
+    # operator runs a successful job alongside a previously-failed one;
+    # the prior text just said "1 个作业失败" forever, which felt stuck.
     _status_class = "error"
-    _status_text = f"{_failed} 个作业失败"
+    _status_text = f"{_failed} 个失败 · {_completed} 个完成"
+elif _completed:
+    _status_text = f"全部空闲 · {_completed} 个完成"
 
 _ICON_MAP = {
     "作业": "\U0001f4cb",            # 📋

@@ -634,6 +634,31 @@ with form_col:
         if compute_device == "gpu" and model_type != "LGBModel":
             st.error("目前仅 LGBModel 支持 GPU 训练。")
             st.stop()
+        # Belt-and-braces: re-run the same guard logic that disables the
+        # Run button. Streamlit's rerun cycle can lose a race between
+        # editing a field and clicking Run — e.g. the operator types
+        # ``instruments=csi800`` and clicks before validation reruns,
+        # so guard_errors looks empty for one frame and the button is
+        # accidentally enabled. Doing the check here catches the stale
+        # frame and surfaces the actual error instead of launching a
+        # job that will fail in qlib with a confusing missing-file trace.
+        if mode == "pipeline":
+            _final_guard = validate_pipeline_training_inputs(
+                provider_uri=provider_uri,
+                instruments=instruments,
+                train_start=train_start,
+                train_end=train_end,
+                valid_start=valid_start,
+                valid_end=valid_end,
+                test_start=test_start,
+                test_end=test_end,
+            )
+            if _final_guard.errors:
+                st.error(
+                    "提交前的最终校验失败，作业未启动：\n- "
+                    + "\n- ".join(_final_guard.errors)
+                )
+                st.stop()
         try:
             validate_config_keys(config_dict, known_keys)
             job_id = JobManager.start(config_dict, mode)

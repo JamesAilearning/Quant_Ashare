@@ -701,14 +701,15 @@ def _render_kpis(
                 latest_count = len(latest_positions)
         _render_card(
             "交易",
-            f"TopK {_fmt_text(config_section.get('topk') if config_section else config.get('topk'))}",
+            f"持仓数 {_fmt_text(config_section.get('topk') if config_section else config.get('topk'))}",
             "",
             [
                 f"换出数（n_drop）：{_fmt_text(config_section.get('n_drop') if config_section else config.get('n_drop'))}",
                 f"持仓天数：{_fmt_int(position_days)}",
                 f"最新持仓数：{_fmt_int(latest_count)}",
             ],
-            help_text="交易卡片：仅展示持仓元数据，UI 不在本地重建交易序列。",
+            help_text="交易卡片：仅展示持仓元数据，UI 不在本地重建交易序列。"
+            "「持仓数」对应 YAML 中的 topk。",
         )
 
 
@@ -825,7 +826,26 @@ def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> N
                 filtered["stock"].astype(str).str.contains(search.strip(), case=False, na=False)
             ]
         filtered = filtered.sort_values("rank", kind="stable").head(int(top_n))
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+        # Display polish:
+        # 1) strip the meaningless ``00:00:00`` time component from the
+        #    daily-snapshot ``date`` column so it just reads ``YYYY-MM-DD``;
+        # 2) rename internal English columns to Chinese for display;
+        # 3) render ``weight`` as a signed percentage instead of a 0.0499
+        #    decimal so operators can eyeball position sizes at a glance.
+        # We make a shallow copy of the slice so the rename / formatting
+        # never mutates the cached parquet frame.
+        display_df = filtered.copy()
+        if "date" in display_df:
+            display_df["date"] = display_df["date"].astype(str).str.slice(0, 10)
+        if "weight" in display_df:
+            display_df["weight"] = display_df["weight"].map(
+                lambda value: _fmt_percent(value, signed=False)
+            )
+        display_df = display_df.rename(
+            columns={"date": "日期", "stock": "股票", "weight": "权重", "rank": "排名"}
+        )
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
         st.download_button(
             "导出持仓 CSV",
             data=filtered.to_csv(index=False).encode("utf-8-sig"),
@@ -848,7 +868,10 @@ def _render_holdings_tab(holdings_frame: Any, positions: Mapping[str, Any]) -> N
     import pandas as pd
 
     rows = [
-        {"标的": str(instrument), "权重": _finite_float(weight)}
+        {
+            "标的": str(instrument),
+            "权重": _fmt_percent(_finite_float(weight), signed=False),
+        }
         for instrument, weight in sorted(date_positions.items(), key=lambda item: str(item[0]))
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -877,7 +900,24 @@ def _render_trades_tab(trades_frame: Any) -> None:
     search = st.text_input("搜索交易", value="", placeholder="股票代码")
     if search.strip() and "stock" in frame:
         frame = frame[frame["stock"].astype(str).str.contains(search.strip(), case=False, na=False)]
-    st.dataframe(frame, use_container_width=True, hide_index=True)
+
+    # Display polish: strip 00:00:00 from date, rename columns to Chinese.
+    # CSV export retains the raw parquet column names + timestamps so
+    # downstream tools (spreadsheets / scripts) keep working unchanged.
+    display_frame = frame.copy()
+    if "date" in display_frame:
+        display_frame["date"] = display_frame["date"].astype(str).str.slice(0, 10)
+    display_frame = display_frame.rename(
+        columns={
+            "date": "日期",
+            "stock": "股票",
+            "side": "方向",
+            "price": "价格",
+            "amount": "成交量",
+            "weight": "权重",
+        }
+    )
+    st.dataframe(display_frame, use_container_width=True, hide_index=True)
     st.download_button(
         "导出交易 CSV",
         data=frame.to_csv(index=False).encode("utf-8-sig"),
@@ -933,7 +973,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
             name="基准净值",
             line={"width": 1.8, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dash"},
         ))
-    nav_axis: dict[str, Any] = {"title": "NAV"}
+    nav_axis: dict[str, Any] = {"title": "净值（×）"}
     y_range = nav_y_range(frame)
     if y_range is not None:
         nav_axis["range"] = y_range
@@ -970,7 +1010,10 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
         height=320,
         hovermode="x unified",
         margin={"l": 36, "r": 20, "t": 20, "b": 36},
-        yaxis={"title": "回撤", "tickformat": ".1%"},
+        # Y-axis title omitted — Chinese characters rotated 90° are hard to
+        # read, and the section header above already says 回撤. We keep the
+        # percent tick format so the scale is unambiguous.
+        yaxis={"title": "", "tickformat": ".1%"},
         xaxis={"title": ""},
         legend={"orientation": "h", "yanchor": "bottom", "y": -0.28, "xanchor": "left", "x": 0},
     )
@@ -1028,8 +1071,13 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
             fig.update_layout(
                 height=260,
                 margin={"l": 36, "r": 20, "t": 10, "b": 30},
-                xaxis={"title": ""},
-                yaxis={"title": ""},
+                # ``xaxis.type=category`` keeps the explicit "1月..12月"
+                # ordering even when only a subset of months appear; ``yaxis``
+                # likewise forces categorical so a single-year run does not
+                # render the year as a continuous numeric scale with bogus
+                # decimal ticks like "2,025.4 / 2,025.2 / 2,025".
+                xaxis={"title": "", "type": "category"},
+                yaxis={"title": "", "type": "category"},
             )
             st.plotly_chart(fig, use_container_width=True)
         except (ImportError, ValueError, TypeError):
@@ -1039,6 +1087,9 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
     for column in ("strategy", "benchmark"):
         if column in display:
             display[column] = display[column].map(lambda value: _fmt_percent(value, signed=True))
+    display = display.rename(
+        columns={"month": "月份", "strategy": "策略", "benchmark": "基准"}
+    )
     st.dataframe(display, use_container_width=True, hide_index=True)
 
 
