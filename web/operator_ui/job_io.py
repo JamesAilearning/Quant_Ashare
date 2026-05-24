@@ -141,6 +141,58 @@ def _load_cli_entries() -> list[dict[str, Any]]:
     return sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True)
 
 
+_STDERR_TAIL_BYTES = 8 * 1024  # 8 KiB is plenty for a Python traceback summary.
+_FAILURE_HINT_TOKENS: tuple[str, ...] = (
+    "Error",
+    "error:",
+    "Exception",
+    "Traceback",
+    "ValueError",
+    "RuntimeError",
+    "TypeError",
+    "KeyError",
+    "AssertionError",
+    "FileNotFoundError",
+)
+
+
+def _extract_failure_detail(job_dir: Path, *, max_chars: int = 200) -> str:
+    """Return a one-line summary of the failure from ``stderr.log``.
+
+    Reads the trailing :data:`_STDERR_TAIL_BYTES` bytes (avoids loading a
+    multi-megabyte log into memory), splits on newlines, then walks
+    backwards looking for the most-recent line that contains an obvious
+    error marker (``Error``, ``Exception``, ``Traceback``, etc.).  Falls
+    back to the last non-empty line.  Returns an empty string when no
+    stderr file exists or it is empty.
+
+    The result is truncated to ``max_chars`` so the Jobs page table cell
+    stays readable; the full log is always one click away from the
+    Results page.
+    """
+
+    stderr_path = job_dir / "stderr.log"
+    if not stderr_path.is_file():
+        return ""
+    try:
+        with stderr_path.open("rb") as handle:
+            try:
+                handle.seek(-_STDERR_TAIL_BYTES, 2)  # 2 = SEEK_END
+            except OSError:
+                handle.seek(0)
+            data = handle.read()
+    except OSError:
+        return ""
+    text = data.decode("utf-8", errors="replace")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    for line in reversed(lines):
+        if any(token in line for token in _FAILURE_HINT_TOKENS):
+            return line[:max_chars]
+    return lines[-1][:max_chars]
+
+
 def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     job_id = str(raw.get("job_id") or raw.get("run_id") or "")
     mode = str(raw.get("mode") or "").replace("tushare_provider", "provider")
@@ -162,9 +214,24 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
         key_label = "结果"
         key_value = "✓"
     elif status == "failed":
+        # Surface the actual error so the operator can diagnose without
+        # opening stderr.log. Order of preference: explicit error / stop_error
+        # in job.json → tail of stderr.log → progress label fallback.
         progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
-        key_label = "失败于"
-        key_value = str(progress.get("label") or "?")
+        key_label = "失败原因"
+        explicit_error = str(raw.get("stop_error") or raw.get("error") or "").strip()
+        stderr_tail = ""
+        job_dir_str = raw.get("_job_dir")
+        if job_dir_str:
+            try:
+                stderr_tail = _extract_failure_detail(Path(str(job_dir_str)))
+            except OSError:
+                stderr_tail = ""
+        key_value = (
+            explicit_error
+            or stderr_tail
+            or str(progress.get("label") or "失败")
+        )
 
     config = raw.get("config")
     if isinstance(raw.get("config_yaml"), str):

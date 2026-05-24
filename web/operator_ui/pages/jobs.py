@@ -400,7 +400,11 @@ for item in items:
     rows.append(
         {
             "状态": f"{_STATUS_ICONS.get(item.status, '')} {_STATUS_LABELS.get(item.status, item.status)}",
-            "运行 ID": item.run_id[:14] + ("…" if len(item.run_id) > 14 else ""),
+            # Show the full run id — failing jobs need the timestamp + hash
+            # tail to copy into a bug report; truncation forced operators
+            # to click into the detail page first. The medium column width
+            # below keeps the layout balanced.
+            "运行 ID": item.run_id,
             "类型": f"{_TYPE_ICONS.get(item.type, '')} {_TYPE_LABELS.get(item.type, item.type)}",
             "创建时间": format_relative_time(item.created_at) if item.created_at else "—",
             "耗时": (
@@ -425,11 +429,15 @@ event = st.dataframe(
     df,
     column_config={
         "状态": st.column_config.TextColumn("状态", width="small"),
-        "运行 ID": st.column_config.TextColumn("运行 ID", width="small"),
+        # Full run id is ~33 chars (e.g. pipeline_YYYYMMDD_HHMMSS_<8hex>);
+        # "medium" column gives it room without crowding the rest.
+        "运行 ID": st.column_config.TextColumn("运行 ID", width="medium"),
         "类型": st.column_config.TextColumn("类型", width="small"),
         "创建时间": st.column_config.TextColumn("创建时间", width="small"),
         "耗时": st.column_config.TextColumn("耗时", width="small"),
-        "关键指标": st.column_config.TextColumn("关键指标"),
+        # Failure reason can be a full Python traceback summary line — give
+        # the cell enough room and let Streamlit wrap inside it.
+        "关键指标": st.column_config.TextColumn("关键指标", width="large"),
         "配置": st.column_config.TextColumn("配置"),
         "来源": st.column_config.TextColumn("来源", width="small"),
     },
