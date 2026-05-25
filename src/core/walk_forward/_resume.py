@@ -312,13 +312,32 @@ class FoldManifest:
         return cls.from_dict(payload)
 
     @classmethod
-    def discover(cls, output_dir: Path | str) -> dict[int, FoldManifest]:
+    def discover(
+        cls,
+        output_dir: Path | str,
+        *,
+        verify_artifacts: bool = True,
+    ) -> dict[int, FoldManifest]:
         """Scan ``output_dir`` for ``fold_*_manifest.json`` files.
 
         Malformed JSON or schema-mismatched manifests are skipped with
         a WARNING log — they don't abort the resume scan, but they
         also don't contribute to the skip set, so the corresponding
         fold will re-run.
+
+        When ``verify_artifacts`` is True (the default), manifests
+        whose ``model_path`` / ``report_path`` / ``predictions_path``
+        don't exist on disk are also skipped with a WARNING. Without
+        this check, an operator who deleted or moved per-fold
+        artifacts (cleanup script, accidental ``rm``, half-finished
+        archive operation) would see the engine "resume" a fold whose
+        model pickle no longer exists — the ensemble loader would
+        then crash later, or worse, silently fall back to fewer
+        models. Audit P2 regression.
+
+        Tests that want to inspect the discover internals on a
+        manifest without the artifact files can pass
+        ``verify_artifacts=False``.
         """
         d = Path(output_dir)
         if not d.is_dir():
@@ -350,8 +369,41 @@ class FoldManifest:
             # consumes absolute paths regardless of whether the run
             # directory was renamed between the original run and this
             # resume (Codex P1 on PR #147).
-            out[manifest.fold_index] = manifest.with_paths_rebased(d)
+            rebased = manifest.with_paths_rebased(d)
+            if verify_artifacts:
+                missing = _missing_required_artifacts(rebased)
+                if missing:
+                    _log.warning(
+                        "skipping fold %d manifest at %s — required "
+                        "artifact(s) missing on disk: %s. The fold "
+                        "will be re-run on the next resume.",
+                        rebased.fold_index, path, ", ".join(missing),
+                    )
+                    continue
+            out[manifest.fold_index] = rebased
         return out
+
+
+def _missing_required_artifacts(manifest: FoldManifest) -> list[str]:
+    """Return the names of any required artifact paths whose files are
+    missing or unreadable. Used by ``discover(verify_artifacts=True)``.
+
+    ``positions_path`` is **not** required — the backtest skips
+    writing it when there are no positions, and the engine writes
+    the manifest with ``positions_path=None`` in that case.
+    ``predictions_path`` IS required for ensemble loading;
+    ``model_path`` is required for prior-model averaging; ``report_path``
+    is required for downstream comparisons / dashboards.
+    """
+    missing: list[str] = []
+    for label, value in (
+        ("model_path", manifest.model_path),
+        ("report_path", manifest.report_path),
+        ("predictions_path", manifest.predictions_path),
+    ):
+        if not value or not Path(value).is_file():
+            missing.append(label)
+    return missing
 
 
 # ---------------------------------------------------------------------------

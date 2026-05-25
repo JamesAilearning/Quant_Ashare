@@ -196,6 +196,11 @@ class DiscoverTests(unittest.TestCase):
         )
 
     def test_discover_finds_all_well_formed_manifests(self) -> None:
+        """Manifest enumeration with a gap (0, 1, 3 — no 2). Uses
+        ``verify_artifacts=False`` because this test is about JSON
+        parsing + version filtering, not artifact-existence checks;
+        the artifact-verify behaviour is covered separately in
+        ``test_walk_forward_resume_artifact_verify.py``."""
         import tempfile
 
         cfg = _make_config()
@@ -208,7 +213,7 @@ class DiscoverTests(unittest.TestCase):
                     predictions_path=f"p{i}", positions_path=None,
                 )
                 m.save(td)
-            found = FoldManifest.discover(td)
+            found = FoldManifest.discover(td, verify_artifacts=False)
             self.assertEqual(sorted(found.keys()), [0, 1, 3])
 
     def test_discover_skips_malformed_json(self) -> None:
@@ -282,7 +287,14 @@ class ResumeOutputDirRenameTests(unittest.TestCase):
     def test_discover_rebases_paths_against_current_dir(self) -> None:
         """Save manifests under ``orig_dir``, move them to ``new_dir``,
         then ``discover(new_dir)`` must return paths joined to
-        ``new_dir`` so the engine loads pickles from the right place."""
+        ``new_dir`` so the engine loads pickles from the right place.
+
+        ``verify_artifacts=False`` because this test is about path
+        rebasing, not artifact existence — populating fake artifact
+        bytes here would just clutter the rename scenario. The
+        artifact-verify behavior is covered in
+        ``test_walk_forward_resume_artifact_verify.py``.
+        """
         import shutil
         import tempfile
 
@@ -302,7 +314,7 @@ class ResumeOutputDirRenameTests(unittest.TestCase):
             # Simulate the operator-rename case: move the whole directory.
             shutil.move(str(orig_dir), str(new_dir))
 
-            found = FoldManifest.discover(new_dir)
+            found = FoldManifest.discover(new_dir, verify_artifacts=False)
             self.assertEqual(set(found), {1})
             rebased = found[1]
             self.assertEqual(
@@ -323,7 +335,11 @@ class ResumeOutputDirRenameTests(unittest.TestCase):
     def test_discover_rebases_legacy_absolute_paths(self) -> None:
         """Old manifests written before this fix have absolute paths
         from the original run. ``discover`` must still produce correct
-        paths by extracting the basename and rejoining."""
+        paths by extracting the basename and rejoining.
+
+        ``verify_artifacts=False`` so the rebase logic is tested in
+        isolation from artifact-existence checks.
+        """
         import tempfile
 
         cfg = _make_config()
@@ -345,7 +361,7 @@ class ResumeOutputDirRenameTests(unittest.TestCase):
             (Path(td) / "fold_00_manifest.json").write_text(
                 json.dumps(payload), encoding="utf-8",
             )
-            found = FoldManifest.discover(td)
+            found = FoldManifest.discover(td, verify_artifacts=False)
             self.assertIn(0, found)
             self.assertEqual(
                 found[0].model_path, str(Path(td) / "model_fold0.pkl"),
