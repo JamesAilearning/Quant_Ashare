@@ -20,6 +20,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.logger import get_logger, setup_logging  # noqa: E402
+from src.data.bundle_manifest import (  # noqa: E402
+    BundleManifestError,
+    save_manifest,
+)
 from src.data.tushare.provider_bundle import (  # noqa: E402
     TushareQlibProviderBundleConfig,
     TushareQlibProviderBundleError,
@@ -63,6 +67,39 @@ def main(argv: list[str] | None = None) -> None:
                  result.validation_profile.coverage_end_date)
     if result.comparison_path:
         _logger.info("  Comparison:        %s", result.comparison_path)
+
+    # Emit the walk-forward freshness manifest (PR8 contract). The
+    # walk-forward CLI reads this to catch stale-bundle configs upfront
+    # instead of failing deep inside FeatureDatasetBuilder with an opaque
+    # "empty dataset". A missing coverage_end_date (publisher couldn't
+    # compute it) skips this with a WARNING — better to publish without
+    # the manifest than to fail the ingest at the last step.
+    tail = result.validation_profile.coverage_end_date
+    if tail:
+        try:
+            manifest_path = save_manifest(
+                result.output_dir,
+                tail_date=tail,
+                instrument_count=result.validation_profile.instrument_count,
+            )
+            _logger.info("  Bundle manifest:   %s", manifest_path)
+        except BundleManifestError as exc:
+            _logger.warning(
+                "Skipped bundle_manifest.json emit (validation_profile data "
+                "was rejected by save_manifest): %s. The bundle itself is "
+                "fine; walk-forward will fall back to 'no manifest = no "
+                "freshness validation'.",
+                exc,
+            )
+    else:
+        _logger.warning(
+            "Skipped bundle_manifest.json emit — "
+            "validation_profile.coverage_end_date is None. "
+            "The publisher couldn't determine a tail_date; the bundle "
+            "is still usable but walk-forward freshness validation will "
+            "fall back to the legacy 'no manifest, no check' path.",
+        )
+
     _logger.info("")
     _logger.info("To train on this bundle, explicitly set provider_uri to:")
     _logger.info("  %s", result.output_dir)

@@ -179,13 +179,18 @@ def _maybe_build_mined_factor_bundle(
     )
 
 
-def _parse_cli(argv: list[str]) -> tuple[str, ResumeMode]:
-    """Parse CLI flags. Returns ``(config_path, resume_mode)``.
+def _parse_cli(argv: list[str]) -> tuple[str, ResumeMode, str | None]:
+    """Parse CLI flags. Returns ``(config_path, resume_mode, dataset_cache_dir_override)``.
 
     Preserves the legacy positional form ``python
     scripts/run_walk_forward.py [config.yaml]`` — the config path is a
     positional with a sensible default. Resume flags are mutually
     exclusive; passing both raises ``SystemExit(2)`` via argparse.
+
+    ``--dataset-cache-dir DIR`` overrides whatever the YAML sets for
+    ``dataset_cache_dir`` (and pre-empts the ``QLIB_DATASET_CACHE_DIR``
+    env var fallback). Pass an empty string to explicitly disable the
+    cache even if the YAML asks for it.
     """
     parser = argparse.ArgumentParser(
         prog="run_walk_forward.py",
@@ -217,24 +222,52 @@ def _parse_cli(argv: list[str]) -> tuple[str, ResumeMode]:
             "Output artifacts are overwritten in place."
         ),
     )
+    parser.add_argument(
+        "--dataset-cache-dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Override WalkForwardConfig.dataset_cache_dir. The feature-"
+            "dataset cache (see openspec/changes/add-feature-dataset-cache) "
+            "is consulted by FeatureDatasetBuilder.build() before "
+            "instantiating Alpha158 / MinedFactor — a cache hit skips "
+            "30-90s of handler init + 3x prepare() per fold. Pass an "
+            "empty string to disable the cache even if the YAML enables it."
+        ),
+    )
     ns = parser.parse_args(argv)
     if ns.no_resume:
-        return ns.config, ResumeMode.FORCE_RERUN
-    if ns.resume_from_fold is not None:
+        resume = ResumeMode.FORCE_RERUN
+    elif ns.resume_from_fold is not None:
         if ns.resume_from_fold < 0:
             parser.error("--resume-from-fold N must be ≥ 0")
-        return ns.config, ResumeMode.from_fold(ns.resume_from_fold)
-    return ns.config, ResumeMode.AUTO
+        resume = ResumeMode.from_fold(ns.resume_from_fold)
+    else:
+        resume = ResumeMode.AUTO
+    return ns.config, resume, ns.dataset_cache_dir
 
 
 def main(argv: list[str] | None = None) -> None:
     setup_logging()
-    config_file, resume_mode = _parse_cli(
+    config_file, resume_mode, ds_cache_override = _parse_cli(
         argv if argv is not None else sys.argv[1:],
     )
     _logger.info("Loading walk-forward config from %s", config_file)
     raw_yaml = load_yaml_with_inheritance(Path(config_file))
     wf_config, qlib_config = _load_config(config_file)
+    # --dataset-cache-dir overrides whatever the YAML sets. The CLI
+    # value is forwarded verbatim — including the empty-string sentinel,
+    # which WalkForwardConfig.dataset_cache_dir interprets as "explicit
+    # disable, do not fall back to QLIB_DATASET_CACHE_DIR". Converting
+    # ``""`` to ``None`` here would let the env var re-enable caching
+    # behind the operator's back — exactly what the documented "stamp
+    # off" semantic forbids.
+    if ds_cache_override is not None:
+        import dataclasses
+        wf_config = dataclasses.replace(
+            wf_config, dataset_cache_dir=ds_cache_override,
+        )
     mined_factor_bundle = _maybe_build_mined_factor_bundle(
         raw_yaml, wf_config, qlib_config.provider_uri,
     )
