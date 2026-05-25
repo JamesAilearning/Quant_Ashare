@@ -1381,10 +1381,13 @@ def _job_label(job: Mapping[str, Any]) -> str:
 
 
 def _query_run_id() -> str:
-    value = st.query_params.get("run_id", "")
-    if isinstance(value, list):
-        value = value[0] if value else ""
-    return str(value or "").strip()
+    # Route through the param-guard so a hostile URL can't inject path
+    # traversal / shell metacharacters via the run_id slot. The guard
+    # rejects anything that isn't `[A-Za-z0-9_\-.]{1,200}`.
+    from web.operator_ui._param_guard import sanitize as _sanitize_qp
+
+    raw = st.query_params.get("run_id", "")
+    return _sanitize_qp("run_id", raw, default="").strip()
 
 
 def _default_job_id(jobs: Sequence[Mapping[str, Any]]) -> str:
