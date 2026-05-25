@@ -39,7 +39,22 @@ jobs:
         run: mypy src/ --ignore-missing-imports
         continue-on-error: true
 
+      # Coverage runs on a single matrix slot (ubuntu-3.11) so we
+      # collect one canonical coverage.xml per PR; running cov on all
+      # 6 jobs would 6x the artifact storage for no extra signal.
+      # The other 5 jobs still run the test suite for the
+      # OS / Python coverage matrix; they just don't emit coverage.
+      - name: Run logic tests (with coverage)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          pytest tests/logic/ -q --tb=short \
+            --cov=src --cov-report=xml:coverage-logic.xml \
+            --cov-report=term-missing:skip-covered
+        env:
+          RUN_E2E: "0"
+
       - name: Run logic tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/logic/ -q --tb=short
         env:
           RUN_E2E: "0"
@@ -73,3 +88,18 @@ jobs:
         run: pytest tests/pit/ -q --tb=short
         env:
           RUN_E2E: "0"
+
+      # Upload the coverage XML as a workflow artifact so reviewers
+      # can download it from the PR Checks tab without configuring an
+      # external Codecov account. Only runs on the slot that
+      # collected coverage (ubuntu-3.11). The artifact also lets a
+      # future Codecov / Coveralls integration just consume the same
+      # file rather than re-running coverage.
+      - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-logic-xml
+          path: coverage-logic.xml
+          if-no-files-found: warn
+          retention-days: 30
