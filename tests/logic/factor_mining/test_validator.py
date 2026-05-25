@@ -6,6 +6,7 @@ import inspect
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.factor_mining.factor_pool import FactorPool, PoolEntry
 from src.factor_mining.validator import (
@@ -337,6 +338,176 @@ def test_filter_correlated_preserves_uncorrelated():
     filtered = filter_correlated(results, panel, crit, pool)
     # Both uncorrelated factors should remain passing
     assert all(r.passes for r in filtered)
+
+
+# ---------------------------------------------------------------------------
+# warmup_days — rolling-window factors get valid OOS values from day 1
+# ---------------------------------------------------------------------------
+
+
+def test_split_panel_warmup_zero_is_legacy_behavior():
+    """``warmup_days=0`` must preserve the pre-PR3 slicing exactly."""
+    from src.factor_mining.validator import _split_panel
+
+    panel, fwd = _make_panel_basic(n_dates=100, n_tickers=5)
+    split = panel["$close"].index[50]
+    is_p, is_f, oos_p, oos_f = _split_panel(panel, fwd, split, warmup_days=0)
+    assert (is_p["$close"].index < split).all()
+    assert (oos_p["$close"].index >= split).all()
+    assert (is_f.index < split).all()
+    assert (oos_f.index >= split).all()
+    # No NaN injection in fwd
+    assert not oos_f.isna().all(axis=1).any()
+
+
+def test_split_panel_warmup_extends_oos_panel_and_masks_fwd():
+    """``warmup_days > 0`` extends the OOS panel back by ``warmup_days``
+    rows and masks those warmup rows' fwd values to NaN."""
+    from src.factor_mining.validator import _split_panel
+
+    panel, fwd = _make_panel_basic(n_dates=100, n_tickers=5)
+    split = panel["$close"].index[50]
+    is_p, is_f, oos_p, oos_f = _split_panel(panel, fwd, split, warmup_days=10)
+    # IS unchanged
+    assert (is_p["$close"].index < split).all()
+    assert (is_f.index < split).all()
+    # OOS panel starts 10 rows before split → date index[40]
+    expected_oos_start = panel["$close"].index[40]
+    assert oos_p["$close"].index.min() == expected_oos_start
+    # OOS fwd: warmup rows are NaN, post-split rows are not
+    warmup_rows = oos_f.loc[oos_f.index < split]
+    assert warmup_rows.isna().all().all(), "warmup fwd must be all NaN"
+    post_split = oos_f.loc[oos_f.index >= split]
+    assert not post_split.isna().all().any()
+
+
+def test_warmup_lets_rolling_factor_score_oos_from_day_one():
+    """A factor using a long rolling window (``ts_mean($close, 20)``)
+    on OOS should produce far more non-NaN values when ``warmup_days``
+    >= the window than when ``warmup_days == 0``."""
+    panel, fwd, split = _make_stable_panel(n_dates=120, n_tickers=10)
+    pool = _make_pool_one_factor("cs_rank(ts_mean($volume, 20))")
+
+    crit_no_warmup = ValidationCriteria(
+        is_oos_split_date=split.strftime("%Y-%m-%d"),
+        min_oos_ir=0.0,
+        min_oos_rank_ic_mean=0.0,
+        min_obs_per_segment=10,
+        warmup_days=0,
+    )
+    crit_warmup = ValidationCriteria(
+        is_oos_split_date=split.strftime("%Y-%m-%d"),
+        min_oos_ir=0.0,
+        min_oos_rank_ic_mean=0.0,
+        min_obs_per_segment=10,
+        warmup_days=20,
+    )
+
+    r_no_warmup = validate_pool(pool, panel, fwd, crit_no_warmup)[0]
+    r_warmup = validate_pool(pool, panel, fwd, crit_warmup)[0]
+
+    # Warmup must materially expand the OOS observation count.
+    assert r_warmup.oos_n_obs > r_no_warmup.oos_n_obs, (
+        f"warmup OOS n_obs ({r_warmup.oos_n_obs}) should exceed "
+        f"no-warmup OOS n_obs ({r_no_warmup.oos_n_obs})"
+    )
+
+
+def test_warmup_rejects_negative_value():
+    """Defensive: ``warmup_days < 0`` is nonsense — raise rather than
+    silently treat as zero."""
+    from src.factor_mining.validator import _split_panel
+
+    panel, fwd = _make_panel_basic(n_dates=50)
+    split = panel["$close"].index[25]
+    with pytest.raises(ValueError, match="warmup_days must be"):
+        _split_panel(panel, fwd, split, warmup_days=-1)
+
+
+# ---------------------------------------------------------------------------
+# Legacy method-tag warning (uses PR2's LEGACY_METHOD_TAG)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_pool_warns_on_legacy_method_entries(monkeypatch):
+    """When the pool contains entries loaded from a pre-PR2 parquet
+    (method == LEGACY_METHOD_TAG), the validator must log a warning
+    so downstream callers know ``ic_mean`` semantics are ambiguous."""
+    import src.factor_mining.validator as v_mod
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.factor_pool import LEGACY_METHOD_TAG
+
+    captured: list[str] = []
+    real_warning = v_mod._log.warning
+
+    def fake_warning(msg, *args, **kwargs):
+        captured.append(msg % args if args else msg)
+        return real_warning(msg, *args, **kwargs)
+
+    monkeypatch.setattr(v_mod._log, "warning", fake_warning)
+
+    panel, fwd, split = _make_stable_panel(n_dates=120, n_tickers=10)
+    expr = parse_expression("cs_rank($volume)")
+    pool = FactorPool()
+    pool.add(
+        PoolEntry(
+            expr=expr,
+            fitness=1.0,
+            ic_mean=0.05, ic_std=0.1, ir=0.5,
+            rank_ic_mean=0.04, rank_ic_std=0.1, rank_ir=0.4,
+            turnover_daily=0.1, coverage=0.95, n_obs_per_day_min=20,
+            expr_size=2, expr_hash=hash(expr),
+            method=LEGACY_METHOD_TAG,
+        )
+    )
+    crit = ValidationCriteria(
+        is_oos_split_date=split.strftime("%Y-%m-%d"),
+        min_oos_ir=0.0,
+        min_oos_rank_ic_mean=0.0,
+        min_obs_per_segment=10,
+    )
+    validate_pool(pool, panel, fwd, crit)
+    assert any("lack a method tag" in msg for msg in captured), (
+        f"expected legacy-tag warning; got {captured!r}"
+    )
+
+
+def test_validate_pool_no_warning_when_all_entries_tagged(monkeypatch):
+    """No legacy-tag warning when every entry carries an explicit
+    method (normal or rank)."""
+    import src.factor_mining.validator as v_mod
+    from src.factor_mining.expression import parse_expression
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        v_mod._log, "warning",
+        lambda msg, *a, **kw: captured.append(msg % a if a else msg),
+    )
+
+    panel, fwd, split = _make_stable_panel(n_dates=120, n_tickers=10)
+    expr = parse_expression("cs_rank($volume)")
+    pool = FactorPool()
+    pool.add(
+        PoolEntry(
+            expr=expr,
+            fitness=1.0,
+            ic_mean=0.05, ic_std=0.1, ir=0.5,
+            rank_ic_mean=0.04, rank_ic_std=0.1, rank_ir=0.4,
+            turnover_daily=0.1, coverage=0.95, n_obs_per_day_min=20,
+            expr_size=2, expr_hash=hash(expr),
+            method="normal",
+        )
+    )
+    crit = ValidationCriteria(
+        is_oos_split_date=split.strftime("%Y-%m-%d"),
+        min_oos_ir=0.0,
+        min_oos_rank_ic_mean=0.0,
+        min_obs_per_segment=10,
+    )
+    validate_pool(pool, panel, fwd, crit)
+    assert not any("lack a method tag" in msg for msg in captured), (
+        f"unexpected legacy-tag warning fired; messages={captured!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

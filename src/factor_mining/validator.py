@@ -14,6 +14,7 @@ already-loaded panels.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -22,7 +23,9 @@ import pandas as pd
 
 from .evaluator import evaluate_factor
 from .expression import Expression
-from .factor_pool import FactorPool, PoolEntry
+from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,15 @@ class ValidationCriteria:
     """Per-factor and per-pool acceptance thresholds.
 
     Defaults match ``decisions.md`` D4 ("Manual gated promotion").
+
+    ``warmup_days`` lets rolling-window factors compute valid OOS values
+    from the first OOS date. When > 0, the OOS panel includes the prior
+    ``warmup_days`` rows from before ``split_ts`` so a factor like
+    ``ts_mean($close, 60)`` doesn't start with 59 NaN rows. The OOS
+    forward-return panel is masked to NaN for the warmup dates so IC is
+    only counted from ``split_ts`` onwards (no contamination).
+    Recommended: ``max(WINDOW_LITERALS)`` from the grammar (or whatever
+    the longest rolling window in your pool is).
     """
 
     is_oos_split_date: str
@@ -37,6 +49,7 @@ class ValidationCriteria:
     min_oos_rank_ic_mean: float = 0.02
     max_pool_correlation: float = 0.6
     min_obs_per_segment: int = 30
+    warmup_days: int = 0
 
 
 @dataclass(frozen=True)
@@ -65,18 +78,58 @@ def _split_panel(
     panel: Mapping[str, pd.DataFrame],
     forward_return: pd.DataFrame,
     split_ts: pd.Timestamp,
+    warmup_days: int = 0,
 ) -> tuple[
     dict[str, pd.DataFrame], pd.DataFrame,
     dict[str, pd.DataFrame], pd.DataFrame,
 ]:
-    """Return (is_panel, is_fwd, oos_panel, oos_fwd) sliced on ``split_ts``."""
+    """Return (is_panel, is_fwd, oos_panel, oos_fwd) sliced on ``split_ts``.
+
+    With ``warmup_days == 0`` (the default and the legacy behavior),
+    IS = ``date < split_ts`` and OOS = ``date >= split_ts``. A rolling
+    factor on the OOS panel will produce NaN for the first window-1
+    dates because the segment has no prior history.
+
+    With ``warmup_days > 0``, the OOS panel is extended back to include
+    the prior ``warmup_days`` rows from the full panel's date index, so
+    rolling factors get valid values from the first true OOS date. The
+    corresponding rows of the OOS forward-return panel are masked to
+    NaN so they don't contribute to IC computation. IS shape is
+    unchanged (IS naturally has its own history).
+    """
     is_panel: dict[str, pd.DataFrame] = {}
     oos_panel: dict[str, pd.DataFrame] = {}
-    for field, df in panel.items():
-        is_panel[field] = df.loc[df.index < split_ts]
-        oos_panel[field] = df.loc[df.index >= split_ts]
+    if warmup_days < 0:
+        raise ValueError(f"warmup_days must be ≥ 0, got {warmup_days!r}")
+
+    # Determine the OOS panel's start date by counting back warmup_days
+    # rows from split_ts within each field. Use position-based slicing
+    # so the result is independent of calendar frequency (business
+    # days, calendar days, etc.).
+    if warmup_days == 0:
+        oos_floor = split_ts
+        for field, df in panel.items():
+            is_panel[field] = df.loc[df.index < split_ts]
+            oos_panel[field] = df.loc[df.index >= split_ts]
+    else:
+        # Union the indices across fields to find a consistent oos_floor.
+        all_dates = pd.Index([], dtype="datetime64[ns]")
+        for df in panel.values():
+            all_dates = all_dates.union(df.index)
+        all_dates = all_dates.sort_values()
+        split_pos = int(all_dates.searchsorted(split_ts, side="left"))
+        warmup_pos = max(0, split_pos - warmup_days)
+        oos_floor = all_dates[warmup_pos] if len(all_dates) else split_ts
+        for field, df in panel.items():
+            is_panel[field] = df.loc[df.index < split_ts]
+            oos_panel[field] = df.loc[df.index >= oos_floor]
+
     is_fwd = forward_return.loc[forward_return.index < split_ts]
-    oos_fwd = forward_return.loc[forward_return.index >= split_ts]
+    oos_fwd = forward_return.loc[forward_return.index >= oos_floor].copy()
+    # Mask warmup dates' fwd values to NaN — they exist only to seed
+    # rolling windows, not to count toward OOS IC.
+    if warmup_days > 0 and not oos_fwd.empty:
+        oos_fwd.loc[oos_fwd.index < split_ts] = np.nan
     return is_panel, is_fwd, oos_panel, oos_fwd
 
 
@@ -120,7 +173,28 @@ def validate_pool(
 ) -> list[FactorValidationResult]:
     """Per-factor IS/OOS validation against the criteria thresholds."""
     split_ts = pd.Timestamp(criteria.is_oos_split_date)
-    is_panel, is_fwd, oos_panel, oos_fwd = _split_panel(panel, forward_return, split_ts)
+    is_panel, is_fwd, oos_panel, oos_fwd = _split_panel(
+        panel, forward_return, split_ts, warmup_days=criteria.warmup_days,
+    )
+
+    # Warn (once per call) if the pool contains entries from a pre-PR2
+    # parquet — their ic_mean field may carry Spearman IC under the
+    # old miner bug, so cross-version ic_mean comparisons are unsafe.
+    # The validator's threshold checks use rank_ic_mean (always
+    # Spearman) so the per-factor verdict itself is still valid.
+    legacy_count = sum(
+        1 for e in pool.all_entries() if e.method == LEGACY_METHOD_TAG
+    )
+    if legacy_count:
+        _log.warning(
+            "%d / %d pool entries lack a method tag (loaded from a "
+            "pre-PR2 parquet); their ic_mean field may carry Spearman "
+            "IC (pre-PR1 miner bug). This validator's checks use "
+            "rank_ic_mean only, so verdicts are unaffected, but "
+            "downstream callers should not cross-compare legacy and "
+            "new entries' ic_mean.",
+            legacy_count, len(pool),
+        )
 
     results: list[FactorValidationResult] = []
     for entry in pool.all_entries():
