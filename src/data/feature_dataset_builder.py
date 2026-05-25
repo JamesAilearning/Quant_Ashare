@@ -13,12 +13,16 @@ Boundaries
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from src.contracts._shared_validators import parse_iso_date
 from src.core.qlib_runtime import is_canonical_qlib_initialized
+
+_log = logging.getLogger(__name__)
 
 
 class FeatureDatasetBuilderError(RuntimeError):
@@ -140,6 +144,7 @@ class FeatureDatasetBuilder:
         config: FeatureDatasetConfig,
         *,
         pit_provider: Any | None = None,
+        cache_dir: Path | str | None = None,
     ) -> FeatureDatasetResult:
         """Build a qlib DatasetH for the given config.
 
@@ -161,11 +166,63 @@ class FeatureDatasetBuilder:
             which would silently train on legacy survivorship-biased
             bins. Phase D.2 opt-in; default ``None`` preserves legacy
             behaviour.
+        cache_dir
+            Optional directory for the feature-dataset pickle cache.
+            When set, the builder hashes the config (plus the qlib
+            provider's bundle tag, when available) and looks for a
+            cached ``FeatureDatasetResult`` before rebuilding. On
+            cache miss, the freshly-built result is pickled to the
+            directory. Cache failures (corrupt blob, disk full,
+            permission) are logged at WARNING and treated as cache
+            misses — never as build failures. The cache is bypassed
+            when ``pit_provider`` is supplied (live PIT state cannot
+            be safely serialised). Default ``None`` preserves the
+            legacy zero-cache code path. See
+            ``openspec/changes/add-feature-dataset-cache/`` for the
+            full contract.
         """
         cls._validate(config)
 
         if pit_provider is not None:
             cls._validate_pit_provider_alignment(pit_provider)
+            # pit_provider has live state we cannot serialise safely;
+            # never read from or write to the cache on this path.
+            cache_active = False
+            cache_key: str | None = None
+        else:
+            cache_active = cache_dir is not None
+            cache_key = None
+            if cache_active:
+                from src.data._feature_dataset_cache import (  # noqa: PLC0415
+                    cache_get,
+                    compute_cache_key,
+                    read_bundle_tag,
+                )
+                # bundle_tag derivation is best-effort — read_bundle_tag
+                # returns "unknown" when no manifest exists, which is
+                # still a stable input to the hash so the cache is
+                # consistent across calls within the same session.
+                try:
+                    from src.core.qlib_runtime import (  # noqa: PLC0415
+                        get_canonical_qlib_config,
+                    )
+                    canonical = get_canonical_qlib_config()
+                    bundle_uri = (
+                        canonical.provider_uri if canonical else None
+                    )
+                except Exception:  # noqa: BLE001
+                    bundle_uri = None
+                bundle_tag = read_bundle_tag(bundle_uri)
+                cache_key = compute_cache_key(config, bundle_tag=bundle_tag)
+                cached = cache_get(cache_dir, cache_key)
+                if cached is not None:
+                    _log.info(
+                        "feature-dataset cache hit (key=%s, instruments=%s, "
+                        "test=%s~%s) — skipping handler + 3× prepare().",
+                        cache_key, config.instruments,
+                        config.test_start, config.test_end,
+                    )
+                    return cached
 
         try:
             from qlib.data.dataset import DatasetH  # type: ignore[import-not-found]
@@ -204,13 +261,19 @@ class FeatureDatasetBuilder:
                 f"(test_start={config.test_start}, test_end={config.test_end})."
             )
 
-        return FeatureDatasetResult(
+        result = FeatureDatasetResult(
             dataset=dataset,
             train_shape=(train_df.shape[0], train_df.shape[1]),
             valid_shape=(valid_df.shape[0], valid_df.shape[1]),
             test_shape=(test_df.shape[0], test_df.shape[1]),
             feature_columns=tuple(str(c) for c in train_df.columns),
         )
+
+        if cache_active and cache_key is not None:
+            from src.data._feature_dataset_cache import cache_put  # noqa: PLC0415
+            cache_put(cache_dir, cache_key, result)
+
+        return result
 
     @classmethod
     def _validate_pit_provider_alignment(cls, pit_provider: Any) -> None:
