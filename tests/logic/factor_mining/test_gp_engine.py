@@ -488,6 +488,83 @@ def test_load_matching_method_checkpoint_keeps_caches(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Codex PR #143 P1 regression: pool-entry ``method`` default.
+#
+# When a checkpoint passes the evaluator_method gate (so caches aren't
+# discarded), individual ``all_evaluated`` entries may still lack the
+# ``method`` field — e.g. an old entry spliced into a newer checkpoint
+# by hand, or a partial migration. Defaulting that to ``"normal"``
+# would claim Pearson semantics for a metric we can't actually verify;
+# Codex flagged this as cross-version contamination. Default to
+# ``LEGACY_METHOD_TAG`` so downstream validators / promoters know not
+# to treat ``ic_mean`` as Pearson-comparable.
+# ---------------------------------------------------------------------------
+
+
+def _make_pool_entry_dict(method=None):
+    """Hand-built payload that ``_pool_entry_from_dict`` accepts.
+
+    Mirrors the shape of ``_pool_entry_to_dict`` output without
+    needing the full GP run loop to populate ``_all_evaluated``
+    (random-noise panels usually don't surface positive-fitness
+    expressions in small fixtures, which makes assertion-on-pool
+    tests flaky).
+    """
+    payload = {
+        "expr": Terminal("$close").to_dict(),
+        "fitness": 0.5,
+        "ic_mean": 0.03,
+        "ic_std": 0.01,
+        "ir": 3.0,
+        "rank_ic_mean": 0.04,
+        "rank_ic_std": 0.015,
+        "rank_ir": 2.66,
+        "turnover_daily": 0.1,
+        "coverage": 0.95,
+        "n_obs_per_day_min": 10,
+        "expr_size": 1,
+    }
+    if method is not None:
+        payload["method"] = method
+    return payload
+
+
+def test_pool_entry_missing_method_defaults_to_legacy_tag():
+    """An entry without ``method`` in the payload becomes
+    ``LEGACY_METHOD_TAG`` on load, NOT silently promoted to "normal"."""
+    from src.factor_mining.factor_pool import LEGACY_METHOD_TAG
+    from src.factor_mining.gp_engine import _pool_entry_from_dict
+
+    payload = _make_pool_entry_dict(method=None)
+    assert "method" not in payload  # contract anchor
+    entry = _pool_entry_from_dict(payload)
+    assert entry.method == LEGACY_METHOD_TAG, (
+        f"untagged entry was promoted to {entry.method!r} instead of "
+        f"{LEGACY_METHOD_TAG!r} — would mislabel rank-derived ic_mean as "
+        "Pearson-comparable"
+    )
+
+
+def test_pool_entry_explicit_normal_method_preserved():
+    """Entries that DO carry ``method="normal"`` must keep it; the
+    legacy default only fires when the field is absent."""
+    from src.factor_mining.gp_engine import _pool_entry_from_dict
+
+    entry = _pool_entry_from_dict(_make_pool_entry_dict(method="normal"))
+    assert entry.method == "normal"
+
+
+def test_pool_entry_explicit_rank_method_preserved():
+    """``method="rank"`` is a legitimate tag (the evaluator supports it
+    via ``validator.py``); loading must round-trip the value verbatim,
+    not coerce it to legacy or normal."""
+    from src.factor_mining.gp_engine import _pool_entry_from_dict
+
+    entry = _pool_entry_from_dict(_make_pool_entry_dict(method="rank"))
+    assert entry.method == "rank"
+
+
+# ---------------------------------------------------------------------------
 # Phase 3.1 acceptance: convergence on a toy moving-average crossover
 # target. Per docs/factor_mining/factor_mining_claude_code_design.md §6
 # Phase 3.1: "On toy target mean(x,10)-mean(x,30), converges < 20 gens".

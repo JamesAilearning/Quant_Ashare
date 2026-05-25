@@ -24,7 +24,7 @@ import pandas as pd
 
 from .evaluator import EvaluationResult, evaluate_factor
 from .expression import Expression, OperatorCall, Terminal
-from .factor_pool import FactorPool, PoolEntry
+from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
 from .fitness import FitnessConfig, compute_fitness, expression_size
 from .grammar import (
     WINDOW_LITERALS,
@@ -633,10 +633,22 @@ def _pool_entry_to_dict(entry: PoolEntry) -> dict:
 
 def _pool_entry_from_dict(d: dict) -> PoolEntry:
     expr = Expression.from_dict(d["expr"])
-    # Legacy checkpoints (pre-PR2) lack the method field. Default to
-    # the new contract ("normal") since by the time a checkpoint is
-    # resumed the live miner is writing PR2's contract; the legacy tag
-    # is reserved for parquet pools loaded via FactorPool.load.
+    # A pool entry dict that lacks the ``method`` field is by definition
+    # pre-method-tagging: we have no record of which IC method produced
+    # its ``ic_mean`` (it could be Pearson under the new contract or
+    # Spearman under the pre-#142 contract that double-counted rank
+    # IC). Default to ``LEGACY_METHOD_TAG`` so downstream validators
+    # and promoters know not to treat the metric as Pearson-comparable.
+    # Promoting the missing case to ``"normal"`` would silently
+    # mislabel rank-derived numbers as Pearson — exactly the
+    # cross-version metric corruption Codex flagged on PR #143.
+    #
+    # Cross-method checkpoints are already invalidated upstream by
+    # ``load_checkpoint`` (the ``evaluator_method`` guard added in
+    # PR #142), so in practice this default fires only when an
+    # individual entry's payload is missing the tag inside an
+    # otherwise-compatible checkpoint (partial migrations, hand-edited
+    # files, parquet pools spliced into a JSON checkpoint, etc.).
     return PoolEntry(
         expr=expr,
         fitness=float(d["fitness"]),
@@ -651,5 +663,5 @@ def _pool_entry_from_dict(d: dict) -> PoolEntry:
         n_obs_per_day_min=int(d["n_obs_per_day_min"]),
         expr_size=int(d["expr_size"]),
         expr_hash=hash(expr),
-        method=str(d.get("method", "normal")),
+        method=str(d.get("method", LEGACY_METHOD_TAG)),
     )
