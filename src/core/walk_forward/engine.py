@@ -160,8 +160,17 @@ class WalkForwardEngine:
                 "Fold %d: train=%s~%s, valid=%s~%s, test=%s~%s",
                 i, train_s, train_e, valid_s, valid_e, test_s, test_e,
             )
+            # Per-fold timing. ``time.perf_counter`` for wall-clock
+            # duration (monotonic, ignores wall-clock jumps), plus
+            # ISO timestamps for operator readability in reports /
+            # manifests. We capture before the try so a failing fold
+            # still gets attributed time (knowing "fold 5 took 8 min
+            # before OOMing" is useful diagnostic info).
+            import time  # noqa: PLC0415
+            fold_started_at = datetime.now(tz=timezone.utc).isoformat()
+            fold_perf_start = time.perf_counter()
             try:
-                fold = cls._run_single_fold(
+                fold_result = cls._run_single_fold(
                     config=config,
                     fold_index=i,
                     train_start=train_s, train_end=train_e,
@@ -170,13 +179,14 @@ class WalkForwardEngine:
                     output_dir=output_dir,
                     prior_model_paths=tuple(prior_model_paths),
                 )
+                fold_failed = False
             except Exception as exc:  # noqa: BLE001
                 _logger.error(
                     "Fold %d failed (%s: %s) — replacing with NaN placeholder "
                     "so the aggregate report is still produced.",
                     i, type(exc).__name__, exc,
                 )
-                fold = WalkForwardFold(
+                fold_result = WalkForwardFold(
                     fold_index=i,
                     train_period=f"{train_s} ~ {train_e}",
                     valid_period=f"{valid_s} ~ {valid_e}",
@@ -188,6 +198,21 @@ class WalkForwardEngine:
                     information_ratio=float("nan"),
                     prediction_shape=(0,),
                 )
+                fold_failed = True
+
+            # Stamp timing on the fold AFTER both the success and the
+            # NaN-placeholder branches so failing folds still get
+            # attributed wall-clock time. Use ``dataclasses.replace``
+            # because ``WalkForwardFold`` is frozen.
+            from dataclasses import replace  # noqa: PLC0415
+            fold_duration = time.perf_counter() - fold_perf_start
+            fold_finished_at = datetime.now(tz=timezone.utc).isoformat()
+            fold = replace(
+                fold_result,
+                duration_seconds=fold_duration,
+                started_at=fold_started_at,
+                finished_at=fold_finished_at,
+            )
             folds.append(fold)
 
             # Placeholder fold (prediction_shape=(0,)) means
@@ -229,8 +254,11 @@ class WalkForwardEngine:
                     )
 
             _logger.info(
-                "  IC(1d)=%.4f | Return=%.2f%% | MaxDD=%.2f%%",
-                fold.ic_1d, fold.annualized_return * 100, fold.max_drawdown * 100,
+                "  IC(1d)=%.4f | Return=%.2f%% | MaxDD=%.2f%% | "
+                "duration=%.1fs%s",
+                fold.ic_1d, fold.annualized_return * 100,
+                fold.max_drawdown * 100, fold_duration,
+                " (FAILED)" if fold_failed else "",
             )
 
         # Aggregate

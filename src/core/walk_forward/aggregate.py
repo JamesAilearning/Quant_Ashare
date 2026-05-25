@@ -58,6 +58,13 @@ def build_aggregate_report(
                 "information_ratio": f.information_ratio,
                 "prediction_shape": list(f.prediction_shape),
                 "report_path": f.report_path,
+                # FU-4 per-fold timing. ``None`` for folds resumed
+                # from a pre-timing manifest or constructed without
+                # going through the engine; dashboards should treat
+                # missing values as "not measured" rather than 0.
+                "duration_seconds": f.duration_seconds,
+                "started_at": f.started_at,
+                "finished_at": f.finished_at,
             }
             for f in folds
         ],
@@ -504,6 +511,33 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
     ci_ir_lo, ci_ir_hi = _bootstrap_mean_ci(irs, seed=seed)
     ci_ret_lo, ci_ret_hi = _bootstrap_mean_ci(returns, seed=seed)
 
+    # Per-fold timing aggregates. ``None`` values come from folds
+    # resumed from a pre-timing manifest, or from unit tests that
+    # construct ``WalkForwardFold`` directly without going through
+    # the engine — both are legitimate, so we filter rather than
+    # propagate NaN.
+    durations = [
+        f.duration_seconds for f in folds
+        if f.duration_seconds is not None
+    ]
+    if durations:
+        mean_fold_duration_seconds = float(np.mean(durations))
+        total_duration_seconds = float(np.sum(durations))
+        # Identify the slowest fold by index. We want to know
+        # "fold 5 took 12 min" not just "the slowest fold took
+        # 12 min" so the operator can drill into that fold's report.
+        slowest_idx = max(
+            (i for i, f in enumerate(folds) if f.duration_seconds is not None),
+            key=lambda i: folds[i].duration_seconds or 0.0,
+        )
+        slowest_fold_index = folds[slowest_idx].fold_index
+        slowest_fold_duration_seconds = float(folds[slowest_idx].duration_seconds)
+    else:
+        mean_fold_duration_seconds = float("nan")
+        total_duration_seconds = float("nan")
+        slowest_fold_index = -1
+        slowest_fold_duration_seconds = float("nan")
+
     return {
         "mean_ic_1d": _nanmean(ic_1d),
         "std_ic_1d": _nanstd(ic_1d),
@@ -529,4 +563,12 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
         "num_folds": len(folds),
         "bootstrap_seed": seed,
         "bootstrap_n": 10000,
+        # Timing — added by FU-4 (per-fold timing). ``-1`` /
+        # ``NaN`` when no fold carries a duration (all resumed from
+        # pre-timing manifests, or all constructed by tests).
+        "mean_fold_duration_seconds": mean_fold_duration_seconds,
+        "total_duration_seconds": total_duration_seconds,
+        "slowest_fold_index": slowest_fold_index,
+        "slowest_fold_duration_seconds": slowest_fold_duration_seconds,
+        "valid_folds_duration": len(durations),
     }
