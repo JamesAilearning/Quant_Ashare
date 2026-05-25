@@ -29,3 +29,18 @@ tests/regression/fixtures/fold0_expected_metrics.json
 # IDE
 .idea/
 .vscode/
+
+# Agent workspace (Claude Code, etc.)
+.claude/
+
+# Pytest / test runtime tmp dirs — historically leaked on Windows when
+# fixtures couldn't unlink locked files. Ignored to keep `git status`
+# clean even when an aborted run leaves dirs behind.
+.tmp/
+.tmp_pytest/
+
+# User-specific config presets (preserved by convention `my_*.yaml`
+# or `*.local.yaml`). Don't accidentally commit operator-specific
+# preset overrides.
+config/presets/my_*.yaml
+config/presets/*.local.yaml
