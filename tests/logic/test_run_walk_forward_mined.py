@@ -238,7 +238,9 @@ def test_main_binds_handler_between_qlib_init_and_engine_run(tmp_path, monkeypat
     fake_result.num_folds = 0
     fake_result.report_path = "x.json"
 
-    def _fake_run(_wf_cfg):
+    def _fake_run(_wf_cfg, **_kwargs):
+        # **_kwargs absorbs PR4's resume_mode=… so this fake stays
+        # compatible across both signatures.
         call_order.append("WalkForwardEngine.run")
         return fake_result
 
@@ -280,7 +282,10 @@ def test_main_alpha158_yaml_does_not_register(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "init_qlib_canonical", _fake_init)
     monkeypatch.setattr(mod, "register_mined_factor_handler", _fake_register)
     monkeypatch.setattr(
-        mod.WalkForwardEngine, "run", staticmethod(lambda _cfg: fake_result),
+        mod.WalkForwardEngine, "run",
+        # **_kwargs absorbs PR4's resume_mode=… kwarg without forcing
+        # this test to care about the resume policy.
+        staticmethod(lambda _cfg, **_kwargs: fake_result),
     )
     monkeypatch.setattr(sys, "argv", ["run_walk_forward.py", str(cfg)])
 

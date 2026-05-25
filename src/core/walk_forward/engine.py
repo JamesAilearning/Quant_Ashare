@@ -35,6 +35,12 @@ from src.core.signal_analyzer import (
     SignalAnalysisConfig,
     SignalAnalyzer,
 )
+from src.core.walk_forward._resume import (
+    FoldManifest,
+    ResumeMode,
+    compute_config_fingerprint,
+    decide_fold,
+)
 from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.aggregate import (
     attribution_section_for_fold,
@@ -60,7 +66,12 @@ class WalkForwardEngine:
     """Orchestrates rolling train/predict/backtest across time."""
 
     @classmethod
-    def run(cls, config: WalkForwardConfig) -> WalkForwardResult:
+    def run(
+        cls,
+        config: WalkForwardConfig,
+        *,
+        resume_mode: ResumeMode | None = None,
+    ) -> WalkForwardResult:
         if not is_canonical_qlib_initialized():
             raise WalkForwardError(
                 "Canonical qlib runtime must be initialized before walk-forward."
@@ -71,6 +82,12 @@ class WalkForwardEngine:
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now(tz=timezone.utc).isoformat()
+
+        # Resume policy — default AUTO (resume any matching manifest).
+        # See src/core/walk_forward/_resume.py for the contract.
+        effective_resume_mode = resume_mode if resume_mode is not None else ResumeMode.AUTO
+        config_fingerprint = compute_config_fingerprint(config)
+        discovered_manifests = FoldManifest.discover(output_dir)
 
         # Generate fold windows
         windows = cls._generate_windows(config)
@@ -90,6 +107,16 @@ class WalkForwardEngine:
         )
         _logger.info("Ensemble window: %d | Total folds: %d", config.ensemble_window, len(windows))
         _logger.info("Output directory: %s", output_dir)
+        if discovered_manifests:
+            _logger.info(
+                "Resume mode: %s | Discovered %d manifest(s): %s",
+                effective_resume_mode.kind.value,
+                len(discovered_manifests),
+                sorted(discovered_manifests.keys()),
+            )
+        else:
+            _logger.info("Resume mode: %s | No manifests in output_dir",
+                         effective_resume_mode.kind.value)
         _logger.info("=" * 60)
 
         # Run the fold loop
@@ -100,6 +127,35 @@ class WalkForwardEngine:
         prior_model_paths: list[tuple[int, str]] = []
 
         for i, (train_s, train_e, valid_s, valid_e, test_s, test_e) in enumerate(windows):
+            decision = decide_fold(
+                fold_index=i,
+                train_period=f"{train_s} ~ {train_e}",
+                test_period=f"{test_s} ~ {test_e}",
+                config_fingerprint=config_fingerprint,
+                discovered=discovered_manifests,
+                resume_mode=effective_resume_mode,
+            )
+
+            if decision.skip and decision.manifest is not None:
+                _logger.info(
+                    "Fold %d: skipped (resumed_from_manifest); "
+                    "completed_at=%s, IC(1d)=%.4f, IR=%.3f",
+                    i, decision.manifest.completed_at,
+                    decision.manifest.fold.ic_1d,
+                    decision.manifest.fold.information_ratio,
+                )
+                fold = decision.manifest.fold
+                folds.append(fold)
+                if fold.prediction_shape != (0,):
+                    prior_model_paths.append((i, decision.manifest.model_path))
+                continue
+
+            if decision.reason.startswith(("fingerprint_mismatch", "window_mismatch")):
+                _logger.warning(
+                    "Fold %d: %s — re-running and overwriting prior manifest",
+                    i, decision.reason,
+                )
+
             _logger.info(
                 "Fold %d: train=%s~%s, valid=%s~%s, test=%s~%s",
                 i, train_s, train_e, valid_s, valid_e, test_s, test_e,
@@ -142,6 +198,35 @@ class WalkForwardEngine:
             if fold.prediction_shape != (0,):
                 model_path = str(output_dir / f"model_fold{i}.pkl")
                 prior_model_paths.append((i, model_path))
+                # Persist the resume manifest only for successful folds
+                # — NaN-placeholder folds (the engine caught an
+                # exception) deliberately have no manifest so the next
+                # resume attempt re-runs them.
+                try:
+                    manifest = FoldManifest.from_fold(
+                        fold=fold,
+                        config=config,
+                        model_path=model_path,
+                        report_path=str(output_dir / f"fold_{i:02d}_report.json"),
+                        predictions_path=str(
+                            output_dir / f"fold_{i:02d}_predictions.pkl"
+                        ),
+                        positions_path=(
+                            str(output_dir / f"fold_{i:02d}_positions.json")
+                            if (output_dir / f"fold_{i:02d}_positions.json").exists()
+                            else None
+                        ),
+                    )
+                    manifest.save(output_dir)
+                except Exception:  # noqa: BLE001
+                    # Manifest persistence is best-effort; never abort
+                    # a successful fold because the manifest couldn't
+                    # be written. The fold's actual artifacts are
+                    # authoritative.
+                    _logger.warning(
+                        "Fold %d: failed to write resume manifest",
+                        i, exc_info=True,
+                    )
 
             _logger.info(
                 "  IC(1d)=%.4f | Return=%.2f%% | MaxDD=%.2f%%",
