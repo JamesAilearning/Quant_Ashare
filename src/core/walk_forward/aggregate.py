@@ -108,9 +108,14 @@ def write_positions(
     # same convention as the per-fold and aggregate reports. A
     # leaked non-finite weight would otherwise produce the
     # non-standard ``NaN`` JSON token that strict parsers reject.
+    # ``ensure_ascii=False`` matches the per-fold / aggregate report
+    # writers in this file (lines ~90 and ~365); without it,
+    # instrument identifiers with CJK characters would round-trip
+    # through ``\uXXXX`` escapes that downstream readers have to
+    # decode. (bug.md P3-27 — consistency with sibling write methods.)
     sanitised = _sanitize_for_json(dict(positions))
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(sanitised, f, indent=2, allow_nan=False)
+        json.dump(sanitised, f, indent=2, ensure_ascii=False, allow_nan=False)
 
 
 def compute_test_window_coverage(folds: list[WalkForwardFold]) -> dict[str, Any]:

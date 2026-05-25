@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
 from collections.abc import Sequence
 from pathlib import Path
@@ -141,22 +142,70 @@ def apply_ensemble(
                             "path": prior_path,
                             "reason": "pkl_sha256 mismatch",
                         })
-                sidecar_lgb = sidecar.get("lightgbm_version")
-                if sidecar_lgb:
-                    import lightgbm as _lgb
-                    if sidecar_lgb != _lgb.__version__:
+                # Version-check the framework the model was actually
+                # trained with. ``sidecar["model_type"]`` is the
+                # canonical "which library produced this pickle?"
+                # answer; the sidecar may opportunistically carry
+                # versions for all three frameworks (the writer logs
+                # whatever's importable at training time), so checking
+                # all of them indiscriminately would falsely reject a
+                # LGB model after a catboost upgrade. Legacy sidecars
+                # without a ``model_type`` key fall back to the
+                # lightgbm-only check that this file used to do.
+                # (bug.md P2-9.)
+                _framework_keys = {
+                    "LGBModel": ("lightgbm_version", "lightgbm"),
+                    "XGBModel": ("xgboost_version", "xgboost"),
+                    "CatBoostModel": ("catboost_version", "catboost"),
+                }
+                sidecar_model_type = sidecar.get("model_type")
+                if sidecar_model_type in _framework_keys:
+                    version_key, import_name = _framework_keys[sidecar_model_type]
+                else:
+                    # Legacy / unrecognised sidecar — keep the pre-fix
+                    # behaviour of checking lightgbm. Operators who
+                    # train with XGB/CatBoost will have ``model_type``
+                    # written, so this branch only fires for very old
+                    # checkpoints.
+                    version_key, import_name = ("lightgbm_version", "lightgbm")
+                sidecar_ver = sidecar.get(version_key)
+                if sidecar_ver:
+                    try:
+                        _mod = __import__(import_name)
+                        current_ver = getattr(_mod, "__version__", None)
+                    except ImportError:
+                        # Framework not installed locally but the prior
+                        # model claims it. We can't verify — refuse the
+                        # prior rather than load and hope for the best.
                         _logger.warning(
                             "Fold %d ensemble: prior model %r trained with "
-                            "lightgbm %s; current is %s — skipping.",
+                            "%s but %s is not importable here — skipping.",
                             current_fold_index, prior_path,
-                            sidecar_lgb, _lgb.__version__,
+                            sidecar_ver, import_name,
                         )
                         skip_prior = True
                         meta["rejected_priors"].append({
                             "fold_idx": prior_fold_idx,
                             "path": prior_path,
-                            "reason": f"lightgbm {sidecar_lgb} != {_lgb.__version__}",
+                            "reason": f"{import_name} not importable",
                         })
+                    else:
+                        if sidecar_ver != current_ver:
+                            _logger.warning(
+                                "Fold %d ensemble: prior model %r trained with "
+                                "%s %s; current is %s — skipping.",
+                                current_fold_index, prior_path,
+                                import_name, sidecar_ver, current_ver,
+                            )
+                            skip_prior = True
+                            meta["rejected_priors"].append({
+                                "fold_idx": prior_fold_idx,
+                                "path": prior_path,
+                                "reason": (
+                                    f"{import_name} {sidecar_ver} "
+                                    f"!= {current_ver}"
+                                ),
+                            })
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
                     "Fold %d ensemble: sidecar parse/check failed "
@@ -273,7 +322,28 @@ def write_prediction_artifact(path: Path, predictions: Any) -> str:
     ensembling is enabled: the backtest consumes the materialized signal,
     not a single model artifact. Return a SHA256 so reports can identify
     the exact bytes written.
+
+    The write is atomic via tmp + ``os.replace``: a crash mid-
+    ``pickle.dump`` (OOM, SIGKILL) used to leave a partial pickle at
+    the target path, and the next resume would load it and fail with
+    ``EOFError`` / ``UnpicklingError``. Now a crash leaves only the
+    ``.tmp`` (cleaned in the except branch) and the target either has
+    the full prior contents or doesn't exist. Matches the convention
+    used by ``model_trainer._write_model_sidecar`` and
+    ``FoldManifest.save``. (bug.md P2-10.)
     """
-    with open(path, "wb") as f:
-        pickle.dump(predictions, f)
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("wb") as f:
+            pickle.dump(predictions, f)
+        os.replace(tmp, path)
+    except Exception:
+        # Best-effort cleanup of the partial tmp — never mask the
+        # original exception with a secondary unlink failure.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return hashlib.sha256(path.read_bytes()).hexdigest()
