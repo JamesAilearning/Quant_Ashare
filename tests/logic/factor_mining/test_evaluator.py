@@ -180,6 +180,87 @@ def test_evaluate_factor_coverage_excludes_nan_cells():
     assert result.coverage == pytest.approx(28 / 30, abs=1e-9)
 
 
+def test_evaluate_factor_method_normal_separates_pearson_from_rank():
+    """When ``method='normal'`` and the factor↔return relationship is
+    monotone but non-linear, ``ic_mean`` (Pearson) and ``rank_ic_mean``
+    (Spearman) must be materially different values — proving fitness
+    has two independent IC terms.
+
+    Regression for the rank-IC double-counting bug: before the fix the
+    miner called ``evaluate_factor(method="rank")``, which set
+    ``ic_mean == rank_ic_mean`` (both Spearman) so the fitness formula
+    ``w_ic·|ic_mean| + w_rankic·|rank_ic_mean|`` collapsed to
+    ``(w_ic + w_rankic)·|rank IC|`` — double-counting the same signal.
+    """
+    tickers = [f"T{i:02d}" for i in range(16)]
+    dates = pd.date_range("2024-01-01", periods=30)
+    rng = np.random.default_rng(2026)
+
+    # Per date: assign tickers values 1..16 in random order; fwd is a
+    # cubic transform of those values. The factor cs_rank($volume)
+    # preserves the order (Spearman IC ≈ 1.0), but Pearson IC between
+    # ranks and cubes is dampened by the non-linearity.
+    base = np.empty((30, 16))
+    fwd_arr = np.empty((30, 16))
+    for d in range(30):
+        perm = rng.permutation(16) + 1  # 1..16
+        base[d] = perm
+        fwd_arr[d] = (perm - 8.5) ** 3 + rng.normal(0, 5, 16)
+
+    panel = _make_panel(tickers, dates)
+    panel["$volume"] = pd.DataFrame(
+        base,
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    fwd = pd.DataFrame(
+        fwd_arr,
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    result = evaluate_factor(expr, panel, fwd, method="normal")
+
+    # cs_rank(volume) preserves ordering ⇒ Spearman IC ≈ 1.0.
+    assert result.rank_ic_mean == pytest.approx(1.0, abs=0.05), (
+        f"expected rank_ic_mean ≈ 1.0 for monotone signal, got "
+        f"{result.rank_ic_mean!r}"
+    )
+    # Pearson IC of (uniform ranks) vs (cubic values) is materially below 1.0.
+    assert result.ic_mean < 0.95, (
+        f"expected ic_mean (Pearson) < 0.95 for cubic relationship, got "
+        f"{result.ic_mean!r}"
+    )
+    # The two must NOT collapse — that is the bug the fix prevents.
+    assert abs(result.ic_mean - result.rank_ic_mean) > 0.01, (
+        f"Pearson and Spearman collapsed to identical values "
+        f"({result.ic_mean!r} vs {result.rank_ic_mean!r}); fitness would "
+        f"be double-counting rank IC."
+    )
+
+
+def test_evaluate_factor_method_rank_collapses_headline_and_rank():
+    """Sanity check of the docstring contract: with ``method='rank'``
+    both ``ic_mean`` and ``rank_ic_mean`` are Spearman by construction.
+    Locks in the behavior so callers passing ``method='rank'`` don't
+    get surprised by silent semantics drift."""
+    tickers = [f"T{i:02d}" for i in range(8)]
+    dates = pd.date_range("2024-01-01", periods=20)
+    panel = _make_panel(tickers, dates, seed=99)
+    rng = np.random.default_rng(99)
+    fwd = pd.DataFrame(
+        rng.normal(0, 0.02, size=(20, 8)),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    result = evaluate_factor(expr, panel, fwd, method="rank")
+    assert result.ic_mean == pytest.approx(result.rank_ic_mean, abs=1e-12), (
+        "method='rank' must place Spearman in both ic_mean and rank_ic_mean"
+    )
+
+
 def test_evaluate_factor_handles_empty_panel_gracefully():
     """Empty inputs should return finite-shaped (mostly-NaN) result, not raise."""
     tickers = ["A"]

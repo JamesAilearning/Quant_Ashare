@@ -14,6 +14,7 @@ panel + forward-return data via parameters.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from random import Random
@@ -32,6 +33,23 @@ from .grammar import (
     GrammarError,
     random_expression,
 )
+
+_log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Evaluator-method contract for fitness scoring.
+#
+# Changing this constant changes the semantics of every score in
+# ``fitness_cache`` and ``_all_evaluated``: ``"normal"`` keeps Pearson
+# IC and Spearman rank-IC as independent inputs to ``compute_fitness``,
+# ``"rank"`` collapses both to Spearman (the pre-PR #142 contract that
+# was double-counting rank IC). Checkpoint payloads embed the value
+# this engine used so resumes across a method change clear stale
+# scores instead of mixing semantics in one run. (Codex P1 on PR #142.)
+# ---------------------------------------------------------------------------
+
+FITNESS_EVALUATOR_METHOD = "normal"
+
 
 # ---------------------------------------------------------------------------
 # Configs and stats
@@ -190,7 +208,13 @@ class GPEngine:
         if h in self.fitness_cache:
             return self.fitness_cache[h], None
         try:
-            result = evaluate_factor(expr, panel, fwd_ret, method="rank")
+            # ``FITNESS_EVALUATOR_METHOD = "normal"`` makes ic_mean=Pearson
+            # and rank_ic_mean=Spearman independent. With method="rank" the
+            # two were identical, so fitness double-counted rank IC
+            # (w_ic·|rank| + w_rankic·|rank|). The constant lives at module
+            # scope so checkpoint payloads can tag stored scores with the
+            # method that produced them — see ``save_checkpoint``.
+            result = evaluate_factor(expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD)
         except Exception:  # noqa: BLE001 — broad on purpose to prevent loop-kill
             self.fitness_cache[h] = float("-inf")
             return float("-inf"), None
@@ -462,6 +486,12 @@ class GPEngine:
         p.parent.mkdir(parents=True, exist_ok=True)
         state: dict = {
             "gp_config": asdict(self.config),
+            # Tag every score in ``fitness_cache`` / ``all_evaluated`` with
+            # the evaluator method that produced them. ``load_checkpoint``
+            # uses this to decide whether cached scores can be trusted on
+            # resume or must be discarded — see the Codex P1 note on the
+            # ``FITNESS_EVALUATOR_METHOD`` constant above.
+            "evaluator_method": FITNESS_EVALUATOR_METHOD,
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
             "fitness_cache": {
@@ -484,20 +514,50 @@ class GPEngine:
         *,
         fitness_config: FitnessConfig,
     ) -> GPEngine:
-        """Reconstruct an engine from a checkpoint file."""
+        """Reconstruct an engine from a checkpoint file.
+
+        If the checkpoint was written by an engine using a different
+        evaluator method (``"rank"`` before PR #142, ``"normal"`` after),
+        the cached fitness scores are not comparable to scores this
+        engine would produce. In that case we discard
+        ``fitness_cache`` and ``_all_evaluated`` so resumed generations
+        re-score from scratch; ``population`` / ``current_gen`` / ``rng``
+        are preserved so determinism of the resumed run is unaffected.
+
+        Legacy checkpoints (pre PR #142) have no ``evaluator_method``
+        field — they were written under ``method="rank"``, so the same
+        invalidation path triggers.
+        """
         p = Path(path)
         state = json.loads(p.read_text(encoding="utf-8"))
         gp_config = GPConfig(**state["gp_config"])
         engine = cls(gp_config, fitness_config)
         engine.rng.setstate(_deserialise_rng_state(state["rng_state"]))
         engine.current_gen = int(state["current_gen"])
-        engine.fitness_cache = {
-            int(h): float(score) for h, score in state["fitness_cache"].items()
-        }
         engine.population = [
             Expression.from_dict(d) for d in state["population"]
         ]
         engine.history = [GenerationStats(**s) for s in state["history"]]
+
+        stored_method = state.get("evaluator_method")
+        if stored_method != FITNESS_EVALUATOR_METHOD:
+            _log.warning(
+                "checkpoint evaluator_method=%r != engine %r — discarding "
+                "fitness_cache (%d entries) and all_evaluated (%d entries); "
+                "resumed generation will re-score from scratch to avoid "
+                "mixing semantics across the method change.",
+                stored_method,
+                FITNESS_EVALUATOR_METHOD,
+                len(state.get("fitness_cache", {})),
+                len(state.get("all_evaluated", {})),
+            )
+            engine.fitness_cache = {}
+            engine._all_evaluated = {}
+            return engine
+
+        engine.fitness_cache = {
+            int(h): float(score) for h, score in state["fitness_cache"].items()
+        }
         engine._all_evaluated = {
             int(h): _pool_entry_from_dict(d)
             for h, d in state["all_evaluated"].items()

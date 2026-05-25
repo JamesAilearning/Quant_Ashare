@@ -183,11 +183,17 @@ def evaluate_factor(
         date × ticker forward-return panel, as produced by
         ``FactorMiningDataView.forward_return``.
     method
-        ``"rank"`` (Spearman, default) or ``"normal"`` (Pearson) —
-        controls the leading IC reported as ``ic_mean``; the other
-        is also computed (Pearson is in ``ic_mean``; Spearman is in
-        ``rank_ic_mean``). The ``method`` parameter selects which
-        becomes the headline ``ic_mean`` (for fitness's first term).
+        ``"rank"`` (Spearman) or ``"normal"`` (Pearson) — selects which
+        becomes the headline ``ic_mean`` / ``ic_std`` / ``ir``. The
+        ``rank_ic_mean`` / ``rank_ic_std`` / ``rank_ir`` fields are
+        *always* Spearman regardless of ``method``, so callers can rely
+        on them as a separate signal in fitness or downstream filters.
+
+        Note: with ``method="rank"``, ``ic_mean == rank_ic_mean`` (both
+        are Spearman). The miner uses ``"normal"`` so the fitness terms
+        ``w_ic·|ic_mean|`` and ``w_rankic·|rank_ic_mean|`` are
+        independent (Pearson + Spearman) rather than a redundant
+        ``(w_ic + w_rankic)·|rank|``.
     """
     walked = evaluate_expression(expr, panel)
     if not isinstance(walked, pd.DataFrame):
@@ -205,12 +211,11 @@ def evaluate_factor(
     ic_pearson = _ic_per_day(factor_values, fwd, method="normal")
     ic_rank = _ic_per_day(factor_values, fwd, method="rank")
 
+    rank_mean, rank_std = float(ic_rank.mean()), float(ic_rank.std())
     if method == "rank":
-        headline_mean, headline_std = float(ic_rank.mean()), float(ic_rank.std())
-        rank_mean, rank_std = float(ic_rank.mean()), float(ic_rank.std())
+        headline_mean, headline_std = rank_mean, rank_std
     else:
         headline_mean, headline_std = float(ic_pearson.mean()), float(ic_pearson.std())
-        rank_mean, rank_std = float(ic_rank.mean()), float(ic_rank.std())
 
     return EvaluationResult(
         factor_values=factor_values,
