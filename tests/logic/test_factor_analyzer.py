@@ -82,7 +82,18 @@ class FactorAnalyzerPITWiringTests(unittest.TestCase):
 
     def test_legacy_path_when_no_pit_provider(self) -> None:
         """Without pit_provider, the function calls qlib's D.features and
-        does NOT touch any PITDataProvider surface."""
+        does NOT touch any PITDataProvider surface.
+
+        Implementation note (PR7): previously this test patched
+        ``sys.modules["qlib.data"]`` with a top-level MagicMock —
+        which hid the real qlib module and would silently mask any
+        API drift (e.g. renamed module, moved attribute). We now
+        require qlib to be importable (``pytest.importorskip``) and
+        patch the real ``qlib.data.D`` attribute directly.
+        """
+        import pytest
+
+        pytest.importorskip("qlib")
         from unittest.mock import MagicMock, patch
 
         factor_df = self._make_factor_df()
@@ -90,7 +101,9 @@ class FactorAnalyzerPITWiringTests(unittest.TestCase):
         mock_D = MagicMock()
         mock_D.features.return_value = close
 
-        with patch.dict("sys.modules", {"qlib.data": MagicMock(D=mock_D)}):
+        # Patch the attribute on the real qlib.data module rather
+        # than the entire module in sys.modules — see PR7.
+        with patch("qlib.data.D", mock_D):
             FactorAnalyzer._fetch_close_unstacked(factor_df, max_lag=2)
         self.assertEqual(mock_D.features.call_count, 1)
 
@@ -604,6 +617,15 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
         # real ``features`` attribute until the provider is bound, so
         # we patch the wrapper itself with a stub object exposing the
         # attribute we need.
+        #
+        # PR7: previously we replaced the entire ``qlib.data`` module
+        # in ``sys.modules``. We now patch the real module's ``D``
+        # attribute, so an import-time API drift in qlib itself
+        # would still surface here.
+        import pytest as _pytest_for_qlib_check
+
+        _pytest_for_qlib_check.importorskip("qlib")
+
         class _FakeD:
             @staticmethod
             def features(*args, **kwargs):
@@ -612,7 +634,7 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
         with _patch(
             "src.core.signal_analyzer.SignalAnalyzer._extend_end_trading_days",
             staticmethod(lambda end_date, max_period: end_date),
-        ), _patch.dict("sys.modules", {"qlib.data": type("M", (), {"D": _FakeD})()}):
+        ), _patch("qlib.data.D", _FakeD):
             SignalAnalyzer._fetch_returns(preds, max_period=1)
 
         # Instruments passed to qlib must be the SH600000-style codes,
