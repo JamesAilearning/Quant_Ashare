@@ -21,7 +21,6 @@ environment-dependent and tested by their absence-handling paths.
 from __future__ import annotations
 
 import json
-import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +44,6 @@ from src.core.pipeline_result_artifacts import (  # noqa: E402
     _stable_hash,
     write_pipeline_result_artifacts,
 )
-
 
 # ---------------------------------------------------------------------------
 # _config_to_dict
