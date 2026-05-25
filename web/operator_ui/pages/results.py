@@ -638,13 +638,36 @@ def _render_kpis(
     if not isinstance(risk, Mapping):
         risk = {}
 
-    ann_return = _first(metrics, [("performance", "annual_return")])
-    ann_return_label = "主指标：年化收益"
-    if ann_return is None:
-        ann_return = _first(metrics, [("performance", "annual_excess_return_with_cost")])
-        ann_return_label = "主指标：扣费后年化超额收益"
-    if ann_return is None:
-        ann_return = risk.get("annualized_return")
+    # Cleanly distinguish three different "annualised return" numbers
+    # that get conflated in the old artifact schema (PR6.4):
+    #   - strategy_annualized = strategy's own NAV-derived annualised
+    #     return (what most operators mean by "年化收益")
+    #   - benchmark_annualized = benchmark's NAV-derived annualised return
+    #   - excess_annualized = strategy - benchmark - cost, annualised
+    #     (what the legacy ``performance.annual_return`` field stores)
+    # Prefer the new explicit fields; fall back to the legacy mislabelled
+    # ``annual_return`` only when reading reports written before this
+    # change, and even then we label the value as "扣费后年化超额" so
+    # operators read it correctly.
+    strategy_annualized = _first(metrics, [("performance", "strategy_annualized_return")])
+    benchmark_annualized = _first(metrics, [("performance", "benchmark_annualized_return")])
+    excess_annualized = _first(metrics, [("performance", "annual_excess_return_with_cost")])
+    if excess_annualized is None:
+        # Pre-PR6.4 reports stored excess under ``annual_return``.
+        excess_annualized = _first(metrics, [("performance", "annual_return")])
+    total_return_value = _first(metrics, [("performance", "total_return")])
+
+    if strategy_annualized is not None:
+        primary_value = strategy_annualized
+        primary_label = "主指标：策略年化收益（按净值复利推算）"
+    elif excess_annualized is not None:
+        # Honest fallback: tell the operator this is excess, not absolute.
+        primary_value = excess_annualized
+        primary_label = "主指标：扣费后年化超额收益（旧产物口径）"
+    else:
+        primary_value = risk.get("annualized_return")
+        primary_label = "主指标：年化收益（来源 risk_analysis 兜底）"
+
     max_drawdown = _first(metrics, [("risk", "max_drawdown")])
     if max_drawdown is None:
         max_drawdown = risk.get("max_drawdown")
@@ -663,19 +686,53 @@ def _render_kpis(
         ],
     )
 
+    # Short-window banner (PR6.4 B1). When the OOS window is shorter than
+    # ~3 months, naive annualisation explodes — a 10% total return over
+    # 38 trading days projects to ~+90% annual. Tell the operator before
+    # they read the KPI card.
+    n_trading_days = _first(metrics, [("performance", "n_trading_days")])
+    _SHORT_WINDOW_THRESHOLD = 60
+    if isinstance(n_trading_days, int) and 0 < n_trading_days < _SHORT_WINDOW_THRESHOLD:
+        st.warning(
+            f"⚠ 短窗口提示：测试期只有 **{n_trading_days} 个交易日**，"
+            f"低于 {_SHORT_WINDOW_THRESHOLD} 天。年化指标对窗口长度极其敏感，"
+            "短窗口下「年化收益」会被几何复利放大到非常不稳定的水平。"
+            "建议优先看「总收益」和「最大回撤」，年化值仅供参考。"
+        )
+
     cols = st.columns(3)
     with cols[0]:
+        secondary_lines = [primary_label]
+        if total_return_value is not None:
+            secondary_lines.append(
+                f"总收益（{n_trading_days or '?'} 个交易日）："
+                f"{_fmt_percent(total_return_value, signed=True)}"
+            )
+        if benchmark_annualized is not None:
+            secondary_lines.append(
+                f"基准年化：{_fmt_percent(benchmark_annualized, signed=True)}"
+            )
+        if excess_annualized is not None and strategy_annualized is not None:
+            # Only useful when we have both; avoids duplicating the primary
+            # value when we already fell back to excess.
+            secondary_lines.append(
+                f"扣费后年化超额：{_fmt_percent(excess_annualized, signed=True)}"
+            )
+        secondary_lines.extend([
+            f"信息比率（IR）：{_fmt_number(information_ratio)}",
+            f"夏普比率：{_fmt_number(sharpe)}",
+            f"基准：{_fmt_text(benchmark_code)}",
+        ])
         _render_card(
             "收益",
-            _fmt_percent(ann_return, signed=True),
-            _metric_color(ann_return),
-            [
-                ann_return_label,
-                f"信息比率（IR）：{_fmt_number(information_ratio)}",
-                f"夏普比率：{_fmt_number(sharpe)}",
-                f"基准：{_fmt_text(benchmark_code)}",
-            ],
-            help_text="收益卡片：年化收益、信息比率、夏普等指标，全部来源于运行产物。",
+            _fmt_percent(primary_value, signed=True),
+            _metric_color(primary_value),
+            secondary_lines,
+            help_text=(
+                "收益卡片：主指标是策略本身按净值复利推算的年化收益，"
+                "扣费后年化超额是策略 - 基准 - 成本后再年化的口径，"
+                "两者不同。短窗口下年化指标参考价值有限。"
+            ),
         )
     with cols[1]:
         _render_card(

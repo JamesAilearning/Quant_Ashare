@@ -14,6 +14,26 @@ from typing import Any
 
 FORWARD_RETURN_BUFFER_DAYS = 20
 
+# qlib's Alpha158 default label is ``Ref($close, -2) / Ref($close, -1) - 1`` —
+# the label at day ``t`` consumes close prices at ``t+1`` and ``t+2``. Without
+# an embargo, the last two rows of validation pick up close prices that fall
+# inside the test window, which contaminates the validation loss the model
+# uses for early stopping. We require at least this many trading days of gap
+# between adjacent segments.
+LABEL_LOOKAHEAD_DAYS = 2
+
+# Heuristic for B2: when the strategy universe is much wider than what the
+# benchmark covers, the resulting "excess return vs benchmark" is partly
+# driven by the universe mismatch (small-caps, STAR / BJ stocks). We warn on
+# the common pairings below; operators who deliberately accept the mismatch
+# can ignore the warning.
+_BENCHMARK_UNIVERSE_HINTS: dict[str, str] = {
+    "SH000300": "csi300",  # 沪深 300
+    "SH000905": "csi500",  # 中证 500
+    "SH000852": "csi1000",  # 中证 1000
+    "SH000906": "csi800",  # 中证 800
+}
+
 
 @dataclass(frozen=True)
 class ProviderMetadata:
@@ -155,6 +175,7 @@ def validate_pipeline_training_inputs(
     valid_end: str,
     test_start: str,
     test_end: str,
+    benchmark_code: str = "",
 ) -> TrainingGuardResult:
     metadata = inspect_provider_metadata(provider_uri)
     errors: list[str] = list(metadata.errors)
@@ -188,14 +209,126 @@ def validate_pipeline_training_inputs(
             errors.append("test_start 必须严格早于 test_end。")
 
         _validate_provider_coverage(parsed, metadata, errors, warnings)
+        _validate_segment_embargo(parsed, metadata, errors)
 
     _validate_instruments(instruments, metadata, errors)
+    _validate_universe_benchmark_alignment(instruments, benchmark_code, warnings)
 
     return TrainingGuardResult(
         errors=tuple(errors),
         warnings=tuple(warnings),
         provider_metadata=metadata,
     )
+
+
+def _validate_segment_embargo(
+    parsed: dict[str, date | None],
+    metadata: ProviderMetadata,
+    errors: list[str],
+) -> None:
+    """Enforce label-lookahead embargo between adjacent segments.
+
+    Alpha158's default label consumes ``Ref($close, -2) / Ref($close, -1)``
+    — i.e. the label at trading day ``t`` looks at the close prices on
+    days ``t+1`` and ``t+2``. If train_end / valid_start (or valid_end /
+    test_start) are separated by fewer than :data:`LABEL_LOOKAHEAD_DAYS`
+    trading days, the trailing rows of the earlier segment compute their
+    labels from prices that fall inside the later segment, leaking
+    information across the boundary.  This biases early-stopping decisions
+    (validation loss is computed against partially-leaked labels) and
+    inflates measured OOS performance.
+
+    Reported as ``error`` rather than ``warning`` because the leak silently
+    invalidates the run's evaluation; the operator has to either move
+    dates apart or accept that conclusions are biased.
+    """
+
+    calendar = metadata.calendar_dates
+    if not calendar:
+        # Without a calendar we can't reason about trading-day distances;
+        # the coverage check already warns about this case.
+        return
+
+    pairs = (
+        ("train_end", "valid_start"),
+        ("valid_end", "test_start"),
+    )
+    for earlier, later in pairs:
+        e_date = parsed[earlier]
+        l_date = parsed[later]
+        if e_date is None or l_date is None or l_date <= e_date:
+            # Other validators already flag missing / non-monotone dates.
+            continue
+        gap = _trading_days_between(e_date, l_date, calendar)
+        if gap < LABEL_LOOKAHEAD_DAYS:
+            errors.append(
+                f"{earlier}（{e_date}）与 {later}（{l_date}）之间只有 "
+                f"{gap} 个交易日，少于 Alpha158 默认 label 所需的 "
+                f"{LABEL_LOOKAHEAD_DAYS} 个交易日 embargo——"
+                f"前一段的尾部 label 会用到后一段的收盘价，"
+                "造成验证集/测试集的 label 泄漏。请将后一段起始日往后推 "
+                f"至少 {LABEL_LOOKAHEAD_DAYS} 个交易日。"
+            )
+
+
+def _trading_days_between(
+    earlier: date, later: date, calendar: tuple[date, ...]
+) -> int:
+    """Return the number of trading days strictly between ``earlier`` and
+    ``later`` (exclusive on both sides).
+
+    For example, if calendar contains 2025-09-30, 2025-10-09, 2025-10-10
+    and we pass (2025-09-30, 2025-10-09), the gap is 0 — they are adjacent
+    trading days, so there is no embargo day in between.
+    """
+
+    if later <= earlier:
+        return 0
+    # Both ends exclusive: trading days strictly between them.
+    return sum(1 for day in calendar if earlier < day < later)
+
+
+def _validate_universe_benchmark_alignment(
+    instruments: str,
+    benchmark_code: str,
+    warnings: list[str],
+) -> None:
+    """Warn (not error) when the strategy universe doesn't match the
+    benchmark constituents.
+
+    Common pitfall: operator picks ``instruments=all`` to fish from the
+    full market (incl. STAR / Beijing / micro-caps) but keeps the default
+    ``benchmark_code=SH000300`` — so the "excess return vs benchmark" is
+    inflated by the universe mismatch rather than reflecting model skill.
+
+    Heuristic only — we cannot know whether a custom universe matches a
+    custom benchmark. We warn on the obvious cases (``instruments=all``
+    against a major index) and let the operator override.
+    """
+
+    instr = str(instruments or "").strip().lower()
+    bench = str(benchmark_code or "").strip().upper()
+    if not instr or not bench:
+        return
+    expected_universe = _BENCHMARK_UNIVERSE_HINTS.get(bench)
+    if expected_universe is None:
+        return
+    if instr == expected_universe:
+        return
+    if instr == "all":
+        warnings.append(
+            f"股票池 instruments=all（全市场，含科创/北交/小盘）与 "
+            f"基准 benchmark_code={bench}（{expected_universe.upper()}）不一致；"
+            "「相对基准超额收益」会被股票池差异天然抬高。"
+            f"若要比较同口径，请把 instruments 改成 {expected_universe}，"
+            "或换一个与策略池匹配的基准。"
+        )
+    elif instr in _BENCHMARK_UNIVERSE_HINTS.values():
+        warnings.append(
+            f"股票池 instruments={instr} 与 基准 benchmark_code={bench}"
+            f"（对应 {expected_universe.upper()}）不同口径，"
+            "相对超额收益可能因股票池范围差异而非模型能力而被放大。"
+        )
 
 
 def provider_metadata_summary(metadata: ProviderMetadata) -> dict[str, str]:

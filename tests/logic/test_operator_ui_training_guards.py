@@ -13,33 +13,39 @@ if str(_PROJECT_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_PROJECT_ROOT))
 
 
+# Calendar with enough dates to leave a 2-trading-day embargo between
+# adjacent segments. We deliberately keep the original 2025-09-30 →
+# 2025-10-09 spacing (with no intervening trading days) so we can test
+# the *failure* case for the embargo validator separately.
+_PROVIDER_CALENDAR: tuple[str, ...] = (
+    "2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07", "2025-01-08",
+    "2025-01-09", "2025-01-10",
+    "2025-06-26", "2025-06-27", "2025-06-30",
+    "2025-07-01", "2025-07-02", "2025-07-03", "2025-07-04", "2025-07-07",
+    "2025-09-26", "2025-09-29", "2025-09-30",
+    "2025-10-09", "2025-10-10", "2025-10-13", "2025-10-14", "2025-10-15",
+    "2025-12-25", "2025-12-26", "2025-12-29", "2025-12-30", "2025-12-31",
+)
+
+
 def _write_provider(root: Path) -> Path:
     provider = root / "qlib_provider"
     (provider / "calendars").mkdir(parents=True)
     (provider / "instruments").mkdir()
     (provider / "calendars" / "day.txt").write_text(
-        "\n".join([
-            "2025-01-02",
-            "2025-01-03",
-            "2025-01-06",
-            "2025-07-01",
-            "2025-09-30",
-            "2025-10-09",
-            "2025-12-29",
-            "2025-12-30",
-            "2025-12-31",
-        ]),
-        encoding="utf-8",
+        "\n".join(_PROVIDER_CALENDAR), encoding="utf-8",
     )
-    (provider / "instruments" / "all.txt").write_text("SH600000\t2025-01-02\t2025-12-31\n", encoding="utf-8")
+    (provider / "instruments" / "all.txt").write_text(
+        "SH600000\t2025-01-02\t2025-12-31\n", encoding="utf-8"
+    )
     (root / "validation.json").write_text(
         json.dumps({
             "health": "ok",
             "coverage_start_date": "2025-01-02",
             "coverage_end_date": "2025-12-31",
-            "calendar_count": 6,
+            "calendar_count": len(_PROVIDER_CALENDAR),
             "instrument_count": 1,
-            "row_count": 6,
+            "row_count": len(_PROVIDER_CALENDAR),
         }),
         encoding="utf-8",
     )
@@ -72,9 +78,9 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
                 instruments="all",
                 train_start="2025-01-02",
                 train_end="2025-06-30",
-                valid_start="2025-01-06",
+                valid_start="2025-01-06",  # before train_end on purpose
                 valid_end="2025-09-30",
-                test_start="2025-10-09",
+                test_start="2025-10-13",
                 test_end="2025-12-30",
             )
 
@@ -86,15 +92,17 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             provider = _write_provider(Path(tmp))
+            # Train and valid arranged with proper 2-day embargo so the
+            # failure is unambiguously the tail-day overflow, not embargo.
             result = validate_pipeline_training_inputs(
                 provider_uri=str(provider),
                 instruments="all",
                 train_start="2025-01-02",
                 train_end="2025-01-03",
-                valid_start="2025-01-06",
-                valid_end="2025-12-29",
+                valid_start="2025-01-08",
+                valid_end="2025-12-25",
                 test_start="2025-12-30",
-                test_end="2025-12-31",
+                test_end="2025-12-31",  # provider's final trading day
             )
 
         self.assertFalse(result.ok)
@@ -111,13 +119,13 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
                 instruments="all",
                 train_start="2025-01-02",
                 train_end="2025-01-03",
-                valid_start="2025-01-06",
-                valid_end="2025-09-30",
-                test_start="2025-10-09",
+                valid_start="2025-01-08",   # embargo: 01-06, 01-07
+                valid_end="2025-09-26",
+                test_start="2025-10-13",    # embargo across the holiday
                 test_end="2025-12-30",
             )
 
-        self.assertTrue(result.ok)
+        self.assertTrue(result.ok, f"unexpected errors: {result.errors}")
         self.assertTrue(any("20 日前向收益" in item for item in result.warnings))
 
     def test_pipeline_guard_rejects_missing_named_universe(self) -> None:
@@ -127,17 +135,183 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
             provider = _write_provider(Path(tmp))
             result = validate_pipeline_training_inputs(
                 provider_uri=str(provider),
-                instruments="csi300",
+                instruments="csi300",  # provider only has 'all'
                 train_start="2025-01-02",
                 train_end="2025-01-03",
-                valid_start="2025-01-06",
-                valid_end="2025-12-29",
-                test_start="2025-12-29",
-                test_end="2025-12-30",
+                valid_start="2025-01-08",
+                valid_end="2025-12-25",
+                test_start="2025-12-30",
+                test_end="2025-12-31",
             )
 
         self.assertFalse(result.ok)
         self.assertTrue(any("instruments='csi300' 不在数据源的" in item for item in result.errors))
+
+
+class SegmentEmbargoTests(unittest.TestCase):
+    """Regression tests for the label-lookahead embargo validator
+    (PR6.4). Alpha158's default label consumes ``Ref($close, -2/-1)`` —
+    without an embargo the last 2 rows of each non-test segment compute
+    their labels from prices that fall inside the next segment, leaking
+    information across the boundary.
+    """
+
+    def test_zero_embargo_between_valid_and_test_is_error(self) -> None:
+        """Reproducer for the operator's pipeline_20260524_221821_b978a811
+        run: valid_end=2025-09-30 → test_start=2025-10-09 with no trading
+        days strictly between them. Embargo days = 0 < 2. Must reject."""
+
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-30",   # last validation day
+                test_start="2025-10-09",  # next trading day — 0 embargo
+                test_end="2025-10-15",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(
+                "valid_end" in item and "test_start" in item and "embargo" in item
+                for item in result.errors
+            ),
+            f"expected embargo error, got: {result.errors}",
+        )
+
+    def test_one_embargo_day_still_below_lookahead_is_error(self) -> None:
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            # train_end=01-03 → valid_start=01-07 leaves only 01-06 in
+            # between (1 trading day) — below LABEL_LOOKAHEAD_DAYS=2.
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-07",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(
+                "train_end" in item and "valid_start" in item and "embargo" in item
+                for item in result.errors
+            ),
+            f"expected embargo error, got: {result.errors}",
+        )
+
+    def test_two_embargo_days_passes(self) -> None:
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            # train_end=01-03, valid_start=01-08 → embargo = [01-06, 01-07] = 2 days.
+            # valid_end=09-26, test_start=10-13 → embargo crosses the
+            # holiday, plenty of days. Both pass.
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+            )
+
+        # The tail-day warning may still fire, but no embargo error.
+        self.assertFalse(
+            any("embargo" in item for item in result.errors),
+            f"unexpected embargo error: {result.errors}",
+        )
+
+
+class UniverseBenchmarkAlignmentTests(unittest.TestCase):
+    """Regression tests for the universe/benchmark mismatch warning
+    (PR6.4 B2). Picking instruments=all alongside benchmark=SH000300
+    inflates the apparent excess return — operator should see a hint."""
+
+    def test_all_universe_with_csi300_benchmark_warns(self) -> None:
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+                benchmark_code="SH000300",
+            )
+
+        self.assertTrue(
+            any("instruments=all" in w and "SH000300" in w for w in result.warnings),
+            f"expected mismatch warning, got: {result.warnings}",
+        )
+
+    def test_csi300_universe_with_csi300_benchmark_no_warning(self) -> None:
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="csi300",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+                benchmark_code="SH000300",
+            )
+
+        # csi300 universe matches SH000300 benchmark — no alignment warning
+        # (instruments missing-universe error fires separately because the
+        # test provider only has 'all.txt'; that's a different validator).
+        self.assertFalse(
+            any("不一致" in w or "不同口径" in w for w in result.warnings),
+            f"unexpected alignment warning: {result.warnings}",
+        )
+
+    def test_unknown_benchmark_skips_alignment_check(self) -> None:
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+                benchmark_code="SH600000",  # not in the hint table
+            )
+
+        # No heuristic data → no alignment warning.
+        self.assertFalse(
+            any("不一致" in w or "不同口径" in w for w in result.warnings),
+            f"unexpected alignment warning: {result.warnings}",
+        )
 
 
 if __name__ == "__main__":
