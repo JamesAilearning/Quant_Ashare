@@ -297,6 +297,65 @@ def _make_factory(bundle: MinedFactorBundle):
     return _factory
 
 
+def _compute_bundle_cache_identity(bundle: MinedFactorBundle) -> str:
+    """Sha256-derived identity covering the bundle's bound state.
+
+    The identity changes whenever any of the following changes:
+
+    * ``pool_dir`` (the directory of the bound factor pool).
+    * ``pit_provider_uri`` (which PIT bundle the handler reads).
+    * ``delisted_registry_path`` (which delisted-tickers registry).
+    * ``universe_name_override``.
+    * **The contents of ``pool_dir / factor_pool.parquet``** — re-running
+      the miner against the same path with a new seed produces a
+      semantically different pool even though the directory string is
+      unchanged. The file's bytes are hashed so a cache-key collision
+      with the prior pool is structurally impossible.
+
+    Audit P2: before this helper existed, the feature-dataset cache
+    keyed only on ``feature_handler="MinedFactor"`` (the registered
+    name), so re-binding the handler to a different pool produced
+    the same cache key and silently served stale features under the
+    new pool's name. This composite identity makes the key sensitive
+    to every bundle field the handler actually consults.
+
+    Missing pool parquet → returns an identity computed from the
+    other fields plus the literal ``"no-parquet"`` marker; cache
+    callers still get a stable, unique key (just one that doesn't
+    fingerprint pool contents).
+    """
+    import hashlib  # noqa: PLC0415
+
+    h = hashlib.sha256()
+    h.update(b"pool_dir=")
+    h.update(str(bundle.pool_dir).encode("utf-8"))
+    h.update(b"\x00pit_provider_uri=")
+    h.update(str(bundle.pit_provider_uri).encode("utf-8"))
+    h.update(b"\x00delisted_registry_path=")
+    h.update(str(bundle.delisted_registry_path).encode("utf-8"))
+    h.update(b"\x00universe_name_override=")
+    h.update(str(bundle.universe_name_override or "").encode("utf-8"))
+
+    # Hash the pool parquet bytes so re-mining the same dir invalidates
+    # the cache. The parquet may be absent in synthetic-mode tests; in
+    # that case we tag the identity so callers don't conflate "no
+    # parquet" with "different parquet".
+    pool_parquet = Path(bundle.pool_dir) / POOL_PARQUET_FILENAME
+    try:
+        if pool_parquet.is_file():
+            h.update(b"\x00pool_parquet_sha256=")
+            h.update(hashlib.sha256(pool_parquet.read_bytes()).digest())
+        else:
+            h.update(b"\x00pool_parquet=no-parquet")
+    except OSError:
+        # Permission denied / read failure — fall through to a stable
+        # but pessimistic identity. Cache will fingerprint by other
+        # fields only.
+        h.update(b"\x00pool_parquet=unreadable")
+
+    return f"mined_factor:{h.hexdigest()[:32]}"
+
+
 def register_mined_factor_handler(
     bundle: MinedFactorBundle,
     *,
@@ -309,6 +368,21 @@ def register_mined_factor_handler(
     subsequent ``register_mined_factor_handler(other_bundle,
     replace=True)`` call rebinds the same registry slot to a new
     bundle.
+
+    A cache identity that fingerprints ``bundle`` (pool_dir + PIT
+    provider + delisted registry + universe override + pool parquet
+    sha) is registered alongside the factory so the feature-dataset
+    cache produces a distinct key per bound pool. Re-binding with
+    ``replace=True`` overwrites both the factory and the identity.
     """
     factory = _make_factory(bundle)
-    register_feature_handler(name, factory, replace=replace)
+
+    # Capture ``bundle`` in a closure for the identity callable so
+    # ``register_feature_handler(replace=True)`` rebinding always
+    # re-derives the identity from the freshly-bound bundle.
+    def _identity() -> str:
+        return _compute_bundle_cache_identity(bundle)
+
+    register_feature_handler(
+        name, factory, replace=replace, cache_identity=_identity,
+    )

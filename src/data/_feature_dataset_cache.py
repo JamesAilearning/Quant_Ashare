@@ -56,27 +56,68 @@ _LEGACY_BUNDLE_TAG = "unknown"
 
 
 def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
-    """Return the tail_date from the qlib provider's bundle_manifest.json.
+    """Return a tag identifying the bundle's contents for cache invalidation.
+
+    Reads (in order):
+
+    1. ``bundle_manifest.json`` (PR #149 canonical contract) → returns
+       the ``tail_date`` string.
+    2. ``tushare_provider_manifest.json`` (existing Tushare publisher
+       format that this repo's own ingest scripts emit) → returns
+       ``"tushare:<coverage_end_date>@<snapshot_at>"`` so a re-ingest
+       with the same coverage window still gets a distinct tag
+       (``snapshot_at`` is a timestamp per-publish).
 
     Returns ``"unknown"`` when:
-      - ``provider_uri`` is None / empty
-      - the bundle directory has no ``bundle_manifest.json`` file
-      - the manifest exists but can't be parsed / lacks tail_date
+
+    * ``provider_uri`` is None / empty.
+    * Neither manifest exists.
+    * The manifest exists but can't be parsed or lacks the key fields.
 
     The tag is included in the cache key (see :func:`compute_cache_key`)
-    so a bundle re-ingest invalidates every cached entry.
+    so a bundle re-ingest invalidates every cached entry. Before audit
+    P2, Tushare bundles always returned ``"unknown"`` because the
+    reader only knew about ``bundle_manifest.json``; the resulting
+    stable tag meant the cache happily served stale features across
+    re-ingestions.
     """
     if not provider_uri:
         return _LEGACY_BUNDLE_TAG
-    try:
-        manifest_path = Path(str(provider_uri)) / "bundle_manifest.json"
-        if not manifest_path.is_file():
-            return _LEGACY_BUNDLE_TAG
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        tail = str(payload.get("tail_date") or "").strip()
-        return tail or _LEGACY_BUNDLE_TAG
-    except Exception:  # noqa: BLE001 — best-effort
-        return _LEGACY_BUNDLE_TAG
+    base = Path(str(provider_uri))
+
+    # 1. PR #149's canonical bundle manifest.
+    bundle_manifest_path = base / "bundle_manifest.json"
+    if bundle_manifest_path.is_file():
+        try:
+            payload = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
+            tail = str(payload.get("tail_date") or "").strip()
+            if tail:
+                return tail
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
+    # 2. Tushare publisher's manifest (the existing format the repo's
+    #    own ingest scripts have always emitted).
+    tushare_manifest_path = base / "tushare_provider_manifest.json"
+    if tushare_manifest_path.is_file():
+        try:
+            payload = json.loads(tushare_manifest_path.read_text(encoding="utf-8"))
+            coverage = str(payload.get("coverage_end_date") or "").strip()
+            snapshot = str(payload.get("snapshot_at") or "").strip()
+            # Both fields ideally combine: coverage alone wouldn't
+            # change on a re-ingest of the same window; snapshot_at
+            # always does. The composite forces a fresh cache key on
+            # every publish even when the window is identical.
+            if coverage and snapshot:
+                return f"tushare:{coverage}@{snapshot}"
+            if coverage:
+                return f"tushare:{coverage}"
+            if snapshot:
+                return f"tushare:@{snapshot}"
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
+    return _LEGACY_BUNDLE_TAG
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +129,7 @@ def compute_cache_key(
     config: FeatureDatasetConfig,
     *,
     bundle_tag: str = _LEGACY_BUNDLE_TAG,
+    handler_identity: str | None = None,
 ) -> str:
     """Return a stable sha256 hex digest identifying the dataset config.
 
@@ -97,11 +139,25 @@ def compute_cache_key(
     - ``instruments`` (universe)
     - ``feature_handler`` (Alpha158, MinedFactor, ...)
     - the six date split fields (train/valid/test start/end)
-    - ``bundle_tag`` (e.g. the qlib provider's tail_date)
+    - ``bundle_tag`` (e.g. the qlib provider's tail_date — covers
+      bundle re-ingest)
+    - ``handler_identity`` (covers handler-internal state that the
+      registered name alone does not pin down — e.g. MinedFactor's
+      currently-bound pool dir + PIT provider + delisted registry
+      + pool parquet hash)
 
     Other config fields, when added in the future, MUST be included
     here if they affect dataset materialisation, or excluded if they
     only affect downstream training/backtesting.
+
+    Audit P2: ``handler_identity`` was added because the cache key
+    previously included only the handler **name**, so re-binding
+    MinedFactor to a different pool produced the same key as the
+    prior pool — silently serving stale features under the new pool's
+    name. Callers that don't supply ``handler_identity`` fall back to
+    the literal sentinel ``"_no_handler_identity_"``, which is
+    intentionally consistent (no random salt) but distinct from any
+    real identity string a handler could declare.
     """
     payload = {
         "instruments": config.instruments,
@@ -113,6 +169,7 @@ def compute_cache_key(
         "test_start": config.test_start,
         "test_end": config.test_end,
         "bundle_tag": bundle_tag,
+        "handler_identity": handler_identity or "_no_handler_identity_",
     }
     encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:32]
