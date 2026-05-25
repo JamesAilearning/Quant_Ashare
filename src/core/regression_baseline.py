@@ -82,6 +82,7 @@ def compare_metrics(
       ignored — new metrics are additive, not regressions.
     """
     abs_tol = tolerance if absolute_tolerance is None else absolute_tolerance
+    keys_explicit = keys is not None
     keys_to_check = (
         tuple(keys) if keys is not None else tuple(baseline.keys())
     )
@@ -96,7 +97,30 @@ def compare_metrics(
             continue
         baseline_value = baseline[key]
         if not _is_numeric(baseline_value):
-            continue  # provenance / config fields, not metrics
+            if keys_explicit:
+                # Codex P2 on PR #166: when the caller explicitly
+                # asked us to check this key, a non-numeric baseline
+                # is a **malformed fixture** — silently skipping
+                # would let an entirely-non-numeric baseline pass
+                # the drift check with zero effective comparisons
+                # (false green). Provenance / config fields that
+                # happen to share the dict are filtered by the
+                # caller via the ``keys`` arg; anything they DID
+                # request and is non-numeric is broken data.
+                drifts.append(
+                    f"{key}: baseline is non-numeric "
+                    f"({type(baseline_value).__name__}: "
+                    f"{baseline_value!r}); caller listed this key as "
+                    f"a metric to compare. Likely a malformed "
+                    f"fixture — regenerate via "
+                    f"scripts/generate_regression_baseline.py."
+                )
+            # When ``keys`` is None (no explicit list) we tolerate
+            # non-numeric baseline values: the dict often carries
+            # both metrics and provenance side-by-side, and the
+            # comparator's job is to flag metric drift, not lint
+            # the whole dict.
+            continue
         if isinstance(baseline_value, float) and math.isnan(baseline_value):
             continue  # explicit "no expectation"
         if key not in actual:

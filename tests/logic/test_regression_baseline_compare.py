@@ -137,6 +137,45 @@ class CompareMetricsNonNumericTests(unittest.TestCase):
         self.assertEqual(len(drifts), 1)
         self.assertIn("non-numeric", drifts[0])
 
+    def test_non_numeric_baseline_with_explicit_keys_is_drift(self):
+        """Codex P2 on PR #166: when the caller explicitly lists a key
+        in ``keys``, a non-numeric baseline value at that key is a
+        malformed fixture — must flag, not silently skip. Otherwise
+        an entirely-non-numeric baseline would pass the drift check
+        with zero effective comparisons (false green)."""
+        drifts = compare_metrics(
+            {"ir": 0.5},
+            {"ir": "0.12"},  # baseline accidentally a string
+            keys=("ir",),
+        )
+        self.assertEqual(len(drifts), 1)
+        self.assertIn("non-numeric", drifts[0])
+        # Helpful message points operator at the regenerate path.
+        self.assertIn("malformed", drifts[0])
+
+    def test_non_numeric_baseline_without_explicit_keys_still_skipped(self):
+        """The default mode (``keys=None``) tolerates non-numeric
+        baseline values — the dict often carries provenance + metrics
+        side-by-side. Only the explicit-keys path treats it as drift."""
+        self.assertEqual(
+            compare_metrics({"ir": 0.5}, {"ir": "0.12"}),
+            [],
+        )
+
+    def test_all_requested_keys_non_numeric_fails_loudly(self):
+        """Regression for the false-green scenario Codex described:
+        every requested key has a non-numeric baseline → 100% of
+        comparisons "skip" → test passes with zero coverage. The
+        fix surfaces N drifts, one per malformed key."""
+        baseline = {"ir": "0.5", "ic": "0.04"}
+        drifts = compare_metrics(
+            {"ir": 0.99, "ic": 0.99},
+            baseline,
+            keys=("ir", "ic"),
+        )
+        self.assertEqual(len(drifts), 2)
+        self.assertTrue(all("non-numeric" in d for d in drifts))
+
 
 class CompareMetricsNearZeroBaselineTests(unittest.TestCase):
     def test_near_zero_baseline_uses_absolute_tolerance(self):
