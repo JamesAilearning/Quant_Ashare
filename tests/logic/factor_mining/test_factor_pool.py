@@ -323,89 +323,49 @@ def test_load_legacy_parquet_without_method_column_uses_legacy_tag(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Regression for bug.md P2-6: ``FactorPool.load`` docstring promises
-# to assert that the reconstructed Expression's hash matches the
-# stored ``expr_hash``, but the pre-fix code computed
-# ``actual_hash = hash(expr)`` and never compared. A tampered or
-# silently-corrupted JSON could install an expression under the wrong
-# slot. The fix raises ``ValueError`` on mismatch — defence in depth
-# against parquet/JSON drift.
+# Codex PR #165 P1 note: ``FactorPool.load`` does NOT cross-check
+# ``hash(reconstructed_expr) == stored_expr_hash`` because Python's
+# ``hash()`` is randomised per process (``PYTHONHASHSEED``). A real
+# integrity check would need a stable canonical hash persisted as a
+# separate column — a schema bump deferred to a future change.
+#
+# What we DO check is left visible by ``test_load_raises_if_expr_missing_from_json``
+# (parquet row claims a key the JSON map doesn't have) — that path
+# is process-stable because the keys themselves are stored on both
+# sides and only compared for set membership.
 # ---------------------------------------------------------------------------
 
 
-def test_load_raises_on_expr_hash_mismatch(tmp_path):
-    """Build a parquet/JSON pair where the JSON's expression hashes to
-    a different value than the parquet claims — load must hard-fail."""
+def test_load_raises_if_expr_missing_from_json(tmp_path):
+    """Parquet records a row but the JSON map has no entry under
+    that ``expr_hash`` — must hard-fail with a clear message."""
     from src.factor_mining.factor_pool import (
         POOL_EXPR_JSON_FILENAME,
         POOL_PARQUET_FILENAME,
     )
 
-    d = tmp_path / "tampered_pool"
-    d.mkdir()
-    real_expr = _expr_cs_rank_volume()
-    other_expr = _expr_cs_rank_money()
-
-    # Parquet records the hash of real_expr, but the JSON ships
-    # other_expr's AST under that same slot. Loading the JSON
-    # reconstructs other_expr; its hash != real_expr's hash → reject.
-    metrics = pd.DataFrame(
-        [
-            {
-                "expr_hash": str(hash(real_expr)),
-                "fitness": 1.5,
-                "ic_mean": 0.05,
-                "ic_std": 0.1,
-                "ir": 0.5,
-                "rank_ic_mean": 0.04,
-                "rank_ic_std": 0.1,
-                "rank_ir": 0.4,
-                "turnover_daily": 0.1,
-                "coverage": 0.95,
-                "n_obs_per_day_min": 20,
-                "expr_size": 2,
-                "method": "normal",
-            }
-        ]
-    )
-    metrics.to_parquet(d / POOL_PARQUET_FILENAME, index=False)
-    # The JSON has the right key but the WRONG expression body.
-    with (d / POOL_EXPR_JSON_FILENAME).open("w", encoding="utf-8") as fh:
-        json.dump({str(hash(real_expr)): other_expr.to_dict()}, fh)
-
-    with pytest.raises(ValueError, match="expr_hash mismatch"):
-        FactorPool.load(d)
-
-
-def test_load_raises_on_non_integer_expr_hash(tmp_path):
-    """A parquet row whose ``expr_hash`` column isn't a valid integer
-    string must hard-fail with a clear message rather than crashing
-    later inside ``int(...)`` deep in the loader."""
-    from src.factor_mining.factor_pool import (
-        POOL_EXPR_JSON_FILENAME,
-        POOL_PARQUET_FILENAME,
-    )
-
-    d = tmp_path / "bad_hash_pool"
+    d = tmp_path / "missing_json_pool"
     d.mkdir()
     expr = _expr_cs_rank_volume()
     metrics = pd.DataFrame(
         [
             {
-                "expr_hash": "not-a-number",
-                "fitness": 0.0, "ic_mean": 0.0, "ic_std": 0.0, "ir": 0.0,
-                "rank_ic_mean": 0.0, "rank_ic_std": 0.0, "rank_ir": 0.0,
-                "turnover_daily": 0.0, "coverage": 0.0,
-                "n_obs_per_day_min": 0, "expr_size": 1,
+                "expr_hash": str(hash(expr)),
+                "fitness": 1.5,
+                "ic_mean": 0.05, "ic_std": 0.1, "ir": 0.5,
+                "rank_ic_mean": 0.04, "rank_ic_std": 0.1, "rank_ir": 0.4,
+                "turnover_daily": 0.1, "coverage": 0.95,
+                "n_obs_per_day_min": 20, "expr_size": 2,
                 "method": "normal",
             }
         ]
     )
     metrics.to_parquet(d / POOL_PARQUET_FILENAME, index=False)
+    # Empty JSON — the parquet row points into nothing.
     with (d / POOL_EXPR_JSON_FILENAME).open("w", encoding="utf-8") as fh:
-        json.dump({"not-a-number": expr.to_dict()}, fh)
+        json.dump({}, fh)
 
-    with pytest.raises(ValueError, match="not a valid integer"):
+    with pytest.raises(ValueError, match="missing from JSON"):
         FactorPool.load(d)
 
 

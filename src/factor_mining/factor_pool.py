@@ -234,9 +234,27 @@ class FactorPool:
     def load(cls, dir_path: str | Path) -> FactorPool:
         """Reconstruct a pool from ``dir_path``.
 
-        Asserts that every ``expr_hash`` in the parquet has a matching
-        AST in the JSON, and that hashing the reconstructed
-        ``Expression`` produces the same ``expr_hash``.
+        Verifies that every ``expr_hash`` in the parquet has a
+        matching AST in the JSON and that the AST deserialises into
+        a valid :class:`Expression`. Does NOT cross-check the
+        deserialised expression's Python ``hash()`` against
+        ``expr_hash`` — Python's ``hash()`` is randomised per
+        interpreter process (``PYTHONHASHSEED``), so a hash recorded
+        in one run is not comparable to one computed in the next.
+        ``expr_hash`` is therefore best understood as a stable
+        **cross-reference** between the parquet rows and the JSON
+        map, not a cryptographic identity hash. Detecting silent
+        AST-tampering (a different expression installed under an
+        existing key) would require a stable canonical hash (e.g.
+        sha256 of ``Expression.to_dict``) persisted alongside the
+        parquet — a separate schema change, not done here.
+
+        Codex P1 on PR #165 flagged that an earlier attempt at this
+        cross-process hash check was rejecting legitimately-saved
+        pools because the save-time hash and load-time hash differ
+        by hash seed; the check has been intentionally removed and
+        the docstring updated to match what the code actually
+        guarantees.
         """
         d = Path(dir_path)
         metrics_path = d / POOL_PARQUET_FILENAME
@@ -265,32 +283,12 @@ class FactorPool:
                     "but missing from JSON"
                 )
             expr = Expression.from_dict(expr_map[h_key])
+            # Re-hash under the current process's hash seed so the
+            # in-memory entry's expr_hash is consistent with any other
+            # ``hash(expr)`` call this process makes. NOT comparable to
+            # ``h_key`` across processes; see docstring above for why
+            # a stable identity check would need a schema change.
             actual_hash = hash(expr)
-            # Verify the parquet's claim against the reconstructed
-            # expression's actual hash. The docstring above promises
-            # this check; previously the code computed ``actual_hash``
-            # but never compared it to ``h_key`` — a tampered or
-            # silently-corrupted JSON could install an expression
-            # under the wrong slot without anyone noticing. (bug.md
-            # P2-6.) Hash mismatch is hard-fail rather than skip:
-            # a pool with mis-bound rows is unsafe to use at all, and
-            # an explicit raise points the operator at the offending
-            # entry.
-            try:
-                expected_hash = int(h_key)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"pool integrity: expr_hash {h_key!r} in parquet "
-                    "is not a valid integer string"
-                ) from exc
-            if actual_hash != expected_hash:
-                raise ValueError(
-                    f"pool integrity: expr_hash mismatch for {h_key} — "
-                    f"reconstructed expression hashes to {actual_hash}, "
-                    f"expected {expected_hash}. The parquet and "
-                    f"factor_expressions.json have drifted; refusing "
-                    f"to load a pool with mis-bound rows."
-                )
             entry = PoolEntry(
                 expr=expr,
                 fitness=float(row["fitness"]),
