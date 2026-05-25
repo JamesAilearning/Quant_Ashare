@@ -132,6 +132,24 @@ class WalkForwardConfig:
     # Output
     output_dir: str = "output/walk_forward"
 
+    # Optional feature-dataset pickle cache directory. When set, each
+    # fold's FeatureDatasetBuilder.build() consults this directory for a
+    # cached FeatureDatasetResult before instantiating Alpha158 (or the
+    # MinedFactor handler) — turning the 30-90s handler init + 3×
+    # prepare() into a single pickle load on cache hit. See
+    # ``openspec/changes/add-feature-dataset-cache/`` for the contract.
+    #
+    # Three layered sources (highest precedence first):
+    #   1. This YAML field, if set.
+    #   2. ``QLIB_DATASET_CACHE_DIR`` env var (resolved at engine.run time).
+    #   3. ``None`` → cache disabled, legacy build path on every fold.
+    #
+    # Operators who want **per-run isolation** can set this to
+    # ``"{output_dir}/.dataset_cache"`` (cache cleared when output is
+    # cleared). Operators who want **cross-run reuse** can set it to a
+    # shared dir like ``"~/.cache/qlib_quant_v2/datasets/"``.
+    dataset_cache_dir: str | None = None
+
     def __post_init__(self) -> None:
         # *Validate-only*, no field mutation. ``frozen=True`` would forbid
         # ordinary ``self.x = ...`` assignment here — if a future iteration

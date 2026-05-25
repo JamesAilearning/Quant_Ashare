@@ -21,23 +21,23 @@ from src.core.walk_forward._resume import _ResumeKind  # noqa: E402
 
 class ResumeFlagsTests(unittest.TestCase):
     def test_default_is_auto_resume(self) -> None:
-        config, mode = _parse_cli([])
+        config, mode, _ds = _parse_cli([])
         self.assertEqual(config, "config_walk.yaml")
         self.assertEqual(mode.kind, _ResumeKind.AUTO)
 
     def test_positional_config_is_honored(self) -> None:
-        config, mode = _parse_cli(["my.yaml"])
+        config, mode, _ds = _parse_cli(["my.yaml"])
         self.assertEqual(config, "my.yaml")
         self.assertEqual(mode.kind, _ResumeKind.AUTO)
 
     def test_resume_from_fold_n_produces_bounded_mode(self) -> None:
-        config, mode = _parse_cli(["walk.yaml", "--resume-from-fold", "3"])
+        config, mode, _ds = _parse_cli(["walk.yaml", "--resume-from-fold", "3"])
         self.assertEqual(config, "walk.yaml")
         self.assertEqual(mode.kind, _ResumeKind.RESUME_FROM_FOLD)
         self.assertEqual(mode.from_fold_index, 3)
 
     def test_no_resume_produces_force_rerun(self) -> None:
-        config, mode = _parse_cli(["walk.yaml", "--no-resume"])
+        config, mode, _ds = _parse_cli(["walk.yaml", "--no-resume"])
         self.assertEqual(config, "walk.yaml")
         self.assertEqual(mode.kind, _ResumeKind.FORCE_RERUN)
 
@@ -59,7 +59,7 @@ class ResumeFlagsTests(unittest.TestCase):
         """N=0 means 'no skips' — re-run everything but per-fold
         manifest writes still happen. Equivalent to AUTO + empty
         discovered set."""
-        _config, mode = _parse_cli(["walk.yaml", "--resume-from-fold", "0"])
+        _config, mode, _ds = _parse_cli(["walk.yaml", "--resume-from-fold", "0"])
         self.assertEqual(mode.kind, _ResumeKind.RESUME_FROM_FOLD)
         self.assertEqual(mode.from_fold_index, 0)
 

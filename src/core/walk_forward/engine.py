@@ -381,16 +381,36 @@ class WalkForwardEngine:
         """
 
         _logger.info("  Fold %d: features...", fold_index)
-        feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
-            instruments=config.instruments,
-            feature_handler=config.feature_handler,
-            train_start=train_start,
-            train_end=train_end,
-            valid_start=valid_start,
-            valid_end=valid_end,
-            test_start=test_start,
-            test_end=test_end,
-        ))
+        # Resolve the optional feature-dataset cache directory.
+        # Precedence (highest first):
+        #   1. ``config.dataset_cache_dir`` YAML field
+        #   2. ``QLIB_DATASET_CACHE_DIR`` env var
+        #   3. None — cache disabled, legacy build path.
+        # The cache itself is opt-in and exception-safe; see
+        # ``src/data/_feature_dataset_cache.py``.
+        import os
+
+        ds_cache_dir: Path | None = None
+        if config.dataset_cache_dir:
+            ds_cache_dir = Path(config.dataset_cache_dir).expanduser()
+        else:
+            env_cache = os.environ.get("QLIB_DATASET_CACHE_DIR", "").strip()
+            if env_cache:
+                ds_cache_dir = Path(env_cache).expanduser()
+
+        feature_result = FeatureDatasetBuilder.build(
+            FeatureDatasetConfig(
+                instruments=config.instruments,
+                feature_handler=config.feature_handler,
+                train_start=train_start,
+                train_end=train_end,
+                valid_start=valid_start,
+                valid_end=valid_end,
+                test_start=test_start,
+                test_end=test_end,
+            ),
+            cache_dir=ds_cache_dir,
+        )
 
         # Train model
         model_path = str(output_dir / f"model_fold{fold_index}.pkl")

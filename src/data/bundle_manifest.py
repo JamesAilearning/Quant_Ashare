@@ -47,7 +47,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from src.core.logger import get_logger
@@ -57,6 +57,7 @@ _logger = get_logger(__name__)
 
 MANIFEST_FILENAME = "bundle_manifest.json"
 SKIP_ENV_VAR = "QLIB_SKIP_BUNDLE_VALIDATION"
+MANIFEST_REQUIRED_FIELDS = ("provider_uri", "tail_date", "instrument_count", "built_at")
 
 
 class BundleManifestError(ValueError):
@@ -204,6 +205,99 @@ def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
         instrument_count=instrument_count_raw,
         built_at=built_at_raw,
     )
+
+
+def save_manifest(
+    provider_uri: str | Path,
+    *,
+    tail_date: str | date,
+    instrument_count: int,
+    built_at: str | None = None,
+) -> Path:
+    """Write ``bundle_manifest.json`` next to a freshly-built bundle.
+
+    Called from ingest scripts after the bundle directory layout is
+    complete (calendars/, features/, instruments/ all written). The
+    file lands at ``Path(provider_uri) / "bundle_manifest.json"`` —
+    the same location :func:`load_manifest` reads from.
+
+    Parameters
+    ----------
+    provider_uri : str or Path
+        The bundle directory. Will be created if missing (so callers
+        can write the manifest before the bundle dir exists).
+    tail_date : str or datetime.date
+        Last calendar day the bundle has feature data for. Strings
+        are required to parse as ISO YYYY-MM-DD; dates are formatted
+        in the same shape.
+    instrument_count : int
+        How many tickers the bundle covers.
+    built_at : str or None
+        ISO timestamp. Defaults to ``datetime.now(tz=timezone.utc).isoformat()``.
+
+    Returns
+    -------
+    pathlib.Path
+        The resolved path the manifest was written to.
+
+    Raises
+    ------
+    BundleManifestError
+        If ``tail_date`` is a malformed string, or ``instrument_count``
+        is not a non-bool integer.
+
+    The write is atomic (``*.tmp`` + ``os.replace``) so a crash mid-
+    write does not leave a half-parsed file behind for the next
+    ``load_manifest`` to choke on.
+    """
+    # Validate the inputs the same way load_manifest validates the
+    # disk file, so a misuse here surfaces as the same error type
+    # callers already handle.
+    if isinstance(tail_date, str):
+        try:
+            date.fromisoformat(tail_date)
+        except ValueError as exc:
+            raise BundleManifestError(
+                f"save_manifest: tail_date ({tail_date!r}) is not an "
+                f"ISO YYYY-MM-DD date: {exc}"
+            ) from exc
+        tail_iso = tail_date
+    elif isinstance(tail_date, date):
+        tail_iso = tail_date.isoformat()
+    else:
+        raise BundleManifestError(
+            f"save_manifest: tail_date must be a str or datetime.date; "
+            f"got {type(tail_date).__name__}"
+        )
+    if not isinstance(instrument_count, int) or isinstance(
+        instrument_count, bool
+    ):
+        raise BundleManifestError(
+            f"save_manifest: instrument_count must be an integer; "
+            f"got {type(instrument_count).__name__}"
+        )
+    built_at_iso = built_at or datetime.now(tz=timezone.utc).isoformat()
+
+    payload = {
+        "provider_uri": str(provider_uri),
+        "tail_date": tail_iso,
+        "instrument_count": int(instrument_count),
+        "built_at": built_at_iso,
+    }
+
+    target = _manifest_path(provider_uri)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2, sort_keys=False),
+        encoding="utf-8",
+    )
+    os.replace(tmp, target)
+    _logger.info(
+        "Wrote bundle manifest at %s (tail_date=%s, instrument_count=%d)",
+        target, tail_iso, instrument_count,
+    )
+    return target
 
 
 def _is_skip_enabled() -> bool:
