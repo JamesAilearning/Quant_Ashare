@@ -314,5 +314,38 @@ class BuildAggregateReportTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Regression for bug.md P3-27: ``write_positions`` was missing
+# ``ensure_ascii=False`` while its sibling write methods
+# (``write_fold_report``, ``write_aggregate_report``) included it. CJK
+# instrument identifiers or path segments would round-trip through
+# ``\uXXXX`` escapes inconsistently across the codebase.
+# ---------------------------------------------------------------------------
+
+
+class WritePositionsAsciiTests(unittest.TestCase):
+    def test_write_positions_does_not_escape_cjk(self) -> None:
+        import json
+        import tempfile
+
+        from src.core.walk_forward.aggregate import write_positions
+
+        # Instrument label contains literal CJK — must survive
+        # round-trip without ``\uXXXX`` escapes.
+        positions = {
+            "2024-01-02": {"中证500.SH": 0.4, "SH600000": 0.6},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "positions.json"
+            write_positions(path, positions)
+            raw = path.read_text(encoding="utf-8")
+            payload = json.loads(raw)
+        self.assertIn("中证500.SH", raw, (
+            "CJK instrument id was escaped to \\uXXXX — P3-27 regression: "
+            "write_positions must pass ensure_ascii=False like sibling writers"
+        ))
+        self.assertEqual(payload["2024-01-02"]["中证500.SH"], 0.4)
+
+
 if __name__ == "__main__":
     unittest.main()

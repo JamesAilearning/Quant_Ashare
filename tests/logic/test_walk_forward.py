@@ -172,6 +172,35 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(WalkForwardError, "silently fall"):
             WalkForwardConfig(model_type="CatBoostModel", compute_device="gpu")
 
+    # ----------------------------------------------------------------
+    # Regression for bug.md P1-8: ``model_type`` was previously only
+    # validated when ``compute_device == "gpu"``. CPU runs with a
+    # typo (``"LGBModle"``) passed config construction and only failed
+    # hours later inside ``ModelTrainer._create_model`` after the
+    # feature build, wasting compute.
+    # ----------------------------------------------------------------
+
+    def test_rejects_unknown_model_type_in_cpu_mode(self):
+        """Even with ``compute_device="cpu"`` (the default), an
+        unknown ``model_type`` must surface at config-construction."""
+        with self.assertRaisesRegex(WalkForwardError, "model_type"):
+            WalkForwardConfig(model_type="LGBModle", compute_device="cpu")
+
+    def test_rejects_unknown_model_type_with_default_device(self):
+        """The default device is CPU; the model_type check must fire
+        without needing ``compute_device`` to be set explicitly."""
+        with self.assertRaisesRegex(WalkForwardError, "model_type"):
+            WalkForwardConfig(model_type="UnknownModel")
+
+    def test_accepts_each_supported_model_type(self):
+        """The whitelist is the source of truth; this test pins the
+        currently-supported set so adding/removing one is visible in
+        the diff."""
+        for mt in ("LGBModel", "XGBModel", "CatBoostModel"):
+            with self.subTest(model_type=mt):
+                # Should NOT raise.
+                WalkForwardConfig(model_type=mt)
+
     def test_rejects_unknown_execution_price_kind(self):
         with self.assertRaisesRegex(WalkForwardError, "execution_price_kind"):
             WalkForwardConfig(execution_price_kind="limit")

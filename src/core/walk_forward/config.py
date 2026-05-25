@@ -13,7 +13,11 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
 )
-from src.core.model_trainer import GPU_SUPPORTED_MODEL_TYPES, SUPPORTED_COMPUTE_DEVICES
+from src.core.model_trainer import (
+    GPU_SUPPORTED_MODEL_TYPES,
+    SUPPORTED_COMPUTE_DEVICES,
+    SUPPORTED_MODEL_TYPES,
+)
 
 
 class WalkForwardError(RuntimeError):
@@ -236,6 +240,17 @@ class WalkForwardConfig:
             raise WalkForwardError(
                 f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
                 f"got {self.adjust_mode!r}."
+            )
+        # ``model_type`` must be in the supported set up-front. Previously
+        # this was only validated when ``compute_device == "gpu"`` (via the
+        # GPU_SUPPORTED check below) and at training time inside
+        # ``ModelTrainer._create_model``. CPU runs with a typo
+        # (``"LGBModle"``) would pass config construction and only fail
+        # after hours of feature-building. (bug.md P1-8.)
+        if self.model_type not in SUPPORTED_MODEL_TYPES:
+            raise WalkForwardError(
+                f"model_type must be one of {SUPPORTED_MODEL_TYPES}; "
+                f"got {self.model_type!r}."
             )
         if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
             raise WalkForwardError(

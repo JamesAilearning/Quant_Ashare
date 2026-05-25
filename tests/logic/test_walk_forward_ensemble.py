@@ -264,6 +264,127 @@ class EnsembleSidecarTests(unittest.TestCase):
         self.assertTrue((out == 2.0).all())
         self.assertEqual(meta["prior_models_loaded"], 1)
 
+    # ----------------------------------------------------------------
+    # Regression for bug.md P2-9: previously the sidecar version
+    # check ONLY looked at ``lightgbm_version``. XGB/CatBoost models
+    # could be silently loaded across incompatible framework versions
+    # because the relevant version field was never read.
+    # ----------------------------------------------------------------
+
+    def test_sidecar_xgb_version_mismatch_rejects(self):
+        """An XGB prior model with a stale ``xgboost_version`` must be
+        skipped, exactly as the lightgbm path does."""
+        import tempfile
+
+        preds = _make_preds(value=1.0)
+        prior_preds = _make_preds(value=3.0)
+        with tempfile.TemporaryDirectory() as td:
+            prior_path = Path(td) / "fold0.pkl"
+            _dump(prior_path, _FakeModel(prior_preds))
+            real_sha = hashlib.sha256(prior_path.read_bytes()).hexdigest()
+            sidecar = prior_path.with_suffix(".pkl.meta.json")
+            sidecar.write_text(json.dumps({
+                "pkl_sha256": real_sha,
+                "model_type": "XGBModel",
+                # Fictional ancient version — virtually guaranteed not
+                # to match the installed xgboost.
+                "xgboost_version": "0.0.0-not-a-real-version",
+            }))
+            out, meta = apply_ensemble(
+                current_predictions=preds, current_dataset=None,
+                prior_model_paths=[(0, str(prior_path))], ensemble_window=2,
+                current_fold_index=1,
+            )
+        self.assertIs(out, preds)
+        self.assertEqual(len(meta["rejected_priors"]), 1)
+        self.assertIn("xgboost", meta["rejected_priors"][0]["reason"])
+
+    def test_sidecar_catboost_version_mismatch_rejects(self):
+        """Same as the XGB case but for CatBoost."""
+        import tempfile
+
+        preds = _make_preds(value=1.0)
+        prior_preds = _make_preds(value=3.0)
+        with tempfile.TemporaryDirectory() as td:
+            prior_path = Path(td) / "fold0.pkl"
+            _dump(prior_path, _FakeModel(prior_preds))
+            real_sha = hashlib.sha256(prior_path.read_bytes()).hexdigest()
+            sidecar = prior_path.with_suffix(".pkl.meta.json")
+            sidecar.write_text(json.dumps({
+                "pkl_sha256": real_sha,
+                "model_type": "CatBoostModel",
+                "catboost_version": "0.0.0-not-a-real-version",
+            }))
+            out, meta = apply_ensemble(
+                current_predictions=preds, current_dataset=None,
+                prior_model_paths=[(0, str(prior_path))], ensemble_window=2,
+                current_fold_index=1,
+            )
+        self.assertIs(out, preds)
+        self.assertEqual(len(meta["rejected_priors"]), 1)
+        self.assertIn("catboost", meta["rejected_priors"][0]["reason"])
+
+    def test_sidecar_lgb_model_ignores_unrelated_framework_version(self):
+        """A LGB model's sidecar may opportunistically carry an
+        ``xgboost_version`` (the writer logs all installed framework
+        versions). A mismatch on the IRRELEVANT framework must not
+        reject the model — only the framework matching ``model_type``
+        is load-blocking."""
+        import tempfile
+
+        import lightgbm as _lgb
+
+        preds = _make_preds(value=1.0)
+        prior_preds = _make_preds(value=3.0)
+        with tempfile.TemporaryDirectory() as td:
+            prior_path = Path(td) / "fold0.pkl"
+            _dump(prior_path, _FakeModel(prior_preds))
+            real_sha = hashlib.sha256(prior_path.read_bytes()).hexdigest()
+            sidecar = prior_path.with_suffix(".pkl.meta.json")
+            sidecar.write_text(json.dumps({
+                "pkl_sha256": real_sha,
+                "model_type": "LGBModel",
+                # CORRECT lightgbm version (load should succeed)…
+                "lightgbm_version": _lgb.__version__,
+                # …but a stale xgboost version (must be ignored).
+                "xgboost_version": "0.0.0-not-a-real-version",
+            }))
+            out, meta = apply_ensemble(
+                current_predictions=preds, current_dataset=None,
+                prior_model_paths=[(0, str(prior_path))], ensemble_window=2,
+                current_fold_index=1,
+            )
+        self.assertTrue((out == 2.0).all())
+        self.assertEqual(meta["prior_models_loaded"], 1)
+        self.assertEqual(meta["rejected_priors"], [])
+
+    def test_sidecar_without_model_type_falls_back_to_lightgbm(self):
+        """Pre-fix sidecars (and any third-party producers) may omit
+        ``model_type``. The check must still happen against
+        ``lightgbm_version`` so the historical safety net survives."""
+        import tempfile
+
+        preds = _make_preds(value=1.0)
+        prior_preds = _make_preds(value=3.0)
+        with tempfile.TemporaryDirectory() as td:
+            prior_path = Path(td) / "fold0.pkl"
+            _dump(prior_path, _FakeModel(prior_preds))
+            real_sha = hashlib.sha256(prior_path.read_bytes()).hexdigest()
+            sidecar = prior_path.with_suffix(".pkl.meta.json")
+            sidecar.write_text(json.dumps({
+                "pkl_sha256": real_sha,
+                # No model_type → must fall back to lightgbm check.
+                "lightgbm_version": "0.0.0-not-a-real-version",
+            }))
+            out, meta = apply_ensemble(
+                current_predictions=preds, current_dataset=None,
+                prior_model_paths=[(0, str(prior_path))], ensemble_window=2,
+                current_fold_index=1,
+            )
+        self.assertIs(out, preds)
+        self.assertEqual(len(meta["rejected_priors"]), 1)
+        self.assertIn("lightgbm", meta["rejected_priors"][0]["reason"])
+
 
 # ---------------------------------------------------------------------------
 # Backward-compat ref shapes
@@ -317,6 +438,67 @@ def test_write_prediction_artifact_sha_is_deterministic(tmp_path):
     sha1 = write_prediction_artifact(p1, preds)
     sha2 = write_prediction_artifact(p2, preds)
     assert sha1 == sha2
+
+
+# ---------------------------------------------------------------------------
+# Regression for bug.md P2-10: pre-fix ``write_prediction_artifact``
+# did ``pickle.dump`` directly into the target path. A crash mid-write
+# (OOM, SIGKILL during a long pickle) left a partial pickle, and the
+# next resume would EOFError. The fix writes to ``<path>.tmp`` and
+# ``os.replace`` only after the dump completes.
+# ---------------------------------------------------------------------------
+
+
+def test_write_prediction_artifact_is_atomic_no_tmp_left(tmp_path):
+    """Successful write leaves no ``.tmp`` sibling — the file was
+    renamed into place, not copied."""
+    preds = _make_preds(value=4.2)
+    path = tmp_path / "preds.pkl"
+    write_prediction_artifact(path, preds)
+    assert path.exists()
+    leftover = list(tmp_path.glob("*.tmp"))
+    assert leftover == [], (
+        f"atomic-write must clean up the tmp; found {leftover}"
+    )
+
+
+def test_write_prediction_artifact_failure_does_not_corrupt_existing(
+    tmp_path, monkeypatch,
+):
+    """If a previous write succeeded and a later write fails mid-dump,
+    the prior contents must remain intact (the tmp swap never
+    completes). Pre-fix the in-place ``pickle.dump`` would truncate
+    the target file the moment ``open(path, "wb")`` ran, so any crash
+    during ``pickle.dump`` would leave a corrupt file at ``path``."""
+    preds_v1 = _make_preds(value=1.0)
+    preds_v2 = _make_preds(value=2.0)
+    path = tmp_path / "preds.pkl"
+
+    # First successful write.
+    write_prediction_artifact(path, preds_v1)
+    original_bytes = path.read_bytes()
+
+    # Force pickle.dump to raise mid-write on the second attempt.
+    real_dump = pickle.dump
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("simulated mid-write crash")
+
+    monkeypatch.setattr(
+        "src.core.walk_forward.ensemble.pickle.dump", boom,
+    )
+    import pytest
+    with pytest.raises(RuntimeError, match="simulated mid-write crash"):
+        write_prediction_artifact(path, preds_v2)
+
+    # Restore the real dump and verify the original file is intact.
+    monkeypatch.setattr("src.core.walk_forward.ensemble.pickle.dump", real_dump)
+    assert path.read_bytes() == original_bytes, (
+        "atomic write contract violated — a failed write corrupted the "
+        "previously-good file (P2-10 regression)"
+    )
+    # And no tmp leftover.
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 if __name__ == "__main__":
