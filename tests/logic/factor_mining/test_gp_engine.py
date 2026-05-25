@@ -341,6 +341,153 @@ def test_checkpoint_preserves_history_and_current_gen(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Codex PR #142 P1 regression: evaluator-method version drift.
+#
+# Pre-PR #142 checkpoints stored scores computed with ``method="rank"``;
+# the new engine evaluates with ``method="normal"``. Without a guard,
+# ``load_checkpoint`` would silently restore the old scores into
+# ``fitness_cache`` / ``_all_evaluated`` and ``evaluate_individual``
+# would return them by hash without recomputing, mixing two scoring
+# semantics in one resumed run and skewing selection + final pool.
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_embeds_evaluator_method(tmp_path):
+    """Saved payloads must tag scores with the method that produced
+    them so a resume can detect the cross-method case."""
+    import json
+
+    from src.factor_mining.gp_engine import FITNESS_EVALUATOR_METHOD
+
+    engine = _engine(seed=11, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=11, n_tickers=3, n_dates=15)
+    engine.run(panel, fwd, n_generations=1)
+    ckpt_path = engine.save_checkpoint(tmp_path / "ckpt.json")
+    state = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    assert state["evaluator_method"] == FITNESS_EVALUATOR_METHOD
+    assert FITNESS_EVALUATOR_METHOD == "normal"  # contract anchor
+
+
+def _write_legacy_style_checkpoint(
+    path,
+    *,
+    engine,
+    method_tag,
+    extra_score_hashes=(99999, 88888),
+):
+    """Serialise ``engine`` and then mutate the payload to look like
+    a pre-PR #142 or method-mismatched checkpoint.
+
+    ``method_tag=None`` deletes the field entirely (the legacy shape).
+    ``method_tag="rank"`` simulates a checkpoint written when fitness
+    was double-counting rank IC. Either way, extra synthetic hashes
+    are spliced into ``fitness_cache`` so a successful invalidation is
+    visually distinguishable from "the round-trip happened to be empty".
+    """
+    import json
+
+    path = engine.save_checkpoint(path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if method_tag is None:
+        state.pop("evaluator_method", None)
+    else:
+        state["evaluator_method"] = method_tag
+    for h in extra_score_hashes:
+        state["fitness_cache"][str(h)] = -12345.0
+    path.write_text(json.dumps(state), encoding="utf-8")
+    return path
+
+
+def _capture_gp_engine_warnings(monkeypatch):
+    """Stand-in for ``caplog`` — captures ``_log.warning`` calls on the
+    gp_engine module logger directly.
+
+    The project's logging config bypasses ``caplog``'s handler
+    attachment when the full test directory runs (see the note on
+    ``test_evaluate_individual_warns_once_per_exception``). Monkey-
+    patching the bound method is reliable; the tests below depend on
+    seeing the invalidation warning, which is part of the observable
+    contract for an operator debugging a resume that quietly lost
+    scores.
+    """
+    import src.factor_mining.gp_engine as gp_mod
+
+    captured: list[str] = []
+    original = gp_mod._log.warning
+
+    def fake_warning(msg, *args, **kwargs):
+        try:
+            captured.append(msg % args if args else str(msg))
+        except Exception:  # noqa: BLE001 — defensive: never crash a test on log formatting
+            captured.append(str(msg))
+        return original(msg, *args, **kwargs)
+
+    monkeypatch.setattr(gp_mod._log, "warning", fake_warning)
+    return captured
+
+
+def test_load_legacy_checkpoint_discards_caches_and_warns(tmp_path, monkeypatch):
+    """Pre-PR #142 checkpoints have no ``evaluator_method`` field. Treat
+    them as method-mismatched: clear scores, preserve everything else."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=22, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=22, n_tickers=3, n_dates=15)
+    engine.run(panel, fwd, n_generations=1)
+    ckpt_path = _write_legacy_style_checkpoint(
+        tmp_path / "legacy.json", engine=engine, method_tag=None,
+    )
+    resumed = GPEngine.load_checkpoint(ckpt_path, fitness_config=FitnessConfig())
+    assert resumed.fitness_cache == {}
+    assert resumed._all_evaluated == {}
+    # Non-score state must survive the invalidation.
+    assert resumed.current_gen == engine.current_gen
+    assert len(resumed.population) == len(engine.population)
+    assert len(resumed.history) == len(engine.history)
+    assert any(
+        "evaluator_method" in msg and "discarding" in msg for msg in warnings
+    ), warnings
+
+
+def test_load_rank_method_checkpoint_discards_caches_and_warns(tmp_path, monkeypatch):
+    """A checkpoint that explicitly declares ``method="rank"`` (the
+    pre-PR #142 contract) must invalidate the same way as a legacy
+    checkpoint with no field. Anchors the cross-method case."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=33, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=33, n_tickers=3, n_dates=15)
+    engine.run(panel, fwd, n_generations=1)
+    ckpt_path = _write_legacy_style_checkpoint(
+        tmp_path / "rank.json", engine=engine, method_tag="rank",
+    )
+    resumed = GPEngine.load_checkpoint(ckpt_path, fitness_config=FitnessConfig())
+    assert resumed.fitness_cache == {}
+    assert resumed._all_evaluated == {}
+    assert any("'rank'" in msg for msg in warnings), (
+        f"warning should name the offending method tag; got: {warnings}"
+    )
+
+
+def test_load_matching_method_checkpoint_keeps_caches(tmp_path, monkeypatch):
+    """The fast path: same method on save and load preserves cached
+    scores byte-for-byte (no spurious invalidation)."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=44, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=44, n_tickers=3, n_dates=15)
+    engine.run(panel, fwd, n_generations=1)
+    ckpt_path = engine.save_checkpoint(tmp_path / "ok.json")
+    n_cached = len(engine.fitness_cache)
+    assert n_cached > 0, "test setup: need a non-empty cache to make this meaningful"
+    resumed = GPEngine.load_checkpoint(ckpt_path, fitness_config=FitnessConfig())
+    assert len(resumed.fitness_cache) == n_cached
+    assert not any("discarding" in msg for msg in warnings), (
+        f"no warning expected on the matching-method path; got: {warnings}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 3.1 acceptance: convergence on a toy moving-average crossover
 # target. Per docs/factor_mining/factor_mining_claude_code_design.md §6
 # Phase 3.1: "On toy target mean(x,10)-mean(x,30), converges < 20 gens".
