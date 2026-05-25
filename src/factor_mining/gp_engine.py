@@ -24,7 +24,7 @@ import pandas as pd
 
 from .evaluator import EvaluationResult, evaluate_factor
 from .expression import Expression, OperatorCall, Terminal
-from .factor_pool import FactorPool, PoolEntry
+from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
 from .fitness import FitnessConfig, compute_fitness, expression_size
 from .grammar import (
     WINDOW_LITERALS,
@@ -161,6 +161,9 @@ class GPEngine:
         self.current_gen: int = 0
         self._all_evaluated: dict[int, PoolEntry] = {}
         self._per_generation_values: dict[int, pd.DataFrame] = {}
+        # Track (exception_type, expr_hash) we've already warned about
+        # so a recurring per-expression failure doesn't spam the log.
+        self._evaluation_warning_keys: set[tuple[str, int]] = set()
 
     # ------------------------------------------------------------------
     # Population lifecycle
@@ -214,8 +217,35 @@ class GPEngine:
             # (w_ic·|rank| + w_rankic·|rank|). The constant lives at module
             # scope so checkpoint payloads can tag stored scores with the
             # method that produced them — see ``save_checkpoint``.
-            result = evaluate_factor(expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD)
-        except Exception:  # noqa: BLE001 — broad on purpose to prevent loop-kill
+            result = evaluate_factor(
+                expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD,
+            )
+        except KeyError as exc:
+            # The evaluator raises KeyError only when a Terminal references
+            # a feature missing from the panel — that's a setup-time
+            # data-contract violation (panel doesn't cover the grammar's
+            # feature set), not a per-expression arithmetic failure.
+            # Fail fast so the bug surfaces instead of every random
+            # expression silently scoring -inf.
+            raise RuntimeError(
+                "factor-mining panel is missing a feature referenced by "
+                "the grammar; this is a setup-time data-contract "
+                f"violation, not a per-expression failure ({exc!s})"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 — broad on purpose
+            # Random GP expressions can legitimately blow up arithmetically
+            # (overflow, undefined ops, NaN propagation, etc.). Log the
+            # first occurrence per (exception_type, expr_hash) so noise
+            # stays bounded, then cache -inf and continue the loop.
+            warn_key = (type(exc).__name__, h)
+            if warn_key not in self._evaluation_warning_keys:
+                self._evaluation_warning_keys.add(warn_key)
+                _log.warning(
+                    "factor evaluation failed for expr_hash=%d: %s: %s "
+                    "(caching as -inf; further warnings for this "
+                    "expression suppressed)",
+                    h, type(exc).__name__, exc,
+                )
             self.fitness_cache[h] = float("-inf")
             return float("-inf"), None
         novelty = self._within_generation_novelty(result.factor_values)
@@ -227,7 +257,11 @@ class GPEngine:
         if score > float("-inf"):
             self._per_generation_values[h] = result.factor_values
             self._all_evaluated[h] = PoolEntry.from_result(
-                expr=expr, result=result, fitness=score, expr_size=size,
+                expr=expr,
+                result=result,
+                fitness=score,
+                expr_size=size,
+                method=FITNESS_EVALUATOR_METHOD,
             )
         return score, result
 
@@ -593,11 +627,28 @@ def _pool_entry_to_dict(entry: PoolEntry) -> dict:
         "coverage": entry.coverage,
         "n_obs_per_day_min": entry.n_obs_per_day_min,
         "expr_size": entry.expr_size,
+        "method": entry.method,
     }
 
 
 def _pool_entry_from_dict(d: dict) -> PoolEntry:
     expr = Expression.from_dict(d["expr"])
+    # A pool entry dict that lacks the ``method`` field is by definition
+    # pre-method-tagging: we have no record of which IC method produced
+    # its ``ic_mean`` (it could be Pearson under the new contract or
+    # Spearman under the pre-#142 contract that double-counted rank
+    # IC). Default to ``LEGACY_METHOD_TAG`` so downstream validators
+    # and promoters know not to treat the metric as Pearson-comparable.
+    # Promoting the missing case to ``"normal"`` would silently
+    # mislabel rank-derived numbers as Pearson — exactly the
+    # cross-version metric corruption Codex flagged on PR #143.
+    #
+    # Cross-method checkpoints are already invalidated upstream by
+    # ``load_checkpoint`` (the ``evaluator_method`` guard added in
+    # PR #142), so in practice this default fires only when an
+    # individual entry's payload is missing the tag inside an
+    # otherwise-compatible checkpoint (partial migrations, hand-edited
+    # files, parquet pools spliced into a JSON checkpoint, etc.).
     return PoolEntry(
         expr=expr,
         fitness=float(d["fitness"]),
@@ -612,4 +663,5 @@ def _pool_entry_from_dict(d: dict) -> PoolEntry:
         n_obs_per_day_min=int(d["n_obs_per_day_min"]),
         expr_size=int(d["expr_size"]),
         expr_hash=hash(expr),
+        method=str(d.get("method", LEGACY_METHOD_TAG)),
     )

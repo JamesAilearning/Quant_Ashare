@@ -488,6 +488,83 @@ def test_load_matching_method_checkpoint_keeps_caches(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Codex PR #143 P1 regression: pool-entry ``method`` default.
+#
+# When a checkpoint passes the evaluator_method gate (so caches aren't
+# discarded), individual ``all_evaluated`` entries may still lack the
+# ``method`` field — e.g. an old entry spliced into a newer checkpoint
+# by hand, or a partial migration. Defaulting that to ``"normal"``
+# would claim Pearson semantics for a metric we can't actually verify;
+# Codex flagged this as cross-version contamination. Default to
+# ``LEGACY_METHOD_TAG`` so downstream validators / promoters know not
+# to treat ``ic_mean`` as Pearson-comparable.
+# ---------------------------------------------------------------------------
+
+
+def _make_pool_entry_dict(method=None):
+    """Hand-built payload that ``_pool_entry_from_dict`` accepts.
+
+    Mirrors the shape of ``_pool_entry_to_dict`` output without
+    needing the full GP run loop to populate ``_all_evaluated``
+    (random-noise panels usually don't surface positive-fitness
+    expressions in small fixtures, which makes assertion-on-pool
+    tests flaky).
+    """
+    payload = {
+        "expr": Terminal("$close").to_dict(),
+        "fitness": 0.5,
+        "ic_mean": 0.03,
+        "ic_std": 0.01,
+        "ir": 3.0,
+        "rank_ic_mean": 0.04,
+        "rank_ic_std": 0.015,
+        "rank_ir": 2.66,
+        "turnover_daily": 0.1,
+        "coverage": 0.95,
+        "n_obs_per_day_min": 10,
+        "expr_size": 1,
+    }
+    if method is not None:
+        payload["method"] = method
+    return payload
+
+
+def test_pool_entry_missing_method_defaults_to_legacy_tag():
+    """An entry without ``method`` in the payload becomes
+    ``LEGACY_METHOD_TAG`` on load, NOT silently promoted to "normal"."""
+    from src.factor_mining.factor_pool import LEGACY_METHOD_TAG
+    from src.factor_mining.gp_engine import _pool_entry_from_dict
+
+    payload = _make_pool_entry_dict(method=None)
+    assert "method" not in payload  # contract anchor
+    entry = _pool_entry_from_dict(payload)
+    assert entry.method == LEGACY_METHOD_TAG, (
+        f"untagged entry was promoted to {entry.method!r} instead of "
+        f"{LEGACY_METHOD_TAG!r} — would mislabel rank-derived ic_mean as "
+        "Pearson-comparable"
+    )
+
+
+def test_pool_entry_explicit_normal_method_preserved():
+    """Entries that DO carry ``method="normal"`` must keep it; the
+    legacy default only fires when the field is absent."""
+    from src.factor_mining.gp_engine import _pool_entry_from_dict
+
+    entry = _pool_entry_from_dict(_make_pool_entry_dict(method="normal"))
+    assert entry.method == "normal"
+
+
+def test_pool_entry_explicit_rank_method_preserved():
+    """``method="rank"`` is a legitimate tag (the evaluator supports it
+    via ``validator.py``); loading must round-trip the value verbatim,
+    not coerce it to legacy or normal."""
+    from src.factor_mining.gp_engine import _pool_entry_from_dict
+
+    entry = _pool_entry_from_dict(_make_pool_entry_dict(method="rank"))
+    assert entry.method == "rank"
+
+
+# ---------------------------------------------------------------------------
 # Phase 3.1 acceptance: convergence on a toy moving-average crossover
 # target. Per docs/factor_mining/factor_mining_claude_code_design.md §6
 # Phase 3.1: "On toy target mean(x,10)-mean(x,30), converges < 20 gens".
@@ -665,6 +742,98 @@ def test_evaluate_individual_uses_normal_method_not_rank():
     assert captured_methods, "no evaluator calls were recorded"
     assert all(m == "normal" for m in captured_methods), (
         f"miner must use method='normal'; saw methods={captured_methods!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Exception classification: KeyError fail-fast, others warn-once + -inf
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_individual_fails_fast_on_missing_panel_feature():
+    """A panel missing a feature the grammar uses is a setup-time
+    data-contract violation, not a per-expression arithmetic failure.
+    ``evaluate_individual`` must re-raise as RuntimeError instead of
+    silently caching -inf — otherwise the operator never sees the
+    bug and every random expression scores -inf."""
+    from src.factor_mining.expression import OperatorCall, Terminal
+
+    engine = _engine(seed=1, population_size=4)
+    panel, fwd = _make_panel(seed=1, n_tickers=5, n_dates=20)
+    # Drop $volume from the panel; cs_rank($volume) below will raise
+    # KeyError inside the evaluator.
+    panel.pop("$volume")
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+
+    with pytest.raises(RuntimeError, match="missing a feature"):
+        engine.evaluate_individual(expr, panel, fwd)
+    # The hash must NOT be cached — fail-fast must not pollute state.
+    assert hash(expr) not in engine.fitness_cache
+
+
+def test_evaluate_individual_warns_once_per_exception():
+    """Non-KeyError exceptions (operator overflow, undefined math, etc.)
+    are expected for random GP expressions. The engine should record
+    the first occurrence per (exc_type, expr_hash) and stay quiet on
+    repeats so the loop doesn't spam millions of warnings.
+
+    Asserts on ``engine._evaluation_warning_keys`` directly (the state
+    that drives the "warn once" decision) rather than caplog, because
+    the project may configure logging in ways that bypass caplog's
+    handler attachment.
+    """
+    import src.factor_mining.gp_engine as gp_mod
+    from src.factor_mining.expression import OperatorCall, Terminal
+
+    engine = _engine(seed=2, population_size=4)
+    panel, fwd = _make_panel(seed=2, n_tickers=5, n_dates=20)
+    expr1 = OperatorCall("cs_rank", (Terminal("$volume"),))
+    expr2 = OperatorCall("cs_rank", (Terminal("$money"),))
+
+    original = gp_mod.evaluate_factor
+
+    def raiser(_expr, _panel, _fwd, *, method="rank"):  # noqa: ARG001
+        raise ValueError("synthetic overflow")
+
+    gp_mod.evaluate_factor = raiser
+    try:
+        score1, _ = engine.evaluate_individual(expr1, panel, fwd)
+        score2, _ = engine.evaluate_individual(expr2, panel, fwd)
+        # Third call — same hash as expr1, after evicting from cache —
+        # must NOT add a new warning key (already seen).
+        engine.fitness_cache.pop(hash(expr1))
+        score3, _ = engine.evaluate_individual(expr1, panel, fwd)
+    finally:
+        gp_mod.evaluate_factor = original
+
+    assert score1 == float("-inf") and score2 == float("-inf") and score3 == float("-inf")
+    assert engine._evaluation_warning_keys == {
+        ("ValueError", hash(expr1)),
+        ("ValueError", hash(expr2)),
+    }, (
+        f"expected exactly 2 unique warning keys (one per expr_hash); "
+        f"got {engine._evaluation_warning_keys!r}"
+    )
+
+
+def test_evaluate_individual_passes_method_normal_to_pool_entry():
+    """Pool entries created by the miner must be tagged ``method='normal'``
+    so downstream consumers (validators, promoters) know ``ic_mean`` is
+    Pearson. See PR2.
+
+    Uses the same seed/panel as ``test_run_loop_completes_and_returns_pool``
+    so we know at least one factor survives the validity filters.
+    """
+    engine = _engine(seed=11, population_size=8, n_generations=1)
+    panel, fwd = _make_panel(seed=11, n_tickers=6, n_dates=30)
+    engine.initialize_population()
+    for expr in engine.population:
+        engine.evaluate_individual(expr, panel, fwd)
+    entries = list(engine._all_evaluated.values())
+    assert entries, "expected at least one valid PoolEntry"
+    assert all(e.method == "normal" for e in entries), (
+        f"all entries must be method='normal'; got "
+        f"{[e.method for e in entries]}"
     )
 
 
