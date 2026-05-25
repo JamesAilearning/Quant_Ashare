@@ -419,15 +419,27 @@ class FeatureDatasetBuilder:
             start=config.train_end, end=config.test_start,
         )
         if not calendar:
-            _log.info(
-                "Skipping Alpha158 label embargo check: qlib's trading "
-                "calendar is unreachable or empty over %s ~ %s. The "
-                "operator UI's training_guards still enforces the same "
-                "check before launch; CLI / main.py callers in this "
-                "environment lose the leakage guard for this run.",
-                config.train_end, config.test_start,
+            # Fail-closed (Codex P1 on PR #157): we've already required
+            # ``is_canonical_qlib_initialized() == True`` above; if
+            # ``D.calendar`` then can't return anything over the
+            # configured boundaries, the qlib init must be degraded
+            # (calendar provider not bound, bundle missing the
+            # ``calendars/`` dir, slice outside coverage, etc.).
+            # Silently skipping the embargo check at this point
+            # re-opens the exact leakage path this PR is meant to
+            # close. Refuse to build instead.
+            raise FeatureDatasetBuilderError(
+                "Alpha158 label embargo check requires an accessible "
+                "qlib trading calendar, but ``D.calendar`` returned no "
+                f"dates over {config.train_end} ~ {config.test_start} "
+                "even though canonical qlib init reported success. "
+                "Refusing to build — silently skipping the embargo "
+                "check would re-introduce the boundary-row label "
+                "leakage this guard exists to prevent. Investigate the "
+                "calendar provider binding (qlib bundle's "
+                "``calendars/`` directory, provider_uri pointing at "
+                "the right bundle, etc.)."
             )
-            return
 
         errors = validate_segment_embargo(
             train_end=parsed["train_end"],
@@ -450,8 +462,18 @@ class FeatureDatasetBuilder:
         """Return a list of ``date`` objects from qlib's calendar.
 
         Returns ``None`` on any failure (qlib import error, calendar
-        provider not bound, empty slice) — callers treat ``None`` as
-        "skip the embargo check with INFO". Never raises.
+        provider not bound, empty slice). Callers must treat ``None``
+        as a hard error in production paths — the embargo check
+        depends on the calendar being available, and silently
+        skipping it would re-introduce the leakage this module exists
+        to prevent. Tests that explicitly want to bypass the embargo
+        check can stub this method to return a synthetic calendar
+        whose dates satisfy the test's boundaries.
+
+        Never raises — qlib's ``D.calendar`` has a few legitimate
+        failure modes (calendar provider not bound, empty slice) we
+        want to translate into a uniform ``None`` for the caller to
+        reject explicitly.
         """
         try:
             import pandas as pd  # noqa: PLC0415

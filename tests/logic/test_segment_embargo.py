@@ -10,7 +10,6 @@ the shared validator and the core builder's new mandatory call.
 
 from __future__ import annotations
 
-import logging
 import sys
 import unittest
 from datetime import date, timedelta
@@ -241,23 +240,26 @@ class CoreEmbargoIntegrationTests(unittest.TestCase):
             )
             _reset_feature_handler_registry_to_defaults()
 
-    def test_validate_skips_with_info_when_calendar_unreachable(self):
-        """If qlib's calendar is unavailable (degraded provider, etc.),
-        the check is skipped with an INFO log, not blocked. This
-        matches the UI's behavior on empty-calendar metadata."""
+    def test_validate_fails_closed_when_calendar_unreachable(self):
+        """If qlib's calendar is unavailable (degraded provider, etc.)
+        AFTER ``is_canonical_qlib_initialized`` already returned True,
+        the check refuses to build — silently skipping would re-open
+        the exact leakage path the embargo guard exists to prevent.
+
+        Regression for the Codex P1 review on PR #157: an earlier
+        draft logged INFO and returned, which let CLI / API callers
+        still pass adjacent-boundary Alpha158 configs whenever
+        calendar loading was degraded.
+        """
         config = self._config(
             train_end="2024-01-10", valid_start="2024-01-11",
         )
-        with self._patch_qlib_init(), self._patch_calendar(None), \
-                self.assertLogs(
-                    "src.data.feature_dataset_builder", level=logging.INFO
-                ) as cap:
-            # Should NOT raise even though the dates are adjacent.
-            FeatureDatasetBuilder._validate(config)
-        self.assertTrue(
-            any("Skipping Alpha158 label embargo check" in m for m in cap.output),
-            f"expected an INFO log about skipping the check; got {cap.output!r}",
-        )
+        with self._patch_qlib_init(), self._patch_calendar(None):
+            with self.assertRaisesRegex(
+                FeatureDatasetBuilderError,
+                "embargo check requires an accessible qlib trading calendar",
+            ):
+                FeatureDatasetBuilder._validate(config)
 
 
 if __name__ == "__main__":

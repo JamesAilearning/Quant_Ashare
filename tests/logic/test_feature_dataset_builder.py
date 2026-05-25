@@ -87,18 +87,19 @@ class PITProviderAlignmentTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # The Alpha158 label embargo check (added in PR fix-embargo)
-        # would otherwise fire on this fixture's adjacent dates and
-        # mask the PIT-alignment errors these tests verify. We stub
-        # the calendar loader so the embargo path returns "no
-        # calendar → skip". Other test classes that explicitly
-        # exercise the embargo logic patch the loader differently.
-        self._cal_patcher = patch.object(
+        # would otherwise fire on this fixture's adjacent dates AND
+        # — post Codex P1 on PR #157 — fail closed when the calendar
+        # loader returns nothing. These tests aren't about embargo;
+        # they verify PIT alignment errors. Stub the embargo entry
+        # point to a no-op so the PIT path runs to completion and
+        # surfaces the alignment failure these tests assert against.
+        self._embargo_patcher = patch.object(
             FeatureDatasetBuilder,
-            "_load_trading_calendar",
-            staticmethod(lambda *, start, end: None),
+            "_validate_embargo",
+            classmethod(lambda cls, config, parsed: None),
         )
-        self._cal_patcher.start()
-        self.addCleanup(self._cal_patcher.stop)
+        self._embargo_patcher.start()
+        self.addCleanup(self._embargo_patcher.stop)
 
     def _config(self) -> FeatureDatasetConfig:
         return FeatureDatasetConfig(
