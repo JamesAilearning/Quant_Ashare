@@ -46,6 +46,9 @@ from src.core.walk_forward import (  # noqa: E402
     WalkForwardConfig,
     WalkForwardEngine,
 )
+from src.data.bundle_manifest import (  # noqa: E402
+    validate_test_end_against_bundle,
+)
 from src.data.mined_factor_handler import (  # noqa: E402
     MinedFactorBundle,
     register_mined_factor_handler,
@@ -234,6 +237,18 @@ def main(argv: list[str] | None = None) -> None:
     wf_config, qlib_config = _load_config(config_file)
     mined_factor_bundle = _maybe_build_mined_factor_bundle(
         raw_yaml, wf_config, qlib_config.provider_uri,
+    )
+
+    # Validate the bundle covers wf_config.overall_end BEFORE qlib
+    # opens any data files. A stale-bundle config would otherwise
+    # fail deep inside FeatureDatasetBuilder with an opaque "empty
+    # dataset" message after many seconds of qlib loading; this
+    # check turns it into an upfront, named exception. See
+    # src/data/bundle_manifest.py for the QLIB_SKIP_BUNDLE_VALIDATION
+    # opt-out and the missing-manifest behaviour.
+    validate_test_end_against_bundle(
+        qlib_config.provider_uri,
+        wf_config.overall_end,
     )
 
     _logger.info("Initialising qlib runtime (provider_uri=%s)", qlib_config.provider_uri)
