@@ -8,15 +8,20 @@ Two features:
    merge) before returning the final dict. Circular references are
    detected and rejected.
 
-2. **Environment-variable expansion.** After the merge completes, the
-   loader walks the resulting dict tree and rewrites every *string
-   scalar value* by substituting ``${VAR_NAME}`` and
-   ``${VAR_NAME:-default_text}`` references (POSIX-shell style). Dict
-   *keys*, integers, floats, booleans, and ``None`` are passed through
-   unchanged — only string-typed values are expanded. An unresolved
-   ``${VAR}`` (env var truly missing AND no default supplied) raises
-   :class:`YamlEnvVarError` with both the variable name and the YAML
-   file path that referenced it.
+2. **Environment-variable expansion.** Every YAML file's string values
+   are rewritten by substituting ``${VAR_NAME}`` and
+   ``${VAR_NAME:-default_text}`` references (POSIX-shell style)
+   **against that file's own path** — so a chain like
+   ``child.yaml → parent.yaml`` with an unresolved ``${VAR}`` in
+   ``parent.yaml`` reports the error against ``parent.yaml``, not the
+   outermost child. Dict keys, integers, floats, booleans, and
+   ``None`` are passed through unchanged — only string-typed values
+   are expanded. An unresolved ``${VAR}`` (env var truly missing AND
+   no default supplied) raises :class:`YamlEnvVarError` with both the
+   variable name and the YAML file path that referenced it. Codex P2
+   on PR #149: previously the merged tree was expanded once at the
+   outermost call with the child's source path, so parent-origin
+   placeholders were misattributed.
 
 Usage::
 
@@ -183,12 +188,18 @@ def load_yaml_with_inheritance(
         )
 
     parent = raw.pop("extends", None)
+
+    # Expand env vars in THIS file's tree before merging. Each level
+    # of the extends chain gets its own ``source_path``, so an
+    # unresolved ``${VAR}`` is reported against the file that wrote
+    # it rather than the outermost child (Codex P2 on PR #149). The
+    # recursive call below will do the same for the parent's tree,
+    # so by the time we merge both sides already hold concrete
+    # strings — every leaf carries the correct attribution should a
+    # later error reference it.
+    _expand_env_vars_in_tree(raw, source_path=file_path)
+
     if parent is None:
-        # Leaf config: expand env vars and return. The recursive case
-        # only expands once at the *outermost* call (see below), so
-        # the leaf branch must do it itself.
-        if not _chain:
-            return _expand_env_vars_in_tree(raw, source_path=file_path)
         return raw
 
     # Resolve parent path relative to the child file's directory
@@ -204,16 +215,8 @@ def load_yaml_with_inheritance(
         _chain=(*_chain, path_str),
     )
 
-    # Shallow merge: child keys override parent keys
+    # Shallow merge: child keys override parent keys. Both sides are
+    # already env-var-expanded so the merge is a pure dict op.
     merged: dict[str, Any] = dict(base)
     merged.update(raw)
-
-    # Expand env vars ONCE, at the outermost call. The
-    # ``if not _chain`` guard means only the public entry point
-    # (called by user code, not by our own recursion) does the
-    # substitution; intermediate parents return the raw merged dict.
-    # This ensures we don't re-traverse the same subtree N times
-    # for an N-deep extends chain.
-    if not _chain:
-        return _expand_env_vars_in_tree(merged, source_path=file_path)
     return merged

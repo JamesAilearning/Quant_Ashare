@@ -323,7 +323,8 @@ class LoadYamlWithInheritanceEnvVarTests(unittest.TestCase):
         self.assertEqual(cfg, {"tickers": ["SH600519", "SH600036"]})
 
     def test_env_var_with_extends_chain(self) -> None:
-        """Expansion runs after the extends-merge, not per file."""
+        """Each YAML file's values are expanded against its own path,
+        and then the child layer is merged over the parent layer."""
         _set_env(_PREFIX + "PROVIDER", "/from_env")
         with tempfile.TemporaryDirectory() as tmp:
             parent = _write_yaml(
@@ -341,6 +342,107 @@ class LoadYamlWithInheritanceEnvVarTests(unittest.TestCase):
         self.assertEqual(
             cfg, {"provider_uri": "/from_env", "region": "us"}
         )
+
+
+# ---------------------------------------------------------------------------
+# Codex PR #149 P2 regression: extends-chain error attribution.
+#
+# Pre-fix: expansion ran once at the outermost call with
+# source_path=child.yaml, so an unresolved ${VAR} from parent.yaml
+# was reported as if it had come from child.yaml. After the fix each
+# file's values are expanded against its own path before merging,
+# so the YamlEnvVarError names the file that actually contains the
+# unresolved placeholder.
+# ---------------------------------------------------------------------------
+
+
+class ExtendsErrorAttributionTests(unittest.TestCase):
+    def test_unresolved_var_in_parent_names_parent_path(self) -> None:
+        """Codex P2 anchor: ``${MISSING}`` in parent.yaml ⇒ error
+        message must reference parent.yaml, not child.yaml."""
+        var_name = _PREFIX + "DEFINITELY_NOT_SET_PARENT"
+        os.environ.pop(var_name, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = _write_yaml(
+                Path(tmp), "parent.yaml",
+                f'data_root: "${{{var_name}}}"\nregion: "cn"\n',
+            )
+            child = _write_yaml(
+                Path(tmp), "child.yaml",
+                'extends: "parent.yaml"\nregion: "us"\n',
+            )
+            # ``load_yaml_with_inheritance`` calls ``Path.resolve()`` on
+            # its inputs, which on Windows expands an 8.3 short-name
+            # tempdir (``RUNNER~1``) to its full form (``runneradmin``).
+            # Compare against the resolved form so the assertion is
+            # stable across platforms.
+            parent_resolved = str(parent.resolve())
+            child_resolved = str(child.resolve())
+            with self.assertRaises(YamlEnvVarError) as ctx:
+                load_yaml_with_inheritance(child)
+            msg = str(ctx.exception)
+        self.assertIn(var_name, msg)
+        self.assertIn(parent_resolved, msg)
+        # Pre-fix the message named the child; the regression is that
+        # the parent path must be present AND the child path must not
+        # be the attributed source.
+        self.assertNotIn(
+            f"referenced by {child_resolved}", msg,
+            "error should name parent.yaml as the source, not child.yaml",
+        )
+
+    def test_unresolved_var_in_child_names_child_path(self) -> None:
+        """The mirror case: ``${MISSING}`` in child.yaml ⇒ error
+        message names child.yaml. Anchors that the fix doesn't
+        accidentally always blame the parent."""
+        var_name = _PREFIX + "DEFINITELY_NOT_SET_CHILD"
+        os.environ.pop(var_name, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = _write_yaml(
+                Path(tmp), "parent.yaml",
+                'region: "cn"\n',
+            )
+            child = _write_yaml(
+                Path(tmp), "child.yaml",
+                'extends: "parent.yaml"\n'
+                f'data_root: "${{{var_name}}}"\n',
+            )
+            parent_resolved = str(parent.resolve())
+            child_resolved = str(child.resolve())
+            with self.assertRaises(YamlEnvVarError) as ctx:
+                load_yaml_with_inheritance(child)
+            msg = str(ctx.exception)
+        self.assertIn(var_name, msg)
+        self.assertIn(child_resolved, msg)
+        self.assertNotIn(parent_resolved, msg)
+
+    def test_three_level_chain_names_innermost_offender(self) -> None:
+        """For ``grandchild → child → grandparent``, an unresolved
+        ``${VAR}`` in ``grandparent.yaml`` must name the grandparent."""
+        var_name = _PREFIX + "DEFINITELY_NOT_SET_GP"
+        os.environ.pop(var_name, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            gp = _write_yaml(
+                Path(tmp), "grandparent.yaml",
+                f'data_root: "${{{var_name}}}"\n',
+            )
+            ch = _write_yaml(
+                Path(tmp), "child.yaml",
+                'extends: "grandparent.yaml"\nregion: "cn"\n',
+            )
+            gc = _write_yaml(
+                Path(tmp), "grandchild.yaml",
+                'extends: "child.yaml"\nregion: "us"\n',
+            )
+            gp_resolved = str(gp.resolve())
+            ch_resolved = str(ch.resolve())
+            gc_resolved = str(gc.resolve())
+            with self.assertRaises(YamlEnvVarError) as ctx:
+                load_yaml_with_inheritance(gc)
+            msg = str(ctx.exception)
+        self.assertIn(gp_resolved, msg)
+        self.assertNotIn(f"referenced by {ch_resolved}", msg)
+        self.assertNotIn(f"referenced by {gc_resolved}", msg)
 
 
 if __name__ == "__main__":

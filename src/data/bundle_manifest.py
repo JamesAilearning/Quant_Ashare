@@ -180,11 +180,29 @@ def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
             f"must be an integer, got {type(instrument_count_raw).__name__}"
         )
 
+    # ``provider_uri`` and ``built_at`` were previously coerced with
+    # ``str(...)``, which silently accepts ``None`` ("None") and dict
+    # values ("{'a': 1}"). Reject non-string types up front so a
+    # malformed manifest raises ``BundleManifestError`` instead of
+    # propagating gibberish downstream. (Codex P2 on PR #149.)
+    provider_uri_raw = raw["provider_uri"]
+    if not isinstance(provider_uri_raw, str):
+        raise BundleManifestError(
+            f"Bundle manifest at {manifest_path}: 'provider_uri' must be "
+            f"a string, got {type(provider_uri_raw).__name__}"
+        )
+    built_at_raw = raw["built_at"]
+    if not isinstance(built_at_raw, str):
+        raise BundleManifestError(
+            f"Bundle manifest at {manifest_path}: 'built_at' must be "
+            f"a string, got {type(built_at_raw).__name__}"
+        )
+
     return BundleManifest(
-        provider_uri=str(raw["provider_uri"]),
+        provider_uri=provider_uri_raw,
         tail_date=tail_date,
         instrument_count=instrument_count_raw,
-        built_at=str(raw["built_at"]),
+        built_at=built_at_raw,
     )
 
 

@@ -116,6 +116,63 @@ class LoadManifestTests(unittest.TestCase):
                 load_manifest(Path(tmp))
         self.assertIn("instrument_count", str(ctx.exception))
 
+    # ----------------------------------------------------------------
+    # Codex PR #149 P2 regression: ``provider_uri`` / ``built_at``
+    # were previously coerced with ``str(...)``, so ``null`` /
+    # objects passed validation as ``"None"`` / ``"{'a': 1}"``.
+    # ----------------------------------------------------------------
+
+    def test_load_manifest_null_provider_uri_raises(self) -> None:
+        body = dict(_VALID_MANIFEST_BODY)
+        body["provider_uri"] = None
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_manifest(Path(tmp), body)
+            with self.assertRaises(BundleManifestError) as ctx:
+                load_manifest(Path(tmp))
+        self.assertIn("provider_uri", str(ctx.exception))
+        self.assertIn("NoneType", str(ctx.exception))
+
+    def test_load_manifest_dict_provider_uri_raises(self) -> None:
+        body = dict(_VALID_MANIFEST_BODY)
+        body["provider_uri"] = {"path": "/qlib"}
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_manifest(Path(tmp), body)
+            with self.assertRaises(BundleManifestError) as ctx:
+                load_manifest(Path(tmp))
+        self.assertIn("provider_uri", str(ctx.exception))
+        self.assertIn("dict", str(ctx.exception))
+
+    def test_load_manifest_int_provider_uri_raises(self) -> None:
+        """A YAML/JSON int (``42``) must NOT be coerced to ``"42"``."""
+        body = dict(_VALID_MANIFEST_BODY)
+        body["provider_uri"] = 42
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_manifest(Path(tmp), body)
+            with self.assertRaises(BundleManifestError) as ctx:
+                load_manifest(Path(tmp))
+        self.assertIn("provider_uri", str(ctx.exception))
+        self.assertIn("int", str(ctx.exception))
+
+    def test_load_manifest_null_built_at_raises(self) -> None:
+        body = dict(_VALID_MANIFEST_BODY)
+        body["built_at"] = None
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_manifest(Path(tmp), body)
+            with self.assertRaises(BundleManifestError) as ctx:
+                load_manifest(Path(tmp))
+        self.assertIn("built_at", str(ctx.exception))
+        self.assertIn("NoneType", str(ctx.exception))
+
+    def test_load_manifest_list_built_at_raises(self) -> None:
+        body = dict(_VALID_MANIFEST_BODY)
+        body["built_at"] = ["2026-03-06"]
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_manifest(Path(tmp), body)
+            with self.assertRaises(BundleManifestError) as ctx:
+                load_manifest(Path(tmp))
+        self.assertIn("built_at", str(ctx.exception))
+        self.assertIn("list", str(ctx.exception))
+
 
 class ValidateTestEndTests(unittest.TestCase):
     def setUp(self) -> None:
