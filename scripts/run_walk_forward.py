@@ -2,6 +2,7 @@
 
 Usage:
     python scripts/run_walk_forward.py [config_walk.yaml]
+                                        [--resume-from-fold N | --no-resume]
 
 Reads a YAML mapping into :class:`WalkForwardConfig` and runs
 :meth:`WalkForwardEngine.run`. Mirrors :mod:`main.py` for the single-fold
@@ -14,10 +15,20 @@ in ``v2-feature-handler-registry``) before the engine runs. The
 required top-level YAML keys for that path are documented in
 ``docs/factor_mining/user_guide.md`` and listed below in
 ``_MINED_FACTOR_YAML_KEYS``.
+
+Resume flags (per ``openspec/changes/add-walk-forward-fold-resume``):
+
+* ``--resume-from-fold N``  Re-run fold N and beyond; reuse manifests
+  for folds 0..N-1 if they match the current config.
+* ``--no-resume``           Ignore any existing manifests; re-run every
+  fold. Output artifacts overwritten in place.
+* (default)                 AUTO — load any matching manifest and
+  re-run the rest. Same behaviour as legacy on a fresh output_dir.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -31,6 +42,7 @@ from src.core._yaml_loader import load_yaml_with_inheritance  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
 from src.core.walk_forward import (  # noqa: E402
+    ResumeMode,
     WalkForwardConfig,
     WalkForwardEngine,
 )
@@ -164,9 +176,59 @@ def _maybe_build_mined_factor_bundle(
     )
 
 
-def main() -> None:
+def _parse_cli(argv: list[str]) -> tuple[str, ResumeMode]:
+    """Parse CLI flags. Returns ``(config_path, resume_mode)``.
+
+    Preserves the legacy positional form ``python
+    scripts/run_walk_forward.py [config.yaml]`` — the config path is a
+    positional with a sensible default. Resume flags are mutually
+    exclusive; passing both raises ``SystemExit(2)`` via argparse.
+    """
+    parser = argparse.ArgumentParser(
+        prog="run_walk_forward.py",
+        description="Run a walk-forward backtest from a YAML config.",
+    )
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default="config_walk.yaml",
+        help="Path to walk-forward YAML (default: config_walk.yaml)",
+    )
+    resume_group = parser.add_mutually_exclusive_group()
+    resume_group.add_argument(
+        "--resume-from-fold",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Re-run fold N and beyond; reuse manifests for folds 0..N-1 "
+            "if they match the current config."
+        ),
+    )
+    resume_group.add_argument(
+        "--no-resume",
+        action="store_true",
+        default=False,
+        help=(
+            "Ignore existing manifests; re-run every fold. "
+            "Output artifacts are overwritten in place."
+        ),
+    )
+    ns = parser.parse_args(argv)
+    if ns.no_resume:
+        return ns.config, ResumeMode.FORCE_RERUN
+    if ns.resume_from_fold is not None:
+        if ns.resume_from_fold < 0:
+            parser.error("--resume-from-fold N must be ≥ 0")
+        return ns.config, ResumeMode.from_fold(ns.resume_from_fold)
+    return ns.config, ResumeMode.AUTO
+
+
+def main(argv: list[str] | None = None) -> None:
     setup_logging()
-    config_file = sys.argv[1] if len(sys.argv) > 1 else "config_walk.yaml"
+    config_file, resume_mode = _parse_cli(
+        argv if argv is not None else sys.argv[1:],
+    )
     _logger.info("Loading walk-forward config from %s", config_file)
     raw_yaml = load_yaml_with_inheritance(Path(config_file))
     wf_config, qlib_config = _load_config(config_file)
@@ -189,7 +251,7 @@ def main() -> None:
         # requirement names this script as an authorised bind site.
         register_mined_factor_handler(mined_factor_bundle, replace=True)
 
-    result = WalkForwardEngine.run(wf_config)
+    result = WalkForwardEngine.run(wf_config, resume_mode=resume_mode)
 
     _logger.info("")
     _logger.info("Walk-forward complete: %d folds", result.num_folds)

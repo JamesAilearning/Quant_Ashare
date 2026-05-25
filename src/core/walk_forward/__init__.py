@@ -15,14 +15,22 @@ Boundaries
 - Reuses FeatureDatasetBuilder, ModelTrainer, BacktestRunner, SignalAnalyzer.
 """
 
+from src.core.walk_forward._resume import (
+    FoldManifest,
+    ResumeMode,
+    compute_config_fingerprint,
+)
 from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.config import WalkForwardConfig, WalkForwardError
 from src.core.walk_forward.engine import WalkForwardEngine
 
 __all__ = (
+    "FoldManifest",
+    "ResumeMode",
     "WalkForwardConfig",
+    "WalkForwardEngine",
     "WalkForwardError",
     "WalkForwardFold",
     "WalkForwardResult",
-    "WalkForwardEngine",
+    "compute_config_fingerprint",
 )

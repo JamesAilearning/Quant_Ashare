@@ -1490,15 +1490,7 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
     def test_run_threads_prior_model_paths_in_chronological_order(self) -> None:
         """After fold N, the engine must call fold N+1 with N pickle
         paths in order (``model_fold0.pkl, model_fold1.pkl, ...``)."""
-        config = WalkForwardConfig(
-            overall_start="2022-01-01",
-            overall_end="2025-06-30",
-            train_months=24,
-            valid_months=3,
-            test_months=3,
-            step_months=3,
-            ensemble_window=3,
-        )
+        import tempfile
 
         from src.core.walk_forward import WalkForwardFold
 
@@ -1520,16 +1512,32 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
                 prediction_shape=(100,),
             )
 
-        with patch(
-            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
-            return_value=True,
-        ), patch.object(
-            WalkForwardEngine, "_run_single_fold",
-            side_effect=fake_single_fold,
-        ), patch(
-            "src.core.walk_forward.engine.WalkForwardEngine._write_aggregate_report"
-        ):
-            WalkForwardEngine.run(config)
+        # Use tmp_path for output_dir so PR4's per-fold manifest writes
+        # don't survive across test runs and trigger the resume logic
+        # on the next invocation (which would skip the fold loop
+        # entirely → empty captured_calls).
+        with tempfile.TemporaryDirectory() as tmp:
+            config = WalkForwardConfig(
+                overall_start="2022-01-01",
+                overall_end="2025-06-30",
+                train_months=24,
+                valid_months=3,
+                test_months=3,
+                step_months=3,
+                ensemble_window=3,
+                output_dir=str(tmp),
+            )
+
+            with patch(
+                "src.core.walk_forward.engine.is_canonical_qlib_initialized",
+                return_value=True,
+            ), patch.object(
+                WalkForwardEngine, "_run_single_fold",
+                side_effect=fake_single_fold,
+            ), patch(
+                "src.core.walk_forward.engine.WalkForwardEngine._write_aggregate_report"
+            ):
+                WalkForwardEngine.run(config)
 
         # Fold 0 sees no priors.
         self.assertGreaterEqual(len(captured_calls), 2)
