@@ -166,6 +166,14 @@ class FoldManifest:
         predictions_path: str,
         positions_path: str | None,
     ) -> FoldManifest:
+        # Store basenames only — paths are location-independent so a
+        # ``output_dir`` rename between the original run and the resume
+        # doesn't strand the manifest. The engine rebases via
+        # :meth:`with_paths_rebased` (called by ``discover``). Codex P1
+        # on PR #147: previously serialised absolute paths caused
+        # ``apply_ensemble`` to load a stale (or nonexistent) pickle when
+        # the run directory had been moved, silently dropping the prior
+        # model from the ensemble.
         return cls(
             version=MANIFEST_VERSION,
             fold_index=fold.fold_index,
@@ -173,12 +181,53 @@ class FoldManifest:
             valid_period=fold.valid_period,
             test_period=fold.test_period,
             config_fingerprint=compute_config_fingerprint(config),
-            model_path=str(model_path),
-            report_path=str(report_path),
-            predictions_path=str(predictions_path),
-            positions_path=str(positions_path) if positions_path else None,
+            model_path=Path(model_path).name,
+            report_path=Path(report_path).name,
+            predictions_path=Path(predictions_path).name,
+            positions_path=(
+                Path(positions_path).name if positions_path else None
+            ),
             completed_at=datetime.now(tz=timezone.utc).isoformat(),
             fold=fold,
+        )
+
+    # ------------------------------------------------------------------
+    # Path rebasing — see Codex P1 on PR #147
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rebase_path(stored: str, output_dir: Path) -> str:
+        """Join the basename of ``stored`` against ``output_dir``.
+
+        Accepts both the new manifest shape (``stored`` is a basename)
+        and legacy manifests written before the relativisation fix
+        (``stored`` is an absolute path from the run that produced it).
+        ``Path(...).name`` extracts the basename from either form, so
+        rejoining against the current ``output_dir`` produces a path
+        that points at the right file whether the run directory was
+        renamed, moved, or left alone.
+        """
+        return str(output_dir / Path(stored).name)
+
+    def with_paths_rebased(self, output_dir: Path | str) -> FoldManifest:
+        """Return a copy with all file-path fields joined to ``output_dir``.
+
+        ``discover`` calls this on every loaded manifest so the engine
+        always sees absolute paths against the directory it is
+        currently scanning — even if the manifest itself was written
+        when that directory had a different name.
+        """
+        d = Path(output_dir)
+        return dataclasses.replace(
+            self,
+            model_path=self._rebase_path(self.model_path, d),
+            report_path=self._rebase_path(self.report_path, d),
+            predictions_path=self._rebase_path(self.predictions_path, d),
+            positions_path=(
+                self._rebase_path(self.positions_path, d)
+                if self.positions_path
+                else None
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -297,7 +346,11 @@ class FoldManifest:
                     path, manifest.version, MANIFEST_VERSION,
                 )
                 continue
-            out[manifest.fold_index] = manifest
+            # Rebase stored paths against ``output_dir`` so the engine
+            # consumes absolute paths regardless of whether the run
+            # directory was renamed between the original run and this
+            # resume (Codex P1 on PR #147).
+            out[manifest.fold_index] = manifest.with_paths_rebased(d)
         return out
 
 

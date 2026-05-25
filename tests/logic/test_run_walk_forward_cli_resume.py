@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.run_walk_forward import _parse_cli  # noqa: E402
-from src.core.walk_forward._resume import ResumeMode, _ResumeKind  # noqa: E402
+from src.core.walk_forward._resume import _ResumeKind  # noqa: E402
 
 
 class ResumeFlagsTests(unittest.TestCase):

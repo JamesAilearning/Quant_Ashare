@@ -21,7 +21,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.walk_forward._resume import (  # noqa: E402
     MANIFEST_VERSION,
     FoldManifest,
-    ResumeDecision,
     ResumeMode,
     compute_config_fingerprint,
     decide_fold,
@@ -239,6 +238,135 @@ class DiscoverTests(unittest.TestCase):
                 json.dumps(payload), encoding="utf-8",
             )
             self.assertEqual(FoldManifest.discover(td), {})
+
+
+# ---------------------------------------------------------------------------
+# Codex PR #147 P1 regression: model_path must survive output_dir rename.
+#
+# The PR deliberately makes ``compute_config_fingerprint`` exclude
+# ``output_dir`` so the engine resumes across directory renames. But
+# ``decision.manifest.model_path`` was serialised as the absolute path
+# from the run that wrote it — after a rename, ``apply_ensemble`` would
+# try to load a pickle that no longer exists at that path, silently
+# dropping the prior model from the ensemble. The fix stores basenames
+# and rebases on ``discover``.
+# ---------------------------------------------------------------------------
+
+
+class ResumeOutputDirRenameTests(unittest.TestCase):
+    def test_from_fold_stores_basenames(self) -> None:
+        """``from_fold`` must strip directory components so the
+        manifest payload is location-independent."""
+        cfg = _make_config()
+        m = FoldManifest.from_fold(
+            fold=_make_fold(idx=2), config=cfg,
+            model_path="/orig/run-2026-01-01/model_fold2.pkl",
+            report_path="/orig/run-2026-01-01/fold_02_report.json",
+            predictions_path="/orig/run-2026-01-01/fold_02_predictions.pkl",
+            positions_path="/orig/run-2026-01-01/fold_02_positions.json",
+        )
+        self.assertEqual(m.model_path, "model_fold2.pkl")
+        self.assertEqual(m.report_path, "fold_02_report.json")
+        self.assertEqual(m.predictions_path, "fold_02_predictions.pkl")
+        self.assertEqual(m.positions_path, "fold_02_positions.json")
+
+    def test_from_fold_handles_none_positions_path(self) -> None:
+        cfg = _make_config()
+        m = FoldManifest.from_fold(
+            fold=_make_fold(idx=0), config=cfg,
+            model_path="m", report_path="r",
+            predictions_path="p", positions_path=None,
+        )
+        self.assertIsNone(m.positions_path)
+
+    def test_discover_rebases_paths_against_current_dir(self) -> None:
+        """Save manifests under ``orig_dir``, move them to ``new_dir``,
+        then ``discover(new_dir)`` must return paths joined to
+        ``new_dir`` so the engine loads pickles from the right place."""
+        import shutil
+        import tempfile
+
+        cfg = _make_config()
+        with tempfile.TemporaryDirectory() as parent:
+            orig_dir = Path(parent) / "run-2026-01-01"
+            new_dir = Path(parent) / "renamed-2026-01-02"
+            orig_dir.mkdir()
+            m = FoldManifest.from_fold(
+                fold=_make_fold(idx=1), config=cfg,
+                model_path=str(orig_dir / "model_fold1.pkl"),
+                report_path=str(orig_dir / "fold_01_report.json"),
+                predictions_path=str(orig_dir / "fold_01_predictions.pkl"),
+                positions_path=str(orig_dir / "fold_01_positions.json"),
+            )
+            m.save(orig_dir)
+            # Simulate the operator-rename case: move the whole directory.
+            shutil.move(str(orig_dir), str(new_dir))
+
+            found = FoldManifest.discover(new_dir)
+            self.assertEqual(set(found), {1})
+            rebased = found[1]
+            self.assertEqual(
+                rebased.model_path, str(new_dir / "model_fold1.pkl"),
+            )
+            self.assertEqual(
+                rebased.report_path, str(new_dir / "fold_01_report.json"),
+            )
+            self.assertEqual(
+                rebased.predictions_path,
+                str(new_dir / "fold_01_predictions.pkl"),
+            )
+            self.assertEqual(
+                rebased.positions_path,
+                str(new_dir / "fold_01_positions.json"),
+            )
+
+    def test_discover_rebases_legacy_absolute_paths(self) -> None:
+        """Old manifests written before this fix have absolute paths
+        from the original run. ``discover`` must still produce correct
+        paths by extracting the basename and rejoining."""
+        import tempfile
+
+        cfg = _make_config()
+        with tempfile.TemporaryDirectory() as td:
+            # Hand-craft a legacy-shape payload (absolute paths,
+            # bypassing the new ``from_fold`` normalisation).
+            m = FoldManifest.from_fold(
+                fold=_make_fold(idx=0), config=cfg,
+                model_path="model_fold0.pkl", report_path="fold_00_report.json",
+                predictions_path="fold_00_predictions.pkl",
+                positions_path=None,
+            )
+            payload = m.to_dict()
+            payload["model_path"] = "/old/abandoned/run-xyz/model_fold0.pkl"
+            payload["report_path"] = "/old/abandoned/run-xyz/fold_00_report.json"
+            payload["predictions_path"] = (
+                "/old/abandoned/run-xyz/fold_00_predictions.pkl"
+            )
+            (Path(td) / "fold_00_manifest.json").write_text(
+                json.dumps(payload), encoding="utf-8",
+            )
+            found = FoldManifest.discover(td)
+            self.assertIn(0, found)
+            self.assertEqual(
+                found[0].model_path, str(Path(td) / "model_fold0.pkl"),
+            )
+            self.assertEqual(
+                found[0].report_path, str(Path(td) / "fold_00_report.json"),
+            )
+
+    def test_with_paths_rebased_does_not_mutate_self(self) -> None:
+        """``dataclasses.replace`` returns a new instance — the
+        frozen=True invariant must hold."""
+        cfg = _make_config()
+        m = FoldManifest.from_fold(
+            fold=_make_fold(idx=0), config=cfg,
+            model_path="m", report_path="r",
+            predictions_path="p", positions_path=None,
+        )
+        rebased = m.with_paths_rebased("/new/dir")
+        self.assertEqual(m.model_path, "m")  # original unchanged
+        self.assertNotEqual(rebased.model_path, m.model_path)
+        self.assertTrue(rebased.model_path.endswith("m"))
 
 
 # ---------------------------------------------------------------------------
