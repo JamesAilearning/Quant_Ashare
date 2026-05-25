@@ -239,6 +239,61 @@ class HandlerCacheIdentityRegistryTests(unittest.TestCase):
                 replace=True,
             )
 
+    def test_empty_string_cache_identity_rejected_at_registration(self):
+        """Codex P2 on PR #158: empty-string identities silently
+        collided with the ``_no_handler_identity_`` sentinel in
+        compute_cache_key, so a mutable handler with an
+        env/config-sourced empty identity would reuse cache entries
+        from any OTHER empty-identity handler instead of being opted
+        out. Fail loud at registration time."""
+        from src.data.feature_dataset_builder import FeatureDatasetBuilderError
+
+        for bad in ("", "   ", "\t\n"):
+            with self.assertRaisesRegex(
+                FeatureDatasetBuilderError,
+                "empty/whitespace-only|empty string",
+            ):
+                register_feature_handler(
+                    "EmptyIdentity", lambda _cfg: None,
+                    cache_identity=bad, replace=True,
+                )
+
+    def test_getter_normalizes_empty_string_from_in_place_mutation(self):
+        """Defence-in-depth: even if some test or downstream code
+        bypasses ``register_feature_handler`` and mutates the
+        registry dict directly with an empty-string descriptor,
+        ``get_feature_handler_cache_identity`` returns ``None`` so
+        the cache stays safely disabled."""
+        from src.data.feature_dataset_builder import (
+            _FEATURE_HANDLER_CACHE_IDENTITY,
+            _FEATURE_HANDLER_REGISTRY,
+        )
+
+        _FEATURE_HANDLER_REGISTRY["DirectMutation"] = lambda _cfg: None
+        _FEATURE_HANDLER_CACHE_IDENTITY["DirectMutation"] = ""
+        self.assertIsNone(
+            get_feature_handler_cache_identity("DirectMutation"),
+        )
+
+    def test_getter_treats_callable_returning_empty_as_none(self):
+        """Same safety rule applies to callable identities: a
+        callable returning ``""`` is treated as "no identity" so the
+        cache doesn't silently bucket the handler with other empty-
+        identity handlers."""
+
+        register_feature_handler(
+            "CallableEmpty", lambda _cfg: None,
+            cache_identity=lambda: "", replace=True,
+        )
+        self.assertIsNone(get_feature_handler_cache_identity("CallableEmpty"))
+
+    def test_getter_treats_callable_returning_whitespace_as_none(self):
+        register_feature_handler(
+            "CallableWS", lambda _cfg: None,
+            cache_identity=lambda: "  \t  ", replace=True,
+        )
+        self.assertIsNone(get_feature_handler_cache_identity("CallableWS"))
+
     def test_replace_overwrites_identity(self):
         register_feature_handler(
             "X", lambda _cfg: None, cache_identity="v1", replace=True,

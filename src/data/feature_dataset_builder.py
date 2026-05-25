@@ -111,13 +111,30 @@ def register_feature_handler(
         raise FeatureDatasetBuilderError(
             f"feature handler {handler_name!r} is already registered."
         )
-    if cache_identity is not None and not (
-        isinstance(cache_identity, str) or callable(cache_identity)
-    ):
-        raise FeatureDatasetBuilderError(
-            "cache_identity must be a str, a callable returning str, "
-            f"or None — got {type(cache_identity).__name__}."
-        )
+    if cache_identity is not None:
+        if not (isinstance(cache_identity, str) or callable(cache_identity)):
+            raise FeatureDatasetBuilderError(
+                "cache_identity must be a str, a callable returning str, "
+                f"or None — got {type(cache_identity).__name__}."
+            )
+        # Reject empty-string identities at registration time (Codex
+        # P2 on PR #158). Returning ``""`` from ``get_…_identity``
+        # falls into ``compute_cache_key``'s ``"_no_handler_identity_"``
+        # sentinel, which is the SAME bucket as "handler has no
+        # identity at all" — meaning a mutable handler with a
+        # config-sourced empty identity would silently collide with
+        # other empty-identity handlers and serve stale cache
+        # entries. The safety contract says missing/invalid identity
+        # disables the cache; failing loud here is more honest than
+        # silently bucketing.
+        if isinstance(cache_identity, str) and not cache_identity.strip():
+            raise FeatureDatasetBuilderError(
+                "cache_identity is an empty/whitespace-only string. "
+                "Pass ``None`` to opt the handler out of caching, or "
+                "supply a non-empty identity string. Empty strings "
+                "would silently collide with the no-identity bucket "
+                "and serve stale entries."
+            )
     _FEATURE_HANDLER_REGISTRY[handler_name] = factory
     _FEATURE_HANDLER_CACHE_IDENTITY[handler_name] = cache_identity
 
@@ -130,9 +147,16 @@ def get_feature_handler_cache_identity(name: str) -> str | None:
     * The handler is not registered.
     * The handler was registered without a ``cache_identity``
       (the safe-default ``None`` declaration).
+    * The identity descriptor is a string but empty / whitespace-only
+      (defence-in-depth — ``register_feature_handler`` rejects this
+      at registration time too, but a direct in-place mutation of the
+      registry dict could bypass that).
     * A callable identity raised when invoked (we treat that as
       "no identity → disable cache" rather than propagating, so a
       broken identity callable never aborts the build).
+    * A callable identity returns an empty string or non-string
+      value (same rationale as the constant-string empty check —
+      empty would silently collide with the no-identity bucket).
 
     Callers (the feature-dataset cache layer) treat ``None`` as
     "cache disabled for this handler".
@@ -141,12 +165,15 @@ def get_feature_handler_cache_identity(name: str) -> str | None:
     if descriptor is None:
         return None
     if isinstance(descriptor, str):
+        # Defence-in-depth: matches the registration-time check.
+        if not descriptor.strip():
+            return None
         return descriptor
     try:
         value = descriptor()
     except Exception:  # noqa: BLE001 — best-effort
         return None
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         return None
     return value
 
