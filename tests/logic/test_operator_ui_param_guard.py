@@ -12,7 +12,6 @@ import pytest
 
 from web.operator_ui._param_guard import known_keys, sanitize
 
-
 # ---------------------------------------------------------------------------
 # Schema registry surface
 # ---------------------------------------------------------------------------
@@ -174,6 +173,45 @@ def test_run_id_accepts_path_safe_strings(good):
 )
 def test_run_id_rejects_traversal_and_shell_meta(bad):
     assert sanitize("run_id", bad, default="default") == "default"
+
+
+@pytest.mark.parametrize(
+    ("key", "payload"),
+    [
+        # Python's ``$`` anchor in a non-MULTILINE pattern still matches
+        # *before* a trailing ``\n``, so ``pattern.match("abc\n")`` against
+        # ``^[A-Za-z0-9_\-.]+$`` historically accepted the embedded newline.
+        # Switching ``_regex`` to ``fullmatch`` closes that hole. Codex P2
+        # review on PR #146.
+        ("run_id", "abc\n"),
+        ("run_id", "abc-123\n"),
+        ("run_id", "pipeline.20260524\r\n"),
+        ("page", "1\n"),
+        ("page", "42\n"),
+        ("search", "model_v2\n"),
+    ],
+)
+def test_regex_rejects_trailing_newline(key, payload):
+    """Regression for Codex PR #146 P2: ``$`` + ``match`` lets ``\\n`` slip
+    through even though newline is outside the whitelist character set.
+    ``fullmatch`` enforces exact-match semantics so trailing control
+    characters can't propagate into downstream selection logic."""
+    assert sanitize(key, payload, default="SAFE") == "SAFE"
+
+
+@pytest.mark.parametrize(
+    ("key", "payload"),
+    [
+        ("run_id", "abc\nrm -rf /"),  # newline + injection attempt
+        ("page", "1\n2"),  # would be parsed as int(1) under match()
+        ("search", "valid\x0aalso valid"),  # \x0a == \n
+    ],
+)
+def test_regex_rejects_embedded_newline(key, payload):
+    """Embedded (non-trailing) newlines were already rejected by the
+    ``$`` anchor, but pin this down as part of the same regression
+    family so a future change to the regex doesn't quietly weaken it."""
+    assert sanitize(key, payload, default="SAFE") == "SAFE"
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,12 @@ _AUTOREFRESH_ALLOWED = frozenset({"0", "1"})
 # chars commonly used in run IDs / model names / error excerpts. Length
 # capped at 200 chars so a pathological URL can't blow up memory in
 # downstream filters.
-_SEARCH_RE = re.compile(r"^[\w\s\-_./:@一-鿿]{0,200}$")
+#
+# Whitespace whitelisted is literal ``space`` and ``\t`` only — NOT
+# ``\s``. ``\s`` would have covered ``\n / \r / \v / \f``, letting log
+# injection sneak in via ``?search=abc%0Adef``. Search inputs are
+# semantically single-line, so this is a tightening, not a regression.
+_SEARCH_RE = re.compile(r"^[\w \t\-_./:@一-鿿]{0,200}$")
 
 # run_id is path-segment safe: alphanumeric + dash + underscore + dot.
 # Capped at 200 chars (actual run IDs are ~30). Rejects path traversal
@@ -82,7 +87,14 @@ def _iso_date(value: str) -> str | None:
 
 def _regex(pattern: re.Pattern[str]) -> Callable[[str], str | None]:
     def check(value: str) -> str | None:
-        return value if pattern.match(value) else None
+        # ``fullmatch`` rather than ``match``: Python's ``$`` anchor also
+        # matches *before* a trailing newline, so ``pattern.match("abc\n")``
+        # with ``^[A-Za-z0-9_\-.]+$`` would accept the embedded ``\n`` and
+        # pass it down into ``st.switch_page`` / log records. ``fullmatch``
+        # forces the pattern to consume the entire input with no implicit
+        # newline tolerance, which is what the whitelist is supposed to
+        # mean. (Codex P2 review on PR #146.)
+        return value if pattern.fullmatch(value) else None
 
     return check
 
