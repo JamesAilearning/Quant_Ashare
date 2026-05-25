@@ -351,9 +351,14 @@ else:
     # that strip query strings). Pre-select the matching run so the
     # detail page lands on the row the operator clicked, not the most
     # recent run.
-    _requested_run_id = st.query_params.get("run_id", "") or str(
-        st.session_state.get("wf_selected_run", "") or ""
-    )
+    # Sanitize the URL-supplied run_id (rejects path traversal / shell
+    # metacharacters); fall through to session_state if missing/invalid.
+    # See web/operator_ui/_param_guard.py.
+    from web.operator_ui._param_guard import sanitize as _sanitize_qp
+
+    _requested_run_id = _sanitize_qp(
+        "run_id", st.query_params.get("run_id", ""), default="",
+    ) or str(st.session_state.get("wf_selected_run", "") or "")
     _default_index = 0
     if _requested_run_id:
         _keys = list(run_options.keys())

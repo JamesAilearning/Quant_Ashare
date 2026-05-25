@@ -21,6 +21,7 @@ from urllib.parse import quote_plus
 import pandas as pd
 import streamlit as st
 
+from web.operator_ui._param_guard import sanitize as _sanitize_qp
 from web.operator_ui.components import (
     render_badge,
     render_empty_state,
@@ -53,7 +54,13 @@ _DEFAULTS: dict[str, str] = {
 
 
 def _qp_read(key: str) -> str:
-    return st.query_params.get(key, _DEFAULTS[key])
+    # Always route URL params through the per-key validator so a
+    # hostile/typo URL can't inject arbitrary strings into session_state
+    # or downstream filters. Unknown / malformed values fall back to
+    # ``_DEFAULTS[key]`` (the same default a user with no URL would
+    # see). See ``web/operator_ui/_param_guard.py``.
+    raw = st.query_params.get(key, _DEFAULTS[key])
+    return _sanitize_qp(key, raw, default=_DEFAULTS[key])
 
 
 def _qp_write(key: str, value: str) -> None:
