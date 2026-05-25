@@ -256,13 +256,18 @@ def main(argv: list[str] | None = None) -> None:
     _logger.info("Loading walk-forward config from %s", config_file)
     raw_yaml = load_yaml_with_inheritance(Path(config_file))
     wf_config, qlib_config = _load_config(config_file)
-    # --dataset-cache-dir overrides whatever the YAML sets. Empty string
-    # disables explicitly (operator can stamp "off" on a config that
-    # ships with the cache enabled).
+    # --dataset-cache-dir overrides whatever the YAML sets. The CLI
+    # value is forwarded verbatim — including the empty-string sentinel,
+    # which WalkForwardConfig.dataset_cache_dir interprets as "explicit
+    # disable, do not fall back to QLIB_DATASET_CACHE_DIR". Converting
+    # ``""`` to ``None`` here would let the env var re-enable caching
+    # behind the operator's back — exactly what the documented "stamp
+    # off" semantic forbids.
     if ds_cache_override is not None:
         import dataclasses
-        cache_value = ds_cache_override.strip() or None
-        wf_config = dataclasses.replace(wf_config, dataset_cache_dir=cache_value)
+        wf_config = dataclasses.replace(
+            wf_config, dataset_cache_dir=ds_cache_override,
+        )
     mined_factor_bundle = _maybe_build_mined_factor_bundle(
         raw_yaml, wf_config, qlib_config.provider_uri,
     )

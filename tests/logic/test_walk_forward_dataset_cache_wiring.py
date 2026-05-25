@@ -65,8 +65,14 @@ class CliDatasetCacheFlagTests(unittest.TestCase):
         self.assertEqual(override, "~/.cache/qlib/datasets")
 
     def test_empty_string_passed_through(self):
-        """Empty string is the documented "disable cache even if YAML
-        enables it" sentinel — main() will translate to None."""
+        """Empty string is the explicit-disable sentinel — must be
+        forwarded verbatim to WalkForwardConfig.dataset_cache_dir so
+        the engine knows to bypass the QLIB_DATASET_CACHE_DIR fallback.
+
+        Regression for Codex P2 on PR #155: an earlier draft converted
+        ``""`` to ``None`` in main(), which let the env var re-enable
+        caching behind the operator's back.
+        """
         _config, _resume, override = _parse_cli(
             ["walk.yaml", "--dataset-cache-dir", ""],
         )
@@ -184,6 +190,49 @@ class EnginePassesCacheDirToBuilderTests(unittest.TestCase):
 
         self.assertIsNotNone(captured["cache_dir"])
         self.assertEqual(str(captured["cache_dir"]), str(Path("/env/cache").expanduser()))
+
+    def test_engine_explicit_disable_bypasses_env_var(self):
+        """Regression for Codex P2 review on PR #155:
+        ``--dataset-cache-dir ""`` (empty-string sentinel) must
+        force cache-off even when ``QLIB_DATASET_CACHE_DIR`` is set
+        globally. Otherwise operators in env-var environments cannot
+        actually disable the cache from the CLI."""
+        from src.core.walk_forward.engine import WalkForwardEngine
+
+        captured = {"cache_dir": "sentinel"}  # not None to detect non-overwrite
+
+        def spy(config, *, pit_provider=None, cache_dir=None):  # noqa: ARG001
+            captured["cache_dir"] = cache_dir
+            raise RuntimeError("intentional short-circuit")
+
+        cfg = WalkForwardConfig(
+            overall_start="2024-01-01",
+            overall_end="2024-12-31",
+            train_months=3, valid_months=1, test_months=1, step_months=12,
+            output_dir="/tmp/wf_test_explicit_disable",
+            dataset_cache_dir="",  # explicit-disable sentinel
+        )
+
+        # Env var IS set — but the explicit-disable sentinel must win.
+        with patch.dict(
+            os.environ, {"QLIB_DATASET_CACHE_DIR": "/env/cache"}, clear=False,
+        ):
+            with patch(
+                "src.core.walk_forward.engine.is_canonical_qlib_initialized",
+                return_value=True,
+            ), patch(
+                "src.core.walk_forward.engine.FeatureDatasetBuilder.build",
+                side_effect=spy,
+            ), patch(
+                "src.core.walk_forward.engine.compute_aggregate",
+                return_value={},
+            ), patch(
+                "src.core.walk_forward.engine.write_aggregate_report",
+            ):
+                WalkForwardEngine.run(cfg)
+
+        # Empty-string sentinel → cache disabled; env var ignored.
+        self.assertIsNone(captured["cache_dir"])
 
     def test_engine_passes_none_when_neither_set(self):
         from src.core.walk_forward.engine import WalkForwardEngine

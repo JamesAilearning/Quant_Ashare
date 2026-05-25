@@ -139,10 +139,18 @@ class WalkForwardConfig:
     # prepare() into a single pickle load on cache hit. See
     # ``openspec/changes/add-feature-dataset-cache/`` for the contract.
     #
-    # Three layered sources (highest precedence first):
-    #   1. This YAML field, if set.
-    #   2. ``QLIB_DATASET_CACHE_DIR`` env var (resolved at engine.run time).
-    #   3. ``None`` → cache disabled, legacy build path on every fold.
+    # **Three-state field** — the engine reads it as:
+    #
+    #   * ``None`` (default)  Not configured. The engine falls back to
+    #                         the ``QLIB_DATASET_CACHE_DIR`` env var, or
+    #                         disables the cache if that's also unset.
+    #   * ``""``              **Explicit disable.** CLI / YAML stamped
+    #                         cache-off; env var fallback is bypassed.
+    #                         Use this when ``QLIB_DATASET_CACHE_DIR`` is
+    #                         set globally but a specific run must avoid
+    #                         the cache (e.g. you suspect stale entries
+    #                         and want a clean rebuild).
+    #   * non-empty string    Use this path. ``~`` is expanded.
     #
     # Operators who want **per-run isolation** can set this to
     # ``"{output_dir}/.dataset_cache"`` (cache cleared when output is
