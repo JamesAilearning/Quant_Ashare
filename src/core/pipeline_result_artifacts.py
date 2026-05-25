@@ -186,6 +186,20 @@ def _build_metrics(
         latest = positions.get(latest_key)
         latest_holding_count = len(latest) if isinstance(latest, dict) else None
 
+    # NAV-derived absolute annualised returns. ``_first_metric(with_cost,
+    # "annual_return", "annualized_return")`` is the **excess** return —
+    # historically (mis-)labelled ``annual_return`` in the artifact, which
+    # operators read as the strategy's own gross/net annualised return.
+    # We keep ``annual_return`` populated with the *excess* value for
+    # backward-compat with already-written reports, but ADD explicit
+    # strategy / benchmark fields below so the UI can render the right
+    # number with the right label.
+    strategy_total_return = _nav_total_return(nav_frame)
+    benchmark_total_return = _nav_total_return_for(nav_frame, "benchmark_nav")
+    n_trading_days = _nav_n_trading_days(nav_frame)
+    strategy_annualised = _annualise_total_return(strategy_total_return, n_trading_days)
+    benchmark_annualised = _annualise_total_return(benchmark_total_return, n_trading_days)
+
     return {
         "schema_version": PIPELINE_RESULT_ARTIFACT_SCHEMA_VERSION,
         "metric_status": backtest_output.metric_status,
@@ -195,8 +209,15 @@ def _build_metrics(
             "display_series": "CanonicalBacktestOutput.return_series",
         },
         "performance": {
+            # Legacy field — same value as ``annual_excess_return_with_cost``.
+            # Retained so existing readers don't break; new readers should
+            # prefer ``strategy_annualized_return`` for the absolute number.
             "annual_return": _first_metric(with_cost, "annual_return", "annualized_return"),
-            "total_return": _nav_total_return(nav_frame),
+            "total_return": strategy_total_return,
+            "benchmark_total_return": benchmark_total_return,
+            "strategy_annualized_return": strategy_annualised,
+            "benchmark_annualized_return": benchmark_annualised,
+            "n_trading_days": n_trading_days,
             "cumulative_nav_end": _nav_end(nav_frame, "strategy_nav"),
             "sharpe_ratio": _first_metric(with_cost, "sharpe", "sharpe_ratio"),
             "sortino_ratio": _first_metric(with_cost, "sortino", "sortino_ratio"),
@@ -267,6 +288,59 @@ def _nav_end(nav_frame: Any, column: str) -> float | None:
 def _nav_total_return(nav_frame: Any) -> float | None:
     end = _nav_end(nav_frame, "strategy_nav")
     return None if end is None else end - 1.0
+
+
+def _nav_total_return_for(nav_frame: Any, column: str) -> float | None:
+    """Return cumulative NAV growth (end - 1.0) for the named NAV column.
+
+    Used for benchmark NAV in addition to strategy. Returns ``None`` when
+    the column is absent or all-NaN so callers can distinguish "no data"
+    from "0 return"."""
+    end = _nav_end(nav_frame, column)
+    return None if end is None else end - 1.0
+
+
+def _nav_n_trading_days(nav_frame: Any) -> int | None:
+    """Count finite strategy-NAV rows.
+
+    Used as the denominator when annualising NAV-derived returns. Falls
+    back to ``None`` when the NAV frame is unusable so the caller can
+    skip the annualisation rather than divide by zero."""
+    if nav_frame is None or nav_frame.empty or "strategy_nav" not in nav_frame:
+        return None
+    n = int(nav_frame["strategy_nav"].dropna().shape[0])
+    return n if n > 0 else None
+
+
+# Trading days per calendar year — qlib convention. Centralised here so
+# every NAV-derived annualisation in this module uses the same divisor.
+_TRADING_DAYS_PER_YEAR = 252.0
+
+
+def _annualise_total_return(
+    total_return: float | None, n_trading_days: int | None
+) -> float | None:
+    """Convert a cumulative return into a geometric annual rate.
+
+    Returns ``None`` when either input is missing or the window is too
+    short to make annualisation meaningful (we keep the computation but
+    rely on the UI's short-window banner to flag the instability). We
+    skip non-finite intermediates loudly rather than coercing to 0 —
+    AGENTS.md #8.
+    """
+    if total_return is None or n_trading_days is None:
+        return None
+    if n_trading_days <= 0:
+        return None
+    base = 1.0 + float(total_return)
+    if base <= 0.0:
+        # Total loss / impossible inputs — refuse to fabricate an
+        # annualised rate; surface as None.
+        return None
+    try:
+        return base ** (_TRADING_DAYS_PER_YEAR / float(n_trading_days)) - 1.0
+    except (ValueError, OverflowError):
+        return None
 
 
 def _monthly_returns(nav_frame: Any) -> list[dict[str, Any]]:

@@ -537,6 +537,7 @@ with form_col:
             train_start=train_start, train_end=train_end,
             valid_start=valid_start, valid_end=valid_end,
             test_start=test_start, test_end=test_end,
+            benchmark_code=benchmark_code,
         )
         guard_errors.extend(guard.errors)
         guard_warnings.extend(guard.warnings)
