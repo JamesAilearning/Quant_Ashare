@@ -241,6 +241,19 @@ class JobManager:
                 f"Cannot delete running job {job_id!r}; stop it before deleting."
             )
         shutil.rmtree(job_dir)
+        # Also clean ``RESULT_ROOT / job_id`` — the job-config directory
+        # under ``JOB_ROOT`` is small, but the result directory carries
+        # the trained model pickles, predictions, and reports
+        # (megabytes to gigabytes per run). Leaving it behind after
+        # ``delete()`` was a disk-space leak for any operator who used
+        # the UI to clean up failed experiments. ``_resolve_child_dir``
+        # re-validates the job_id against ``RESULT_ROOT`` so this can't
+        # be coaxed into traversal even though we already passed the
+        # JOB_ROOT check (defense-in-depth: the two roots could in
+        # principle have different layouts).
+        result_dir = _resolve_child_dir(RESULT_ROOT, job_id)
+        if result_dir.is_dir():
+            shutil.rmtree(result_dir)
 
     @staticmethod
     def status(job_id: str) -> dict[str, Any]:

@@ -327,6 +327,64 @@ class JobManagerDeleteTests(unittest.TestCase):
                     with self.assertRaises(JobManagerError):
                         JobManager.delete(bad_job_id)
 
+    # ----------------------------------------------------------------
+    # Regression for bug.md P1-3: ``delete()`` only cleaned the job
+    # config dir under JOB_ROOT, never touched the corresponding
+    # ``RESULT_ROOT / job_id`` which holds the model pickle + reports
+    # (the actually-big artifacts). This left a disk-space leak for
+    # every UI-deleted job.
+    # ----------------------------------------------------------------
+
+    def test_delete_also_removes_result_dir(self) -> None:
+        job_root = Path(tempfile.mkdtemp())
+        result_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "finished_job"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "finished_job", "status": "success"}),
+            encoding="utf-8",
+        )
+        # Result dir with one fake artifact — must also be gone after delete.
+        result_dir = result_root / "finished_job"
+        result_dir.mkdir(parents=True)
+        (result_dir / "model.pkl").write_bytes(b"\x80\x03N.")  # pickle stub
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root), \
+             patch("web.operator_ui.job_manager.RESULT_ROOT", result_root):
+            from web.operator_ui.job_manager import JobManager
+
+            JobManager.delete("finished_job")
+
+        self.assertFalse(job_dir.exists())
+        self.assertFalse(
+            result_dir.exists(),
+            "result directory must be cleaned alongside the job dir — "
+            "P1-3 regression",
+        )
+
+    def test_delete_tolerates_missing_result_dir(self) -> None:
+        """A job that failed before producing any artifacts may have
+        no result dir at all. ``delete()`` must not raise in that
+        case — it should clean the job config and silently skip the
+        absent result dir."""
+        job_root = Path(tempfile.mkdtemp())
+        result_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "no_artifacts_job"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "no_artifacts_job", "status": "failed"}),
+            encoding="utf-8",
+        )
+        # Note: no result_root / "no_artifacts_job" — never created.
+
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root), \
+             patch("web.operator_ui.job_manager.RESULT_ROOT", result_root):
+            from web.operator_ui.job_manager import JobManager
+
+            JobManager.delete("no_artifacts_job")  # must not raise
+
+        self.assertFalse(job_dir.exists())
+
 
 class JobManagerStatusTests(unittest.TestCase):
     def test_status_rejects_path_traversal_job_id(self) -> None:

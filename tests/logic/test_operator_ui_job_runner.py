@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import signal
+import subprocess
 import sys as _sys
 import tempfile
 import unittest
 from pathlib import Path
-from subprocess import CompletedProcess
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in _sys.path:
@@ -33,12 +33,13 @@ class JobRunnerDispatchTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = CompletedProcess(args=[], returncode=0)
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = mock_popen.return_value
+                mock_proc.wait.return_value = 0
                 main([str(job_dir), "tushare_provider"])
 
-            cmd = mock_run.call_args[0][0]
-            kwargs = mock_run.call_args.kwargs
+            cmd = mock_popen.call_args[0][0]
+            kwargs = mock_popen.call_args.kwargs
             self.assertIn("scripts/ingest_tushare_qlib_provider.py", cmd)
             self.assertFalse(kwargs["shell"])
             self.assertIn(str(Path(__file__).resolve().parents[2]), kwargs["env"]["PYTHONPATH"])
@@ -62,8 +63,9 @@ class JobRunnerDispatchTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = CompletedProcess(args=[], returncode=0)
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = mock_popen.return_value
+                mock_proc.wait.return_value = 0
                 main([str(job_dir), "tushare_provider"])
 
             data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
@@ -83,8 +85,9 @@ class JobRunnerDispatchTests(unittest.TestCase):
             )
             job_dir.joinpath("config.yaml").write_text(config_text, encoding="utf-8")
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = CompletedProcess(args=[], returncode=0)
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = mock_popen.return_value
+                mock_proc.wait.return_value = 0
                 main([str(job_dir), "pipeline"])
 
             copied = run_dir.joinpath("config.yaml").read_text(encoding="utf-8")
@@ -107,8 +110,9 @@ class JobRunnerDispatchTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = CompletedProcess(args=[], returncode=2)
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = mock_popen.return_value
+                mock_proc.wait.return_value = 2
                 main([str(job_dir), "pipeline"])
 
             copied = old_run_dir.joinpath("config.yaml").read_text(encoding="utf-8")
@@ -123,6 +127,7 @@ class JobRunnerDispatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             job_dir = Path(tmp)
             job_runner._ACTIVE_JOB_DIR = job_dir
+            job_runner._ACTIVE_CHILD_PROCESS = None  # no child for this case
 
             with self.assertRaises(SystemExit) as exc:
                 job_runner._handle_stop_signal(signal.SIGTERM, None)
@@ -132,6 +137,89 @@ class JobRunnerDispatchTests(unittest.TestCase):
             self.assertEqual(data["status"], "stopped")
             self.assertEqual(data["stop_signal"], signal.SIGTERM)
             self.assertIsNotNone(data["ended_at"])
+
+    # ----------------------------------------------------------------
+    # Regression for bug.md P1-4: the SIGTERM handler previously
+    # raised ``SystemExit`` without touching the training subprocess.
+    # ``subprocess.run`` had no caller-visible Popen handle, so on
+    # Linux the child re-parented to init; on Windows it just kept
+    # running. After the fix, the handler ``terminate()`` s the child
+    # before exiting.
+    # ----------------------------------------------------------------
+
+    def test_stop_signal_handler_terminates_active_child_process(self) -> None:
+        import web.operator_ui.job_runner as job_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            job_runner._ACTIVE_JOB_DIR = job_dir
+            # Simulate a live child training process: poll() returns
+            # None (still running), wait() succeeds after terminate().
+            fake_child = MagicMock()
+            fake_child.poll.return_value = None
+            fake_child.wait.return_value = 0
+            job_runner._ACTIVE_CHILD_PROCESS = fake_child
+
+            try:
+                with self.assertRaises(SystemExit):
+                    job_runner._handle_stop_signal(signal.SIGTERM, None)
+            finally:
+                job_runner._ACTIVE_CHILD_PROCESS = None
+
+            fake_child.terminate.assert_called_once()
+            fake_child.wait.assert_called()
+            data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["status"], "stopped")
+
+    def test_stop_signal_handler_falls_back_to_kill_on_timeout(self) -> None:
+        """If the child ignores ``terminate()`` and ``wait()`` times
+        out, the handler must escalate to ``kill()`` rather than
+        leaking the process."""
+        import web.operator_ui.job_runner as job_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            job_runner._ACTIVE_JOB_DIR = job_dir
+            fake_child = MagicMock()
+            fake_child.poll.return_value = None
+            # First wait() (after terminate) raises TimeoutExpired,
+            # second wait() (after kill) returns normally.
+            fake_child.wait.side_effect = [
+                subprocess.TimeoutExpired(cmd="python", timeout=5.0),
+                0,
+            ]
+            job_runner._ACTIVE_CHILD_PROCESS = fake_child
+
+            try:
+                with self.assertRaises(SystemExit):
+                    job_runner._handle_stop_signal(signal.SIGTERM, None)
+            finally:
+                job_runner._ACTIVE_CHILD_PROCESS = None
+
+            fake_child.terminate.assert_called_once()
+            fake_child.kill.assert_called_once()
+
+    def test_stop_signal_handler_skips_already_dead_child(self) -> None:
+        """If the child has already exited (race: SIGTERM arrives just
+        after ``wait()`` returns), don't call ``terminate()`` on a
+        zombie."""
+        import web.operator_ui.job_runner as job_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            job_runner._ACTIVE_JOB_DIR = job_dir
+            fake_child = MagicMock()
+            fake_child.poll.return_value = 0  # already exited
+            job_runner._ACTIVE_CHILD_PROCESS = fake_child
+
+            try:
+                with self.assertRaises(SystemExit):
+                    job_runner._handle_stop_signal(signal.SIGTERM, None)
+            finally:
+                job_runner._ACTIVE_CHILD_PROCESS = None
+
+            fake_child.terminate.assert_not_called()
+            fake_child.kill.assert_not_called()
 
 
 if __name__ == "__main__":
