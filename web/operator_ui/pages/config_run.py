@@ -33,6 +33,7 @@ from web.operator_ui.provider_catalog import (
 )
 from web.operator_ui.training_guards import (
     FORWARD_RETURN_BUFFER_DAYS,
+    LABEL_LOOKAHEAD_DAYS,
     ProviderMetadata,
     inspect_provider_metadata,
     provider_metadata_summary,
@@ -77,27 +78,70 @@ def _safe_pipeline_last_index(calendar_dates: tuple[date, ...]) -> int:
 
 
 def _six_increasing_indices(last_index: int) -> list[int]:
-    if last_index < 5:
+    """Lay out six calendar indices (train_start, train_end, valid_start,
+    valid_end, test_start, test_end) across ``[0, last_index]``.
+
+    Critical: the pairs ``(train_end, valid_start)`` and
+    ``(valid_end, test_start)`` MUST be far enough apart to satisfy the
+    label-lookahead embargo enforced by ``training_guards``. With
+    ``LABEL_LOOKAHEAD_DAYS = 2`` we need at least
+    ``LABEL_LOOKAHEAD_DAYS + 1 = 3`` calendar slots of gap on each
+    segment boundary (the +1 is because moving to the next trading day
+    is one step, then ``LABEL_LOOKAHEAD_DAYS`` more steps cover the
+    intervening trading days that go between the two boundary dates).
+    Non-boundary pairs only need strict ordering (+1).
+    """
+
+    embargo = LABEL_LOOKAHEAD_DAYS
+    # Min slots needed = 1 (train_start→train_end) + embargo + 1
+    # (→valid_start) + 1 (→valid_end) + embargo + 1 (→test_start) + 1
+    # (→test_end). With LABEL_LOOKAHEAD_DAYS=2 this is 4 + 2*2 = 8.
+    min_required = 4 + 2 * embargo
+    if last_index < min_required:
+        # Calendar too short to lay out a valid split. Don't fabricate a
+        # fake one — callers will see the embargo validator's error and
+        # be told to pull more data.
         return [min(index, max(0, last_index)) for index in range(6)]
     indices = [
         0, round(last_index * 0.55), round(last_index * 0.65),
         round(last_index * 0.78), round(last_index * 0.86), last_index,
     ]
-    for index in range(1, len(indices) - 1):
-        indices[index] = max(indices[index], indices[index - 1] + 1)
-    for index in range(len(indices) - 2, -1, -1):
-        indices[index] = min(indices[index], indices[index + 1] - 1)
+    # Required minimum gap between each consecutive index pair. Segment
+    # boundaries (idx 1→2 and 3→4) need ``embargo + 1`` so the embargo
+    # validator's "trading days strictly between" count is ≥ embargo.
+    min_gaps = [1, embargo + 1, 1, embargo + 1, 1]
+    # Forward pass: push each index forward to satisfy its minimum gap.
+    for i in range(1, 6):
+        indices[i] = max(indices[i], indices[i - 1] + min_gaps[i - 1])
+    # Backward pass: if forward pass overshot last_index, clip everything
+    # back while preserving the same minimum gaps.
+    indices[-1] = min(indices[-1], last_index)
+    for i in range(4, -1, -1):
+        indices[i] = min(indices[i], indices[i + 1] - min_gaps[i])
     return indices
+
+
+# Static defaults used when the operator hasn't picked a provider yet
+# (calendar_dates is empty / sparse). The embargo validator returns early
+# in that case (no calendar to count trading days against), but once a
+# real provider is selected the dates flow into the form and the embargo
+# check runs against the real calendar — so we keep ≥ 2 trading days of
+# slack on each boundary even in the static defaults so the natural
+# weekend/holiday gaps comfortably cover the embargo.
+_PIPELINE_DATE_FALLBACK: dict[str, str] = {
+    "train_start": "2022-01-01",
+    "train_end":   "2024-12-25",  # boundary: Dec 26-31 left as embargo
+    "valid_start": "2025-01-02",
+    "valid_end":   "2025-06-23",  # boundary: Jun 24-30 left as embargo
+    "test_start":  "2025-07-01",
+    "test_end":    "2025-12-31",
+}
 
 
 def _pipeline_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
     calendar_dates = metadata.calendar_dates
     if len(calendar_dates) < 6:
-        return {
-            "train_start": "2022-01-01", "train_end": "2024-12-31",
-            "valid_start": "2025-01-01", "valid_end": "2025-06-30",
-            "test_start": "2025-07-01", "test_end": "2025-12-31",
-        }
+        return dict(_PIPELINE_DATE_FALLBACK)
     indices = _six_increasing_indices(_safe_pipeline_last_index(calendar_dates))
     keys = ("train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end")
     return {key: calendar_dates[index].isoformat() for key, index in zip(keys, indices, strict=True)}
@@ -111,7 +155,13 @@ def _last_n_days_split(
     """Split the last ``n_days`` trading days of the calendar into
     train/valid/test segments by ``ratios`` (must sum to 1.0).
 
-    Returns ``None`` when the calendar is too short or empty.  No
+    Each segment boundary leaves ``LABEL_LOOKAHEAD_DAYS`` trading days
+    of embargo so the result satisfies the training_guards embargo
+    validator and the quick presets don't immediately disable the Run
+    button.
+
+    Returns ``None`` when the calendar is too short or empty (also when
+    the window can't fit two embargo gaps + non-empty segments).  No
     silent fallback — callers SHALL treat ``None`` as "preset
     unavailable" rather than guess.
     """
@@ -122,19 +172,37 @@ def _last_n_days_split(
     take = min(len(cal), n_days)
     sub = cal[-take:]
     n = len(sub)
-    if n < 6:
+    embargo = LABEL_LOOKAHEAD_DAYS
+    # Minimum n: 1 train + embargo + 1 valid + embargo + 1 test = 3 + 2*embargo
+    if n < 3 + 2 * embargo:
         return None
+
     train_end_i = max(0, int(n * ratios[0]) - 1)
-    valid_end_i = max(train_end_i + 1, train_end_i + int(n * ratios[1]))
-    if valid_end_i >= n - 1:
-        valid_end_i = n - 2
+    valid_start_i = train_end_i + 1 + embargo  # leaves ``embargo`` days strictly between
+    # Anchor valid_end from train_end + nominal valid length, but never
+    # earlier than valid_start.
+    valid_end_i = max(valid_start_i, train_end_i + int(n * ratios[1]))
+    test_start_i = valid_end_i + 1 + embargo
     test_end_i = n - 1
+
+    if test_start_i >= test_end_i:
+        # The valid window grew so wide that there's no room for test
+        # after embargo. Pull valid_end back to fit a non-empty test
+        # segment + boundary embargo.
+        test_start_i = test_end_i - 1
+        if test_start_i <= valid_start_i + embargo:
+            # Even the minimum valid + embargo + test doesn't fit;
+            # surface as "preset unavailable" rather than emit a split
+            # the embargo validator will immediately reject.
+            return None
+        valid_end_i = test_start_i - 1 - embargo
+
     return {
         "train_start": sub[0].isoformat(),
         "train_end": sub[train_end_i].isoformat(),
-        "valid_start": sub[min(train_end_i + 1, n - 1)].isoformat(),
+        "valid_start": sub[valid_start_i].isoformat(),
         "valid_end": sub[valid_end_i].isoformat(),
-        "test_start": sub[min(valid_end_i + 1, n - 1)].isoformat(),
+        "test_start": sub[test_start_i].isoformat(),
         "test_end": sub[test_end_i].isoformat(),
     }
 

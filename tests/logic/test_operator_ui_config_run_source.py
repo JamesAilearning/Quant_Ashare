@@ -262,6 +262,93 @@ class LastNDaysSplitTests(unittest.TestCase):
         self.assertLess(result["valid_start"], result["valid_end"])
         self.assertLess(result["test_start"], result["test_end"])
 
+    def test_split_leaves_embargo_between_segments(self) -> None:
+        """Regression for Codex PR6.4 P1: the embargo guard in
+        training_guards.py rejects splits with < LABEL_LOOKAHEAD_DAYS=2
+        trading days between train_end → valid_start and valid_end →
+        test_start. The quick presets must produce ranges that satisfy
+        the guard so clicking ``最近 5 年`` doesn't immediately disable
+        the Run button.
+        """
+
+        import types
+        from datetime import date as _d
+
+        from web.operator_ui.pages.config_run import _last_n_days_split
+        from web.operator_ui.training_guards import LABEL_LOOKAHEAD_DAYS
+
+        base = _d(2020, 1, 1)
+        cal = tuple(_d.fromordinal(base.toordinal() + i) for i in range(1000))
+        metadata = types.SimpleNamespace(calendar_dates=cal)
+        result = _last_n_days_split(metadata, 252 * 5)
+        assert result is not None
+
+        # Count trading days strictly between each boundary pair.
+        cal_set = set(cal)
+        ts = {key: _d.fromisoformat(result[key]) for key in result}
+
+        def _gap(earlier: _d, later: _d) -> int:
+            return sum(1 for day in cal if earlier < day < later)
+
+        # ``cal_set`` is only used to assert each preset date is itself in
+        # the calendar — that the helper picked snapped trading days.
+        for key, value in ts.items():
+            self.assertIn(value, cal_set, f"preset {key} ({value}) is not in calendar")
+
+        self.assertGreaterEqual(
+            _gap(ts["train_end"], ts["valid_start"]),
+            LABEL_LOOKAHEAD_DAYS,
+            f"train_end→valid_start embargo too small: {result}",
+        )
+        self.assertGreaterEqual(
+            _gap(ts["valid_end"], ts["test_start"]),
+            LABEL_LOOKAHEAD_DAYS,
+            f"valid_end→test_start embargo too small: {result}",
+        )
+
+
+@unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
+class SixIncreasingIndicesTests(unittest.TestCase):
+    """Regression for Codex PR6.4 P1: the long-default preset
+    (`_pipeline_date_defaults` → `_six_increasing_indices`) must also
+    leave enough room on each segment boundary so the embargo validator
+    doesn't block ``全部历史`` clicks."""
+
+    def test_indices_leave_embargo_at_segment_boundaries(self) -> None:
+        from web.operator_ui.pages.config_run import _six_increasing_indices
+        from web.operator_ui.training_guards import LABEL_LOOKAHEAD_DAYS
+
+        indices = _six_increasing_indices(500)
+        # Boundary 1: train_end → valid_start
+        self.assertGreaterEqual(
+            indices[2] - indices[1] - 1, LABEL_LOOKAHEAD_DAYS,
+            f"train_end→valid_start gap too small in {indices}",
+        )
+        # Boundary 2: valid_end → test_start
+        self.assertGreaterEqual(
+            indices[4] - indices[3] - 1, LABEL_LOOKAHEAD_DAYS,
+            f"valid_end→test_start gap too small in {indices}",
+        )
+        # Non-boundary pairs still strictly increasing.
+        for i in range(5):
+            self.assertLess(indices[i], indices[i + 1])
+        # Indices fit within [0, last_index].
+        self.assertEqual(indices[0], 0)
+        self.assertLessEqual(indices[-1], 500)
+
+    def test_returns_compact_layout_when_calendar_too_short(self) -> None:
+        """Very short calendar can't satisfy embargos. Helper returns a
+        best-effort layout rather than crashing; the embargo validator
+        will then surface the real error to the operator."""
+
+        from web.operator_ui.pages.config_run import _six_increasing_indices
+
+        indices = _six_increasing_indices(3)
+        self.assertEqual(len(indices), 6)
+        # All indices are in [0, last_index] and the layout is monotone
+        # non-decreasing (the helper clips rather than synthesising).
+        self.assertTrue(all(0 <= i <= 3 for i in indices))
+
 
 if __name__ == "__main__":
     unittest.main()
