@@ -537,6 +537,22 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
         total_duration_seconds = float("nan")
         slowest_fold_index = -1
         slowest_fold_duration_seconds = float("nan")
+    # ``timing`` sub-dict mirrors pipeline's
+    # ``metrics["timing"]`` namespace so shared consumers can do
+    # ``report["timing"]["total_duration_seconds"]`` uniformly.
+    # Codex P1 on PR #163: previously the keys lived flat at the
+    # ``aggregate_metrics`` top level, which created cross-engine
+    # schema drift (pipeline had no equivalent). Walk-forward-
+    # specific keys (``mean_fold_duration_seconds``, ``slowest_*``,
+    # ``valid_folds_duration``) live here too — pipeline reports
+    # them as absent rather than as degenerate "1 fold" values.
+    timing_block = {
+        "total_duration_seconds": total_duration_seconds,
+        "mean_fold_duration_seconds": mean_fold_duration_seconds,
+        "slowest_fold_index": slowest_fold_index,
+        "slowest_fold_duration_seconds": slowest_fold_duration_seconds,
+        "valid_folds_duration": len(durations),
+    }
 
     return {
         "mean_ic_1d": _nanmean(ic_1d),
@@ -563,12 +579,8 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
         "num_folds": len(folds),
         "bootstrap_seed": seed,
         "bootstrap_n": 10000,
-        # Timing — added by FU-4 (per-fold timing). ``-1`` /
-        # ``NaN`` when no fold carries a duration (all resumed from
-        # pre-timing manifests, or all constructed by tests).
-        "mean_fold_duration_seconds": mean_fold_duration_seconds,
-        "total_duration_seconds": total_duration_seconds,
-        "slowest_fold_index": slowest_fold_index,
-        "slowest_fold_duration_seconds": slowest_fold_duration_seconds,
-        "valid_folds_duration": len(durations),
+        # Timing — added by FU-4 (per-fold timing). Nested under a
+        # ``timing`` sub-dict (Codex P1 on PR #163) so the same key
+        # path works across pipeline + walk-forward reports.
+        "timing": timing_block,
     }

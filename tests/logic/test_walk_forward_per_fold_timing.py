@@ -91,6 +91,10 @@ class WalkForwardFoldTimingFieldsTests(unittest.TestCase):
 
 
 class ComputeAggregateTimingTests(unittest.TestCase):
+    """Timing fields live under ``aggregate["timing"]`` (Codex P1 on
+    PR #163: nested for cross-engine schema parity with pipeline's
+    ``metrics["timing"]``)."""
+
     def test_mean_total_slowest_with_all_durations(self):
         folds = [
             _fold(0, duration=10.0),
@@ -98,11 +102,12 @@ class ComputeAggregateTimingTests(unittest.TestCase):
             _fold(2, duration=20.0),
         ]
         agg = compute_aggregate(folds)
-        self.assertAlmostEqual(agg["mean_fold_duration_seconds"], 20.0)
-        self.assertAlmostEqual(agg["total_duration_seconds"], 60.0)
-        self.assertEqual(agg["slowest_fold_index"], 1)
-        self.assertAlmostEqual(agg["slowest_fold_duration_seconds"], 30.0)
-        self.assertEqual(agg["valid_folds_duration"], 3)
+        timing = agg["timing"]
+        self.assertAlmostEqual(timing["mean_fold_duration_seconds"], 20.0)
+        self.assertAlmostEqual(timing["total_duration_seconds"], 60.0)
+        self.assertEqual(timing["slowest_fold_index"], 1)
+        self.assertAlmostEqual(timing["slowest_fold_duration_seconds"], 30.0)
+        self.assertEqual(timing["valid_folds_duration"], 3)
 
     def test_slowest_uses_fold_index_not_list_position(self):
         """Fold indices may not be contiguous (resume + skip etc.).
@@ -114,7 +119,7 @@ class ComputeAggregateTimingTests(unittest.TestCase):
             _fold(6, duration=8.0),
         ]
         agg = compute_aggregate(folds)
-        self.assertEqual(agg["slowest_fold_index"], 4)
+        self.assertEqual(agg["timing"]["slowest_fold_index"], 4)
 
     def test_mixed_some_none_durations_uses_available(self):
         """Resumed folds may have no duration (pre-timing manifest).
@@ -125,28 +130,91 @@ class ComputeAggregateTimingTests(unittest.TestCase):
             _fold(2, duration=40.0),
         ]
         agg = compute_aggregate(folds)
+        timing = agg["timing"]
         # Mean over (20, 40), not over (NaN, 20, 40).
-        self.assertAlmostEqual(agg["mean_fold_duration_seconds"], 30.0)
-        self.assertAlmostEqual(agg["total_duration_seconds"], 60.0)
-        self.assertEqual(agg["valid_folds_duration"], 2)
+        self.assertAlmostEqual(timing["mean_fold_duration_seconds"], 30.0)
+        self.assertAlmostEqual(timing["total_duration_seconds"], 60.0)
+        self.assertEqual(timing["valid_folds_duration"], 2)
         # Slowest: fold 2 (40s).
-        self.assertEqual(agg["slowest_fold_index"], 2)
+        self.assertEqual(timing["slowest_fold_index"], 2)
 
     def test_all_none_durations_returns_sentinel(self):
         """When NO fold has a duration (all resumed from pre-timing
         manifests, or all constructed by tests), mean/total are NaN
         and slowest_fold_index is -1."""
         folds = [_fold(0, duration=None), _fold(1, duration=None)]
-        agg = compute_aggregate(folds)
-        self.assertTrue(math.isnan(agg["mean_fold_duration_seconds"]))
-        self.assertTrue(math.isnan(agg["total_duration_seconds"]))
-        self.assertEqual(agg["slowest_fold_index"], -1)
-        self.assertTrue(math.isnan(agg["slowest_fold_duration_seconds"]))
-        self.assertEqual(agg["valid_folds_duration"], 0)
+        timing = compute_aggregate(folds)["timing"]
+        self.assertTrue(math.isnan(timing["mean_fold_duration_seconds"]))
+        self.assertTrue(math.isnan(timing["total_duration_seconds"]))
+        self.assertEqual(timing["slowest_fold_index"], -1)
+        self.assertTrue(math.isnan(timing["slowest_fold_duration_seconds"]))
+        self.assertEqual(timing["valid_folds_duration"], 0)
 
     def test_empty_folds_returns_empty_dict(self):
         """Empty fold list still returns ``{}`` — existing contract."""
         self.assertEqual(compute_aggregate([]), {})
+
+    def test_timing_block_namespace_keys_locked(self):
+        """Lock the timing sub-dict's key set so the cross-engine
+        parity contract with pipeline (Codex P1 on PR #163) doesn't
+        silently drift. Both engines expose ``total_duration_seconds``;
+        walk-forward additionally exposes the multi-fold keys."""
+        timing = compute_aggregate([_fold(0, duration=1.0)])["timing"]
+        expected_keys = {
+            "total_duration_seconds",  # shared with pipeline
+            "mean_fold_duration_seconds",  # walk-forward only
+            "slowest_fold_index",  # walk-forward only
+            "slowest_fold_duration_seconds",  # walk-forward only
+            "valid_folds_duration",  # walk-forward only
+        }
+        self.assertEqual(set(timing.keys()), expected_keys)
+
+
+class PipelineTimingBlockTests(unittest.TestCase):
+    """The pipeline's ``metrics.json`` now also carries a ``timing``
+    sub-dict so a shared consumer reading either report can call
+    ``report["timing"]["total_duration_seconds"]`` uniformly. Walk-
+    forward-specific keys are intentionally absent here (pipeline is
+    single-fold; reporting them with degenerate values would mislead
+    consumers into thinking they're cross-fold aggregates)."""
+
+    def test_pipeline_timing_block_shape(self):
+        from src.core.pipeline_result_artifacts import _build_timing_block
+
+        block = _build_timing_block(
+            started_at="2026-05-25T10:00:00+00:00",
+            finished_at="2026-05-25T10:03:42+00:00",
+        )
+        self.assertIsInstance(block["total_duration_seconds"], float)
+        self.assertAlmostEqual(block["total_duration_seconds"], 222.0)
+        self.assertEqual(block["started_at"], "2026-05-25T10:00:00+00:00")
+        self.assertEqual(block["finished_at"], "2026-05-25T10:03:42+00:00")
+
+    def test_pipeline_timing_block_handles_missing_timestamps(self):
+        from src.core.pipeline_result_artifacts import _build_timing_block
+
+        block = _build_timing_block(started_at=None, finished_at=None)
+        self.assertIsNone(block["total_duration_seconds"])
+        self.assertIsNone(block["started_at"])
+        self.assertIsNone(block["finished_at"])
+
+    def test_pipeline_and_walk_forward_share_total_duration_key(self):
+        """The cross-engine contract: both engines emit
+        ``total_duration_seconds`` inside a ``timing`` sub-dict so
+        consumers can use one key path."""
+        from src.core.pipeline_result_artifacts import _build_timing_block
+
+        pipeline_timing = _build_timing_block(
+            started_at="2026-05-25T10:00:00+00:00",
+            finished_at="2026-05-25T10:00:42+00:00",
+        )
+        wf_timing = compute_aggregate([_fold(0, duration=42.0)])["timing"]
+        self.assertIn("total_duration_seconds", pipeline_timing)
+        self.assertIn("total_duration_seconds", wf_timing)
+        # The walk-forward keys may absent from the pipeline block
+        # (single-fold by construction); only ``total_duration_seconds``
+        # is shared.
+        self.assertNotIn("mean_fold_duration_seconds", pipeline_timing)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +233,12 @@ class BuildAggregateReportTimingTests(unittest.TestCase):
         self.assertEqual(report["folds"][0]["duration_seconds"], 12.3)
         self.assertEqual(report["folds"][0]["started_at"], "t0a")
         self.assertEqual(report["folds"][0]["finished_at"], "t0b")
+        # Aggregate timing block (Codex P1 on PR #163: nested for
+        # cross-engine schema parity with pipeline's metrics block).
+        self.assertEqual(
+            report["aggregate_metrics"]["timing"]["total_duration_seconds"],
+            12.3,
+        )
 
     def test_per_fold_none_duration_preserved_as_null(self):
         """Folds without timing data should serialize as ``None``,

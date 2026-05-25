@@ -78,7 +78,13 @@ def write_pipeline_result_artifacts(
     nav_frame = _build_nav_frame(backtest_output.return_series)
 
     _write_yaml(config_path, config_dict)
-    _write_json(metrics_path, _build_metrics(config_dict, backtest_output, nav_frame))
+    _write_json(
+        metrics_path,
+        _build_metrics(
+            config_dict, backtest_output, nav_frame,
+            started_at=started_at, finished_at=finished_at,
+        ),
+    )
     nav_frame.to_parquet(nav_path, index=False)
     _build_holdings_frame(backtest_output.positions).to_parquet(holdings_path, index=False)
     _build_empty_trades_frame().to_parquet(trades_path, index=False)
@@ -176,6 +182,9 @@ def _build_metrics(
     config: dict[str, Any],
     backtest_output: CanonicalBacktestOutput,
     nav_frame: Any,
+    *,
+    started_at: str | None = None,
+    finished_at: str | None = None,
 ) -> dict[str, Any]:
     with_cost = _metric_section(backtest_output, "excess_return_with_cost")
     without_cost = _metric_section(backtest_output, "excess_return_without_cost")
@@ -265,6 +274,41 @@ def _build_metrics(
         },
         "monthly_returns": _monthly_returns(nav_frame),
         "official_metrics": dict(backtest_output.risk_analysis),
+        # ``timing`` block mirrors walk-forward's
+        # ``aggregate_metrics["timing"]`` so shared consumers can
+        # do ``report["timing"]["total_duration_seconds"]``
+        # uniformly across engines. Codex P1 on PR #163.
+        # Walk-forward-specific keys (``mean_fold_duration_seconds`` /
+        # ``slowest_fold_*`` / ``valid_folds_duration``) live in the
+        # walk-forward report only — the pipeline is single-fold by
+        # construction so those values would be degenerate. The
+        # ``total_duration_seconds`` field is comparable across
+        # engines.
+        "timing": _build_timing_block(
+            started_at=started_at, finished_at=finished_at,
+        ),
+    }
+
+
+def _build_timing_block(
+    *, started_at: str | None, finished_at: str | None,
+) -> dict[str, Any]:
+    """Pipeline-shaped timing block — single-run duration only.
+
+    Mirrors the walk-forward ``aggregate_metrics["timing"]`` sub-dict
+    by namespace. Walk-forward-specific keys are intentionally
+    absent (pipeline is single-fold; reporting them with degenerate
+    values would mislead consumers into thinking they're aggregates).
+    """
+    duration = None
+    if started_at and finished_at:
+        duration_int = _duration_seconds(started_at, finished_at)
+        if duration_int is not None:
+            duration = float(duration_int)
+    return {
+        "total_duration_seconds": duration,
+        "started_at": started_at,
+        "finished_at": finished_at,
     }
 
 
