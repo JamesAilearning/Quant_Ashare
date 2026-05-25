@@ -585,12 +585,24 @@ def _build_metadata(
 
 
 def _qlib_version() -> str | None:
+    """Return the installed qlib version, or ``None`` if unavailable.
+
+    Previously: ``str(getattr(qlib, "__version__", "") or None)``. That
+    expression has a subtle Python-semantics trap — when
+    ``qlib.__version__`` is the empty string ``""``, the inner
+    ``"" or None`` evaluates to ``None`` (truthiness), then the outer
+    ``str(None)`` produces the **string literal** ``"None"``. JSON
+    serialisation then writes ``"None"`` into the artifact instead of
+    ``null``, masking the fact that the version is actually absent
+    and tripping any downstream comparison logic that treats
+    ``"None"`` as a valid version string. (bug.md P1-7.)
+    """
     try:
         import qlib  # type: ignore[import-not-found]
-
-        return str(getattr(qlib, "__version__", "") or None)
     except ImportError:
         return None
+    version = getattr(qlib, "__version__", "")
+    return version if version else None
 
 
 def _git_commit() -> str | None:

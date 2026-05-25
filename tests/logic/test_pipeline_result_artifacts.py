@@ -41,6 +41,7 @@ from src.core.pipeline_result_artifacts import (  # noqa: E402
     _config_to_dict,
     _finite_float,
     _nav_total_return,
+    _qlib_version,
     _stable_hash,
     write_pipeline_result_artifacts,
 )
@@ -280,3 +281,76 @@ def test_write_pipeline_result_artifacts_holdings_parquet(tmp_path):
         weights = group[holdings.columns[2]] if "weight" in holdings.columns[2] \
             else group.select_dtypes("number").iloc[:, -1]
         assert weights.sum() == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Regression for bug.md P1-7: ``_qlib_version`` returned the **string**
+# ``"None"`` when ``qlib.__version__`` was ``""``. ``str("" or None)``
+# evaluates to ``str(None) == "None"`` — Python truthiness on the
+# empty string falls through to ``None``, then ``str`` rebuilds it as
+# the literal four-character string. JSON serialisation then writes
+# ``"None"`` into the artifact, which downstream version-comparison
+# logic would treat as a real version.
+# ---------------------------------------------------------------------------
+
+
+class _FakeQlibModule:
+    """Stand-in for the ``qlib`` package whose ``__version__`` we
+    control per-test."""
+
+    def __init__(self, version):
+        self.__version__ = version
+
+
+def test_qlib_version_returns_python_none_for_empty_string(monkeypatch):
+    """The literal failure mode bug.md flagged: empty-string
+    ``__version__`` MUST return Python ``None``, not the string
+    ``"None"``. JSON would serialise the former as ``null`` and the
+    latter as the four-character string."""
+    fake = _FakeQlibModule(version="")
+    monkeypatch.setitem(sys.modules, "qlib", fake)
+    out = _qlib_version()
+    assert out is None, (
+        f"P1-7 regression: empty __version__ should return None, got {out!r}"
+    )
+
+
+def test_qlib_version_returns_python_none_for_missing_attr(monkeypatch):
+    """If the qlib module exists but lacks ``__version__`` entirely,
+    treat as absent (not as a coerced sentinel)."""
+    fake = type("FakeNoVer", (), {})()  # bare object, no __version__
+    monkeypatch.setitem(sys.modules, "qlib", fake)
+    out = _qlib_version()
+    assert out is None
+
+
+def test_qlib_version_returns_string_for_real_version(monkeypatch):
+    """A normal install returns the actual version string verbatim."""
+    fake = _FakeQlibModule(version="0.9.6")
+    monkeypatch.setitem(sys.modules, "qlib", fake)
+    out = _qlib_version()
+    assert out == "0.9.6"
+
+
+def test_qlib_version_returns_none_when_qlib_not_importable(monkeypatch):
+    """When qlib is genuinely absent (operator env without it),
+    the helper returns ``None`` instead of raising ImportError."""
+    # Simulate a hostile import — set sys.modules["qlib"] to a class
+    # that raises on attribute access? Cleaner: remove if present and
+    # block fresh imports by patching the finder. Simplest: patch the
+    # function's import inside the helper. Since the import is inside
+    # the function body, we can use monkeypatch on builtins.__import__.
+    real_import = __builtins__["__import__"] if isinstance(
+        __builtins__, dict,
+    ) else __builtins__.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "qlib":
+            raise ImportError("qlib not installed (simulated)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    # Also clear any already-imported qlib so the function actually
+    # invokes __import__ rather than reading from sys.modules.
+    monkeypatch.delitem(sys.modules, "qlib", raising=False)
+    assert _qlib_version() is None

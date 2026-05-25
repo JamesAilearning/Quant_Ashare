@@ -266,6 +266,31 @@ class FactorPool:
                 )
             expr = Expression.from_dict(expr_map[h_key])
             actual_hash = hash(expr)
+            # Verify the parquet's claim against the reconstructed
+            # expression's actual hash. The docstring above promises
+            # this check; previously the code computed ``actual_hash``
+            # but never compared it to ``h_key`` — a tampered or
+            # silently-corrupted JSON could install an expression
+            # under the wrong slot without anyone noticing. (bug.md
+            # P2-6.) Hash mismatch is hard-fail rather than skip:
+            # a pool with mis-bound rows is unsafe to use at all, and
+            # an explicit raise points the operator at the offending
+            # entry.
+            try:
+                expected_hash = int(h_key)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"pool integrity: expr_hash {h_key!r} in parquet "
+                    "is not a valid integer string"
+                ) from exc
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"pool integrity: expr_hash mismatch for {h_key} — "
+                    f"reconstructed expression hashes to {actual_hash}, "
+                    f"expected {expected_hash}. The parquet and "
+                    f"factor_expressions.json have drifted; refusing "
+                    f"to load a pool with mis-bound rows."
+                )
             entry = PoolEntry(
                 expr=expr,
                 fitness=float(row["fitness"]),

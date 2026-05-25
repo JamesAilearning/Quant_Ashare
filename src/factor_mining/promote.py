@@ -112,6 +112,15 @@ def _build_synthetic_panel(
         "$volume": _df(volume),
         "$money": _df(money),
     }
+    # Forward return = the one-day open-to-open return REALISED at
+    # T+1→T+2, mirroring qlib's Alpha158 default label
+    # ``Ref($close, -2)/Ref($close, -1) - 1`` (LABEL_LOOKAHEAD_DAYS=2):
+    # signal decided at T, trade at T+1 open, return from T+1 open to
+    # T+2 open. ``shift(-2)/shift(-1)`` is the pandas translation of
+    # that label — NOT a bug despite audit-tool flags that claim it
+    # should be ``shift(-1)/x`` (the latter would be a 1-day lookahead
+    # because T's signal can't be acted on before T+1's open). See
+    # also ``miner.py`` _build_synthetic_panel for the same convention.
     open_df = panel["$open"]
     raw_return = open_df.shift(-2) / open_df.shift(-1) - 1
     vol_signal = np.log(panel["$volume"]).rank(axis=1, pct=True) - 0.5
