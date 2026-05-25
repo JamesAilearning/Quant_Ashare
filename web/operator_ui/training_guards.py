@@ -12,15 +12,17 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from src.data._segment_embargo import (  # noqa: E402
+    LABEL_LOOKAHEAD_DAYS,
+    trading_days_between,
+)
+
 FORWARD_RETURN_BUFFER_DAYS = 20
 
-# qlib's Alpha158 default label is ``Ref($close, -2) / Ref($close, -1) - 1`` —
-# the label at day ``t`` consumes close prices at ``t+1`` and ``t+2``. Without
-# an embargo, the last two rows of validation pick up close prices that fall
-# inside the test window, which contaminates the validation loss the model
-# uses for early stopping. We require at least this many trading days of gap
-# between adjacent segments.
-LABEL_LOOKAHEAD_DAYS = 2
+# ``LABEL_LOOKAHEAD_DAYS`` is sourced from ``src/data/_segment_embargo``
+# and re-exported above so the operator UI and the core
+# ``FeatureDatasetBuilder._validate`` cannot drift apart. Callers that
+# imported the constant from this module continue to work.
 
 # Heuristic for B2: when the strategy universe is much wider than what the
 # benchmark covers, the resulting "excess return vs benchmark" is partly
@@ -226,21 +228,14 @@ def _validate_segment_embargo(
     metadata: ProviderMetadata,
     errors: list[str],
 ) -> None:
-    """Enforce label-lookahead embargo between adjacent segments.
+    """Surface Alpha158 label-lookahead embargo violations in Chinese.
 
-    Alpha158's default label consumes ``Ref($close, -2) / Ref($close, -1)``
-    — i.e. the label at trading day ``t`` looks at the close prices on
-    days ``t+1`` and ``t+2``. If train_end / valid_start (or valid_end /
-    test_start) are separated by fewer than :data:`LABEL_LOOKAHEAD_DAYS`
-    trading days, the trailing rows of the earlier segment compute their
-    labels from prices that fall inside the later segment, leaking
-    information across the boundary.  This biases early-stopping decisions
-    (validation loss is computed against partially-leaked labels) and
-    inflates measured OOS performance.
-
-    Reported as ``error`` rather than ``warning`` because the leak silently
-    invalidates the run's evaluation; the operator has to either move
-    dates apart or accept that conclusions are biased.
+    Delegates the gap arithmetic to the shared validator in
+    ``src.data._segment_embargo`` so this UI guard and the core
+    ``FeatureDatasetBuilder._validate`` cannot drift apart. This
+    wrapper exists to (a) skip when the UI's calendar source is empty,
+    (b) tolerate the optional-date inputs the UI form may surface, and
+    (c) render the error messages in Chinese for the Chinese-only UI.
     """
 
     calendar = metadata.calendar_dates
@@ -249,43 +244,28 @@ def _validate_segment_embargo(
         # the coverage check already warns about this case.
         return
 
+    train_end = parsed.get("train_end")
+    valid_start = parsed.get("valid_start")
+    valid_end = parsed.get("valid_end")
+    test_start = parsed.get("test_start")
     pairs = (
-        ("train_end", "valid_start"),
-        ("valid_end", "test_start"),
+        ("train_end", train_end, "valid_start", valid_start),
+        ("valid_end", valid_end, "test_start", test_start),
     )
-    for earlier, later in pairs:
-        e_date = parsed[earlier]
-        l_date = parsed[later]
+    for e_name, e_date, l_name, l_date in pairs:
         if e_date is None or l_date is None or l_date <= e_date:
             # Other validators already flag missing / non-monotone dates.
             continue
-        gap = _trading_days_between(e_date, l_date, calendar)
+        gap = trading_days_between(e_date, l_date, calendar)
         if gap < LABEL_LOOKAHEAD_DAYS:
             errors.append(
-                f"{earlier}（{e_date}）与 {later}（{l_date}）之间只有 "
+                f"{e_name}（{e_date}）与 {l_name}（{l_date}）之间只有 "
                 f"{gap} 个交易日，少于 Alpha158 默认 label 所需的 "
                 f"{LABEL_LOOKAHEAD_DAYS} 个交易日 embargo——"
                 f"前一段的尾部 label 会用到后一段的收盘价，"
                 "造成验证集/测试集的 label 泄漏。请将后一段起始日往后推 "
                 f"至少 {LABEL_LOOKAHEAD_DAYS} 个交易日。"
             )
-
-
-def _trading_days_between(
-    earlier: date, later: date, calendar: tuple[date, ...]
-) -> int:
-    """Return the number of trading days strictly between ``earlier`` and
-    ``later`` (exclusive on both sides).
-
-    For example, if calendar contains 2025-09-30, 2025-10-09, 2025-10-10
-    and we pass (2025-09-30, 2025-10-09), the gap is 0 — they are adjacent
-    trading days, so there is no embargo day in between.
-    """
-
-    if later <= earlier:
-        return 0
-    # Both ends exclusive: trading days strictly between them.
-    return sum(1 for day in calendar if earlier < day < later)
 
 
 def _validate_universe_benchmark_alignment(

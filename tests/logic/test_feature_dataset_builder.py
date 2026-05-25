@@ -85,6 +85,21 @@ class PITProviderAlignmentTests(unittest.TestCase):
     survivorship-biased bins while believing PIT is active.
     """
 
+    def setUp(self) -> None:
+        # The Alpha158 label embargo check (added in PR fix-embargo)
+        # would otherwise fire on this fixture's adjacent dates and
+        # mask the PIT-alignment errors these tests verify. We stub
+        # the calendar loader so the embargo path returns "no
+        # calendar → skip". Other test classes that explicitly
+        # exercise the embargo logic patch the loader differently.
+        self._cal_patcher = patch.object(
+            FeatureDatasetBuilder,
+            "_load_trading_calendar",
+            staticmethod(lambda *, start, end: None),
+        )
+        self._cal_patcher.start()
+        self.addCleanup(self._cal_patcher.stop)
+
     def _config(self) -> FeatureDatasetConfig:
         return FeatureDatasetConfig(
             instruments="csi300",

@@ -303,6 +303,16 @@ def stub_qlib(monkeypatch):
         "src.data.feature_dataset_builder.is_canonical_qlib_initialized",
         lambda: True,
     )
+    # Stub the Alpha158 label-embargo calendar loader. The fixture's
+    # config dates are adjacent (train_end=2023-12-31, valid_start=
+    # 2024-01-01), which violate the embargo check added in PR
+    # fix-embargo. Cache tests don't care about embargo — returning
+    # None makes the embargo check skip with INFO. Tests that
+    # explicitly verify embargo behaviour use a different stub.
+    monkeypatch.setattr(
+        "src.data.feature_dataset_builder.FeatureDatasetBuilder._load_trading_calendar",
+        staticmethod(lambda *, start, end: None),
+    )
 
     class _CounterView:
         @property

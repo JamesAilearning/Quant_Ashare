@@ -377,6 +377,91 @@ class FeatureDatasetBuilder:
                 "Overlapping valid/test ranges cause data leakage."
             )
 
+        # Alpha158 label-lookahead embargo. Previously this check lived
+        # only in web/operator_ui/training_guards.py, so CLI / main.py /
+        # direct API callers bypassed it entirely — they could submit
+        # adjacent-day boundaries with silent label leakage. Now both
+        # entry points consume the shared validator in
+        # src/data/_segment_embargo.py.
+        cls._validate_embargo(config, parsed)
+
+    @classmethod
+    def _validate_embargo(
+        cls,
+        config: FeatureDatasetConfig,
+        parsed: dict,
+    ) -> None:
+        """Run the shared Alpha158 label-lookahead embargo check.
+
+        Loads the trading calendar from the already-initialised qlib
+        runtime (``_validate`` has already asserted
+        ``is_canonical_qlib_initialized``). When qlib's calendar is
+        unreachable for any reason — degraded providers, calendar
+        provider not yet bound, calendar slice empty — we log INFO
+        and skip rather than block, because the embargo check is a
+        leakage guard, not a substitute for the qlib initialisation
+        chain. The skip is loud enough to grep in operator logs.
+
+        The check is mandatory for ``feature_handler == "Alpha158"``.
+        Other handlers (e.g. ``MinedFactor``) may have different label
+        lookahead semantics and currently opt out — adding their own
+        embargo policy is the handler author's responsibility.
+        """
+        if config.feature_handler != "Alpha158":
+            return
+
+        from src.data._segment_embargo import (  # noqa: PLC0415
+            LABEL_LOOKAHEAD_DAYS,
+            validate_segment_embargo,
+        )
+
+        calendar = cls._load_trading_calendar(
+            start=config.train_end, end=config.test_start,
+        )
+        if not calendar:
+            _log.info(
+                "Skipping Alpha158 label embargo check: qlib's trading "
+                "calendar is unreachable or empty over %s ~ %s. The "
+                "operator UI's training_guards still enforces the same "
+                "check before launch; CLI / main.py callers in this "
+                "environment lose the leakage guard for this run.",
+                config.train_end, config.test_start,
+            )
+            return
+
+        errors = validate_segment_embargo(
+            train_end=parsed["train_end"],
+            valid_start=parsed["valid_start"],
+            valid_end=parsed["valid_end"],
+            test_start=parsed["test_start"],
+            calendar=calendar,
+            lookahead_days=LABEL_LOOKAHEAD_DAYS,
+        )
+        if errors:
+            joined = "\n  - ".join(errors)
+            raise FeatureDatasetBuilderError(
+                "Alpha158 label embargo violation — refusing to build "
+                "feature dataset (silent label leakage would inflate "
+                "OOS metrics):\n  - " + joined,
+            )
+
+    @staticmethod
+    def _load_trading_calendar(*, start: str, end: str):
+        """Return a list of ``date`` objects from qlib's calendar.
+
+        Returns ``None`` on any failure (qlib import error, calendar
+        provider not bound, empty slice) — callers treat ``None`` as
+        "skip the embargo check with INFO". Never raises.
+        """
+        try:
+            import pandas as pd  # noqa: PLC0415
+            from qlib.data import D  # type: ignore[import-not-found]
+            cal = D.calendar(start_time=start, end_time=end)
+            out = [pd.Timestamp(d).date() for d in cal]
+            return out if out else None
+        except Exception:  # noqa: BLE001
+            return None
+
     @staticmethod
     def _build_handler(config: FeatureDatasetConfig) -> Any:
         try:
