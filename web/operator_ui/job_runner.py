@@ -25,6 +25,15 @@ from web.operator_ui.job_io import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ACTIVE_JOB_DIR: Path | None = None
 
+# Reference to the currently-running training subprocess so the SIGTERM
+# handler can ``terminate()`` it before this runner exits. Without this,
+# ``subprocess.run`` blocks while holding no caller-visible reference;
+# raising ``SystemExit`` from the signal handler would let the runner
+# exit but leave the training child orphaned (Linux re-parents to init,
+# Windows just continues). bug.md P1-4.
+_ACTIVE_CHILD_PROCESS: subprocess.Popen | None = None
+_CHILD_TERMINATE_TIMEOUT_S = 5.0
+
 
 def _runner_env() -> dict[str, str]:
     env = os.environ.copy()
@@ -93,7 +102,43 @@ def _copy_pipeline_logs_to_run_dir(
         return
 
 
+def _terminate_active_child() -> None:
+    """Stop the training subprocess so it doesn't outlive this runner.
+
+    Best-effort: try graceful ``terminate()`` first, fall back to
+    ``kill()`` after a short timeout. Swallow any exception — the
+    SIGTERM handler must not crash, since a crash here would skip the
+    job.json ``stopped`` write that downstream UI relies on.
+    """
+    proc = _ACTIVE_CHILD_PROCESS
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=_CHILD_TERMINATE_TIMEOUT_S)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        proc.kill()
+        try:
+            proc.wait(timeout=_CHILD_TERMINATE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return
+    except Exception:
+        # OSError from already-dead PID, AttributeError on platform
+        # quirks, etc. — never let the handler crash.
+        return
+
+
 def _handle_stop_signal(signum: int, _frame: Any) -> None:
+    # Kill the training subprocess BEFORE writing job.json — if we
+    # wrote ``stopped`` first and the child then crashed during
+    # terminate (e.g., flushing a partial model pickle), the UI would
+    # see a "stopped" job with corrupt half-written artifacts. Killing
+    # first means: by the time we write ``stopped``, the child is
+    # guaranteed gone and no further writes are happening.
+    _terminate_active_child()
     if _ACTIVE_JOB_DIR is not None:
         _write_job_json(
             _ACTIVE_JOB_DIR,
@@ -167,8 +212,13 @@ def main(argv: list[str] | None = None) -> None:
 
     _write_job_json(job_dir, {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
 
+    # ``subprocess.Popen`` instead of ``subprocess.run``: gives us a
+    # process handle that the SIGTERM handler can ``terminate()``
+    # before this runner exits, so the training child doesn't
+    # become an orphan. (bug.md P1-4.)
+    global _ACTIVE_CHILD_PROCESS
     with open(stdout_path, "w", encoding="utf-8") as out, open(stderr_path, "w", encoding="utf-8") as err:
-        result = subprocess.run(
+        _ACTIVE_CHILD_PROCESS = subprocess.Popen(
             cmd,
             stdout=out,
             stderr=err,
@@ -176,13 +226,21 @@ def main(argv: list[str] | None = None) -> None:
             env=_runner_env(),
             shell=False,
         )
+        try:
+            returncode = _ACTIVE_CHILD_PROCESS.wait()
+        finally:
+            # Drop the global ref once wait() returns (the child has
+            # exited on its own, or was terminated by the handler).
+            # Holding a stale ref past this point would have the handler
+            # try to terminate a dead PID on a subsequent signal.
+            _ACTIVE_CHILD_PROCESS = None
 
     ended = datetime.now(timezone.utc).isoformat()
-    succeeded = result.returncode == 0
+    succeeded = returncode == 0
     if succeeded:
         _write_job_json(job_dir, {"status": "success", "ended_at": ended})
     else:
-        _write_job_json(job_dir, {"status": "failed", "ended_at": ended, "returncode": result.returncode})
+        _write_job_json(job_dir, {"status": "failed", "ended_at": ended, "returncode": returncode})
 
     # Try to find the run directory only after successful CLI completion.
     # Failed runs can leave old directories under a reused output_dir; binding
