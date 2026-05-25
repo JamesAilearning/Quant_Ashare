@@ -101,7 +101,18 @@ def load_config(path: str | Path) -> MinerConfig:
     if pool_top_k_raw is None:
         pool_top_k = None
     else:
-        pool_top_k = int(pool_top_k_raw)
+        # Reject types that ``int(...)`` would silently coerce — ``bool``
+        # (``True`` → 1), ``float`` (``1.9`` → 1), ``str`` (``"5"`` → 5),
+        # etc. ``pool_top_k`` is a hard cap on the persisted factor pool;
+        # a typo'd type can quietly shrink experimental results without
+        # the operator noticing. (Codex P2 on PR #150.) ``bool`` is
+        # explicitly rejected because it is an ``int`` subclass.
+        if isinstance(pool_top_k_raw, bool) or not isinstance(pool_top_k_raw, int):
+            raise ValueError(
+                "pool_top_k must be a positive integer or null, got "
+                f"{type(pool_top_k_raw).__name__} ({pool_top_k_raw!r})"
+            )
+        pool_top_k = pool_top_k_raw
         if pool_top_k <= 0:
             raise ValueError(
                 f"pool_top_k must be a positive integer or null, got {pool_top_k_raw!r}"

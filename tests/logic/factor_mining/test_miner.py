@@ -261,6 +261,44 @@ def test_load_config_pool_top_k_negative_raises(tmp_path):
         load_config(_bigger_smoke_config(tmp_path, pool_top_k=-3))
 
 
+# ---------------------------------------------------------------------------
+# Codex PR #150 P2 regression: ``pool_top_k`` must reject non-integer types.
+#
+# Pre-fix: ``int(...)`` silently coerced ``True`` → 1, ``1.9`` → 1, and
+# ``"5"`` → 5, quietly shrinking the persisted factor pool with no
+# explicit configuration error. The field's contract is "integer knob";
+# the loader must enforce it at config-load time.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_load_config_pool_top_k_bool_rejected(tmp_path, bad):
+    """``bool`` is an ``int`` subclass; ``int(True)`` would silently
+    become 1. Must raise instead so a YAML typo (``pool_top_k: yes``
+    parses as ``True`` in safe-yaml) doesn't quietly cap the pool at
+    1 entry."""
+    with pytest.raises(ValueError, match="positive integer"):
+        load_config(_bigger_smoke_config(tmp_path, pool_top_k=bad))
+
+
+@pytest.mark.parametrize("bad", [1.5, 5.0, 0.9])
+def test_load_config_pool_top_k_float_rejected(tmp_path, bad):
+    """``int(1.9)`` would silently truncate to ``1``. Reject all
+    floats (including those that happen to be integer-valued like
+    ``5.0``) so the schema is unambiguous about the field's type."""
+    with pytest.raises(ValueError, match="positive integer"):
+        load_config(_bigger_smoke_config(tmp_path, pool_top_k=bad))
+
+
+@pytest.mark.parametrize("bad", ["5", "many", ""])
+def test_load_config_pool_top_k_str_rejected(tmp_path, bad):
+    """A stringly-typed integer (``"5"``) was previously coerced to
+    ``5``. Reject so an env-var-expansion mistake doesn't slip
+    through. (Quoted numbers in YAML are also strings, not ints.)"""
+    with pytest.raises(ValueError, match="positive integer"):
+        load_config(_bigger_smoke_config(tmp_path, pool_top_k=bad))
+
+
 def test_run_mining_with_pool_top_k_truncates(tmp_path):
     """When pool_top_k < full pool size, the saved pool has exactly K entries
     and they are the K highest by fitness."""
