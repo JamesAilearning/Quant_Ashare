@@ -360,7 +360,20 @@ class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
 
     def test_legacy_path_when_no_pit_provider(self) -> None:
         """``pit_provider=None`` (default) falls through to direct
-        qlib.D.features — the existing legacy behaviour."""
+        qlib.D.features — the existing legacy behaviour.
+
+        Implementation note (PR7): previously this test patched
+        ``sys.modules["qlib.data"]`` with a top-level MagicMock,
+        hiding the real qlib module entirely. That masked any
+        API drift in qlib itself — e.g. a renamed module or moved
+        attribute would silently pass. We now require qlib to be
+        importable (``pytest.importorskip``) and patch the real
+        ``qlib.data.D`` attribute directly, so an import-time
+        breakage surfaces here too.
+        """
+        import pytest
+
+        pytest.importorskip("qlib")
         from unittest.mock import MagicMock
         from unittest.mock import patch as mpatch
 
@@ -380,7 +393,12 @@ class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
 
         mock_D = MagicMock()
         mock_D.features.return_value = close
-        with mpatch.dict("sys.modules", {"qlib.data": MagicMock(D=mock_D)}):
+        # Patch the attribute on the real qlib.data module, not the
+        # module itself in sys.modules. The production code's
+        # ``from qlib.data import D`` then resolves to this mock at
+        # call time without the test having to fake qlib's entire
+        # module graph.
+        with mpatch("qlib.data.D", mock_D):
             BacktestRunner._compute_equalweight_baseline(
                 predictions=predictions, topk=2,
                 evaluation_start="2025-10-01", evaluation_end="2025-10-02",
