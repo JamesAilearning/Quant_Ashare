@@ -30,7 +30,20 @@ class FeatureDatasetBuilderError(RuntimeError):
 
 
 FeatureHandlerFactory = Callable[["FeatureDatasetConfig"], Any]
+HandlerCacheIdentity = str | Callable[[], str]
 _FEATURE_HANDLER_REGISTRY: dict[str, FeatureHandlerFactory] = {}
+# Maps handler-name → cache identity. Three shapes:
+#   * absent / mapped to None → handler has NO declared cache identity;
+#     the feature-dataset cache MUST disable itself for this handler
+#     (safety default — handlers with mutable bundle state, like
+#     MinedFactor before audit P2, would otherwise serve stale entries
+#     across rebinds).
+#   * str → constant identity (e.g. ``Alpha158`` is fully determined by
+#     the registered name).
+#   * Callable[[], str] → computed identity (e.g. MinedFactor's identity
+#     depends on the currently-bound bundle's pool dir, PIT provider,
+#     delisted registry, and pool parquet contents).
+_FEATURE_HANDLER_CACHE_IDENTITY: dict[str, HandlerCacheIdentity | None] = {}
 
 
 @dataclass(frozen=True)
@@ -63,8 +76,31 @@ def register_feature_handler(
     factory: FeatureHandlerFactory,
     *,
     replace: bool = False,
+    cache_identity: HandlerCacheIdentity | None = None,
 ) -> None:
-    """Register a qlib feature handler factory by explicit name."""
+    """Register a qlib feature handler factory by explicit name.
+
+    ``cache_identity`` declares whether the feature-dataset cache can
+    safely include datasets produced by this handler:
+
+    * ``None`` (default, conservative)  Cache disabled for this
+      handler — callers see a cache miss every time. Use this when
+      the handler's output depends on mutable global state that the
+      cache key cannot fingerprint.
+    * ``str``  Constant identity. Suitable for stateless handlers
+      (e.g. ``Alpha158`` whose output depends only on the qlib
+      bundle + ``FeatureDatasetConfig`` fields the cache key
+      already includes).
+    * ``Callable[[], str]``  Computed identity. Called each time the
+      cache key is composed. Suitable for handlers whose bundle
+      state (e.g. MinedFactor's pool dir, PIT provider, registry)
+      changes between training runs and must be reflected in the
+      cache key.
+
+    A re-registration with ``replace=True`` also replaces the
+    associated identity, so binding a new MinedFactor pool produces
+    a fresh cache identity.
+    """
 
     handler_name = str(name or "").strip()
     if not handler_name:
@@ -75,7 +111,44 @@ def register_feature_handler(
         raise FeatureDatasetBuilderError(
             f"feature handler {handler_name!r} is already registered."
         )
+    if cache_identity is not None and not (
+        isinstance(cache_identity, str) or callable(cache_identity)
+    ):
+        raise FeatureDatasetBuilderError(
+            "cache_identity must be a str, a callable returning str, "
+            f"or None — got {type(cache_identity).__name__}."
+        )
     _FEATURE_HANDLER_REGISTRY[handler_name] = factory
+    _FEATURE_HANDLER_CACHE_IDENTITY[handler_name] = cache_identity
+
+
+def get_feature_handler_cache_identity(name: str) -> str | None:
+    """Resolve the registered cache identity for ``name``.
+
+    Returns ``None`` when:
+
+    * The handler is not registered.
+    * The handler was registered without a ``cache_identity``
+      (the safe-default ``None`` declaration).
+    * A callable identity raised when invoked (we treat that as
+      "no identity → disable cache" rather than propagating, so a
+      broken identity callable never aborts the build).
+
+    Callers (the feature-dataset cache layer) treat ``None`` as
+    "cache disabled for this handler".
+    """
+    descriptor = _FEATURE_HANDLER_CACHE_IDENTITY.get(name)
+    if descriptor is None:
+        return None
+    if isinstance(descriptor, str):
+        return descriptor
+    try:
+        value = descriptor()
+    except Exception:  # noqa: BLE001 — best-effort
+        return None
+    if not isinstance(value, str) or not value:
+        return None
+    return value
 
 
 def list_supported_feature_handlers() -> tuple[str, ...]:
@@ -100,7 +173,14 @@ def _reset_feature_handler_registry_to_defaults() -> None:
     """
 
     _FEATURE_HANDLER_REGISTRY.clear()
-    register_feature_handler("Alpha158", _alpha158_factory)
+    _FEATURE_HANDLER_CACHE_IDENTITY.clear()
+    # Alpha158 is stateless given the FeatureDatasetConfig fields the
+    # cache key already includes (instruments + date splits + bundle
+    # tag). A constant identity is therefore safe and lets the cache
+    # serve Alpha158 datasets.
+    register_feature_handler(
+        "Alpha158", _alpha158_factory, cache_identity="alpha158_default",
+    )
 
 
 def _alpha158_factory(config: FeatureDatasetConfig) -> Any:
@@ -198,31 +278,55 @@ class FeatureDatasetBuilder:
                     compute_cache_key,
                     read_bundle_tag,
                 )
-                # bundle_tag derivation is best-effort — read_bundle_tag
-                # returns "unknown" when no manifest exists, which is
-                # still a stable input to the hash so the cache is
-                # consistent across calls within the same session.
-                try:
-                    from src.core.qlib_runtime import (  # noqa: PLC0415
-                        get_canonical_qlib_config,
-                    )
-                    canonical = get_canonical_qlib_config()
-                    bundle_uri = (
-                        canonical.provider_uri if canonical else None
-                    )
-                except Exception:  # noqa: BLE001
-                    bundle_uri = None
-                bundle_tag = read_bundle_tag(bundle_uri)
-                cache_key = compute_cache_key(config, bundle_tag=bundle_tag)
-                cached = cache_get(cache_dir, cache_key)
-                if cached is not None:
+                # Resolve the handler's cache identity. A handler
+                # registered without one (the safe default) is opted
+                # OUT of caching here — serving stale bundles across
+                # different MinedFactor pools, for example, would be
+                # silent and misleading. See
+                # ``register_feature_handler(cache_identity=...)``.
+                handler_identity = get_feature_handler_cache_identity(
+                    config.feature_handler,
+                )
+                if handler_identity is None:
                     _log.info(
-                        "feature-dataset cache hit (key=%s, instruments=%s, "
-                        "test=%s~%s) — skipping handler + 3× prepare().",
-                        cache_key, config.instruments,
-                        config.test_start, config.test_end,
+                        "feature-dataset cache skipped: handler %r has "
+                        "no declared cache_identity. Register the "
+                        "handler with a cache_identity (str or "
+                        "callable) to enable caching for it.",
+                        config.feature_handler,
                     )
-                    return cached
+                    # Disable cache for this build but continue on
+                    # the normal build path below.
+                    cache_active = False
+                else:
+                    # bundle_tag derivation is best-effort — read_bundle_tag
+                    # returns "unknown" when no manifest exists.
+                    try:
+                        from src.core.qlib_runtime import (  # noqa: PLC0415
+                            get_canonical_qlib_config,
+                        )
+                        canonical = get_canonical_qlib_config()
+                        bundle_uri = (
+                            canonical.provider_uri if canonical else None
+                        )
+                    except Exception:  # noqa: BLE001
+                        bundle_uri = None
+                    bundle_tag = read_bundle_tag(bundle_uri)
+                    cache_key = compute_cache_key(
+                        config,
+                        bundle_tag=bundle_tag,
+                        handler_identity=handler_identity,
+                    )
+                    cached = cache_get(cache_dir, cache_key)
+                    if cached is not None:
+                        _log.info(
+                            "feature-dataset cache hit (key=%s, "
+                            "instruments=%s, test=%s~%s) — skipping "
+                            "handler + 3× prepare().",
+                            cache_key, config.instruments,
+                            config.test_start, config.test_end,
+                        )
+                        return cached
 
         try:
             from qlib.data.dataset import DatasetH  # type: ignore[import-not-found]

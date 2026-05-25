@@ -398,11 +398,21 @@ def test_build_with_pit_provider_bypasses_cache(stub_qlib, tmp_path, monkeypatch
 def test_build_corrupt_cache_falls_back_to_rebuild(stub_qlib, tmp_path):
     """If a cache file exists but is corrupt, the build must fall
     through to a fresh build (not raise)."""
+    from src.data.feature_dataset_builder import (
+        get_feature_handler_cache_identity,
+    )
+
     config = _make_config()
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    # Compute key, write corrupt file at that path
-    key = compute_cache_key(config)
+    # Compute the same key the builder will. Audit P2 added
+    # ``handler_identity`` to the key composition; pass the registered
+    # identity for ``Alpha158`` so this test's pre-write lands at the
+    # exact path the builder would consult.
+    key = compute_cache_key(
+        config,
+        handler_identity=get_feature_handler_cache_identity(config.feature_handler),
+    )
     (cache_dir / f"dataset_{key}.pkl").write_bytes(b"garbage")
     # Must not raise
     result = FeatureDatasetBuilder.build(config, cache_dir=cache_dir)
