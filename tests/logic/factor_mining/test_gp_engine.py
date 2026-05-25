@@ -485,6 +485,43 @@ def test_gp_converges_on_toy_ma_crossover_target():
 
 
 # ---------------------------------------------------------------------------
+# Regression: miner must use method="normal" so Pearson and Spearman IC
+# are independent fitness inputs. See PR fix-rank-ic-double-count.
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_individual_uses_normal_method_not_rank():
+    """Regression: ``evaluate_individual`` must call ``evaluate_factor``
+    with ``method='normal'``. With ``method='rank'`` (the old default)
+    ``ic_mean == rank_ic_mean`` and the fitness formula
+    ``w_ic·|ic_mean| + w_rankic·|rank_ic_mean|`` double-counts rank IC.
+    """
+    import src.factor_mining.gp_engine as gp_mod
+
+    captured_methods: list[str] = []
+    original = gp_mod.evaluate_factor
+
+    def recorder(expr, panel, fwd_ret, *, method="rank"):
+        captured_methods.append(method)
+        return original(expr, panel, fwd_ret, method=method)
+
+    engine = _engine(seed=314, population_size=4, n_generations=1)
+    panel, fwd = _make_panel(seed=314, n_tickers=5, n_dates=20)
+    gp_mod.evaluate_factor = recorder
+    try:
+        engine.initialize_population()
+        for expr in engine.population:
+            engine.evaluate_individual(expr, panel, fwd)
+    finally:
+        gp_mod.evaluate_factor = original
+
+    assert captured_methods, "no evaluator calls were recorded"
+    assert all(m == "normal" for m in captured_methods), (
+        f"miner must use method='normal'; saw methods={captured_methods!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # D5 strict gate
 # ---------------------------------------------------------------------------
 

@@ -190,7 +190,10 @@ class GPEngine:
         if h in self.fitness_cache:
             return self.fitness_cache[h], None
         try:
-            result = evaluate_factor(expr, panel, fwd_ret, method="rank")
+            # method="normal" makes ic_mean=Pearson and rank_ic_mean=Spearman
+            # independent. With method="rank" the two were identical, so
+            # fitness double-counted rank IC (w_ic·|rank| + w_rankic·|rank|).
+            result = evaluate_factor(expr, panel, fwd_ret, method="normal")
         except Exception:  # noqa: BLE001 — broad on purpose to prevent loop-kill
             self.fitness_cache[h] = float("-inf")
             return float("-inf"), None
