@@ -58,6 +58,20 @@ class MinerConfig:
     fitness: FitnessConfig
     output_dir: Path
     run_id: str | None = None
+    pool_top_k: int | None = None
+    """If set, ``run_mining`` saves only the top-K pool entries
+    (by ``fitness`` desc, hash-tie-broken). ``None`` (default) saves
+    the entire post-GP pool.
+
+    Rationale: a large GP run on real PIT data routinely produces
+    O(10³) factors that pass validity. Feeding O(10³) features into
+    qlib's ``StaticDataLoader`` / ``DataHandlerLP`` triggers two
+    failure modes on Windows: (1) the LightGBM trainer overfits at
+    the high feature-to-sample ratio; (2) qlib's multiprocessed
+    backtest fork hits ``[Errno 22]`` when re-importing scipy in
+    the worker. Truncating to the top-K (typical: 30-100) keeps the
+    downstream model training stable AND the backtest single-process.
+    """
 
 
 @dataclass(frozen=True)
@@ -82,8 +96,19 @@ def load_config(path: str | Path) -> MinerConfig:
     fitness = FitnessConfig(**(raw.get("fitness") or {}))
     out_dir = Path(raw.get("output_dir", "research/mined_factors"))
     run_id = raw.get("run_id")
+    pool_top_k_raw = raw.get("pool_top_k")
+    pool_top_k: int | None
+    if pool_top_k_raw is None:
+        pool_top_k = None
+    else:
+        pool_top_k = int(pool_top_k_raw)
+        if pool_top_k <= 0:
+            raise ValueError(
+                f"pool_top_k must be a positive integer or null, got {pool_top_k_raw!r}"
+            )
     return MinerConfig(
-        data=data, gp=gp, fitness=fitness, output_dir=out_dir, run_id=run_id,
+        data=data, gp=gp, fitness=fitness, output_dir=out_dir,
+        run_id=run_id, pool_top_k=pool_top_k,
     )
 
 
@@ -188,11 +213,36 @@ def _autogenerate_run_id(seed: int) -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + f"-{seed}"
 
 
+def _truncate_pool_to_top_k(pool: FactorPool, k: int) -> FactorPool:
+    """Build a new pool containing only the top-K entries by fitness.
+
+    Deterministic: ``FactorPool.top_k`` sorts by fitness desc (the
+    underlying ``sort`` is stable, and ``add()`` preserves insertion
+    order in the dict), so two calls with identical pools and ``k``
+    produce byte-identical saved artefacts.
+    """
+    truncated = FactorPool()
+    for entry in pool.top_k(k, by="fitness"):
+        truncated.add(entry)
+    return truncated
+
+
 def run_mining(config: MinerConfig) -> RunResult:
-    """Execute the full miner pipeline: build panel → run GP → save pool."""
+    """Execute the full miner pipeline: build panel → run GP → save pool.
+
+    When ``config.pool_top_k`` is set, the saved pool is truncated to
+    the top-K entries by fitness BEFORE persistence. The returned
+    ``RunResult.pool`` reflects the saved (truncated) pool so callers
+    inspecting ``result.pool`` see the same entries that downstream
+    consumers (handler, walk-forward) will load.
+    """
     panel, fwd = build_panel(config)
     engine = GPEngine(config.gp, config.fitness)
     pool = engine.run(panel, fwd)
+
+    full_pool_size = len(pool)
+    if config.pool_top_k is not None and full_pool_size > config.pool_top_k:
+        pool = _truncate_pool_to_top_k(pool, config.pool_top_k)
 
     run_id = config.run_id or _autogenerate_run_id(config.gp.seed)
     run_dir = Path(config.output_dir) / "runs" / run_id
@@ -210,6 +260,9 @@ def run_mining(config: MinerConfig) -> RunResult:
     config_dump = {
         "run_id": run_id,
         "output_dir": str(config.output_dir),
+        "pool_top_k": config.pool_top_k,
+        "full_pool_size_pre_truncation": full_pool_size,
+        "saved_pool_size": len(pool),
         "data": asdict(config.data),
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
@@ -242,7 +295,13 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
     config = load_config(args.config)
     result = run_mining(config)
-    print(f"Run complete: {result.run_id} | pool size: {len(result.pool)}")
+    if config.pool_top_k is not None:
+        print(
+            f"Run complete: {result.run_id} | pool size: {len(result.pool)} "
+            f"(top-{config.pool_top_k} by fitness)"
+        )
+    else:
+        print(f"Run complete: {result.run_id} | pool size: {len(result.pool)}")
     return 0
 
 
