@@ -46,23 +46,9 @@ _logger = get_logger(__name__)
 QLIB_OPEN_END_DATE = "2099-12-31"
 
 
-def _to_qlib_ticker(ts_code: str) -> str:
-    """Tushare ``600519.SH`` -> qlib ``SH600519``. Duplicated from
-    delisted_registry and index_membership pending a follow-up
-    consolidation PR."""
-    if "." not in ts_code:
-        return ts_code
-    code, exchange = ts_code.split(".", 1)
-    if len(code) == 6 and code.isdigit() and len(exchange) == 2 and exchange.isalpha():
-        return f"{exchange.upper()}{code}"
-    return ts_code
-
-
-def _to_iso_date(yyyymmdd: str) -> str:
-    s = str(yyyymmdd)
-    if len(s) != 8 or not s.isdigit():
-        raise ValueError(f"expected YYYYMMDD, got {yyyymmdd!r}")
-    return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+# Consolidated into ``src.data.pit._common`` (bug.md P2-4).
+from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
+from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 
 
 class UniverseFilesError(RuntimeError):

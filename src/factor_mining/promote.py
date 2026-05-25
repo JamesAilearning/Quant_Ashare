@@ -83,51 +83,15 @@ class PromotionError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _build_synthetic_panel(
-    n_tickers: int, n_dates: int, seed: int,
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    rng = np.random.default_rng(seed)
-    tickers = [f"T{i:04d}" for i in range(n_tickers)]
-    dates = pd.date_range("2024-01-01", periods=n_dates, freq="D")
-    log_returns = rng.normal(0.0005, 0.02, size=(n_dates, n_tickers))
-    close = np.exp(np.cumsum(log_returns, axis=0)) * 100.0
-    high = close * (1 + np.abs(rng.normal(0, 0.005, size=close.shape)))
-    low = close * (1 - np.abs(rng.normal(0, 0.005, size=close.shape)))
-    open_ = close * np.exp(rng.normal(0, 0.003, size=close.shape))
-    volume = np.exp(rng.normal(12, 1.0, size=close.shape))
-    money = volume * close
-
-    def _df(arr):
-        return pd.DataFrame(
-            arr,
-            index=pd.Index(dates, name="datetime"),
-            columns=pd.Index(tickers, name="instrument"),
-        )
-
-    panel = {
-        "$open": _df(open_),
-        "$high": _df(high),
-        "$low": _df(low),
-        "$close": _df(close),
-        "$volume": _df(volume),
-        "$money": _df(money),
-    }
-    # Forward return = the one-day open-to-open return REALISED at
-    # T+1→T+2, mirroring qlib's Alpha158 default label
-    # ``Ref($close, -2)/Ref($close, -1) - 1`` (LABEL_LOOKAHEAD_DAYS=2):
-    # signal decided at T, trade at T+1 open, return from T+1 open to
-    # T+2 open. ``shift(-2)/shift(-1)`` is the pandas translation of
-    # that label — NOT a bug despite audit-tool flags that claim it
-    # should be ``shift(-1)/x`` (the latter would be a 1-day lookahead
-    # because T's signal can't be acted on before T+1's open). See
-    # also ``miner.py`` _build_synthetic_panel for the same convention.
-    open_df = panel["$open"]
-    raw_return = open_df.shift(-2) / open_df.shift(-1) - 1
-    vol_signal = np.log(panel["$volume"]).rank(axis=1, pct=True) - 0.5
-    fwd = (raw_return + 0.05 * vol_signal.shift(-1)).fillna(0.0)
-    fwd.index.name = "datetime"
-    fwd.columns.name = "instrument"
-    return panel, fwd
+# Consolidated into ``src.factor_mining._synthetic_panel`` (bug.md
+# P2-5). Identical implementation previously lived in this file and
+# ``miner.py`` (including the qlib LABEL_LOOKAHEAD_DAYS=2 comment
+# added in #165's P1-6 clarification, which now lives at the
+# canonical implementation site). Both now share one source so any
+# change to the panel shape happens in one place.
+from src.factor_mining._synthetic_panel import (  # noqa: E402
+    build_synthetic_panel as _build_synthetic_panel,
+)
 
 
 def _build_pit_panel(config: PromotionDataConfig):

@@ -100,27 +100,11 @@ REGISTRY_COLUMNS: tuple[str, ...] = (
 )
 
 
-def _to_qlib_ticker(ts_code: str) -> str:
-    """Normalise Tushare ``600087.SH`` to qlib-style ``SH600087``.
-
-    Tushare's ``stock_basic`` returns ``ts_code`` as ``<6-digit>.<exchange>``
-    (e.g. ``600087.SH``, ``000023.SZ``). The rest of this project (design
-    doc §4.1 example, ``verify_survivorship.py::KNOWN_DELISTED``, qlib's
-    ``instruments/*.txt`` convention) uses ``<exchange><6-digit>`` (e.g.
-    ``SH600087``). The registry must emit the qlib-style form so
-    ``reference_cases.yaml`` and downstream Phase B.2 consumers match
-    without per-call translation.
-
-    Values without a dot are returned unchanged (already qlib-style or
-    of unrecognised shape — defer the failure to the validation step
-    instead of silently mangling them).
-    """
-    if "." not in ts_code:
-        return ts_code
-    code, exchange = ts_code.split(".", 1)
-    if len(code) == 6 and code.isdigit() and len(exchange) == 2 and exchange.isalpha():
-        return f"{exchange.upper()}{code}"
-    return ts_code
+# Consolidated into ``src.data.pit._common`` (bug.md P2-4) — the
+# original 4-way copy/paste left a TODO to dedupe; this re-export
+# preserves the leading-underscore name so internal call sites
+# don't need touching.
+from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 
 
 class DelistedRegistryError(RuntimeError):

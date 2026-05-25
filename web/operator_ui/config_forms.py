@@ -1,13 +1,22 @@
-"""Streamlit configuration forms and validation."""
+"""Streamlit configuration forms and validation.
+
+Heavy config classes (``PipelineConfig``, ``WalkForwardConfig``,
+``TushareQlibProviderBundleConfig``) transitively import ``qlib``,
+which is intentionally NOT a pyproject.toml dependency (see
+``pyproject.toml`` lines 12-14). Streamlit auto-imports every page
+module at startup to build the sidebar, so a top-level import of
+those config classes here would crash the entire UI on any
+environment without qlib. The page modules that consume
+``PIPELINE_KEYS`` / ``WALK_FORWARD_KEYS`` / ``TUSHARE_PROVIDER_KEYS``
+only need the field-name sets, not the config classes themselves;
+:pep:`562` ``__getattr__`` defers the import to first access.
+(bug.md P2-2.)
+"""
 
 from __future__ import annotations
 
 from dataclasses import fields
 from typing import Any
-
-from src.core.pipeline import PipelineConfig
-from src.core.walk_forward import WalkForwardConfig
-from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
 
 
 def validate_provider_uri(uri: str) -> None:
@@ -30,6 +39,52 @@ def _dataclass_field_names(cls: type) -> set[str]:
     return {field.name for field in fields(cls)}
 
 
-PIPELINE_KEYS = _dataclass_field_names(PipelineConfig)
-WALK_FORWARD_KEYS = _dataclass_field_names(WalkForwardConfig) | {"provider_uri", "region"}
-TUSHARE_PROVIDER_KEYS = _dataclass_field_names(TushareQlibProviderBundleConfig)
+# First-access cache for the lazily-computed key sets. Without this
+# every access would re-import and re-introspect; with it, the
+# second and subsequent lookups are O(1).
+_KEY_SET_CACHE: dict[str, frozenset[str]] = {}
+
+
+def _pipeline_keys() -> frozenset[str]:
+    if "pipeline" not in _KEY_SET_CACHE:
+        from src.core.pipeline import PipelineConfig
+        _KEY_SET_CACHE["pipeline"] = frozenset(_dataclass_field_names(PipelineConfig))
+    return _KEY_SET_CACHE["pipeline"]
+
+
+def _walk_forward_keys() -> frozenset[str]:
+    if "walk_forward" not in _KEY_SET_CACHE:
+        from src.core.walk_forward import WalkForwardConfig
+        _KEY_SET_CACHE["walk_forward"] = frozenset(
+            _dataclass_field_names(WalkForwardConfig) | {"provider_uri", "region"}
+        )
+    return _KEY_SET_CACHE["walk_forward"]
+
+
+def _tushare_provider_keys() -> frozenset[str]:
+    if "tushare" not in _KEY_SET_CACHE:
+        from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
+        _KEY_SET_CACHE["tushare"] = frozenset(
+            _dataclass_field_names(TushareQlibProviderBundleConfig)
+        )
+    return _KEY_SET_CACHE["tushare"]
+
+
+_LAZY_ATTRS = {
+    "PIPELINE_KEYS": _pipeline_keys,
+    "WALK_FORWARD_KEYS": _walk_forward_keys,
+    "TUSHARE_PROVIDER_KEYS": _tushare_provider_keys,
+}
+
+
+def __getattr__(name: str):
+    """:pep:`562` module-level ``__getattr__`` — defers the heavy
+    config-class imports until the first access of one of the
+    KEY-set names. Operators running the UI without qlib (for
+    example, opening the Streamlit app on a machine that only has
+    the operator-UI dependencies) will still see the sidebar.
+    """
+    loader = _LAZY_ATTRS.get(name)
+    if loader is not None:
+        return loader()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -86,20 +86,9 @@ TUSHARE_VOL_LOTS_TO_SHARES = 100  # vol is in 手 (100 shares)
 TUSHARE_AMOUNT_KYUAN_TO_YUAN = 1000  # amount is in 千元
 
 
-def _to_qlib_ticker(ts_code: str) -> str:
-    if "." not in ts_code:
-        return ts_code
-    code, exchange = ts_code.split(".", 1)
-    if len(code) == 6 and code.isdigit() and len(exchange) == 2 and exchange.isalpha():
-        return f"{exchange.upper()}{code}"
-    return ts_code
-
-
-def _to_iso_date(yyyymmdd: str) -> str:
-    s = str(yyyymmdd)
-    if len(s) != 8 or not s.isdigit():
-        raise ValueError(f"expected YYYYMMDD, got {yyyymmdd!r}")
-    return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+# Consolidated into ``src.data.pit._common`` (bug.md P2-4).
+from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
+from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 
 
 class QlibBinBuilderError(RuntimeError):
