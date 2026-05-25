@@ -669,6 +669,98 @@ def test_evaluate_individual_uses_normal_method_not_rank():
 
 
 # ---------------------------------------------------------------------------
+# Exception classification: KeyError fail-fast, others warn-once + -inf
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_individual_fails_fast_on_missing_panel_feature():
+    """A panel missing a feature the grammar uses is a setup-time
+    data-contract violation, not a per-expression arithmetic failure.
+    ``evaluate_individual`` must re-raise as RuntimeError instead of
+    silently caching -inf — otherwise the operator never sees the
+    bug and every random expression scores -inf."""
+    from src.factor_mining.expression import OperatorCall, Terminal
+
+    engine = _engine(seed=1, population_size=4)
+    panel, fwd = _make_panel(seed=1, n_tickers=5, n_dates=20)
+    # Drop $volume from the panel; cs_rank($volume) below will raise
+    # KeyError inside the evaluator.
+    panel.pop("$volume")
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+
+    with pytest.raises(RuntimeError, match="missing a feature"):
+        engine.evaluate_individual(expr, panel, fwd)
+    # The hash must NOT be cached — fail-fast must not pollute state.
+    assert hash(expr) not in engine.fitness_cache
+
+
+def test_evaluate_individual_warns_once_per_exception():
+    """Non-KeyError exceptions (operator overflow, undefined math, etc.)
+    are expected for random GP expressions. The engine should record
+    the first occurrence per (exc_type, expr_hash) and stay quiet on
+    repeats so the loop doesn't spam millions of warnings.
+
+    Asserts on ``engine._evaluation_warning_keys`` directly (the state
+    that drives the "warn once" decision) rather than caplog, because
+    the project may configure logging in ways that bypass caplog's
+    handler attachment.
+    """
+    import src.factor_mining.gp_engine as gp_mod
+    from src.factor_mining.expression import OperatorCall, Terminal
+
+    engine = _engine(seed=2, population_size=4)
+    panel, fwd = _make_panel(seed=2, n_tickers=5, n_dates=20)
+    expr1 = OperatorCall("cs_rank", (Terminal("$volume"),))
+    expr2 = OperatorCall("cs_rank", (Terminal("$money"),))
+
+    original = gp_mod.evaluate_factor
+
+    def raiser(_expr, _panel, _fwd, *, method="rank"):  # noqa: ARG001
+        raise ValueError("synthetic overflow")
+
+    gp_mod.evaluate_factor = raiser
+    try:
+        score1, _ = engine.evaluate_individual(expr1, panel, fwd)
+        score2, _ = engine.evaluate_individual(expr2, panel, fwd)
+        # Third call — same hash as expr1, after evicting from cache —
+        # must NOT add a new warning key (already seen).
+        engine.fitness_cache.pop(hash(expr1))
+        score3, _ = engine.evaluate_individual(expr1, panel, fwd)
+    finally:
+        gp_mod.evaluate_factor = original
+
+    assert score1 == float("-inf") and score2 == float("-inf") and score3 == float("-inf")
+    assert engine._evaluation_warning_keys == {
+        ("ValueError", hash(expr1)),
+        ("ValueError", hash(expr2)),
+    }, (
+        f"expected exactly 2 unique warning keys (one per expr_hash); "
+        f"got {engine._evaluation_warning_keys!r}"
+    )
+
+
+def test_evaluate_individual_passes_method_normal_to_pool_entry():
+    """Pool entries created by the miner must be tagged ``method='normal'``
+    so downstream consumers (validators, promoters) know ``ic_mean`` is
+    Pearson. See PR2.
+
+    Uses the same seed/panel as ``test_run_loop_completes_and_returns_pool``
+    so we know at least one factor survives the validity filters.
+    """
+    engine = _engine(seed=11, population_size=8, n_generations=1)
+    panel, fwd = _make_panel(seed=11, n_tickers=6, n_dates=30)
+    engine.initialize_population()
+    for expr in engine.population:
+        engine.evaluate_individual(expr, panel, fwd)
+    entries = list(engine._all_evaluated.values())
+    assert entries, "expected at least one valid PoolEntry"
+    assert all(e.method == "normal" for e in entries), (
+        f"all entries must be method='normal'; got "
+        f"{[e.method for e in entries]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # D5 strict gate
 # ---------------------------------------------------------------------------
 

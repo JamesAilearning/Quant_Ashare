@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 
 import numpy as np
 import pandas as pd
@@ -209,6 +210,116 @@ def test_save_load_empty_pool(tmp_path):
 def test_load_missing_parquet_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         FactorPool.load(tmp_path / "does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# method tag — added in PR2 so downstream validators know whether
+# ic_mean is Pearson or Spearman.
+# ---------------------------------------------------------------------------
+
+
+def test_pool_entry_default_method_is_normal():
+    """Default method tag is ``'normal'`` because PR1 fixed the miner
+    to call evaluate_factor with ``method='normal'``."""
+    e = _make_entry(_expr_cs_rank_volume())
+    assert e.method == "normal"
+
+
+def test_pool_entry_from_result_propagates_method():
+    """``PoolEntry.from_result`` must record the ``method`` argument so
+    the round-trip survives save/load."""
+    from src.factor_mining.evaluator import EvaluationResult
+
+    fake_result = EvaluationResult(
+        factor_values=pd.DataFrame(),
+        ic_mean=0.1,
+        ic_std=0.2,
+        ir=0.5,
+        rank_ic_mean=0.08,
+        rank_ic_std=0.15,
+        rank_ir=0.53,
+        turnover_daily=0.1,
+        coverage=0.9,
+        n_obs_per_day_min=20,
+    )
+    e = PoolEntry.from_result(
+        expr=_expr_cs_rank_volume(),
+        result=fake_result,
+        fitness=1.0,
+        expr_size=2,
+        method="rank",
+    )
+    assert e.method == "rank"
+
+
+def test_save_load_round_trip_preserves_method(tmp_path):
+    """``method`` field survives save → load (parquet column round-trip)."""
+    pool = FactorPool()
+    e1 = PoolEntry(
+        expr=_expr_cs_rank_volume(),
+        fitness=1.0, ic_mean=0.05, ic_std=0.1, ir=0.5,
+        rank_ic_mean=0.04, rank_ic_std=0.1, rank_ir=0.4,
+        turnover_daily=0.1, coverage=0.95, n_obs_per_day_min=20,
+        expr_size=2, expr_hash=hash(_expr_cs_rank_volume()),
+        method="normal",
+    )
+    e2 = PoolEntry(
+        expr=_expr_cs_rank_money(),
+        fitness=0.8, ic_mean=0.03, ic_std=0.1, ir=0.3,
+        rank_ic_mean=0.05, rank_ic_std=0.1, rank_ir=0.5,
+        turnover_daily=0.1, coverage=0.9, n_obs_per_day_min=15,
+        expr_size=2, expr_hash=hash(_expr_cs_rank_money()),
+        method="rank",
+    )
+    pool.add(e1)
+    pool.add(e2)
+    pool.save(tmp_path / "pool")
+
+    loaded = FactorPool.load(tmp_path / "pool")
+    by_hash = {hash(e.expr): e.method for e in loaded.all_entries()}
+    assert by_hash[hash(_expr_cs_rank_volume())] == "normal"
+    assert by_hash[hash(_expr_cs_rank_money())] == "rank"
+
+
+def test_load_legacy_parquet_without_method_column_uses_legacy_tag(tmp_path):
+    """A parquet saved by pre-PR2 code (no 'method' column) must load
+    with the LEGACY_METHOD_TAG sentinel so downstream callers can
+    detect ambiguous-semantics entries."""
+    from src.factor_mining.factor_pool import (
+        LEGACY_METHOD_TAG,
+        POOL_EXPR_JSON_FILENAME,
+        POOL_PARQUET_FILENAME,
+    )
+
+    d = tmp_path / "legacy_pool"
+    d.mkdir()
+    expr = _expr_cs_rank_volume()
+    legacy_metrics = pd.DataFrame(
+        [
+            {
+                "expr_hash": str(hash(expr)),
+                "fitness": 1.5,
+                "ic_mean": 0.05,
+                "ic_std": 0.1,
+                "ir": 0.5,
+                "rank_ic_mean": 0.04,
+                "rank_ic_std": 0.1,
+                "rank_ir": 0.4,
+                "turnover_daily": 0.1,
+                "coverage": 0.95,
+                "n_obs_per_day_min": 20,
+                "expr_size": 2,
+                # NOTE: no 'method' column — that's the legacy shape.
+            }
+        ]
+    )
+    legacy_metrics.to_parquet(d / POOL_PARQUET_FILENAME, index=False)
+    with (d / POOL_EXPR_JSON_FILENAME).open("w", encoding="utf-8") as fh:
+        json.dump({str(hash(expr)): expr.to_dict()}, fh)
+
+    loaded = FactorPool.load(d)
+    only = loaded.all_entries()[0]
+    assert only.method == LEGACY_METHOD_TAG
 
 
 # ---------------------------------------------------------------------------

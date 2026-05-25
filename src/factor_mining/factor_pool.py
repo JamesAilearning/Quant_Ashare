@@ -16,6 +16,7 @@ serialisation arithmetic.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +27,17 @@ import pandas as pd
 from .evaluator import EvaluationResult
 from .expression import Expression
 
+_log = logging.getLogger(__name__)
+
 POOL_PARQUET_FILENAME = "factor_pool.parquet"
 POOL_EXPR_JSON_FILENAME = "factor_expressions.json"
+
+# Default ``method`` for entries loaded from a parquet that predates the
+# method-tagging contract (PR2). Old pools were produced by the miner
+# bug where ``ic_mean`` actually carried Spearman IC; we tag them as
+# "unknown" so downstream consumers (validators, promoters) can decide
+# whether to trust ic_mean rather than silently assuming Pearson.
+LEGACY_METHOD_TAG = "unknown"
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,12 @@ class PoolEntry:
     The structural ``expr_hash`` is the dedup key. Metric scalars are
     persisted to parquet; the ``Expression`` is persisted to JSON via
     ``Expression.to_dict``.
+
+    ``method`` records which IC method produced ``ic_mean`` (``"normal"``
+    for Pearson, ``"rank"`` for Spearman, or :data:`LEGACY_METHOD_TAG`
+    for entries loaded from a pre-PR2 parquet without the column).
+    Downstream validators and promoters use it to decide whether to
+    compare ``ic_mean`` across runs.
     """
 
     expr: Expression
@@ -52,6 +68,7 @@ class PoolEntry:
     n_obs_per_day_min: int
     expr_size: int
     expr_hash: int
+    method: str = "normal"
 
     @classmethod
     def from_result(
@@ -60,6 +77,7 @@ class PoolEntry:
         result: EvaluationResult,
         fitness: float,
         expr_size: int,
+        method: str = "normal",
     ) -> PoolEntry:
         return cls(
             expr=expr,
@@ -75,6 +93,7 @@ class PoolEntry:
             n_obs_per_day_min=int(result.n_obs_per_day_min),
             expr_size=int(expr_size),
             expr_hash=hash(expr),
+            method=str(method),
         )
 
 
@@ -188,6 +207,7 @@ class FactorPool:
                         "coverage": e.coverage,
                         "n_obs_per_day_min": e.n_obs_per_day_min,
                         "expr_size": e.expr_size,
+                        "method": e.method,
                     }
                     for e in entries
                 ]
@@ -198,7 +218,7 @@ class FactorPool:
                     "expr_hash", "fitness", "ic_mean", "ic_std", "ir",
                     "rank_ic_mean", "rank_ic_std", "rank_ir",
                     "turnover_daily", "coverage", "n_obs_per_day_min",
-                    "expr_size",
+                    "expr_size", "method",
                 ]
             )
         metrics.to_parquet(d / POOL_PARQUET_FILENAME, index=False)
@@ -228,6 +248,14 @@ class FactorPool:
         metrics = pd.read_parquet(metrics_path)
         with json_path.open("r", encoding="utf-8") as fh:
             expr_map = json.load(fh)
+        has_method = "method" in metrics.columns
+        if not has_method and not metrics.empty:
+            _log.info(
+                "pool at %s has no 'method' column (predates PR2); "
+                "tagging entries as method=%r so callers know ic_mean "
+                "semantics may have been Spearman under the old miner",
+                d, LEGACY_METHOD_TAG,
+            )
         pool = cls()
         for _, row in metrics.iterrows():
             h_key = str(row["expr_hash"])
@@ -252,6 +280,7 @@ class FactorPool:
                 n_obs_per_day_min=int(row["n_obs_per_day_min"]),
                 expr_size=int(row["expr_size"]),
                 expr_hash=actual_hash,
+                method=str(row["method"]) if has_method else LEGACY_METHOD_TAG,
             )
             pool.add(entry)
         return pool
