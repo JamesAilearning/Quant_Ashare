@@ -23,6 +23,18 @@ class WalkForwardFold:
     # fold without persisting a report (e.g. the aggregate-NaN tests
     # below) keep working unchanged.
     report_path: str | None = None
+    # Wall-clock duration of the fold (``time.perf_counter`` delta
+    # around the engine's ``_run_single_fold`` call). ``None`` when
+    # the fold was resumed from a manifest that predates the timing
+    # field, or when tests construct a fold without going through
+    # the engine. Aggregate report surfaces ``mean_fold_duration_seconds``
+    # / ``slowest_fold_*`` so operators can spot which fold is
+    # dragging a "system slowly training" run.
+    duration_seconds: float | None = None
+    # ISO 8601 UTC timestamps captured by the engine around the fold
+    # body. ``None`` for the same reason as ``duration_seconds``.
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 @dataclass(frozen=True)
