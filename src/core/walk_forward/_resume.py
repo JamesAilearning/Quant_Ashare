@@ -112,9 +112,15 @@ def compute_config_fingerprint(config: Any) -> str:
     change (train_months, topk, model_type, …) produces a different
     fingerprint and triggers a re-run of all folds.
     """
-    if not dataclasses.is_dataclass(config):
+    # ``is_dataclass`` is True for both classes AND instances; we
+    # only want instances (``asdict`` raises on a class). Explicit
+    # type narrowing satisfies mypy's strict mode and surfaces a
+    # caller passing ``WalkForwardConfig`` (the class) instead of
+    # ``WalkForwardConfig(...)`` (an instance).
+    if not dataclasses.is_dataclass(config) or isinstance(config, type):
         raise TypeError(
-            f"config must be a dataclass; got {type(config).__name__}"
+            f"config must be a dataclass INSTANCE; got "
+            f"{type(config).__name__}"
         )
     raw = dataclasses.asdict(config)
     for key in _FINGERPRINT_EXCLUDE_FIELDS:
