@@ -119,6 +119,31 @@ class DiscoverRunDirsTests(unittest.TestCase):
             self.assertEqual(len(dirs), 1)
             self.assertEqual(dirs[0].size_bytes, 0)
 
+    def test_symlinked_run_dir_skipped(self):
+        """Codex P2 on PR #168: directory symlinks satisfy
+        ``Path.is_dir()`` but crash ``shutil.rmtree`` mid-cleanup.
+        Skipping symlinks entirely keeps the inventory + cleanup
+        loop safe — the operator can ``rm`` the link manually
+        if they want to."""
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            real = _seed_run(root, "real_run", files={"a.json": 1024})
+            link = root / "linked_run"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                # Windows without symlink privilege — skip rather
+                # than fail; the regression is verified on platforms
+                # where symlinks are creatable.
+                self.skipTest(
+                    "symlinks not creatable on this platform/privilege "
+                    "level"
+                )
+            dirs = discover_run_dirs(root)
+            self.assertEqual([d.path.name for d in dirs], ["real_run"])
+
 
 # ---------------------------------------------------------------------------
 # select_candidates
