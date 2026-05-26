@@ -28,7 +28,7 @@ from src.contracts.canonical_boundaries import (
 _EXPECTED_CANONICAL_BACKTEST_PATH = "qlib.backtest.backtest"
 
 try:
-    from qlib.backtest import backtest as _qlib_backtest_callable  # type: ignore[import-not-found]
+    from qlib.backtest import backtest as _qlib_backtest_callable
 
     CANONICAL_OFFICIAL_BACKTEST_CALLABLE: Callable[..., Any] | None = _qlib_backtest_callable
     CANONICAL_OFFICIAL_BACKTEST_PATH = (
@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover - environment-dependent
 _EXPECTED_CANONICAL_METRIC_HELPER_PATH = "qlib.contrib.evaluate.risk_analysis"
 
 try:
-    from qlib.contrib.evaluate import risk_analysis as _qlib_metric_helper_callable  # type: ignore[import-not-found]
+    from qlib.contrib.evaluate import risk_analysis as _qlib_metric_helper_callable
 
     CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE: Callable[..., Any] | None = (
         _qlib_metric_helper_callable

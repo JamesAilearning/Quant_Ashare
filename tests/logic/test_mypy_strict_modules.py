@@ -42,6 +42,18 @@ STRICT_MODULES: tuple[str, ...] = (
     "src.core.regression_baseline",
 )
 
+# Wildcard patterns added by ``add-mypy-strict-everywhere`` (batch 1
+# of 4). The pyproject overrides block accepts ``"src.core.*"``
+# style globs — we cross-check these as substring matches in the
+# file rather than importlib-loading every module they cover (too
+# slow, and the directory-level CI step already enforces strict
+# inside the tree).
+STRICT_MODULE_PATTERNS: tuple[str, ...] = (
+    "src.core.*",
+    "src.pit.*",
+    "scripts.*",
+)
+
 
 class MypyStrictPyprojectTests(unittest.TestCase):
     def test_pyproject_lists_all_strict_modules(self):
@@ -60,6 +72,20 @@ class MypyStrictPyprojectTests(unittest.TestCase):
                 f"{module!r} — see FU-7. Found pyproject without it; "
                 f"either add the module to the override block, or "
                 f"remove it from STRICT_MODULES in this test.",
+            )
+
+    def test_pyproject_lists_all_strict_patterns(self):
+        """Same drift check as above but for the wildcard patterns
+        added by ``add-mypy-strict-everywhere`` (batch 1 of 4)."""
+        pyproject = PROJECT_ROOT / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        for pattern in STRICT_MODULE_PATTERNS:
+            self.assertIn(
+                f'"{pattern}"', text,
+                f"pyproject.toml's mypy overrides should list "
+                f"{pattern!r} — see add-mypy-strict-everywhere batch 1. "
+                f"Either add the pattern to the override block, or "
+                f"remove it from STRICT_MODULE_PATTERNS in this test.",
             )
 
     def test_strict_module_flags_present(self):
@@ -119,6 +145,23 @@ class MypyStrictCiWorkflowTests(unittest.TestCase):
             "so legacy-code transitive errors don't drown the "
             "strict-module signal.",
         )
+
+    def test_ci_workflow_covers_batch1_directories(self):
+        """Batch 1 of ``add-mypy-strict-everywhere`` extends CI's
+        strict step from the FU-7 file-list to directory-level
+        coverage of `src/core/`, `src/pit/`, and `scripts/`. The
+        directory names must appear in the workflow's mypy
+        invocation; if a future PR demotes the step back to the
+        file-list, this test fails loudly."""
+        wf = PROJECT_ROOT / ".github" / "workflows" / "test.yml"
+        text = wf.read_text(encoding="utf-8")
+        for directory in ("src/core/", "src/pit/", "scripts/"):
+            self.assertIn(
+                directory, text,
+                f"CI workflow's strict-mypy step must include "
+                f"{directory!r} — see add-mypy-strict-everywhere "
+                f"batch 1.",
+            )
 
 
 if __name__ == "__main__":

@@ -74,20 +74,20 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 ignore_missing_imports = true
 
-# Strict mode opt-in for high-stakes modules (audit FU-7).
-# The repo-wide default is intentionally lenient — large swaths of
-# legacy code still need cleanup, and a flag-day strict turn-on would
-# require ~175 fixes scattered across 35 files. Instead, we
-# strict-mode the modules where type bugs cause silent regressions
-# (caching keys, manifest schemas, regression-baseline comparators,
-# the embargo guard). Future additions to these modules get caught
-# at PR review rather than at runtime.
+# Strict mode opt-in. Growing the whitelist directory-by-directory
+# per the `add-mypy-strict-everywhere` OpenSpec change (PR #171).
+# End state: flip ``[tool.mypy] strict = true`` and demote this
+# block to a single ``src.factor_mining.*`` opt-out.
 #
-# Excluded: ``src/factor_mining/`` (active workstream on another
-# session — turning strict on while live code is in flight would
-# generate constant merge noise) and the rest of ``src/data/`` /
-# ``src/core/walk_forward/`` (each carries pre-existing untyped
-# defs that would need backfilling first).
+# Batch 1 (this PR) adds ``src.core.*``, ``src.pit.*``, ``scripts.*``
+# alongside the original FU-7 individual modules — the latter become
+# redundant under the wildcard but stay until batch 4's flip-and-
+# invert PR so the ``test_mypy_strict_modules.STRICT_MODULES`` tuple
+# continues to round-trip.
+#
+# Excluded: ``src/factor_mining/`` (parallel workstream — strict mid-
+# flight = constant merge noise; opt-out removed in a follow-up
+# after that stabilises).
 [[tool.mypy.overrides]]
 module = [
   "src.data._segment_embargo",
@@ -95,6 +95,9 @@ module = [
   "src.data._feature_dataset_cache",
   "src.core.walk_forward._resume",
   "src.core.regression_baseline",
+  "src.core.*",
+  "src.pit.*",
+  "scripts.*",
 ]
 disallow_untyped_defs = true
 disallow_untyped_calls = true

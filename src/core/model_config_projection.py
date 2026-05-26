@@ -28,7 +28,7 @@ def model_train_config_kwargs(
         if value is MISSING:
             if item.default is not MISSING:
                 value = item.default
-            elif item.default_factory is not MISSING:  # type: ignore[comparison-overlap]
+            elif item.default_factory is not MISSING:
                 value = item.default_factory()  # type: ignore[misc]
             else:
                 raise TypeError(f"Missing required ModelTrainConfig field {item.name!r}.")

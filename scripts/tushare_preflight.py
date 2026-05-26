@@ -107,7 +107,7 @@ def _run_preflight() -> int:
 
     # ---- Step 2: tushare importable ---------------------------------
     try:
-        import tushare as ts  # type: ignore[import-not-found]
+        import tushare as ts
         ts_version = getattr(ts, "__version__", "unknown")
     except ImportError:
         _line(

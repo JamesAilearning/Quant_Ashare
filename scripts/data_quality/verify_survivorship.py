@@ -29,6 +29,7 @@ the updated PIT design baseline.
 """
 
 import sys
+from typing import Any
 
 import pandas as pd
 import qlib
@@ -52,7 +53,7 @@ TEST_START = "2014-01-01"
 TEST_END = "2025-12-31"
 
 
-def main():
+def main() -> int:
     qlib.init(provider_uri=PROVIDER_URI, region=REGION)
 
     print("=" * 60)
@@ -75,7 +76,7 @@ def main():
     #   missing       — no data for the ticker at all (survivorship).
     #   error         — query raised.
     BOUNDARY_DAYS = 90
-    results = {
+    results: dict[str, list[Any]] = {
         "good": [],
         "bad_extended": [],
         "truncated": [],

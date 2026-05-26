@@ -33,7 +33,8 @@ def _load_aggregate(run_dir: Path) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(f"Missing aggregate report: {path}")
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        loaded: dict[str, Any] = json.load(f)
+        return loaded
 
 
 def _load_fold(run_dir: Path, fold_index: int) -> dict[str, Any]:
@@ -44,7 +45,8 @@ def _load_fold(run_dir: Path, fold_index: int) -> dict[str, Any]:
     if not path.exists():
         return {}
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        loaded: dict[str, Any] = json.load(f)
+        return loaded
 
 
 def _fmt_float(value: Any, *, pct: bool = False, places: int = 4) -> str:

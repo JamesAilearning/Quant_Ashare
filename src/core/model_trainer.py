@@ -176,7 +176,7 @@ class ModelTrainer:
 
         model = cls._create_model(config)
 
-        evals_result: dict = {}
+        evals_result: dict[str, Any] = {}
         cls._fit_dispatch(model, dataset, config, evals_result)
         cls._refresh_framework_evals_result(model, config.model_type, evals_result)
 
@@ -241,7 +241,7 @@ class ModelTrainer:
 
     @classmethod
     def _fit_dispatch(
-        cls, model: Any, dataset: Any, config: ModelTrainConfig, evals_result: dict,
+        cls, model: Any, dataset: Any, config: ModelTrainConfig, evals_result: dict[str, Any],
     ) -> None:
         """Call ``model.fit`` with the kwargs each framework actually accepts.
 
@@ -268,7 +268,7 @@ class ModelTrainer:
 
     @classmethod
     def _refresh_framework_evals_result(
-        cls, model: Any, model_type: str, evals_result: dict,
+        cls, model: Any, model_type: str, evals_result: dict[str, Any],
     ) -> None:
         """Normalize framework eval history into one in-process shape.
 
@@ -456,7 +456,7 @@ class ModelTrainer:
 
     @classmethod
     def _extract_training_diagnostics(
-        cls, model: Any, model_type: str, evals_result: dict,
+        cls, model: Any, model_type: str, evals_result: dict[str, Any],
     ) -> tuple[int | None, float | None]:
         """Best-effort extraction of ``best_iteration`` and final valid loss.
 
@@ -533,7 +533,7 @@ class ModelTrainer:
         """
         if config.model_type == "LGBModel":
             try:
-                from qlib.contrib.model.gbdt import LGBModel  # type: ignore[import-not-found]
+                from qlib.contrib.model.gbdt import LGBModel
             except ImportError as exc:
                 raise ModelTrainerError(
                     "lightgbm / qlib LGBModel is not importable. Run: "
@@ -562,7 +562,7 @@ class ModelTrainer:
             return LGBModel(**lgb_kwargs)
         elif config.model_type == "XGBModel":
             try:
-                from qlib.contrib.model.xgboost import XGBModel  # type: ignore[import-not-found]
+                from qlib.contrib.model.xgboost import XGBModel
             except ImportError as exc:
                 raise ModelTrainerError(
                     "xgboost is not installed. Run: pip install xgboost"
@@ -576,7 +576,7 @@ class ModelTrainer:
             )
         elif config.model_type == "CatBoostModel":
             try:
-                from qlib.contrib.model.catboost_model import CatBoostModel  # type: ignore[import-not-found]
+                from qlib.contrib.model.catboost_model import CatBoostModel
             except ImportError as exc:
                 raise ModelTrainerError(
                     "catboost is not installed. Run: pip install catboost"

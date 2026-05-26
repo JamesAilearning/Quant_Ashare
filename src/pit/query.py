@@ -114,7 +114,7 @@ class PITDataProvider:
         in case the qlib instruments file leaks a delisted ticker on
         the day after delist — observed in older qlib bundles).
         """
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         ts = pd.Timestamp(date)
         try:
@@ -145,7 +145,7 @@ class PITDataProvider:
         ranges this is the per-call cost; consider caching at the
         caller if you call it repeatedly with overlapping ranges.
         """
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         s, e = pd.Timestamp(start), pd.Timestamp(end)
         calendar = D.calendar(start_time=s, end_time=e, freq="day")
@@ -237,7 +237,7 @@ class PITDataProvider:
         universe_name: str,
         instruments: list[str] | None = None,
     ) -> pd.DataFrame:
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
         # Specific-instrument queries skip the universe lookup so callers
         # that already resolved a ticker list (factor mining, backtest)
         # can use the PIT mask without translating through a universe

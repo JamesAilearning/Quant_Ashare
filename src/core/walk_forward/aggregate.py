@@ -423,7 +423,9 @@ def extract_cost_metrics(
     )
 
 
-def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[str, float]:
+def compute_aggregate(
+    folds: list[WalkForwardFold], *, seed: int = 42,
+) -> dict[str, Any]:
     """Compute aggregate metrics across all folds, NaN-safe.
 
     SignalAnalyzer now surfaces "no valid IC" as ``NaN`` rather than
@@ -536,7 +538,13 @@ def compute_aggregate(folds: list[WalkForwardFold], *, seed: int = 42) -> dict[s
             key=lambda i: folds[i].duration_seconds or 0.0,
         )
         slowest_fold_index = folds[slowest_idx].fold_index
-        slowest_fold_duration_seconds = float(folds[slowest_idx].duration_seconds)
+        # ``durations`` was built from folds with non-None
+        # ``duration_seconds`` (see ``max`` filter above), so the
+        # assert holds; spelling it out narrows ``float | None`` →
+        # ``float`` for mypy.
+        slowest_duration = folds[slowest_idx].duration_seconds
+        assert slowest_duration is not None
+        slowest_fold_duration_seconds = float(slowest_duration)
     else:
         mean_fold_duration_seconds = float("nan")
         total_duration_seconds = float("nan")

@@ -162,6 +162,12 @@ def compare(
         # "candidate > baseline" means candidate wins; the comparison
         # is the same after the sign convention is fixed in the
         # underlying metric.
+        # ``_diff_metric`` returns ``MetricDiff`` only when both
+        # baseline and candidate are numeric (``None`` → diff is None,
+        # which we handled above with ``continue``). The narrow here
+        # is for mypy; the runtime guarantee is upstream.
+        if diff.baseline is None or diff.candidate is None:
+            continue
         if diff.candidate > diff.baseline:
             candidate_better += 1
         elif diff.candidate < diff.baseline:

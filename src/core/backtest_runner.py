@@ -129,10 +129,10 @@ class BacktestRunner:
             )
 
         try:
-            from qlib.backtest import backtest as qlib_backtest  # type: ignore[import-not-found]
-            from qlib.backtest.executor import SimulatorExecutor  # type: ignore[import-not-found]
-            from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy  # type: ignore[import-not-found]
-            from qlib.utils.time import Freq  # type: ignore[import-not-found]
+            from qlib.backtest import backtest as qlib_backtest
+            from qlib.backtest.executor import SimulatorExecutor
+            from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy
+            from qlib.utils.time import Freq
         except ImportError as exc:
             raise BacktestRunnerError(
                 "qlib is not importable; cannot run backtest."
@@ -329,7 +329,7 @@ class BacktestRunner:
             )
 
         # Extract per-date top-k instrument sets.
-        daily_topk: dict[pd.Timestamp, set] = {}
+        daily_topk: dict[pd.Timestamp, set[str]] = {}
         for dt, group in predictions.groupby(level=0):
             top = group.nlargest(topk)
             daily_topk[dt] = set(top.index.get_level_values(1))
@@ -579,7 +579,7 @@ class BacktestRunner:
         }
 
 
-def _risk_analysis_to_flat_dict(df: Any) -> dict:
+def _risk_analysis_to_flat_dict(df: Any) -> dict[str, Any]:
     """Normalize a qlib risk_analysis DataFrame to a flat {metric: value} dict.
 
     qlib's ``risk_analysis`` can return a DataFrame in two orientations:
@@ -639,7 +639,7 @@ def _risk_analysis_to_flat_dict(df: Any) -> dict:
 
     # Column-oriented shape: outer keys are metric names, inner dicts
     # have index labels as keys (typically a single "risk" entry).
-    flat: dict = {}
+    flat: dict[str, Any] = {}
     for metric, sub in raw.items():
         if not isinstance(sub, dict):
             try:
@@ -656,7 +656,7 @@ def _risk_analysis_to_flat_dict(df: Any) -> dict:
     return flat
 
 
-def _series_to_dict(series: Any, *, name: str = "series") -> dict:
+def _series_to_dict(series: Any, *, name: str = "series") -> dict[str, float]:
     """Convert a pandas-like Series to ``{date_str: float}``.
 
     Unknown qlib output shapes are boundary failures. Returning a raw string
@@ -678,7 +678,7 @@ def _series_to_dict(series: Any, *, name: str = "series") -> dict:
         ) from exc
 
 
-def _positions_to_weight_map(positions_normal: Any) -> dict:
+def _positions_to_weight_map(positions_normal: Any) -> dict[str, dict[str, float]]:
     """Serialize qlib positions into ``{date_str: {instrument: weight}}``.
 
     qlib's ``positions_normal`` comes out of ``generate_portfolio_metrics`` as

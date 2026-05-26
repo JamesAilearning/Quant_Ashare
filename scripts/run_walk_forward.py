@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 # Allow ``python scripts/run_walk_forward.py`` from the repo root —
 # ensure the project root is on sys.path before importing src.*
@@ -126,7 +127,7 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
 
 
 def _maybe_build_mined_factor_bundle(
-    raw: dict,
+    raw: dict[str, Any],
     wf_config: WalkForwardConfig,
     provider_uri: str,
 ) -> MinedFactorBundle | None:

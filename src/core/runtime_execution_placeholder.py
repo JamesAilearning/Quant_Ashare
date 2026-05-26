@@ -7,7 +7,7 @@ class RuntimeExecutionPlaceholder:
     """Explicit boundary marker: runtime execution semantics are not implemented here."""
 
     @staticmethod
-    def run(*_args, **_kwargs):
+    def run(*_args: object, **_kwargs: object) -> None:
         raise NotImplementedError(
             "Runtime execution semantics are intentionally unimplemented "
             "in define-v2-run-artifact-contract-foundation."
