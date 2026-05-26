@@ -136,6 +136,13 @@ _FILTER_KEY_LABELS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 render_breadcrumbs([("运行", None)])
 render_page_header("作业", "所有流水线、滚动验证及数据源的运行记录。")
+# FU-8: surface bundle freshness next to the header. Operators can
+# now spot a stale / mis-configured ``provider_uri`` before they
+# launch a multi-hour walk-forward run.
+from web.operator_ui.bundle_health import (  # noqa: E402, PLC0415
+    render_bundle_health_banner,
+)
+render_bundle_health_banner(st=st)
 
 # ---------------------------------------------------------------------------
 # Filter row 1: type / status / source / search
