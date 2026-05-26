@@ -1469,6 +1469,14 @@ def _render_run_not_found(run_id: str) -> None:
 _install_styles()
 render_breadcrumbs([("分析", None)])
 render_page_header("结果", "查看流水线、滚动验证及数据源运行的产物。")
+# FU-8: bundle freshness banner mirrors the jobs page; the results
+# the operator is looking at on this page came from a specific
+# bundle, so showing tail_date + instrument count up front saves a
+# trip to the YAML.
+from web.operator_ui.bundle_health import (  # noqa: E402, PLC0415
+    render_bundle_health_banner,
+)
+render_bundle_health_banner(st=st)
 
 # Detect current theme for Plotly charts
 theme_detect_script = """
