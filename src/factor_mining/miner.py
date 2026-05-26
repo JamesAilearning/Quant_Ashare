@@ -161,8 +161,16 @@ def _build_synthetic_panel(
         "$volume": _df(volume),
         "$money": _df(money),
     }
-    # Forward return = open-to-open one-day return, plus a noisy signal
-    # tied to volume (so the GP can find a small but real factor).
+    # Forward return = the one-day open-to-open return REALISED at
+    # T+1→T+2, mirroring qlib's Alpha158 default label
+    # ``Ref($close, -2)/Ref($close, -1) - 1`` (LABEL_LOOKAHEAD_DAYS=2):
+    # at time T you decide based on data ≤ T, trade at T+1 open, and
+    # earn the return from T+1 open to T+2 open. ``shift(-2)/shift(-1)``
+    # is that — NOT a bug despite occasional audit-tool flags that
+    # claim it should be ``shift(-1)/x``. The latter (T→T+1 return)
+    # would be a 1-day lookahead because T's signal can't be acted on
+    # before T+1's open. Plus a noisy volume-momentum signal so the GP
+    # has something real to mine on top of the random walk.
     open_df = panel["$open"]
     raw_return = open_df.shift(-2) / open_df.shift(-1) - 1
     # Mild "volume momentum" signal so the GP has something to mine.
