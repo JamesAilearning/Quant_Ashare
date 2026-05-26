@@ -73,28 +73,11 @@ MEMBERSHIP_DATE_TOLERANCE_DAYS = 35
 QLIB_OPEN_END_DATE = "2099-12-31"
 
 
-def _to_qlib_ticker(ts_code: str) -> str:
-    """Normalise Tushare ``600519.SH`` to qlib-style ``SH600519``.
-
-    Duplicated from :mod:`src.data.pit.delisted_registry` to avoid a
-    cross-PR import dependency while both PRs are in flight. After both
-    Phase A.2 (PR #100) and Phase A.4 (this PR) merge, a follow-up PR
-    should consolidate into a shared ``_common.py``.
-    """
-    if "." not in ts_code:
-        return ts_code
-    code, exchange = ts_code.split(".", 1)
-    if len(code) == 6 and code.isdigit() and len(exchange) == 2 and exchange.isalpha():
-        return f"{exchange.upper()}{code}"
-    return ts_code
-
-
-def _to_iso_date(yyyymmdd: str) -> str:
-    """``20220630`` -> ``2022-06-30``."""
-    s = str(yyyymmdd)
-    if len(s) != 8 or not s.isdigit():
-        raise ValueError(f"expected YYYYMMDD, got {yyyymmdd!r}")
-    return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+# Consolidated into ``src.data.pit._common`` (bug.md P2-4). The
+# leading-underscore re-exports preserve the existing call-site
+# names so nothing else in this module needs to change.
+from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
+from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 
 
 class IndexMembershipError(RuntimeError):

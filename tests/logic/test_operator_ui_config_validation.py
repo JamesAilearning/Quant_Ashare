@@ -64,5 +64,70 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(TUSHARE_PROVIDER_KEYS, expected)
 
 
+class LazyImportTests(unittest.TestCase):
+    """Regression for bug.md P2-2: ``config_forms`` previously
+    triggered ``src.core.pipeline``/``src.core.walk_forward``/
+    ``src.data.tushare.provider_bundle`` imports at module load,
+    each of which transitively imports qlib. Streamlit imports every
+    page module to build the sidebar, so the UI would crash on any
+    machine without qlib. The lazy ``__getattr__`` (PEP 562) defers
+    those imports until first key-set access.
+    """
+
+    def test_importing_config_forms_does_not_load_heavy_configs(self) -> None:
+        """A fresh subprocess that imports ``config_forms`` must NOT
+        end up with ``src.core.pipeline`` etc. in ``sys.modules`` —
+        proves the import-time cost is bounded to the lazy hook
+        itself, not the transitive qlib dependency chain.
+        """
+        import subprocess
+
+        script = (
+            "import sys\n"
+            "import web.operator_ui.config_forms  # noqa: F401\n"
+            "heavy = ['src.core.pipeline', 'src.core.walk_forward',\n"
+            "         'src.data.tushare.provider_bundle']\n"
+            "loaded = [m for m in heavy if m in sys.modules]\n"
+            "if loaded:\n"
+            "    raise SystemExit(f'eagerly loaded: {loaded}')\n"
+        )
+        result = subprocess.run(
+            [_sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=str(_PROJECT_ROOT),
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"config_forms eagerly loaded a heavy config module — "
+            f"P2-2 regression. stderr: {result.stderr}",
+        )
+
+    def test_pipeline_keys_lookup_triggers_lazy_load(self) -> None:
+        """The deferred load DOES happen on first access — pin the
+        contract by checking the module appears in ``sys.modules``
+        after touching the lazy attr."""
+        import importlib
+        import sys
+
+        # Pre-emptively evict any cached module from a prior test
+        # so this assertion observes a fresh load.
+        for mod_name in (
+            "src.core.pipeline",
+            "web.operator_ui.config_forms",
+        ):
+            sys.modules.pop(mod_name, None)
+        cf = importlib.import_module("web.operator_ui.config_forms")
+        self.assertNotIn(
+            "src.core.pipeline", sys.modules,
+            "import-time leak: pipeline module loaded before key-set access",
+        )
+        _ = cf.PIPELINE_KEYS  # trigger lazy hook
+        self.assertIn(
+            "src.core.pipeline", sys.modules,
+            "lazy hook did not load pipeline module on first access",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

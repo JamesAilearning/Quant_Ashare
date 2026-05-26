@@ -22,8 +22,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import yaml
 
 from .factor_pool import FactorPool
@@ -128,57 +126,15 @@ def load_config(path: str | Path) -> MinerConfig:
 # ---------------------------------------------------------------------------
 
 
-def _build_synthetic_panel(
-    n_tickers: int, n_dates: int, seed: int,
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    """Deterministic synthetic OHLCV panel + noisy forward return."""
-    rng = np.random.default_rng(seed)
-    tickers = [f"T{i:04d}" for i in range(n_tickers)]
-    dates = pd.date_range("2024-01-01", periods=n_dates, freq="D")
-    # Random-walk close prices (positive, drift slightly upward).
-    log_returns = rng.normal(0.0005, 0.02, size=(n_dates, n_tickers))
-    close = np.exp(np.cumsum(log_returns, axis=0)) * 100.0
-    # Intraday range proxied as 1 % around close.
-    high = close * (1 + np.abs(rng.normal(0, 0.005, size=close.shape)))
-    low = close * (1 - np.abs(rng.normal(0, 0.005, size=close.shape)))
-    open_ = close * np.exp(rng.normal(0, 0.003, size=close.shape))
-    volume = np.exp(rng.normal(12, 1.0, size=close.shape))
-    money = volume * close
-
-    def _df(arr):
-        df = pd.DataFrame(
-            arr,
-            index=pd.Index(dates, name="datetime"),
-            columns=pd.Index(tickers, name="instrument"),
-        )
-        return df
-
-    panel = {
-        "$open": _df(open_),
-        "$high": _df(high),
-        "$low": _df(low),
-        "$close": _df(close),
-        "$volume": _df(volume),
-        "$money": _df(money),
-    }
-    # Forward return = the one-day open-to-open return REALISED at
-    # T+1→T+2, mirroring qlib's Alpha158 default label
-    # ``Ref($close, -2)/Ref($close, -1) - 1`` (LABEL_LOOKAHEAD_DAYS=2):
-    # at time T you decide based on data ≤ T, trade at T+1 open, and
-    # earn the return from T+1 open to T+2 open. ``shift(-2)/shift(-1)``
-    # is that — NOT a bug despite occasional audit-tool flags that
-    # claim it should be ``shift(-1)/x``. The latter (T→T+1 return)
-    # would be a 1-day lookahead because T's signal can't be acted on
-    # before T+1's open. Plus a noisy volume-momentum signal so the GP
-    # has something real to mine on top of the random walk.
-    open_df = panel["$open"]
-    raw_return = open_df.shift(-2) / open_df.shift(-1) - 1
-    # Mild "volume momentum" signal so the GP has something to mine.
-    vol_signal = np.log(panel["$volume"]).rank(axis=1, pct=True) - 0.5
-    fwd = (raw_return + 0.05 * vol_signal.shift(-1)).fillna(0.0)
-    fwd.index.name = "datetime"
-    fwd.columns.name = "instrument"
-    return panel, fwd
+# Consolidated into ``src.factor_mining._synthetic_panel`` (bug.md
+# P2-5) — the body lived in both this file and ``promote.py`` with
+# identical contracts (including the qlib LABEL_LOOKAHEAD_DAYS=2
+# comment added in #165's P1-6 clarification, which now lives at
+# the canonical implementation site). Re-export under the
+# leading-underscore name so call sites in this module don't change.
+from src.factor_mining._synthetic_panel import (  # noqa: E402
+    build_synthetic_panel as _build_synthetic_panel,
+)
 
 
 def _build_pit_panel(config: DataConfig):

@@ -291,6 +291,21 @@ class ModelTrainer:
         if had_input_history or framework_normalized:
             evals_result.clear()
             evals_result.update(normalized)
+        elif model_type == "CatBoostModel":
+            # CatBoostModel's qlib wrapper does NOT mutate
+            # ``evals_result`` the way LGBModel does — recovery
+            # depends on ``model.model.get_evals_result()`` working.
+            # If neither path produced anything, the operator gets a
+            # silent empty diagnostic. Surface that loudly so debug
+            # tooling (loss-curve dashboard) can flag the run as
+            # "diagnostics unavailable" instead of "ran fine, no
+            # learning signal". (bug.md P1-1.)
+            _logger.warning(
+                "CatBoostModel: evals_result recovery failed — both "
+                "direct-fit mutation and model.model.get_evals_result() "
+                "returned empty. Training diagnostics (loss curves) "
+                "will be unavailable for this run."
+            )
 
     @staticmethod
     def _read_inner_evals_result(model: Any, model_type: str) -> Mapping[str, Any]:
@@ -334,6 +349,22 @@ class ModelTrainer:
                 continue
 
             if "-" not in dataset_key:
+                # XGBoost in some configurations emits keys like
+                # ``"validation_0"`` (no hyphen separator) when the
+                # caller didn't pass an ``eval_metric`` — the whole
+                # key is the dataset name with an implicit unnamed
+                # metric. Pre-fix this branch silently dropped the
+                # entry; now we treat it as a dataset with a single
+                # ``loss`` series so the loss-curve dashboard at
+                # least has something to draw. (bug.md P1-2.)
+                coerced = cls._coerce_metric_values(metrics)
+                if coerced:
+                    _logger.debug(
+                        "evals_result key %r has no hyphen — treating as "
+                        "dataset name with unnamed 'loss' metric.",
+                        dataset_key,
+                    )
+                    normalized.setdefault(dataset_key, {})["loss"] = coerced
                 continue
             split_dataset, split_metric = dataset_key.split("-", 1)
             coerced = cls._coerce_metric_values(metrics)

@@ -379,6 +379,41 @@ class TrainingDiagnosticsTests(unittest.TestCase):
             },
         )
 
+    # ----------------------------------------------------------------
+    # Regression for bug.md P1-2: XGB sometimes emits hyphen-less
+    # keys like ``validation_0`` (no ``eval_metric`` configured).
+    # Pre-fix the normalizer silently dropped them; now they survive
+    # as ``{<key>: {"loss": [...]}}`` so the loss-curve dashboard
+    # has something to draw.
+    # ----------------------------------------------------------------
+
+    def test_refresh_keeps_xgb_hyphen_less_validation_keys(self) -> None:
+        class _M:
+            model = None
+
+        evals = {"validation_0": [0.8, 0.6, 0.4]}
+        ModelTrainer._refresh_framework_evals_result(_M(), "XGBModel", evals)
+        self.assertEqual(evals, {"validation_0": {"loss": [0.8, 0.6, 0.4]}})
+
+    def test_refresh_mixed_hyphen_and_hyphen_less_keys(self) -> None:
+        """Real XGB output can mix both shapes — the normalizer must
+        emit both into the merged tree."""
+        class _M:
+            model = None
+
+        evals = {
+            "train-rmse": [0.9, 0.8],
+            "validation_0": [0.7, 0.5],
+        }
+        ModelTrainer._refresh_framework_evals_result(_M(), "XGBModel", evals)
+        self.assertEqual(
+            evals,
+            {
+                "train": {"rmse": [0.9, 0.8]},
+                "validation_0": {"loss": [0.7, 0.5]},
+            },
+        )
+
     def test_refresh_clears_malformed_evals_result(self) -> None:
         class _M:
             model = None
@@ -398,6 +433,79 @@ class TrainingDiagnosticsTests(unittest.TestCase):
         evals: dict = {}
         ModelTrainer._refresh_framework_evals_result(_M(), "XGBModel", evals)
         self.assertEqual(evals, {"valid": {"rmse": [0.6, 0.4]}})
+
+    # ----------------------------------------------------------------
+    # Regression for bug.md P1-1: when CatBoost recovery fails on
+    # BOTH paths (direct evals_result mutation is a no-op AND
+    # model.model.get_evals_result() returns empty), pre-fix code
+    # silently left ``evals_result`` empty. Now a WARNING is logged
+    # so operators / dashboards can flag the run as
+    # "diagnostics unavailable".
+    # ----------------------------------------------------------------
+
+    def test_catboost_logs_warning_when_both_recovery_paths_fail(self) -> None:
+        import logging
+
+        class _M:
+            model = None  # inner is None → recovery path returns {}
+
+        evals: dict = {}
+        captured: list[str] = []
+
+        # Monkey-patch the module logger so we don't depend on
+        # caplog (the project's logger config bypasses caplog's
+        # handler attachment in some test orderings — same trick as
+        # ``test_evaluate_individual_warns_once_per_exception`` in
+        # ``test_gp_engine.py``).
+        import src.core.model_trainer as mt
+        original = mt._logger.warning
+        mt._logger.warning = lambda msg, *a, **kw: captured.append(
+            msg % a if a else str(msg),
+        )
+        try:
+            ModelTrainer._refresh_framework_evals_result(
+                _M(), "CatBoostModel", evals,
+            )
+        finally:
+            mt._logger.warning = original
+
+        self.assertEqual(evals, {})
+        self.assertTrue(
+            any("CatBoost" in m and "diagnostics" in m for m in captured),
+            f"P1-1 regression: expected CatBoost recovery-failed warning; "
+            f"captured: {captured}",
+        )
+        # Also reset the level so subsequent tests aren't affected.
+        logging.getLogger("src.core.model_trainer").setLevel(logging.NOTSET)
+
+    def test_catboost_does_not_warn_when_recovery_succeeds(self) -> None:
+        """The mirror case — if the inner ``get_evals_result()`` does
+        produce data, we must NOT spuriously warn."""
+        class _Inner:
+            def get_evals_result(self):
+                return {"learn": {"RMSE": [0.9, 0.7]}}
+
+        class _M:
+            model = _Inner()
+
+        evals: dict = {}
+        captured: list[str] = []
+        import src.core.model_trainer as mt
+        original = mt._logger.warning
+        mt._logger.warning = lambda msg, *a, **kw: captured.append(
+            msg % a if a else str(msg),
+        )
+        try:
+            ModelTrainer._refresh_framework_evals_result(
+                _M(), "CatBoostModel", evals,
+            )
+        finally:
+            mt._logger.warning = original
+        self.assertEqual(evals, {"learn": {"RMSE": [0.9, 0.7]}})
+        self.assertFalse(
+            any("diagnostics" in m for m in captured),
+            f"spurious warning on successful recovery: {captured}",
+        )
 
     def test_refresh_reads_catboost_inner_evals_result(self) -> None:
         class _Inner:
