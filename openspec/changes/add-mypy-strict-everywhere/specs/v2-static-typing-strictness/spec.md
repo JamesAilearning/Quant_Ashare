@@ -12,12 +12,22 @@ fails the build rather than being logged as a warning.
 
 The single permitted opt-out at completion is `src.factor_mining.*`
 (parallel workstream). That opt-out's `[[tool.mypy.overrides]]`
-block SHALL explicitly set each of `disallow_untyped_defs`,
-`disallow_untyped_calls`, `disallow_incomplete_defs`,
-`disallow_untyped_decorators`, `warn_return_any`,
-`warn_unreachable`, `no_implicit_optional`, and `strict_equality`
-to `false` so future additions to the strict flag set do not
-silently leak into the factor-mining tree.
+block SHALL explicitly set **every flag implied by `mypy --strict`**
+to `false` — at the time of writing, this means all sixteen of:
+`warn_unused_configs`, `disallow_any_generics`,
+`disallow_subclassing_any`, `disallow_untyped_calls`,
+`disallow_untyped_defs`, `disallow_incomplete_defs`,
+`check_untyped_defs`, `disallow_untyped_decorators`,
+`no_implicit_optional`, `warn_redundant_casts`,
+`warn_unused_ignores`, `warn_return_any`, `no_implicit_reexport`,
+`strict_equality`, `strict_concatenate`, and `extra_checks`.
+Future-proofing: the test in
+`tests/logic/test_mypy_strict_default.py` SHALL read the strict-flag
+set from mypy at runtime (or pin to a current mypy release) so the
+opt-out's flag list cannot silently drift behind mypy's `--strict`
+definition. (Codex P1 on PR #171 — listing only the FU-7 subset
+would leave eight strict-implied flags active on factor_mining,
+defeating the "single opt-out" claim.)
 
 #### Scenario: default strict applies to all source trees
 
@@ -32,7 +42,9 @@ silently leak into the factor-mining tree.
 - **WHEN** `pyproject.toml` is parsed
 - **THEN** exactly one `[[tool.mypy.overrides]]` block exists
 - **AND** its `module` list contains only `"src.factor_mining.*"`
-- **AND** every strict flag in that block is set to `false`
+- **AND** every flag implied by `mypy --strict` (16 at time of
+  writing — see Requirement body) is explicitly set to `false` in
+  that block
 
 #### Scenario: CI fails on a strict regression
 

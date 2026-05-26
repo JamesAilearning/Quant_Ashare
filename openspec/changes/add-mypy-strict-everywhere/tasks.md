@@ -253,19 +253,12 @@ Either option:
       - Set `strict = true` under `[tool.mypy]`
       - Remove the existing `[[tool.mypy.overrides]]` whitelist
         block entirely (every module covered by default-strict)
-      - Add new `[[tool.mypy.overrides]]` block:
-        ```toml
-        [[tool.mypy.overrides]]
-        module = ["src.factor_mining.*"]
-        disallow_untyped_defs = false
-        disallow_untyped_calls = false
-        disallow_incomplete_defs = false
-        disallow_untyped_decorators = false
-        warn_return_any = false
-        warn_unreachable = false
-        no_implicit_optional = false
-        strict_equality = false
-        ```
+      - Add new `[[tool.mypy.overrides]]` block with **every flag
+        implied by `mypy --strict`** set to `false` (16 flags at
+        time of writing — see proposal.md's "The flip" block for
+        the canonical list). Codex P1 on PR #171: an incomplete
+        opt-out would leave several strict-implied flags active on
+        factor_mining and defeat the "single opt-out" claim.
 
 ### Step 4 — CI flip
 
@@ -287,9 +280,13 @@ Either option:
         `OPT_OUT_MODULES = ("src.factor_mining.*",)` blacklist
         assertion
       - New test: `[tool.mypy] strict = true` is set in pyproject
-      - New test: the opt-out block has every strict flag set to
-        `false` (mirror of FU-7's "strict flags can't be silently
-        diluted" but inverted)
+      - New test: the opt-out block has **every flag implied by
+        `mypy --strict`** set to `false`. Cross-check the flag list
+        at runtime against `mypy.main.strict_flag_assignments` (or
+        whatever the public API is in the pinned mypy version) so
+        the test fails loudly when mypy adds a new strict-implied
+        flag. Mirror of FU-7's "strict flags can't be silently
+        diluted" but inverted. (Codex P1 on PR #171.)
       - Remove the "CI invokes strict check" test (CI now runs the
         broad mypy step with strict-default; verify that step
         exists instead)

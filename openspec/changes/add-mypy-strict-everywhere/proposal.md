@@ -165,16 +165,30 @@ with a dedicated migration of each setter call site.
 [tool.mypy]
 strict = true                # was: false
 
+# Opt-out for the factor-mining workstream. ``--strict`` enables 16
+# distinct flags; listing only a subset (e.g. the FU-7 eight) would
+# leave the other eight active on factor_mining and defeat the
+# "single opt-out" claim. Codex P1 on PR #171 — explicit listing
+# below + a runtime cross-check in
+# tests/logic/test_mypy_strict_default.py.
 [[tool.mypy.overrides]]
 module = ["src.factor_mining.*"]
-disallow_untyped_defs = false
+warn_unused_configs = false
+disallow_any_generics = false
+disallow_subclassing_any = false
 disallow_untyped_calls = false
+disallow_untyped_defs = false
 disallow_incomplete_defs = false
+check_untyped_defs = false
 disallow_untyped_decorators = false
-warn_return_any = false
-warn_unreachable = false
 no_implicit_optional = false
+warn_redundant_casts = false
+warn_unused_ignores = false
+warn_return_any = false
+no_implicit_reexport = false
 strict_equality = false
+strict_concatenate = false
+extra_checks = false
 ```
 
 Removes the whitelist entries from PRs 1–3 (now redundant under
