@@ -39,6 +39,25 @@ jobs:
         run: mypy src/ --ignore-missing-imports
         continue-on-error: true
 
+      # Strict mode for the modules listed under [tool.mypy.overrides]
+      # in pyproject.toml. These are the high-stakes modules where a
+      # type regression would silently break the system (cache keys,
+      # manifest schemas, regression-baseline comparators, embargo
+      # guard). ``--follow-imports=silent`` suppresses noise from
+      # transitively-imported legacy code so this step ONLY fails
+      # on regressions inside the strict-mode modules. CI fails this
+      # step (no ``continue-on-error``) — that's the whole point of
+      # opt-in strict.
+      - name: Type check strict modules (audit FU-7)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          mypy --follow-imports=silent --ignore-missing-imports \
+            src/data/_segment_embargo.py \
+            src/data/bundle_manifest.py \
+            src/data/_feature_dataset_cache.py \
+            src/core/walk_forward/_resume.py \
+            src/core/regression_baseline.py
+
       # Coverage runs on a single matrix slot (ubuntu-3.11) so we
       # collect one canonical coverage.xml per PR; running cov on all
       # 6 jobs would 6x the artifact storage for no extra signal.
