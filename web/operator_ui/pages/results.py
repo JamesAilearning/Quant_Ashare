@@ -1469,14 +1469,18 @@ def _render_run_not_found(run_id: str) -> None:
 _install_styles()
 render_breadcrumbs([("分析", None)])
 render_page_header("结果", "查看流水线、滚动验证及数据源运行的产物。")
-# FU-8: bundle freshness banner mirrors the jobs page; the results
-# the operator is looking at on this page came from a specific
-# bundle, so showing tail_date + instrument count up front saves a
-# trip to the YAML.
+# FU-8 bundle freshness banner. **Bound to the SELECTED run's bundle**,
+# not the project-default — Codex P1 on PR #169 surfaced that
+# rendering with ``provider_uri=None`` here would show
+# ``config.yaml``'s bundle even when the operator is inspecting a
+# historical run that used a different one. The banner is rendered
+# AFTER the run-selection block below (see ``render_bundle_health_banner``
+# call following ``_read_config``); a future "no run selected"
+# fallback could render the default at the top, but the current
+# results page always has a default selected job.
 from web.operator_ui.bundle_health import (  # noqa: E402, PLC0415
     render_bundle_health_banner,
 )
-render_bundle_health_banner(st=st)
 
 # Detect current theme for Plotly charts
 theme_detect_script = """
@@ -1534,6 +1538,18 @@ else:
     config, config_path, config_bytes = _read_config(selected_job, artifact_issues)
     run_dir = _resolve_run_dir(selected_job, config)
     mode = str(selected_job.get("mode") or "")
+
+    # FU-8 banner bound to the selected run's bundle (Codex P1 on
+    # PR #169). ``config.provider_uri`` is the value the training
+    # actually saw; this is the right number to surface for
+    # results-page investigation. ``provider_uri or None`` falls
+    # back to the project-default lookup when the run's config
+    # didn't capture a provider_uri (rare — running jobs / stub
+    # configs in tests).
+    render_bundle_health_banner(
+        provider_uri=str(config.get("provider_uri") or "") or None,
+        st=st,
+    )
 
     # Auto-refresh for running jobs
     if str(selected_job.get("status", "")).lower() == "running":

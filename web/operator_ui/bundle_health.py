@@ -139,7 +139,17 @@ def resolve_default_provider_uri(
     raw_value = raw.get("provider_uri")
     if not isinstance(raw_value, str):
         return ""
-    return _expand_env(raw_value).strip()
+    expanded = _expand_env(raw_value).strip()
+    if not expanded:
+        return ""
+    # Codex P2 on PR #169: configs like ``provider_uri: ~/qlib_data``
+    # were treated as a literal relative path because the banner
+    # didn't expanduser; the bundle then "didn't exist" and the
+    # banner showed a red ``error`` for a perfectly valid config
+    # (the runtime ``init_qlib_canonical`` expanduser's the path
+    # before calling qlib). Normalise here so the banner matches
+    # runtime resolution.
+    return str(Path(expanded).expanduser())
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +180,15 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
             tail_date=None,
             instrument_count=None,
         )
+
+    # Same normalisation that ``resolve_default_provider_uri`` does
+    # (Codex P2 on PR #169): expand env vars + ``~``. This matters
+    # when the caller passes a run-specific ``provider_uri`` from a
+    # config that has ``~/qlib_data``-style paths — without the
+    # expanduser the banner would render a red "error" for a
+    # perfectly valid bundle.
+    raw = _expand_env(raw)
+    raw = str(Path(raw).expanduser())
 
     metadata = inspect_provider_metadata(raw)
 

@@ -85,8 +85,13 @@ class SummariseBundleHealthTests(unittest.TestCase):
         self.assertEqual(s.status, "error")
         self.assertIn("does not exist", s.message)
         # Even on error, the provider_uri is echoed so the operator
-        # can read what they typed.
-        self.assertEqual(s.provider_uri, "/this/path/does/not/exist")
+        # can read what they typed (subject to platform-native path
+        # normalization that the banner shares with runtime — Codex
+        # P2 on PR #169 expanduser).
+        self.assertEqual(
+            Path(s.provider_uri),
+            Path("/this/path/does/not/exist"),
+        )
 
     def test_clean_bundle_ok_status(self):
         import tempfile
@@ -183,9 +188,12 @@ class ResolveDefaultProviderUriTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             cfg = Path(td) / "config.yaml"
             cfg.write_text("provider_uri: /path/to/bundle\n")
+            # Platform-native path comparison (Path() normalisation
+            # changes ``/`` to ``\\`` on Windows); the value is
+            # semantically the same.
             self.assertEqual(
-                resolve_default_provider_uri(cfg),
-                "/path/to/bundle",
+                Path(resolve_default_provider_uri(cfg)),
+                Path("/path/to/bundle"),
             )
 
     def test_provider_uri_with_env_var(self):
@@ -198,9 +206,30 @@ class ResolveDefaultProviderUriTests(unittest.TestCase):
                 os.environ, {"QLIB_BUNDLE_TEST": "/env/path"}, clear=False,
             ):
                 self.assertEqual(
-                    resolve_default_provider_uri(cfg),
-                    "/env/path",
+                    Path(resolve_default_provider_uri(cfg)),
+                    Path("/env/path"),
                 )
+
+    def test_provider_uri_with_tilde_expanded(self):
+        """Codex P2 on PR #169: configs like
+        ``provider_uri: ~/qlib_data`` were treated as a literal
+        relative path and the banner showed a false red error.
+        After the fix, ``~`` expands to the user's home (matching
+        the runtime's ``init_qlib_canonical`` resolution)."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("provider_uri: ~/qlib_data\n")
+            result = resolve_default_provider_uri(cfg)
+            # Tilde must NOT survive — ``~/qlib_data`` should expand
+            # to ``<home>/qlib_data``.
+            self.assertNotIn("~", result)
+            self.assertTrue(
+                result.endswith("qlib_data")
+                or result.endswith("qlib_data" + os.sep),
+                f"expected expanded path to end with 'qlib_data', got {result!r}",
+            )
 
     def test_missing_provider_uri_field_returns_empty(self):
         import tempfile
