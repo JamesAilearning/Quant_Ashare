@@ -119,6 +119,18 @@ def discover_run_dirs(
     for child in sorted(root.iterdir()):
         if not child.is_dir():
             continue
+        # Codex P2 on PR #168: ``Path.is_dir()`` returns True for
+        # directory symlinks too, which then crashed ``shutil.rmtree``
+        # mid-cleanup (rmtree raises ``OSError`` on a symlink path
+        # rather than deleting the link). Skipping symlinks entirely
+        # is the safe default — the operator explicitly created the
+        # link, so they shouldn't expect this script to delete the
+        # pointed-to data (it might be a shared bundle, a project-
+        # external archive, etc.). A future flag could opt into
+        # ``Path.unlink()``-style symlink cleanup, but it's not
+        # the common case.
+        if child.is_symlink():
+            continue
         if not fnmatch.fnmatch(child.name, include):
             continue
         size, mtime = _dir_size_and_mtime(child)
