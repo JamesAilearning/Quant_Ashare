@@ -828,10 +828,41 @@ class PerformanceAttribution:
 
     @classmethod
     def _get_instrument_returns(cls, instruments: list[str], config: AttributionConfig) -> Any:
-        """Get total return per instrument over the attribution period."""
+        """Get total return per instrument over the attribution period.
+
+        WARNING — non-PIT path
+        ----------------------
+        Unlike ``BacktestRunner._compute_equalweight_baseline`` and
+        ``FactorAnalyzer._fetch_close_panel`` (both of which accept an
+        optional ``pit_provider`` to route through the §4.3.2
+        post-delist mask), this method has NO PIT opt-in yet. Close
+        prices for instruments that were delisted mid-period may flow
+        through to the Brinson decomposition with qlib's default
+        ``min_periods``-less window behaviour. For a portfolio that
+        holds delisted names, sector returns can be skewed by
+        forward-filled stale closes.
+
+        The WARN log below makes the bypass observable in every run
+        log so an operator inspecting an attribution report has
+        evidence to discount it appropriately. The fix is to thread a
+        ``PITDataProvider`` through ``Pipeline`` /
+        ``WalkForwardEngine`` into ``PerformanceAttribution.analyze``
+        and on into this helper — that's a wider contract change than
+        this PR's scope.
+
+        TODO(P0-6 follow-up): add ``pit_provider`` parameter and
+        prefer it when set.
+        """
         import pandas as pd
         from qlib.data import D
 
+        _logger.warning(
+            "PerformanceAttribution._get_instrument_returns: bypasses "
+            "PITDataProvider (no opt-in yet) — close prices for "
+            "delisted instruments may carry stale / forward-filled "
+            "values into the Brinson decomposition. See TODO above; "
+            "audit P0-6."
+        )
         close = D.features(
             instruments, ["$close"],
             start_time=config.start_date, end_time=config.end_date,

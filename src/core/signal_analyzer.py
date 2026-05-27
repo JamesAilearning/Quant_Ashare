@@ -202,8 +202,32 @@ class SignalAnalyzer:
         """Fetch close-to-close returns from qlib for all instruments in predictions.
 
         Returns a DataFrame with (datetime, instrument) MultiIndex and 'close' column.
+
+        WARNING — non-PIT path
+        ----------------------
+        Unlike ``BacktestRunner._compute_equalweight_baseline`` and
+        ``FactorAnalyzer._fetch_close_panel`` (both of which accept an
+        optional ``pit_provider`` to route through the §4.3.2
+        post-delist mask), this method has NO PIT opt-in yet. IC and
+        IC-decay diagnostics derived from this panel may include
+        stale / forward-filled closes for tickers delisted within the
+        window. The WARN log below makes the bypass observable in
+        every run log.
+
+        TODO(P0-6 follow-up): add ``pit_provider`` parameter to
+        ``SignalAnalyzer.analyze`` and thread it through here; until
+        then, treat IC numbers for portfolios with mid-period
+        delistings as approximate.
         """
         from qlib.data import D
+
+        _logger.warning(
+            "SignalAnalyzer._fetch_returns: bypasses PITDataProvider "
+            "(no opt-in yet) — IC / IC-decay numbers may absorb "
+            "stale / forward-filled closes for tickers delisted "
+            "within the prediction window. See TODO above; audit "
+            "P0-6."
+        )
 
         # Read by name (not position) so an internal caller that bypasses
         # the public ``analyze`` boundary still gets correct data. The
