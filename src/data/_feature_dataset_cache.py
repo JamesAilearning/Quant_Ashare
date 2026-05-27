@@ -61,7 +61,16 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
     Reads (in order):
 
     1. ``bundle_manifest.json`` (PR #149 canonical contract) → returns
-       the ``tail_date`` string.
+       ``"<tail_date>@<content_hash>"`` when both fields are present
+       (the ``content_hash`` field was added in PR #175), or just
+       ``<tail_date>`` for legacy manifests that pre-date the hash
+       opt-in. Including ``content_hash`` in the tag means a re-ingest
+       that lands on the same tail_date but with different calendar
+       bytes still invalidates the cache — without it, the freshness
+       check (``verify_content_hash``) would correctly raise, but a
+       run with ``QLIB_SKIP_BUNDLE_VALIDATION=1`` or against a soft-
+       mode validator would happily return a stale dataset under the
+       unchanged cache key.
     2. ``tushare_provider_manifest.json`` (existing Tushare publisher
        format that this repo's own ingest scripts emit) → returns
        ``"tushare:<coverage_end_date>@<snapshot_at>"`` so a re-ingest
@@ -92,6 +101,17 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
             payload = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
             tail = str(payload.get("tail_date") or "").strip()
             if tail:
+                # PR #175 ``content_hash`` opt-in. Fold it into the tag
+                # so the cache key sees same-tail / different-calendar
+                # drift as a distinct bundle. We deliberately do NOT
+                # re-validate the hash shape here — load_manifest is
+                # the authoritative parser; this function is best-
+                # effort cache-invalidation and an out-of-spec hash
+                # string still produces a distinct tag, which is
+                # exactly what we want for invalidation.
+                content_hash = payload.get("content_hash")
+                if isinstance(content_hash, str) and content_hash.strip():
+                    return f"{tail}@{content_hash.strip()}"
                 return tail
         except Exception:  # noqa: BLE001 — best-effort
             pass

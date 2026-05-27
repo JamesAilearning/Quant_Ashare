@@ -72,6 +72,99 @@ class ReadBundleTagTushareFallbackTests(unittest.TestCase):
             )
             self.assertEqual(read_bundle_tag(td), "2026-05-01")
 
+    def test_bundle_manifest_with_content_hash_returns_composite(self):
+        """When PR #175's ``content_hash`` is present, the bundle tag
+        is ``"<tail>@<hash>"`` so two bundles that happen to share the
+        same tail_date but differ in calendar bytes get distinct cache
+        keys. Codex P1 on PR #175.
+        """
+        import tempfile
+
+        good_hash = "sha256:" + ("a" * 64)
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",
+                    "content_hash": good_hash,
+                })
+            )
+            self.assertEqual(
+                read_bundle_tag(td),
+                f"2026-05-01@{good_hash}",
+            )
+
+    def test_same_tail_different_content_hash_produces_different_tags(self):
+        """Regression for the cross-feature integration hole: a re-
+        ingest that lands on the same tail_date with a different
+        calendar produces a different content_hash, which MUST flow
+        through into the cache tag — otherwise feature dataset cache
+        would silently serve stale data across that re-ingest. Codex
+        P1 on PR #175.
+        """
+        import tempfile
+
+        hash_a = "sha256:" + ("a" * 64)
+        hash_b = "sha256:" + ("b" * 64)
+        with tempfile.TemporaryDirectory() as td_a, tempfile.TemporaryDirectory() as td_b:
+            (Path(td_a) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",  # same tail
+                    "content_hash": hash_a,
+                })
+            )
+            (Path(td_b) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",  # same tail
+                    "content_hash": hash_b,     # different bytes
+                })
+            )
+            tag_a = read_bundle_tag(td_a)
+            tag_b = read_bundle_tag(td_b)
+            self.assertNotEqual(
+                tag_a, tag_b,
+                "Same-tail / different-content_hash bundles MUST get "
+                "different cache tags or the cache silently serves "
+                "stale features after a bundle correction.",
+            )
+            # And both tags individually carry the hash, not just the
+            # tail — so a future refactor that drops one half won't
+            # silently re-introduce the bug.
+            self.assertIn(hash_a, tag_a)
+            self.assertIn(hash_b, tag_b)
+
+    def test_legacy_bundle_manifest_without_content_hash_still_returns_tail(self):
+        """Backwards compat: a manifest emitted before PR #175 has no
+        ``content_hash`` field. The tag stays exactly the same as
+        before (bare ``tail_date``) so existing cache entries are not
+        invalidated by adopting this PR.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({"tail_date": "2026-05-01"})
+            )
+            self.assertEqual(read_bundle_tag(td), "2026-05-01")
+
+    def test_explicit_null_content_hash_falls_back_to_tail_only(self):
+        """``"content_hash": null`` on disk is rejected by
+        ``load_manifest`` itself (separate Codex P2 in this PR), but
+        ``read_bundle_tag`` is best-effort and runs even on manifests
+        that haven't been validated yet. Treat ``null`` here as "no
+        hash available" — same as a missing field — so cache
+        invalidation gracefully falls back instead of crashing.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",
+                    "content_hash": None,
+                })
+            )
+            self.assertEqual(read_bundle_tag(td), "2026-05-01")
+
     def test_tushare_manifest_composite_tag(self):
         """The Tushare fallback returns ``tushare:<coverage>@<snapshot>``
         — both fields combined so a re-ingest of the same window still
