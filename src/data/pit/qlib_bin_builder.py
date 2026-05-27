@@ -1,4 +1,4 @@
-"""Build qlib bin storage from Tushare daily + adj_factor + delisted_registry.
+"""Build qlib bin storage from Tushare daily + adj_factor + daily_basic + delisted_registry.
 
 Pipeline (Phase B.2, per docs/pit/pit_universe_design.md §5 Stage 5)
 -------------------------------------------------------------------
@@ -6,10 +6,13 @@ Pipeline (Phase B.2, per docs/pit/pit_universe_design.md §5 Stage 5)
 
     <tushare_dir>/daily/{year}/{ticker}.parquet
     <tushare_dir>/adj_factor/{year}/{ticker}.parquet
+    <tushare_dir>/daily_basic/{year}/{ticker}.parquet   (optional)
     <tushare_dir>/active_stocks.parquet
     <delisted_registry_path>
        -> <output_dir>/calendars/day.txt
        -> <output_dir>/features/<ticker_lower>/{open,high,low,close,volume,money}.day.bin
+       -> <output_dir>/features/<ticker_lower>/{pe,pb,ps,turnover_rate,circ_mv,total_mv}.day.bin
+          (only when a daily_basic parquet exists for the ticker)
 
 qlib bin format (matches src/data/tushare/provider_bundle/publisher.py
 ``_write_qlib_bundle``):
@@ -45,9 +48,18 @@ Downstream consumers MUST use within-ticker ratios / returns only
 
 Scope (Phase B.2)
 -----------------
-- 6 fields: open, high, low, close, volume, money.
+- 6 OHLCV fields: open, high, low, close, volume, money.
+- 6 OPTIONAL ``daily_basic`` fields: pe, pb, ps, turnover_rate,
+  circ_mv, total_mv. Emitted only for tickers that have a
+  ``daily_basic/<year>/<ticker>.parquet`` payload in the source dump.
+  Backward-compatible: a bundle built from an older Tushare snapshot
+  (no daily_basic dir) still produces the same 6 OHLCV bins per
+  ticker.
 - Volume in Tushare's ``vol`` (lots / 手, ×100 to shares).
 - Amount in Tushare's ``amount`` (千元, ×1000 to yuan).
+- daily_basic fields are written as-is (no unit conversion); they
+  share the per-ticker calendar alignment, NaN-after-delist mask,
+  and start_idx convention with the OHLCV bins.
 - Per-ticker DataFrame load and reindex to a global calendar.
 - Atomic-rename of the final provider directory (no half-written
   partial provider visible to qlib mid-write).
@@ -79,6 +91,18 @@ _logger = get_logger(__name__)
 # each field becomes its own .bin file.
 BIN_FEATURE_FIELDS: tuple[str, ...] = (
     "open", "high", "low", "close", "volume", "money",
+)
+
+# Optional daily_basic fields (Tushare ``daily_basic`` endpoint, per the
+# ``extend-feature-universe-with-daily-basic`` OpenSpec change). The
+# builder emits these bins ONLY when a daily_basic parquet exists for
+# the ticker; PIT bundles built before daily_basic was ingested still
+# work (they just lack these six fields). No unit conversion is applied
+# (Tushare publishes daily_basic in the units we want: PE/PB/PS as
+# unitless ratios, turnover_rate as a percentage, circ_mv / total_mv
+# as 万元).
+BIN_DAILY_BASIC_FIELDS: tuple[str, ...] = (
+    "pe", "pb", "ps", "turnover_rate", "circ_mv", "total_mv",
 )
 
 # Tushare unit conversions (per src/data/tushare/provider_bundle/_types).
@@ -144,6 +168,10 @@ class QlibBinBuilder:
         # Acceptable on a workstation; in a memory-constrained
         # environment we'd stream this differently.
         per_ticker: dict[str, pd.DataFrame] = {}
+        # Per-ticker mask: which daily_basic fields exist for this
+        # ticker. Empty set => no daily_basic parquet => emit only the
+        # 6 OHLCV bins (backward-compat with pre-daily_basic bundles).
+        per_ticker_daily_basic_fields: dict[str, tuple[str, ...]] = {}
         skipped = 0
         for qlib_ticker in sorted(universe):
             tushare_code = self._qlib_to_tushare(qlib_ticker)
@@ -152,11 +180,13 @@ class QlibBinBuilder:
                 skipped += 1
                 continue
             df = self._apply_adjustment(df, tushare_code)
+            df, daily_basic_fields = self._merge_daily_basic(df, tushare_code)
             df = self._clip_to_listing_window(df, qlib_ticker, delisted_tickers)
             if df.empty:
                 skipped += 1
                 continue
             per_ticker[qlib_ticker] = df
+            per_ticker_daily_basic_fields[qlib_ticker] = daily_basic_fields
 
         if not per_ticker:
             raise QlibBinBuilderError(
@@ -177,7 +207,14 @@ class QlibBinBuilder:
             self._write_calendar(calendar, staging)
             self._write_instruments_all(active_df, delisted_df, staging)
             for qlib_ticker, df in per_ticker.items():
-                self._write_one_ticker_bins(qlib_ticker, df, calendar, calendar_index, staging)
+                self._write_one_ticker_bins(
+                    qlib_ticker,
+                    df,
+                    calendar,
+                    calendar_index,
+                    staging,
+                    daily_basic_fields=per_ticker_daily_basic_fields.get(qlib_ticker, ()),
+                )
             # Promote staging to final location
             if self._output_dir.exists():
                 # Backup pattern: rename existing to .bak before swap
@@ -306,6 +343,35 @@ class QlibBinBuilder:
         df["trade_date"] = df["trade_date"].astype(str)
         return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
 
+    def _load_daily_basic(self, tushare_code: str) -> pd.DataFrame | None:
+        """Same shape as _load_ticker_history but for the daily_basic dump.
+
+        Returns None when EITHER the ``daily_basic/`` root does not
+        exist (e.g. PIT bundle built before daily_basic ingest was
+        wired up) OR no per-year parquet exists for this ticker.
+        Either case is silent: the builder will simply skip the six
+        daily_basic bins for that ticker. The OHLCV bins are still
+        produced as before.
+        """
+        basic_root = self._tushare_dir / "daily_basic"
+        if not basic_root.exists():
+            return None
+        chunks: list[pd.DataFrame] = []
+        for year_dir in sorted(basic_root.iterdir()):
+            if not year_dir.is_dir():
+                continue
+            ticker_path = year_dir / f"{tushare_code}.parquet"
+            if not ticker_path.exists():
+                continue
+            chunk = pd.read_parquet(ticker_path)
+            if not chunk.empty:
+                chunks.append(chunk)
+        if not chunks:
+            return None
+        df = pd.concat(chunks, ignore_index=True)
+        df["trade_date"] = df["trade_date"].astype(str)
+        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+
     # ------------------------------------------------------------------
     # Per-ticker transforms
     # ------------------------------------------------------------------
@@ -340,6 +406,42 @@ class QlibBinBuilder:
         if "amount" in out.columns:
             out["money"] = pd.to_numeric(out["amount"], errors="coerce") * TUSHARE_AMOUNT_KYUAN_TO_YUAN
         return out
+
+    def _merge_daily_basic(
+        self, daily: pd.DataFrame, tushare_code: str,
+    ) -> tuple[pd.DataFrame, tuple[str, ...]]:
+        """Merge daily_basic columns into ``daily`` on ``trade_date``.
+
+        Returns ``(merged_df, fields_actually_present)``.
+
+        Backward-compatible: if no daily_basic parquet exists for this
+        ticker (or the daily_basic root is absent), returns the
+        unchanged daily df + an empty tuple of fields. The bin writer
+        then emits only the 6 OHLCV bins for that ticker.
+
+        Per-row daily_basic values are NOT forward-filled. The merge
+        is left-join on ``trade_date`` so non-trading days fall away
+        naturally, and a day where Tushare returned a row in
+        ``daily/`` but no matching row in ``daily_basic/`` (rare but
+        possible) gets NaN for the fundamental fields — the same
+        no-fill / NaN-on-gap convention qlib uses for partial inputs.
+        """
+        basic = self._load_daily_basic(tushare_code)
+        if basic is None or basic.empty:
+            return daily, ()
+        present = tuple(f for f in BIN_DAILY_BASIC_FIELDS if f in basic.columns)
+        if not present:
+            # daily_basic parquet exists but contains none of the six
+            # canonical fields — treat as "no data" rather than
+            # emitting all-NaN bins.
+            return daily, ()
+        merged = daily.merge(
+            basic[["trade_date", *present]],
+            on="trade_date", how="left",
+        )
+        for field in present:
+            merged[field] = pd.to_numeric(merged[field], errors="coerce")
+        return merged, present
 
     @staticmethod
     def _clip_to_listing_window(
@@ -433,8 +535,19 @@ class QlibBinBuilder:
         calendar: list[str],
         calendar_index: dict[str, int],
         output_dir: Path,
+        daily_basic_fields: tuple[str, ...] = (),
     ) -> None:
-        """Write all 6 .day.bin files for one ticker, aligned to ``calendar``.
+        """Write the .day.bin files for one ticker, aligned to ``calendar``.
+
+        Always emits the 6 OHLCV fields. Additionally emits the
+        ``daily_basic_fields`` subset of ``BIN_DAILY_BASIC_FIELDS`` —
+        passing ``()`` (the default) means "no daily_basic for this
+        ticker, skip those bins entirely". Per-field NaN handling
+        within the aligned window is identical to the OHLCV path: any
+        calendar day that's in the aligned slice but missing from the
+        source df becomes NaN, which means the PIT NaN-after-delist
+        mask (the row drop in ``_clip_to_listing_window``) propagates
+        to daily_basic bins for free.
 
         The bin file layout matches qlib's native format and
         ``src/data/tushare/provider_bundle/publisher.py``: first
@@ -475,5 +588,20 @@ class QlibBinBuilder:
                 # didn't return amount). Write NaN for every aligned day
                 # so the bin shape is still consistent across tickers.
                 values = np.full(len(aligned), np.nan, dtype="float32")
+            payload = np.hstack([[start_index], values]).astype("<f4")
+            payload.tofile(feats_dir / f"{field}.day.bin")
+
+        # Optional daily_basic bins. Skip entirely when the per-ticker
+        # mask is empty — backward-compat for bundles built before
+        # daily_basic ingest landed. When the mask lists a subset of
+        # BIN_DAILY_BASIC_FIELDS, only those bins are written; the
+        # caller already verified each listed field is present in df.
+        for field in daily_basic_fields:
+            if field not in aligned.columns:
+                # Defensive: caller should have screened this out, but
+                # don't emit an all-NaN bin if it slipped through —
+                # silently skip instead so the bundle stays minimal.
+                continue
+            values = pd.to_numeric(aligned[field], errors="coerce").astype("float32").to_numpy()
             payload = np.hstack([[start_index], values]).astype("<f4")
             payload.tofile(feats_dir / f"{field}.day.bin")
