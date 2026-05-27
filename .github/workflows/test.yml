@@ -54,17 +54,17 @@ jobs:
       # fails this step (no ``continue-on-error``) — that's the whole
       # point of opt-in strict.
       #
-      # Batch 2 of `add-mypy-strict-everywhere` (this PR) widens
-      # coverage to all of `src/data/` — the three FU-7 data files
-      # are now subsumed by the directory pass. Remaining tree to
-      # flip: `web/operator_ui/` (batch 3) and `src/contracts/` +
-      # global default-strict (batch 4).
-      - name: Type check strict modules (mypy-strict batch 2)
+      # Batch 3 of `add-mypy-strict-everywhere` (this PR) extends
+      # coverage to `web/operator_ui/` (operator UI, training
+      # guards, job manager). Remaining: `src/contracts/` protocol
+      # redesign + the global ``strict = true`` flip, both in
+      # batch 4.
+      - name: Type check strict modules (mypy-strict batch 3)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: |
           mypy --follow-imports=silent --ignore-missing-imports \
             --explicit-package-bases \
-            src/core/ src/pit/ src/data/ scripts/
+            src/core/ src/pit/ src/data/ scripts/ web/operator_ui/
 
       # Coverage runs on a single matrix slot (ubuntu-3.11) so we
       # collect one canonical coverage.xml per PR; running cov on all

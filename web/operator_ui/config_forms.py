@@ -77,7 +77,7 @@ _LAZY_ATTRS = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """:pep:`562` module-level ``__getattr__`` — defers the heavy
     config-class imports until the first access of one of the
     KEY-set names. Operators running the UI without qlib (for

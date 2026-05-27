@@ -421,7 +421,10 @@ def render_settings_dialog(preferences: UserPreferences) -> None:
 
     import streamlit as st
 
-    @st.dialog("设置")
+    # ``st.dialog`` is an untyped decorator in older streamlit stubs
+    # (untyped-decorator) and typed in newer ones (where the ignore
+    # would be unused — hence the ``unused-ignore`` code).
+    @st.dialog("设置")  # type: ignore[misc,untyped-decorator,unused-ignore]
     def _dialog() -> None:
         st.markdown(
             '<div class="qv2-settings-section-title">外观</div>',

@@ -18,7 +18,8 @@ def read_pipeline_report(run_dir: Path) -> dict[str, Any]:
     path = run_dir / "pipeline_report.json"
     if not path.is_file():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return payload
 
 
 def read_walk_forward_report(run_dir: Path) -> dict[str, Any]:
@@ -26,12 +27,13 @@ def read_walk_forward_report(run_dir: Path) -> dict[str, Any]:
     path = run_dir / "walk_forward_report.json"
     if not path.is_file():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return payload
 
 
 def read_fold_reports(run_dir: Path) -> list[dict[str, Any]]:
     _guard_path(run_dir)
-    folds = []
+    folds: list[dict[str, Any]] = []
     for entry in sorted(run_dir.iterdir()):
         if entry.name.startswith("fold_") and entry.name.endswith("_report.json"):
             folds.append(json.loads(entry.read_text(encoding="utf-8")))
@@ -47,7 +49,7 @@ def read_job_from_catalog(run_dir: Path) -> dict[str, Any]:
     with open(index_path, encoding="utf-8") as f:
         for line in f:
             try:
-                record = json.loads(line)
+                record: dict[str, Any] = json.loads(line)
                 if record.get("report_path", "").startswith(str(run_dir)):
                     return record
             except json.JSONDecodeError:

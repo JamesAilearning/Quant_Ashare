@@ -34,7 +34,7 @@ _ACTIVE_JOB_DIR: Path | None = None
 # raising ``SystemExit`` from the signal handler would let the runner
 # exit but leave the training child orphaned (Linux re-parents to init,
 # Windows just continues). bug.md P1-4.
-_ACTIVE_CHILD_PROCESS: subprocess.Popen | None = None
+_ACTIVE_CHILD_PROCESS: subprocess.Popen[bytes] | None = None
 _CHILD_TERMINATE_TIMEOUT_S = 5.0
 
 
