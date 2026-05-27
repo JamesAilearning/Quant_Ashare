@@ -211,9 +211,27 @@ def compute_bundle_content_hash(provider_uri: str | Path) -> str:
     digest = hashlib.sha256()
     # Stream in 64 KB chunks so an unusually large calendar (millions of
     # rows, decades of history) doesn't spike memory.
-    with calendar.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            digest.update(chunk)
+    #
+    # The ``is_file()`` check above narrows missing-file errors, but a
+    # PermissionError, an EIO, or a TOCTOU race (file removed between
+    # check and open) can still raise ``OSError`` here. Without the
+    # except below, those would escape as raw OSError — the docstring
+    # promises "missing or unreadable => BundleManifestError" and the
+    # ingest script's except-branch only catches BundleManifestError,
+    # so an unreadable calendar would bypass the controlled hard-exit
+    # and surface as an uncaught traceback. Codex P2 on PR #175.
+    try:
+        with calendar.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise BundleManifestError(
+            f"compute_bundle_content_hash: cannot read {calendar} "
+            f"({type(exc).__name__}: {exc}). The calendar exists but "
+            "is unreadable — investigate filesystem permissions, disk "
+            "errors, or a concurrent process that removed the file "
+            "between the existence check and the read."
+        ) from exc
     return f"{CONTENT_HASH_PREFIX}{digest.hexdigest()}"
 
 

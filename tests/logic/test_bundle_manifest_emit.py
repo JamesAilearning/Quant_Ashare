@@ -221,6 +221,38 @@ class ComputeBundleContentHashTests(unittest.TestCase):
             ):
                 compute_bundle_content_hash(td)
 
+    def test_wraps_oserror_from_unreadable_calendar(self):
+        """The ``is_file()`` guard catches the missing-file case, but
+        a calendar that exists yet is unreadable — permission denied,
+        EIO, a TOCTOU race that deletes it between the check and
+        the read — would otherwise raise the raw ``OSError`` up to
+        the caller. The docstring contract is "missing or unreadable
+        => BundleManifestError" so the ingest script's
+        ``except BundleManifestError`` actually catches both failure
+        modes. Codex P2 on PR #175.
+        """
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            # Force the open() call to raise PermissionError after the
+            # is_file() check has already passed. Patching pathlib.Path.open
+            # is the cleanest way to simulate the race / permission case
+            # deterministically across OSes (a real chmod 000 file would
+            # behave differently on Windows vs Linux).
+            with patch.object(
+                Path, "open",
+                side_effect=PermissionError("simulated"),
+            ):
+                with self.assertRaises(BundleManifestError) as ctx:
+                    compute_bundle_content_hash(td)
+        msg = str(ctx.exception)
+        self.assertIn("PermissionError", msg)
+        # The original OSError must be preserved as __cause__ so callers
+        # debugging downstream can still see the root cause.
+        self.assertIsInstance(ctx.exception.__cause__, OSError)
+
 
 # ---------------------------------------------------------------------------
 # save_manifest content_hash round-trip
