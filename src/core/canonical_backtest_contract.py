@@ -448,13 +448,29 @@ def compute_effective_stamp_tax_bps(
         total_weight += weight
 
     if total_weight <= 0:
-        # E.g. a calendar with no trading days in the window — fall
-        # back to the bps of the first segment so we never produce a
-        # divide-by-zero. This is best-effort: a backtest with zero
-        # trading days has bigger problems than which stamp tax it
-        # uses.
-        return EffectiveStampTaxBps(
-            bps=segments[0][2], transitions=tuple(),
+        # No segment received any weight. With ``calendar=None``,
+        # weights are calendar-day counts which are positive by
+        # construction (we already dropped zero-length segments
+        # above), so this branch is reachable only when an
+        # explicit calendar was supplied and it has zero entries
+        # in EVERY segment — typically a misconfigured bundle that
+        # doesn't cover the requested window, or a calendar passed
+        # in trimmed to the wrong range.
+        #
+        # Hard-fail rather than fall back to the first segment's
+        # rate. Returning ``segments[0][2]`` would silently produce
+        # official metrics from a degraded cost model AND swallow
+        # the transitions list, defeating the cross-period WARN.
+        # Audit P0-4 / Codex P1 follow-up on PR #178.
+        raise CanonicalBacktestContractError(
+            "compute_effective_stamp_tax_bps: the supplied calendar "
+            f"has zero trading days in [{period_start.isoformat()}, "
+            f"{period_end.isoformat()}] — every schedule segment "
+            "received weight 0. Cannot resolve a per-run scalar "
+            "without at least one trading day. Verify the qlib "
+            "provider covers the requested window and that the "
+            "calendar argument is not filtered to a non-overlapping "
+            "range."
         )
 
     avg_bps = weighted_sum / total_weight

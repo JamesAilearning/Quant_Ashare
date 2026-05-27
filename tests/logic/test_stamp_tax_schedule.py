@@ -261,6 +261,49 @@ class ComputeEffectiveStampTaxBpsTests(unittest.TestCase):
         # Calendar version weights pre-reform days more heavily.
         self.assertGreater(result_with_cal.bps, result_no_cal.bps)
 
+    def test_empty_calendar_in_period_raises(self) -> None:
+        """Codex P1 follow-up on PR #178.
+
+        When a caller passes an explicit ``calendar`` that has zero
+        entries in every schedule segment (e.g. a misconfigured
+        bundle that doesn't cover the requested window), the
+        helper MUST raise rather than fall back to the first
+        segment's rate. Silent fallback would produce a degraded
+        official scalar AND swallow the cross-period transitions
+        list — exactly the "no silent fallback" anti-pattern this
+        codebase forbids.
+        """
+        # Period spans the 2023-08-28 reform; calendar is supplied
+        # but its dates all fall OUTSIDE the period.
+        calendar_outside_period = [date(2018, 1, 1), date(2019, 1, 1)]
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError,
+            "zero trading days",
+        ):
+            compute_effective_stamp_tax_bps(
+                CN_STAMP_TAX_SCHEDULE_DEFAULT,
+                date(2022, 1, 1),
+                date(2024, 12, 31),
+                calendar=calendar_outside_period,
+            )
+
+    def test_calendar_none_with_zero_length_segment_does_not_trip_empty_calendar_guard(
+        self,
+    ) -> None:
+        """With ``calendar=None`` the weights are calendar-day
+        counts. Segments are pre-filtered to non-zero length, so
+        the empty-calendar guard MUST NOT fire here — only when an
+        explicit calendar was supplied and was empty. Defensive
+        regression."""
+        result = compute_effective_stamp_tax_bps(
+            CN_STAMP_TAX_SCHEDULE_DEFAULT,
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            calendar=None,
+        )
+        # Same result as the single-segment test — no exception.
+        self.assertEqual(result.bps, 5.0)
+
     def test_end_before_start_raises(self) -> None:
         with self.assertRaisesRegex(
             CanonicalBacktestContractError, "period_end .* < period_start"
