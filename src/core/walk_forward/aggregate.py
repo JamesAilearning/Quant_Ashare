@@ -460,7 +460,7 @@ def compute_aggregate(
     irs = np.asarray([f.information_ratio for f in folds], dtype=float)
 
 
-    def _nan_agg(arr: "np.ndarray[Any, Any]", fn: Any) -> float:
+    def _nan_agg(arr: np.ndarray[Any, Any], fn: Any) -> float:
         """np.nan{mean,std,min}(arr) with the all-NaN-slice
         RuntimeWarning silenced — NaN is exactly the result we want
         in those cases, the warning would just be noise.
@@ -471,20 +471,20 @@ def compute_aggregate(
             warnings.simplefilter("ignore", RuntimeWarning)
             return float(fn(arr))
 
-    def _nanmean(arr: "np.ndarray[Any, Any]") -> float:
+    def _nanmean(arr: np.ndarray[Any, Any]) -> float:
         return _nan_agg(arr, np.nanmean)
 
-    def _nanstd(arr: "np.ndarray[Any, Any]") -> float:
+    def _nanstd(arr: np.ndarray[Any, Any]) -> float:
         return _nan_agg(arr, np.nanstd)
 
-    def _nanmin(arr: "np.ndarray[Any, Any]") -> float:
+    def _nanmin(arr: np.ndarray[Any, Any]) -> float:
         return _nan_agg(arr, np.nanmin)
 
-    def _valid(arr: "np.ndarray[Any, Any]") -> int:
+    def _valid(arr: np.ndarray[Any, Any]) -> int:
         return int(np.count_nonzero(~np.isnan(arr)))
 
     def _bootstrap_mean_ci(
-        arr: "np.ndarray[Any, Any]",
+        arr: np.ndarray[Any, Any],
         *,
         n_boot: int = 10000,
         ci: float = 0.95,

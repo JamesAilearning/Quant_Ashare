@@ -167,7 +167,7 @@ def _align_to_calendar(
     return start_index, aligned
 
 
-def _write_bin(field_path: Path, start_index: int, values: "np.ndarray[Any, Any]") -> None:
+def _write_bin(field_path: Path, start_index: int, values: np.ndarray[Any, Any]) -> None:
     field_path.parent.mkdir(parents=True, exist_ok=True)
     # Qlib format: first cell is start_index (as float32), then values.
     payload = np.empty(len(values) + 1, dtype=np.float32)
