@@ -18,9 +18,12 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from src.core._json_utils import _sanitize_for_json
 from src.core.canonical_backtest_contract import CanonicalBacktestOutput
@@ -138,7 +141,12 @@ def write_pipeline_result_artifacts(
 
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
-    if is_dataclass(config):
+    # ``is_dataclass`` returns True for both the class object AND
+    # instances; ``asdict`` only accepts an instance. Narrow via
+    # ``not isinstance(config, type)`` so a class object falls through
+    # to the explicit error (matches the pattern in
+    # ``walk_forward/_resume.py::compute_config_fingerprint``).
+    if is_dataclass(config) and not isinstance(config, type):
         return dict(asdict(config))
     if isinstance(config, Mapping):
         return dict(config)
@@ -382,7 +390,12 @@ def _annualise_total_return(
         # annualised rate; surface as None.
         return None
     try:
-        return base ** (_TRADING_DAYS_PER_YEAR / float(n_trading_days)) - 1.0
+        # Explicit float() — ``float ** float`` can widen to ``Any``
+        # under mypy because the result-type depends on operand signs
+        # (a negative base + non-integer exponent can produce
+        # ``complex``). ``base > 0`` here so we know the result is
+        # finite float.
+        return float(base ** (_TRADING_DAYS_PER_YEAR / float(n_trading_days)) - 1.0)
     except (ValueError, OverflowError):
         return None
 
@@ -435,7 +448,7 @@ def _metric_section(
     return dict(section) if isinstance(section, Mapping) else {}
 
 
-def _build_nav_frame(return_series: Any):
+def _build_nav_frame(return_series: Any) -> pd.DataFrame:
     import pandas as pd
 
     returns = _mapping_to_series(return_series, "return", required=True)
@@ -462,7 +475,9 @@ def _build_nav_frame(return_series: Any):
     return frame.reset_index()
 
 
-def _mapping_to_series(return_series: Any, name: str, *, required: bool):
+def _mapping_to_series(
+    return_series: Any, name: str, *, required: bool,
+) -> pd.Series | None:
     import pandas as pd
 
     if not isinstance(return_series, Mapping):
@@ -508,7 +523,7 @@ def _finite_float(value: Any, label: str) -> float:
     return number
 
 
-def _build_holdings_frame(positions: Any):
+def _build_holdings_frame(positions: Any) -> pd.DataFrame:
     import pandas as pd
 
     rows: list[dict[str, Any]] = []
@@ -543,13 +558,13 @@ def _build_holdings_frame(positions: Any):
     return pd.DataFrame(rows, columns=["date", "stock", "weight", "rank"])
 
 
-def _build_empty_trades_frame():
+def _build_empty_trades_frame() -> pd.DataFrame:
     import pandas as pd
 
     return pd.DataFrame(columns=list(TRADE_COLUMNS))
 
 
-def _build_predictions_frame(predictions: Any):
+def _build_predictions_frame(predictions: Any) -> pd.DataFrame:
     import pandas as pd
 
     if not isinstance(predictions, pd.Series):
@@ -642,7 +657,7 @@ def _qlib_version() -> str | None:
     ``"None"`` as a valid version string. (bug.md P1-7.)
     """
     try:
-        import qlib  # type: ignore[import-not-found]
+        import qlib
     except ImportError:
         return None
     version = getattr(qlib, "__version__", "")

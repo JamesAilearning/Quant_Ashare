@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -35,7 +36,7 @@ from src.data.tushare.industry_publisher import (  # noqa: E402
 _logger = get_logger(__name__)
 
 
-_DEFAULT_CONFIG: dict = {
+_DEFAULT_CONFIG: dict[str, Any] = {
     "artifact_path": "output/taxonomy/sw_l2.csv",
     "manifest_path": "output/taxonomy/sw_l2.json",
     "level": "L2",
@@ -47,7 +48,7 @@ _REQUIRED_KEYS = ("snapshot_at",)
 _TOKEN_KEY_FORBIDDEN = "tushare_token"
 
 
-def _load_config(path: str) -> dict:
+def _load_config(path: str) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")

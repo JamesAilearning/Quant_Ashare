@@ -20,7 +20,10 @@ import threading
 # The check-then-set pattern below is *not* atomic without the lock —
 # the GIL serialises individual bytecodes but not the read+write
 # straddling the ``return``.
-_CONFIGURED = False
+# Explicit ``bool`` annotation (not ``Literal[False]``) — without it
+# mypy narrows the second ``if _CONFIGURED: return`` after the lock
+# to ``unreachable`` and rejects the double-checked locking pattern.
+_CONFIGURED: bool = False
 _CONFIG_LOCK = threading.Lock()
 
 
@@ -38,7 +41,14 @@ def setup_logging(level: int = logging.INFO) -> None:
     if _CONFIGURED:
         return
     with _CONFIG_LOCK:
-        if _CONFIGURED:
+        # Re-check inside the lock — another thread may have populated
+        # ``_CONFIGURED`` between our fast-path read above and the lock
+        # acquisition. ``globals()`` defeats mypy's type narrowing (it
+        # would otherwise mark this branch unreachable after the outer
+        # early return), preserving the canonical double-checked
+        # locking pattern that prevents two threads from both
+        # ``addHandler``-ing.
+        if globals()["_CONFIGURED"]:
             return
 
         formatter = logging.Formatter(

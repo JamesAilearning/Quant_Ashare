@@ -145,8 +145,8 @@ def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
         # Lazy import so that modules importing this file do not hard-require
         # qlib at collection time.
         try:
-            import qlib  # type: ignore[import-not-found]
-            from qlib.constant import REG_CN, REG_US  # type: ignore[import-not-found]
+            import qlib
+            from qlib.constant import REG_CN, REG_US
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise QlibRuntimeInitError(
                 "qlib is not importable from the current Python environment. "
@@ -163,7 +163,7 @@ def init_qlib_canonical(config: QlibRuntimeConfig) -> None:
         # simply skipping it would leave our canonical state lying about what
         # provider/region qlib actually resolved against. Compare against
         # qlib's live config and refuse to adopt a foreign session.
-        from qlib.config import C as _qlib_C  # type: ignore[import-not-found]
+        from qlib.config import C as _qlib_C
 
         if getattr(_qlib_C, "registered", False):
             mismatch = _qlib_session_mismatch(_qlib_C, config, region_constant)

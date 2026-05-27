@@ -203,7 +203,7 @@ class SignalAnalyzer:
 
         Returns a DataFrame with (datetime, instrument) MultiIndex and 'close' column.
         """
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         # Read by name (not position) so an internal caller that bypasses
         # the public ``analyze`` boundary still gets correct data. The

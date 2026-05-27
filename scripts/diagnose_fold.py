@@ -82,7 +82,8 @@ class FoldDiagnosis:
     def ic_decay_curve(self) -> list[float]:
         r = self._report or {}
         sig = r.get("signal_analysis", {})
-        return sig.get("ic_decay", [])
+        curve: list[float] = sig.get("ic_decay", [])
+        return curve
 
     # ── sector exposure ───────────────────────────────────────────
 

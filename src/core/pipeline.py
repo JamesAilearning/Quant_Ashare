@@ -854,7 +854,7 @@ class Pipeline:
             )
 
     @staticmethod
-    def _signal_analysis_section(signal_result: SignalAnalysisResult) -> dict:
+    def _signal_analysis_section(signal_result: SignalAnalysisResult) -> dict[str, Any]:
         """Build the ``signal_analysis`` block of the JSON report.
 
         Why this is its own method
@@ -898,7 +898,10 @@ class Pipeline:
         contract warnings via the pipeline's own logger so they land
         in the run's log file.
         """
-        base = {
+        # Type widened to ``Any`` so the ``**base`` splat below matches
+        # AttributionConfig's Mapping-valued fields (industry_map_override,
+        # etc.); the literal values are still strings.
+        base: dict[str, Any] = {
             "start_date": config.test_start,
             "end_date": config.test_end,
         }
@@ -938,7 +941,7 @@ class Pipeline:
     def _attribution_section(
         attribution_result: AttributionResult | None,
         skipped_reason: str | None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Build the ``attribution`` block of the JSON report.
 
         Always emits a dict with a ``status`` field. Previously a missing
@@ -967,7 +970,7 @@ class Pipeline:
         }
 
     @staticmethod
-    def _attribution_to_report_dict(attribution_result: AttributionResult) -> dict:
+    def _attribution_to_report_dict(attribution_result: AttributionResult) -> dict[str, Any]:
         """Serialize an :class:`AttributionResult` to the JSON-report dict.
 
         Extracted so the JSON contract (which methodology fields land in

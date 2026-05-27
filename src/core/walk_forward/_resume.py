@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from src.core.walk_forward._types import WalkForwardFold
 
@@ -61,6 +61,12 @@ class ResumeMode:
     kind: _ResumeKind
     from_fold_index: int | None = None
 
+    # Class-level singletons populated below the class body. Declared
+    # here so type-checkers (and IDEs) see ``ResumeMode.AUTO`` /
+    # ``ResumeMode.FORCE_RERUN`` as documented attributes.
+    AUTO: ClassVar[ResumeMode]
+    FORCE_RERUN: ClassVar[ResumeMode]
+
     @classmethod
     def auto(cls) -> ResumeMode:
         return cls(kind=_ResumeKind.AUTO)
@@ -92,8 +98,11 @@ class ResumeMode:
 
 
 # Convenience class-level constants matching the spec's reference names.
-ResumeMode.AUTO = ResumeMode.auto()  # type: ignore[attr-defined]
-ResumeMode.FORCE_RERUN = ResumeMode.force_rerun()  # type: ignore[attr-defined]
+# The ``ClassVar`` declarations on the dataclass above tell type-
+# checkers these exist; the assignments here populate them at import
+# time. (``ClassVar`` keeps them out of ``__init__`` parameters.)
+ResumeMode.AUTO = ResumeMode.auto()
+ResumeMode.FORCE_RERUN = ResumeMode.force_rerun()
 
 
 # ---------------------------------------------------------------------------
