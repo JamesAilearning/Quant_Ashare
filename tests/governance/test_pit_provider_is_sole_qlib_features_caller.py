@@ -100,6 +100,14 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # TODO(P0-6 follow-up): thread ``pit_provider`` through
     # ``SignalAnalyzer.analyze``.
     "src/core/signal_analyzer.py": 1,
+
+    # ``microstructure_mask`` (audit P0-3 /
+    # add-microstructure-mask): has ``pit_provider`` opt-in. The
+    # direct ``D.features`` call only fires when the caller did
+    # NOT pass a provider; the ``compute_unavailable_mask``
+    # function carries the ``pit-bypass-ok`` marker in its
+    # docstring.
+    "src/core/microstructure_mask.py": 1,
 }
 
 

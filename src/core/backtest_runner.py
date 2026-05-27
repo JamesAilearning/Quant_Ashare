@@ -32,6 +32,11 @@ from src.core.canonical_backtest_contract import (
     compute_effective_stamp_tax_bps,
 )
 from src.core.logger import get_logger
+from src.core.microstructure_mask import (
+    MicrostructureMaskError,
+    apply_mask_to_predictions,
+    compute_unavailable_mask,
+)
 from src.core.qlib_runtime import (
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
@@ -257,6 +262,55 @@ class BacktestRunner:
 
         # Apply signal_to_execution_lag by shifting predictions
         shifted_predictions = cls._apply_lag(predictions, request.signal_to_execution_lag)
+
+        # A-share microstructure mask (audit P0-3 /
+        # openspec/changes/add-microstructure-mask). Drop every
+        # (date, instrument) row in the predictions Series that
+        # corresponds to a suspended day (volume <= 0 or close NaN)
+        # or a one-price-lock day (high == low). qlib's
+        # ``TopkDropoutStrategy`` would otherwise pick those rows
+        # by score and the executor would report phantom fills at
+        # the carried-forward close (suspended) or the locked
+        # limit price (one-price). The mask runs on the SHIFTED
+        # predictions so it filters by EXECUTION date, not signal
+        # date. Routes OHLCV fetch through PIT when supplied
+        # (audit P0-6 compliance — when no provider, the helper's
+        # direct ``D.features`` call is allow-listed).
+        instruments_in_predictions = sorted({
+            str(inst)
+            for inst in shifted_predictions.index.get_level_values("instrument").unique()
+        })
+        try:
+            mask_result = compute_unavailable_mask(
+                instruments=instruments_in_predictions,
+                start_date=request.evaluation_start,
+                end_date=request.evaluation_end,
+                pit_provider=pit_provider,
+            )
+        except MicrostructureMaskError as exc:
+            raise BacktestRunnerError(
+                f"BacktestRunner.run: microstructure mask "
+                f"computation failed ({exc}). The canonical backtest "
+                "path requires a valid mask before strategy "
+                "construction — refuse to fall back to unmasked "
+                "predictions. Audit P0-3."
+            ) from exc
+        shifted_predictions, n_masked_dropped = apply_mask_to_predictions(
+            shifted_predictions, mask_result,
+        )
+        if mask_result.masked:
+            _logger.warning(
+                "BacktestRunner: microstructure mask dropped %d "
+                "(date, instrument) candidates from predictions before "
+                "strategy construction — %d suspended (volume<=0 or "
+                "NaN close), %d one-price-locked (high==low). The "
+                "filtered Series has %d fewer rows than the input. "
+                "Audit P0-3.",
+                mask_result.total_masked,
+                mask_result.n_suspended,
+                mask_result.n_one_price_days,
+                n_masked_dropped,
+            )
 
         strategy = TopkDropoutStrategy(
             signal=shifted_predictions,

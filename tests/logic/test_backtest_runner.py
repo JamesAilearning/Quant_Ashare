@@ -1166,5 +1166,239 @@ class ProvenanceFingerprintTests(unittest.TestCase):
         self.assertEqual(prov["config"]["runtime"], {})
 
 
+class MicrostructureMaskIntegrationTests(unittest.TestCase):
+    """Audit P0-3: BacktestRunner.run drops suspended /
+    one-price-lock candidates from predictions before qlib sees
+    them. We patch the helper directly to verify integration
+    plumbing without standing up a full mocked qlib OHLCV stack.
+    """
+
+    def _make_predictions_panel(self) -> object:
+        """Build a 3-ticker × 3-day predictions Series with
+        sequential scores so the order of remaining rows after
+        masking is unambiguous."""
+        import pandas as pd
+
+        dates = pd.to_datetime(["2024-03-14", "2024-03-15", "2024-03-16"])
+        tickers = ["SH600000", "SZ300001", "SH600519"]
+        idx = pd.MultiIndex.from_product(
+            [dates, tickers], names=["datetime", "instrument"],
+        )
+        return pd.Series(
+            [9, 8, 7, 6, 5, 4, 3, 2, 1], index=idx, dtype="float64",
+        )
+
+    def _make_request(self):
+        from src.core.canonical_backtest_contract import (
+            ADJUST_MODE_PRE,
+            CN_STAMP_TAX_SCHEDULE_DEFAULT,
+            EXECUTION_PRICE_CLOSE,
+            CanonicalAccountConfig,
+            CanonicalBacktestInput,
+            CanonicalExchangeConfig,
+            CanonicalExchangeCostModel,
+        )
+        return CanonicalBacktestInput(
+            predictions_ref="model.pkl",
+            evaluation_start="2024-03-14",
+            evaluation_end="2024-03-16",
+            account_config=CanonicalAccountConfig(init_cash=100_000_000),
+            exchange_config=CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=EXECUTION_PRICE_CLOSE,
+                cost_model=CanonicalExchangeCostModel(
+                    commission_rate=0.0005,
+                    stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
+                    slippage_bps=5.0,
+                    min_cost=5.0,
+                ),
+            ),
+            adjust_mode=ADJUST_MODE_PRE,
+            signal_to_execution_lag=1,
+            benchmark_code="SH000300",
+        )
+
+    def _drive_until_strategy_construction(
+        self,
+        mask_pairs: frozenset[tuple[str, str]],
+        n_suspended: int = 0,
+        n_one_price_days: int = 0,
+        logger_records: list | None = None,
+    ) -> object:
+        """Run BacktestRunner.run with a patched mask helper and
+        a patched ``TopkDropoutStrategy`` that records the
+        predictions it receives. Stop the run at qlib.backtest
+        with a benign exception so we can inspect what reached
+        the strategy. Returns the captured predictions Series.
+        """
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        import pandas as pd
+
+        from src.core.backtest_runner import BacktestRunner
+        from src.core.microstructure_mask import MicrostructureMaskResult
+
+        captured: dict = {}
+
+        class _CapturingStrategy:
+            def __init__(self, signal, topk, n_drop):
+                captured["signal"] = signal
+                captured["topk"] = topk
+                captured["n_drop"] = n_drop
+
+        # Build a 7-day calendar covering 2024-03-14..16 (3 days
+        # of data + buffer). compute_effective_stamp_tax_bps needs
+        # at least one trading day per segment.
+        fake_calendar = list(pd.date_range("2024-03-01", "2024-03-31"))
+        fake_qlib_data = MagicMock()
+        fake_qlib_data.D.calendar.return_value = fake_calendar
+
+        mask_result = MicrostructureMaskResult(
+            masked=mask_pairs,
+            n_suspended=n_suspended,
+            n_one_price_days=n_one_price_days,
+        )
+
+        if logger_records is not None:
+            handler = logging.Handler()
+            handler.emit = logger_records.append
+            handler.setLevel(logging.WARNING)
+            logger = logging.getLogger("src.core.backtest_runner")
+            logger.addHandler(handler)
+            logger.setLevel(logging.WARNING)
+        else:
+            handler = None
+            logger = None
+
+        try:
+            with patch(
+                "src.core.backtest_runner.is_canonical_qlib_initialized",
+                return_value=True,
+            ), patch(
+                "src.core.backtest_runner.get_canonical_qlib_config",
+            ) as get_cfg, patch(
+                "src.core.backtest_runner.compute_unavailable_mask",
+                return_value=mask_result,
+            ), patch.dict(
+                "sys.modules",
+                {
+                    "qlib.data": fake_qlib_data,
+                    "qlib.backtest": MagicMock(backtest=MagicMock(
+                        side_effect=RuntimeError("test-stop after strategy"),
+                    )),
+                    "qlib.backtest.executor": MagicMock(),
+                    "qlib.contrib.strategy.signal_strategy": MagicMock(
+                        TopkDropoutStrategy=_CapturingStrategy,
+                    ),
+                    "qlib.utils.time": MagicMock(),
+                },
+            ):
+                from src.core.qlib_runtime import QlibRuntimeConfig
+                get_cfg.return_value = QlibRuntimeConfig(
+                    provider_uri="/tmp/qlib_data",
+                    region="cn",
+                    data_adjust_mode="pre_adjusted",
+                )
+                try:
+                    BacktestRunner.run(
+                        request=self._make_request(),
+                        predictions=self._make_predictions_panel(),
+                        topk=2, n_drop=1,
+                    )
+                except Exception:
+                    # Run is intentionally stopped at qlib.backtest;
+                    # we only need what reached the strategy.
+                    pass
+        finally:
+            if handler is not None and logger is not None:
+                logger.removeHandler(handler)
+
+        return captured.get("signal")
+
+    def test_mask_drops_suspended_and_one_price_rows(self) -> None:
+        """A mask containing (2024-03-15, SH600000) as suspended
+        and (2024-03-15, SZ300001) as one-price-locked. After
+        ``_apply_lag(lag=1)`` shifts predictions, the rows the
+        strategy sees on those dates MUST exclude those tickers."""
+        # Note: ``_apply_lag(lag=1)`` advances the DATE stamps
+        # forward, so predictions originally indexed at
+        # 2024-03-14/15/16 land at 2024-03-15/16/17 inside the
+        # strategy. We mask the EXECUTION dates 2024-03-15.
+        mask = frozenset({
+            ("2024-03-15", "SH600000"),
+            ("2024-03-15", "SZ300001"),
+        })
+        signal = self._drive_until_strategy_construction(
+            mask, n_suspended=1, n_one_price_days=1,
+        )
+        self.assertIsNotNone(
+            signal,
+            "Strategy constructor never received a signal — "
+            "the run aborted before strategy construction.",
+        )
+        date_level = signal.index.get_level_values("datetime")
+        inst_level = signal.index.get_level_values("instrument")
+        observed = {
+            (ts.date().isoformat(), str(inst))
+            for ts, inst in zip(date_level, inst_level, strict=False)
+        }
+        # The two masked rows MUST NOT appear in the signal.
+        self.assertNotIn(("2024-03-15", "SH600000"), observed)
+        self.assertNotIn(("2024-03-15", "SZ300001"), observed)
+        # Other (date, instrument) combos that were NOT masked
+        # MUST still be present.
+        self.assertIn(("2024-03-15", "SH600519"), observed)
+
+    def test_empty_mask_leaves_predictions_intact(self) -> None:
+        """No suspended / one-price days → predictions reach
+        qlib unchanged, no WARN about masking is emitted."""
+        records: list = []
+        signal = self._drive_until_strategy_construction(
+            frozenset(), n_suspended=0, n_one_price_days=0,
+            logger_records=records,
+        )
+        # _apply_lag(lag=1) drops the first row when there is no
+        # source — 3 source dates × 3 tickers shifts to 2 shifted
+        # dates × 3 tickers after stack().dropna(). So 6 rows
+        # reach the strategy.
+        self.assertEqual(len(signal), 6)
+        # No microstructure-mask WARN should fire.
+        msgs = [r.getMessage() for r in records if r.levelno >= 30]
+        mask_warns = [m for m in msgs if "microstructure mask" in m]
+        self.assertEqual(
+            mask_warns, [],
+            f"Empty mask should not produce a WARN; got {mask_warns}",
+        )
+
+    def test_warn_summarises_per_regime_counts(self) -> None:
+        """When the mask is non-empty, the run emits exactly one
+        WARN containing the per-regime counts AND audit P0-3
+        attribution. Operators tailing the log can immediately see
+        the magnitude of the silent-fill correction."""
+        records: list = []
+        mask = frozenset({
+            ("2024-03-15", "SH600000"),
+            ("2024-03-15", "SZ300001"),
+            ("2024-03-16", "SH600519"),
+        })
+        self._drive_until_strategy_construction(
+            mask, n_suspended=2, n_one_price_days=1,
+            logger_records=records,
+        )
+        msgs = [r.getMessage() for r in records if r.levelno >= 30]
+        mask_warns = [m for m in msgs if "microstructure mask" in m]
+        self.assertEqual(
+            len(mask_warns), 1,
+            f"Expected exactly 1 mask WARN; got {len(mask_warns)}: "
+            f"{mask_warns}",
+        )
+        msg = mask_warns[0]
+        self.assertIn("3", msg)  # total_masked
+        self.assertIn("2", msg)  # n_suspended
+        self.assertIn("1", msg)  # n_one_price_days
+        self.assertIn("Audit P0-3", msg)
+
+
 if __name__ == "__main__":
     unittest.main()
