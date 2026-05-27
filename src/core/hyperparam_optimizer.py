@@ -196,6 +196,17 @@ class HyperparamOptimizer:
                 "All hyperparameter trials failed; no completed trial available."
             )
         best = study.best_trial
+        # ``study.best_trial`` is only valid when ≥1 trial COMPLETED
+        # (we checked ``completed`` above) and the trial's objective
+        # actually returned a value. Optuna types ``Trial.value`` as
+        # ``float | None``, but COMPLETE trials always have a value
+        # — assert here to narrow ``float | None`` → ``float`` and
+        # surface the unlikely "completed but no value" case loudly.
+        if best.value is None:
+            raise HyperparamOptimizerError(
+                f"Best trial #{best.number} is COMPLETE but has no "
+                f"objective value — Optuna study state is inconsistent."
+            )
         _logger.info(
             "Best trial #%d: IC=%.4f, params=%s",
             best.number, best.value, best.params,
