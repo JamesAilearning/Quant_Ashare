@@ -240,3 +240,94 @@ def test_random_generator_uses_only_six_features():
         seen |= _collect_terminals(s)
     illegal = seen - legal_terminals
     assert not illegal, f"generator emitted illegal terminals: {illegal}"
+
+
+
+# ---------------------------------------------------------------------------
+# Pseudo-signal rejection: ts_corr(f(X), X, N) where f is bijective monotonic
+# (see docs/factor_mining/empirical_results_b_std.md §"Top expressions")
+# ---------------------------------------------------------------------------
+
+
+from src.factor_mining.grammar import GrammarError  # noqa: E402
+
+
+def test_ts_corr_rejects_same_expression_twice():
+    """ts_corr($close, $close, 20) has zero variance per ticker — reject
+    at construction time so GP doesn't waste a search slot on it."""
+    with pytest.raises(GrammarError, match="trivially related"):
+        OperatorCall(
+            "ts_corr",
+            (Terminal("$close"), Terminal("$close"), Terminal("20")),
+        )
+
+
+@pytest.mark.parametrize("mono_op", ["neg", "log_safe", "sqrt_safe"])
+def test_ts_corr_rejects_monotonic_univariate_of_self(mono_op):
+    """ts_corr(neg/log_safe/sqrt_safe(X), X, N) is mechanically near ±1
+    on a rolling window — the residual variance is numerical artefact,
+    not signal."""
+    inner = OperatorCall(mono_op, (Terminal("$close"),))
+    with pytest.raises(GrammarError, match="trivially related"):
+        OperatorCall(
+            "ts_corr",
+            (inner, Terminal("$close"), Terminal("20")),
+        )
+
+
+@pytest.mark.parametrize("mono_op", ["neg", "log_safe", "sqrt_safe"])
+def test_ts_corr_rejects_self_then_monotonic(mono_op):
+    """Symmetric: ts_corr(X, neg/log_safe/sqrt_safe(X), N) also rejected."""
+    inner = OperatorCall(mono_op, (Terminal("$close"),))
+    with pytest.raises(GrammarError, match="trivially related"):
+        OperatorCall(
+            "ts_corr",
+            (Terminal("$close"), inner, Terminal("20")),
+        )
+
+
+def test_ts_corr_accepts_two_different_features():
+    """Legitimate cross-feature correlation: ts_corr($close, $volume, 20)
+    is NOT trivial — both kept."""
+    expr = OperatorCall(
+        "ts_corr",
+        (Terminal("$close"), Terminal("$volume"), Terminal("20")),
+    )
+    # Constructs without error
+    assert expr.op_name == "ts_corr"
+
+
+def test_ts_corr_accepts_abs_of_self():
+    """abs is intentionally NOT in the bijective-monotonic blocklist —
+    ts_corr(abs($close), $close, N) can capture up-/down-asymmetry which
+    is real signal. (The B-std pseudo-signals were neg/log_safe/sqrt_safe;
+    abs has a different shape.)"""
+    inner = OperatorCall("abs", (Terminal("$close"),))
+    expr = OperatorCall(
+        "ts_corr",
+        (inner, Terminal("$close"), Terminal("20")),
+    )
+    assert expr.op_name == "ts_corr"
+
+
+def test_ts_corr_accepts_unrelated_expressions():
+    """ts_corr of two unrelated subtrees is legitimate."""
+    a = OperatorCall("ts_mean", (Terminal("$close"), Terminal("20")))
+    b = OperatorCall("ts_std", (Terminal("$volume"), Terminal("20")))
+    expr = OperatorCall(
+        "ts_corr",
+        (a, b, Terminal("20")),
+    )
+    assert expr.op_name == "ts_corr"
+
+
+def test_random_generator_avoids_trivial_ts_corr():
+    """Sample 500 random CSF/PURE expressions; none should embed a
+    trivial ts_corr form (the grammar enforces this at construction)."""
+    rng = Random(7)
+    for _ in range(500):
+        random_expression(
+            ExprType("CSF", "PURE"), max_depth=6, min_depth=2, rng=rng,
+        )
+        # If random_expression had produced a trivial form, the
+        # OperatorCall constructor would have raised GrammarError.

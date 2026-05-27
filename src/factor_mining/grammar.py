@@ -509,11 +509,33 @@ def _random_operator(
             f"Generator cannot produce target_type={target_type!r}: "
             "no operator candidates and no leaves available"
         )
-    op, input_types = rng.choice(candidates)
-    children = tuple(
-        _gen(t, max_depth - 1, min_depth - 1, rng) for t in input_types
+    # Some operator-input combinations satisfy the static type check but
+    # are rejected by the AST constructor's post-validation (e.g. the
+    # ``ts_corr(f(X), X, N)`` pseudo-signal rule added after the B-std
+    # empirical run — see docs/factor_mining/empirical_results_b_std.md).
+    # Retry up to MAX_OP_RETRIES with fresh subtree samples before
+    # falling back to a leaf; the rejection rate of the trivial form
+    # is < 1% in practice so the retry budget is never exhausted.
+    MAX_OP_RETRIES = 10
+    last_err: GrammarError | None = None
+    for _ in range(MAX_OP_RETRIES):
+        op, input_types = rng.choice(candidates)
+        children = tuple(
+            _gen(t, max_depth - 1, min_depth - 1, rng) for t in input_types
+        )
+        try:
+            return OperatorCall(op.name, children)
+        except GrammarError as exc:
+            last_err = exc
+            continue
+    # If retries are exhausted (extremely rare) fall back to a leaf when
+    # one exists for this target_type; otherwise propagate the last error.
+    if _has_leaves_for(target_type):
+        return _random_leaf(target_type, rng)
+    raise GrammarError(
+        f"Generator cannot construct {target_type!r} after "
+        f"{MAX_OP_RETRIES} retries: {last_err}"
     )
-    return OperatorCall(op.name, children)
 
 
 def _gen(

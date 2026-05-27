@@ -27,6 +27,43 @@ from .grammar import (
     GrammarError,
 )
 
+# Operators whose `compute_fn` is a bijective monotonic univariate transform
+# on the relevant domain. `ts_corr(MONOTONIC_UNIVARIATE(X), X, N)` collapses
+# to a near-constant value over a rolling window (residual variation comes
+# from numerical compression / domain-boundary NaN, not from real signal).
+# `abs` and `sign` are deliberately NOT in this set — `abs` folds the sign
+# and the corr can legitimately diverge from ±1 in a meaningful way;
+# `sign` is piecewise-constant so the corr is degenerate (the existing
+# ts_corr ±Inf → NaN rule already handles it).
+_BIJECTIVE_UNIVARIATE_OPS = frozenset({"neg", "log_safe", "sqrt_safe"})
+
+
+def _ts_corr_is_trivial(a: Expression, b: Expression) -> bool:
+    """Return True iff ``ts_corr(a, b, N)`` is a numerical pseudo-signal.
+
+    Trivial forms:
+      1. ``a == b`` structurally — zero variance per ticker (ts_corr → NaN
+         per v1 §5.2 ts_corr rule, but we reject up-front so GP doesn't
+         waste a slot on it).
+      2. ``a`` is a bijective univariate transform of ``b`` (or vice versa)
+         — e.g. ``ts_corr(log_safe($close), $close, N)``.
+
+    The check is structural, not semantic — it does not catch every
+    pseudo-signal (e.g. ``ts_corr(div_safe($close, $close), $close, N)``
+    where the inner div_safe is the constant 1.0). It is intentionally
+    narrow: only forms surfaced by the B-std empirical run are rejected,
+    so the GP search space is not over-constrained.
+    """
+    if a == b:
+        return True
+    if isinstance(a, OperatorCall) and a.op_name in _BIJECTIVE_UNIVARIATE_OPS:
+        if len(a.children) == 1 and a.children[0] == b:
+            return True
+    if isinstance(b, OperatorCall) and b.op_name in _BIJECTIVE_UNIVARIATE_OPS:
+        if len(b.children) == 1 and b.children[0] == a:
+            return True
+    return False
+
 
 class Expression:
     """Abstract base for AST nodes. Concrete: ``Terminal``, ``OperatorCall``."""
@@ -126,6 +163,27 @@ class OperatorCall(Expression):
         # Trigger type-check. Raises GrammarError on illegal taint combos
         # or unknown operator inputs.
         _ = self.output_type
+        # Reject pseudo-signal forms surfaced by the B-std empirical run
+        # (see docs/factor_mining/empirical_results_b_std.md §"Top expressions
+        # reveal pseudo-signals"). `ts_corr(f(X), X, N)` where ``f`` is a
+        # bijective univariate transform on the relevant domain is
+        # mechanically near ±1 over a rolling window — the residual variation
+        # comes from numerical compression (e.g. log near zero), not predictive
+        # content. GP picks these up as high IS-IC factors but they don't
+        # transfer to OOS.
+        if self.op_name == "ts_corr" and len(self.children) >= 2:
+            if _ts_corr_is_trivial(self.children[0], self.children[1]):
+                raise GrammarError(
+                    f"ts_corr(a, b, N) where a and b are trivially related "
+                    f"(same expression, or one is a bijective univariate "
+                    f"transform — neg/log_safe/sqrt_safe — of the other) is "
+                    f"a numerical pseudo-signal, not a factor; got "
+                    f"a={self.children[0].to_qlib_string()!r}, "
+                    f"b={self.children[1].to_qlib_string()!r}. "
+                    "See docs/factor_mining/empirical_results_b_std.md "
+                    "§\"Top expressions reveal pseudo-signals\" for the "
+                    "B-std evidence motivating this rule."
+                )
 
     @property
     def output_type(self) -> ExprType:
