@@ -380,6 +380,76 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertEqual(result.violations, tuple())
 
 
+class InputWeightValidationTests(unittest.TestCase):
+    """Codex P2 follow-up on PR #179 — input-side nan guard.
+
+    ``apply()`` MUST reject positions weights that are non-finite
+    (``nan``, ``inf``, ``-inf``) or non-numeric (``None``, str,
+    bool). Without this guard, a stray ``nan`` in the positions
+    map flows through unchanged: ``w > cap`` evaluates to False
+    for every w, ``apply()`` reports zero violations, and the
+    nan propagates into ``clipped_positions``. The constraint
+    engine would silently wave through malformed input — exactly
+    the kind of silent-fallback this codebase forbids.
+    """
+
+    def test_rejects_nan_weight(self) -> None:
+        c = MinimalRiskConstraints()
+        with self.assertRaisesRegex(
+            RiskConstraintError, "non-finite",
+        ):
+            c.apply({"2024-01-02": {"SH600000": float("nan")}})
+
+    def test_rejects_inf_weight(self) -> None:
+        c = MinimalRiskConstraints()
+        with self.assertRaisesRegex(
+            RiskConstraintError, "non-finite",
+        ):
+            c.apply({"2024-01-02": {"SH600000": float("inf")}})
+
+    def test_rejects_negative_inf_weight(self) -> None:
+        c = MinimalRiskConstraints()
+        with self.assertRaisesRegex(
+            RiskConstraintError, "non-finite",
+        ):
+            c.apply({"2024-01-02": {"SH600000": float("-inf")}})
+
+    def test_rejects_none_weight(self) -> None:
+        c = MinimalRiskConstraints()
+        with self.assertRaisesRegex(
+            RiskConstraintError, "must be a real number",
+        ):
+            c.apply({"2024-01-02": {"SH600000": None}})  # type: ignore[dict-item]
+
+    def test_rejects_string_weight(self) -> None:
+        c = MinimalRiskConstraints()
+        with self.assertRaisesRegex(
+            RiskConstraintError, "must be a real number",
+        ):
+            c.apply({"2024-01-02": {"SH600000": "0.05"}})  # type: ignore[dict-item]
+
+    def test_rejects_bool_weight(self) -> None:
+        """``bool`` is an ``int`` subclass — so ``True`` would
+        otherwise silently become weight=1 (a 100% position).
+        Reject bool explicitly."""
+        c = MinimalRiskConstraints()
+        with self.assertRaisesRegex(
+            RiskConstraintError, "must be a real number",
+        ):
+            c.apply({"2024-01-02": {"SH600000": True}})  # type: ignore[dict-item]
+
+    def test_error_message_names_offending_date_and_instrument(self) -> None:
+        c = MinimalRiskConstraints()
+        with self.assertRaises(RiskConstraintError) as ctx:
+            c.apply({
+                "2024-03-15": {"SH600000": 0.04},
+                "2024-03-16": {"SH600099": float("nan")},
+            })
+        msg = str(ctx.exception)
+        self.assertIn("2024-03-16", msg)
+        self.assertIn("SH600099", msg)
+
+
 class ApplyResultShapeTests(unittest.TestCase):
     def test_result_is_frozen_dataclass(self) -> None:
         c = MinimalRiskConstraints()

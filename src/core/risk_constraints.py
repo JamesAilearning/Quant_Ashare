@@ -307,6 +307,40 @@ class MinimalRiskConstraints:
     # Per-day apply helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_input_weights(
+        date_str: str, weights: Mapping[str, float],
+    ) -> None:
+        """Pre-flight: every weight in ``weights`` MUST be a real
+        finite number.
+
+        Without this guard, a stray ``float('nan')`` flows through
+        unchanged: arithmetic preserves it, every constraint
+        comparison (``w > cap``, ``total < floor``) evaluates to
+        False, so ``apply()`` reports zero violations AND
+        propagates the nan into ``clipped_positions``. The
+        constraint engine then silently waves through a malformed
+        position. Reject non-finite / non-numeric weights at the
+        boundary so the failure is loud and named (offending
+        date + instrument). Codex P2 follow-up on PR #179.
+        """
+        for inst, w in weights.items():
+            if isinstance(w, bool) or not isinstance(w, (int, float)):
+                raise RiskConstraintError(
+                    "MinimalRiskConstraints.apply: positions weight "
+                    f"on {date_str} for {inst!r} must be a real "
+                    f"number, got {type(w).__name__} ({w!r})."
+                )
+            if not math.isfinite(w):
+                raise RiskConstraintError(
+                    "MinimalRiskConstraints.apply: positions weight "
+                    f"on {date_str} for {inst!r} is non-finite "
+                    f"({w!r}); refuse to evaluate constraints on a "
+                    "malformed positions map. Investigate the "
+                    "upstream positions producer (qlib executor / "
+                    "test fixture) before re-running."
+                )
+
     def _apply_day(
         self,
         date_str: str,
@@ -340,6 +374,12 @@ class MinimalRiskConstraints:
         cash-buffer scale-all step runs late so it does not undo
         earlier per-name / per-board decisions.
         """
+        # Pre-flight: reject non-finite / non-numeric weights so a
+        # malformed positions_map can't silently disable the
+        # constraint comparisons (every ``w > cap`` returns False
+        # against nan). Codex P2 follow-up on PR #179.
+        self._validate_input_weights(date_str, weights)
+
         violations: list[RiskConstraintViolation] = []
         original = dict(weights)
         original_total = sum(original.values())
