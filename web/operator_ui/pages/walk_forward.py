@@ -335,6 +335,13 @@ jobs = JobManager.list_jobs()
 wf_jobs = [j for j in jobs if j.get("mode") == "walk_forward" and j.get("run_dir")]
 run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run_dir")}
 
+# Pre-seed ``selected`` so bare-mode imports (no Streamlit script
+# context — ``st.stop()`` becomes a no-op) have a defined value for
+# the module-level ``run_dir = Path(str(selected))`` reference below.
+# Production runs overwrite this in the ``else`` branch before
+# reaching that line. See test_operator_ui_walk_forward_source.
+selected: str | None = str(output_path())
+
 if not run_options:
     render_empty_state(
         "\U0001f501",
@@ -345,12 +352,6 @@ if not run_options:
     if st.button("配置运行"):
         st.switch_page("pages/config_run.py")
     st.stop()
-    # mypy marks the next line unreachable because ``st.stop()`` is
-    # typed as ``NoReturn``. In bare-mode (no Streamlit script
-    # context) ``st.stop()`` is a no-op, so the assignment still has
-    # to run to give ``selected`` a definition for the module-level
-    # ``run_dir`` reference below. See test_operator_ui_walk_forward_source.
-    selected = str(output_path())  # type: ignore[unreachable]
 else:
     # If the operator clicked through from the Jobs hub, the selected
     # run id is in ``st.query_params["run_id"]`` (or stashed in
@@ -381,8 +382,6 @@ else:
     )
     if not selected:
         st.stop()
-        # Bare-mode fallback — see comment above the symmetric block.
-        selected = str(output_path())  # type: ignore[unreachable]
 
 # In bare-Python (no Streamlit context), st.selectbox returns None
 # which causes Path() to fail.  Always coerce to string first so the

@@ -215,8 +215,11 @@ class JobManager:
                     # only runs after ``platform.system() != "Windows"``
                     # — see ``test_stop_non_windows_*`` for behavioural
                     # coverage. (``sys.platform`` would narrow but the
-                    # tests patch ``platform.system``.)
-                    os.killpg(os.getpgid(int(pid)), signal.SIGTERM)  # type: ignore[attr-defined]
+                    # tests patch ``platform.system``.) The
+                    # ``unused-ignore`` code makes the suppression
+                    # safe across mypy versions whose os stubs
+                    # disagree on whether these attrs exist.
+                    os.killpg(os.getpgid(int(pid)), signal.SIGTERM)  # type: ignore[attr-defined,unused-ignore]
                 else:
                     os.kill(int(pid), signal.SIGTERM)
             except OSError as exc:

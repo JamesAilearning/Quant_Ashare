@@ -59,10 +59,15 @@ def _option_index(options: list[str], default: str) -> int:
 def _select_trading_day(
     label: str, *, default: str, metadata: ProviderMetadata,
 ) -> str:
+    # ``st.text_input`` / ``st.selectbox`` return ``str`` at runtime
+    # but the streamlit stubs across versions disagree: some declare
+    # the return as ``Any`` (CI's older stubs → no-any-return), newer
+    # stubs declare it as ``str`` (so a cast would be redundant). A
+    # narrow ignore that covers both:
     if not metadata.calendar_dates:
-        return st.text_input(label, value=default)
+        return st.text_input(label, value=default)  # type: ignore[no-any-return,unused-ignore]
     options = _trading_day_options(metadata.calendar_dates)
-    return st.selectbox(
+    return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
         label,
         options=options,
         index=_option_index(options, default),
