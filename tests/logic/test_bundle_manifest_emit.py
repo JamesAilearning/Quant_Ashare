@@ -36,6 +36,7 @@ from src.data.bundle_manifest import (  # noqa: E402
     verify_content_hash,
 )
 
+
 def _write_calendar(provider_dir: Path, *, dates: list[str] | None = None) -> Path:
     """Write a minimal ``calendars/day.txt`` under *provider_dir*.
 
