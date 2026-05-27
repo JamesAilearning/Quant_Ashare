@@ -221,6 +221,9 @@ class SignalAnalyzer:
         """
         from qlib.data import D
 
+        # pit-bypass-ok: no PIT opt-in yet; WARN below makes the
+        # bypass observable. TODO follow-up wires pit_provider
+        # through analyze(). Audit P0-6.
         _logger.warning(
             "SignalAnalyzer._fetch_returns: bypasses PITDataProvider "
             "(no opt-in yet) — IC / IC-decay numbers may absorb "

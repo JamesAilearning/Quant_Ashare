@@ -135,6 +135,12 @@ class BenchmarkArtifactPublisher:
                 "qlib is not importable; cannot publish benchmark artifact."
             ) from exc
 
+        # pit-bypass-ok: this is the benchmark PUBLISHER. It fetches
+        # an index close series (e.g. SH000300) to write to a CSV
+        # artifact downstream consumers will read. Indices do not
+        # delist, so the §4.3.2 post-delist mask is irrelevant; and
+        # PITDataProvider is for instrument-universe queries, not
+        # index publishing. Audit P0-6.
         raw = D.features(
             [benchmark_code],
             ["$close"],

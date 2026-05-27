@@ -232,6 +232,9 @@ class PITValidator:
             ticker = str(row["ticker"])
             delist = pd.Timestamp(row["delist_date"])
             day_after = (delist + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            # pit-bypass-ok: validator inspects raw bin contents BEFORE
+            # the §4.3.2 mask is applied; routing through PIT would
+            # tautologically pass. Audit P0-6.
             try:
                 df = D.features([ticker], ["$close"], delist.strftime("%Y-%m-%d"), day_after)
             except Exception as exc:  # qlib raises on missing instrument
@@ -293,6 +296,8 @@ class PITValidator:
             delist = pd.Timestamp(row["delist_date"])
             window_start = (delist - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
             window_end = (delist + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+            # pit-bypass-ok: validator inspects raw bin contents BEFORE
+            # the §4.3.2 mask is applied. Audit P0-6.
             try:
                 df = D.features([ticker], ["$close"], window_start, window_end)
             except Exception:
@@ -400,6 +405,11 @@ class PITValidator:
             delist = pd.Timestamp(row["delist_date"])
             start = (delist + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             end = (delist + pd.Timedelta(days=20)).strftime("%Y-%m-%d")
+            # pit-bypass-ok: this check EXISTS to verify that qlib's
+            # default ``min_periods`` lets window operators leak past
+            # delist_date — running through PIT (which applies the
+            # mask) would mask the very leak we're checking for.
+            # Audit P0-6.
             try:
                 df = D.features([ticker], ["Mean($close, 20)"], start, end)
             except Exception as exc:
@@ -472,6 +482,10 @@ class PITValidator:
             restructure = pd.Timestamp(case.get("restructure_date"))
             start = (restructure - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
             end = (restructure + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+            # pit-bypass-ok: validator inspects raw bin contents
+            # around the borrow-shell restructure date. The mask
+            # would suppress the boundary behaviour we're verifying.
+            # Audit P0-6.
             try:
                 df = D.features([ticker], ["$close"], start, end)
             except Exception as exc:
@@ -544,6 +558,9 @@ def _legacy_verify_survivorship_check(
         ))
     good = bad_extended = truncated = missing = errors = 0
     for ticker, delist_str, _label in known_delisted:
+        # pit-bypass-ok: legacy survivorship-baseline checker reads raw
+        # bin tails to verify the on-disk truncation contract. Mask
+        # would defeat the check. Audit P0-6.
         try:
             df = D.features([ticker], ["$close"], "2014-01-01", "2025-12-31")
         except Exception:

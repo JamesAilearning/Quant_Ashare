@@ -242,6 +242,12 @@ class PITDataProvider:
         # that already resolved a ticker list (factor mining, backtest)
         # can use the PIT mask without translating through a universe
         # name they don't have. Phase D wiring uses this form.
+        #
+        # pit-bypass-ok: this IS the PIT layer's raw fetch; the
+        # ``_mask_post_delist`` step at the public ``get_features``
+        # boundary applies the §4.3.2 mask on top of whatever this
+        # returns. Routing this internal call through PIT would be
+        # infinite recursion. Audit P0-6.
         target = instruments if instruments is not None else D.instruments(universe_name)
         try:
             return D.features(

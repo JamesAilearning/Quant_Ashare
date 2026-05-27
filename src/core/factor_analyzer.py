@@ -363,6 +363,8 @@ class FactorAnalyzer:
             # TODO(P0-6 follow-up): thread pit_provider through callers
             # so this branch can be retired once the production sites
             # opt in.
+            # pit-bypass-ok: pre-PIT-pipeline fallback, documented
+            # above + WARN below. See audit P0-6.
             _logger.warning(
                 "FactorAnalyzer._fetch_close_panel: pit_provider is "
                 "None — falling back to direct qlib.data.D.features. "

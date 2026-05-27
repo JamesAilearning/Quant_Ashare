@@ -365,6 +365,8 @@ class BacktestRunner:
                 # ``Pipeline`` / ``WalkForwardEngine`` so this legacy
                 # branch can be removed once all production callers
                 # opt in.
+                # pit-bypass-ok: legacy Phase D.3 opt-out path,
+                # documented above + WARN below. See audit P0-6.
                 _logger.warning(
                     "BacktestRunner._compute_equalweight_baseline: "
                     "pit_provider is None — falling back to direct "
