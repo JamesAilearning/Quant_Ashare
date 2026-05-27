@@ -13,6 +13,9 @@ from pathlib import Path
 
 import yaml
 
+from src.core.canonical_backtest_contract import (
+    stamp_tax_schedule_migration_snippet,
+)
 from src.core.logger import get_logger, setup_logging
 from src.core.pipeline import Pipeline, PipelineConfig
 
@@ -30,6 +33,28 @@ def _load_config(path: str) -> PipelineConfig:
 
     if not isinstance(raw, dict):
         raise ValueError(f"Config file must be a YAML mapping, got {type(raw).__name__}")
+
+    # Legacy scalar ``stamp_tax_bps`` was replaced by
+    # ``stamp_tax_schedule`` as part of the audit-P0-4 cost-model
+    # change. Detect the legacy key BEFORE the generic "unknown
+    # keys" check so the operator gets a precise migration message
+    # (the snippet + the why) rather than a generic "unknown key"
+    # error that buries the actual fix.
+    if "stamp_tax_bps" in raw:
+        raise ValueError(
+            f"Config {config_path} uses the legacy scalar key "
+            "``stamp_tax_bps``. CN A-share stamp tax was halved on "
+            "2023-08-28 (10 bps → 5 bps), so backtest windows that "
+            "span the reform must use a TIME-ORDERED schedule, not a "
+            "single scalar. Replace the line with the canonical "
+            "default:\n\n"
+            f"{stamp_tax_schedule_migration_snippet()}"
+            "\nOr omit ``stamp_tax_schedule`` entirely (None / "
+            "missing key → CN_STAMP_TAX_SCHEDULE_DEFAULT applied "
+            "automatically). See "
+            "openspec/changes/add-stamp-tax-schedule for the "
+            "design + accepted shape."
+        )
 
     # Reject unknown keys hard. The previous WARNING was easy to miss
     # in a noisy log and silently masked typos like ``top_k`` (which

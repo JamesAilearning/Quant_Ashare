@@ -40,6 +40,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core._yaml_loader import load_yaml_with_inheritance  # noqa: E402
+from src.core.canonical_backtest_contract import (  # noqa: E402
+    stamp_tax_schedule_migration_snippet,
+)
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
 from src.core.walk_forward import (  # noqa: E402
@@ -89,6 +92,23 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
     if not isinstance(raw, dict):
         raise ValueError(
             f"Config file must be a YAML mapping, got {type(raw).__name__}"
+        )
+
+    # Legacy ``stamp_tax_bps`` scalar was replaced by
+    # ``stamp_tax_schedule`` (audit P0-4 / add-stamp-tax-schedule).
+    # Surface a precise migration error BEFORE the generic
+    # unknown-key check so the operator sees the fix snippet.
+    if "stamp_tax_bps" in raw:
+        raise ValueError(
+            f"Config {config_path} uses the legacy scalar key "
+            "``stamp_tax_bps``. CN A-share stamp tax was halved on "
+            "2023-08-28 (10 bps → 5 bps); walk-forward windows that "
+            "span the reform must carry a TIME-ORDERED schedule, not "
+            "a single scalar. Replace the line with:\n\n"
+            f"{stamp_tax_schedule_migration_snippet()}"
+            "\nOr omit the key entirely (the default canonical CN "
+            "schedule is applied automatically). See "
+            "openspec/changes/add-stamp-tax-schedule for the design."
         )
 
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}

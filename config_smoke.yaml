@@ -28,7 +28,11 @@ num_leaves: 32
 benchmark_code: "SH000300"
 init_cash: 100000000
 commission_rate: 0.0005
-stamp_tax_bps: 10.0
+# CN stamp tax: omit ``stamp_tax_schedule`` to inherit
+# CN_STAMP_TAX_SCHEDULE_DEFAULT. This smoke window (2024-2025) is
+# entirely post-2023-08-28 reform, so the runtime resolves to the
+# 5.0 bps segment with no WARN. Audit P0-4 /
+# openspec/changes/add-stamp-tax-schedule.
 slippage_bps: 5.0
 min_cost: 5.0
 execution_price_kind: "close"

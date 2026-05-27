@@ -35,7 +35,27 @@ num_leaves: 210
 benchmark_code: "SH000300"
 init_cash: 100000000
 commission_rate: 0.0005
-stamp_tax_bps: 10.0
+# CN stamp tax: omit ``stamp_tax_schedule`` to inherit
+# CN_STAMP_TAX_SCHEDULE_DEFAULT, which models the 2023-08-28 reform
+# (0.1% → 0.05% sell-only). This window (2022-2026) crosses the
+# reform date; the runtime will WARN and use a trading-day-weighted
+# scalar across the two segments.
+#
+# To OVERRIDE the schedule, write entries whose first
+# ``effective_from`` is on or before ``test_start`` — the runtime
+# raises ``CanonicalBacktestContractError`` if the period starts
+# before the schedule's earliest entry. For a 2022-2026 window,
+# that means the first entry must be ≤ 2022-01-01. Example
+# overriding to a single pinned post-reform rate (only valid for
+# windows whose start is also on/after 2023-08-28):
+#   stamp_tax_schedule:
+#     - {effective_from: 2023-08-28, bps: 5.0}
+# For a custom 2-entry override on a 2022-onward window, mirror
+# the default's earliest entry:
+#   stamp_tax_schedule:
+#     - {effective_from: 2008-09-19, bps: 10.0}
+#     - {effective_from: 2023-08-28, bps: 5.0}
+# Audit P0-4 / openspec/changes/add-stamp-tax-schedule.
 slippage_bps: 5.0
 min_cost: 5.0
 execution_price_kind: "close"

@@ -71,6 +71,7 @@ class Fold0RegressionBaselineTests(unittest.TestCase):
         from src.core.backtest_runner import BacktestRunner
         from src.core.canonical_backtest_contract import (
             ADJUST_MODE_PRE,
+            CN_STAMP_TAX_SCHEDULE_DEFAULT,
             CanonicalAccountConfig,
             CanonicalBacktestInput,
             CanonicalExchangeConfig,
@@ -89,7 +90,16 @@ class Fold0RegressionBaselineTests(unittest.TestCase):
                 execution_price_kind="close",
                 cost_model=CanonicalExchangeCostModel(
                     commission_rate=0.0005,
-                    stamp_tax_bps=10.0,
+                    # Migrated from ``stamp_tax_bps=10.0``. The
+                    # default schedule applies 10 bps pre-2023-08-28
+                    # and 5 bps after, with the runtime computing a
+                    # trading-day-weighted scalar when the window
+                    # crosses the reform date. If the fixture window
+                    # crosses 2023-08-28, the baseline expected
+                    # metrics may need a tolerance bump
+                    # (annualized_return tolerance from 0.005 to
+                    # 0.010). Audit P0-4 / add-stamp-tax-schedule.
+                    stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
                     slippage_bps=5.0,
                     min_cost=5.0,
                 ),

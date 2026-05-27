@@ -18,6 +18,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 from src.core.canonical_backtest_contract import (
@@ -28,6 +29,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestContract,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
+    compute_effective_stamp_tax_bps,
 )
 from src.core.logger import get_logger
 from src.core.qlib_runtime import (
@@ -151,7 +153,91 @@ class BacktestRunner:
 
         # Map CanonicalExchangeConfig → qlib exchange_kwargs
         cost = request.exchange_config.cost_model
-        stamp_tax_fraction = cost.stamp_tax_bps / 10000.0
+
+        # Resolve the time-ordered stamp-tax schedule into the single
+        # scalar that qlib's ``exchange_kwargs["close_cost"]``
+        # accepts. The helper returns a trading-day-weighted average
+        # when the backtest period crosses one or more rate
+        # transitions (e.g. the 2023-08-28 CN reform 10→5 bps), AND
+        # the list of transitions actually crossed. We WARN once per
+        # run when crossings happen so the operator can decide
+        # whether the weighted scalar is good enough or whether they
+        # need to split the backtest at the transition.
+        #
+        # The qlib calendar IS passed so the weighting matches what
+        # qlib's executor actually charges per sell. Without the
+        # calendar the helper falls back to calendar-day weighting,
+        # which produces a different scalar when holidays cluster
+        # asymmetrically around a transition (e.g. CN long-holiday
+        # in October before a hypothetical reform on Oct 15 would
+        # over-weight the post-reform side because it skips the
+        # holiday days on the pre-reform side). Codex P2 follow-up
+        # on PR #178.
+        #
+        # Audit P0-4 + add-stamp-tax-schedule.
+        period_start = date.fromisoformat(request.evaluation_start)
+        period_end = date.fromisoformat(request.evaluation_end)
+        try:
+            from qlib.data import D as _qlib_D
+            trading_calendar_ts = _qlib_D.calendar(
+                start_time=request.evaluation_start,
+                end_time=request.evaluation_end,
+            )
+            trading_calendar: list[date] = [
+                ts.date() if hasattr(ts, "date") else date.fromisoformat(str(ts)[:10])
+                for ts in trading_calendar_ts
+            ]
+        except Exception as exc:
+            # Hard-fail rather than fall back to calendar-day
+            # weighting. The repo's "no silent fallback" rule
+            # forbids degrading the official metrics path on a
+            # canonical runtime data failure — calendar-day
+            # weighting would produce a different ``close_cost``
+            # than what qlib's executor actually charges per sell,
+            # silently shifting the official scalar from the
+            # documented trading-day-weighted value. Codex P1
+            # follow-up on PR #178. If you genuinely need to
+            # proceed without a calendar (e.g. a contract-only
+            # unit test), patch ``qlib.data.D.calendar`` at the
+            # test boundary; production runs must raise here.
+            raise BacktestRunnerError(
+                "BacktestRunner: failed to fetch qlib trading "
+                f"calendar for stamp-tax weighting ({type(exc).__name__}: "
+                f"{exc}). The official cost model requires the trading-day "
+                "calendar to weight per-segment rates across schedule "
+                "transitions; falling back to calendar-day weighting "
+                "would produce a scalar that does not match what qlib's "
+                "executor charges per sell. Verify canonical qlib init "
+                "and that ``provider_uri`` points at a bundle covering "
+                f"[{request.evaluation_start}, {request.evaluation_end}]."
+            ) from exc
+        effective_stamp_tax = compute_effective_stamp_tax_bps(
+            cost.stamp_tax_schedule,
+            period_start,
+            period_end,
+            calendar=trading_calendar,
+        )
+        if effective_stamp_tax.transitions:
+            schedule_repr = ", ".join(
+                f"{entry.effective_from.isoformat()}={entry.bps}bps"
+                for entry in cost.stamp_tax_schedule
+            )
+            crossed_repr = ", ".join(
+                entry.effective_from.isoformat()
+                for entry in effective_stamp_tax.transitions
+            )
+            _logger.warning(
+                "BacktestRunner: backtest period %s → %s crosses "
+                "stamp-tax transition(s) at %s. Using trading-day-"
+                "weighted scalar %.4f bps; the actual per-day cost is "
+                "time-varying (full schedule: %s). To get exact "
+                "per-segment costs, split the backtest at the "
+                "transition(s) and reconcile the per-segment "
+                "outputs externally. Audit P0-4.",
+                request.evaluation_start, request.evaluation_end,
+                crossed_repr, effective_stamp_tax.bps, schedule_repr,
+            )
+        stamp_tax_fraction = effective_stamp_tax.bps / 10000.0
         slippage_fraction = cost.slippage_bps / 10000.0
         exchange_kwargs = {
             "freq": request.exchange_config.freq,
