@@ -22,6 +22,7 @@ Two surfaces live here, kept distinct on purpose:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -201,6 +202,18 @@ class MinimalRiskConstraints:
             raise RiskConstraintError(
                 f"MinimalRiskConstraints.{name} must be a real "
                 f"number, got {type(value).__name__}."
+            )
+        # ``nan``/``inf``/``-inf`` silently disable downstream
+        # comparisons (``nan < lo`` and ``nan > hi`` are both
+        # False, ``inf > hi`` would also dodge the lo branch).
+        # Reject non-finite values explicitly so a stray
+        # ``float('nan')`` in a config can't dismantle the
+        # constraint that's supposed to be the official risk
+        # limit. Codex P2 follow-up on PR #179.
+        if not math.isfinite(value):
+            raise RiskConstraintError(
+                f"MinimalRiskConstraints.{name} must be finite "
+                f"(not nan / inf / -inf), got {value!r}."
             )
         if value < lo or value > hi:
             raise RiskConstraintError(

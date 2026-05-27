@@ -72,6 +72,46 @@ class ConstructorValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RiskConstraintError, "cash_buffer_min"):
             MinimalRiskConstraints(cash_buffer_min=-0.01)
 
+    def test_rejects_nan_constraint_values(self) -> None:
+        """Codex P2 follow-up on PR #179.
+
+        ``float('nan')`` returns False for both ``nan < lo`` and
+        ``nan > hi``, so a bare range check lets it through and the
+        downstream constraint comparison silently disables (``w >
+        nan`` is False for every ``w``). Reject non-finite values
+        at the constructor so a stray nan in a config can't
+        dismantle the official risk limit.
+        """
+        nan = float("nan")
+        for field_name, kwargs in [
+            ("max_per_name", {"max_per_name": nan}),
+            ("max_per_board", {"max_per_board": nan}),
+            ("cash_buffer_min", {"cash_buffer_min": nan}),
+            ("max_leverage", {"max_leverage": nan}),
+        ]:
+            with self.subTest(field=field_name):
+                with self.assertRaisesRegex(
+                    RiskConstraintError, "finite",
+                ):
+                    MinimalRiskConstraints(**kwargs)  # type: ignore[arg-type]
+
+    def test_rejects_inf_constraint_values(self) -> None:
+        """``inf``/``-inf`` also silently disables comparison
+        semantics (``inf > hi`` is True so it'd hit the range
+        check, but ``-inf < lo`` is also True so the diagnostic
+        is misleading; reject up front so the message is honest:
+        'must be finite').
+        """
+        for field_name, value in [
+            ("max_per_name", float("inf")),
+            ("max_leverage", float("-inf")),
+        ]:
+            with self.subTest(field=field_name, value=value):
+                with self.assertRaisesRegex(
+                    RiskConstraintError, "finite",
+                ):
+                    MinimalRiskConstraints(**{field_name: value})  # type: ignore[arg-type]
+
 
 class MaxPerNameTests(unittest.TestCase):
     """Single-instrument cap. Default 5%."""
