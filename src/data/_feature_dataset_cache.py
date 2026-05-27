@@ -101,14 +101,49 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
             payload = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
             tail = str(payload.get("tail_date") or "").strip()
             if tail:
-                # PR #175 ``content_hash`` opt-in. Fold it into the tag
-                # so the cache key sees same-tail / different-calendar
-                # drift as a distinct bundle. We deliberately do NOT
-                # re-validate the hash shape here — load_manifest is
-                # the authoritative parser; this function is best-
-                # effort cache-invalidation and an out-of-spec hash
-                # string still produces a distinct tag, which is
-                # exactly what we want for invalidation.
+                # PR #175: include the calendar SHA-256 in the tag so
+                # same-tail / different-calendar drift invalidates
+                # the cache. Two resolution sources, in priority:
+                #
+                # (i) Recompute the hash from ``calendars/day.txt`` on
+                #     disk. This is the actual-bytes truth and is the
+                #     ONLY path that catches "someone edited the
+                #     calendar out-of-band without updating the
+                #     manifest" — including under
+                #     ``QLIB_SKIP_BUNDLE_VALIDATION=1`` or
+                #     soft-mode validators where the integrity
+                #     check was bypassed. (Codex P2 follow-up on
+                #     PR #175.) The cost is one SHA-256 stream over
+                #     the calendar file (~hundreds of KB), bounded
+                #     by ``compute_bundle_content_hash``; the call
+                #     happens once per ``FeatureDatasetBuilder.build``
+                #     so it adds <1 s to a typical walk-forward run.
+                #
+                # (ii) Fall back to the manifest's stored
+                #      ``content_hash`` only when the calendar file
+                #      is missing / unreadable — preserves the tag
+                #      shape for legacy / corrupt-bundle paths so
+                #      cache lookups don't crash.
+                actual_hash: str | None = None
+                try:
+                    # Lazy import: keeps ``bundle_manifest`` and
+                    # ``_feature_dataset_cache`` import-graph independent
+                    # so a future refactor cannot accidentally create a
+                    # cycle. The import is hot-path only when the
+                    # canonical manifest is present.
+                    from src.data.bundle_manifest import (
+                        compute_bundle_content_hash,
+                    )
+                    actual_hash = compute_bundle_content_hash(base)
+                except Exception:  # noqa: BLE001 — best-effort
+                    actual_hash = None
+                if actual_hash:
+                    return f"{tail}@{actual_hash}"
+                # Fallback: manifest's stored content_hash. We
+                # deliberately do NOT re-validate its shape here —
+                # ``load_manifest`` is the authoritative parser; this
+                # function is best-effort cache-invalidation, and an
+                # out-of-spec string still produces a distinct tag.
                 content_hash = payload.get("content_hash")
                 if isinstance(content_hash, str) and content_hash.strip():
                     return f"{tail}@{content_hash.strip()}"

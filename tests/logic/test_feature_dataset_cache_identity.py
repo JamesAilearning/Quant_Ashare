@@ -146,6 +146,90 @@ class ReadBundleTagTushareFallbackTests(unittest.TestCase):
             )
             self.assertEqual(read_bundle_tag(td), "2026-05-01")
 
+    def test_actual_calendar_bytes_override_stored_manifest_hash(self):
+        """The cache tag MUST be keyed on the actual calendar bytes
+        on disk, not on the ``content_hash`` field as written in the
+        manifest. This catches the "out-of-band edit + bypassed
+        integrity check" scenario:
+
+          1. Bundle is published with calendar=A, manifest hash H_A.
+          2. Operator edits ``calendars/day.txt`` to bytes B (without
+             re-running ingest, so manifest still claims H_A).
+          3. Validation is bypassed via ``QLIB_SKIP_BUNDLE_VALIDATION=1``
+             or downgraded to soft mode (warns, proceeds).
+
+        Without recomputing the hash from actual bytes, the tag would
+        still be ``"<tail>@H_A"`` and the cache would happily serve
+        the dataset built against calendar A.
+
+        Codex P2 follow-up on PR #175.
+        """
+        import tempfile
+
+        from src.data.bundle_manifest import (
+            compute_bundle_content_hash,
+            save_manifest,
+        )
+
+        # Phase 1: write calendar A + manifest with matching hash.
+        # Read tag — should be "<tail>@<sha(A)>".
+        with tempfile.TemporaryDirectory() as td:
+            cal_path = Path(td) / "calendars" / "day.txt"
+            cal_path.parent.mkdir(parents=True)
+            cal_path.write_text("2026-01-02\n2026-01-03\n", encoding="utf-8")
+            hash_a = compute_bundle_content_hash(td)
+            save_manifest(
+                td, tail_date="2026-05-01", instrument_count=1,
+                content_hash=hash_a,
+            )
+            tag_phase_1 = read_bundle_tag(td)
+            self.assertEqual(tag_phase_1, f"2026-05-01@{hash_a}")
+
+            # Phase 2: operator-edit. Calendar bytes change, manifest
+            # STAYS at the old hash (simulates an unattended edit
+            # without re-running ingest).
+            cal_path.write_text(
+                "2026-01-02\n2026-01-03\n2026-01-06\n",  # one extra day
+                encoding="utf-8",
+            )
+            # Manifest still claims hash_a, but actual bytes now hash
+            # to something else. The tag MUST reflect the actual
+            # bytes, otherwise the cache silently serves stale data.
+            tag_phase_2 = read_bundle_tag(td)
+            self.assertNotEqual(
+                tag_phase_2, tag_phase_1,
+                "out-of-band calendar edit must invalidate cache "
+                "even when the manifest's stored content_hash is "
+                "stale (the SKIP / soft-mode bypass path)",
+            )
+            # And the new tag must contain the freshly-computed hash,
+            # not the stored one.
+            hash_b = compute_bundle_content_hash(td)
+            self.assertIn(hash_b, tag_phase_2)
+            self.assertNotIn(hash_a, tag_phase_2)
+
+    def test_falls_back_to_stored_hash_when_calendar_missing(self):
+        """When the calendar file is missing, recomputation fails;
+        fall back to the manifest's stored ``content_hash`` so the
+        cache tag still includes drift information and the call does
+        not crash. (Other code paths surface the missing calendar
+        loudly — ``read_bundle_tag`` is best-effort.)
+        """
+        import tempfile
+
+        good_hash = "sha256:" + ("c" * 64)
+        with tempfile.TemporaryDirectory() as td:
+            # Manifest claims a hash, but no calendar on disk.
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",
+                    "content_hash": good_hash,
+                })
+            )
+            self.assertEqual(
+                read_bundle_tag(td), f"2026-05-01@{good_hash}",
+            )
+
     def test_explicit_null_content_hash_falls_back_to_tail_only(self):
         """``"content_hash": null`` on disk is rejected by
         ``load_manifest`` itself (separate Codex P2 in this PR), but
