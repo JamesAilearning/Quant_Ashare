@@ -166,9 +166,20 @@ class MinimalRiskConstraints:
     engine is post-trade: it inspects the positions map qlib
     produced. In ``RAISE`` mode it aborts the run on any
     violation; in ``WARN_AND_CLIP`` mode it logs each violation
-    and exposes the clipped positions on
-    ``CanonicalBacktestOutput.positions`` (with the original
-    unclipped map preserved on ``positions_pre_clip``).
+    and writes the constraint-respecting allocation to the
+    sibling field ``CanonicalBacktestOutput.positions_clipped``.
+
+    Importantly, ``CanonicalBacktestOutput.positions`` ALWAYS
+    stays tied to qlib's unclipped execution — same map that
+    produced ``return_series`` / ``risk_analysis``. Live-deployment
+    callers who want to trade the constraint-respecting allocation
+    read ``positions_clipped`` (populated only when at least one
+    clip happened); the unclipped ``positions`` remains the
+    authoritative record of what the backtest actually executed,
+    so downstream attribution stays consistent with the official
+    returns. Codex P1 on PR #179 motivated the sibling-field
+    design (an earlier draft swapped ``positions`` itself, which
+    broke ``PerformanceAttribution`` consistency).
 
     See ``openspec/changes/add-minimal-risk-constraints/`` for
     the full design including the post-trade-vs-pre-trade
