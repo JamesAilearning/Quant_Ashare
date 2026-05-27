@@ -711,6 +711,16 @@ class CanonicalBacktestOutput:
     (long-only portfolios). Downstream consumers (performance attribution,
     turnover analysis) must prefer this over reconstructing weights from
     predictions, which would diverge from the actual topk-dropout selection.
+
+    ``positions_pre_clip`` carries the qlib-produced positions BEFORE
+    any risk-constraint clipping. Empty (``{}``) by default — only
+    populated when ``BacktestRunner.run`` was given
+    ``risk_constraints`` in ``WARN_AND_CLIP`` mode AND at least one
+    constraint actually clipped weight on at least one day. In that
+    case ``positions`` reflects the clipped allocation (what the
+    operator should trade) and ``positions_pre_clip`` reflects what
+    qlib's executor actually ran (what produced ``return_series`` /
+    ``risk_analysis``). Audit P0-1 / add-minimal-risk-constraints.
     """
 
     metric_status: str
@@ -720,6 +730,7 @@ class CanonicalBacktestOutput:
     report: Mapping[str, Any]
     provenance: Mapping[str, Any]
     positions: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    positions_pre_clip: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
 
 class CanonicalBacktestContract:

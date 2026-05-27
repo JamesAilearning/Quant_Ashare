@@ -36,6 +36,10 @@ from src.core.qlib_runtime import (
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
 )
+from src.core.risk_constraints import (
+    MinimalRiskConstraints,
+    RiskConstraintError,
+)
 
 _logger = get_logger(__name__)
 
@@ -66,6 +70,7 @@ class BacktestRunner:
         n_drop: int = 5,
         compute_baselines: bool = True,
         pit_provider: Any | None = None,
+        risk_constraints: MinimalRiskConstraints | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -347,6 +352,50 @@ class BacktestRunner:
 
         positions_map = _positions_to_weight_map(positions_normal)
 
+        # Risk-constraints layer (audit P0-1 /
+        # openspec/changes/add-minimal-risk-constraints). Post-trade:
+        # ``return_series`` and ``risk_analysis`` above are already
+        # computed from qlib's unclipped positions, so they reflect
+        # what qlib's executor actually ran. The constraints engine
+        # only affects the ``positions`` field returned downstream
+        # (and surfaces violations via raise / WARN).
+        positions_pre_clip: Mapping[str, Mapping[str, float]] = {}
+        if risk_constraints is None:
+            _logger.warning(
+                "BacktestRunner.run: ``risk_constraints`` was not "
+                "supplied — the backtest ran with NO position-level "
+                "risk constraints active. Single-name / single-board "
+                "concentration, cash-buffer-min, and leverage caps "
+                "are all unbounded. Pass a "
+                "``MinimalRiskConstraints(...)`` instance to opt in. "
+                "Audit P0-1."
+            )
+        else:
+            try:
+                apply_result = risk_constraints.apply(positions_map)
+            except RiskConstraintError as exc:
+                # RAISE mode — surface the consolidated violation
+                # report as a BacktestRunnerError so callers
+                # catching either error class get a clean signal.
+                # ``__cause__`` preserves the RiskConstraintError
+                # for callers that want the structured violations.
+                raise BacktestRunnerError(
+                    f"BacktestRunner.run: risk constraints rejected the "
+                    f"backtest positions map. {exc}"
+                ) from exc
+            # WARN_AND_CLIP mode (or RAISE mode with zero
+            # violations). When clipping actually moved weight,
+            # promote the clipped map to ``positions`` and stash
+            # the unclipped one on ``positions_pre_clip`` so
+            # downstream consumers can diff. When nothing moved,
+            # leave ``positions`` unchanged and
+            # ``positions_pre_clip`` empty (default field).
+            if apply_result.was_clipped:
+                positions_pre_clip = positions_map
+                positions_map = {
+                    d: dict(w) for d, w in apply_result.clipped_positions.items()
+                }
+
         report = {
             "total_days": len(report_normal),
             "start_date": str(report_normal.index.min().date()),
@@ -364,6 +413,7 @@ class BacktestRunner:
             report=report,
             provenance=provenance,
             positions=positions_map,
+            positions_pre_clip=positions_pre_clip,
         )
 
     @staticmethod

@@ -691,6 +691,71 @@ class StampTaxScheduleWarnLoggingTests(unittest.TestCase):
                 )
 
 
+class BacktestRunnerRiskConstraintsKwargTests(unittest.TestCase):
+    """Audit P0-1 / openspec/changes/add-minimal-risk-constraints.
+
+    ``BacktestRunner.run`` MUST accept a ``risk_constraints``
+    keyword argument that defaults to ``None`` (preserves existing
+    callers). A future refactor that removes the kwarg or changes
+    its default would break the OpenSpec contract.
+
+    Deep integration (mocking qlib enough to exercise the post-
+    trade apply call) is covered by ``test_minimal_risk_constraints``
+    on the engine side plus an E2E regression test gated by
+    ``RUN_E2E=1`` on the runner side. The lightweight signature
+    + default-value test below is the everyday CI guard.
+    """
+
+    def test_run_has_risk_constraints_kwarg_with_default_none(self) -> None:
+        import inspect
+
+        from src.core.backtest_runner import BacktestRunner
+
+        sig = inspect.signature(BacktestRunner.run)
+        self.assertIn(
+            "risk_constraints", sig.parameters,
+            msg="BacktestRunner.run must accept ``risk_constraints`` "
+                "kwarg per audit P0-1; if you removed it, "
+                "openspec/changes/add-minimal-risk-constraints needs "
+                "to be archived first.",
+        )
+        param = sig.parameters["risk_constraints"]
+        self.assertIs(
+            param.default, None,
+            msg="``risk_constraints`` default must be None so existing "
+                "callers preserve their previous behaviour (with a "
+                "WARN about no constraints active).",
+        )
+        self.assertIs(
+            param.kind, inspect.Parameter.KEYWORD_ONLY,
+            msg="``risk_constraints`` must be keyword-only — same "
+                "convention as the other run() kwargs.",
+        )
+
+    def test_canonical_backtest_output_has_positions_pre_clip(self) -> None:
+        """The output dataclass gains a sibling field for the
+        unclipped positions. Should default to empty dict so
+        existing constructions without the kwarg keep working."""
+        from dataclasses import fields
+
+        from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+
+        names = {f.name for f in fields(CanonicalBacktestOutput)}
+        self.assertIn("positions_pre_clip", names)
+        # Construct a minimal instance without the new field —
+        # default factory must produce empty dict.
+        out = CanonicalBacktestOutput(
+            metric_status="official",
+            official_backtest_path="qlib.backtest.backtest",
+            return_series={},
+            risk_analysis={},
+            report={},
+            provenance={},
+            positions={},
+        )
+        self.assertEqual(out.positions_pre_clip, {})
+
+
 class PositionsSerializationTests(unittest.TestCase):
     """Unit tests for the ``_positions_to_weight_map`` helper."""
 
