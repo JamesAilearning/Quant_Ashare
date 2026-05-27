@@ -39,29 +39,44 @@ from typing import Any, Protocol
 # ---------------------------------------------------------------------------
 
 
+# Each protocol member is declared as a ``@property`` so the
+# concrete callers — frozen dataclasses (``UniverseArtifactProfile``,
+# ``TaxonomyArtifactProfile``, ``BenchmarkArtifactProfile``) — match
+# structurally. The plain-attribute form would imply a settable
+# variable, which is incompatible with the read-only attributes a
+# ``frozen=True`` dataclass exposes (mypy 1.x flags the mismatch as
+# ``arg-type``). None of these helpers ever assigns back to the
+# fields, so read-only is the honest contract.
 class _HasPresenceFlags(Protocol):
-    artifact_present: bool
-    manifest_present: bool
+    @property
+    def artifact_present(self) -> bool: ...
+    @property
+    def manifest_present(self) -> bool: ...
 
 
 class _HasMetadata(Protocol):
-    metadata: Mapping[str, Any]
+    @property
+    def metadata(self) -> Mapping[str, Any]: ...
 
 
 class _HasStaleness(Protocol):
-    stale_days: int | None
+    @property
+    def stale_days(self) -> int | None: ...
 
 
 class _HasCoverage(Protocol):
-    coverage_ratio: float | None
+    @property
+    def coverage_ratio(self) -> float | None: ...
 
 
 class _HasSnapshotEnd(Protocol):
-    snapshot_end: str | None
+    @property
+    def snapshot_end(self) -> str | None: ...
 
 
 class _HasSnapshotAtMismatch(Protocol):
-    has_snapshot_at_mismatch: bool
+    @property
+    def has_snapshot_at_mismatch(self) -> bool: ...
 
 
 # ---------------------------------------------------------------------------

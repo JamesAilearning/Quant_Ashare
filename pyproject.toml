@@ -69,41 +69,46 @@ ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.10"
-strict = false
-warn_unused_ignores = true
-warn_redundant_casts = true
+strict = true
 ignore_missing_imports = true
 
-# Strict mode opt-in. Growing the whitelist directory-by-directory
-# per the `add-mypy-strict-everywhere` OpenSpec change (PR #171).
-# End state: flip ``[tool.mypy] strict = true`` and demote this
-# block to a single ``src.factor_mining.*`` opt-out.
+# `add-mypy-strict-everywhere` (PR #171) batch 4: the four-batch
+# migration completes here. ``strict = true`` is the repo default;
+# every tree we curated through batches 1–3 (src/core/, src/pit/,
+# src/data/, scripts/, web/operator_ui/) plus src/contracts/ runs
+# strict by default. The whitelist that grew through the migration
+# is gone — strict is the rule, opt-out is the exception.
 #
-# Batch 3 (this PR) adds ``web.operator_ui.*`` to the wildcard set.
-# After this PR, the only remaining tree outside strict is
-# ``src/contracts/`` (15 known errors — protocol redesign) and the
-# global default — both land together in batch 4's flip PR. The two
-# ``src.core.*`` survivors (``_resume``, ``regression_baseline``)
-# stay until that flip for symmetry with batch 2's cleanup.
-#
-# Excluded: ``src/factor_mining/`` (parallel workstream — strict mid-
-# flight = constant merge noise; opt-out removed in a follow-up
-# after that stabilises).
+# The single permitted opt-out is ``src.factor_mining.*`` — a parallel
+# workstream on another session, strict mid-flight would generate
+# constant merge noise. A follow-up PR removes this opt-out once
+# the workstream stabilises. The block lists **every flag implied
+# by ``mypy --strict``** explicitly set to ``false`` so future
+# additions to the strict-flag set don't silently leak into the
+# factor-mining tree (Codex P1 on PR #171).
 [[tool.mypy.overrides]]
-module = [
-  "src.core.walk_forward._resume",
-  "src.core.regression_baseline",
-  "src.core.*",
-  "src.pit.*",
-  "src.data.*",
-  "scripts.*",
-  "web.operator_ui.*",
-]
-disallow_untyped_defs = true
-disallow_untyped_calls = true
-disallow_incomplete_defs = true
-disallow_untyped_decorators = true
-warn_return_any = true
-warn_unreachable = true
-no_implicit_optional = true
-strict_equality = true
+module = ["src.factor_mining.*"]
+# ``ignore_errors = true`` is the practical opt-out — it skips ALL
+# mypy errors (strict and non-strict) inside this module set. The
+# explicit per-flag ``false`` settings below are belt-and-braces:
+# if a future mypy release adds a new strict-implied flag, it stays
+# off here even if someone accidentally drops ``ignore_errors``.
+# (Codex P1 on PR #171 — listing only the strict subset would let
+# new strict flags silently leak in.) ``warn_unused_configs`` and
+# ``warn_redundant_casts`` are NOT listed because mypy rejects them
+# per-module ("should only specify per-module flags").
+ignore_errors = true
+disallow_any_generics = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+disallow_untyped_decorators = false
+no_implicit_optional = false
+warn_unused_ignores = false
+warn_return_any = false
+no_implicit_reexport = false
+strict_equality = false
+strict_concatenate = false
+extra_checks = false

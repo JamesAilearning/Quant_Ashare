@@ -62,6 +62,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from src.core.logger import get_logger
 
@@ -500,7 +501,7 @@ def save_manifest(
                 "0-9 only)."
             )
 
-    payload: dict = {
+    payload: dict[str, Any] = {
         "provider_uri": str(provider_uri),
         "tail_date": tail_iso,
         "instrument_count": int(instrument_count),

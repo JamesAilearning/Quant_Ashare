@@ -42,29 +42,20 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: ruff check src/ tests/ scripts/
 
-      - name: Type check (mypy)
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: mypy src/ --ignore-missing-imports
-        continue-on-error: true
-
-      # Strict mode for directories listed under [tool.mypy.overrides]
-      # in pyproject.toml. ``--follow-imports=silent`` suppresses
-      # noise from transitively-imported legacy code so this step
-      # ONLY fails on regressions inside the strict-mode trees. CI
-      # fails this step (no ``continue-on-error``) — that's the whole
-      # point of opt-in strict.
-      #
-      # Batch 3 of `add-mypy-strict-everywhere` (this PR) extends
-      # coverage to `web/operator_ui/` (operator UI, training
-      # guards, job manager). Remaining: `src/contracts/` protocol
-      # redesign + the global ``strict = true`` flip, both in
-      # batch 4.
-      - name: Type check strict modules (mypy-strict batch 3)
+      # Strict mode is the default after `add-mypy-strict-everywhere`
+      # batch 4 (this PR) — see [tool.mypy] in pyproject.toml. The
+      # whitelist that grew through batches 1-3 is gone; the only
+      # opt-out is ``src.factor_mining.*`` (active parallel workstream;
+      # a follow-up PR removes that opt-out once it stabilises).
+      # ``--follow-imports=silent`` keeps the run focused on the
+      # PR's tree without pulling transitive third-party errors into
+      # the signal. No ``continue-on-error`` — strict is the rule.
+      - name: Type check (mypy --strict by default)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: |
           mypy --follow-imports=silent --ignore-missing-imports \
             --explicit-package-bases \
-            src/core/ src/pit/ src/data/ scripts/ web/operator_ui/
+            src/ scripts/ web/operator_ui/
 
       # Coverage runs on a single matrix slot (ubuntu-3.11) so we
       # collect one canonical coverage.xml per PR; running cov on all
