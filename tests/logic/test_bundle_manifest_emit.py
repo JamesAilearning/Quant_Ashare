@@ -25,11 +25,32 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.bundle_manifest import (  # noqa: E402
+    CONTENT_HASH_PREFIX,
     MANIFEST_FILENAME,
+    SKIP_ENV_VAR,
+    BundleContentHashMismatchError,
     BundleManifestError,
+    compute_bundle_content_hash,
     load_manifest,
     save_manifest,
+    verify_content_hash,
 )
+
+def _write_calendar(provider_dir: Path, *, dates: list[str] | None = None) -> Path:
+    """Write a minimal ``calendars/day.txt`` under *provider_dir*.
+
+    Many of the new tests need an actual calendar file so the content-
+    hash check can run. The content is just a few ISO dates; the
+    integrity check only cares about the bytes, not the semantic
+    contents.
+    """
+    cal_dir = provider_dir / "calendars"
+    cal_dir.mkdir(parents=True, exist_ok=True)
+    cal_path = cal_dir / "day.txt"
+    body = "\n".join(dates or ["2026-01-02", "2026-01-03", "2026-01-06"]) + "\n"
+    cal_path.write_text(body, encoding="utf-8")
+    return cal_path
+
 
 # ---------------------------------------------------------------------------
 # save_manifest contract
@@ -146,6 +167,391 @@ class SaveManifestTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# compute_bundle_content_hash
+# ---------------------------------------------------------------------------
+
+
+class ComputeBundleContentHashTests(unittest.TestCase):
+    """Tests for the SHA-256 fingerprint helper. We deliberately
+    write small calendar files by hand — the hash only cares about
+    bytes, not semantic dates."""
+
+    def test_returns_sha256_prefixed_64_hex(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            digest = compute_bundle_content_hash(td)
+        self.assertTrue(digest.startswith(CONTENT_HASH_PREFIX))
+        hex_part = digest[len(CONTENT_HASH_PREFIX):]
+        self.assertEqual(len(hex_part), 64)
+        # All lower-case hex.
+        self.assertTrue(all(c in "0123456789abcdef" for c in hex_part))
+
+    def test_is_deterministic_for_same_bytes(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            d1 = compute_bundle_content_hash(td)
+            d2 = compute_bundle_content_hash(td)
+        self.assertEqual(d1, d2)
+
+    def test_changes_when_bytes_change(self):
+        """A single-byte difference in the calendar must produce a
+        different hash — otherwise the integrity check is useless."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td), dates=["2026-01-02"])
+            d_short = compute_bundle_content_hash(td)
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td), dates=["2026-01-02", "2026-01-03"])
+            d_long = compute_bundle_content_hash(td)
+        self.assertNotEqual(d_short, d_long)
+
+    def test_raises_when_calendar_missing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            # No calendars/day.txt written.
+            with self.assertRaisesRegex(
+                BundleManifestError, "calendars/day.txt|calendar"
+            ):
+                compute_bundle_content_hash(td)
+
+
+# ---------------------------------------------------------------------------
+# save_manifest content_hash round-trip
+# ---------------------------------------------------------------------------
+
+
+class SaveManifestContentHashTests(unittest.TestCase):
+
+    def test_omits_content_hash_when_none(self):
+        """Legacy callers that don't pass ``content_hash`` MUST produce
+        a JSON without the key (not ``"content_hash": null``) so the
+        emitted manifest stays byte-identical to pre-PR fixtures."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            save_manifest(td, tail_date="2026-03-06", instrument_count=10)
+            payload = json.loads(
+                (Path(td) / MANIFEST_FILENAME).read_text(encoding="utf-8"),
+            )
+        self.assertNotIn("content_hash", payload)
+
+    def test_writes_content_hash_when_supplied(self):
+        import tempfile
+
+        good = CONTENT_HASH_PREFIX + ("a" * 64)
+        with tempfile.TemporaryDirectory() as td:
+            save_manifest(
+                td,
+                tail_date="2026-03-06",
+                instrument_count=10,
+                content_hash=good,
+            )
+            payload = json.loads(
+                (Path(td) / MANIFEST_FILENAME).read_text(encoding="utf-8"),
+            )
+        self.assertEqual(payload["content_hash"], good)
+
+    def test_round_trips_via_load_manifest(self):
+        import tempfile
+
+        good = CONTENT_HASH_PREFIX + ("b" * 64)
+        with tempfile.TemporaryDirectory() as td:
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=good,
+            )
+            loaded = load_manifest(td)
+            assert loaded is not None
+            self.assertEqual(loaded.content_hash, good)
+
+    def test_load_returns_none_for_legacy_manifest_without_field(self):
+        """A manifest that pre-dates this PR (no ``content_hash`` key)
+        MUST load fine with ``content_hash=None``; that's the legacy
+        contract operators implicitly rely on."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / MANIFEST_FILENAME).write_text(
+                json.dumps({
+                    "provider_uri": "D:/legacy",
+                    "tail_date": "2026-03-06",
+                    "instrument_count": 5,
+                    "built_at": "2026-03-08T00:00:00Z",
+                }),
+                encoding="utf-8",
+            )
+            loaded = load_manifest(td)
+        assert loaded is not None
+        self.assertIsNone(loaded.content_hash)
+
+    def test_rejects_non_string_content_hash(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                save_manifest(
+                    td, tail_date="2026-03-06", instrument_count=1,
+                    content_hash=12345,  # type: ignore[arg-type]
+                )
+
+    def test_rejects_content_hash_without_algo_prefix(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                save_manifest(
+                    td, tail_date="2026-03-06", instrument_count=1,
+                    content_hash="a" * 64,
+                )
+
+    def test_rejects_content_hash_wrong_hex_length(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                save_manifest(
+                    td, tail_date="2026-03-06", instrument_count=1,
+                    content_hash=CONTENT_HASH_PREFIX + "abcdef",  # too short
+                )
+
+    def test_rejects_content_hash_non_hex_chars(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                save_manifest(
+                    td, tail_date="2026-03-06", instrument_count=1,
+                    # 64 chars but with a non-hex 'z'.
+                    content_hash=CONTENT_HASH_PREFIX + ("a" * 63) + "z",
+                )
+
+    def test_load_rejects_malformed_content_hash_on_disk(self):
+        """A hand-edited / corrupted manifest with a malformed
+        content_hash on disk must surface as BundleManifestError at
+        load time, not later as a confusing mismatch."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / MANIFEST_FILENAME).write_text(
+                json.dumps({
+                    "provider_uri": "D:/x",
+                    "tail_date": "2026-03-06",
+                    "instrument_count": 5,
+                    "built_at": "2026-03-08T00:00:00Z",
+                    "content_hash": "md5:abc",  # wrong algo prefix
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                load_manifest(td)
+
+
+# ---------------------------------------------------------------------------
+# verify_content_hash
+# ---------------------------------------------------------------------------
+
+
+class VerifyContentHashTests(unittest.TestCase):
+    """``verify_content_hash`` is the runtime side of the integrity
+    check — it loads the manifest, recomputes the calendar hash, and
+    compares. The matrix of cases below covers:
+
+    - matching hash → silent
+    - mismatch (out-of-band edit) → BundleContentHashMismatchError
+    - mismatch with soft=True → WARNING
+    - manifest with no content_hash (legacy) → silent
+    - missing manifest entirely → silent
+    - manifest claims hash but calendar file is missing → BundleManifestError
+    - SKIP env var → silent (matches validate_test_end behaviour)
+    """
+
+    def setUp(self) -> None:
+        import os
+        self._saved_skip = os.environ.pop(SKIP_ENV_VAR, None)
+
+    def tearDown(self) -> None:
+        import os
+        os.environ.pop(SKIP_ENV_VAR, None)
+        if self._saved_skip is not None:
+            os.environ[SKIP_ENV_VAR] = self._saved_skip
+
+    def test_silent_when_calendar_matches_manifest_hash(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            actual = compute_bundle_content_hash(td)
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=actual,
+            )
+            # Must NOT raise.
+            verify_content_hash(td)
+
+    def test_raises_on_mismatch(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            # Stamp a manifest with a hash that doesn't match the
+            # calendar — simulates a calendar edited after manifest
+            # write.
+            stale = CONTENT_HASH_PREFIX + ("0" * 64)
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=stale,
+            )
+            with self.assertRaises(BundleContentHashMismatchError) as ctx:
+                verify_content_hash(td)
+        msg = str(ctx.exception)
+        self.assertIn(stale, msg)
+        self.assertIn(SKIP_ENV_VAR, msg)  # remediation hint
+
+    def test_mismatch_soft_logs_warning(self):
+        import logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            stale = CONTENT_HASH_PREFIX + ("0" * 64)
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=stale,
+            )
+            with self.assertLogs(
+                "src.data.bundle_manifest", level="WARNING"
+            ) as captured:
+                verify_content_hash(td, soft=True)
+        warns = [r for r in captured.records if r.levelno == logging.WARNING]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("content_hash mismatch", warns[0].getMessage())
+
+    def test_silent_when_manifest_has_no_content_hash(self):
+        """Legacy bundle: manifest exists, but no content_hash field.
+        Must be a no-op so existing operators are not forced to
+        re-ingest."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            save_manifest(td, tail_date="2026-03-06", instrument_count=1)
+            # No raise.
+            verify_content_hash(td)
+
+    def test_silent_when_manifest_missing(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            # No manifest written at all.
+            verify_content_hash(td)
+
+    def test_raises_when_manifest_claims_hash_but_calendar_missing(self):
+        """Manifest declares an integrity surface (``content_hash``)
+        that no longer exists on disk. Surface this as
+        BundleManifestError (consistent with the "manifest schema is
+        wrong" error class) rather than as a silent pass."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            # Hand-craft a manifest with content_hash but DO NOT
+            # write calendars/day.txt. save_manifest would normally
+            # not gate on the calendar existing — operators usually
+            # write the manifest after the publisher emits the
+            # calendar, but we test the standalone validator here.
+            fake = CONTENT_HASH_PREFIX + ("a" * 64)
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=fake,
+            )
+            # calendars/day.txt does not exist.
+            with self.assertRaisesRegex(
+                BundleManifestError, "calendar"
+            ):
+                verify_content_hash(td)
+
+    def test_skip_env_var_bypasses(self):
+        import os
+        import tempfile
+
+        os.environ[SKIP_ENV_VAR] = "1"
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            stale = CONTENT_HASH_PREFIX + ("0" * 64)
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=stale,
+            )
+            # Mismatch, but env-var bypass → no raise.
+            verify_content_hash(td)
+
+
+# ---------------------------------------------------------------------------
+# validate_test_end_against_bundle: hash check fires before date check
+# ---------------------------------------------------------------------------
+
+
+class ValidateBundleHashCheckOrderingTests(unittest.TestCase):
+    """When both content_hash and tail_date are violated,
+    BundleContentHashMismatchError must fire FIRST — see the docstring
+    rationale in validate_test_end_against_bundle."""
+
+    def setUp(self) -> None:
+        import os
+        self._saved_skip = os.environ.pop(SKIP_ENV_VAR, None)
+
+    def tearDown(self) -> None:
+        import os
+        os.environ.pop(SKIP_ENV_VAR, None)
+        if self._saved_skip is not None:
+            os.environ[SKIP_ENV_VAR] = self._saved_skip
+
+    def test_hash_mismatch_fires_before_stale_date(self):
+        import tempfile
+
+        from src.data.bundle_manifest import validate_test_end_against_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            # tail_date is 2026-01-01 — way past for the test_end below
+            # — AND content_hash is wrong. We expect the hash error,
+            # NOT the stale-date error.
+            stale = CONTENT_HASH_PREFIX + ("0" * 64)
+            save_manifest(
+                td, tail_date="2026-01-01", instrument_count=1,
+                content_hash=stale,
+            )
+            with self.assertRaises(BundleContentHashMismatchError):
+                validate_test_end_against_bundle(td, "2099-12-31")
+
+    def test_hash_valid_then_stale_date_still_raises(self):
+        """Sanity: when the hash matches, the date check still runs
+        and a past test_end still triggers BundleStaleError."""
+        import tempfile
+
+        from src.data.bundle_manifest import (
+            BundleStaleError,
+            validate_test_end_against_bundle,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            good = compute_bundle_content_hash(td)
+            save_manifest(
+                td, tail_date="2026-01-01", instrument_count=1,
+                content_hash=good,
+            )
+            with self.assertRaises(BundleStaleError):
+                validate_test_end_against_bundle(td, "2099-12-31")
+
+
+# ---------------------------------------------------------------------------
 # Ingest script integration
 # ---------------------------------------------------------------------------
 
@@ -185,6 +591,12 @@ class IngestScriptEmitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             output_dir = Path(td) / "qlib_bundle"
             output_dir.mkdir()
+            # The script now also computes the calendar SHA-256 and
+            # writes it as ``content_hash`` — the publisher would have
+            # produced this file in production, but the mock doesn't,
+            # so we plant one here. Without it, the script would log a
+            # WARNING and skip the manifest emit.
+            _write_calendar(output_dir)
             fake_result = self._make_fake_publish_result(output_dir)
 
             # Stub _load_config to skip Tushare config parsing, and stub
@@ -206,6 +618,57 @@ class IngestScriptEmitTests(unittest.TestCase):
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["tail_date"], "2026-03-06")
             self.assertEqual(payload["instrument_count"], 4128)
+            # The new wire-up: ``content_hash`` must be embedded so a
+            # later walk-forward validator can detect out-of-band
+            # bundle edits.
+            self.assertIn("content_hash", payload)
+            self.assertTrue(
+                payload["content_hash"].startswith(CONTENT_HASH_PREFIX),
+                f"content_hash should start with {CONTENT_HASH_PREFIX!r}; "
+                f"got {payload['content_hash']!r}",
+            )
+            # Round-trip: recomputing the hash from the same calendar
+            # must match the emitted value (sanity check that the
+            # script computed the hash on the right file).
+            self.assertEqual(
+                payload["content_hash"],
+                compute_bundle_content_hash(output_dir),
+            )
+
+    def test_main_skips_emit_when_calendar_missing(self):
+        """Script must NOT crash when ``compute_bundle_content_hash``
+        cannot find the calendar (e.g. the publisher reported success
+        but the calendar file is somehow absent). Instead it warns and
+        falls back to the legacy no-manifest path — same handling as
+        a malformed validation_profile."""
+        import tempfile
+
+        import scripts.ingest_tushare_qlib_provider as ingest_mod
+
+        with tempfile.TemporaryDirectory() as td:
+            output_dir = Path(td) / "qlib_bundle"
+            output_dir.mkdir()
+            # NO calendar written — compute_bundle_content_hash will
+            # raise BundleManifestError, which the script catches.
+            fake_result = self._make_fake_publish_result(output_dir)
+
+            with patch.object(
+                ingest_mod, "_load_config",
+                return_value=SimpleNamespace(),
+            ), patch.object(
+                ingest_mod.TushareQlibProviderPublisher, "publish",
+                return_value=fake_result,
+            ), patch.object(sys, "argv", ["ingest", "ignored.yaml"]):
+                # Must NOT raise.
+                ingest_mod.main()
+
+            manifest_path = output_dir / MANIFEST_FILENAME
+            self.assertFalse(
+                manifest_path.exists(),
+                "manifest should be skipped when calendar is missing — "
+                "the bundle is unusable for the integrity check, so the "
+                "ingest falls back to the legacy no-manifest path.",
+            )
 
     def test_main_skips_emit_when_coverage_end_date_missing(self):
         """When the publisher can't determine coverage_end_date, the

@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.bundle_manifest import (  # noqa: E402
     BundleManifestError,
+    compute_bundle_content_hash,
     save_manifest,
 )
 from src.data.tushare.provider_bundle import (  # noqa: E402
@@ -77,17 +78,29 @@ def main(argv: list[str] | None = None) -> None:
     tail = result.validation_profile.coverage_end_date
     if tail:
         try:
+            # Compute the calendar SHA-256 once, *after* the publisher
+            # finished writing calendars/day.txt, and embed it in the
+            # manifest. The walk-forward CLI's validator will recompute
+            # and compare on every run, so a later out-of-band edit
+            # surfaces as BundleContentHashMismatchError instead of as
+            # silent data drift. compute_bundle_content_hash itself
+            # raises BundleManifestError if the calendar file is
+            # missing — caught by the same except below.
+            content_hash = compute_bundle_content_hash(result.output_dir)
             manifest_path = save_manifest(
                 result.output_dir,
                 tail_date=tail,
                 instrument_count=result.validation_profile.instrument_count,
+                content_hash=content_hash,
             )
             _logger.info("  Bundle manifest:   %s", manifest_path)
+            _logger.info("  Content hash:      %s", content_hash)
         except BundleManifestError as exc:
             _logger.warning(
                 "Skipped bundle_manifest.json emit (validation_profile data "
-                "was rejected by save_manifest): %s. The bundle itself is "
-                "fine; walk-forward will fall back to 'no manifest = no "
+                "was rejected by save_manifest, or calendar fingerprint "
+                "could not be computed): %s. The bundle itself is fine; "
+                "walk-forward will fall back to 'no manifest = no "
                 "freshness validation'.",
                 exc,
             )
