@@ -62,6 +62,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -430,7 +431,7 @@ class TushareFetcher:
         tickers = sorted(set(active["ts_code"]) | set(delisted["ts_code"]))
         return tuple(tickers)
 
-    def _safe_call(self, api_name: str, **params) -> pd.DataFrame:
+    def _safe_call(self, api_name: str, **params: Any) -> pd.DataFrame:
         """Call Tushare with per-call sleep + rate-limit retry backoff.
 
         Re-raises non-rate-limit ``TushareClientError`` immediately so the

@@ -6,6 +6,7 @@ import shutil
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -147,7 +148,11 @@ class TushareQlibProviderPublisher:
         config: TushareQlibProviderBundleConfig,
     ) -> _PreparedMarketData:
         daily, adj, calendar, index_daily, errors, warnings = cls._normalize_and_validate_inputs(staged, config)
-        profile_base = {
+        # ``dict[str, Any]`` so the ``**profile_base`` splat below matches
+        # the heterogeneous str + int parameters of
+        # TushareQlibProviderValidationProfile. The literal value types
+        # stay correct at runtime.
+        profile_base: dict[str, Any] = {
             "schema_version": VALIDATION_SCHEMA_VERSION,
             "requested_start_date": config.start_date,
             "requested_end_date": config.end_date,

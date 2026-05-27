@@ -103,7 +103,7 @@ class TushareClient:
         call failed" without reading a stack trace.
         """
         try:
-            import tushare as ts  # type: ignore[import-not-found]
+            import tushare as ts
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise TushareClientError(
                 "tushare is not installed. Run: python -m pip install -e \".[tushare]\""

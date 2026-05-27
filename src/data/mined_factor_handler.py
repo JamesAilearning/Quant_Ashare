@@ -35,7 +35,7 @@ Lifecycle:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -90,8 +90,12 @@ class MinedFactorBundle:
 
     def __post_init__(self) -> None:
         # We must call object.__setattr__ to coerce because the dataclass is frozen.
+        # The declared type is ``Path`` but the dataclass init accepts
+        # any path-like at runtime (e.g. ``str`` from YAML loaders);
+        # mypy sees the isinstance check as unreachable because of the
+        # declared type, but the runtime coercion is still needed.
         if not isinstance(self.pool_dir, Path):
-            object.__setattr__(self, "pool_dir", Path(self.pool_dir))
+            object.__setattr__(self, "pool_dir", Path(self.pool_dir))  # type: ignore[unreachable]
         d = self.pool_dir
         if not d.exists():
             raise MinedFactorHandlerError(
@@ -279,7 +283,7 @@ def _make_qlib_handler(
     )
 
 
-def _make_factory(bundle: MinedFactorBundle):
+def _make_factory(bundle: MinedFactorBundle) -> Callable[[FeatureDatasetConfig], Any]:
     """Closure-style factory that captures ``bundle``."""
 
     def _factory(config: FeatureDatasetConfig) -> Any:

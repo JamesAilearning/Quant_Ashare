@@ -172,7 +172,7 @@ class PITValidator:
             )
         return pd.read_parquet(path)
 
-    def _load_reference_cases(self) -> dict:
+    def _load_reference_cases(self) -> dict[str, Any]:
         if self._reference_cases_path is None:
             return {}
         path = self._reference_cases_path
@@ -223,7 +223,7 @@ class PITValidator:
         Spot-checks the first 5 registry rows (full registry can be 325+
         rows; full sweep happens in check B).
         """
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         result = CheckResult(name="Survivorship spot-check", code="A", passed=True)
         sample = registry.head(5)
@@ -281,7 +281,7 @@ class PITValidator:
         last actual trade (e.g. SH600087 delist_date=2014-06-05 but
         last trade 2014-06-04) plus long-weekend gaps.
         """
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         TRUNCATION_TOLERANCE_DAYS = 7
         result = CheckResult(name="Delist boundary sweep", code="B", passed=True)
@@ -345,7 +345,7 @@ class PITValidator:
     def _check_c_time_travel(self) -> CheckResult:
         """At each sample date, all returned universe instruments have
         ``list_date <= date`` AND no delist_date <= date."""
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         result = CheckResult(name="Time-travel sanity", code="C", passed=True)
         registry = self._load_delisted_registry()
@@ -387,7 +387,7 @@ class PITValidator:
         ``min_periods < 20`` (fix: wrap with explicit min_periods=N) or
         the NaN-after-delist write in Phase B.2 is broken.
         """
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         result = CheckResult(
             name="qlib operator min_periods (delist boundary)", code="D",
@@ -421,7 +421,7 @@ class PITValidator:
         result.details["sample_size"] = len(sample)
         return result
 
-    def _check_e_index_membership(self, references: dict) -> CheckResult:
+    def _check_e_index_membership(self, references: dict[str, Any]) -> CheckResult:
         """E: known CSI300 enter / leave boundary cases.
 
         The reference YAML's ``index_membership_cases.csi300`` rows
@@ -457,10 +457,10 @@ class PITValidator:
         result.details["case_count"] = len(cases)
         return result
 
-    def _check_f_borrow_shell_continuity(self, references: dict) -> CheckResult:
+    def _check_f_borrow_shell_continuity(self, references: dict[str, Any]) -> CheckResult:
         """For each ``borrow_shell_cases`` entry, assert $close is
         continuous (no NaN gap) across ``restructure_date``."""
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
 
         result = CheckResult(name="Borrow-shell continuity", code="F", passed=True)
         cases = references.get("borrow_shell_cases") or []
@@ -531,7 +531,7 @@ def _legacy_verify_survivorship_check(
     legacy "did the bin builder produce GOOD data?" smoke against a
     fresh provider without re-implementing it in two places.
     """
-    from qlib.data import D  # type: ignore[import-not-found]
+    from qlib.data import D
 
     from src.core.canonical_backtest_contract import ADJUST_MODE_POST
     from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical

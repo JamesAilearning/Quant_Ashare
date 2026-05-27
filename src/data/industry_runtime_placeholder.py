@@ -7,7 +7,7 @@ class IndustryAwareRuntimePlaceholder:
     """Explicit boundary marker: industry-aware runtime semantics are not implemented here."""
 
     @staticmethod
-    def apply(*_args, **_kwargs):
+    def apply(*_args: object, **_kwargs: object) -> None:
         raise NotImplementedError(
             "Industry-aware runtime semantics are intentionally unimplemented "
             "in define-v2-taxonomy-data-contract-foundation."

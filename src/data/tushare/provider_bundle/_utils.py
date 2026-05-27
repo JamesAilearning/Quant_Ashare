@@ -245,7 +245,7 @@ def _staged_cache_metadata_matches(
         cached = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return cached == _staged_cache_signature(api_name, params)
+    return bool(cached == _staged_cache_signature(api_name, params))
 
 
 def _concat_frames(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
@@ -311,7 +311,7 @@ def _replace_directory_atomically(temp_dir: Path, final_dir: Path) -> None:
 
 def _get_tushare_version() -> str | None:
     try:
-        import tushare as ts  # type: ignore[import-not-found]
+        import tushare as ts
     except ImportError:
         return None
     return str(getattr(ts, "__version__", "unknown"))

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -185,8 +186,14 @@ class IndexMembershipResolver:
         df["ticker"] = df["con_code"].astype(str).map(_to_qlib_ticker)
         return df
 
-    def _load_reference_cases(self) -> dict:
+    def _load_reference_cases(self) -> dict[str, Any]:
         path = self._reference_cases_path
+        # Callers only invoke this when ``_reference_cases_path`` is
+        # truthy (see the ``if self._reference_cases_path else {}``
+        # guard at the call site) — narrow ``Path | None`` → ``Path``
+        # for mypy.
+        if path is None:
+            return {}
         if not path.exists():
             raise IndexMembershipError(
                 f"Reference cases file not found: {path}"
@@ -238,12 +245,20 @@ class IndexMembershipResolver:
                     run_end = d
                 else:
                     if in_run:
+                        # ``in_run`` is set together with ``run_start``
+                        # / ``run_end`` above, so they are non-None
+                        # whenever this branch fires; assert narrows
+                        # ``str | None`` → ``str`` for mypy.
+                        assert run_start is not None
+                        assert run_end is not None
                         runs.append((ticker, run_start, run_end))
                         in_run = False
                         run_start = None
                         run_end = None
             if in_run:
                 # Still member at latest snapshot — open-ended
+                assert run_start is not None
+                assert run_end is not None
                 end_token = "20991231" if run_end == latest else run_end
                 runs.append((ticker, run_start, end_token))
 
@@ -258,7 +273,7 @@ class IndexMembershipResolver:
         self,
         runs: list[tuple[str, str, str]],
         snapshots: pd.DataFrame,
-        references: dict,
+        references: dict[str, Any],
         index_short: str,
     ) -> int:
         """Validate index_membership_cases entries against the resolved runs.

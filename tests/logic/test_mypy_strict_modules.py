@@ -34,23 +34,25 @@ if str(PROJECT_ROOT) not in sys.path:
 #      block.
 #   3. Add the file to the CI workflow's strict-mypy step.
 # All three steps are checked here (steps 1+2) and in CI (step 3).
+# The three original FU-7 ``src.data.*`` individual modules were
+# removed from pyproject in batch 2 — they're redundant under the
+# ``src.data.*`` wildcard. The two ``src.core.*`` survivors stay
+# until batch 4's flip (they're redundant under ``src.core.*`` but
+# the test still pins them for symmetry with the batch-2 cleanup).
 STRICT_MODULES: tuple[str, ...] = (
-    "src.data._segment_embargo",
-    "src.data.bundle_manifest",
-    "src.data._feature_dataset_cache",
     "src.core.walk_forward._resume",
     "src.core.regression_baseline",
 )
 
-# Wildcard patterns added by ``add-mypy-strict-everywhere`` (batch 1
-# of 4). The pyproject overrides block accepts ``"src.core.*"``
-# style globs — we cross-check these as substring matches in the
-# file rather than importlib-loading every module they cover (too
-# slow, and the directory-level CI step already enforces strict
-# inside the tree).
+# Wildcard patterns added by ``add-mypy-strict-everywhere``. The
+# pyproject overrides block accepts ``"src.core.*"`` style globs —
+# we cross-check these as substring matches in the file rather than
+# importlib-loading every module they cover (too slow, and the
+# directory-level CI step already enforces strict inside the tree).
 STRICT_MODULE_PATTERNS: tuple[str, ...] = (
     "src.core.*",
     "src.pit.*",
+    "src.data.*",
     "scripts.*",
 )
 
@@ -146,21 +148,20 @@ class MypyStrictCiWorkflowTests(unittest.TestCase):
             "strict-module signal.",
         )
 
-    def test_ci_workflow_covers_batch1_directories(self):
-        """Batch 1 of ``add-mypy-strict-everywhere`` extends CI's
-        strict step from the FU-7 file-list to directory-level
-        coverage of `src/core/`, `src/pit/`, and `scripts/`. The
-        directory names must appear in the workflow's mypy
-        invocation; if a future PR demotes the step back to the
-        file-list, this test fails loudly."""
+    def test_ci_workflow_covers_strict_directories(self):
+        """``add-mypy-strict-everywhere`` extends CI's strict step
+        to directory-level coverage. The directory names must
+        appear in the workflow's mypy invocation; if a future PR
+        demotes the step back to a narrower file-list, this test
+        fails loudly. Each batch adds one directory to the
+        assertion list — batch 2 adds ``src/data/``."""
         wf = PROJECT_ROOT / ".github" / "workflows" / "test.yml"
         text = wf.read_text(encoding="utf-8")
-        for directory in ("src/core/", "src/pit/", "scripts/"):
+        for directory in ("src/core/", "src/pit/", "src/data/", "scripts/"):
             self.assertIn(
                 directory, text,
                 f"CI workflow's strict-mypy step must include "
-                f"{directory!r} — see add-mypy-strict-everywhere "
-                f"batch 1.",
+                f"{directory!r} — see add-mypy-strict-everywhere.",
             )
 
 

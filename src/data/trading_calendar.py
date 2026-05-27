@@ -138,7 +138,7 @@ class QlibTradingCalendar:
 
     def _fetch_and_build_cache(self) -> StaticTradingCalendar:
         try:
-            from qlib.data import D  # type: ignore[import-not-found]
+            from qlib.data import D
         except ImportError as exc:  # pragma: no cover - environment-dependent
             raise TradingCalendarError(
                 "qlib is not importable. QlibTradingCalendar requires the "
@@ -209,7 +209,7 @@ def extend_end_by_trading_days(
     end_ts = pd.Timestamp(end_dt)
     fallback = end_ts + pd.Timedelta(days=n_trading_days * 3)
     try:
-        from qlib.data import D  # type: ignore[import-not-found]
+        from qlib.data import D
     except ImportError as exc:  # pragma: no cover - environment-dependent
         logger.warning(
             "%s: qlib import failed inside extend_end_by_trading_days "

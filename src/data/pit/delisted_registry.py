@@ -73,6 +73,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -219,7 +220,7 @@ class DelistedRegistryBuilder:
             )
         return df
 
-    def _load_reference_cases(self) -> dict:
+    def _load_reference_cases(self) -> dict[str, Any]:
         path = self._reference_cases_path
         if not path.exists():
             raise DelistedRegistryError(
@@ -234,7 +235,7 @@ class DelistedRegistryBuilder:
             )
         return data
 
-    def _load_manual_overrides(self) -> list[dict]:
+    def _load_manual_overrides(self) -> list[dict[str, Any]]:
         """Read ``data/manual_delistings.yaml`` if a path was supplied.
 
         The file is optional: when no path is configured OR the file
@@ -277,7 +278,7 @@ class DelistedRegistryBuilder:
                 f"for no overrides), got {type(raw_entries).__name__}"
             )
 
-        validated: list[dict] = []
+        validated: list[dict[str, Any]] = []
         seen_tickers: set[str] = set()
         for i, entry in enumerate(raw_entries):
             if not isinstance(entry, dict):
@@ -329,8 +330,8 @@ class DelistedRegistryBuilder:
     def _build_registry_df(
         self,
         delisted_raw: pd.DataFrame,
-        references: dict,
-        overrides: list[dict] | None = None,
+        references: dict[str, Any],
+        overrides: list[dict[str, Any]] | None = None,
     ) -> pd.DataFrame:
         """Project Tushare delisted_stocks → registry schema.
 
@@ -406,7 +407,7 @@ class DelistedRegistryBuilder:
         return out
 
     @staticmethod
-    def _collect_reasons_from_references(references: dict) -> dict[str, str]:
+    def _collect_reasons_from_references(references: dict[str, Any]) -> dict[str, str]:
         """Flatten reference cases into ``{ticker: reason}``.
 
         Both ``pure_delisting_cases`` (each carries its own reason) and
@@ -434,7 +435,7 @@ class DelistedRegistryBuilder:
     # ------------------------------------------------------------------
 
     def _validate_reference_delistings(
-        self, registry: pd.DataFrame, references: dict,
+        self, registry: pd.DataFrame, references: dict[str, Any],
     ) -> int:
         """Every pure_delisting + batch_delisting reference row MUST be
         present with matching delist_date. Mismatches raise so the
@@ -486,7 +487,7 @@ class DelistedRegistryBuilder:
         return matched
 
     def _validate_active_controls(
-        self, registry: pd.DataFrame, active: pd.DataFrame, references: dict,
+        self, registry: pd.DataFrame, active: pd.DataFrame, references: dict[str, Any],
     ) -> int:
         """Every active_control reference row MUST be in the active bucket
         AND NOT in the delisted registry. False-positive delistings
