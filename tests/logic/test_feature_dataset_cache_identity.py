@@ -72,6 +72,227 @@ class ReadBundleTagTushareFallbackTests(unittest.TestCase):
             )
             self.assertEqual(read_bundle_tag(td), "2026-05-01")
 
+    def _write_cal(self, td: Path, body: str = "2026-01-02\n") -> str:
+        """Write a calendar file under *td* and return the computed
+        SHA-256 (``sha256:<hex>``).
+        """
+        from src.data.bundle_manifest import compute_bundle_content_hash
+
+        cal = td / "calendars" / "day.txt"
+        cal.parent.mkdir(parents=True, exist_ok=True)
+        cal.write_text(body, encoding="utf-8")
+        return compute_bundle_content_hash(td)
+
+    def test_bundle_manifest_with_content_hash_returns_composite(self):
+        """When PR #175's ``content_hash`` is opted in AND the calendar
+        is present, the bundle tag is ``"<tail>@<recomputed_hash>"``
+        so two bundles that share the same tail_date but differ in
+        calendar bytes get distinct cache keys.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            actual = self._write_cal(Path(td), "2026-01-02\n2026-01-03\n")
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",
+                    "content_hash": actual,
+                })
+            )
+            self.assertEqual(
+                read_bundle_tag(td),
+                f"2026-05-01@{actual}",
+            )
+
+    def test_same_tail_different_calendar_produces_different_tags(self):
+        """Regression: a re-ingest that lands on the same tail_date
+        with different calendar bytes (= different recomputed hash)
+        MUST flow through into the cache tag, otherwise the feature
+        dataset cache would silently serve stale data across that
+        re-ingest. Codex P1 on PR #175.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td_a, tempfile.TemporaryDirectory() as td_b:
+            hash_a = self._write_cal(Path(td_a), "2026-01-02\n")
+            hash_b = self._write_cal(Path(td_b), "2026-01-02\n2026-01-03\n")
+            self.assertNotEqual(hash_a, hash_b, "test setup: hashes must differ")
+            (Path(td_a) / "bundle_manifest.json").write_text(
+                json.dumps({"tail_date": "2026-05-01", "content_hash": hash_a})
+            )
+            (Path(td_b) / "bundle_manifest.json").write_text(
+                json.dumps({"tail_date": "2026-05-01", "content_hash": hash_b})
+            )
+            tag_a = read_bundle_tag(td_a)
+            tag_b = read_bundle_tag(td_b)
+            self.assertNotEqual(tag_a, tag_b)
+            self.assertIn(hash_a, tag_a)
+            self.assertIn(hash_b, tag_b)
+
+    def test_legacy_bundle_manifest_without_content_hash_still_returns_tail(self):
+        """Backwards compat: a manifest emitted before PR #175 has no
+        ``content_hash`` field. The tag stays exactly the same as
+        before (bare ``tail_date``) so existing cache entries are not
+        invalidated by adopting this PR.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({"tail_date": "2026-05-01"})
+            )
+            self.assertEqual(read_bundle_tag(td), "2026-05-01")
+
+    def test_legacy_manifest_with_calendar_still_returns_bare_tail(self):
+        """Codex P2 follow-up on PR #175 — explicit regression guard.
+
+        If a legacy manifest (no ``content_hash`` field) coexists with
+        a normal ``calendars/day.txt``, the tag MUST still be the
+        bare tail string. The opt-in check is field VALUE, not file
+        presence — otherwise adopting this PR would invalidate every
+        cache entry built against pre-#175 manifests merely because
+        the calendar happens to exist (which it always does for
+        usable bundles).
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            # Calendar IS present.
+            self._write_cal(Path(td), "2026-01-02\n")
+            # Manifest has no content_hash field.
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({"tail_date": "2026-05-01"})
+            )
+            self.assertEqual(read_bundle_tag(td), "2026-05-01")
+
+    def test_actual_calendar_bytes_override_stored_manifest_hash(self):
+        """The cache tag MUST be keyed on the actual calendar bytes
+        on disk, not on the ``content_hash`` field as written in the
+        manifest. This catches the "out-of-band edit + bypassed
+        integrity check" scenario:
+
+          1. Bundle is published with calendar=A, manifest hash H_A.
+          2. Operator edits ``calendars/day.txt`` to bytes B (without
+             re-running ingest, so manifest still claims H_A).
+          3. Validation is bypassed via ``QLIB_SKIP_BUNDLE_VALIDATION=1``
+             or downgraded to soft mode (warns, proceeds).
+
+        Without recomputing the hash from actual bytes, the tag would
+        still be ``"<tail>@H_A"`` and the cache would happily serve
+        the dataset built against calendar A.
+
+        Codex P2 follow-up on PR #175.
+        """
+        import tempfile
+
+        from src.data.bundle_manifest import (
+            compute_bundle_content_hash,
+            save_manifest,
+        )
+
+        # Phase 1: write calendar A + manifest with matching hash.
+        # Read tag — should be "<tail>@<sha(A)>".
+        with tempfile.TemporaryDirectory() as td:
+            cal_path = Path(td) / "calendars" / "day.txt"
+            cal_path.parent.mkdir(parents=True)
+            cal_path.write_text("2026-01-02\n2026-01-03\n", encoding="utf-8")
+            hash_a = compute_bundle_content_hash(td)
+            save_manifest(
+                td, tail_date="2026-05-01", instrument_count=1,
+                content_hash=hash_a,
+            )
+            tag_phase_1 = read_bundle_tag(td)
+            self.assertEqual(tag_phase_1, f"2026-05-01@{hash_a}")
+
+            # Phase 2: operator-edit. Calendar bytes change, manifest
+            # STAYS at the old hash (simulates an unattended edit
+            # without re-running ingest).
+            cal_path.write_text(
+                "2026-01-02\n2026-01-03\n2026-01-06\n",  # one extra day
+                encoding="utf-8",
+            )
+            # Manifest still claims hash_a, but actual bytes now hash
+            # to something else. The tag MUST reflect the actual
+            # bytes, otherwise the cache silently serves stale data.
+            tag_phase_2 = read_bundle_tag(td)
+            self.assertNotEqual(
+                tag_phase_2, tag_phase_1,
+                "out-of-band calendar edit must invalidate cache "
+                "even when the manifest's stored content_hash is "
+                "stale (the SKIP / soft-mode bypass path)",
+            )
+            # And the new tag must contain the freshly-computed hash,
+            # not the stored one.
+            hash_b = compute_bundle_content_hash(td)
+            self.assertIn(hash_b, tag_phase_2)
+            self.assertNotIn(hash_a, tag_phase_2)
+
+    def test_unique_sentinel_when_opted_in_but_calendar_unreadable(self):
+        """Codex P2 follow-up on PR #175.
+
+        When the manifest opts in to ``content_hash`` (non-empty
+        string) BUT the calendar file is missing or unreadable, we
+        cannot verify whether the bundle bytes match the manifest's
+        claim. Returning the manifest's stored hash here would let
+        the cache HIT under a tag tied to a bundle state we can no
+        longer verify, silently serving a previously-built dataset
+        for what is now a broken bundle.
+
+        Required behaviour: emit a per-call unique sentinel so:
+          (a) this call cache-MISSES (no stale data served)
+          (b) no future call shares this tag (so any result we end
+              up writing under it cannot be reused by another call
+              either)
+        """
+        import tempfile
+
+        good_hash = "sha256:" + ("c" * 64)
+        with tempfile.TemporaryDirectory() as td:
+            # Manifest claims a hash, but no calendar on disk.
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",
+                    "content_hash": good_hash,
+                })
+            )
+            tag_1 = read_bundle_tag(td)
+            tag_2 = read_bundle_tag(td)
+            # Same broken state, but the two calls must NOT share a
+            # tag — otherwise a corrupt-state result could be cached
+            # and re-served.
+            self.assertNotEqual(tag_1, tag_2)
+            # Tags carry the tail prefix so the cache key still
+            # partitions sensibly across distinct bundles.
+            self.assertTrue(tag_1.startswith("2026-05-01@"))
+            self.assertTrue(tag_2.startswith("2026-05-01@"))
+            # Tags must NOT contain the stored hash — that would
+            # allow a previous in-spec run to share the tag and
+            # collide.
+            self.assertNotIn(good_hash, tag_1)
+            self.assertNotIn(good_hash, tag_2)
+            # And the sentinel SHOULD self-document so a debug dump
+            # makes the cause clear.
+            self.assertIn("_calendar_unreadable_", tag_1)
+
+    def test_explicit_null_content_hash_falls_back_to_tail_only(self):
+        """``"content_hash": null`` on disk is rejected by
+        ``load_manifest`` itself (separate Codex P2 in this PR), but
+        ``read_bundle_tag`` is best-effort and runs even on manifests
+        that haven't been validated yet. Treat ``null`` here as "no
+        hash available" — same as a missing field — so cache
+        invalidation gracefully falls back instead of crashing.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "bundle_manifest.json").write_text(
+                json.dumps({
+                    "tail_date": "2026-05-01",
+                    "content_hash": None,
+                })
+            )
+            self.assertEqual(read_bundle_tag(td), "2026-05-01")
+
     def test_tushare_manifest_composite_tag(self):
         """The Tushare fallback returns ``tushare:<coverage>@<snapshot>``
         — both fields combined so a re-ingest of the same window still

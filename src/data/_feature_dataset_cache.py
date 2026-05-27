@@ -61,7 +61,16 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
     Reads (in order):
 
     1. ``bundle_manifest.json`` (PR #149 canonical contract) → returns
-       the ``tail_date`` string.
+       ``"<tail_date>@<content_hash>"`` when both fields are present
+       (the ``content_hash`` field was added in PR #175), or just
+       ``<tail_date>`` for legacy manifests that pre-date the hash
+       opt-in. Including ``content_hash`` in the tag means a re-ingest
+       that lands on the same tail_date but with different calendar
+       bytes still invalidates the cache — without it, the freshness
+       check (``verify_content_hash``) would correctly raise, but a
+       run with ``QLIB_SKIP_BUNDLE_VALIDATION=1`` or against a soft-
+       mode validator would happily return a stale dataset under the
+       unchanged cache key.
     2. ``tushare_provider_manifest.json`` (existing Tushare publisher
        format that this repo's own ingest scripts emit) → returns
        ``"tushare:<coverage_end_date>@<snapshot_at>"`` so a re-ingest
@@ -92,7 +101,62 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
             payload = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
             tail = str(payload.get("tail_date") or "").strip()
             if tail:
-                return tail
+                # PR #175 ``content_hash`` opt-in. Decide whether the
+                # bundle has opted in by looking at the FIELD VALUE
+                # (non-empty string), not just key presence:
+                #
+                #   * Field absent OR ``null`` OR empty string =>
+                #     "no integrity check requested" => preserve the
+                #     legacy bare-tail tag. Critical for backwards
+                #     compatibility: adopting this PR must NOT
+                #     invalidate cache entries built against
+                #     pre-#175 manifests, and must NOT spuriously
+                #     re-hash legacy bundles where the operator
+                #     never opted in. (Codex P2 follow-up on PR #175.)
+                #   * Field is a non-empty string => opt-in.
+                #     Recompute the SHA-256 from actual calendar bytes
+                #     and use THAT in the tag (not the stored value).
+                #     The recompute is what catches "someone edited
+                #     the calendar out-of-band" under
+                #     ``QLIB_SKIP_BUNDLE_VALIDATION=1`` or a soft-mode
+                #     validator that warned-and-continued.
+                content_hash_field = payload.get("content_hash")
+                has_hash_opt_in = (
+                    isinstance(content_hash_field, str)
+                    and bool(content_hash_field.strip())
+                )
+                if not has_hash_opt_in:
+                    return tail
+
+                # Opt-in: try to compute from actual bytes. Lazy
+                # import so the ``bundle_manifest`` <->
+                # ``_feature_dataset_cache`` import graph stays acyclic
+                # (a future refactor can't accidentally create a cycle).
+                try:
+                    from src.data.bundle_manifest import (
+                        compute_bundle_content_hash,
+                    )
+                    actual_hash = compute_bundle_content_hash(base)
+                    return f"{tail}@{actual_hash}"
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
+
+                # Recompute failed (calendar missing / unreadable /
+                # permission denied / TOCTOU race). The manifest
+                # CLAIMS a content_hash but we cannot verify the
+                # bytes match it. DO NOT fall back to the stored
+                # hash: that would let the cache HIT under a tag
+                # tied to a bundle state we can no longer verify
+                # and silently serve a previously-built dataset for
+                # what is now a broken/corrupt bundle. Instead emit
+                # a per-call unique sentinel so:
+                #   (i) this call cache-MISSES (no stale data served)
+                #   (ii) no future call ever shares this tag (so any
+                #        result we end up writing under it cannot be
+                #        reused either — corrupt-state results stay
+                #        ungrowing-cache-only)
+                # Codex P2 follow-up on PR #175.
+                return f"{tail}@_calendar_unreadable_{os.urandom(8).hex()}"
         except Exception:  # noqa: BLE001 — best-effort
             pass
 

@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.bundle_manifest import (  # noqa: E402
     BundleManifestError,
+    compute_bundle_content_hash,
     save_manifest,
 )
 from src.data.tushare.provider_bundle import (  # noqa: E402
@@ -76,13 +77,51 @@ def main(argv: list[str] | None = None) -> None:
     # the manifest than to fail the ingest at the last step.
     tail = result.validation_profile.coverage_end_date
     if tail:
+        # Two distinct failure modes have to be separated here so they
+        # get treated differently. Codex P2 on PR #175.
+        #
+        # (a) ``compute_bundle_content_hash`` raises => the publisher
+        #     reported success AND coverage_end_date is set, but
+        #     ``calendars/day.txt`` is missing or unreadable. That is
+        #     a corrupt bundle — the calendar is a required qlib
+        #     provider artifact, so the published output is unusable
+        #     as a qlib provider regardless of whether we emit a
+        #     manifest. Downgrading to "no manifest, walk-forward
+        #     will figure it out" silently leaves the operator with
+        #     a broken bundle that fails much later inside qlib
+        #     with an opaque error. Fail loudly here instead.
+        #
+        # (b) ``save_manifest`` raises BundleManifestError => the
+        #     ``validation_profile`` data was rejected by the
+        #     manifest schema (e.g. a non-int ``instrument_count``).
+        #     The bundle bytes on disk are still fine; the failure
+        #     is just in the metadata sidecar. Falling back to "no
+        #     manifest" is honest here — walk-forward will warn and
+        #     proceed.
+        try:
+            content_hash = compute_bundle_content_hash(result.output_dir)
+        except BundleManifestError as exc:
+            _logger.error(
+                "Tushare publish reported success and coverage_end_date "
+                "is set, but compute_bundle_content_hash failed: %s. "
+                "The bundle is missing calendars/day.txt (or it is "
+                "unreadable), which is a required qlib provider artifact "
+                "— the output is NOT a usable qlib provider in this "
+                "state. Aborting before writing a misleading manifest. "
+                "Investigate the publisher; re-run ingest after fixing.",
+                exc,
+            )
+            sys.exit(1)
+
         try:
             manifest_path = save_manifest(
                 result.output_dir,
                 tail_date=tail,
                 instrument_count=result.validation_profile.instrument_count,
+                content_hash=content_hash,
             )
             _logger.info("  Bundle manifest:   %s", manifest_path)
+            _logger.info("  Content hash:      %s", content_hash)
         except BundleManifestError as exc:
             _logger.warning(
                 "Skipped bundle_manifest.json emit (validation_profile data "
