@@ -350,6 +350,30 @@ class BacktestRunner:
                     instruments=all_instruments,
                 )
             else:
+                # Legacy non-PIT path. Documented in the function
+                # docstring as "Phase D.3 opt-in; default None falls
+                # through to direct D.features preserving the legacy
+                # behaviour". Audit P0-6 added the WARN below so the
+                # bypass is observable — the silent fallthrough used
+                # to leave operators unable to tell whether a backtest
+                # had post-delist values leaking through window
+                # operators (qlib's default min_periods does not mask
+                # past delist_date — see ``src/pit/query.py``
+                # docstring §4.3.2). When you want the §4.3.2 mask,
+                # pass a configured ``PITDataProvider`` instance.
+                # TODO(P0-6 follow-up): thread pit_provider through
+                # ``Pipeline`` / ``WalkForwardEngine`` so this legacy
+                # branch can be removed once all production callers
+                # opt in.
+                _logger.warning(
+                    "BacktestRunner._compute_equalweight_baseline: "
+                    "pit_provider is None — falling back to direct "
+                    "qlib.data.D.features. The §4.3.2 post-delist "
+                    "mask is NOT applied; window-operator outputs "
+                    "for delisted tickers may leak across the "
+                    "delist_date boundary. Pass a PITDataProvider "
+                    "to opt into the mask. Audit P0-6."
+                )
                 from qlib.data import D
                 close = D.features(
                     all_instruments,

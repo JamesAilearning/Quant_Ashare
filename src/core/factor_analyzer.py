@@ -353,6 +353,25 @@ class FactorAnalyzer:
                 instruments=instruments,
             )
         else:
+            # Legacy non-PIT path. Documented in the function docstring
+            # as the pre-PIT-pipeline fallback. Audit P0-6 added the
+            # WARN so the bypass is observable — the silent fallthrough
+            # used to mean the operator could not tell whether a factor
+            # analysis run was reading post-delist values through qlib's
+            # default ``min_periods`` (see ``src/pit/query.py`` §4.3.2).
+            # When you want the mask, pass a configured ``PITDataProvider``.
+            # TODO(P0-6 follow-up): thread pit_provider through callers
+            # so this branch can be retired once the production sites
+            # opt in.
+            _logger.warning(
+                "FactorAnalyzer._fetch_close_panel: pit_provider is "
+                "None — falling back to direct qlib.data.D.features. "
+                "The §4.3.2 post-delist mask is NOT applied; forward "
+                "returns and IC computed from this panel may consume "
+                "stale / forward-filled values for delisted tickers. "
+                "Pass a PITDataProvider to opt into the mask. "
+                "Audit P0-6."
+            )
             from qlib.data import D
             close = D.features(
                 instruments, ["$close"], start_time=start, end_time=end_extended,
