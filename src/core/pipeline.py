@@ -263,16 +263,26 @@ class PipelineConfig:
                     f"PipelineConfig.{name} must be >= 0 to avoid silently "
                     f"inflating returns by negative cost; got {value!r}."
                 )
-        # Resolve the stamp-tax schedule now so a malformed value in
-        # the YAML config fails AT CONFIG CONSTRUCTION, not after
-        # several minutes of feature build. We discard the result —
-        # the actual schedule is resolved again when constructing
-        # ``CanonicalExchangeCostModel`` in ``Pipeline.run``. The
-        # helper is pure so calling it twice is cheap, and the
-        # second call also verifies that no mutation snuck in
-        # between config construction and use. Audit P0-4.
+        # Resolve AND fully validate the stamp-tax schedule now so a
+        # malformed value in the YAML config fails AT CONFIG
+        # CONSTRUCTION, not after several minutes of feature build.
+        # ``resolve_stamp_tax_schedule`` alone only coerces the
+        # YAML shape — ordering / duplicate-date checks live on
+        # ``CanonicalExchangeCostModel._validate_stamp_tax_schedule``.
+        # Construct a throwaway cost-model with the resolved schedule
+        # so BOTH validators fire here, matching the pattern
+        # ``WalkForwardConfig.__post_init__`` uses to validate its
+        # backtest controls. Codex P2 follow-up on PR #178.
         try:
-            resolve_stamp_tax_schedule(self.stamp_tax_schedule)
+            resolved_schedule = resolve_stamp_tax_schedule(
+                self.stamp_tax_schedule,
+            )
+            CanonicalExchangeCostModel(
+                commission_rate=self.commission_rate,
+                stamp_tax_schedule=resolved_schedule,
+                slippage_bps=self.slippage_bps,
+                min_cost=self.min_cost,
+            )
         except CanonicalBacktestContractError as exc:
             raise PipelineError(
                 f"PipelineConfig.stamp_tax_schedule failed validation: {exc}"

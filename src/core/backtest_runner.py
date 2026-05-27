@@ -164,13 +164,46 @@ class BacktestRunner:
         # whether the weighted scalar is good enough or whether they
         # need to split the backtest at the transition.
         #
+        # The qlib calendar IS passed so the weighting matches what
+        # qlib's executor actually charges per sell. Without the
+        # calendar the helper falls back to calendar-day weighting,
+        # which produces a different scalar when holidays cluster
+        # asymmetrically around a transition (e.g. CN long-holiday
+        # in October before a hypothetical reform on Oct 15 would
+        # over-weight the post-reform side because it skips the
+        # holiday days on the pre-reform side). Codex P2 follow-up
+        # on PR #178.
+        #
         # Audit P0-4 + add-stamp-tax-schedule.
         period_start = date.fromisoformat(request.evaluation_start)
         period_end = date.fromisoformat(request.evaluation_end)
+        try:
+            from qlib.data import D as _qlib_D
+            trading_calendar_ts = _qlib_D.calendar(
+                start_time=request.evaluation_start,
+                end_time=request.evaluation_end,
+            )
+            trading_calendar: list[date] | None = [
+                ts.date() if hasattr(ts, "date") else date.fromisoformat(str(ts)[:10])
+                for ts in trading_calendar_ts
+            ]
+        except Exception as exc:  # pragma: no cover - best-effort calendar fetch
+            # If qlib.calendar fails (shouldn't, since we already
+            # verified canonical init above), fall back to
+            # calendar-day weighting. The WARN below documents this.
+            _logger.warning(
+                "BacktestRunner: failed to fetch qlib trading "
+                "calendar for stamp-tax weighting (%s: %s); falling "
+                "back to calendar-day weighting which may produce a "
+                "slightly different scalar than the per-sell rate.",
+                type(exc).__name__, exc,
+            )
+            trading_calendar = None
         effective_stamp_tax = compute_effective_stamp_tax_bps(
             cost.stamp_tax_schedule,
             period_start,
             period_end,
+            calendar=trading_calendar,
         )
         if effective_stamp_tax.transitions:
             schedule_repr = ", ".join(
