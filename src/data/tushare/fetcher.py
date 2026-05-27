@@ -432,11 +432,26 @@ class TushareFetcher:
         return tuple(tickers)
 
     def _safe_call(self, api_name: str, **params: Any) -> pd.DataFrame:
-        """Call Tushare with per-call sleep + rate-limit retry backoff.
+        """Call Tushare with per-call sleep + retry backoff.
 
-        Re-raises non-rate-limit ``TushareClientError`` immediately so the
-        operator sees true failures (missing token, malformed parameter)
-        without 5 minutes of misleading retries.
+        Retries are triggered for TWO error classes (see
+        :meth:`_is_retryable_error` for the predicate):
+
+        * **Rate limit**: Tushare quota window exhaustion. Recovery is
+          quota-window-scale (~60s).
+        * **Transient network error**: ``ConnectionError`` /
+          ``ReadTimeout`` / 5xx gateway errors that the underlying
+          ``requests`` stack surfaces through ``TushareClientError``.
+          These typically resolve within seconds, but we use the
+          same linear backoff (60s × attempt) because (a) network
+          blips can persist longer than a single TCP retry-window
+          and (b) one schedule keeps the operator-facing behaviour
+          predictable.
+
+        Re-raises non-retryable ``TushareClientError`` immediately so
+        the operator sees true failures (missing token, malformed
+        parameter, account-permission errors) without 5 minutes of
+        misleading retries.
         """
         last_err: TushareClientError | None = None
         for attempt in range(MAX_RATE_LIMIT_RETRIES):
@@ -445,8 +460,10 @@ class TushareFetcher:
                     time.sleep(self._config.rate_limit_sleep_ms / 1000.0)
                 return self._client.call(api_name, **params)
             except TushareClientError as exc:
-                if not self._is_rate_limit_error(exc):
-                    # Non-rate-limit failure: re-raise immediately
+                if not self._is_retryable_error(exc):
+                    # Token / permission / param error: re-raise so
+                    # the operator gets the real error fast, not
+                    # 5 attempts × 60s of misleading backoff.
                     raise
                 last_err = exc
                 # Only back off if another attempt remains. Sleeping after
@@ -457,26 +474,73 @@ class TushareFetcher:
                 if attempt < MAX_RATE_LIMIT_RETRIES - 1:
                     wait = RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1)
                     _logger.warning(
-                        "  Rate-limit on %s attempt %d/%d, sleeping %ds: %s",
+                        "  Transient Tushare error on %s attempt %d/%d, "
+                        "sleeping %ds: %s",
                         api_name, attempt + 1, MAX_RATE_LIMIT_RETRIES, wait, exc,
                     )
                     time.sleep(wait)
                 else:
                     _logger.warning(
-                        "  Rate-limit on %s attempt %d/%d (final): %s",
+                        "  Transient Tushare error on %s attempt %d/%d (final): %s",
                         api_name, attempt + 1, MAX_RATE_LIMIT_RETRIES, exc,
                     )
         raise TushareFetcherError(
-            f"Tushare {api_name} hit rate limit "
-            f"{MAX_RATE_LIMIT_RETRIES} times; aborting. Last error: {last_err}"
+            f"Tushare {api_name} failed {MAX_RATE_LIMIT_RETRIES} retryable "
+            f"attempts (rate limit, network, or 5xx); aborting. "
+            f"Last error: {last_err}"
         )
 
     @staticmethod
-    def _is_rate_limit_error(exc: TushareClientError) -> bool:
+    def _is_retryable_error(exc: TushareClientError) -> bool:
+        """True iff ``exc`` is a transient error worth retrying.
+
+        Covered classes:
+
+        * **Rate limit**: ``"rate"`` / ``"limit"`` substrings;
+          Tushare's quota exhaustion sometimes surfaces as
+          ``returned None`` (no body in the SDK).
+        * **Transient network**: ``ConnectionError`` /
+          ``ConnectionResetError`` (catches the user-reported
+          ``HTTPConnectionPool(host='api.waditu.com')`` blip),
+          ``Timeout`` / ``timed out``, ``max retries exceeded``
+          (raised by the requests adapter when its OWN retry
+          budget is exhausted on transport-level failures).
+        * **5xx gateway**: ``502``, ``503``, ``504``, ``bad gateway``,
+          ``gateway time-out``, ``service unavailable``.
+        * **Tushare Chinese error messages**: ``网络`` (network),
+          ``服务异常`` (service abnormal), ``服务繁忙`` (server busy).
+          Tushare's pro API sometimes returns Chinese error bodies
+          on transient failures; matching the substrings here means
+          a misconfigured operator locale doesn't accidentally lose
+          the retry. Static method so it can be unit-tested without
+          a fetcher instance.
+
+        NOT retried:
+
+        * Token / authentication errors (``"token"``, ``"权限"``,
+          ``"invalid"``) — recovery requires operator action, not
+          time.
+        * Param errors (``"missing"``, ``"required"``) — same.
+        * Anything not in the substring set above.
+        """
         msg = str(exc).lower()
         return any(
             token in msg
-            for token in ("rate", "limit", "returned none", "返回 none")
+            for token in (
+                # Rate-limit class — original tokens preserved.
+                "rate", "limit", "returned none", "返回 none",
+                # Transient network class (audit P0-followup; this
+                # caught the user-reported ConnectionError on
+                # api.waditu.com).
+                "connection", "connectionerror", "connectionreseterror",
+                "timeout", "timed out", "max retries exceeded",
+                "httpconnectionpool", "httpsconnectionpool",
+                # 5xx gateway.
+                "502", "503", "504",
+                "bad gateway", "gateway time-out", "service unavailable",
+                # Chinese transient-error messages from Tushare server.
+                "网络", "服务异常", "服务繁忙",
+            )
         )
 
     @staticmethod

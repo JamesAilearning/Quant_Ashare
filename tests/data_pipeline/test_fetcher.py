@@ -500,6 +500,164 @@ class RateLimitTests(unittest.TestCase):
         self.assertEqual(client.call.call_count, MAX_RATE_LIMIT_RETRIES)
 
 
+class RetryableErrorClassificationTests(unittest.TestCase):
+    """``_is_retryable_error`` covers rate-limit AND transient
+    network / 5xx classes. Audit follow-up after a real
+    operator-reported ``HTTPConnectionPool(host='api.waditu.com',
+    port=80): ConnectionError`` killed a multi-hour
+    ``adj_factor`` pull on the first blip.
+    """
+
+    def test_rate_limit_token_still_retried(self) -> None:
+        """The original rate-limit tokens MUST still trigger retry —
+        regression guard against accidentally narrowing the
+        predicate while extending it.
+        """
+        from src.data.tushare.fetcher import TushareFetcher
+
+        for msg in (
+            "RATE limit exceeded",
+            "Tushare returned None for stock_basic",
+            "返回 None — rate limit",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError(msg),
+                    ),
+                    f"rate-limit signal {msg!r} should be retryable",
+                )
+
+    def test_connection_error_is_retryable(self) -> None:
+        """The user-reported failure mode: requests' adapter raises
+        ``ConnectionError`` and the message contains
+        ``HTTPConnectionPool(host='api.waditu.com')``. Both
+        substrings now trigger retry."""
+        from src.data.tushare.fetcher import TushareFetcher
+
+        for msg in (
+            "ConnectionError: HTTPConnectionPool(host='api.waditu.com', "
+            "port=80): Max retries exceeded with url: /",
+            "Connection refused by remote host",
+            "ConnectionResetError: connection reset by peer",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError(msg),
+                    ),
+                    f"connection-class signal {msg!r} should be retryable",
+                )
+
+    def test_timeout_is_retryable(self) -> None:
+        from src.data.tushare.fetcher import TushareFetcher
+
+        for msg in (
+            "ReadTimeout: HTTPSConnectionPool(...): Read timed out.",
+            "ConnectTimeout: HTTPSConnectionPool(...): timeout=5",
+            "The read operation timed out",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError(msg),
+                    ),
+                )
+
+    def test_5xx_gateway_is_retryable(self) -> None:
+        from src.data.tushare.fetcher import TushareFetcher
+
+        for msg in (
+            "HTTP 502 Bad Gateway",
+            "Server returned 503 Service Unavailable",
+            "Gateway Time-out (504)",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError(msg),
+                    ),
+                )
+
+    def test_chinese_transient_messages_retryable(self) -> None:
+        """Tushare's Pro API sometimes returns Chinese error bodies on
+        transient failures. The substring match covers them so a
+        misconfigured operator locale doesn't lose the retry."""
+        from src.data.tushare.fetcher import TushareFetcher
+
+        for msg in (
+            "网络连接异常，请稍后重试",
+            "服务异常，请稍后再试",
+            "Tushare 服务繁忙，请重试",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError(msg),
+                    ),
+                )
+
+    def test_token_and_permission_errors_NOT_retried(self) -> None:
+        """Real failures must propagate immediately — wasting 5×60s
+        of backoff on a missing-token error is exactly the bad
+        operator experience the original retry logic was meant to
+        avoid."""
+        from src.data.tushare.fetcher import TushareFetcher
+
+        for msg in (
+            "Invalid token: please check TUSHARE_TOKEN",
+            "Account permission denied for index_classify",
+            "Missing required parameter: ts_code",
+            "权限不足",
+        ):
+            with self.subTest(msg=msg):
+                self.assertFalse(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError(msg),
+                    ),
+                    f"non-retryable signal {msg!r} must NOT trigger retry",
+                )
+
+    def test_connection_error_actually_retries_in_safe_call(self) -> None:
+        """End-to-end smoke test: ``_safe_call`` retries a
+        ``ConnectionError``-shaped TushareClientError just like a
+        rate-limit error. Without this PR, a single transient
+        network blip on ``adj_factor`` killed the entire publish
+        — the original failure mode reported by the operator."""
+        from unittest.mock import MagicMock
+
+        from src.data.tushare.fetcher import (
+            MAX_RATE_LIMIT_RETRIES,
+            TushareFetcher,
+            TushareFetcherConfig,
+        )
+
+        # Fail with ConnectionError-style message every attempt;
+        # safe_call should hit MAX_RATE_LIMIT_RETRIES retries before
+        # raising — proving the retry path engages, not bailing on
+        # attempt 1 like the pre-PR behaviour.
+        client = MagicMock()
+        client.call.side_effect = TushareClientError(
+            "ConnectionError: HTTPConnectionPool(host='api.waditu.com', "
+            "port=80): Max retries exceeded"
+        )
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("stock_basic",),
+                    rate_limit_sleep_ms=0,
+                )
+                with self.assertRaisesRegex(
+                    TushareFetcherError,
+                    "rate limit, network, or 5xx",
+                ):
+                    TushareFetcher(client, cfg).fetch()
+        # MAX_RATE_LIMIT_RETRIES attempts — pre-PR this would have
+        # been exactly 1 because ConnectionError didn't match
+        # ``_is_rate_limit_error``.
+        self.assertEqual(client.call.call_count, MAX_RATE_LIMIT_RETRIES)
+
+
 class AtomicWriteTests(unittest.TestCase):
 
     def test_no_tmp_file_left_after_success(self) -> None:
