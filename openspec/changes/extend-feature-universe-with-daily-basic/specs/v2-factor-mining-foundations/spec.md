@@ -35,12 +35,17 @@ The following terminals SHALL NOT be added in this iteration:
 - **THEN** construction succeeds with `output_type == ExprType("CSF", "PURE")`
 - **AND** no `GrammarError` is raised
 
-#### Scenario: a same-ticker ratio of cap and adjusted close cancels taint
-- **WHEN** a caller constructs `div_safe($total_mv, $close)`
-- **THEN** the result's `output_type` is `ExprType("FLOAT", "PURE")` (cap is PURE; adjusted close is ADJ_TAINTED; the ratio is PURE per the same-ticker-ratio cancellation rule of `scale_invariance.md` §4)
-- **AND** wrapping it in `cs_rank(...)` passes the cs_* gate
+#### Scenario: PURE ÷ PURE fundamental composites stay PURE
+- **WHEN** a caller constructs `div_safe($pe, $pb)` (both PURE — value-ratio composite)
+- **THEN** the result's `output_type` is `ExprType("FLOAT", "PURE")` per `_rule_div_safe`'s "same-taint → PURE" branch (scale_invariance.md §4)
+- **AND** wrapping it in `cs_rank(...)` constructs cleanly as `ExprType("CSF", "PURE")`
 
-#### Scenario: mixing PURE fundamentals with ADJ_TAINTED price is still rejected
+#### Scenario: PURE-cap divided by ADJ_TAINTED adjusted close does NOT cancel taint
+- **WHEN** a caller constructs `div_safe($total_mv, $close)` (mixed taints: cap is PURE because Tushare publishes it as a daily-recomputed product, NOT through the adjustment ladder; `$close` is ADJ_TAINTED because the qlib bundle stores adjusted closes)
+- **THEN** the result's `output_type` is `ExprType("FLOAT", "ADJ_TAINTED")` per `_rule_div_safe`'s "different-taint → ADJ_TAINTED" branch — the ratio inherits `1/adj_factor` because the cap does NOT ride the same adjustment ladder as the close
+- **AND** wrapping it in `cs_rank(...)` SHALL raise `GrammarError` (the cs_* gate rejects ADJ_TAINTED input). This pinned example documents an intuitive trap — "both are same-ticker daily quantities, surely adj cancels" is false unless BOTH sides ride the same adjustment ladder
+
+#### Scenario: mixing PURE fundamentals with ADJ_TAINTED price is rejected at the inner additive op
 - **WHEN** a caller constructs `cs_rank(add($pe, $close))` (one PURE input, one ADJ_TAINTED input to `add`)
 - **THEN** `GrammarError` is raised at construction time
 - **AND** the message names the taint mismatch on `add` (the inner failure surfaces before the `cs_rank` gate)

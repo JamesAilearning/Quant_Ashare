@@ -98,7 +98,10 @@ def test_load_panel_returns_dict_per_field():
     view = FactorMiningDataView(stub, "2024-01-02", "2024-01-08")
     panel = view.load_panel()
     assert set(panel.keys()) == {
+        # OHLCV (D3)
         "$open", "$high", "$low", "$close", "$volume", "$money",
+        # daily_basic (extend-feature-universe-with-daily-basic proposal)
+        "$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv",
     }
     for _field, df in panel.items():
         assert isinstance(df, pd.DataFrame)
@@ -128,7 +131,12 @@ def test_load_panel_passes_correct_args_to_provider():
     view.load_panel()
     args = stub.last_get_features_args
     assert args is not None
-    assert args["fields"] == ["$open", "$high", "$low", "$close", "$volume", "$money"]
+    assert args["fields"] == [
+        # OHLCV (D3)
+        "$open", "$high", "$low", "$close", "$volume", "$money",
+        # daily_basic (extend-feature-universe-with-daily-basic proposal)
+        "$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv",
+    ]
     assert args["start"] == "2024-01-02"
     assert args["end"] == "2024-01-04"
     assert args["universe_name"] == "csi300"

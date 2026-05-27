@@ -42,8 +42,12 @@ class FactorMiningDataView:
 
     Responsibilities:
 
-    - Load the OHLCV panel (six PIT bin fields per ``decisions.md`` D3)
-      once via ``PITDataProvider.get_features``.
+    - Load the OHLCV + daily_basic panel (twelve PIT bin fields per
+      ``decisions.md`` D3 plus the
+      ``extend-feature-universe-with-daily-basic`` proposal extension)
+      once via ``PITDataProvider.get_features``. Field list comes from
+      ``FeatureRegistry.V1`` so single-source-of-truth stays in
+      ``grammar.py``.
     - Convert PIT's ``(instrument, datetime)`` MultiIndex output into
       a dict of date × ticker DataFrames per field — the shape the
       operator engine consumes.

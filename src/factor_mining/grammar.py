@@ -44,25 +44,46 @@ class GrammarError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# Feature universe (decisions.md D3 — six PIT bin fields)
+# Feature universe (decisions.md D3 + extend-feature-universe-with-daily-basic)
 # ---------------------------------------------------------------------------
 
 
 class FeatureRegistry:
-    """The v1 terminal feature universe.
+    """The v1 terminal feature universe — twelve PIT bin fields.
 
-    Exactly the six fields present in the PIT qlib bins per
-    ``decisions.md`` D3. ``$vwap`` is a derived expression
-    (``div_safe($money, $volume)``) and is NOT a terminal. ``$turn``
-    is deferred to v2 pending separate Tushare ``daily_basic`` ingest.
+    Two groups:
+
+    - Six OHLCV fields per ``decisions.md`` D3: ``$open, $high, $low,
+      $close`` (ADJ_TAINTED — qlib adjusts via ``adj_factor``) plus
+      ``$volume, $money`` (PURE).
+    - Six daily_basic fundamental / microstructure fields per the
+      ``extend-feature-universe-with-daily-basic`` proposal: ``$pe,
+      $pb, $ps`` (value ratios; PURE because the same-ticker ratio
+      cancels ``adj_factor``), ``$turnover_rate`` (already a ratio;
+      PURE), and ``$circ_mv, $total_mv`` (market caps; PURE because
+      Tushare publishes them by daily-recomputed ``shares ×
+      current_price``, NOT by scaling a static reference through the
+      adjustment ladder — see the proposal's risk register for the
+      operator-verification requirement on this taint choice).
+
+    ``$vwap`` is a derived expression (``div_safe($money, $volume)``)
+    and is NOT a terminal. ``$pe_ttm``, ``$ps_ttm``, ``$float_share``,
+    ``$total_share`` are deferred to a future iteration.
     """
 
     V1_RAW_PRICE: tuple[str, ...] = ("$open", "$high", "$low", "$close")
     V1_SCALE_FREE: tuple[str, ...] = ("$volume", "$money")
-    V1: tuple[str, ...] = V1_RAW_PRICE + V1_SCALE_FREE
+    V1_FUNDAMENTAL: tuple[str, ...] = (
+        "$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv",
+    )
+    V1: tuple[str, ...] = V1_RAW_PRICE + V1_SCALE_FREE + V1_FUNDAMENTAL
 
-    # Reserved for v2 (NOT enabled in Phase 1)
-    V2_DEFERRED: tuple[str, ...] = ("$turn", "$pe", "$pb", "$ps", "$mktcap")
+    # Reserved for a future iteration (NOT enabled in v1)
+    V2_DEFERRED: tuple[str, ...] = (
+        "$turn",                # absolute turnover (kept under $turnover_rate)
+        "$pe_ttm", "$ps_ttm",   # TTM variants of value ratios
+        "$float_share", "$total_share",  # raw share counts
+    )
 
     @classmethod
     def current(cls) -> tuple[str, ...]:
@@ -77,6 +98,8 @@ class FeatureRegistry:
         if name in cls.V1_RAW_PRICE:
             return ExprType("FEATURE", "ADJ_TAINTED")
         if name in cls.V1_SCALE_FREE:
+            return ExprType("FEATURE", "PURE")
+        if name in cls.V1_FUNDAMENTAL:
             return ExprType("FEATURE", "PURE")
         raise GrammarError(f"Unknown terminal feature: {name!r}")
 
@@ -482,7 +505,14 @@ def _random_leaf(target_type: ExprType, rng: Random):
         if target_type.taint == "ADJ_TAINTED":
             name = rng.choice(FeatureRegistry.V1_RAW_PRICE)
         else:
-            name = rng.choice(FeatureRegistry.V1_SCALE_FREE)
+            # PURE pool = legacy scale-free (volume, money) + daily_basic
+            # fundamentals (pe, pb, ps, turnover_rate, circ_mv, total_mv).
+            # All registered with taint=PURE in FeatureRegistry — combined
+            # here so the random sampler reaches them with non-negligible
+            # probability per the extend-feature-universe-with-daily-basic
+            # spec's "generator MUST sample fundamentals" requirement.
+            pure_pool = FeatureRegistry.V1_SCALE_FREE + FeatureRegistry.V1_FUNDAMENTAL
+            name = rng.choice(pure_pool)
         return Terminal(name)
     if target_type.kind == "INT_WINDOW":
         return Terminal(str(rng.choice(WINDOW_LITERALS)))

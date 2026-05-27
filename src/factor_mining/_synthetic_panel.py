@@ -30,7 +30,8 @@ def build_synthetic_panel(
     Returns ``(panel_dict, forward_return_df)``:
 
     * ``panel_dict``: ``{"$open", "$high", "$low", "$close",
-      "$volume", "$money"}`` → ``pd.DataFrame`` keyed by
+      "$volume", "$money", "$pe", "$pb", "$ps",
+      "$turnover_rate", "$circ_mv", "$total_mv"}`` → ``pd.DataFrame`` keyed by
       (datetime, instrument).
     * ``forward_return_df``: the **realisable** one-day return —
       see the comment at the ``raw_return`` line below for why
@@ -56,6 +57,22 @@ def build_synthetic_panel(
             columns=pd.Index(tickers, name="instrument"),
         )
 
+    # daily_basic fundamentals — synthesised with plausible ranges
+    # per the `extend-feature-universe-with-daily-basic` proposal. The
+    # values are NOT trying to model real fundamentals, just hit
+    # realistic magnitudes so factors over them behave sensibly in
+    # smoke tests:
+    #   - PE / PB / PS in single-digit-to-low-double-digit range
+    #   - turnover_rate as a daily percent in [0.1, 10] (typical
+    #     A-share range)
+    #   - market caps in 1e9 .. 1e11 yuan (small-cap to mid-cap range)
+    pe = np.exp(rng.normal(np.log(20), 0.5, size=close.shape))    # ~ln-normal around 20
+    pb = np.exp(rng.normal(np.log(3), 0.4, size=close.shape))     # ~ln-normal around 3
+    ps = np.exp(rng.normal(np.log(5), 0.5, size=close.shape))     # ~ln-normal around 5
+    turnover_rate = np.exp(rng.normal(np.log(1.5), 0.6, size=close.shape))  # ~1.5%
+    total_mv = close * np.exp(rng.normal(20, 0.5, size=close.shape))  # cap scales with price
+    circ_mv = total_mv * rng.uniform(0.3, 1.0, size=close.shape)  # circulating ≤ total
+
     panel = {
         "$open": _df(open_),
         "$high": _df(high),
@@ -63,6 +80,12 @@ def build_synthetic_panel(
         "$close": _df(close),
         "$volume": _df(volume),
         "$money": _df(money),
+        "$pe": _df(pe),
+        "$pb": _df(pb),
+        "$ps": _df(ps),
+        "$turnover_rate": _df(turnover_rate),
+        "$circ_mv": _df(circ_mv),
+        "$total_mv": _df(total_mv),
     }
     # Forward return = the one-day open-to-open return REALISED at
     # T+1→T+2, mirroring qlib's Alpha158 default label

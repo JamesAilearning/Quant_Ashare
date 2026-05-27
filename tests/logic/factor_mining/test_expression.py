@@ -28,13 +28,26 @@ def test_terminal_known_feature_pure():
         assert t.output_type == ExprType("FEATURE", "PURE")
 
 
+def test_terminal_known_fundamental_pure():
+    """daily_basic terminals (extend-feature-universe-with-daily-basic) are PURE."""
+    for name in ("$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv"):
+        t = Terminal(name)
+        assert t.output_type == ExprType("FEATURE", "PURE")
+
+
 def test_terminal_unknown_feature_raises():
     with pytest.raises(GrammarError, match="Unknown"):
         Terminal("$vwap")
+    # $turn (absolute turnover) stays deferred — $turnover_rate is the
+    # v1 daily_basic exposure.
     with pytest.raises(GrammarError):
         Terminal("$turn")
+    # TTM ratios and raw share counts still deferred per the
+    # extend-feature-universe-with-daily-basic proposal "held back".
     with pytest.raises(GrammarError):
-        Terminal("$pe")
+        Terminal("$pe_ttm")
+    with pytest.raises(GrammarError):
+        Terminal("$float_share")
 
 
 def test_terminal_window_literal():

@@ -34,6 +34,22 @@ def test_terminal_taint_table_scale_free():
         )
 
 
+def test_terminal_taint_table_fundamental():
+    """daily_basic terminals are all PURE.
+
+    Same-ticker price ratios (PE/PB/PS) cancel ``adj_factor`` identically.
+    ``$turnover_rate`` is already a ratio. ``$circ_mv`` and ``$total_mv``
+    are PURE under the Tushare-recomputed-daily convention (see the
+    ``extend-feature-universe-with-daily-basic`` proposal risk register
+    — operators must verify against a known split event before relying
+    on cap factors in downstream signals).
+    """
+    for name in ("$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv"):
+        assert FeatureRegistry.terminal_type(name) == ExprType(
+            "FEATURE", "PURE"
+        )
+
+
 # ---------------------------------------------------------------------------
 # The 8 pinned pass / fail examples from §5
 # ---------------------------------------------------------------------------
@@ -202,3 +218,68 @@ def test_ts_invariant_yields_pure_even_for_adj_input(op):
 def test_ts_corr_yields_pure_even_for_adj_inputs():
     expr = parse_expression("ts_corr($close, $open, 20)")
     assert expr.output_type == ExprType("FLOAT", "PURE")
+
+
+# ---------------------------------------------------------------------------
+# daily_basic fundamental terminals
+# (extend-feature-universe-with-daily-basic proposal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "terminal", ["$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv"]
+)
+def test_cs_rank_accepts_fundamental_terminals_directly(terminal):
+    """All daily_basic terminals are PURE → ``cs_rank`` accepts them directly.
+
+    No same-ticker ratio wrapping needed (unlike ``cs_rank($close)`` which
+    requires e.g. ``ts_pctchange`` or ``div_safe`` to neutralise taint).
+    """
+    expr = parse_expression(f"cs_rank({terminal})")
+    assert expr.output_type == ExprType("CSF", "PURE")
+
+
+def test_div_safe_pure_pure_fundamentals_stays_pure():
+    """``div_safe`` of two PURE fundamentals stays PURE — both PE and PB
+    are scale-free ratios, so their ratio is also scale-free (a
+    Price/Earnings to Price/Book composite, often used as a
+    earnings-to-book yield proxy)."""
+    expr = parse_expression("div_safe($pe, $pb)")
+    assert expr.output_type == ExprType("FLOAT", "PURE")
+
+
+def test_cs_rank_of_pe_pb_ratio_passes():
+    """Wrapping a PURE-÷-PURE fundamental composite in ``cs_rank``
+    constructs cleanly."""
+    expr = parse_expression("cs_rank(div_safe($pe, $pb))")
+    assert expr.output_type == ExprType("CSF", "PURE")
+
+
+def test_div_safe_cap_over_adjusted_close_inherits_adj_factor():
+    """``$total_mv`` (Tushare-recomputed, PURE) divided by ``$close``
+    (qlib-adjusted, ADJ_TAINTED) does NOT cancel the adj_factor ladder —
+    it introduces ``1/adj_factor`` instead. The grammar's
+    ``_rule_div_safe`` correctly propagates taint when the two sides
+    don't match: (PURE, ADJ) → ADJ_TAINTED. The resulting expression
+    is therefore unfit for direct ``cs_*`` consumption.
+
+    This pinned example documents an intuitive trap: just because both
+    sides are "same-ticker daily quantities" doesn't mean adj_factor
+    cancels — only if BOTH sides ride the same adjustment ladder."""
+    expr = parse_expression("div_safe($total_mv, $close)")
+    assert expr.output_type == ExprType("FLOAT", "ADJ_TAINTED")
+
+
+def test_cs_rank_of_cap_over_adjusted_close_is_rejected():
+    """The trap above is caught at the cs_rank construction site —
+    ``cs_rank`` requires PURE input, this ratio is ADJ_TAINTED."""
+    with pytest.raises(GrammarError):
+        parse_expression("cs_rank(div_safe($total_mv, $close))")
+
+
+def test_cs_rank_of_add_pe_close_is_rejected_at_add():
+    """Mixing PURE fundamental with ADJ_TAINTED raw price in ``add`` is a
+    units error — caught at the inner ``add`` construction, before
+    ``cs_rank`` even sees the result."""
+    with pytest.raises(GrammarError):
+        parse_expression("cs_rank(add($pe, $close))")
