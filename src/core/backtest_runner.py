@@ -183,22 +183,34 @@ class BacktestRunner:
                 start_time=request.evaluation_start,
                 end_time=request.evaluation_end,
             )
-            trading_calendar: list[date] | None = [
+            trading_calendar: list[date] = [
                 ts.date() if hasattr(ts, "date") else date.fromisoformat(str(ts)[:10])
                 for ts in trading_calendar_ts
             ]
-        except Exception as exc:  # pragma: no cover - best-effort calendar fetch
-            # If qlib.calendar fails (shouldn't, since we already
-            # verified canonical init above), fall back to
-            # calendar-day weighting. The WARN below documents this.
-            _logger.warning(
+        except Exception as exc:
+            # Hard-fail rather than fall back to calendar-day
+            # weighting. The repo's "no silent fallback" rule
+            # forbids degrading the official metrics path on a
+            # canonical runtime data failure — calendar-day
+            # weighting would produce a different ``close_cost``
+            # than what qlib's executor actually charges per sell,
+            # silently shifting the official scalar from the
+            # documented trading-day-weighted value. Codex P1
+            # follow-up on PR #178. If you genuinely need to
+            # proceed without a calendar (e.g. a contract-only
+            # unit test), patch ``qlib.data.D.calendar`` at the
+            # test boundary; production runs must raise here.
+            raise BacktestRunnerError(
                 "BacktestRunner: failed to fetch qlib trading "
-                "calendar for stamp-tax weighting (%s: %s); falling "
-                "back to calendar-day weighting which may produce a "
-                "slightly different scalar than the per-sell rate.",
-                type(exc).__name__, exc,
-            )
-            trading_calendar = None
+                f"calendar for stamp-tax weighting ({type(exc).__name__}: "
+                f"{exc}). The official cost model requires the trading-day "
+                "calendar to weight per-segment rates across schedule "
+                "transitions; falling back to calendar-day weighting "
+                "would produce a scalar that does not match what qlib's "
+                "executor charges per sell. Verify canonical qlib init "
+                "and that ``provider_uri`` points at a bundle covering "
+                f"[{request.evaluation_start}, {request.evaluation_end}]."
+            ) from exc
         effective_stamp_tax = compute_effective_stamp_tax_bps(
             cost.stamp_tax_schedule,
             period_start,
