@@ -332,6 +332,68 @@ class SaveManifestContentHashTests(unittest.TestCase):
                     content_hash=CONTENT_HASH_PREFIX + ("a" * 63) + "z",
                 )
 
+    def test_save_rejects_uppercase_hex_content_hash(self):
+        """``compute_bundle_content_hash`` emits lowercase hex, so
+        an uppercase manifest would shape-validate but then byte-
+        mismatch at verify time. Reject at write to fail honestly.
+        Codex P2 on PR #175.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                save_manifest(
+                    td, tail_date="2026-03-06", instrument_count=1,
+                    # 64 valid hex chars, but the letters are uppercase.
+                    content_hash=CONTENT_HASH_PREFIX + ("AB" * 32),
+                )
+
+    def test_load_rejects_uppercase_hex_content_hash(self):
+        """Symmetric to save_manifest's rejection — a hand-crafted
+        manifest with uppercase hex on disk must surface at load time,
+        not later as a confusing mismatch. Codex P2 on PR #175.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / MANIFEST_FILENAME).write_text(
+                json.dumps({
+                    "provider_uri": "D:/x",
+                    "tail_date": "2026-03-06",
+                    "instrument_count": 5,
+                    "built_at": "2026-03-08T00:00:00Z",
+                    "content_hash": CONTENT_HASH_PREFIX + ("AB" * 32),
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BundleManifestError, "content_hash"):
+                load_manifest(td)
+
+    def test_load_rejects_explicit_null_content_hash(self):
+        """``"content_hash": null`` on disk must REJECT rather than
+        silently disable the integrity check. A producer that emits
+        explicit null almost certainly meant to set a hash but failed;
+        treating it as "legacy / no hash" turns a corruption signal
+        into a silent opt-out. Codex P2 on PR #175.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / MANIFEST_FILENAME).write_text(
+                json.dumps({
+                    "provider_uri": "D:/x",
+                    "tail_date": "2026-03-06",
+                    "instrument_count": 5,
+                    "built_at": "2026-03-08T00:00:00Z",
+                    "content_hash": None,
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                BundleManifestError, "content_hash.*null|null.*content_hash"
+            ):
+                load_manifest(td)
+
     def test_load_rejects_malformed_content_hash_on_disk(self):
         """A hand-edited / corrupted manifest with a malformed
         content_hash on disk must surface as BundleManifestError at

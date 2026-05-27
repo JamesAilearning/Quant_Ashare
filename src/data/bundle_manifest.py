@@ -307,13 +307,27 @@ def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
             f"a string, got {type(built_at_raw).__name__}"
         )
 
-    # Optional ``content_hash``. Absent => legacy manifest, no
-    # integrity check at validate time. Present => MUST be a string
-    # in the ``sha256:<hex>`` shape so a typo / wrong-type value
-    # surfaces as a load-time error rather than later as a confusing
-    # mismatch.
-    content_hash_raw = raw.get("content_hash")
-    if content_hash_raw is not None:
+    # Optional ``content_hash``. Three distinct cases:
+    #   (a) key absent  => legacy manifest, no integrity check at
+    #       validate time (the documented backwards-compat path).
+    #   (b) key present with a valid string => integrity check is on.
+    #   (c) key present but explicit ``null`` => REJECT. ``null`` and
+    #       "absent" carry different intent for a NEW field: ``null``
+    #       looks like a producer that meant to emit a hash but
+    #       failed (e.g. a third-party tool, or a manifest someone
+    #       hand-edited to "disable" the check by setting null). The
+    #       PR contract is "present => verify"; treating null as an
+    #       implicit opt-out silently disables a check the operator
+    #       believed was in place. Codex P2 on PR #175.
+    if "content_hash" in raw:
+        content_hash_raw = raw["content_hash"]
+        if content_hash_raw is None:
+            raise BundleManifestError(
+                f"Bundle manifest at {manifest_path}: 'content_hash' "
+                "is explicitly null. Either omit the key entirely for "
+                "a legacy bundle with no integrity check, or supply a "
+                f"valid {CONTENT_HASH_PREFIX}<64-lowercase-hex> value."
+            )
         if not isinstance(content_hash_raw, str):
             raise BundleManifestError(
                 f"Bundle manifest at {manifest_path}: 'content_hash' "
@@ -327,14 +341,22 @@ def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
                 f"{CONTENT_HASH_PREFIX!r}; got an unknown algorithm prefix."
             )
         hex_part = content_hash_raw[len(CONTENT_HASH_PREFIX):]
-        # 64 hex chars = SHA-256. Validate the shape so a truncated
-        # / non-hex string is rejected up front.
-        if len(hex_part) != 64 or any(c not in "0123456789abcdef" for c in hex_part.lower()):
+        # 64 lowercase hex chars = SHA-256. We deliberately reject
+        # uppercase here (case-sensitive set) — ``hashlib.hexdigest()``
+        # and :func:`compute_bundle_content_hash` always emit lowercase,
+        # so an uppercase hash on disk would pass shape validation but
+        # then byte-mismatch the recomputed value at
+        # :func:`verify_content_hash` time. Failing here is the honest
+        # error. Codex P2 on PR #175 (option: reject vs normalise; we
+        # picked reject).
+        if len(hex_part) != 64 or any(c not in "0123456789abcdef" for c in hex_part):
             raise BundleManifestError(
                 f"Bundle manifest at {manifest_path}: 'content_hash' "
                 f"hex body ({hex_part!r}) is not a 64-char SHA-256 hex "
-                "string."
+                "string (lowercase a-f / 0-9 only)."
             )
+    else:
+        content_hash_raw = None
 
     return BundleManifest(
         provider_uri=provider_uri_raw,
@@ -446,12 +468,18 @@ def save_manifest(
                 "value."
             )
         hex_part = content_hash[len(CONTENT_HASH_PREFIX):]
+        # Same case-sensitive lowercase requirement as load_manifest —
+        # see the comment there. compute_bundle_content_hash always
+        # emits lowercase, so accepting uppercase at write time would
+        # plant a manifest that later fails comparison even though
+        # nothing changed on disk.
         if len(hex_part) != 64 or any(
-            c not in "0123456789abcdef" for c in hex_part.lower()
+            c not in "0123456789abcdef" for c in hex_part
         ):
             raise BundleManifestError(
                 f"save_manifest: content_hash hex body ({hex_part!r}) "
-                "is not a 64-char SHA-256 hex string."
+                "is not a 64-char SHA-256 hex string (lowercase a-f / "
+                "0-9 only)."
             )
 
     payload: dict = {
