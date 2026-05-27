@@ -11,6 +11,7 @@ Pipeline
       index_weight         ->  index_weight/{index_code}.parquet
       daily                ->  daily/{year}/{ticker}.parquet
       adj_factor           ->  adj_factor/{year}/{ticker}.parquet
+      daily_basic          ->  daily_basic/{year}/{ticker}.parquet
 
 Why this layering
 -----------------
@@ -26,7 +27,7 @@ Why this layering
 
 Scope (Phase A.1)
 -----------------
-- Pull the 7 endpoints listed above into one output directory.
+- Pull the endpoints listed above into one output directory.
 - Resume on re-run: per-file existence check; existing parquet files are
   skipped. Atomic writes via ``.tmp`` + rename so a killed process does
   not leave half-written files.
@@ -34,8 +35,14 @@ Scope (Phase A.1)
   bounded retry on Tushare's typical rate-limit failure shapes (the
   client raises ``TushareClientError`` with messages containing 'rate',
   'limit', or 'returned None').
-- Endpoint subset selection: callers can fetch any subset of the 7
+- Endpoint subset selection: callers can fetch any subset of the
   endpoints (e.g. for smoke-testing or incremental refresh).
+
+The ``daily_basic`` endpoint is the per-(ticker, day) fundamentals
+snapshot (PE/PB/turnover/market-cap). It uses the same per-(ticker,
+year) pattern as ``daily`` / ``adj_factor`` and lives under
+``daily_basic/{year}/{ticker}.parquet``. See PR #182's proposal for
+the rationale (factor-mining feature-universe extension).
 
 Out of scope for Phase A.1
 --------------------------
@@ -82,6 +89,7 @@ ENDPOINTS: tuple[str, ...] = (
     "index_weight",
     "daily",
     "adj_factor",
+    "daily_basic",
 )
 
 DEFAULT_INDICES: tuple[str, ...] = (
@@ -171,7 +179,7 @@ class TushareFetchResult:
 
 
 class TushareFetcher:
-    """Orchestrator that pulls the 7 Phase A.1 endpoints into a directory.
+    """Orchestrator that pulls the Phase A.1 endpoints into a directory.
 
     Construction is cheap; ``fetch()`` does the work. Each endpoint method
     is also callable on its own for testing / incremental refresh.
@@ -352,6 +360,25 @@ class TushareFetcher:
             fields="ts_code,trade_date,adj_factor",
         )
 
+    def _fetch_daily_basic(self) -> TushareFetchResult:
+        """Pull daily_basic fundamentals per (ticker, year).
+
+        Long pole — supports resume on per-file existence. Fields cover
+        the factor-mining feature universe extension (PR #182): value
+        ratios (pe/pb/ps/ps_ttm), microstructure (turnover_rate), size
+        (circ_mv/total_mv), and share-count diagnostics
+        (float_share/total_share). The fetched ``trade_date`` keys join
+        these fundamentals to the OHLCV ladder downstream.
+        """
+        return self._fetch_per_ticker_per_year(
+            endpoint="daily_basic",
+            subdir="daily_basic",
+            fields=(
+                "ts_code,trade_date,turnover_rate,pe,pb,ps,ps_ttm,"
+                "circ_mv,total_mv,float_share,total_share"
+            ),
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -359,7 +386,7 @@ class TushareFetcher:
     def _fetch_per_ticker_per_year(
         self, *, endpoint: str, subdir: str, fields: str,
     ) -> TushareFetchResult:
-        """Common loop for ``daily`` / ``adj_factor`` — per (year, ticker)."""
+        """Common loop for ``daily`` / ``adj_factor`` / ``daily_basic`` — per (year, ticker)."""
         tickers = self._load_ticker_universe()
         out_root = self._config.output_dir / subdir
         start_year = int(self._config.start_date[:4])
@@ -420,9 +447,9 @@ class TushareFetcher:
         delisted_path = self._config.output_dir / "delisted_stocks.parquet"
         if not active_path.exists() or not delisted_path.exists():
             raise TushareFetcherError(
-                "daily / adj_factor require active_stocks.parquet AND "
-                "delisted_stocks.parquet to exist (run endpoint='stock_basic' "
-                "first). Missing: "
+                "daily / adj_factor / daily_basic require "
+                "active_stocks.parquet AND delisted_stocks.parquet to exist "
+                "(run endpoint='stock_basic' first). Missing: "
                 + ", ".join(p.name for p in (active_path, delisted_path)
                            if not p.exists())
             )
