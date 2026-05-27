@@ -28,7 +28,15 @@ def _make_panel(seed=0, n_tickers=8, n_dates=50):
     rng = np.random.default_rng(seed)
     tickers = [f"T{i:03d}" for i in range(n_tickers)]
     dates = pd.date_range("2024-01-01", periods=n_dates, freq="D")
-    fields = ["$open", "$high", "$low", "$close", "$volume", "$money"]
+    # Twelve fields per the extend-feature-universe-with-daily-basic
+    # extension (six OHLCV + six daily_basic). The random sampler in
+    # FeatureRegistry pulls from any of them, so the panel MUST cover
+    # all of them or `evaluate_factor` raises a contract-violation
+    # KeyError mid-GP.
+    fields = [
+        "$open", "$high", "$low", "$close", "$volume", "$money",
+        "$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv",
+    ]
     panel = {}
     for f in fields:
         data = rng.normal(100, 5, size=(n_dates, n_tickers))
@@ -619,6 +627,15 @@ def _build_toy_target_panel(seed=42, n_tickers=15, n_dates=150):
     )
     money_df = volume_df * close_df
 
+    # Distractor daily_basic fields so the GP random sampler doesn't
+    # KeyError when it picks a fundamental terminal. Values are not
+    # tuned for signal — they're noise relative to the MA-crossover
+    # target the test asserts the GP discovers.
+    def _distractor(scale_log_mean, scale_log_sd):
+        return pd.DataFrame(
+            np.exp(rng.normal(scale_log_mean, scale_log_sd, size=close_df.shape)),
+            index=close_df.index, columns=close_df.columns,
+        )
     panel = {
         "$open": open_df,
         "$high": high_df,
@@ -626,6 +643,12 @@ def _build_toy_target_panel(seed=42, n_tickers=15, n_dates=150):
         "$close": close_df,
         "$volume": volume_df,
         "$money": money_df,
+        "$pe": _distractor(np.log(20), 0.5),
+        "$pb": _distractor(np.log(3), 0.4),
+        "$ps": _distractor(np.log(5), 0.5),
+        "$turnover_rate": _distractor(np.log(1.5), 0.6),
+        "$circ_mv": close_df * _distractor(20, 0.5),
+        "$total_mv": close_df * _distractor(20, 0.5) * 1.3,
     }
 
     # True target signal: cs_rank of the MA10-MA30 crossover.

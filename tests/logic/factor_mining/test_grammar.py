@@ -73,15 +73,18 @@ def test_cs_operators_v1_no_group_by_in_compute():
 
 
 # ---------------------------------------------------------------------------
-# FeatureRegistry: exactly six fields per D3
+# FeatureRegistry: exactly twelve fields (six OHLCV + six daily_basic)
 # ---------------------------------------------------------------------------
 
 
-def test_feature_universe_is_exactly_six():
+def test_feature_universe_is_exactly_twelve():
     assert set(FeatureRegistry.V1) == {
+        # OHLCV (D3)
         "$open", "$high", "$low", "$close", "$volume", "$money",
+        # daily_basic (extend-feature-universe-with-daily-basic proposal)
+        "$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv",
     }
-    assert len(FeatureRegistry.V1) == 6
+    assert len(FeatureRegistry.V1) == 12
 
 
 def test_feature_universe_raw_price_is_adj_tainted():
@@ -98,6 +101,24 @@ def test_feature_universe_scale_free_is_pure():
         )
 
 
+def test_feature_universe_fundamental_is_pure():
+    """daily_basic fundamentals are all PURE (ratios / daily-recomputed caps).
+
+    Risk: ``$circ_mv`` / ``$total_mv`` taint is PURE under the assumption
+    that Tushare publishes them as ``shares × current_price`` recomputed
+    daily (i.e. they do NOT ride the adj_factor ladder). Operators applying
+    the bundle build must spot-check against a known split event before
+    trusting downstream factor expressions that consume the caps. See
+    ``extend-feature-universe-with-daily-basic`` risk register.
+    """
+    expected = {"$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv"}
+    assert set(FeatureRegistry.V1_FUNDAMENTAL) == expected
+    for name in FeatureRegistry.V1_FUNDAMENTAL:
+        assert FeatureRegistry.terminal_type(name) == ExprType(
+            "FEATURE", "PURE"
+        )
+
+
 def test_vwap_is_not_a_terminal():
     """$vwap is expressed as div_safe($money, $volume), not a leaf."""
     from src.factor_mining.grammar import GrammarError
@@ -107,10 +128,19 @@ def test_vwap_is_not_a_terminal():
         FeatureRegistry.terminal_type("$vwap")
 
 
-def test_turn_is_not_a_terminal_in_v1():
-    """$turn deferred to v2 pending separate Tushare ingest (D3)."""
+def test_turn_absolute_is_not_a_terminal_in_v1():
+    """$turn (absolute turnover) deferred — v1 exposes $turnover_rate instead."""
     assert "$turn" not in FeatureRegistry.V1
     assert "$turn" in FeatureRegistry.V2_DEFERRED
+    # Sanity: the rate IS exposed (closer to the canonical factor definition)
+    assert "$turnover_rate" in FeatureRegistry.V1
+
+
+def test_ttm_value_ratios_deferred_to_v2():
+    """$pe_ttm / $ps_ttm and raw share counts held back for a future iteration."""
+    for name in ("$pe_ttm", "$ps_ttm", "$float_share", "$total_share"):
+        assert name not in FeatureRegistry.V1
+        assert name in FeatureRegistry.V2_DEFERRED
 
 
 def test_window_literals_exact():
@@ -215,9 +245,9 @@ def test_random_generator_max_depth_validation():
         )
 
 
-def test_random_generator_uses_only_six_features():
+def test_random_generator_uses_only_v1_features():
     """The generator MUST only emit terminals from FeatureRegistry.V1
-    or window literals — never $vwap, $turn, or fundamentals."""
+    or window literals — never V2_DEFERRED entries ($turn, $pe_ttm, etc.)."""
     rng = Random(555)
     legal_terminals = set(FeatureRegistry.V1) | {str(n) for n in WINDOW_LITERALS}
     samples = [
@@ -240,6 +270,50 @@ def test_random_generator_uses_only_six_features():
         seen |= _collect_terminals(s)
     illegal = seen - legal_terminals
     assert not illegal, f"generator emitted illegal terminals: {illegal}"
+    # Deferred terminals must NEVER appear (regression for the daily_basic
+    # extension — confirming $turn / $pe_ttm / etc. stay deferred).
+    for deferred in FeatureRegistry.V2_DEFERRED:
+        assert deferred not in seen, (
+            f"deferred terminal {deferred!r} leaked into generator output"
+        )
+
+
+def test_random_generator_can_sample_fundamental_terminals():
+    """Over a large sample, the generator should reach the new fundamental
+    terminals at least occasionally — confirming they ARE in the feature
+    pool the random sampler draws from, not just registered-but-unreachable.
+
+    1000 samples × max_depth=5 has comfortable probability mass on every
+    V1 terminal; a 0-occurrence outcome would indicate a bug in either
+    ``FeatureRegistry.V1`` enumeration or the random sampler's feature
+    selection.
+    """
+    rng = Random(2026)
+    samples = [
+        random_expression(
+            ExprType("CSF", "PURE"), max_depth=5, min_depth=2, rng=rng
+        )
+        for _ in range(1000)
+    ]
+
+    def _collect_terminals(expr) -> set[str]:
+        if isinstance(expr, Terminal):
+            return {expr.name}
+        out: set[str] = set()
+        for c in expr.children:
+            out |= _collect_terminals(c)
+        return out
+
+    seen: set[str] = set()
+    for s in samples:
+        seen |= _collect_terminals(s)
+    fundamental = set(FeatureRegistry.V1_FUNDAMENTAL)
+    overlap = seen & fundamental
+    assert overlap, (
+        f"generator never sampled any V1_FUNDAMENTAL terminal in 1000 "
+        f"samples; expected at least one. seen V1 terminals = "
+        f"{seen & set(FeatureRegistry.V1)}"
+    )
 
 
 

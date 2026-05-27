@@ -92,11 +92,14 @@ def test_load_config_synthetic_defaults():
 # ---------------------------------------------------------------------------
 
 
-def test_build_panel_synthetic_returns_six_fields(tmp_path):
+def test_build_panel_synthetic_returns_twelve_fields(tmp_path):
     cfg = load_config(_smoke_config(tmp_path))
     panel, fwd = build_panel(cfg)
     assert set(panel.keys()) == {
+        # OHLCV (D3)
         "$open", "$high", "$low", "$close", "$volume", "$money",
+        # daily_basic (extend-feature-universe-with-daily-basic proposal)
+        "$pe", "$pb", "$ps", "$turnover_rate", "$circ_mv", "$total_mv",
     }
     for df in panel.values():
         assert df.shape == (30, 8)
