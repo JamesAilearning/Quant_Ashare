@@ -218,6 +218,31 @@ class HyperparamOptimizerSeedTests(unittest.TestCase):
         cfg = HyperparamOptConfig(seed=12345)
         self.assertEqual(cfg.seed, 12345)
 
+    def test_rejects_none_seed(self) -> None:
+        """Untyped YAML loaders happily pass ``None`` for an unset key.
+        ``TPESampler(seed=None)`` is the unseeded default, which would
+        silently restore the nondeterministic trial order this field
+        was added to eliminate — reject loudly at construction.
+        Codex P2 on PR #174.
+        """
+        with self.assertRaisesRegex(HyperparamOptimizerError, "seed"):
+            HyperparamOptConfig(seed=None)  # type: ignore[arg-type]
+
+    def test_rejects_bool_seed(self) -> None:
+        """``bool`` is a subclass of ``int``; without the explicit
+        ``isinstance(.., bool)`` guard, ``seed=True`` would silently
+        act as ``seed=1`` and ``seed=False`` as ``seed=0``."""
+        for bad in (True, False):
+            with self.subTest(seed=bad):
+                with self.assertRaisesRegex(HyperparamOptimizerError, "seed"):
+                    HyperparamOptConfig(seed=bad)  # type: ignore[arg-type]
+
+    def test_rejects_non_int_seed(self) -> None:
+        for bad in (1.5, "42", 3.14, [], {}):
+            with self.subTest(seed=bad):
+                with self.assertRaisesRegex(HyperparamOptimizerError, "seed"):
+                    HyperparamOptConfig(seed=bad)  # type: ignore[arg-type]
+
     def test_optimize_seeds_tpe_sampler_from_config(self) -> None:
         """``optimize`` MUST construct a ``TPESampler`` seeded with
         ``config.seed`` and pass it to ``optuna.create_study``. We patch

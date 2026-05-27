@@ -97,6 +97,19 @@ class HyperparamOptConfig:
             raise HyperparamOptimizerError(
                 f"n_trials must be >= 1; got {self.n_trials}."
             )
+        # ``seed`` must be a real int — not None, not bool, not float.
+        # Optuna's ``TPESampler(seed=None)`` is the unseeded default,
+        # which would silently reintroduce the nondeterministic trial
+        # sequence this field was added to eliminate. Untyped YAML
+        # loaders happily pass ``None`` for an unset key, so reject
+        # explicitly at the contract boundary. Codex P2 on PR #174.
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool):
+            raise HyperparamOptimizerError(
+                f"seed must be an int, got {type(self.seed).__name__}. "
+                "None / bool are rejected because optuna's TPESampler "
+                "treats seed=None as the unseeded default, which silently "
+                "restores nondeterministic trial order."
+            )
 
 
 @dataclass(frozen=True)
