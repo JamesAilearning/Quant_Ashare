@@ -129,7 +129,7 @@ class BenchmarkArtifactPublisher:
         # every test that touches src/data/* to depend on qlib being fully
         # initialized, which is not true for contract-only tests.
         try:
-            from qlib.data import D  # type: ignore[import-not-found]
+            from qlib.data import D
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise BenchmarkArtifactPublisherError(
                 "qlib is not importable; cannot publish benchmark artifact."

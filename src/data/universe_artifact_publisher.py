@@ -79,7 +79,7 @@ class UniverseArtifactPublisher:
         cls,
         universe_name: str,
         temporal_mode: str,
-        rows: Sequence[tuple],
+        rows: Sequence[tuple[Any, ...]],
         artifact_path: str,
         manifest_path: str,
         *,
@@ -257,7 +257,7 @@ class UniverseArtifactPublisher:
         cls,
         artifact_file: Path,
         temporal_mode: str,
-        rows: Sequence[tuple],
+        rows: Sequence[tuple[Any, ...]],
     ) -> None:
         if temporal_mode == UNIVERSE_MODE_STATIC:
             header: tuple[str, ...] = cls.BASE_HEADER

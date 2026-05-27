@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -211,7 +212,7 @@ def _reset_feature_handler_registry_to_defaults() -> None:
 
 
 def _alpha158_factory(config: FeatureDatasetConfig) -> Any:
-    from qlib.contrib.data.handler import Alpha158  # type: ignore[import-not-found]
+    from qlib.contrib.data.handler import Alpha158
 
     return Alpha158(
         instruments=config.instruments,
@@ -356,7 +357,7 @@ class FeatureDatasetBuilder:
                         return cached
 
         try:
-            from qlib.data.dataset import DatasetH  # type: ignore[import-not-found]
+            from qlib.data.dataset import DatasetH
         except ImportError as exc:
             raise FeatureDatasetBuilderError(
                 "qlib is not importable; cannot build feature dataset."
@@ -483,11 +484,17 @@ class FeatureDatasetBuilder:
             ("test_start", config.test_start),
             ("test_end", config.test_end),
         )
-        parsed = {}
+        parsed: dict[str, date] = {}
         for name, value in date_fields:
             if not str(value or "").strip():
                 raise FeatureDatasetBuilderError(f"{name} must be a non-empty ISO date string.")
-            parsed[name] = parse_iso_date(value, error_cls=FeatureDatasetBuilderError)
+            parsed_val = parse_iso_date(value, error_cls=FeatureDatasetBuilderError)
+            # ``parse_iso_date`` returns ``None`` only when its input
+            # is empty / whitespace — we just rejected that case above,
+            # so this narrows ``date | None`` → ``date`` for mypy
+            # without changing observable behaviour.
+            assert parsed_val is not None
+            parsed[name] = parsed_val
 
         if parsed["train_start"] > parsed["train_end"]:
             raise FeatureDatasetBuilderError("train_start must be <= train_end.")
@@ -520,7 +527,7 @@ class FeatureDatasetBuilder:
     def _validate_embargo(
         cls,
         config: FeatureDatasetConfig,
-        parsed: dict,
+        parsed: dict[str, Any],
     ) -> None:
         """Run the shared Alpha158 label-lookahead embargo check.
 
@@ -589,7 +596,7 @@ class FeatureDatasetBuilder:
             )
 
     @staticmethod
-    def _load_trading_calendar(*, start: str, end: str):
+    def _load_trading_calendar(*, start: str, end: str) -> list[date] | None:
         """Return a list of ``date`` objects from qlib's calendar.
 
         Returns ``None`` on any failure (qlib import error, calendar
@@ -608,7 +615,7 @@ class FeatureDatasetBuilder:
         """
         try:
             import pandas as pd  # noqa: PLC0415
-            from qlib.data import D  # type: ignore[import-not-found]
+            from qlib.data import D
             cal = D.calendar(start_time=start, end_time=end)
             out = [pd.Timestamp(d).date() for d in cal]
             return out if out else None

@@ -79,24 +79,24 @@ ignore_missing_imports = true
 # End state: flip ``[tool.mypy] strict = true`` and demote this
 # block to a single ``src.factor_mining.*`` opt-out.
 #
-# Batch 1 (this PR) adds ``src.core.*``, ``src.pit.*``, ``scripts.*``
-# alongside the original FU-7 individual modules — the latter become
-# redundant under the wildcard but stay until batch 4's flip-and-
-# invert PR so the ``test_mypy_strict_modules.STRICT_MODULES`` tuple
-# continues to round-trip.
+# Batch 2 (this PR) adds ``src.data.*`` to the wildcard set. The
+# three original FU-7 ``src.data.*`` individual modules are now
+# redundant under the wildcard and removed (the
+# ``STRICT_MODULES`` tuple test was updated to match). The
+# ``src.core.walk_forward._resume`` + ``src.core.regression_baseline``
+# entries stay until batch 4's flip-and-invert PR — they are
+# redundant under ``src.core.*`` but the test still pins them.
 #
 # Excluded: ``src/factor_mining/`` (parallel workstream — strict mid-
 # flight = constant merge noise; opt-out removed in a follow-up
 # after that stabilises).
 [[tool.mypy.overrides]]
 module = [
-  "src.data._segment_embargo",
-  "src.data.bundle_manifest",
-  "src.data._feature_dataset_cache",
   "src.core.walk_forward._resume",
   "src.core.regression_baseline",
   "src.core.*",
   "src.pit.*",
+  "src.data.*",
   "scripts.*",
 ]
 disallow_untyped_defs = true

@@ -7,7 +7,7 @@ class RuntimeBenchmarkSelectionPlaceholder:
     """Explicit boundary marker: runtime benchmark selection is not implemented here."""
 
     @staticmethod
-    def select(*_args, **_kwargs):
+    def select(*_args: object, **_kwargs: object) -> None:
         raise NotImplementedError(
             "Runtime benchmark-selection semantics are intentionally unimplemented "
             "in define-v2-benchmark-data-contract-foundation."

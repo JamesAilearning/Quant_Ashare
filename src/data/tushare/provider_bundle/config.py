@@ -58,7 +58,7 @@ class TushareQlibProviderBundleConfig:
                 f"{forbidden}. Use the TUSHARE_TOKEN environment variable."
             )
 
-        valid_fields = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        valid_fields = set(cls.__dataclass_fields__)
         unknown = sorted(set(raw) - valid_fields)
         if unknown:
             raise TushareQlibProviderBundleError(

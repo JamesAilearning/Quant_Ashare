@@ -62,7 +62,7 @@ class TaxonomyArtifactPublisher:
         cls,
         taxonomy_name: str,
         temporal_mode: str,
-        rows: Sequence[tuple],
+        rows: Sequence[tuple[Any, ...]],
         artifact_path: str,
         manifest_path: str,
         *,
@@ -207,7 +207,7 @@ class TaxonomyArtifactPublisher:
             ) from exc
 
     @staticmethod
-    def _validate_unique_static_instruments(rows: Sequence[tuple]) -> None:
+    def _validate_unique_static_instruments(rows: Sequence[tuple[Any, ...]]) -> None:
         seen: dict[str, str] = {}
         for idx, row in enumerate(rows):
             instrument = str(row[0]).strip()
@@ -226,7 +226,7 @@ class TaxonomyArtifactPublisher:
         cls,
         artifact_file: Path,
         temporal_mode: str,
-        rows: Sequence[tuple],
+        rows: Sequence[tuple[Any, ...]],
     ) -> None:
         if temporal_mode == TAXONOMY_MODE_STATIC:
             header: tuple[str, ...] = cls.BASE_HEADER
