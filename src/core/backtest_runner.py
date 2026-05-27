@@ -354,12 +354,19 @@ class BacktestRunner:
 
         # Risk-constraints layer (audit P0-1 /
         # openspec/changes/add-minimal-risk-constraints). Post-trade:
-        # ``return_series`` and ``risk_analysis`` above are already
-        # computed from qlib's unclipped positions, so they reflect
-        # what qlib's executor actually ran. The constraints engine
-        # only affects the ``positions`` field returned downstream
-        # (and surfaces violations via raise / WARN).
-        positions_pre_clip: Mapping[str, Mapping[str, float]] = {}
+        # ``return_series`` and ``risk_analysis`` above were computed
+        # from qlib's unclipped execution. To keep the canonical
+        # output internally consistent, ``positions`` ALSO stays
+        # tied to qlib's unclipped execution — downstream consumers
+        # (PerformanceAttribution, pipeline_result_artifacts) use
+        # ``positions`` as the authoritative portfolio that
+        # produced the returns, so a clipped substitution would
+        # give them an attribution / holdings record that does NOT
+        # match the official numbers. Instead, the clipped map
+        # lives on the sibling field ``positions_clipped`` —
+        # populated only in WARN_AND_CLIP mode AND only when at
+        # least one clip happened. Codex P1 follow-up on PR #179.
+        positions_clipped: Mapping[str, Mapping[str, float]] = {}
         if risk_constraints is None:
             _logger.warning(
                 "BacktestRunner.run: ``risk_constraints`` was not "
@@ -384,15 +391,13 @@ class BacktestRunner:
                     f"backtest positions map. {exc}"
                 ) from exc
             # WARN_AND_CLIP mode (or RAISE mode with zero
-            # violations). When clipping actually moved weight,
-            # promote the clipped map to ``positions`` and stash
-            # the unclipped one on ``positions_pre_clip`` so
-            # downstream consumers can diff. When nothing moved,
-            # leave ``positions`` unchanged and
-            # ``positions_pre_clip`` empty (default field).
+            # violations). When clipping moved weight, expose the
+            # constraint-respecting allocation on the sibling
+            # field — ``positions`` stays unchanged so it remains
+            # internally consistent with the official return
+            # series and risk_analysis above.
             if apply_result.was_clipped:
-                positions_pre_clip = positions_map
-                positions_map = {
+                positions_clipped = {
                     d: dict(w) for d, w in apply_result.clipped_positions.items()
                 }
 
@@ -413,7 +418,7 @@ class BacktestRunner:
             report=report,
             provenance=provenance,
             positions=positions_map,
-            positions_pre_clip=positions_pre_clip,
+            positions_clipped=positions_clipped,
         )
 
     @staticmethod

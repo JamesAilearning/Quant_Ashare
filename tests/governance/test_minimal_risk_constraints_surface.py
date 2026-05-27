@@ -70,33 +70,45 @@ class MinimalRiskConstraintsSurfaceTests(unittest.TestCase):
         with self.assertRaises(AttributeError):  # frozen dataclass
             cfg.max_per_name = 0.10  # type: ignore[misc]
 
-    def test_canonical_backtest_output_has_positions_pre_clip(self) -> None:
-        """The output dataclass MUST carry the ``positions_pre_clip``
-        field so WARN_AND_CLIP callers can compare clipped vs
-        original. Audit P0-1."""
+    def test_canonical_backtest_output_has_positions_clipped(self) -> None:
+        """The output dataclass MUST carry the ``positions_clipped``
+        field so WARN_AND_CLIP callers can read the constraint-
+        respecting allocation while ``positions`` stays tied to
+        qlib's executed map. Audit P0-1 / codex P1 on PR #179."""
         from src.core.canonical_backtest_contract import CanonicalBacktestOutput
         names = {f.name for f in fields(CanonicalBacktestOutput)}
-        self.assertIn("positions_pre_clip", names)
+        self.assertIn("positions_clipped", names)
+        # Also: the old name MUST NOT exist (regression guard for
+        # the codex P1 swap).
+        self.assertNotIn(
+            "positions_pre_clip", names,
+            "``positions_pre_clip`` was renamed to "
+            "``positions_clipped`` per codex P1 follow-up on "
+            "PR #179 (positions stays tied to qlib's executed "
+            "portfolio; clipped is the sibling).",
+        )
 
-    def test_positions_pre_clip_is_in_canonical_output_schema(self) -> None:
-        """Codex P2 follow-up on PR #179.
+    def test_positions_clipped_is_in_canonical_output_schema(self) -> None:
+        """Codex P2 + P1 follow-ups on PR #179.
 
         The schema-level constant ``CANONICAL_OUTPUT_FIELDS`` and
         the contract's ``output_schema()`` accessor MUST list
-        ``positions_pre_clip``. Without this, schema-driven
+        ``positions_clipped``. Without this, schema-driven
         consumers (UI, JSON validators) can't discover the new
-        WARN_AND_CLIP sibling field as part of the official output
-        contract — the dataclass and the schema would disagree.
+        sibling field as part of the official output contract —
+        the dataclass and the schema would disagree.
         """
         from src.core.canonical_backtest_contract import (
             CANONICAL_OUTPUT_FIELDS,
             CanonicalBacktestContract,
         )
-        self.assertIn("positions_pre_clip", CANONICAL_OUTPUT_FIELDS)
+        self.assertIn("positions_clipped", CANONICAL_OUTPUT_FIELDS)
         self.assertIn(
-            "positions_pre_clip",
+            "positions_clipped",
             CanonicalBacktestContract.output_schema(),
         )
+        # Same regression guard at the schema layer.
+        self.assertNotIn("positions_pre_clip", CANONICAL_OUTPUT_FIELDS)
 
 
 class LegacyFailClosedStubGuardTests(unittest.TestCase):

@@ -82,13 +82,17 @@ and needs its own design pass.
      post-trade first delivers the constraint surface + the
      observability AT MINIMUM RISK; pre-trade follows once
      the operator-facing API is stable.
-   - Trade-off: in WARN_AND_CLIP mode the
-     ``return_series`` / ``risk_analysis`` reflect what
-     qlib actually ran (unclipped), while ``positions``
-     reflects the clipped allocation. This is documented on
-     the field; the operator gets both maps via the
-     ``positions`` and a new ``positions_pre_clip`` field
-     on ``CanonicalBacktestOutput``.
+   - Trade-off: the operator gets both maps on
+     ``CanonicalBacktestOutput``. ``positions`` stays tied to
+     qlib's unclipped execution so it remains internally
+     consistent with ``return_series`` / ``risk_analysis``.
+     The new sibling field ``positions_clipped`` carries the
+     constraint-respecting allocation; it is informational for
+     downstream live-deployment tooling. Codex P1 on PR #179
+     corrected an earlier draft that put the clipped map on
+     ``positions`` itself — that would have broken downstream
+     ``PerformanceAttribution`` (attribution against a
+     portfolio that didn't produce the official returns).
 
 2. **``MinimalRiskConstraints`` is a frozen dataclass, not a
    subclass of the legacy stub.**

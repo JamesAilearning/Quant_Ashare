@@ -125,8 +125,8 @@ CANONICAL_OUTPUT_FIELDS = (
     # WARN_AND_CLIP sibling field as part of the official output
     # contract. Populated only when ``risk_constraints`` was in
     # WARN_AND_CLIP mode AND at least one clip happened — see
-    # ``CanonicalBacktestOutput.positions_pre_clip`` docstring.
-    "positions_pre_clip",
+    # ``CanonicalBacktestOutput.positions_clipped`` docstring.
+    "positions_clipped",
 )
 
 
@@ -719,15 +719,27 @@ class CanonicalBacktestOutput:
     turnover analysis) must prefer this over reconstructing weights from
     predictions, which would diverge from the actual topk-dropout selection.
 
-    ``positions_pre_clip`` carries the qlib-produced positions BEFORE
-    any risk-constraint clipping. Empty (``{}``) by default — only
-    populated when ``BacktestRunner.run`` was given
-    ``risk_constraints`` in ``WARN_AND_CLIP`` mode AND at least one
-    constraint actually clipped weight on at least one day. In that
-    case ``positions`` reflects the clipped allocation (what the
-    operator should trade) and ``positions_pre_clip`` reflects what
-    qlib's executor actually ran (what produced ``return_series`` /
-    ``risk_analysis``). Audit P0-1 / add-minimal-risk-constraints.
+    ``positions`` ALWAYS reflects what qlib's executor actually ran
+    — it stays tied to ``return_series`` / ``risk_analysis`` so
+    downstream consumers (``PerformanceAttribution``,
+    pipeline_result_artifacts) compute attribution / persisted
+    holdings against the SAME portfolio that produced the official
+    returns. Post-trade risk-constraint clipping (audit P0-1) does
+    NOT mutate this field.
+
+    ``positions_clipped`` carries the constraint-respecting
+    allocation derived by post-trade risk-constraint clipping.
+    Empty (``{}``) by default — populated only when
+    ``BacktestRunner.run`` was given ``risk_constraints`` in
+    ``WARN_AND_CLIP`` mode AND at least one constraint actually
+    clipped weight on at least one day. It represents "what the
+    operator SHOULD trade given these constraints", not "what was
+    traded in this backtest". It is informational for downstream
+    live-deployment tooling; the official metrics
+    (``return_series``, ``risk_analysis``) reflect the unclipped
+    execution. Audit P0-1 / add-minimal-risk-constraints; Codex P1
+    follow-up on PR #179 swapped the original "replace positions
+    with clipped" semantics for this sibling-field design.
     """
 
     metric_status: str
@@ -737,7 +749,7 @@ class CanonicalBacktestOutput:
     report: Mapping[str, Any]
     provenance: Mapping[str, Any]
     positions: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
-    positions_pre_clip: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    positions_clipped: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
 
 class CanonicalBacktestContract:

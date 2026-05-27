@@ -47,10 +47,19 @@ Integration into ``BacktestRunner.run``:
   are computed (so those numbers reflect what qlib actually
   ran — clipping is post-hoc and informational, not a
   retroactive rewrite of official metrics).
-* The clipped positions map (when ``WARN_AND_CLIP``) becomes the
-  ``positions`` field on ``CanonicalBacktestOutput``; the
-  unclipped map is preserved on a new sibling field for downstream
-  diff / audit.
+* ``positions`` on ``CanonicalBacktestOutput`` stays tied to
+  qlib's unclipped execution — same map that produced
+  ``return_series`` / ``risk_analysis``. This keeps the canonical
+  output internally consistent: downstream consumers
+  (``PerformanceAttribution`` etc.) compute attribution against
+  the SAME portfolio that produced the official returns.
+  The clipped map (when ``WARN_AND_CLIP`` actually clipped) lives
+  on a new sibling field ``positions_clipped``, populated only
+  when at least one clip happened. It is informational for
+  downstream live-deployment tooling (what the operator SHOULD
+  trade) rather than authoritative (what was traded). Codex P1
+  follow-up on PR #179 corrected the original proposal that put
+  the clipped map on ``positions`` itself.
 
 Governance test asserting ``risk_constraints.py`` exports
 ``MinimalRiskConstraints``, ``RiskConstraintMode``, and the four

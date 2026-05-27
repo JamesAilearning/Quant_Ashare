@@ -104,11 +104,15 @@ In ``WARN_AND_CLIP`` mode, ``apply()`` SHALL NOT raise. Instead:
 * When supplied: after the official ``return_series`` and
   ``risk_analysis`` are computed, ``run`` SHALL call
   ``risk_constraints.apply(positions_map)`` and behave
-  according to the mode (RAISE → raise on non-empty
-  violations; WARN_AND_CLIP → use the clipped positions
-  for the ``CanonicalBacktestOutput.positions`` field and
-  expose the unclipped map on a sibling field
-  ``positions_pre_clip``).
+  according to the mode:
+  - ``RAISE`` → raise ``BacktestRunnerError`` (wrapping
+    ``RiskConstraintError``) on any non-empty violations.
+  - ``WARN_AND_CLIP`` → preserve qlib's executed positions on
+    ``CanonicalBacktestOutput.positions`` (so it stays
+    consistent with ``return_series`` / ``risk_analysis``),
+    AND expose the constraint-respecting allocation on the
+    sibling field ``positions_clipped`` (populated only when
+    at least one clip happened).
 
 #### Scenario: None-default emits a WARN
 - **WHEN** ``BacktestRunner.run(...)`` is called without

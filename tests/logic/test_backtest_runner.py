@@ -732,16 +732,20 @@ class BacktestRunnerRiskConstraintsKwargTests(unittest.TestCase):
                 "convention as the other run() kwargs.",
         )
 
-    def test_canonical_backtest_output_has_positions_pre_clip(self) -> None:
+    def test_canonical_backtest_output_has_positions_clipped(self) -> None:
         """The output dataclass gains a sibling field for the
-        unclipped positions. Should default to empty dict so
-        existing constructions without the kwarg keep working."""
+        constraint-respecting allocation. Default factory must
+        produce an empty dict so existing constructions without
+        the kwarg keep working. Codex P1 follow-up on PR #179
+        renamed this from ``positions_pre_clip`` to
+        ``positions_clipped`` and swapped the semantics — see
+        the dataclass docstring."""
         from dataclasses import fields
 
         from src.core.canonical_backtest_contract import CanonicalBacktestOutput
 
         names = {f.name for f in fields(CanonicalBacktestOutput)}
-        self.assertIn("positions_pre_clip", names)
+        self.assertIn("positions_clipped", names)
         # Construct a minimal instance without the new field —
         # default factory must produce empty dict.
         out = CanonicalBacktestOutput(
@@ -753,7 +757,7 @@ class BacktestRunnerRiskConstraintsKwargTests(unittest.TestCase):
             provenance={},
             positions={},
         )
-        self.assertEqual(out.positions_pre_clip, {})
+        self.assertEqual(out.positions_clipped, {})
 
 
 class PositionsSerializationTests(unittest.TestCase):
