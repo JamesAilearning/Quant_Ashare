@@ -23,12 +23,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # NO ``continue-on-error: true`` here on purpose. If qlib install
+      # fails (network blip, garbage-collected commit, transient pip
+      # error), this step MUST fail loudly. Previously the flag was
+      # set, which combined with the codebase's pervasive
+      # ``pytest.importorskip("qlib")`` produced a silent-green CI
+      # path where qlib-dependent tests were all skipped while the
+      # workflow reported success. If the install becomes flaky in
+      # practice, add a retry around the pip command rather than
+      # bringing back the swallow. Audit P1-13.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install git+https://github.com/microsoft/qlib.git@8fd6d5ca7eab59a69bf5c62f84e8b4e2a4e8910b
           pip install -e ".[dev]"
-        continue-on-error: true
 
       - name: Lint (ruff)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
@@ -63,12 +71,18 @@ jobs:
       # 6 jobs would 6x the artifact storage for no extra signal.
       # The other 5 jobs still run the test suite for the
       # OS / Python coverage matrix; they just don't emit coverage.
+      #
+      # Each test suite under ``tests/`` runs as a separate pytest
+      # invocation (PIT singleton isolation — see PIT block below).
+      # To consolidate coverage across them, the ubuntu-3.11 slot
+      # uses ``--cov=src`` on the FIRST run (which erases any prior
+      # ``.coverage`` data) and ``--cov=src --cov-append`` on every
+      # subsequent run. The LAST run also emits ``coverage.xml``,
+      # which then includes data from every suite. Other slots run
+      # plain pytest without coverage. Audit P1-15.
       - name: Run logic tests (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: |
-          pytest tests/logic/ -q --tb=short \
-            --cov=src --cov-report=xml:coverage-logic.xml \
-            --cov-report=term-missing:skip-covered
+        run: pytest tests/logic/ -q --tb=short --cov=src
         env:
           RUN_E2E: "0"
 
@@ -78,10 +92,22 @@ jobs:
         env:
           RUN_E2E: "0"
 
+      - name: Run governance tests (with coverage)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: pytest tests/governance/ -q --tb=short --cov=src --cov-append
+
       - name: Run governance tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/governance/ -q --tb=short
 
+      - name: Run regression tests (with coverage)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: pytest tests/regression/ -q --tb=short --cov=src --cov-append
+        env:
+          RUN_E2E: "0"
+
       - name: Run regression tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/regression/ -q --tb=short
         env:
           RUN_E2E: "0"
@@ -98,27 +124,48 @@ jobs:
       #   2. PIT scaffolding (Phases A-D) is opt-in for the existing
       #      pipeline; keeping its tests in their own runs makes it
       #      obvious which suite a regression came from.
+      - name: Run PIT data-pipeline tests (with coverage)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: pytest tests/data_pipeline/ -q --tb=short --cov=src --cov-append
+        env:
+          RUN_E2E: "0"
+
       - name: Run PIT data-pipeline tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/data_pipeline/ -q --tb=short
         env:
           RUN_E2E: "0"
 
+      # PIT query-layer is the LAST suite — emits the consolidated
+      # XML report covering every prior --cov-append accumulation.
+      - name: Run PIT query-layer tests (with coverage)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          pytest tests/pit/ -q --tb=short \
+            --cov=src --cov-append \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing:skip-covered
+        env:
+          RUN_E2E: "0"
+
       - name: Run PIT query-layer tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/pit/ -q --tb=short
         env:
           RUN_E2E: "0"
 
-      # Upload the coverage XML as a workflow artifact so reviewers
-      # can download it from the PR Checks tab without configuring an
-      # external Codecov account. Only runs on the slot that
-      # collected coverage (ubuntu-3.11). The artifact also lets a
-      # future Codecov / Coveralls integration just consume the same
-      # file rather than re-running coverage.
+      # Upload the consolidated coverage XML as a workflow artifact
+      # so reviewers can download it from the PR Checks tab without
+      # configuring an external Codecov account. Covers every test
+      # suite (logic, governance, regression, data_pipeline, pit) —
+      # the previous artifact name ``coverage-logic-xml`` reflected
+      # the pre-#176 state where only logic/ ran with --cov; renamed
+      # to match what it actually contains now.
       - name: Upload coverage report
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-logic-xml
-          path: coverage-logic.xml
+          name: coverage-xml
+          path: coverage.xml
           if-no-files-found: warn
           retention-days: 30
