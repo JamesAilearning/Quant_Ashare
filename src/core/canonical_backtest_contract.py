@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from src.contracts import _shared_validators as _sv
@@ -166,6 +166,24 @@ class StampTaxScheduleEntry:
     bps: float
 
     def __post_init__(self) -> None:
+        # ``datetime.datetime`` is a subclass of ``datetime.date`` —
+        # a bare ``isinstance(..., date)`` check accepts it, which
+        # later trips a ``TypeError`` deep in
+        # ``compute_effective_stamp_tax_bps`` when a ``date``
+        # period bound is compared against a ``datetime``
+        # ``effective_from``. Reject ``datetime`` explicitly at the
+        # contract boundary so the error message names the field
+        # and points at the fix (drop the time component). Codex
+        # P2 follow-up on PR #178.
+        if isinstance(self.effective_from, datetime):
+            raise CanonicalBacktestContractError(
+                "StampTaxScheduleEntry.effective_from must be a "
+                "datetime.date (not datetime.datetime); got a "
+                f"datetime with time component {self.effective_from!r}. "
+                "YAML inputs like ``2023-08-28 00:00:00`` produce "
+                "datetime values — drop the time component "
+                "(``2023-08-28``) or call ``.date()`` before passing."
+            )
         if not isinstance(self.effective_from, date):
             raise CanonicalBacktestContractError(
                 "StampTaxScheduleEntry.effective_from must be a "

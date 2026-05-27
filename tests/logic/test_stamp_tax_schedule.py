@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +63,36 @@ class StampTaxScheduleEntryTests(unittest.TestCase):
             StampTaxScheduleEntry(
                 effective_from=date(2023, 8, 28),
                 bps=STAMP_TAX_BPS_MAX + 1,
+            )
+
+    def test_rejects_datetime_effective_from(self) -> None:
+        """Codex P2 follow-up on PR #178.
+
+        ``datetime.datetime`` is a subclass of ``datetime.date``, so a
+        bare ``isinstance(..., date)`` check would accept it and
+        defer the failure to a confusing TypeError deep in
+        ``compute_effective_stamp_tax_bps``. The contract must
+        reject datetimes at construction with a message naming the
+        field and pointing at the fix."""
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError,
+            "must be a datetime.date \\(not datetime.datetime\\)",
+        ):
+            StampTaxScheduleEntry(
+                effective_from=datetime(2023, 8, 28, 0, 0, 0),  # type: ignore[arg-type]
+                bps=5.0,
+            )
+
+    def test_rejects_datetime_effective_from_with_time_component(self) -> None:
+        """Variant that uses a non-zero time component — same
+        rejection. Real-world YAML hazard: ``2023-08-28T12:00:00``
+        unintentionally loaded as datetime."""
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError, "datetime.date"
+        ):
+            StampTaxScheduleEntry(
+                effective_from=datetime(2023, 8, 28, 12, 30, 45),  # type: ignore[arg-type]
+                bps=5.0,
             )
 
 
@@ -394,6 +424,23 @@ class ResolveStampTaxScheduleTests(unittest.TestCase):
             CanonicalBacktestContractError, "empty sequence"
         ):
             resolve_stamp_tax_schedule([])
+
+    def test_rejects_datetime_value_via_yaml_shape(self) -> None:
+        """If YAML loads ``effective_from`` as a datetime (e.g. when
+        the file says ``2023-08-28 00:00:00``), the resolver must
+        propagate the StampTaxScheduleEntry rejection — NOT silently
+        truncate to ``.date()``. Silent truncation would discard
+        operator intent (they wrote a time, even if the time is
+        meaningless for stamp tax). Codex P2 follow-up on PR #178.
+        """
+        raw = [{
+            "effective_from": datetime(2023, 8, 28, 0, 0, 0),
+            "bps": 5.0,
+        }]
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError, "datetime.date"
+        ):
+            resolve_stamp_tax_schedule(raw)
 
 
 class MigrationSnippetTests(unittest.TestCase):
