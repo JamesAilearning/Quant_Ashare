@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core.attribution_industry_loader import assert_industry_config_complete_or_empty
@@ -12,6 +13,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestContractError,
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
+    resolve_stamp_tax_schedule,
 )
 from src.core.model_trainer import (
     GPU_SUPPORTED_MODEL_TYPES,
@@ -65,7 +67,10 @@ class WalkForwardConfig:
     topk: int = 50
     n_drop: int = 5
     commission_rate: float = 0.0005
-    stamp_tax_bps: float = 10.0
+    # CN A-share stamp tax — schedule, not scalar. See
+    # PipelineConfig.stamp_tax_schedule for the format. Audit P0-4 /
+    # openspec/changes/add-stamp-tax-schedule.
+    stamp_tax_schedule: Any = None
     slippage_bps: float = 5.0
     min_cost: float = 5.0
     execution_price_kind: str = EXECUTION_PRICE_CLOSE
@@ -302,7 +307,9 @@ class WalkForwardConfig:
                 execution_price_kind=self.execution_price_kind,
                 cost_model=CanonicalExchangeCostModel(
                     commission_rate=self.commission_rate,
-                    stamp_tax_bps=self.stamp_tax_bps,
+                    stamp_tax_schedule=resolve_stamp_tax_schedule(
+                        self.stamp_tax_schedule,
+                    ),
                     slippage_bps=self.slippage_bps,
                     min_cost=self.min_cost,
                 ),

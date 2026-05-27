@@ -268,7 +268,12 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
             min_cost=7.5,
             limit_threshold=0.195,
             commission_rate=0.0007,
-            stamp_tax_bps=8.0,
+            # Single-entry schedule pins the rate at 8 bps for the
+            # entire window — replaces the legacy
+            # ``stamp_tax_bps=8.0`` scalar test fixture.
+            stamp_tax_schedule=[
+                {"effective_from": "2008-09-19", "bps": 8.0},
+            ],
             slippage_bps=3.0,
         )
 

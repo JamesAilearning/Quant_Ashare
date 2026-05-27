@@ -26,10 +26,12 @@ from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
     CanonicalAccountConfig,
+    CanonicalBacktestContractError,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
+    resolve_stamp_tax_schedule,
 )
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
 from src.core.logger import get_logger
@@ -106,7 +108,16 @@ class PipelineConfig:
     benchmark_code: str = "SH000300"
     init_cash: float = 100_000_000
     commission_rate: float = 0.0005
-    stamp_tax_bps: float = 10.0
+    # CN A-share stamp tax — represented as a time-ordered schedule
+    # rather than a single scalar so the 2023-08-28 reform (0.1% →
+    # 0.05% sell-only) is modelled correctly on backtest windows that
+    # cross the transition. ``None`` resolves to
+    # ``CN_STAMP_TAX_SCHEDULE_DEFAULT`` (recommended). A custom value
+    # must be a sequence of ``{effective_from: ISO-date, bps: float}``
+    # mappings; see audit P0-4 / openspec/changes/add-stamp-tax-schedule
+    # for the format. The legacy scalar key ``stamp_tax_bps`` is no
+    # longer accepted — the YAML loader raises with a migration message.
+    stamp_tax_schedule: Any = None
     slippage_bps: float = 5.0
     min_cost: float = 5.0
     execution_price_kind: str = "close"
@@ -236,7 +247,11 @@ class PipelineConfig:
         # the feature build + model train + predict steps have already
         # run for several minutes; failing here at config construction
         # avoids the wasted compute.
-        for name in ("commission_rate", "stamp_tax_bps", "slippage_bps", "min_cost"):
+        # ``stamp_tax_schedule`` has its own validation below — it is
+        # a sequence-of-mappings shape, not a scalar — so the per-field
+        # numeric check applies only to the remaining three scalar
+        # cost knobs. Audit P0-4 (add-stamp-tax-schedule).
+        for name in ("commission_rate", "slippage_bps", "min_cost"):
             value = getattr(self, name)
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise PipelineError(
@@ -248,6 +263,20 @@ class PipelineConfig:
                     f"PipelineConfig.{name} must be >= 0 to avoid silently "
                     f"inflating returns by negative cost; got {value!r}."
                 )
+        # Resolve the stamp-tax schedule now so a malformed value in
+        # the YAML config fails AT CONFIG CONSTRUCTION, not after
+        # several minutes of feature build. We discard the result —
+        # the actual schedule is resolved again when constructing
+        # ``CanonicalExchangeCostModel`` in ``Pipeline.run``. The
+        # helper is pure so calling it twice is cheap, and the
+        # second call also verifies that no mutation snuck in
+        # between config construction and use. Audit P0-4.
+        try:
+            resolve_stamp_tax_schedule(self.stamp_tax_schedule)
+        except CanonicalBacktestContractError as exc:
+            raise PipelineError(
+                f"PipelineConfig.stamp_tax_schedule failed validation: {exc}"
+            ) from exc
         # ``n_drop`` is the number of names ``TopkDropoutStrategy``
         # rotates out of the portfolio each rebalance; if it equals or
         # exceeds ``topk`` the strategy ends up holding zero names after
@@ -422,7 +451,9 @@ class Pipeline:
                 execution_price_kind=config.execution_price_kind,
                 cost_model=CanonicalExchangeCostModel(
                     commission_rate=config.commission_rate,
-                    stamp_tax_bps=config.stamp_tax_bps,
+                    stamp_tax_schedule=resolve_stamp_tax_schedule(
+                        config.stamp_tax_schedule,
+                    ),
                     slippage_bps=config.slippage_bps,
                     min_cost=config.min_cost,
                 ),

@@ -18,6 +18,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 from src.core.canonical_backtest_contract import (
@@ -28,6 +29,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestContract,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
+    compute_effective_stamp_tax_bps,
 )
 from src.core.logger import get_logger
 from src.core.qlib_runtime import (
@@ -151,7 +153,46 @@ class BacktestRunner:
 
         # Map CanonicalExchangeConfig → qlib exchange_kwargs
         cost = request.exchange_config.cost_model
-        stamp_tax_fraction = cost.stamp_tax_bps / 10000.0
+
+        # Resolve the time-ordered stamp-tax schedule into the single
+        # scalar that qlib's ``exchange_kwargs["close_cost"]``
+        # accepts. The helper returns a trading-day-weighted average
+        # when the backtest period crosses one or more rate
+        # transitions (e.g. the 2023-08-28 CN reform 10→5 bps), AND
+        # the list of transitions actually crossed. We WARN once per
+        # run when crossings happen so the operator can decide
+        # whether the weighted scalar is good enough or whether they
+        # need to split the backtest at the transition.
+        #
+        # Audit P0-4 + add-stamp-tax-schedule.
+        period_start = date.fromisoformat(request.evaluation_start)
+        period_end = date.fromisoformat(request.evaluation_end)
+        effective_stamp_tax = compute_effective_stamp_tax_bps(
+            cost.stamp_tax_schedule,
+            period_start,
+            period_end,
+        )
+        if effective_stamp_tax.transitions:
+            schedule_repr = ", ".join(
+                f"{entry.effective_from.isoformat()}={entry.bps}bps"
+                for entry in cost.stamp_tax_schedule
+            )
+            crossed_repr = ", ".join(
+                entry.effective_from.isoformat()
+                for entry in effective_stamp_tax.transitions
+            )
+            _logger.warning(
+                "BacktestRunner: backtest period %s → %s crosses "
+                "stamp-tax transition(s) at %s. Using trading-day-"
+                "weighted scalar %.4f bps; the actual per-day cost is "
+                "time-varying (full schedule: %s). To get exact "
+                "per-segment costs, split the backtest at the "
+                "transition(s) and reconcile the per-segment "
+                "outputs externally. Audit P0-4.",
+                request.evaluation_start, request.evaluation_end,
+                crossed_repr, effective_stamp_tax.bps, schedule_repr,
+            )
+        stamp_tax_fraction = effective_stamp_tax.bps / 10000.0
         slippage_fraction = cost.slippage_bps / 10000.0
         exchange_kwargs = {
             "freq": request.exchange_config.freq,

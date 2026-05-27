@@ -21,6 +21,7 @@ from src.core.backtest_runner import (
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_POST,
     ADJUST_MODE_PRE,
+    CN_STAMP_TAX_SCHEDULE_DEFAULT,
     EXECUTION_PRICE_CLOSE,
     CanonicalAccountConfig,
     CanonicalBacktestContractError,
@@ -45,7 +46,7 @@ def _make_request(**overrides) -> CanonicalBacktestInput:
             execution_price_kind=EXECUTION_PRICE_CLOSE,
             cost_model=CanonicalExchangeCostModel(
                 commission_rate=0.0005,
-                stamp_tax_bps=10.0,
+                stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
                 slippage_bps=5.0,
                 min_cost=5.0,
             ),
@@ -433,7 +434,7 @@ class BacktestRunnerNDropValidationTests(unittest.TestCase):
                 freq="day",
                 execution_price_kind=EXECUTION_PRICE_CLOSE,
                 cost_model=CanonicalExchangeCostModel(
-                    commission_rate=0.0005, stamp_tax_bps=10.0,
+                    commission_rate=0.0005, stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
                     slippage_bps=5.0, min_cost=5.0,
                 ),
                 limit_threshold=0.095,
@@ -469,6 +470,148 @@ class BacktestRunnerNDropValidationTests(unittest.TestCase):
                 predictions="dummy",
                 topk=0, n_drop=0,
             )
+
+
+class StampTaxScheduleWarnLoggingTests(unittest.TestCase):
+    """``BacktestRunner.run`` MUST emit a WARN log when the
+    requested period crosses a stamp-tax schedule transition. The
+    converse (period entirely within one segment) must NOT emit
+    the WARN. Audit P0-4 / openspec/changes/add-stamp-tax-schedule.
+
+    We patch the canonical qlib runtime + the qlib backtest call to
+    side-step the real backtest engine; the WARN is emitted long
+    before the qlib call so the patch boundary is sufficient.
+    """
+
+    def _make_request(self, *, start: str, end: str):
+        from src.core.canonical_backtest_contract import (
+            ADJUST_MODE_PRE,
+            CN_STAMP_TAX_SCHEDULE_DEFAULT,
+            EXECUTION_PRICE_CLOSE,
+            CanonicalAccountConfig,
+            CanonicalBacktestInput,
+            CanonicalExchangeConfig,
+            CanonicalExchangeCostModel,
+        )
+        return CanonicalBacktestInput(
+            predictions_ref="/tmp/x.pkl",
+            evaluation_start=start,
+            evaluation_end=end,
+            account_config=CanonicalAccountConfig(init_cash=1_000_000),
+            exchange_config=CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=EXECUTION_PRICE_CLOSE,
+                cost_model=CanonicalExchangeCostModel(
+                    commission_rate=0.0005,
+                    stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
+                    slippage_bps=5.0, min_cost=5.0,
+                ),
+                limit_threshold=0.095,
+            ),
+            adjust_mode=ADJUST_MODE_PRE,
+            signal_to_execution_lag=1,
+            benchmark_code="SH000300",
+        )
+
+    def _make_predictions(self):
+        """Minimal pd.Series with the (datetime, instrument)
+        MultiIndex shape that BacktestRunner._apply_lag's
+        validation accepts."""
+        import pandas as pd
+        idx = pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2022-01-04"), "SH600000"),
+                (pd.Timestamp("2022-01-05"), "SH600000"),
+            ],
+            names=("datetime", "instrument"),
+        )
+        return pd.Series([0.5, 0.6], index=idx)
+
+    def _run_with_patches(self, request, predictions, logger_records):
+        """Drive BacktestRunner.run until it raises after the WARN
+        has been emitted. We patch enough boundary calls that the
+        WARN log line is reached; the run is then allowed to error
+        out (we only care about whether the WARN fired)."""
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
+
+        with patch(
+            "src.core.backtest_runner.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+        ) as get_cfg, patch.dict(
+            "sys.modules",
+            {
+                "qlib.backtest": MagicMock(backtest=MagicMock(
+                    side_effect=RuntimeError("test-stop after WARN"),
+                )),
+                "qlib.backtest.executor": MagicMock(),
+                "qlib.contrib.strategy.signal_strategy": MagicMock(),
+                "qlib.utils.time": MagicMock(),
+            },
+        ):
+            from src.core.qlib_runtime import QlibRuntimeConfig
+            get_cfg.return_value = QlibRuntimeConfig(
+                provider_uri="/tmp/qlib_data",
+                region="cn",
+                data_adjust_mode="pre_adjusted",
+            )
+            logger = logging.getLogger("src.core.backtest_runner")
+            handler = logging.Handler()
+            handler.setLevel(logging.WARNING)
+
+            def emit(record):
+                logger_records.append(record)
+            handler.emit = emit
+            logger.addHandler(handler)
+            try:
+                with self.assertRaises(BacktestRunnerError):
+                    BacktestRunner.run(
+                        request=request,
+                        predictions=predictions,
+                        topk=5, n_drop=1,
+                    )
+            finally:
+                logger.removeHandler(handler)
+
+    def test_cross_period_emits_warn_with_both_rates(self) -> None:
+        records: list = []
+        request = self._make_request(
+            start="2022-01-01", end="2024-12-31",  # crosses 2023-08-28
+        )
+        self._run_with_patches(request, self._make_predictions(), records)
+        warns = [r for r in records if r.levelname == "WARNING"]
+        self.assertTrue(warns, "expected at least one WARN; got none")
+        msgs = [w.getMessage() for w in warns]
+        # Must mention the transition date, the pre/post rates, and
+        # the weighted scalar.
+        cross_warns = [m for m in msgs if "2023-08-28" in m]
+        self.assertTrue(cross_warns, f"no WARN mentions 2023-08-28; got {msgs}")
+        msg = cross_warns[0]
+        self.assertIn("10.0bps", msg)
+        self.assertIn("5.0bps", msg)
+        self.assertIn("Audit P0-4", msg)
+
+    def test_single_segment_does_not_emit_stamp_tax_warn(self) -> None:
+        records: list = []
+        request = self._make_request(
+            start="2024-01-01", end="2024-12-31",  # entirely post-reform
+        )
+        self._run_with_patches(request, self._make_predictions(), records)
+        warns = [r for r in records if r.levelname == "WARNING"]
+        stamp_warns = [
+            w for w in warns
+            if "stamp-tax transition" in w.getMessage()
+        ]
+        self.assertEqual(
+            stamp_warns, [],
+            f"WARN about stamp-tax transition should NOT fire when "
+            f"period is within one segment; got: "
+            f"{[w.getMessage() for w in stamp_warns]}",
+        )
 
 
 class PositionsSerializationTests(unittest.TestCase):
@@ -774,7 +917,7 @@ class ProvenanceFingerprintTests(unittest.TestCase):
                 freq="day",
                 execution_price_kind=EXECUTION_PRICE_CLOSE,
                 cost_model=CanonicalExchangeCostModel(
-                    commission_rate=0.0005, stamp_tax_bps=10.0,
+                    commission_rate=0.0005, stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
                     slippage_bps=5.0, min_cost=5.0,
                 ),
                 limit_threshold=0.095,

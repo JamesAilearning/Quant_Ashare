@@ -20,6 +20,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalBacktestOutput,
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
+    resolve_stamp_tax_schedule,
 )
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
@@ -516,7 +517,9 @@ class WalkForwardEngine:
                 execution_price_kind=config.execution_price_kind,
                 cost_model=CanonicalExchangeCostModel(
                     commission_rate=config.commission_rate,
-                    stamp_tax_bps=config.stamp_tax_bps,
+                    stamp_tax_schedule=resolve_stamp_tax_schedule(
+                        config.stamp_tax_schedule,
+                    ),
                     slippage_bps=config.slippage_bps,
                     min_cost=config.min_cost,
                 ),

@@ -330,9 +330,19 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "commission_rate"):
             PipelineConfig(provider_uri="/tmp/fake", commission_rate=-0.001)
 
-    def test_rejects_negative_stamp_tax_bps(self) -> None:
-        with self.assertRaisesRegex(PipelineError, "stamp_tax_bps"):
-            PipelineConfig(provider_uri="/tmp/fake", stamp_tax_bps=-1.0)
+    def test_rejects_negative_bps_in_stamp_tax_schedule(self) -> None:
+        """The legacy scalar ``stamp_tax_bps`` is gone; the
+        equivalent validator now lives inside
+        ``StampTaxScheduleEntry.__post_init__``. PipelineConfig
+        rejects a schedule containing a negative bps entry at
+        construction. Audit P0-4 / add-stamp-tax-schedule."""
+        with self.assertRaisesRegex(PipelineError, "stamp_tax_schedule"):
+            PipelineConfig(
+                provider_uri="/tmp/fake",
+                stamp_tax_schedule=[
+                    {"effective_from": "2020-01-01", "bps": -1.0},
+                ],
+            )
 
     def test_rejects_negative_slippage_bps(self) -> None:
         with self.assertRaisesRegex(PipelineError, "slippage_bps"):

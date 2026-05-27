@@ -14,8 +14,9 @@ is importable.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from src.contracts import _shared_validators as _sv
@@ -144,6 +145,333 @@ class CanonicalAccountConfig:
 
 
 @dataclass(frozen=True)
+class StampTaxScheduleEntry:
+    """One segment of the CN stamp-tax schedule.
+
+    ``effective_from`` is the first day (inclusive) on which ``bps``
+    applies. The segment runs until the next entry's
+    ``effective_from`` (or forever, for the last entry).
+
+    The CN A-share stamp tax has changed at least twice in the
+    realistic backtest window:
+
+    * 2008-09-19: 0.1% sell-side only (10 bps).  Before this date the
+      tax was charged on both sides; we do NOT model that era — see
+      ``CN_STAMP_TAX_SCHEDULE_DEFAULT`` and the audit-P0-4 design
+      doc for the rationale.
+    * 2023-08-28: halved to 0.05% (5 bps) by MOF reform.
+    """
+
+    effective_from: date
+    bps: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.effective_from, date):
+            raise CanonicalBacktestContractError(
+                "StampTaxScheduleEntry.effective_from must be a "
+                f"datetime.date, got {type(self.effective_from).__name__}."
+            )
+        if not isinstance(self.bps, (int, float)) or isinstance(self.bps, bool):
+            raise CanonicalBacktestContractError(
+                "StampTaxScheduleEntry.bps must be a real number, "
+                f"got {type(self.bps).__name__}."
+            )
+        if self.bps < 0 or self.bps > STAMP_TAX_BPS_MAX:
+            raise CanonicalBacktestContractError(
+                f"StampTaxScheduleEntry.bps for effective_from="
+                f"{self.effective_from.isoformat()} must be in "
+                f"[0, {STAMP_TAX_BPS_MAX}], got {self.bps}."
+            )
+
+
+# Canonical CN stamp-tax schedule. Operators who do not opt into a
+# custom schedule resolve to this. We model the post-2008-09-19 era
+# (sell-side only); pre-2008 backtests must extend the schedule
+# explicitly because the tax was both-side before then and the
+# single-bps-per-entry model cannot represent that.
+CN_STAMP_TAX_SCHEDULE_DEFAULT: tuple[StampTaxScheduleEntry, ...] = (
+    StampTaxScheduleEntry(effective_from=date(2008, 9, 19), bps=10.0),
+    StampTaxScheduleEntry(effective_from=date(2023, 8, 28), bps=5.0),
+)
+
+
+# Marker error class — separate so config layers can catch
+# schedule-shape errors specifically (vs. other contract errors).
+def resolve_stamp_tax_schedule(
+    value: Any,
+) -> tuple[StampTaxScheduleEntry, ...]:
+    """Convert a YAML / config-shaped schedule value into the typed
+    tuple consumed by :class:`CanonicalExchangeCostModel`.
+
+    Accepted inputs:
+
+    * ``None`` → returns :data:`CN_STAMP_TAX_SCHEDULE_DEFAULT`. This
+      is the recommended default for almost every CN backtest.
+    * ``Sequence[Mapping[str, Any]]`` — each mapping MUST carry
+      ``effective_from`` (an ``ISO-YYYY-MM-DD`` string or a
+      ``datetime.date``) and ``bps`` (a real number). Returns the
+      corresponding tuple of :class:`StampTaxScheduleEntry`. Order
+      and bounds are NOT validated here — that is the responsibility
+      of ``CanonicalExchangeCostModel._validate_stamp_tax_schedule``
+      so the same validator runs whether the schedule came from
+      YAML or from a direct dataclass construction.
+    * ``tuple[StampTaxScheduleEntry, ...]`` — returned verbatim.
+      Lets internal callers pass an already-validated schedule
+      through without re-coercion.
+
+    Raises
+    ------
+    CanonicalBacktestContractError
+        On any other shape: a string, a single mapping, a mapping
+        with the wrong keys / types, a malformed ISO date, etc. The
+        message names the offending value so an operator editing a
+        YAML config can fix it without reading source.
+    """
+    if value is None:
+        return CN_STAMP_TAX_SCHEDULE_DEFAULT
+
+    # Already typed — return verbatim.
+    if isinstance(value, tuple) and all(
+        isinstance(e, StampTaxScheduleEntry) for e in value
+    ):
+        return value
+
+    # Reject strings (a common YAML mistake where someone writes
+    # ``stamp_tax_schedule: cn_default`` thinking it's a registry
+    # lookup — we don't support that for now to keep the surface
+    # small).
+    if isinstance(value, (str, bytes, Mapping)):
+        raise CanonicalBacktestContractError(
+            "resolve_stamp_tax_schedule: expected a list of "
+            "{effective_from, bps} mappings or None, got "
+            f"{type(value).__name__} ({value!r}). See "
+            "openspec/changes/add-stamp-tax-schedule for the "
+            "accepted shape."
+        )
+    try:
+        iter(value)
+    except TypeError as exc:
+        raise CanonicalBacktestContractError(
+            "resolve_stamp_tax_schedule: value is not iterable "
+            f"({type(value).__name__}). Expected a list of "
+            "{effective_from, bps} mappings or None."
+        ) from exc
+
+    entries: list[StampTaxScheduleEntry] = []
+    for i, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise CanonicalBacktestContractError(
+                f"resolve_stamp_tax_schedule: entry [{i}] must be a "
+                f"mapping with keys 'effective_from' and 'bps'; got "
+                f"{type(item).__name__}."
+            )
+        # Allow either ``effective_from`` (the spec-canonical key)
+        # OR ``from`` as a shorthand. Reject anything else.
+        raw_date = item.get("effective_from", item.get("from"))
+        if raw_date is None:
+            raise CanonicalBacktestContractError(
+                f"resolve_stamp_tax_schedule: entry [{i}] is missing "
+                "the required 'effective_from' key."
+            )
+        if isinstance(raw_date, date):
+            eff_from = raw_date
+        elif isinstance(raw_date, str):
+            try:
+                eff_from = date.fromisoformat(raw_date)
+            except ValueError as exc:
+                raise CanonicalBacktestContractError(
+                    f"resolve_stamp_tax_schedule: entry [{i}] "
+                    f"'effective_from' ({raw_date!r}) is not an "
+                    f"ISO YYYY-MM-DD date: {exc}."
+                ) from exc
+        else:
+            raise CanonicalBacktestContractError(
+                f"resolve_stamp_tax_schedule: entry [{i}] "
+                "'effective_from' must be a date or ISO YYYY-MM-DD "
+                f"string, got {type(raw_date).__name__}."
+            )
+        if "bps" not in item:
+            raise CanonicalBacktestContractError(
+                f"resolve_stamp_tax_schedule: entry [{i}] is missing "
+                "the required 'bps' key."
+            )
+        bps = item["bps"]
+        # StampTaxScheduleEntry.__post_init__ enforces type + range —
+        # construct it and let those checks fire.
+        entries.append(StampTaxScheduleEntry(
+            effective_from=eff_from, bps=bps,
+        ))
+
+    if not entries:
+        raise CanonicalBacktestContractError(
+            "resolve_stamp_tax_schedule: empty sequence; supply at "
+            "least one entry or pass None for the CN default."
+        )
+    return tuple(entries)
+
+
+def stamp_tax_schedule_migration_snippet() -> str:
+    """Return a copy-pasteable YAML snippet for the canonical CN
+    schedule. Used in legacy-key migration error messages.
+    """
+    return (
+        "stamp_tax_schedule:\n"
+        "  - effective_from: 2008-09-19\n"
+        "    bps: 10.0\n"
+        "  - effective_from: 2023-08-28\n"
+        "    bps: 5.0\n"
+    )
+
+
+@dataclass(frozen=True)
+class EffectiveStampTaxBps:
+    """Result of resolving a schedule against a backtest period.
+
+    ``bps`` is the single scalar passed to qlib's
+    ``exchange_kwargs["close_cost"]``. When the period spans more
+    than one schedule entry it is the trading-day-weighted (or
+    calendar-day-weighted, when no calendar is supplied) average
+    across segments.
+
+    ``transitions`` lists the schedule entries whose
+    ``effective_from`` falls STRICTLY INSIDE the requested period —
+    i.e. each represents a rate change crossed during the backtest.
+    When non-empty, callers (typically ``BacktestRunner.run``) emit
+    a WARN log so the operator knows the per-period scalar is an
+    approximation of a time-varying rate.
+    """
+
+    bps: float
+    transitions: tuple[StampTaxScheduleEntry, ...]
+
+
+def compute_effective_stamp_tax_bps(
+    schedule: tuple[StampTaxScheduleEntry, ...],
+    period_start: date,
+    period_end: date,
+    *,
+    calendar: Sequence[date] | None = None,
+) -> EffectiveStampTaxBps:
+    """Collapse ``schedule`` into a single scalar over ``[period_start, period_end]``.
+
+    Semantics:
+
+    * Period covered by exactly one schedule entry → return that
+      entry's bps, ``transitions=()``.
+    * Period crosses one or more transitions → return the
+      time-weighted average bps + a non-empty ``transitions`` tuple
+      so the caller can WARN. Weights are TRADING DAYS when
+      ``calendar`` is supplied, calendar days otherwise. (Calendar-
+      day fallback shifts the weighting slightly toward holiday
+      stretches; trading-day weighting is the correct semantics for
+      "rate that applies on actual sell events".)
+    * Period starts before ``schedule[0].effective_from`` → raise
+      ``CanonicalBacktestContractError``. We deliberately do NOT
+      extrapolate the earliest entry backwards, because for CN
+      stamp tax that would silently model pre-2008-09-19 sell-only
+      tax which was actually both-side. Operators who really need
+      pre-2008 backtests must extend the schedule explicitly.
+
+    Parameters
+    ----------
+    schedule
+        Non-empty, ascending-by-``effective_from`` tuple of entries.
+    period_start, period_end
+        Inclusive backtest window bounds. ``period_end >= period_start``.
+    calendar
+        Optional sorted sequence of trading days. When omitted, we
+        fall back to calendar-day weighting and the result is a
+        slightly different scalar on windows containing long
+        holidays — usable but documented as an approximation.
+    """
+    if not schedule:
+        raise CanonicalBacktestContractError(
+            "compute_effective_stamp_tax_bps: schedule is empty; "
+            "expected at least one StampTaxScheduleEntry."
+        )
+    if period_end < period_start:
+        raise CanonicalBacktestContractError(
+            "compute_effective_stamp_tax_bps: period_end "
+            f"({period_end.isoformat()}) < period_start "
+            f"({period_start.isoformat()})."
+        )
+    if period_start < schedule[0].effective_from:
+        raise CanonicalBacktestContractError(
+            "compute_effective_stamp_tax_bps: period_start "
+            f"({period_start.isoformat()}) precedes the schedule's "
+            f"first entry ({schedule[0].effective_from.isoformat()}). "
+            "We do NOT extrapolate the earliest rate backwards because "
+            "for CN stamp tax that would silently misrepresent the "
+            "pre-2008-09-19 both-side era. Extend ``schedule`` "
+            "explicitly if you need a pre-coverage period."
+        )
+
+    # Walk the schedule and accumulate per-segment (start, end, bps).
+    # Each segment is the half-open interval where one entry's bps applies,
+    # clamped to the period bounds.
+    segments: list[tuple[date, date, float]] = []
+    for i, entry in enumerate(schedule):
+        seg_start = max(entry.effective_from, period_start)
+        seg_end_excl = (
+            schedule[i + 1].effective_from
+            if i + 1 < len(schedule)
+            else None
+        )
+        # period_end is inclusive — convert to half-open by +1 day below.
+        # Use period_end + 1 day as the exclusive upper bound for clamping.
+        period_end_excl = date.fromordinal(period_end.toordinal() + 1)
+        if seg_end_excl is None or seg_end_excl > period_end_excl:
+            seg_end_excl = period_end_excl
+        if seg_end_excl <= seg_start:
+            continue
+        segments.append((seg_start, seg_end_excl, entry.bps))
+
+    if not segments:
+        # Defensive: should be unreachable given the pre-checks above.
+        raise CanonicalBacktestContractError(  # pragma: no cover
+            "compute_effective_stamp_tax_bps: no schedule segment "
+            "covers the requested period — internal invariant broken."
+        )
+
+    # Weight each segment. Trading-day weighting when a calendar is
+    # supplied, calendar-day weighting otherwise.
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for seg_start, seg_end_excl, bps in segments:
+        if calendar is None:
+            weight = (seg_end_excl - seg_start).days
+        else:
+            weight = sum(1 for d in calendar if seg_start <= d < seg_end_excl)
+        if weight <= 0:
+            continue
+        weighted_sum += weight * bps
+        total_weight += weight
+
+    if total_weight <= 0:
+        # E.g. a calendar with no trading days in the window — fall
+        # back to the bps of the first segment so we never produce a
+        # divide-by-zero. This is best-effort: a backtest with zero
+        # trading days has bigger problems than which stamp tax it
+        # uses.
+        return EffectiveStampTaxBps(
+            bps=segments[0][2], transitions=tuple(),
+        )
+
+    avg_bps = weighted_sum / total_weight
+
+    # Collect transitions STRICTLY INSIDE the period (excluding the
+    # first segment's effective_from, which equals or precedes
+    # period_start by construction).
+    transitions = tuple(
+        entry
+        for entry in schedule
+        if period_start < entry.effective_from <= period_end
+    )
+
+    return EffectiveStampTaxBps(bps=avg_bps, transitions=transitions)
+
+
+@dataclass(frozen=True)
 class CanonicalExchangeCostModel:
     """Frozen, bound-checked cost model for the canonical exchange.
 
@@ -152,9 +480,14 @@ class CanonicalExchangeCostModel:
     commission_rate:
         Per-side commission as a fraction of trade notional (e.g. 0.0003 = 3 bps).
         Must be in ``[0, COMMISSION_RATE_MAX]``.
-    stamp_tax_bps:
-        CN-market stamp tax, sell-side only, in basis points.
-        Must be in ``[0, STAMP_TAX_BPS_MAX]``.
+    stamp_tax_schedule:
+        CN-market stamp tax represented as a time-ordered schedule.
+        Must be a non-empty tuple of :class:`StampTaxScheduleEntry`
+        sorted strictly ascending by ``effective_from``. Each entry's
+        ``bps`` must be in ``[0, STAMP_TAX_BPS_MAX]``. The runtime
+        collapses this into a single per-run scalar via
+        :func:`compute_effective_stamp_tax_bps`. See audit P0-4 +
+        ``add-stamp-tax-schedule`` change proposal.
     slippage_bps:
         Symmetric slippage assumption, applied to both buy and sell fills.
         Must be in ``[0, SLIPPAGE_BPS_MAX]``.
@@ -163,13 +496,12 @@ class CanonicalExchangeCostModel:
     """
 
     commission_rate: float
-    stamp_tax_bps: float
+    stamp_tax_schedule: tuple[StampTaxScheduleEntry, ...]
     slippage_bps: float
     min_cost: float
 
     def __post_init__(self) -> None:
         self._check_numeric("commission_rate", self.commission_rate, 0.0, COMMISSION_RATE_MAX)
-        self._check_numeric("stamp_tax_bps", self.stamp_tax_bps, 0.0, STAMP_TAX_BPS_MAX)
         self._check_numeric("slippage_bps", self.slippage_bps, 0.0, SLIPPAGE_BPS_MAX)
         if not isinstance(self.min_cost, (int, float)) or isinstance(self.min_cost, bool):
             raise CanonicalBacktestContractError(
@@ -179,6 +511,7 @@ class CanonicalExchangeCostModel:
             raise CanonicalBacktestContractError(
                 f"CanonicalExchangeCostModel.min_cost must be >= 0, got {self.min_cost}."
             )
+        self._validate_stamp_tax_schedule(self.stamp_tax_schedule)
 
     @staticmethod
     def _check_numeric(field_name: str, value: Any, lo: float, hi: float) -> None:
@@ -190,6 +523,46 @@ class CanonicalExchangeCostModel:
             raise CanonicalBacktestContractError(
                 f"CanonicalExchangeCostModel.{field_name} must be in [{lo}, {hi}], got {value}."
             )
+
+    @staticmethod
+    def _validate_stamp_tax_schedule(
+        schedule: tuple[StampTaxScheduleEntry, ...],
+    ) -> None:
+        """Reject empty / non-monotone / duplicate-date schedules.
+
+        ``StampTaxScheduleEntry.__post_init__`` already enforces
+        per-entry bounds (type, bps range); this method enforces
+        the tuple-level invariants.
+        """
+        if not isinstance(schedule, tuple):
+            raise CanonicalBacktestContractError(
+                "CanonicalExchangeCostModel.stamp_tax_schedule must "
+                f"be a tuple, got {type(schedule).__name__}."
+            )
+        if not schedule:
+            raise CanonicalBacktestContractError(
+                "CanonicalExchangeCostModel.stamp_tax_schedule must "
+                "be non-empty. Use CN_STAMP_TAX_SCHEDULE_DEFAULT for "
+                "the canonical CN schedule, or supply at least one "
+                "StampTaxScheduleEntry."
+            )
+        for entry in schedule:
+            if not isinstance(entry, StampTaxScheduleEntry):
+                raise CanonicalBacktestContractError(
+                    "CanonicalExchangeCostModel.stamp_tax_schedule "
+                    "entries must be StampTaxScheduleEntry instances, "
+                    f"got {type(entry).__name__}."
+                )
+        # Strict ascending dates, no duplicates.
+        for prev, curr in zip(schedule, schedule[1:], strict=False):
+            if curr.effective_from <= prev.effective_from:
+                raise CanonicalBacktestContractError(
+                    "CanonicalExchangeCostModel.stamp_tax_schedule "
+                    "entries must be strictly ascending by "
+                    f"effective_from; got "
+                    f"{prev.effective_from.isoformat()} followed by "
+                    f"{curr.effective_from.isoformat()}."
+                )
 
 
 @dataclass(frozen=True)

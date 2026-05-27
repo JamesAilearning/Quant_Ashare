@@ -16,6 +16,7 @@ from src.core.canonical_backtest_contract import (
     CANONICAL_INPUT_REQUIRED_FIELDS,
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     CANONICAL_OUTPUT_FIELDS,
+    CN_STAMP_TAX_SCHEDULE_DEFAULT,
     COMMISSION_RATE_MAX,
     EXECUTION_PRICE_CLOSE,
     CanonicalAccountConfig,
@@ -30,7 +31,7 @@ from src.core.canonical_backtest_contract import (
 def _valid_cost_model(**overrides) -> CanonicalExchangeCostModel:
     payload = {
         "commission_rate": 0.0003,
-        "stamp_tax_bps": 10.0,
+        "stamp_tax_schedule": CN_STAMP_TAX_SCHEDULE_DEFAULT,
         "slippage_bps": 5.0,
         "min_cost": 5.0,
     }
@@ -254,7 +255,7 @@ class BenchmarkCodeContractTests(unittest.TestCase):
                     execution_price_kind="close",
                     cost_model=CanonicalExchangeCostModel(
                         commission_rate=0.0005,
-                        stamp_tax_bps=10.0,
+                        stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
                         slippage_bps=5.0,
                         min_cost=5.0,
                     ),
