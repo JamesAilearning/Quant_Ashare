@@ -288,34 +288,46 @@ class MinimalRiskConstraints:
         date_str: str,
         weights: dict[str, float],
     ) -> tuple[list[RiskConstraintViolation], dict[str, float], bool]:
-        """Apply all four constraints to one day. Mutates ``weights``
-        as it clips. Returns ``(violations, clipped_weights, moved_flag)``.
+        """Apply all four constraints to one day. Returns
+        ``(violations, clipped_weights, moved_flag)``.
 
-        Order of application matters:
+        Two-phase: detect every violation against the ORIGINAL
+        weights first (no mutation), THEN apply the clipping
+        ordered pipeline that produces the WARN_AND_CLIP-mode
+        ``clipped_positions`` map. Without this split, RAISE mode
+        would only report the FIRST violation per-instrument and
+        miss downstream ones — e.g. ``{'SH600000': 0.80}`` violates
+        BOTH ``max_per_name`` (0.80 > 0.05) AND ``max_per_board``
+        (0.80 on SH_Main > 0.40), but if the per-name check
+        clipped 0.80 → 0.05 before the per-board check ran, the
+        latter would see 0.05 and report nothing. Codex P2
+        follow-up on PR #179.
+
+        Clipping order (applied to a separate ``work`` dict):
 
         1. ``max_per_name`` — per-instrument cap.
         2. ``max_per_board`` — aggregate cap per board bucket.
         3. ``cash_buffer_min`` — ensure cash share >= floor.
         4. ``max_leverage`` — ensure sum(|weight|) <= cap.
 
-        We apply in this order because:
-
-        * Per-name clipping always frees weight to cash (never to
-          other instruments), so it can only IMPROVE the
-          per-board / cash / leverage situation.
-        * Per-board clipping similarly only frees weight to cash.
-        * The cash-buffer floor is the most aggressive
-          "scale all instrument weights" step; running it later
-          means we don't undo earlier per-name / per-board
-          decisions.
-        * Leverage cap is a last-resort safety net.
+        The ordering matters because per-name clipping frees
+        weight to cash (only IMPROVES per-board / cash / leverage),
+        so running it first keeps the cascade monotonic. The
+        cash-buffer scale-all step runs late so it does not undo
+        earlier per-name / per-board decisions.
         """
         violations: list[RiskConstraintViolation] = []
-        original_total = sum(weights.values())
-        moved = False
+        original = dict(weights)
+        original_total = sum(original.values())
 
-        # 1. max_per_name — clip each over-cap name to the cap.
-        for inst, w in list(weights.items()):
+        # ------------------------------------------------------------------
+        # Phase 1: detect every violation against the ORIGINAL snapshot.
+        # No mutation — each check sees what the operator actually
+        # passed in, so RAISE mode lists every original violation.
+        # ------------------------------------------------------------------
+
+        # 1. max_per_name (original).
+        for inst, w in original.items():
             if w > self.max_per_name:
                 violations.append(RiskConstraintViolation(
                     date=date_str,
@@ -324,18 +336,13 @@ class MinimalRiskConstraints:
                     actual=float(w),
                     limit=float(self.max_per_name),
                 ))
-                weights[inst] = float(self.max_per_name)
-                moved = True
 
-        # 2. max_per_board — aggregate by board, scale down over-cap
-        #    boards proportionally.
+        # 2. max_per_board (original).
         by_board: dict[str, list[str]] = {}
-        for inst in weights:
-            board = classify_instrument(inst)
-            by_board.setdefault(board, []).append(inst)
-
+        for inst in original:
+            by_board.setdefault(classify_instrument(inst), []).append(inst)
         for board_id, board_insts in by_board.items():
-            board_weight = sum(weights[i] for i in board_insts)
+            board_weight = sum(original[i] for i in board_insts)
             if board_weight > self.max_per_board:
                 violations.append(RiskConstraintViolation(
                     date=date_str,
@@ -345,53 +352,81 @@ class MinimalRiskConstraints:
                     limit=float(self.max_per_board),
                     details={"contributing_instruments": tuple(board_insts)},
                 ))
-                # Scale each instrument in the board down by the
-                # same ratio so within-board weighting is preserved
-                # while the aggregate respects the cap.
-                scale = float(self.max_per_board) / float(board_weight)
-                for inst in board_insts:
-                    weights[inst] = weights[inst] * scale
-                moved = True
 
-        # 3. cash_buffer_min — ensure cash share >= floor by
-        #    proportionally scaling instrument weights down.
-        cash_share = 1.0 - sum(weights.values())
-        if cash_share < self.cash_buffer_min:
+        # 3. cash_buffer_min (original).
+        original_cash = 1.0 - original_total
+        if original_cash < self.cash_buffer_min:
             violations.append(RiskConstraintViolation(
                 date=date_str,
                 constraint_name="cash_buffer_min",
                 instrument_or_bucket=_CASH_BUCKET,
-                actual=float(cash_share),
+                actual=float(original_cash),
                 limit=float(self.cash_buffer_min),
             ))
+
+        # 4. max_leverage (original).
+        original_abs = sum(abs(w) for w in original.values())
+        if original_abs > self.max_leverage:
+            violations.append(RiskConstraintViolation(
+                date=date_str,
+                constraint_name="max_leverage",
+                instrument_or_bucket=_PORTFOLIO_BUCKET,
+                actual=float(original_abs),
+                limit=float(self.max_leverage),
+                details={"original_instrument_total": float(original_total)},
+            ))
+
+        # ------------------------------------------------------------------
+        # Phase 2: apply the clipping pipeline to produce the
+        # WARN_AND_CLIP-mode clipped map. RAISE mode never returns
+        # this (it raises before reaching the result), but we still
+        # compute it so the result type is consistent.
+        # ------------------------------------------------------------------
+        work = dict(original)
+        moved = False
+
+        # 1. max_per_name — clip each over-cap name to the cap.
+        for inst, w in list(work.items()):
+            if w > self.max_per_name:
+                work[inst] = float(self.max_per_name)
+                moved = True
+
+        # 2. max_per_board — aggregate by board, scale down over-cap
+        #    boards proportionally. The board id is recorded in
+        #    phase 1's violation list; here we only need the
+        #    grouping to do the scaling.
+        for _board_id, board_insts in by_board.items():
+            board_weight = sum(work[i] for i in board_insts)
+            if board_weight > self.max_per_board:
+                scale = float(self.max_per_board) / float(board_weight)
+                for inst in board_insts:
+                    work[inst] = work[inst] * scale
+                moved = True
+
+        # 3. cash_buffer_min — ensure cash share >= floor by
+        #    proportionally scaling instrument weights down.
+        cash_share = 1.0 - sum(work.values())
+        if cash_share < self.cash_buffer_min:
             target_instrument_total = 1.0 - float(self.cash_buffer_min)
-            current_total = sum(weights.values())
+            current_total = sum(work.values())
             if current_total > 0:
                 scale = target_instrument_total / current_total
-                for inst in list(weights.keys()):
-                    weights[inst] = weights[inst] * scale
+                for inst in list(work.keys()):
+                    work[inst] = work[inst] * scale
                 moved = True
 
         # 4. max_leverage — sum(|weight|) cap. For long-only this
         #    duplicates cash_buffer_min in spirit; we still check
         #    because (a) future short-supporting strategies, (b)
         #    callers may set max_leverage < (1 - cash_buffer_min).
-        total_abs = sum(abs(w) for w in weights.values())
+        total_abs = sum(abs(w) for w in work.values())
         if total_abs > self.max_leverage:
-            violations.append(RiskConstraintViolation(
-                date=date_str,
-                constraint_name="max_leverage",
-                instrument_or_bucket=_PORTFOLIO_BUCKET,
-                actual=float(total_abs),
-                limit=float(self.max_leverage),
-                details={"original_instrument_total": float(original_total)},
-            ))
             scale = float(self.max_leverage) / float(total_abs)
-            for inst in list(weights.keys()):
-                weights[inst] = weights[inst] * scale
+            for inst in list(work.keys()):
+                work[inst] = work[inst] * scale
             moved = True
 
-        return violations, weights, moved
+        return violations, work, moved
 
     def _raise_consolidated(
         self,

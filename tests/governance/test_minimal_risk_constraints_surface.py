@@ -78,6 +78,26 @@ class MinimalRiskConstraintsSurfaceTests(unittest.TestCase):
         names = {f.name for f in fields(CanonicalBacktestOutput)}
         self.assertIn("positions_pre_clip", names)
 
+    def test_positions_pre_clip_is_in_canonical_output_schema(self) -> None:
+        """Codex P2 follow-up on PR #179.
+
+        The schema-level constant ``CANONICAL_OUTPUT_FIELDS`` and
+        the contract's ``output_schema()`` accessor MUST list
+        ``positions_pre_clip``. Without this, schema-driven
+        consumers (UI, JSON validators) can't discover the new
+        WARN_AND_CLIP sibling field as part of the official output
+        contract — the dataclass and the schema would disagree.
+        """
+        from src.core.canonical_backtest_contract import (
+            CANONICAL_OUTPUT_FIELDS,
+            CanonicalBacktestContract,
+        )
+        self.assertIn("positions_pre_clip", CANONICAL_OUTPUT_FIELDS)
+        self.assertIn(
+            "positions_pre_clip",
+            CanonicalBacktestContract.output_schema(),
+        )
+
 
 class LegacyFailClosedStubGuardTests(unittest.TestCase):
     """The pre-P0-1 ``RiskConstraintEngine`` stub remains in place

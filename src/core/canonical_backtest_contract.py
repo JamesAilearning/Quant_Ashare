@@ -120,6 +120,13 @@ CANONICAL_OUTPUT_FIELDS = (
     "report",
     "provenance",
     "positions",
+    # Audit P0-1 / add-minimal-risk-constraints: schema-driven
+    # consumers (UI, JSON validators) need to discover the new
+    # WARN_AND_CLIP sibling field as part of the official output
+    # contract. Populated only when ``risk_constraints`` was in
+    # WARN_AND_CLIP mode AND at least one clip happened — see
+    # ``CanonicalBacktestOutput.positions_pre_clip`` docstring.
+    "positions_pre_clip",
 )
 
 

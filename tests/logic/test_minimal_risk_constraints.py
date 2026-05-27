@@ -260,6 +260,35 @@ class MaxLeverageTests(unittest.TestCase):
 
 
 class MultipleConstraintsTests(unittest.TestCase):
+
+    def test_single_oversize_name_reports_both_per_name_and_per_board(self) -> None:
+        """Codex P2 follow-up on PR #179.
+
+        A single oversize position on one board should produce BOTH
+        a ``max_per_name`` violation AND a ``max_per_board``
+        violation. With defaults (per-name=0.05, per-board=0.40),
+        ``{'SH600000': 0.80}`` violates both. The previous one-phase
+        ``apply()`` clipped per-name (0.80 → 0.05) before the
+        per-board check ran, so the per-board check saw 0.05 (under
+        0.40) and reported nothing — silently violating the RAISE-mode
+        contract to collect every violation across the snapshot.
+        """
+        c = MinimalRiskConstraints(mode=RiskConstraintMode.WARN_AND_CLIP)
+        result = c.apply({"2024-01-02": _day({"SH600000": 0.80})})
+        names = {v.constraint_name for v in result.violations}
+        self.assertIn("max_per_name", names)
+        self.assertIn("max_per_board", names)
+        # Both violations carry the ORIGINAL value, not the
+        # post-clip value.
+        per_name = next(
+            v for v in result.violations if v.constraint_name == "max_per_name"
+        )
+        per_board = next(
+            v for v in result.violations if v.constraint_name == "max_per_board"
+        )
+        self.assertAlmostEqual(per_name.actual, 0.80, places=6)
+        self.assertAlmostEqual(per_board.actual, 0.80, places=6)
+
     def test_mixed_violations_all_listed_in_raise_message(self) -> None:
         """Mixed violations on the same day must ALL surface in the
         consolidated RAISE message — engine MUST NOT short-circuit
