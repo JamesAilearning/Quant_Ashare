@@ -698,12 +698,18 @@ class IngestScriptEmitTests(unittest.TestCase):
                 compute_bundle_content_hash(output_dir),
             )
 
-    def test_main_skips_emit_when_calendar_missing(self):
-        """Script must NOT crash when ``compute_bundle_content_hash``
-        cannot find the calendar (e.g. the publisher reported success
-        but the calendar file is somehow absent). Instead it warns and
-        falls back to the legacy no-manifest path — same handling as
-        a malformed validation_profile."""
+    def test_main_aborts_when_calendar_missing(self):
+        """When the publisher reports success AND coverage_end_date is
+        set BUT ``calendars/day.txt`` is missing, the ingest MUST hard-
+        fail rather than silently downgrade to the legacy no-manifest
+        path.
+
+        Codex P2 on PR #175. Rationale: the calendar is a required
+        qlib provider artifact, so a "successful publish without
+        calendar" is a corrupt bundle. Downgrading would leave the
+        operator with an unusable provider that breaks much later
+        inside qlib with an opaque error.
+        """
         import tempfile
 
         import scripts.ingest_tushare_qlib_provider as ingest_mod
@@ -712,7 +718,8 @@ class IngestScriptEmitTests(unittest.TestCase):
             output_dir = Path(td) / "qlib_bundle"
             output_dir.mkdir()
             # NO calendar written — compute_bundle_content_hash will
-            # raise BundleManifestError, which the script catches.
+            # raise BundleManifestError; the script must surface that
+            # as a hard exit.
             fake_result = self._make_fake_publish_result(output_dir)
 
             with patch.object(
@@ -722,15 +729,69 @@ class IngestScriptEmitTests(unittest.TestCase):
                 ingest_mod.TushareQlibProviderPublisher, "publish",
                 return_value=fake_result,
             ), patch.object(sys, "argv", ["ingest", "ignored.yaml"]):
-                # Must NOT raise.
-                ingest_mod.main()
+                with self.assertRaises(SystemExit) as cm:
+                    ingest_mod.main()
+                self.assertEqual(cm.exception.code, 1)
 
             manifest_path = output_dir / MANIFEST_FILENAME
             self.assertFalse(
                 manifest_path.exists(),
-                "manifest should be skipped when calendar is missing — "
-                "the bundle is unusable for the integrity check, so the "
-                "ingest falls back to the legacy no-manifest path.",
+                "no manifest should be written when calendar is missing — "
+                "the corrupt-bundle abort fires before save_manifest.",
+            )
+
+    def test_main_warns_and_skips_emit_when_save_manifest_rejects(self):
+        """The ``save_manifest`` validation path (e.g. a non-int
+        ``instrument_count`` from a malformed validation_profile) is
+        still a soft failure: the bundle bytes on disk are fine, only
+        the metadata sidecar can't be written. Falling back to the
+        legacy no-manifest path is honest here — operators get a
+        WARNING and walk-forward picks it up at next run.
+
+        Companion to ``test_main_aborts_when_calendar_missing`` —
+        same code branch, opposite outcome, depending on which kind
+        of BundleManifestError was raised.
+        """
+        import logging
+        import tempfile
+
+        import scripts.ingest_tushare_qlib_provider as ingest_mod
+
+        with tempfile.TemporaryDirectory() as td:
+            output_dir = Path(td) / "qlib_bundle"
+            output_dir.mkdir()
+            _write_calendar(output_dir)
+            # Coerce a save_manifest failure by stuffing a non-int
+            # ``instrument_count`` into the publish result — same
+            # contract violation save_manifest already rejects with
+            # BundleManifestError.
+            fake_result = self._make_fake_publish_result(
+                output_dir, instrument_count="not-an-int",  # type: ignore[arg-type]
+            )
+
+            with patch.object(
+                ingest_mod, "_load_config",
+                return_value=SimpleNamespace(),
+            ), patch.object(
+                ingest_mod.TushareQlibProviderPublisher, "publish",
+                return_value=fake_result,
+            ), patch.object(sys, "argv", ["ingest", "ignored.yaml"]):
+                with self.assertLogs(
+                    "scripts.ingest_tushare_qlib_provider",
+                    level="WARNING",
+                ) as captured:
+                    # MUST NOT raise — soft fallback.
+                    ingest_mod.main()
+            warns = [
+                r for r in captured.records if r.levelno == logging.WARNING
+            ]
+            self.assertTrue(
+                any("save_manifest" in w.getMessage() for w in warns),
+                f"expected WARNING about save_manifest fallback; got {warns}",
+            )
+            self.assertFalse(
+                (output_dir / MANIFEST_FILENAME).exists(),
+                "manifest must NOT be written when save_manifest rejected.",
             )
 
     def test_main_skips_emit_when_coverage_end_date_missing(self):
