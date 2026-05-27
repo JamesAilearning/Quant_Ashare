@@ -72,6 +72,14 @@ class HyperparamOptConfig:
     # Output
     output_dir: str = "output/hyperparam"
 
+    # Reproducibility. Threads through to optuna's TPESampler so the
+    # trial sequence is deterministic across runs; previous behaviour
+    # (sampler unseeded) made best_params unreproducible. The seed is
+    # NOT forwarded to ModelTrainer's per-trial config — each trial
+    # builds its own ``ModelTrainConfig`` via ``build_model_train_config``
+    # which carries its own ``seed`` field (defaulted by the projector).
+    seed: int = 42
+
     def __post_init__(self) -> None:
         if self.optimization_metric not in _VALID_OPTIMIZATION_METRICS:
             raise HyperparamOptimizerError(
@@ -165,10 +173,16 @@ class HyperparamOptimizer:
         # exposing intermediate validation IC; that is a separate piece
         # of work. Document the absence here so a future reader does
         # not re-add a pruner without also adding the report-loop.
-        # Sampler stays at the optuna default (``TPESampler``).
+        #
+        # Sampler: TPESampler with an explicit seed so the trial sequence
+        # is reproducible. The previous unseeded default made two runs
+        # of the same config explore different regions of the search
+        # space, so ``best_params`` was non-deterministic across runs.
+        sampler = optuna.samplers.TPESampler(seed=config.seed)
         study = optuna.create_study(
             direction="maximize",
             study_name="lgb_hyperparam_search",
+            sampler=sampler,
         )
 
         _logger.info("Starting %d trials...", config.n_trials)

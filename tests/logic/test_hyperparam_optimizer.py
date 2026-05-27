@@ -199,6 +199,100 @@ class HyperparamOptimizerValidationTests(unittest.TestCase):
                 )
 
 
+class HyperparamOptimizerSeedTests(unittest.TestCase):
+    """Reproducibility guards for the Optuna sampler seed.
+
+    Previously ``HyperparamOptConfig`` had no seed field and
+    ``optuna.create_study`` was called without a ``sampler=`` kwarg,
+    so each run started a fresh unseeded TPESampler and explored a
+    different region of the search space. Two runs of the *same*
+    config produced different ``best_params`` — which broke any
+    "this hyperparam set was tuned by Optuna" claim downstream.
+    """
+
+    def test_config_exposes_seed_with_sensible_default(self) -> None:
+        cfg = HyperparamOptConfig()
+        self.assertEqual(cfg.seed, 42)
+
+    def test_config_seed_is_overridable(self) -> None:
+        cfg = HyperparamOptConfig(seed=12345)
+        self.assertEqual(cfg.seed, 12345)
+
+    def test_optimize_seeds_tpe_sampler_from_config(self) -> None:
+        """``optimize`` MUST construct a ``TPESampler`` seeded with
+        ``config.seed`` and pass it to ``optuna.create_study``. We patch
+        both classes with stubs that record their kwargs; the test then
+        asserts the seed propagates end-to-end.
+        """
+        try:
+            import optuna  # noqa: F401
+        except ImportError:
+            self.skipTest("optuna not installed")
+
+        from unittest.mock import MagicMock, patch
+
+        sampler_kwargs: dict = {}
+        create_study_kwargs: dict = {}
+
+        class _StubSampler:
+            def __init__(self, **kwargs):
+                sampler_kwargs.update(kwargs)
+
+        class _StubStudy:
+            def __init__(self):
+                self.trials: list = []
+
+            def optimize(self, *_args, **_kwargs):
+                # No-op: we just want to exercise create_study.
+                pass
+
+            @property
+            def best_trial(self):  # pragma: no cover - not reached
+                raise AssertionError("optimize() short-circuited; "
+                                     "best_trial should not be queried")
+
+        def _stub_create_study(**kwargs):
+            create_study_kwargs.update(kwargs)
+            return _StubStudy()
+
+        # Patch is_canonical_qlib_initialized so optimize() does not bail
+        # on the "qlib not initialised" guard, and patch _build_dataset
+        # so we never touch qlib.
+        with patch(
+            "src.core.hyperparam_optimizer.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            HyperparamOptimizer,
+            "_build_dataset",
+            return_value=MagicMock(name="dataset"),
+        ), patch(
+            "optuna.samplers.TPESampler",
+            _StubSampler,
+        ), patch(
+            "optuna.create_study",
+            _stub_create_study,
+        ):
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                # n_trials=0 is rejected by __post_init__; use 1 and
+                # rely on study.optimize being a no-op above.
+                cfg = HyperparamOptConfig(
+                    seed=987, n_trials=1, output_dir=tmp,
+                )
+                # The stub study returns empty trials; the "no completed
+                # trial" check at the end of optimize() will raise. That
+                # is fine for this test — we only need to reach the
+                # create_study call.
+                with self.assertRaises(HyperparamOptimizerError):
+                    HyperparamOptimizer.optimize(cfg)
+
+        self.assertEqual(sampler_kwargs.get("seed"), 987,
+                         f"TPESampler must be seeded from config.seed; "
+                         f"sampler_kwargs={sampler_kwargs!r}")
+        self.assertIn("sampler", create_study_kwargs,
+                      "create_study must receive a sampler= kwarg")
+
+
 class SuggestParamsClampingTests(unittest.TestCase):
     """P2e regression guards on :meth:`HyperparamOptimizer._suggest_params`.
 

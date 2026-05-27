@@ -547,6 +547,19 @@ class ModelTrainer:
                 "max_depth": config.max_depth,
                 "num_leaves": config.num_leaves,
                 "seed": config.seed,
+                # LightGBM's per-RNG sub-seeds default to fixed constants
+                # (1, 2, 3) if not set — they are NOT derived from
+                # ``seed``. That means changing ``config.seed`` alone
+                # only randomises booster initialisation; the data
+                # sampling, feature sampling, and bagging RNGs stay
+                # pinned to those constants across all seeds, which
+                # silently coupled "two runs with different seeds" to
+                # produce the same data/feature/bagging draws. Tie
+                # them all to ``config.seed`` so changing the seed
+                # actually randomises every stochastic step of training.
+                "data_random_seed": config.seed,
+                "feature_fraction_seed": config.seed,
+                "bagging_seed": config.seed,
                 # LGB regularisation / sampling. LGBModel forwards
                 # **kwargs into lightgbm.train, so these reach the
                 # underlying booster directly.

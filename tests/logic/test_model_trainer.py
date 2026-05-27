@@ -801,6 +801,79 @@ class LGBRegularisationFieldsTests(unittest.TestCase):
 
         self.assertEqual(captured["device_type"], "gpu")
 
+    def test_create_model_forwards_lgb_sub_seeds(self) -> None:
+        """LightGBM's per-RNG sub-seeds (``data_random_seed``,
+        ``feature_fraction_seed``, ``bagging_seed``) default to fixed
+        constants (1, 2, 3) and are NOT derived from ``seed``. Without
+        explicitly setting them, two runs with different ``config.seed``
+        values would still draw identical data / feature / bagging
+        subsets, partly defeating the point of changing the seed.
+
+        Guard: all three sub-seeds MUST be forwarded from
+        ``config.seed`` so the full stochastic state of LGBModel is
+        driven by a single config knob.
+        """
+        captured: dict = {}
+
+        class _StubLGB:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.dict(
+            "sys.modules",
+            {"qlib.contrib.model.gbdt": MagicMock(LGBModel=_StubLGB)},
+        ):
+            ModelTrainer._create_model(ModelTrainConfig(
+                model_type="LGBModel",
+                seed=7777,
+            ))
+
+        # All three sub-seeds must equal config.seed.
+        self.assertEqual(captured.get("data_random_seed"), 7777)
+        self.assertEqual(captured.get("feature_fraction_seed"), 7777)
+        self.assertEqual(captured.get("bagging_seed"), 7777)
+        # And the primary ``seed`` is preserved (regression guard against
+        # a future refactor accidentally removing it).
+        self.assertEqual(captured.get("seed"), 7777)
+
+    def test_create_model_sub_seeds_track_changing_seed(self) -> None:
+        """A different ``config.seed`` value MUST land in every
+        sub-seed slot — protects against a future regression where one
+        of the three is hard-coded to a constant instead of
+        ``config.seed``.
+        """
+        first: dict = {}
+        second: dict = {}
+
+        class _StubLGB:
+            captured: dict | None = None
+
+            def __init__(self, **kwargs):
+                if _StubLGB.captured is not None:
+                    _StubLGB.captured.update(kwargs)
+
+        _StubLGB.captured = first
+        with patch.dict(
+            "sys.modules",
+            {"qlib.contrib.model.gbdt": MagicMock(LGBModel=_StubLGB)},
+        ):
+            ModelTrainer._create_model(ModelTrainConfig(
+                model_type="LGBModel", seed=111,
+            ))
+        _StubLGB.captured = second
+        with patch.dict(
+            "sys.modules",
+            {"qlib.contrib.model.gbdt": MagicMock(LGBModel=_StubLGB)},
+        ):
+            ModelTrainer._create_model(ModelTrainConfig(
+                model_type="LGBModel", seed=222,
+            ))
+
+        for key in ("seed", "data_random_seed",
+                    "feature_fraction_seed", "bagging_seed"):
+            self.assertEqual(first[key], 111, f"{key} on first run")
+            self.assertEqual(second[key], 222, f"{key} on second run")
+
     def _validate_with_qlib_init(self, cfg: ModelTrainConfig) -> None:
         with patch("src.core.model_trainer.is_canonical_qlib_initialized", return_value=True):
             ModelTrainer._validate(cfg, model_artifact_path="/tmp/m.pkl")
