@@ -95,7 +95,7 @@ class MinedFactorBundle:
         # mypy sees the isinstance check as unreachable because of the
         # declared type, but the runtime coercion is still needed.
         if not isinstance(self.pool_dir, Path):
-            object.__setattr__(self, "pool_dir", Path(self.pool_dir))  # type: ignore[unreachable]
+            object.__setattr__(self, "pool_dir", Path(self.pool_dir))  # type: ignore[unreachable,unused-ignore]
         d = self.pool_dir
         if not d.exists():
             raise MinedFactorHandlerError(
