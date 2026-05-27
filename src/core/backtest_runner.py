@@ -36,6 +36,10 @@ from src.core.qlib_runtime import (
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
 )
+from src.core.risk_constraints import (
+    MinimalRiskConstraints,
+    RiskConstraintError,
+)
 
 _logger = get_logger(__name__)
 
@@ -66,6 +70,7 @@ class BacktestRunner:
         n_drop: int = 5,
         compute_baselines: bool = True,
         pit_provider: Any | None = None,
+        risk_constraints: MinimalRiskConstraints | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -347,6 +352,55 @@ class BacktestRunner:
 
         positions_map = _positions_to_weight_map(positions_normal)
 
+        # Risk-constraints layer (audit P0-1 /
+        # openspec/changes/add-minimal-risk-constraints). Post-trade:
+        # ``return_series`` and ``risk_analysis`` above were computed
+        # from qlib's unclipped execution. To keep the canonical
+        # output internally consistent, ``positions`` ALSO stays
+        # tied to qlib's unclipped execution — downstream consumers
+        # (PerformanceAttribution, pipeline_result_artifacts) use
+        # ``positions`` as the authoritative portfolio that
+        # produced the returns, so a clipped substitution would
+        # give them an attribution / holdings record that does NOT
+        # match the official numbers. Instead, the clipped map
+        # lives on the sibling field ``positions_clipped`` —
+        # populated only in WARN_AND_CLIP mode AND only when at
+        # least one clip happened. Codex P1 follow-up on PR #179.
+        positions_clipped: Mapping[str, Mapping[str, float]] = {}
+        if risk_constraints is None:
+            _logger.warning(
+                "BacktestRunner.run: ``risk_constraints`` was not "
+                "supplied — the backtest ran with NO position-level "
+                "risk constraints active. Single-name / single-board "
+                "concentration, cash-buffer-min, and leverage caps "
+                "are all unbounded. Pass a "
+                "``MinimalRiskConstraints(...)`` instance to opt in. "
+                "Audit P0-1."
+            )
+        else:
+            try:
+                apply_result = risk_constraints.apply(positions_map)
+            except RiskConstraintError as exc:
+                # RAISE mode — surface the consolidated violation
+                # report as a BacktestRunnerError so callers
+                # catching either error class get a clean signal.
+                # ``__cause__`` preserves the RiskConstraintError
+                # for callers that want the structured violations.
+                raise BacktestRunnerError(
+                    f"BacktestRunner.run: risk constraints rejected the "
+                    f"backtest positions map. {exc}"
+                ) from exc
+            # WARN_AND_CLIP mode (or RAISE mode with zero
+            # violations). When clipping moved weight, expose the
+            # constraint-respecting allocation on the sibling
+            # field — ``positions`` stays unchanged so it remains
+            # internally consistent with the official return
+            # series and risk_analysis above.
+            if apply_result.was_clipped:
+                positions_clipped = {
+                    d: dict(w) for d, w in apply_result.clipped_positions.items()
+                }
+
         report = {
             "total_days": len(report_normal),
             "start_date": str(report_normal.index.min().date()),
@@ -364,6 +418,7 @@ class BacktestRunner:
             report=report,
             provenance=provenance,
             positions=positions_map,
+            positions_clipped=positions_clipped,
         )
 
     @staticmethod
