@@ -644,19 +644,25 @@ def validate_test_end_against_bundle(
 
     Raises
     ------
-    BundleStaleError
-        When ``test_end > manifest.tail_date`` and ``soft=False``.
+    BundleManifestError
+        When ``test_end`` is a malformed ISO date string, or the
+        manifest exists but is malformed (propagated from
+        :func:`load_manifest`). Checked FIRST so a caller-config
+        bug surfaces before any bundle-state inspection — the
+        operator's wrong YAML is more actionable than a downstream
+        environmental error.
     BundleContentHashMismatchError
         When the manifest declares a ``content_hash`` and the bundle's
         actual calendar bytes hash to a different value, and ``soft=False``.
-        Checked BEFORE the date comparison: a hash mismatch means the
-        bundle was tampered / partially regenerated, which is a higher-
-        priority signal than "date window is past coverage". Surfacing
-        the mismatch first prevents an operator from chasing the wrong
-        problem.
-    BundleManifestError
-        When the manifest exists but is malformed (propagated from
-        :func:`load_manifest`).
+        Checked AFTER ``test_end`` parsing but BEFORE the date
+        comparison: a hash mismatch means the bundle was tampered /
+        partially regenerated, which is a higher-priority signal than
+        "date window is past coverage". Surfacing the mismatch first
+        prevents an operator from chasing the wrong problem.
+    BundleStaleError
+        When ``test_end > manifest.tail_date`` and ``soft=False``.
+        Checked LAST — only after the config is well-formed and the
+        bundle bytes match what the manifest claims.
     """
     if _is_skip_enabled():
         _logger.info(
@@ -678,15 +684,11 @@ def validate_test_end_against_bundle(
         )
         return
 
-    # Hash check first: a mismatch means the bundle bytes on disk no
-    # longer match what the manifest claims, which is a higher-priority
-    # signal than "tail_date is past your window". An operator chasing
-    # a hash mismatch may not need to refresh the date window at all
-    # (e.g. they may just need to revert an out-of-band edit), so we
-    # surface that error first. ``soft`` carries through with the same
-    # warn-vs-raise semantics as the date check.
-    verify_content_hash(provider_uri, soft=soft)
-
+    # Parse ``test_end`` BEFORE running any bundle-state checks. The
+    # malformed-date case is a caller-config bug (their YAML / CLI arg
+    # is wrong); they should see that actionable error first instead
+    # of an environmental "hash mismatch" / "calendar missing" message
+    # that hides the real problem. Codex P2 on PR #175.
     if isinstance(test_end, str):
         try:
             test_end_date = date.fromisoformat(test_end)
@@ -697,6 +699,15 @@ def validate_test_end_against_bundle(
             ) from exc
     else:
         test_end_date = test_end
+
+    # Hash check next: a mismatch means the bundle bytes on disk no
+    # longer match what the manifest claims, which is a higher-priority
+    # signal than "tail_date is past your window". An operator chasing
+    # a hash mismatch may not need to refresh the date window at all
+    # (e.g. they may just need to revert an out-of-band edit), so we
+    # surface that error before the stale-date one. ``soft`` carries
+    # through with the same warn-vs-raise semantics as the date check.
+    verify_content_hash(provider_uri, soft=soft)
 
     if test_end_date <= manifest.tail_date:
         # Bundle covers the requested window. Stay silent — chatty

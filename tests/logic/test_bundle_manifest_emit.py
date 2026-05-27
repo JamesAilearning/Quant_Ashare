@@ -625,6 +625,38 @@ class ValidateBundleHashCheckOrderingTests(unittest.TestCase):
             with self.assertRaises(BundleContentHashMismatchError):
                 validate_test_end_against_bundle(td, "2099-12-31")
 
+    def test_malformed_test_end_beats_hash_error(self):
+        """When ``test_end`` is malformed AND the bundle has a hash
+        mismatch (or missing calendar), the test_end-parse error MUST
+        fire first. The malformed-date case is a caller-config bug
+        (their YAML is wrong); they should see that actionable error,
+        not a downstream environmental hash error that masks the
+        real problem. Codex P2 on PR #175.
+        """
+        import tempfile
+
+        from src.data.bundle_manifest import validate_test_end_against_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            _write_calendar(Path(td))
+            # Manifest claims a bogus content_hash, so the hash check
+            # WILL fail — but we expect the malformed-date error
+            # FIRST, not the hash mismatch error.
+            stale_hash = CONTENT_HASH_PREFIX + ("0" * 64)
+            save_manifest(
+                td, tail_date="2026-03-06", instrument_count=1,
+                content_hash=stale_hash,
+            )
+            with self.assertRaisesRegex(
+                BundleManifestError, "test_end"
+            ) as ctx:
+                validate_test_end_against_bundle(td, "not-a-date")
+            # Sanity: the raised error is the config one, not the hash
+            # mismatch one.
+            self.assertNotIsInstance(
+                ctx.exception, BundleContentHashMismatchError,
+            )
+
     def test_hash_valid_then_stale_date_still_raises(self):
         """Sanity: when the hash matches, the date check still runs
         and a past test_end still triggers BundleStaleError."""
