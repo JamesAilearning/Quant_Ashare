@@ -18,9 +18,12 @@ from typing import Any
 
 import yaml
 
+from src.core.logger import get_logger
 from web.operator_ui.job_io import (
     write_job_json as _write_job_json,
 )
+
+_logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ACTIVE_JOB_DIR: Path | None = None
@@ -125,9 +128,26 @@ def _terminate_active_child() -> None:
             proc.wait(timeout=_CHILD_TERMINATE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return
-    except Exception:
+    except Exception as exc:
         # OSError from already-dead PID, AttributeError on platform
-        # quirks, etc. — never let the handler crash.
+        # quirks, etc. — never let the handler crash. But DO emit a
+        # WARNING with the exception class before swallowing: the
+        # silent fallthrough previously left an orphaned child while
+        # the UI showed the job as "stopped", and the operator had
+        # no log trail to investigate. With the WARNING, the same
+        # contract holds (handler must not crash → still returns)
+        # but the orphan condition is at least observable. Audit
+        # P1-16.
+        _logger.warning(
+            "_terminate_active_child failed for pid=%r (%s: %s); "
+            "the child process may be orphaned — verify via OS "
+            "process listing if the UI reports the job as 'stopped' "
+            "while compute remains active.",
+            getattr(proc, "pid", None),
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
         return
 
 

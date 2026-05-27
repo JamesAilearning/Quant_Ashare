@@ -221,6 +221,71 @@ class JobRunnerDispatchTests(unittest.TestCase):
             fake_child.terminate.assert_not_called()
             fake_child.kill.assert_not_called()
 
+    def test_terminate_failure_logs_warning_but_still_writes_job_json(
+        self,
+    ) -> None:
+        """When ``proc.terminate()`` raises (e.g. OS-level
+        PermissionError, AttributeError on a platform quirk, an
+        already-dead PID surfacing as OSError), the SIGTERM handler
+        MUST still:
+          (a) NOT crash (raises ``SystemExit`` like the happy path)
+          (b) write the ``stopped`` job.json so the UI reflects the
+              transition
+          (c) emit a WARNING log so an operator investigating an
+              orphaned child has evidence it failed
+
+        Pre-#176 the handler swallowed the exception with zero log
+        trail — an orphaned child would be invisible to the operator.
+        Audit P1-16 regression guard.
+        """
+        import logging
+
+        import web.operator_ui.job_runner as job_runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            job_runner._ACTIVE_JOB_DIR = job_dir
+            fake_child = MagicMock()
+            fake_child.pid = 99999  # pid attribute for the log message
+            fake_child.poll.return_value = None  # not yet exited
+            # terminate() raises — simulates a real OS-level failure
+            # like ``OSError: [Errno 1] Operation not permitted`` or a
+            # mocked-platform quirk that yields AttributeError.
+            fake_child.terminate.side_effect = PermissionError("denied")
+            job_runner._ACTIVE_CHILD_PROCESS = fake_child
+
+            try:
+                with self.assertLogs(
+                    "web.operator_ui.job_runner", level="WARNING",
+                ) as captured:
+                    with self.assertRaises(SystemExit) as exc:
+                        job_runner._handle_stop_signal(signal.SIGTERM, None)
+            finally:
+                job_runner._ACTIVE_CHILD_PROCESS = None
+
+            # (a) Handler did not crash — SystemExit is the expected
+            #     control-flow exit, not a raised exception inside the
+            #     handler.
+            self.assertEqual(exc.exception.code, 128 + signal.SIGTERM)
+
+            # (b) job.json got the stopped transition even though
+            #     terminate() failed.
+            data = json.loads(
+                job_dir.joinpath("job.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(data["status"], "stopped")
+
+            # (c) WARNING log carries the pid + exception type +
+            #     ``exc_info`` so a tail-log scrape can find it.
+            warns = [
+                r for r in captured.records if r.levelno == logging.WARNING
+            ]
+            self.assertEqual(len(warns), 1, f"expected 1 warning; got {warns}")
+            msg = warns[0].getMessage()
+            self.assertIn("99999", msg)              # pid
+            self.assertIn("PermissionError", msg)    # exception type
+            self.assertIsNotNone(warns[0].exc_info)  # exc_info attached
+
 
 if __name__ == "__main__":
     unittest.main()
