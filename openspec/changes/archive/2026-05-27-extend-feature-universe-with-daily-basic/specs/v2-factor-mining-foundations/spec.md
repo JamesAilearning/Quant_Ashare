@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Feature universe SHALL be exactly the twelve PIT bin fields per D3 (extended)
+### Requirement: Feature universe SHALL be exactly the six PIT bin fields per D3
 
 The terminal feature registry SHALL expose exactly twelve features partitioned into two groups:
 
