@@ -72,7 +72,7 @@ def _finite_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _get_metrics(entry: dict, *keys: str) -> float | None:
+def _get_metrics(entry: dict[str, Any], *keys: str) -> float | None:
     """Walk nested dicts: entry['metrics']['annual_return'] etc."""
     cur: Any = entry
     for key in keys:
@@ -82,7 +82,7 @@ def _get_metrics(entry: dict, *keys: str) -> float | None:
     return _finite_float(cur)
 
 
-def _first_metric(entry: dict, *paths: tuple[str, ...]) -> float | None:
+def _first_metric(entry: dict[str, Any], *paths: tuple[str, ...]) -> float | None:
     for path in paths:
         value = _get_metrics(entry, *path)
         if value is not None:
@@ -241,7 +241,9 @@ def _read_log_files(run_dir: Path) -> list[tuple[str, str]]:
     return out
 
 
-def _compute_stability_score(ir_list: list[float], dd_list: list[float]) -> tuple[float, dict]:
+def _compute_stability_score(
+    ir_list: list[float], dd_list: list[float],
+) -> tuple[float, dict[str, Any]]:
     """Compute a composite stability score (0-1) from fold metrics."""
     n = len(ir_list)
     if n < 2:
@@ -343,7 +345,12 @@ if not run_options:
     if st.button("配置运行"):
         st.switch_page("pages/config_run.py")
     st.stop()
-    selected = str(output_path())
+    # mypy marks the next line unreachable because ``st.stop()`` is
+    # typed as ``NoReturn``. In bare-mode (no Streamlit script
+    # context) ``st.stop()`` is a no-op, so the assignment still has
+    # to run to give ``selected`` a definition for the module-level
+    # ``run_dir`` reference below. See test_operator_ui_walk_forward_source.
+    selected = str(output_path())  # type: ignore[unreachable]
 else:
     # If the operator clicked through from the Jobs hub, the selected
     # run id is in ``st.query_params["run_id"]`` (or stashed in
@@ -374,7 +381,8 @@ else:
     )
     if not selected:
         st.stop()
-        selected = str(output_path())
+        # Bare-mode fallback — see comment above the symmetric block.
+        selected = str(output_path())  # type: ignore[unreachable]
 
 # In bare-Python (no Streamlit context), st.selectbox returns None
 # which causes Path() to fail.  Always coerce to string first so the
@@ -393,6 +401,7 @@ folds = wf_report.get("folds", [])
 
 # Try to read folds from fold directories if not in report
 if not folds:
+    fold_reports: list[dict[str, Any]] | None
     try:
         fold_reports = read_fold_reports(run_dir)
     except (ValueError, OSError) as exc:
@@ -407,6 +416,7 @@ if not folds:
         "暂无单折数据",
         "滚动验证作业完成后，单折报告会出现在这里。",
     )
+    charts: dict[str, Path] | None
     try:
         charts = discover_charts(run_dir)
     except (ValueError, OSError) as exc:

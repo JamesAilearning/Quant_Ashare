@@ -79,13 +79,12 @@ ignore_missing_imports = true
 # End state: flip ``[tool.mypy] strict = true`` and demote this
 # block to a single ``src.factor_mining.*`` opt-out.
 #
-# Batch 2 (this PR) adds ``src.data.*`` to the wildcard set. The
-# three original FU-7 ``src.data.*`` individual modules are now
-# redundant under the wildcard and removed (the
-# ``STRICT_MODULES`` tuple test was updated to match). The
-# ``src.core.walk_forward._resume`` + ``src.core.regression_baseline``
-# entries stay until batch 4's flip-and-invert PR — they are
-# redundant under ``src.core.*`` but the test still pins them.
+# Batch 3 (this PR) adds ``web.operator_ui.*`` to the wildcard set.
+# After this PR, the only remaining tree outside strict is
+# ``src/contracts/`` (15 known errors — protocol redesign) and the
+# global default — both land together in batch 4's flip PR. The two
+# ``src.core.*`` survivors (``_resume``, ``regression_baseline``)
+# stay until that flip for symmetry with batch 2's cleanup.
 #
 # Excluded: ``src/factor_mining/`` (parallel workstream — strict mid-
 # flight = constant merge noise; opt-out removed in a follow-up
@@ -98,6 +97,7 @@ module = [
   "src.pit.*",
   "src.data.*",
   "scripts.*",
+  "web.operator_ui.*",
 ]
 disallow_untyped_defs = true
 disallow_untyped_calls = true

@@ -54,6 +54,7 @@ STRICT_MODULE_PATTERNS: tuple[str, ...] = (
     "src.pit.*",
     "src.data.*",
     "scripts.*",
+    "web.operator_ui.*",
 )
 
 
@@ -154,10 +155,13 @@ class MypyStrictCiWorkflowTests(unittest.TestCase):
         appear in the workflow's mypy invocation; if a future PR
         demotes the step back to a narrower file-list, this test
         fails loudly. Each batch adds one directory to the
-        assertion list — batch 2 adds ``src/data/``."""
+        assertion list — batch 3 adds ``web/operator_ui/``."""
         wf = PROJECT_ROOT / ".github" / "workflows" / "test.yml"
         text = wf.read_text(encoding="utf-8")
-        for directory in ("src/core/", "src/pit/", "src/data/", "scripts/"):
+        for directory in (
+            "src/core/", "src/pit/", "src/data/", "scripts/",
+            "web/operator_ui/",
+        ):
             self.assertIn(
                 directory, text,
                 f"CI workflow's strict-mypy step must include "

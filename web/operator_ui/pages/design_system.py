@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 import streamlit as st
 
@@ -116,15 +117,17 @@ st.dataframe(examples, width="stretch", hide_index=True)
 st.header("徽章 Badge")
 
 badge_cols = st.columns(5)
-for idx, (variant, label, icon, pulse) in enumerate(
-    [
-        ("neutral", "排队中", "⏸", False),
-        ("info", "运行中", "", True),
-        ("success", "已完成", "✅", False),
-        ("warning", "已取消", "⊘", False),
-        ("danger", "失败", "❌", False),
-    ]
-):
+# Annotate the list element type so mypy keeps the variant literals
+# narrow when passed to ``render_badge``, which expects a Literal.
+_BadgeVariant = Literal["neutral", "info", "success", "warning", "danger"]
+_badge_specs: list[tuple[_BadgeVariant, str, str, bool]] = [
+    ("neutral", "排队中", "⏸", False),
+    ("info", "运行中", "", True),
+    ("success", "已完成", "✅", False),
+    ("warning", "已取消", "⊘", False),
+    ("danger", "失败", "❌", False),
+]
+for idx, (variant, label, icon, pulse) in enumerate(_badge_specs):
     with badge_cols[idx]:
         render_badge(variant, label, icon=icon, pulse=pulse)
 

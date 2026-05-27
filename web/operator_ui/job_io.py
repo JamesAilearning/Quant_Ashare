@@ -5,12 +5,17 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-if os.name == "nt":
+# Platform-conditional locking primitives. ``sys.platform`` (not
+# ``os.name``) is the platform check mypy understands as narrowing —
+# without it the cross-platform run would see ``fcntl.flock`` /
+# ``msvcrt.locking`` references as unbound attributes on the other OS.
+if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
@@ -43,7 +48,7 @@ def _job_lock(job_dir: Path) -> Iterator[None]:
     lock_path = job_dir / "job.json.lock"
     with open(lock_path, "a+b") as lock_file:
         lock_file.seek(0)
-        if os.name == "nt":
+        if sys.platform == "win32":
             lock_file.write(b"\0")
             lock_file.flush()
             lock_file.seek(0)
@@ -54,7 +59,7 @@ def _job_lock(job_dir: Path) -> Iterator[None]:
             yield
         finally:
             lock_file.seek(0)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -207,7 +212,11 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
 
     key_label, key_value = "", ""
     if status == "running":
-        progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
+        # Assign to a local first so isinstance can narrow it; the
+        # inline ternary doesn't propagate the narrowing through the
+        # second ``raw.get`` call.
+        progress_raw = raw.get("progress")
+        progress: dict[str, Any] = progress_raw if isinstance(progress_raw, dict) else {}
         key_label = "阶段"
         key_value = str(progress.get("label") or status)
     elif status == "completed":
@@ -217,7 +226,8 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
         # Surface the actual error so the operator can diagnose without
         # opening stderr.log. Order of preference: explicit error / stop_error
         # in job.json → tail of stderr.log → progress label fallback.
-        progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
+        progress_raw = raw.get("progress")
+        progress = progress_raw if isinstance(progress_raw, dict) else {}
         key_label = "失败原因"
         explicit_error = str(raw.get("stop_error") or raw.get("error") or "").strip()
         stderr_tail = ""

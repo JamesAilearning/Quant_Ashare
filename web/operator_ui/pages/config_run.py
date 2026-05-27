@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import base64
 import difflib
-import math
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import streamlit as st
 import yaml
@@ -24,7 +23,7 @@ from web.operator_ui.config_presets import (
     load_preset,
     sanitise_preset_name,
 )
-from web.operator_ui.job_manager import JobManager, JobManagerError
+from web.operator_ui.job_manager import JobManager, JobManagerError, JobMode
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
 from web.operator_ui.provider_catalog import (
     ProviderCatalogError,
@@ -268,7 +267,7 @@ def _detect_preset() -> str:
     return "Custom"
 
 
-def _estimate_duration(config: dict) -> str:
+def _estimate_duration(config: dict[str, Any]) -> str:
     """Heuristic runtime estimate."""
     instruments = str(config.get("instruments", "csi300"))
     n_stocks = 5000 if instruments == "all" else 800 if "800" in instruments else 300
@@ -278,7 +277,7 @@ def _estimate_duration(config: dict) -> str:
             from datetime import datetime
             ts = datetime.strptime(str(config.get("train_start", "2022-01-01")), "%Y-%m-%d")
             te = datetime.strptime(str(config.get("train_end", "2024-12-31")), "%Y-%m-%d")
-            train_years = max(1, (te - ts).days / 365)
+            train_years = max(1, int((te - ts).days / 365))
         except Exception:
             pass
     n_est = int(config.get("num_boost_round", 1000))
@@ -293,7 +292,7 @@ def _estimate_duration(config: dict) -> str:
     return f"约 {est_minutes} 分钟"
 
 
-def _prefill_config() -> dict:
+def _prefill_config() -> dict[str, Any]:
     raw = st.session_state.get("prefill_config_yaml")
     if not raw:
         return {}
@@ -327,7 +326,7 @@ if PREFILL_CONFIG:
         st.session_state["prefill_config_applied_token"] = prefill_token
 
 
-def _cr(key: str, default=None):
+def _cr(key: str, default: Any = None) -> Any:
     session_key = f"cr_{key}"
     prefill_value = PREFILL_CONFIG.get(key)
     if prefill_value is not None and session_key not in st.session_state:
@@ -363,12 +362,19 @@ with bar_col2:
         _apply_preset(preset_choice)
 
 with bar_col1:
-    mode = st.selectbox(
-        "模式",
-        ["pipeline", "walk_forward"],
-        key="cr_mode",
-        format_func=lambda v: "流水线" if v == "pipeline" else "滚动验证",
-        help="流水线 = 单次训练/测试划分；滚动验证 = 多折滚动。",
+    # The selectbox below restricts ``mode`` to two of the three
+    # ``JobMode`` literals at runtime. ``cast`` narrows ``str`` →
+    # ``JobMode`` so the downstream ``JobManager.start(config_dict,
+    # mode)`` call type-checks; runtime path is unchanged.
+    mode = cast(
+        JobMode,
+        st.selectbox(
+            "模式",
+            ["pipeline", "walk_forward"],
+            key="cr_mode",
+            format_func=lambda v: "流水线" if v == "pipeline" else "滚动验证",
+            help="流水线 = 单次训练/测试划分；滚动验证 = 多折滚动。",
+        ),
     )
 
 # Auto-detect custom when fields diverge
@@ -624,7 +630,7 @@ with form_col:
 
     # Build run config separately from the UI preview; mode is selected outside
     # the runtime config schema and passed to JobManager.start as its own value.
-    config_dict: dict = {
+    config_dict: dict[str, Any] = {
         "provider_uri": provider_uri,
         "instruments": instruments,
         "feature_handler": feature_handler,

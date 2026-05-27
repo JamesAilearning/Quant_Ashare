@@ -10,6 +10,7 @@ the project's hard rule on secrets).
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import streamlit as st
 
@@ -104,7 +105,7 @@ with st.form("tushare_provider_form"):
     pull_tushare = st.form_submit_button("拉取 Tushare 数据")
 
 if pull_tushare:
-    tushare_config: dict = {
+    tushare_config: dict[str, Any] = {
         "start_date": ts_start_date,
         "end_date": ts_end_date,
         "data_adjust_mode": ts_adjust_mode,

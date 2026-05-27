@@ -32,6 +32,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # Tolerance: this module imports from ``training_guards`` only —
 # that module is the canonical metadata reader. We do NOT depend
@@ -248,7 +249,7 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
 def render_bundle_health_banner(
     provider_uri: str | None = None,
     *,
-    st=None,
+    st: Any = None,
     config_path: Path | str = DEFAULT_CONFIG_FILE,
 ) -> BundleHealthSummary:
     """Render a one-line Streamlit caption summarising bundle health.

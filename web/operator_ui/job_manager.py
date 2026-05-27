@@ -209,7 +209,14 @@ class JobManager:
         else:
             try:
                 if data.get("process_group") == "own_session":
-                    os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+                    # ``os.killpg`` / ``os.getpgid`` are POSIX-only and
+                    # not present on Windows; mypy flags them as
+                    # unbound on the Windows-side analysis. The branch
+                    # only runs after ``platform.system() != "Windows"``
+                    # — see ``test_stop_non_windows_*`` for behavioural
+                    # coverage. (``sys.platform`` would narrow but the
+                    # tests patch ``platform.system``.)
+                    os.killpg(os.getpgid(int(pid)), signal.SIGTERM)  # type: ignore[attr-defined]
                 else:
                     os.kill(int(pid), signal.SIGTERM)
             except OSError as exc:

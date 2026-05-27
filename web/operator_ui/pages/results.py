@@ -1173,7 +1173,13 @@ def _render_config_tab(config_path: Path | None, config_bytes: bytes, config: Ma
 
 
 def _render_timings_tab(job: Mapping[str, Any], report: Mapping[str, Any], metadata: Mapping[str, Any]) -> None:
-    progress = job.get("progress") if isinstance(job.get("progress"), Mapping) else {}
+    # Assign first, then narrow — the inline ternary re-evaluates
+    # ``job.get("progress")`` and mypy doesn't propagate isinstance
+    # narrowing across the call boundary.
+    _progress_raw = job.get("progress")
+    progress: Mapping[str, Any] = (
+        _progress_raw if isinstance(_progress_raw, Mapping) else {}
+    )
     rows = {
         "status": job.get("status") or metadata.get("status"),
         "started_at": job.get("started_at") or metadata.get("started_at"),

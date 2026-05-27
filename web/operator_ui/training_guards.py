@@ -7,14 +7,17 @@ not initialize qlib, call Tushare, or compute official metrics.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from src.data._segment_embargo import (  # noqa: E402
-    LABEL_LOOKAHEAD_DAYS,
-    trading_days_between,
+    LABEL_LOOKAHEAD_DAYS as LABEL_LOOKAHEAD_DAYS,
+)
+from src.data._segment_embargo import (
+    trading_days_between as trading_days_between,
 )
 
 FORWARD_RETURN_BUFFER_DAYS = 20
@@ -193,25 +196,30 @@ def validate_pipeline_training_inputs(
     }
 
     if all(parsed.values()):
-        if not parsed["train_start"] < parsed["train_end"]:
+        # ``all(parsed.values())`` guarantees no Nones at runtime, but
+        # mypy can't propagate that through the dict subscripts below.
+        # ``cast`` narrows ``date | None`` → ``date`` at the type level
+        # without changing observable behaviour.
+        parsed_dates = cast(dict[str, date], parsed)
+        if not parsed_dates["train_start"] < parsed_dates["train_end"]:
             errors.append("train_start 必须严格早于 train_end。")
-        if not parsed["train_end"] < parsed["valid_start"]:
+        if not parsed_dates["train_end"] < parsed_dates["valid_start"]:
             errors.append(
                 "valid_start 必须严格晚于 train_end "
                 f"（train_end={train_end}, valid_start={valid_start}）。"
             )
-        if not parsed["valid_start"] < parsed["valid_end"]:
+        if not parsed_dates["valid_start"] < parsed_dates["valid_end"]:
             errors.append("valid_start 必须严格早于 valid_end。")
-        if not parsed["valid_end"] < parsed["test_start"]:
+        if not parsed_dates["valid_end"] < parsed_dates["test_start"]:
             errors.append(
                 "test_start 必须严格晚于 valid_end "
                 f"（valid_end={valid_end}, test_start={test_start}）。"
             )
-        if not parsed["test_start"] < parsed["test_end"]:
+        if not parsed_dates["test_start"] < parsed_dates["test_end"]:
             errors.append("test_start 必须严格早于 test_end。")
 
-        _validate_provider_coverage(parsed, metadata, errors, warnings)
-        _validate_segment_embargo(parsed, metadata, errors)
+        _validate_provider_coverage(parsed_dates, metadata, errors, warnings)
+        _validate_segment_embargo(parsed_dates, metadata, errors)
 
     _validate_instruments(instruments, metadata, errors)
     _validate_universe_benchmark_alignment(instruments, benchmark_code, warnings)
@@ -224,7 +232,7 @@ def validate_pipeline_training_inputs(
 
 
 def _validate_segment_embargo(
-    parsed: dict[str, date | None],
+    parsed: Mapping[str, date | None],
     metadata: ProviderMetadata,
     errors: list[str],
 ) -> None:
@@ -323,7 +331,7 @@ def provider_metadata_summary(metadata: ProviderMetadata) -> dict[str, str]:
 
 
 def _validate_provider_coverage(
-    parsed: dict[str, date | None],
+    parsed: Mapping[str, date | None],
     metadata: ProviderMetadata,
     errors: list[str],
     warnings: list[str],
