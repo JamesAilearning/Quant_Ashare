@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -12,7 +13,9 @@ import streamlit as st
 import yaml
 
 from web.operator_ui import artifact_reader
-from web.operator_ui._path_guard import output_path
+from web.operator_ui._path_guard import guard_output_path, output_path
+
+_log = logging.getLogger(__name__)
 from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import render_empty_state, render_error_state
@@ -157,6 +160,15 @@ def _read_config(
 def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path | None:
     run_dir = _path_or_none(job.get("run_dir"))
     if run_dir is not None:
+        # UI-launched jobs always go through ``JobManager.start`` which forces
+        # ``run_dir`` under ``RESULT_ROOT``. CLI catalog entries
+        # (``output/runs/_index.jsonl``) carry whatever path the CLI wrote
+        # with no schema validation, so a crafted entry could point at
+        # ``..\..\..\Windows\System32``. Surface the guard before any
+        # ``iterdir`` / ``stat`` runs against a hostile path, mirroring the
+        # protection already in place on every ``_read_*_artifact`` call.
+        if not _is_safe_run_dir(run_dir):
+            return None
         return run_dir
     job_status = str(job.get("status") or "").lower()
     if job_status not in {"success", "completed", "ok"}:
@@ -164,13 +176,76 @@ def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path 
     output_dir = _path_or_none(config.get("output_dir"))
     if output_dir is None:
         return None
+    # CLI-sourced ``output_dir`` is operator-controlled and reaches this
+    # function unsanitised (the catalog is just a JSONL of whatever the
+    # CLI wrote). Reject paths outside ``allowed_output_roots()`` before
+    # we touch the filesystem with ``is_dir`` / ``iterdir``. Downstream
+    # ``_read_*_artifact`` calls all guard their own reads, but
+    # ``iterdir`` here would already act as a directory-existence probe
+    # against arbitrary paths — defence in depth.
+    if not _is_safe_run_dir(output_dir):
+        return None
     if str(job.get("mode") or "") == "pipeline":
         runs_dir = output_dir / "runs"
+        # Re-check the derived ``runs`` path: even when ``output_dir``
+        # itself resolves under an allowed root, ``runs`` could be a
+        # symlink pointing at an arbitrary directory (or a relative-
+        # parent traversal escape). ``guard_output_path`` resolves the
+        # final path before checking containment, so this catches a
+        # crafted ``runs -> /tmp/outside`` symlink before ``is_dir``
+        # follows it. (Codex P2 follow-up on PR #192.)
+        if not _is_safe_run_dir(runs_dir):
+            return None
         if runs_dir.is_dir():
-            candidates = [entry for entry in runs_dir.iterdir() if entry.is_dir()]
-            if candidates:
-                return max(candidates, key=lambda path: path.stat().st_mtime)
+            # Filter each candidate through ``_is_safe_run_dir`` BEFORE
+            # any ``is_dir`` / ``stat`` call runs on it — both of those
+            # follow symlinks and would otherwise leak directory /
+            # existence information about an arbitrary attacker-
+            # controlled target before the guard could block the
+            # return. Equally important, this lets ``_resolve_run_dir``
+            # surface a legitimate non-symlinked run even when a
+            # newer-mtime symlinked sibling resolves outside roots —
+            # the prior "guard the winner only" version returned None
+            # whenever the newest entry happened to be hostile, hiding
+            # valid runs. (Codex P2 round 3 on PR #192.)
+            safe_dir_candidates = [
+                entry
+                for entry in runs_dir.iterdir()
+                if _is_safe_run_dir(entry) and entry.is_dir()
+            ]
+            if safe_dir_candidates:
+                return max(
+                    safe_dir_candidates,
+                    key=lambda path: path.stat().st_mtime,
+                )
     return output_dir
+
+
+def _is_safe_run_dir(candidate: Path) -> bool:
+    """Return ``True`` if ``candidate`` resolves under the allowed output
+    roots. Logs a warning and returns ``False`` otherwise so the caller
+    can render an empty / not-found state instead of probing arbitrary
+    filesystem paths.
+
+    Centralised here (rather than inlined in ``_resolve_run_dir``) so the
+    same guard can be applied to both the ``job.run_dir`` and the
+    ``config.output_dir`` branches without duplicating the try/except
+    + log message.
+    """
+
+    try:
+        guard_output_path(candidate)
+    except ValueError as exc:
+        # WARN level so the audit trail captures the suspect path. The
+        # operator-visible side is the empty-state ("artifacts unavailable");
+        # the suspect path stays in the server log for forensics.
+        _log.warning(
+            "Refusing to resolve run_dir outside allowed output roots: %s (%s)",
+            candidate,
+            exc,
+        )
+        return False
+    return True
 
 
 def _nested(data: Mapping[str, Any], *path: str) -> Any:
@@ -1254,7 +1329,37 @@ def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) ->
         st.info("没有日志符合当前搜索关键字和严重等级筛选。")
 
 
-def _filter_json_by_query(obj: Any, query: str) -> Any:
+# Bound recursion in ``_filter_json_by_query`` so an artifact with
+# pathologically deep nesting (adversarial input or a downstream pipeline
+# producing unexpectedly nested structures) can't blow CPython's stack or
+# hang the Streamlit session. Real pipeline reports nest 4-6 levels deep
+# in practice; 32 leaves plenty of headroom while staying well below
+# the default recursion limit (1000) and bounding worst-case CPU.
+_FILTER_JSON_MAX_DEPTH = 32
+
+
+def _truncate_for_st_json(obj: Any, _depth: int = 0) -> Any:
+    """Recursively trim ``obj`` so no branch reaches deeper than
+    :data:`_FILTER_JSON_MAX_DEPTH` levels from this call's root. At the
+    cap, the deep subtree is replaced with ``None`` so the result stays
+    JSON-serialisable AND so Streamlit's ``st.json`` cannot itself
+    recurse over a pathologically deep structure.
+
+    Used by :func:`_filter_json_by_query` on the matched-key branch
+    (where the matched value would otherwise pass through unchanged
+    and bypass the recursion cap — see Codex P2 follow-up on PR #192).
+    """
+
+    if _depth >= _FILTER_JSON_MAX_DEPTH:
+        return None
+    if isinstance(obj, dict):
+        return {k: _truncate_for_st_json(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_truncate_for_st_json(v, _depth + 1) for v in obj]
+    return obj
+
+
+def _filter_json_by_query(obj: Any, query: str, *, _depth: int = 0) -> Any:
     """Recursive substring filter for nested JSON.
 
     Returns a subtree containing only branches where some key, string
@@ -1265,19 +1370,53 @@ def _filter_json_by_query(obj: Any, query: str) -> Any:
     Designed to keep the Raw JSON tab usable on large pipeline reports
     by letting the operator narrow to a key like ``sharpe`` or
     ``drawdown`` without scrolling through hundreds of lines.
+
+    Recursion is bounded at :data:`_FILTER_JSON_MAX_DEPTH`: at the cap
+    we return the subtree unchanged rather than continuing to recurse.
+    Returning the subtree (vs. ``None``) preserves the operator's
+    ability to see *something* below the cap; truncation is preferable
+    to silently hiding data that may have matched deeper down.
     """
 
     q = query.strip().lower()
     if not q:
         return obj
 
+    if _depth >= _FILTER_JSON_MAX_DEPTH:
+        # Stop recursing. Return None so the upstream
+        # ``if filtered not in (None, {}, [])`` prune drops this
+        # branch from the filtered tree.
+        #
+        # An earlier revision of this guard returned the subtree
+        # unchanged, but Codex P2 on PR #192 flagged two problems
+        # with that choice: (a) it misrepresented branches deeper
+        # than the cap as "matched" even when the query never
+        # matched below the cap, surfacing arbitrary deep blobs as
+        # fake hits in the Raw JSON tab; and (b) it handed the
+        # pathologically-deep subtree to ``st.json`` for rendering,
+        # so Streamlit's serialiser would re-recurse over exactly
+        # the adversarial structure this cap is meant to protect
+        # against. Returning None keeps the contract honest (only
+        # branches with a real match survive) AND keeps the deep
+        # subtree out of any downstream recursive code path.
+        return None
+
     if isinstance(obj, dict):
         kept: dict[str, Any] = {}
         for key, value in obj.items():
             if q in str(key).lower():
-                kept[key] = value
+                # Matched-key branch: previously passed ``value`` through
+                # unchanged, so an artifact like
+                # ``{"needle": <100-deep-tree>}`` would still hand the
+                # whole deep subtree to ``st.json`` and reproduce the
+                # same Streamlit serializer recursion the cap was meant
+                # to prevent (Codex P2 follow-up on PR #192). Truncate
+                # the matched value to the same depth budget, sharing
+                # the running ``_depth`` so the budget is global to the
+                # filter call, not reset per matched key.
+                kept[key] = _truncate_for_st_json(value, _depth + 1)
                 continue
-            filtered = _filter_json_by_query(value, query)
+            filtered = _filter_json_by_query(value, query, _depth=_depth + 1)
             if filtered not in (None, {}, []):
                 kept[key] = filtered
         return kept or None
@@ -1285,7 +1424,7 @@ def _filter_json_by_query(obj: Any, query: str) -> Any:
     if isinstance(obj, list):
         out = []
         for entry in obj:
-            filtered = _filter_json_by_query(entry, query)
+            filtered = _filter_json_by_query(entry, query, _depth=_depth + 1)
             if filtered not in (None, {}, []):
                 out.append(filtered)
         return out or None
