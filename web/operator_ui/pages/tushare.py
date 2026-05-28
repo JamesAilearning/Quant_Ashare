@@ -98,8 +98,13 @@ with st.form("tushare_provider_form"):
         )
         reuse_staged = st.checkbox(
             "复用已暂存的 Parquet (reuse_staged)",
-            value=True,
-            help="如果存在之前已下载的 Parquet 快照，跳过重复下载直接复用。",
+            value=False,
+            help=(
+                "默认关闭：每次都重新拉取最新数据，避免上次中断 / 限流"
+                "留下的不完整 Parquet 被静默复用，污染下游训练。"
+                "只有当你确认 staging 目录是上一次完整成功落盘的 / "
+                "想避免重新拉一遍 Tushare 时再勾选。"
+            ),
         )
     pull_tushare = st.form_submit_button("拉取 Tushare 数据")
 
@@ -121,6 +126,18 @@ if pull_tushare:
         st.error(str(exc))
         st.stop()
     st.success(f"Tushare 拉取作业已启动：{job_id}")
+    if reuse_staged:
+        # Operators who opt in to reuse_staged need a visible reminder
+        # that the staging files were NOT re-validated by the UI.
+        # ``reuse_staged=True`` silently fed the downstream qlib bin
+        # builder whatever Parquet happened to be on disk, so half-
+        # downloaded files from a prior crash / Tushare limit hit
+        # could pollute training without any UI signal (review P1-8).
+        st.warning(
+            "⚠ 已复用 staging 目录里上一次下载的 Parquet（未重新校验）。"
+            "如果上次拉取在中途被中断（Ctrl+C / Tushare 限流 / 网络抖动），"
+            "可能正在使用不完整的快照。建议先删除 staging 目录再重拉。"
+        )
     st.info(
         f"完成后，把 ``output/operator_ui/results/{job_id}/qlib_provider`` "
         "作为「配置运行」页的 ``provider_uri``。"

@@ -350,5 +350,132 @@ class SixIncreasingIndicesTests(unittest.TestCase):
         self.assertTrue(all(0 <= i <= 3 for i in indices))
 
 
+@unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
+class SelectTradingDayFallbackTests(unittest.TestCase):
+    """``_select_trading_day`` SHALL NOT silently snap a configured
+    default to the calendar's first entry when the default falls outside
+    the provider's calendar.
+
+    The previous ``_option_index`` returned 0 on miss so the page just
+    swapped, say, ``train_start=2022-01-01`` for ``calendar[0]=2023-06-12``
+    with zero visual signal. Operators chased "why did my run skip 2022?"
+    ghosts for days. UI review P1-9 made ``_option_index`` return -1 on
+    miss; ``_select_trading_day`` then snaps to index 0 BUT surfaces
+    ``st.warning`` so the operator sees the date change.
+    """
+
+    def test_option_index_returns_negative_one_on_miss(self) -> None:
+        from web.operator_ui.pages.config_run import _option_index
+
+        options = ["2023-01-03", "2023-01-04", "2023-01-05"]
+        self.assertEqual(_option_index(options, "2022-12-01"), -1)
+        # Hit still returns the real index.
+        self.assertEqual(_option_index(options, "2023-01-04"), 1)
+        # Empty options also returns -1 (defensive).
+        self.assertEqual(_option_index([], "anything"), -1)
+
+    def test_select_trading_day_warns_when_default_outside_calendar(self) -> None:
+        """When the default falls outside the calendar, the page MUST
+        emit a visible ``st.warning`` mentioning both the missing
+        default and the replacement value."""
+
+        import types
+        from datetime import date as _d
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import config_run
+
+        cal = (
+            _d(2023, 6, 12),
+            _d(2023, 6, 13),
+            _d(2023, 6, 14),
+        )
+        metadata = types.SimpleNamespace(calendar_dates=cal)
+
+        captured_warnings: list[str] = []
+        with patch(
+            "streamlit.warning",
+            side_effect=lambda msg, *_a, **_kw: captured_warnings.append(msg),
+        ), patch(
+            "streamlit.selectbox",
+            side_effect=lambda label, options, **kw: options[kw.get("index", 0)],
+        ):
+            result = config_run._select_trading_day(
+                "train_start",
+                default="2022-01-01",
+                metadata=metadata,
+            )
+
+        # Snapped to calendar[0].
+        self.assertEqual(result, "2023-06-12")
+        # Exactly one warning, mentioning both the bad default and
+        # the replacement.
+        self.assertEqual(len(captured_warnings), 1)
+        warning = captured_warnings[0]
+        self.assertIn("train_start", warning)
+        self.assertIn("2022-01-01", warning)
+        self.assertIn("2023-06-12", warning)
+
+    def test_select_trading_day_does_not_warn_when_default_is_in_calendar(self) -> None:
+        """Hit path stays silent — the warning is for the silent-snap
+        case only, not a generic "you used a preset" reminder."""
+
+        import types
+        from datetime import date as _d
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import config_run
+
+        cal = (_d(2023, 6, 12), _d(2023, 6, 13), _d(2023, 6, 14))
+        metadata = types.SimpleNamespace(calendar_dates=cal)
+
+        captured_warnings: list[str] = []
+        with patch(
+            "streamlit.warning",
+            side_effect=lambda msg, *_a, **_kw: captured_warnings.append(msg),
+        ), patch(
+            "streamlit.selectbox",
+            side_effect=lambda label, options, **kw: options[kw.get("index", 0)],
+        ):
+            result = config_run._select_trading_day(
+                "train_start",
+                default="2023-06-13",
+                metadata=metadata,
+            )
+
+        self.assertEqual(result, "2023-06-13")
+        self.assertEqual(captured_warnings, [])
+
+    def test_select_trading_day_no_calendar_falls_back_to_text_input(self) -> None:
+        """When the provider exposes no calendar at all (no metadata or
+        empty calendar), the helper degrades to ``st.text_input`` and
+        does NOT warn — the snap-warning is specifically about
+        out-of-calendar defaults, not unconfigured providers."""
+
+        import types
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import config_run
+
+        metadata = types.SimpleNamespace(calendar_dates=())
+
+        captured_warnings: list[str] = []
+        with patch(
+            "streamlit.warning",
+            side_effect=lambda msg, *_a, **_kw: captured_warnings.append(msg),
+        ), patch(
+            "streamlit.text_input",
+            side_effect=lambda label, value: value,
+        ):
+            result = config_run._select_trading_day(
+                "train_start",
+                default="2022-01-01",
+                metadata=metadata,
+            )
+
+        self.assertEqual(result, "2022-01-01")
+        self.assertEqual(captured_warnings, [])
+
+
 if __name__ == "__main__":
     unittest.main()
