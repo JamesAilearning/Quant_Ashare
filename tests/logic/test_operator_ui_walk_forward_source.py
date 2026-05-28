@@ -139,10 +139,13 @@ class WalkForwardPageSourceTests(unittest.TestCase):
 
     def test_stability_breakdown_renders_subscores_alongside_composite(self) -> None:
         """The composite score is a glance-aid; the four sub-components
-        (IR CV / positive folds / drawdown concentration / IR > 1) MUST
-        render alongside the composite (expander defaults to expanded,
-        each sub-score shows its weight) so operators see what the
-        composite is made of (UI review P1-6)."""
+        MUST render alongside it. The four bars MUST match the four
+        inputs to the score formula (cv_clamped, n_positive/n,
+        dd_concentration, trend_stable). The earlier revision of this
+        block mislabelled the trend slot with ``IR > 1.0 折数`` — a
+        SEPARATE diagnostic that the formula never reads — so
+        operators saw "all bars healthy" while a monotone-down trend
+        silently dropped the score (Codex P2 on PR #195)."""
 
         source = self._source()
 
@@ -155,6 +158,15 @@ class WalkForwardPageSourceTests(unittest.TestCase):
         self.assertIn("_STABILITY_W_POSITIVE_FOLDS:.0%", source)
         self.assertIn("_STABILITY_W_DD_CONCENTRATION:.0%", source)
         self.assertIn("_STABILITY_W_TREND_STABLE:.0%", source)
+        # The trend slot MUST read the actual trend signal (spearman /
+        # trend_stable), not the IR > 1.0 diagnostic.
+        self.assertIn('score_details.get("spearman"', source)
+        self.assertIn('score_details.get("trend_stable"', source)
+        self.assertIn("折间趋势稳定", source)
+        # IR > 1.0 lives in a SEPARATE "diagnostic" row that doesn't
+        # claim a weight slot — guard against the mislabel coming back.
+        self.assertIn("额外诊断（不计入评分）", source)
+        self.assertIn("IR > 1.0 折数：", source)
 
     def test_stability_score_display_surfaces_heuristic_disclaimer(self) -> None:
         """The "启发式" tooltip AND a screen-reader-accessible caption

@@ -700,6 +700,15 @@ st.dataframe(df, hide_index=True, height=400)
 # Expanded by default so operators see the four load-bearing sub-scores
 # alongside the composite — the composite is a glance-aid only; gating
 # decisions SHALL use these (UI review P1-6).
+#
+# Important: the four progress bars below match the FOUR INPUTS to the
+# score formula (cv_clamped, n_positive/n, dd_concentration,
+# trend_stable). The earlier revision of this block mislabelled the
+# trend slot with "IR > 1.0 折数", which is a SEPARATE diagnostic
+# (n_above_1) that the score formula never reads — operators would see
+# all four bars "look healthy" while a monotone-down trend silently
+# dropped the score (Codex P2 on PR #195). IR > 1.0 lives in a
+# separate "extras" row below.
 if score >= 0:
     with st.expander("稳定性分解（4 个子分量）", expanded=True):
         b_cols = st.columns(2)
@@ -723,12 +732,32 @@ if score >= 0:
             )
             st.progress(dc, text=f"{dc:.2f}")
 
+            # Show the *actual* trend signal that drives the 10% weight:
+            # |spearman| < cutoff → 1.0, else 0.0. We render the Spearman
+            # value as text so operators can see both the binary and the
+            # underlying magnitude.
+            spearman_value = float(score_details.get("spearman", 0.0))
+            trend_stable_flag = bool(score_details.get("trend_stable", False))
             st.caption(
-                f"IR > 1.0 折数（趋势权重 {_STABILITY_W_TREND_STABLE:.0%}）"
+                f"折间趋势稳定（|ρ| < {_STABILITY_TREND_SPEARMAN_CUTOFF}，"
+                f"权重 {_STABILITY_W_TREND_STABLE:.0%}）"
             )
-            abv_str = score_details.get("above_ir_1", "?/?")
-            abv_ratio = _ratio_fraction(abv_str)
-            st.progress(abv_ratio, text=abv_str)
+            st.progress(
+                1.0 if trend_stable_flag else 0.0,
+                text=(
+                    f"{'稳定' if trend_stable_flag else '下行/上行'}"
+                    f"（ρ = {spearman_value:+.2f}）"
+                ),
+            )
+        # Diagnostic row — IR > 1.0 is NOT a sub-score (the formula
+        # never reads ``n_above_1``), but operators expect to see it
+        # because it answers the parallel question "how many folds
+        # clearly beat the IR=1 ergonomic threshold". Surfaced separately
+        # so it can't be mistaken for the trend slot.
+        st.caption("额外诊断（不计入评分）")
+        abv_str = score_details.get("above_ir_1", "?/?")
+        abv_ratio = _ratio_fraction(abv_str)
+        st.progress(abv_ratio, text=f"IR > 1.0 折数：{abv_str}")
 
 # ---------------------------------------------------------------------------
 # Bottom section — tabs (TICKET-B reorg)
