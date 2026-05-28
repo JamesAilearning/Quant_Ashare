@@ -88,23 +88,38 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         the topbar / sidebar / breadcrumb instead of immediately after the
         link itself (UI review P0-4).
 
-        Anchors emitted from this helper land on every page, so the skip
-        link works uniformly without requiring each page to opt in."""
+        We patch ``streamlit.html`` to capture the markup ``render_page_header``
+        emits and assert against the *rendered* string — not the source text.
+        The previous source-text version of this test matched the literal
+        ``id="qv2-main-content"`` that lives in the docstring rather than the
+        f-string ``id="{SKIP_LINK_TARGET_ID}"`` that lives in the code body,
+        so a docstring tweak would have masked a real regression (codex P2
+        on PR #191)."""
 
-        source = inspect.getsource(
-            __import__(
-                "web.operator_ui.page_header", fromlist=["render_page_header"]
-            ).render_page_header,
+        from unittest.mock import patch
+
+        captured: list[str] = []
+
+        def _capture(markup: str, **_: object) -> None:
+            captured.append(markup)
+
+        with patch("streamlit.html", side_effect=_capture):
+            from web.operator_ui.page_header import render_page_header
+
+            render_page_header("Test Title", subtitle="测试副标题")
+
+        self.assertEqual(
+            len(captured), 1,
+            "render_page_header should emit exactly one st.html block",
         )
-        # Source-level guard — we cannot drive Streamlit's st.html
-        # capture without a ScriptRunContext, but pinning the literal
-        # tag in source is enough to prevent silent regression.
-        self.assertIn('id="qv2-main-content"', source)
-        self.assertIn("tabindex=\"-1\"", source)
-        # Must be emitted via the parts list so it lands BEFORE the
-        # ``<div class="qv2-page-header">`` opening tag.
-        anchor_index = source.index('id="qv2-main-content"')
-        header_index = source.index('class="qv2-page-header"')
+        html = captured[0]
+        self.assertIn('id="qv2-main-content"', html)
+        self.assertIn('tabindex="-1"', html)
+        # The anchor MUST lead the rendered HTML — sitting before the
+        # ``<div class="qv2-page-header">`` div means the skip link
+        # actually skips past topbar / sidebar / breadcrumb chrome.
+        anchor_index = html.index('id="qv2-main-content"')
+        header_index = html.index('class="qv2-page-header"')
         self.assertLess(
             anchor_index,
             header_index,
