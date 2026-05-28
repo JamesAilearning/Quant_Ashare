@@ -241,10 +241,69 @@ def _read_log_files(run_dir: Path) -> list[tuple[str, str]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Stability-score heuristic.
+#
+# The composite score below is a **single-glance heuristic**, NOT a derived
+# metric. Operators using it to gate a deployment SHALL also read the four
+# sub-components (rendered alongside the score in the UI) — the weights and
+# thresholds here were picked empirically by the original PR author, not by
+# any optimisation procedure, and they trade off in non-obvious ways on
+# extreme inputs.
+#
+# Weights — chosen to lean on the two signals operators actually use when
+# triaging walk-forward stability:
+#   * IR coefficient-of-variation (40%) — fold-to-fold consistency of risk-
+#     adjusted return; the largest single weight because a strategy whose
+#     IR swings wildly across folds is the canonical "not ready" case.
+#   * Positive-period frequency (30%) — fraction of folds with IR > 0;
+#     captures the "doesn't blow up out-of-sample" baseline.
+#   * Drawdown concentration (20%) — how clustered the worst drawdown is
+#     in a single fold; a heavy tail in one fold is preferable to a
+#     uniformly bad drawdown across all folds.
+#   * Trend stability (10%) — Spearman |ρ| of IR vs. fold ordinal; small
+#     weight because a "fold N is worse than fold N-1" trend is hard to
+#     interpret without more folds.
+# Pinned as module constants so a refactor can't silently drift the
+# composition; documented here so reviewers don't read the values as
+# load-bearing magic numbers (UI review P1-6).
+_STABILITY_W_IR_CV: float = 0.4
+_STABILITY_W_POSITIVE_FOLDS: float = 0.3
+_STABILITY_W_DD_CONCENTRATION: float = 0.2
+_STABILITY_W_TREND_STABLE: float = 0.1
+
+# Bucket labels — pinned similarly. Operators SHALL use the per-component
+# breakdown rather than the coarse bucket for any actual gating decision.
+_STABILITY_LABEL_HIGH: float = 0.8
+_STABILITY_LABEL_MID: float = 0.6
+_STABILITY_LABEL_LOW: float = 0.3
+
+# Spearman absolute-value cutoff for "trend stable". 0.3 is the conventional
+# small-effect threshold; pinning it makes the choice explicit.
+_STABILITY_TREND_SPEARMAN_CUTOFF: float = 0.3
+
+# Tooltip copy surfaced in the UI under the score. Lives next to the
+# constants so the disclaimer stays close to the heuristic it disclaims.
+STABILITY_SCORE_HEURISTIC_NOTE: str = (
+    "启发式评分（仅供参考）：权重 0.4/0.3/0.2/0.1 是经验值，不来自任何"
+    "优化过程。请同时参考下方四个子分量，不要单独依赖这个分数做模型上线"
+    "的判断。"
+)
+
+
 def _compute_stability_score(
     ir_list: list[float], dd_list: list[float],
 ) -> tuple[float, dict[str, Any]]:
-    """Compute a composite stability score (0-1) from fold metrics."""
+    """Compute a composite stability score (0-1) from fold metrics.
+
+    **Heuristic, not a derived metric.** See the module-level constants
+    above for the weight rationale and the disclaimer surfaced to
+    operators in :data:`STABILITY_SCORE_HEURISTIC_NOTE`. The four
+    sub-components in the returned ``details`` dict are the load-
+    bearing display; the scalar score is a glance-aid for the dashboard
+    KPI position only.
+    """
+
     n = len(ir_list)
     if n < 2:
         return 0.0, {"error": "Need at least 2 folds"}
@@ -283,13 +342,13 @@ def _compute_stability_score(
             spearman = 0.0
     else:
         spearman = 0.0
-    trend_stable = abs(spearman) < 0.3
+    trend_stable = abs(spearman) < _STABILITY_TREND_SPEARMAN_CUTOFF
 
     score = (
-        0.4 * (1.0 - cv_clamped)
-        + 0.3 * (n_positive / n)
-        + 0.2 * dd_concentration
-        + 0.1 * (1.0 if trend_stable else 0.0)
+        _STABILITY_W_IR_CV * (1.0 - cv_clamped)
+        + _STABILITY_W_POSITIVE_FOLDS * (n_positive / n)
+        + _STABILITY_W_DD_CONCENTRATION * dd_concentration
+        + _STABILITY_W_TREND_STABLE * (1.0 if trend_stable else 0.0)
     )
     details = {
         "ir_cv": cv,
@@ -303,21 +362,21 @@ def _compute_stability_score(
 
 
 def _stability_label(score: float) -> str:
-    if score >= 0.8:
+    if score >= _STABILITY_LABEL_HIGH:
         return "高度稳定"
-    if score >= 0.6:
+    if score >= _STABILITY_LABEL_MID:
         return "较稳定"
-    if score >= 0.3:
+    if score >= _STABILITY_LABEL_LOW:
         return "不稳定"
     return "极不稳定"
 
 
 def _stability_color(score: float) -> str:
-    if score >= 0.8:
+    if score >= _STABILITY_LABEL_HIGH:
         return "positive"
-    if score >= 0.6:
+    if score >= _STABILITY_LABEL_MID:
         return "info"
-    if score >= 0.3:
+    if score >= _STABILITY_LABEL_LOW:
         return "warning"
     return "negative"
 
@@ -516,21 +575,34 @@ aggregate_dd = _finite_float(aggregate.get("worst_drawdown"))
 # Display
 # ---------------------------------------------------------------------------
 
-# --- Stability Score ---
+# --- Stability Score (heuristic — see STABILITY_SCORE_HEURISTIC_NOTE) ---
 if score >= 0:
     label = _stability_label(score)
     color = _stability_color(score)
     bar_len = int(score * 20)
     bar = "█" * bar_len + "░" * (20 - bar_len)
     st.markdown(
-        f"""<div style="margin-bottom:24px;">
-        <span class="qv2-text-card-label">稳定性评分</span><br>
+        f"""<div style="margin-bottom:8px;">
+        <span class="qv2-text-card-label">
+          稳定性评分
+          <span title="{STABILITY_SCORE_HEURISTIC_NOTE}"
+                style="cursor:help;color:var(--text-tertiary);
+                       font-size:0.85rem;margin-left:6px;">
+            ⓘ 启发式
+          </span>
+        </span><br>
         <span style="font-size:2rem;font-weight:800;color:var(--{color});">{score:.2f}</span>
         <span style="color:var(--text-secondary);font-size:1rem;"> / 1.00</span>
         <span style="margin-left:12px;color:var(--text-tertiary);font-size:0.9rem;">{label}</span>
         <div style="font-family:monospace;margin-top:4px;color:var(--text-tertiary);">{bar}</div>
         </div>""",
         unsafe_allow_html=True,
+    )
+    # Surface the disclaimer in plain text under the score as well, so
+    # operators on screen-readers / keyboards (where the ``title=``
+    # tooltip never fires) still see it (UI review P1-6).
+    st.caption(
+        "⚠ " + STABILITY_SCORE_HEURISTIC_NOTE
     )
 
 # --- KPI row ---
@@ -625,24 +697,35 @@ df = pd.DataFrame(table_rows)
 st.dataframe(df, hide_index=True, height=400)
 
 # --- Stability Breakdown ---
+# Expanded by default so operators see the four load-bearing sub-scores
+# alongside the composite — the composite is a glance-aid only; gating
+# decisions SHALL use these (UI review P1-6).
 if score >= 0:
-    with st.expander("稳定性分解", expanded=False):
+    with st.expander("稳定性分解（4 个子分量）", expanded=True):
         b_cols = st.columns(2)
         with b_cols[0]:
             cv = score_details.get("ir_cv", 0)
-            st.caption("IR 变异系数（越低越好）")
+            st.caption(
+                f"IR 变异系数（越低越好，权重 {_STABILITY_W_IR_CV:.0%}）"
+            )
             st.progress(min(1.0, max(0.0, 1.0 - cv)), text=f"CV = {cv:.2f}")
 
-            st.caption("正收益折数")
+            st.caption(
+                f"正收益折数（权重 {_STABILITY_W_POSITIVE_FOLDS:.0%}）"
+            )
             pos_str = score_details.get("positive_folds", "?/?")
             pos_ratio = _ratio_fraction(pos_str)
             st.progress(pos_ratio, text=pos_str)
         with b_cols[1]:
             dc = score_details.get("dd_concentration", 0.5)
-            st.caption("回撤集中度")
+            st.caption(
+                f"回撤集中度（权重 {_STABILITY_W_DD_CONCENTRATION:.0%}）"
+            )
             st.progress(dc, text=f"{dc:.2f}")
 
-            st.caption("IR > 1.0 折数")
+            st.caption(
+                f"IR > 1.0 折数（趋势权重 {_STABILITY_W_TREND_STABLE:.0%}）"
+            )
             abv_str = score_details.get("above_ir_1", "?/?")
             abv_ratio = _ratio_fraction(abv_str)
             st.progress(abv_ratio, text=abv_str)
@@ -678,13 +761,21 @@ with wf_tabs[0]:
             import plotly.graph_objects as go
 
             fig = go.Figure()
+            # Dashed line + low-contrast fill make it visually clear at
+            # a glance that this curve is NOT a real backtest path. The
+            # solid version was mistakenly screenshotted into reports as
+            # ground-truth NAV — visual review P1-7.
             fig.add_trace(
                 go.Scatter(
                     x=timeline,
                     y=nav_values,
                     mode="lines",
-                    name="OOS NAV (synthesised)",
-                    line={"width": 2.4, "color": PLOTLY_STRATEGY_COLOR},
+                    name="OOS NAV (合成 / synthesized)",
+                    line={
+                        "width": 2.0,
+                        "color": PLOTLY_STRATEGY_COLOR,
+                        "dash": "dash",
+                    },
                 )
             )
             # Alternating fold shading so the operator can see the fold
@@ -704,22 +795,37 @@ with wf_tabs[0]:
                     annotation_position="top left",
                     annotation_font_size=10,
                 )
+            # Big diagonal "SYNTHESIZED" watermark in chart paper coords
+            # so the marker survives screenshot crops + zoom. Low alpha
+            # so it doesn't fight the actual curve.
+            fig.add_annotation(
+                text="合成 SYNTHESIZED",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5,
+                showarrow=False,
+                font={"size": 44, "color": "rgba(150, 150, 150, 0.22)"},
+                textangle=-22,
+            )
             fig.update_layout(
                 height=380,
-                margin={"t": 10, "b": 36, "l": 40, "r": 12},
+                margin={"t": 28, "b": 36, "l": 40, "r": 12},
                 xaxis_title="测试窗",
-                yaxis_title="样本外净值（×）",
+                yaxis_title="样本外净值（× ， 合成）",
                 showlegend=False,
                 title={
-                    "text": "拼接样本外净值（合成）",
+                    # Prefix the bracket + dashed-line tag survives even
+                    # when the chart is screenshotted with the watermark
+                    # cropped out.
+                    "text": "【合成】拼接样本外净值（synthesized — 仅作稳定性参考）",
                     "font": {"size": 12},
                     "x": 0,
                 },
             )
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
-                "由每折的年化收益与测试窗长度合成 —— 折内路径不可得"
-                "（滚动验证引擎没有按折落盘 nav.parquet）。"
+                "⚠ 合成曲线：由每折的年化收益与测试窗长度复利推得 — 折内路径"
+                "不可得（滚动验证引擎不按折落盘 nav.parquet）。仅适合做"
+                "稳定性 / 形状判断，不要作为真实回测路径截图。"
             )
         except ImportError:
             st.info("未安装 Plotly，净值图不可用。")

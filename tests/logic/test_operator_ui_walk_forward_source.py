@@ -101,6 +101,97 @@ class WalkForwardPageSourceTests(unittest.TestCase):
         self.assertIn("on_retry=", source)
         self.assertIn('window.location.reload()', source)
 
+    def test_stability_score_weights_are_documented_module_constants(self) -> None:
+        """Weights and thresholds for the stability heuristic MUST live
+        as documented module constants — not as bare ``0.4 * cv +
+        0.3 * ...`` literals — so a refactor cannot silently drift
+        them and so reviewers don't read the values as load-bearing
+        magic numbers (UI review P1-6)."""
+
+        source = self._source()
+
+        # Constants exist with the expected values.
+        self.assertIn("_STABILITY_W_IR_CV: float = 0.4", source)
+        self.assertIn("_STABILITY_W_POSITIVE_FOLDS: float = 0.3", source)
+        self.assertIn("_STABILITY_W_DD_CONCENTRATION: float = 0.2", source)
+        self.assertIn("_STABILITY_W_TREND_STABLE: float = 0.1", source)
+        self.assertIn("_STABILITY_LABEL_HIGH: float = 0.8", source)
+        self.assertIn("_STABILITY_LABEL_MID: float = 0.6", source)
+        self.assertIn("_STABILITY_LABEL_LOW: float = 0.3", source)
+        self.assertIn("_STABILITY_TREND_SPEARMAN_CUTOFF: float = 0.3", source)
+
+        # Heuristic-disclaimer string exists and is used in the UI.
+        self.assertIn("STABILITY_SCORE_HEURISTIC_NOTE", source)
+        self.assertIn("启发式评分", source)
+
+        # Score formula reads from the constants, not magic numbers.
+        self.assertIn(
+            "_STABILITY_W_IR_CV * (1.0 - cv_clamped)",
+            source,
+        )
+        self.assertIn("_STABILITY_W_POSITIVE_FOLDS * (n_positive / n)", source)
+        self.assertIn("_STABILITY_W_DD_CONCENTRATION * dd_concentration", source)
+        # Specifically: the bare ``0.4 *``/``0.3 *``/``0.2 *``/``0.1 *``
+        # literal score formula MUST NOT survive in source.
+        self.assertNotIn("0.4 * (1.0 - cv_clamped)", source)
+        self.assertNotIn("0.3 * (n_positive / n)", source)
+        self.assertNotIn("0.2 * dd_concentration", source)
+
+    def test_stability_breakdown_renders_subscores_alongside_composite(self) -> None:
+        """The composite score is a glance-aid; the four sub-components
+        (IR CV / positive folds / drawdown concentration / IR > 1) MUST
+        render alongside the composite (expander defaults to expanded,
+        each sub-score shows its weight) so operators see what the
+        composite is made of (UI review P1-6)."""
+
+        source = self._source()
+
+        # Expander opens by default — the breakdown is load-bearing.
+        self.assertIn('"稳定性分解（4 个子分量）"', source)
+        self.assertIn("expanded=True", source)
+        # Weight labels next to each sub-score so the operator can see
+        # the composition without leaving the page.
+        self.assertIn("_STABILITY_W_IR_CV:.0%", source)
+        self.assertIn("_STABILITY_W_POSITIVE_FOLDS:.0%", source)
+        self.assertIn("_STABILITY_W_DD_CONCENTRATION:.0%", source)
+        self.assertIn("_STABILITY_W_TREND_STABLE:.0%", source)
+
+    def test_stability_score_display_surfaces_heuristic_disclaimer(self) -> None:
+        """The "启发式" tooltip AND a screen-reader-accessible caption
+        MUST sit next to the score so keyboard/screen-reader users (for
+        whom ``title=`` never fires) still see the disclaimer
+        (UI review P1-6)."""
+
+        source = self._source()
+
+        # Inline tooltip on the score label.
+        self.assertIn("ⓘ 启发式", source)
+        # Plain-text caption fallback below the score.
+        self.assertIn("st.caption(", source)
+        self.assertIn("STABILITY_SCORE_HEURISTIC_NOTE", source)
+
+    def test_synthesized_nav_chart_carries_visible_synthesis_marker(self) -> None:
+        """The stitched NAV chart was being screenshotted into reports
+        as ground-truth — the operator-visible markers MUST make the
+        synthesis obvious even after a crop. Pin: dashed line,
+        watermark annotation, and a ``【合成】`` title prefix that
+        survives chart-area screenshots (UI review P1-7)."""
+
+        source = self._source()
+
+        # Dashed line style (was solid).
+        self.assertIn('"dash": "dash"', source)
+        # Watermark annotation at chart paper coords.
+        self.assertIn("合成 SYNTHESIZED", source)
+        self.assertIn('xref="paper"', source)
+        # Title prefix carries the marker too — survives a screenshot
+        # that crops the watermark.
+        self.assertIn("【合成】拼接样本外净值", source)
+        # Plain-text caption on the trace name and y-axis title gives
+        # screen-reader users the same signal as the visual cues.
+        self.assertIn("OOS NAV (合成 / synthesized)", source)
+        self.assertIn("合成", source)
+
     def test_walk_forward_synthesised_nav_helpers_exist(self) -> None:
         """Stitched NAV synthesis + log reader SHALL be implemented as
         named helpers so unit tests can target them without a Streamlit
