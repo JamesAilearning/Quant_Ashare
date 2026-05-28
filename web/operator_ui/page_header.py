@@ -1,4 +1,14 @@
-"""Consistent page header and breadcrumb helpers for the operator UI."""
+"""Consistent page header helper for the operator UI.
+
+``render_breadcrumbs`` lived here in earlier iterations but every page
+called it with a single ``(label, None)`` segment — the path was always
+None, so the breadcrumb rendered as plain non-clickable text instead of
+nav. Operators kept trying to click the "section" label and nothing
+happened. The same section is already exposed by ``st.navigation``'s
+sidebar grouping, so the breadcrumb added zero information while
+masquerading as navigation. UI review P1-2 deleted both the calls and
+the helper.
+"""
 
 from __future__ import annotations
 
@@ -25,12 +35,11 @@ def render_page_header(
         immediately before the page title. The matching link lives in
         :func:`web.operator_ui.theme.render_skip_link` and is rendered by
         ``app.py`` before navigation; the anchor must land HERE (after
-        topbar / sidebar / breadcrumb chrome but before page content) so
-        the skip-link actually skips chrome. Previously both link and
-        anchor lived in ``theme.SKIP_LINK_HTML`` as adjacent siblings,
-        so pressing Enter scrolled to a point still above every piece
-        of chrome the operator wanted to skip — silently useless (UI
-        review P0-4).
+        topbar / sidebar chrome but before page content) so the skip-link
+        actually skips chrome. Previously both link and anchor lived in
+        ``theme.SKIP_LINK_HTML`` as adjacent siblings, so pressing Enter
+        scrolled to a point still above every piece of chrome the
+        operator wanted to skip — silently useless (UI review P0-4).
     """
 
     parts = [
@@ -46,37 +55,3 @@ def render_page_header(
         parts.append(f'<div class="qv2-page-header-actions">{actions_html}</div>')
     parts.append("</div>")
     st.html("\n".join(parts), width="content", unsafe_allow_javascript=False)
-
-
-def render_breadcrumbs(segments: list[tuple[str, str | None]]) -> None:
-    """Inject a breadcrumb trail above the page content.
-
-    Each ``segment`` is a ``(label, path_or_None)`` pair.  The *last*
-    segment (where ``path`` is ``None``) is rendered as the current page
-    without a hyperlink.
-
-    Example::
-
-        render_breadcrumbs([
-            ("Analyze", "/results"),
-            ("Results", None),
-        ])
-    """
-
-    items: list[str] = []
-    for i, (label, path) in enumerate(segments):
-        is_last = i == len(segments) - 1
-        if is_last:
-            items.append(f'<li><span aria-current="page">{label}</span></li>')
-        else:
-            items.append(f'<li><a href="{path}">{label}</a></li>')
-            items.append('<li><span class="qv2-breadcrumb-sep">/</span></li>')
-
-    html = (
-        '<nav class="qv2-breadcrumbs" aria-label="Breadcrumb">'
-        "<ol>"
-        + "".join(items)
-        + "</ol>"
-        "</nav>"
-    )
-    st.html(html, width="content", unsafe_allow_javascript=False)

@@ -114,11 +114,30 @@ class OperatorUiThemeTests(unittest.TestCase):
 
         self.assertEqual(offenders, [], "Python UI sources should use CSS tokens")
 
-    def test_app_registers_design_system_page_and_theme_injection(self) -> None:
+    def test_app_registers_design_system_page_behind_env_gate(self) -> None:
+        """Theme injection must still happen unconditionally. The
+        design-system demo page (token swatches + component gallery
+        for visual QA) MUST be gated behind ``QV2_SHOW_DESIGN_SYSTEM``
+        so it doesn't show up in the production operator menu and
+        get misread as a real settings page (UI review P1-12)."""
+
         source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
 
         self.assertIn("inject_theme", source)
+        # File reference still present (just gated).
         self.assertIn("design_system.py", source)
+        # The env var that operators opt into for design QA.
+        self.assertIn("QV2_SHOW_DESIGN_SYSTEM", source)
+        # Defence-in-depth: the design_system Page literal MUST sit
+        # inside an env-var conditional, not at the top of the nav
+        # dict.
+        ds_idx = source.index('design_system.py')
+        gate_idx = source.index('QV2_SHOW_DESIGN_SYSTEM')
+        self.assertLess(
+            gate_idx, ds_idx,
+            "QV2_SHOW_DESIGN_SYSTEM check must appear before "
+            "design_system.py is added to the navigation",
+        )
 
     def test_app_uses_shell_helpers_not_legacy_sidebar_expander(self) -> None:
         """App entry SHALL drive appearance from the topbar settings dialog

@@ -15,11 +15,18 @@ class JobsSourceTests(unittest.TestCase):
         self.assertIn("format_relative_time", source)
         self.assertIn("format_duration", source)
 
-    def test_old_run_history_redirects_to_jobs(self) -> None:
-        source = Path("web/operator_ui/pages/run_history.py").read_text(encoding="utf-8")
+    def test_old_run_history_redirect_file_is_removed(self) -> None:
+        """``pages/run_history.py`` was a 6-line ``st.switch_page`` stub
+        that wasn't registered in ``app.py``'s navigation — pure dead
+        code that just added grep noise. UI review P1-14 deleted it;
+        pin its absence so a revert doesn't bring it back. Operators
+        who bookmarked the old URL hit Streamlit's default 404 and can
+        navigate to Jobs from the sidebar."""
 
-        self.assertIn('pages/jobs.py', source)
-        self.assertIn('st.switch_page', source)
+        self.assertFalse(
+            Path("web/operator_ui/pages/run_history.py").exists(),
+            "run_history.py should have been deleted as dead code",
+        )
 
     def test_app_nav_includes_jobs_not_run_history(self) -> None:
         source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")

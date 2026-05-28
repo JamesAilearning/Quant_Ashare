@@ -34,7 +34,7 @@ from web.operator_ui.formatting import (
     format_relative_time,
 )
 from web.operator_ui.job_io import SORT_OPTIONS, list_all_jobs
-from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+from web.operator_ui.page_header import render_page_header
 
 # ---------------------------------------------------------------------------
 # URL <-> session sync helpers
@@ -135,7 +135,6 @@ _FILTER_KEY_LABELS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-render_breadcrumbs([("运行", None)])
 render_page_header("作业", "所有流水线、滚动验证及数据源的运行记录。")
 # FU-8: surface bundle freshness next to the header. Operators can
 # now spot a stale / mis-configured ``provider_uri`` before they

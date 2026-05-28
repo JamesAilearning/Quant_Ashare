@@ -39,7 +39,7 @@ from web.operator_ui.formatting import (
     format_percent,
 )
 from web.operator_ui.job_manager import JobManager
-from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+from web.operator_ui.page_header import render_page_header
 from web.operator_ui.report_reader import (
     read_fold_reports,
     read_walk_forward_report,
@@ -325,7 +325,6 @@ def _stability_color(score: float) -> str:
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-render_breadcrumbs([("分析", None)])
 render_page_header("滚动验证详情", "单折结果、稳定性分析以及样本外净值。")
 
 # ---------------------------------------------------------------------------

@@ -116,13 +116,29 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("搜索交易", source)
         self.assertIn("导出交易 CSV", source)
 
-    def test_results_page_exposes_accessible_status_and_shortcut_help(self) -> None:
+    def test_results_page_status_header_uses_aria_live(self) -> None:
+        """The status badge in the result header SHALL announce updates
+        to assistive tech via ``role="status"`` + ``aria-live="polite"``.
+        (The "键盘快捷键" expander was removed in UI review P1-3 — it
+        documented shortcuts that don't actually fire any handler.)"""
+
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
 
         self.assertIn('role="status"', source)
         self.assertIn('aria-live="polite"', source)
-        self.assertIn("键盘快捷键", source)
-        self.assertIn("Streamlit 没有暴露全局键盘事件接口", source)
+
+    def test_results_page_does_not_advertise_unimplemented_kbd_shortcuts(self) -> None:
+        """The legacy "键盘快捷键" expander listed 6 shortcuts (?, j/k,
+        r, e, 1-5, /) and immediately disclaimed that none of them
+        actually worked — a tombstone disguised as a feature. UI review
+        P1-3 deleted it; pin its absence so a well-meaning rewrite
+        doesn't add the misleading documentation back without wiring
+        the JS event listeners."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertNotIn('st.expander("键盘快捷键"', source)
+        self.assertNotIn("Streamlit 没有暴露全局键盘事件接口", source)
 
     def test_results_page_exposes_polished_header_navigation(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
