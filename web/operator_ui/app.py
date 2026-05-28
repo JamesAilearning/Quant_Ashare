@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
@@ -132,21 +134,29 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 _PAGES_DIR = Path(__file__).resolve().parent / "pages"
 
-pg = st.navigation(
-    {
-        "运行": [
-            st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
-            st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
-            st.Page(str(_PAGES_DIR / "tushare.py"), title="Tushare 数据"),
-        ],
-        "分析": [
-            st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
-            st.Page(str(_PAGES_DIR / "walk_forward.py"), title="滚动验证"),
-        ],
-        "系统": [
-            st.Page(str(_PAGES_DIR / "design_system.py"), title="设计系统"),
-        ],
-    },
-)
+_navigation: dict[str, list[Any]] = {
+    "运行": [
+        st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
+        st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
+        st.Page(str(_PAGES_DIR / "tushare.py"), title="Tushare 数据"),
+    ],
+    "分析": [
+        st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
+        st.Page(str(_PAGES_DIR / "walk_forward.py"), title="滚动验证"),
+    ],
+}
+
+# Design-system demo page is for visual QA only — it doesn't read any
+# runtime artifacts and adding it to the operator nav let new operators
+# misread "设计系统" as a real settings page (UI review P1-12). Gate it
+# behind an opt-in env var so design QA can still preview tokens via
+# ``QV2_SHOW_DESIGN_SYSTEM=1 python scripts/run_ui.py`` without
+# polluting the production menu.
+if os.environ.get("QV2_SHOW_DESIGN_SYSTEM", "").strip():
+    _navigation["系统"] = [
+        st.Page(str(_PAGES_DIR / "design_system.py"), title="设计系统"),
+    ]
+
+pg = st.navigation(_navigation)
 
 pg.run()

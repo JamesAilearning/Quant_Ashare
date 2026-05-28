@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import unittest
 from pathlib import Path
 
@@ -17,30 +16,58 @@ except ImportError:
 class OperatorUiPageHeaderTests(unittest.TestCase):
     @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_module_exports_public_api(self) -> None:
-        from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+        """Only ``render_page_header`` remains — ``render_breadcrumbs``
+        was removed in UI review P1-2 because every page called it
+        with ``(label, None)`` and the helper rendered the label as
+        non-clickable text masquerading as nav. The same section is
+        already exposed by the sidebar grouping."""
+
+        from web.operator_ui.page_header import render_page_header
 
         self.assertTrue(callable(render_page_header))
-        self.assertTrue(callable(render_breadcrumbs))
 
-    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
-    def test_render_breadcrumbs_generates_semantic_html(self) -> None:
-        source = inspect.getsource(
-            __import__(
-                "web.operator_ui.page_header", fromlist=["render_breadcrumbs"]
-            ).render_breadcrumbs,
+    def test_render_breadcrumbs_helper_removed(self) -> None:
+        """``render_breadcrumbs`` MUST be gone from the module surface.
+        Pin its absence so a well-meaning revert that "puts the helper
+        back for future use" without callers reintroduces the same dead
+        / misleading affordance (UI review P1-2).
+
+        Asserted at the source-text level rather than via ``import`` so
+        the check still runs in CI cells without ``streamlit`` installed
+        — ``page_header.py`` ``import streamlit as st`` at module top
+        would otherwise raise ``ModuleNotFoundError`` before
+        ``hasattr`` could even run. (Codex P2 on PR #193.)
+        """
+
+        source = Path("web/operator_ui/page_header.py").read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            "def render_breadcrumbs(",
+            source,
+            "render_breadcrumbs should have been removed alongside its callers",
         )
 
-        self.assertIn("qv2-breadcrumbs", source)
-        self.assertIn('aria-label="Breadcrumb"', source)
-        self.assertIn('aria-current="page"', source)
+    def test_no_page_calls_render_breadcrumbs(self) -> None:
+        """All page modules SHALL stop importing or calling
+        ``render_breadcrumbs`` (UI review P1-2)."""
+
+        pages_dir = Path("web/operator_ui/pages")
+        offenders: list[str] = []
+        for path in sorted(pages_dir.glob("*.py")):
+            if path.name.startswith("_") or path.name == "__init__.py":
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "render_breadcrumbs" in source:
+                offenders.append(path.name)
+        self.assertEqual(
+            offenders, [],
+            "Pages should no longer reference render_breadcrumbs",
+        )
 
     def test_all_pages_use_page_header(self) -> None:
         pages_dir = Path("web/operator_ui/pages")
         for path in sorted(pages_dir.glob("*.py")):
             if path.name.startswith("_") or path.name == "__init__.py":
-                continue
-            # Redirect stubs don't need a header
-            if path.name == "run_history.py":
                 continue
             source = path.read_text(encoding="utf-8")
             self.assertIn(
@@ -68,7 +95,6 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         self.assertIn("qv2-sidebar-brand", css)
         self.assertIn("qv2-sidebar-footer", css)
         self.assertIn("qv2-page-header", css)
-        self.assertIn("qv2-breadcrumbs", css)
         self.assertIn("qv2-sidebar-status", css)
         self.assertIn("@media (max-width: 768px)", css)
 
@@ -85,7 +111,7 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         """``render_page_header`` SHALL inject the skip-link target anchor
         (``<a id="qv2-main-content">``) at the start of the rendered HTML so
         the affordance from ``theme.render_skip_link`` actually lands past
-        the topbar / sidebar / breadcrumb instead of immediately after the
+        the topbar / sidebar chrome instead of immediately after the
         link itself (UI review P0-4).
 
         We patch ``streamlit.html`` to capture the markup ``render_page_header``
@@ -117,7 +143,7 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         self.assertIn('tabindex="-1"', html)
         # The anchor MUST lead the rendered HTML — sitting before the
         # ``<div class="qv2-page-header">`` div means the skip link
-        # actually skips past topbar / sidebar / breadcrumb chrome.
+        # actually skips past topbar / sidebar chrome.
         anchor_index = html.index('id="qv2-main-content"')
         header_index = html.index('class="qv2-page-header"')
         self.assertLess(
@@ -128,16 +154,12 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
 
     def test_all_pages_render_page_header(self) -> None:
         """Every operator-facing page module MUST call ``render_page_header``
-        so the skip-link target lands on the page. Stub redirects (e.g.,
-        ``run_history.py``) are exempt — see ``test_all_pages_use_page_header``
-        above for the parallel coverage."""
+        so the skip-link target lands on the page."""
 
         pages_dir = Path("web/operator_ui/pages")
         missing: list[str] = []
         for path in sorted(pages_dir.glob("*.py")):
             if path.name.startswith("_") or path.name == "__init__.py":
-                continue
-            if path.name == "run_history.py":
                 continue
             source = path.read_text(encoding="utf-8")
             if "render_page_header" not in source:

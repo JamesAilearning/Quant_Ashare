@@ -25,7 +25,7 @@ from web.operator_ui.config_forms import (
     validate_config_keys,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
-from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+from web.operator_ui.page_header import render_page_header
 
 
 def _parse_instruments(raw: str) -> str | list[str]:
@@ -35,7 +35,6 @@ def _parse_instruments(raw: str) -> str | list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-render_breadcrumbs([("运行", None)])
 render_page_header(
     "Tushare 数据",
     "把 A 股日频数据拉到本地 qlib bin 存储里。完成后将产出的目录路径填到"

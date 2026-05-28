@@ -21,7 +21,7 @@ from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import render_empty_state, render_error_state
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
-from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+from web.operator_ui.page_header import render_page_header
 from web.operator_ui.result_exports import (
     BundleTooLargeError,
     bundle_zip_bytes,
@@ -660,20 +660,14 @@ def _render_header_actions(
         if bundle_too_large_message:
             st.caption(bundle_too_large_message)
 
-    with st.expander("键盘快捷键", expanded=False):
-        st.markdown(
-            """
-            - `?`：在此处打开快捷键帮助。
-            - `j` / `k`：在「运行」选择器里跳到下一个 / 上一个作业。
-            - `r`：跳到「配置运行」页面用此作业重跑。
-            - `e`：使用上方的导出按钮。
-            - `1`-`5`：在「持仓 / 交易 / 配置 / 阶段耗时 / 日志」之间切换。
-            - `/`：聚焦到「搜索持仓 / 搜索交易 / 搜索日志」输入框。
-
-            Streamlit 没有暴露全局键盘事件接口，因此这些快捷键以可见按钮和
-            标签的形式呈现，需要用鼠标点击。
-            """
-        )
+    # The "键盘快捷键" expander used to live here, listing 6 shortcuts
+    # (?, j/k, r, e, 1-5, /) immediately followed by "Streamlit 没有暴露
+    # 全局键盘事件接口，因此这些快捷键……需要用鼠标点击。" Operators
+    # who hit `?` after reading the entry got nothing, learning the
+    # quirk only by then scrolling to the disclaimer — a tombstone
+    # disguised as a feature. Deleted (UI review P1-3); if real
+    # shortcuts ever land they can be wired through the existing
+    # ``window.parent.document`` hook pattern in ``theme.py``.
 
 
 def _render_artifact_issues(issues: Sequence[ArtifactReadIssue]) -> None:
@@ -1632,7 +1626,6 @@ def _render_run_not_found(run_id: str) -> None:
 
 
 _install_styles()
-render_breadcrumbs([("分析", None)])
 render_page_header("结果", "查看流水线、滚动验证及数据源运行的产物。")
 # FU-8 bundle freshness banner. **Bound to the SELECTED run's bundle**,
 # not the project-default — Codex P1 on PR #169 surfaced that

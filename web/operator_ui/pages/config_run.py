@@ -24,7 +24,7 @@ from web.operator_ui.config_presets import (
     sanitise_preset_name,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError, JobMode
-from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+from web.operator_ui.page_header import render_page_header
 from web.operator_ui.provider_catalog import (
     ProviderCatalogError,
     delete_provider_catalog_entry,
@@ -311,7 +311,6 @@ def _prefill_config() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------------------
-render_breadcrumbs([("运行", None)])
 render_page_header("配置运行", "配置并启动流水线或滚动验证作业。")
 
 # ---------------------------------------------------------------------------

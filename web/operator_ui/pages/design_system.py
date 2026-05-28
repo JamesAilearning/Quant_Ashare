@@ -35,9 +35,8 @@ from web.operator_ui.formatting import (
     format_percent,
     format_relative_time,
 )
-from web.operator_ui.page_header import render_breadcrumbs, render_page_header
+from web.operator_ui.page_header import render_page_header
 
-render_breadcrumbs([("系统", None)])
 render_page_header("设计系统")
 st.caption("运维 UI 的视觉 token 与展示格式示例。")
 
