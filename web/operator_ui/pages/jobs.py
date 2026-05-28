@@ -538,13 +538,48 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
             )
 
 # ---------------------------------------------------------------------------
-# Load more
+# Pagination — real prev/next nav over offset-sliced pages (UI review
+# P1-10). The previous "load more" button returned the first N×size
+# items cumulatively, so dataframe formatting cost grew linearly with
+# click count and the operator had no "what page am I on" signal.
 # ---------------------------------------------------------------------------
-_showing = _page * _page_size
-if _showing < total:
-    if st.button(f"加载更多（剩余 {total - _showing} 条）", key="jobs_load_more"):
-        st.session_state["jobs_page"] = str(_page + 1)
-        st.rerun()
+_total_pages = max(1, (total + _page_size - 1) // _page_size)
+# Clamp display page if the URL / session state somehow lands past
+# the end (e.g., filter narrows the result set). list_all_jobs would
+# return [] without crashing, but the indicator should still read a
+# valid page number.
+_display_page = min(_page, _total_pages)
+
+if _total_pages > 1 or total > _page_size:
+    pg_prev, pg_indicator, pg_next = st.columns([1, 2, 1])
+    with pg_prev:
+        if st.button(
+            "← 上一页",
+            key="jobs_pg_prev",
+            disabled=_display_page <= 1,
+            use_container_width=True,
+        ):
+            st.session_state["jobs_page"] = str(_display_page - 1)
+            st.rerun()
+    with pg_indicator:
+        # Centered "第 N / M 页 · 共 X 条" indicator. Renders inside a
+        # ``st.caption`` so it lines up with the buttons without
+        # competing for visual weight.
+        st.caption(
+            f"<div style='text-align:center;padding-top:6px;'>"
+            f"第 {_display_page} / {_total_pages} 页 · 共 {total} 条"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with pg_next:
+        if st.button(
+            "下一页 →",
+            key="jobs_pg_next",
+            disabled=_display_page >= _total_pages,
+            use_container_width=True,
+        ):
+            st.session_state["jobs_page"] = str(_display_page + 1)
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # Auto-refresh (only when there is at least one running job)

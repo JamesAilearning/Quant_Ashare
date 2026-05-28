@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
@@ -266,6 +268,115 @@ class ListAllJobsContractTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             list_all_jobs(date_from="May 20")
+
+
+class ListAllJobsPaginationTests(unittest.TestCase):
+    """UI review P1-10: ``list_all_jobs`` returns a real offset slice
+    instead of the cumulative ``sorted_items[: page * page_size]`` form
+    the load-more UX relied on. Pin the new contract so the cumulative
+    pattern can't quietly come back."""
+
+    def _fake_filtered_items(self, count: int) -> list[object]:
+        # We don't need real JobSummary fixtures — the pagination test
+        # cares about list slicing, so patch ``_apply_sort`` to return
+        # a sentinel list of plain integers ordered as the function
+        # would have sorted them.
+        return list(range(count))
+
+    def _list_with_fake_items(self, items: list[object], **kwargs: object) -> tuple[list[object], int]:
+        from web.operator_ui import job_io
+
+        with patch.object(job_io, "_load_ui_jobs", return_value=[]), \
+             patch.object(job_io, "_load_cli_entries", return_value=[]), \
+             patch.object(job_io, "_apply_sort", return_value=items):
+            return job_io.list_all_jobs(**kwargs)  # type: ignore[arg-type]
+
+    def test_page_one_returns_first_page_size_items(self) -> None:
+        items = self._fake_filtered_items(50)
+        page, total = self._list_with_fake_items(items, page=1, page_size=25)
+        self.assertEqual(total, 50)
+        self.assertEqual(page, list(range(0, 25)))
+
+    def test_page_two_returns_next_window_not_cumulative(self) -> None:
+        items = self._fake_filtered_items(50)
+        page, total = self._list_with_fake_items(items, page=2, page_size=25)
+        self.assertEqual(total, 50)
+        # Crucially: items 25..49 ONLY — NOT 0..49. The cumulative
+        # variant returned the full prefix on each click; the real
+        # pagination returns the window for this page only.
+        self.assertEqual(page, list(range(25, 50)))
+
+    def test_last_partial_page_returns_remainder(self) -> None:
+        items = self._fake_filtered_items(53)
+        page, total = self._list_with_fake_items(items, page=3, page_size=25)
+        self.assertEqual(total, 53)
+        self.assertEqual(page, list(range(50, 53)))
+
+    def test_request_past_end_returns_empty_with_intact_total(self) -> None:
+        items = self._fake_filtered_items(10)
+        page, total = self._list_with_fake_items(items, page=99, page_size=25)
+        # Total preserves so the UI can show "past last page" or snap
+        # back to a valid page without re-querying.
+        self.assertEqual(total, 10)
+        self.assertEqual(page, [])
+
+    def test_single_page_dataset_returns_everything(self) -> None:
+        items = self._fake_filtered_items(7)
+        page, total = self._list_with_fake_items(items, page=1, page_size=25)
+        self.assertEqual(total, 7)
+        self.assertEqual(page, list(range(7)))
+
+    def test_empty_dataset_returns_empty_page_with_total_zero(self) -> None:
+        items = self._fake_filtered_items(0)
+        page, total = self._list_with_fake_items(items, page=1, page_size=25)
+        self.assertEqual(total, 0)
+        self.assertEqual(page, [])
+
+    def test_invalid_page_value_raises(self) -> None:
+        from web.operator_ui.job_io import list_all_jobs
+
+        with self.assertRaises(ValueError):
+            list_all_jobs(page=0)
+        with self.assertRaises(ValueError):
+            list_all_jobs(page=-5)
+
+    def test_invalid_page_size_raises(self) -> None:
+        from web.operator_ui.job_io import list_all_jobs
+
+        with self.assertRaises(ValueError):
+            list_all_jobs(page_size=0)
+
+
+class JobsPagePaginationUiTests(unittest.TestCase):
+    """Source-level pin for the jobs page's prev/next pagination UI
+    (UI review P1-10)."""
+
+    def setUp(self) -> None:
+        self.source = Path("web/operator_ui/pages/jobs.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_prev_next_buttons_replace_cumulative_load_more(self) -> None:
+        # Real prev/next buttons with stable keys.
+        self.assertIn('"← 上一页"', self.source)
+        self.assertIn('"下一页 →"', self.source)
+        self.assertIn('key="jobs_pg_prev"', self.source)
+        self.assertIn('key="jobs_pg_next"', self.source)
+        # Cumulative "加载更多" pattern + its session key MUST be gone.
+        self.assertNotIn("加载更多", self.source)
+        self.assertNotIn("jobs_load_more", self.source)
+
+    def test_page_indicator_shows_current_total_and_count(self) -> None:
+        # Indicator references the resolved page / total pages / total
+        # rows so the operator always knows where they are.
+        self.assertIn("第 {_display_page} / {_total_pages} 页", self.source)
+        self.assertIn("共 {total} 条", self.source)
+
+    def test_buttons_disable_at_edges(self) -> None:
+        # Prev disabled on page 1, Next disabled on last page so click
+        # noise doesn't fire ineffective reruns.
+        self.assertIn("disabled=_display_page <= 1", self.source)
+        self.assertIn("disabled=_display_page >= _total_pages", self.source)
 
 
 if __name__ == "__main__":
