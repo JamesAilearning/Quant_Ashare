@@ -332,8 +332,8 @@ except (TypeError, ValueError):
     _page = 1
 _page_size = 25
 
-try:
-    items, total = list_all_jobs(
+def _query_page(page_value: int) -> tuple[list[Any], int]:
+    return list_all_jobs(
         type_filter=type_filter,
         status_filter=status_filter,
         source_filter=source_filter,
@@ -342,9 +342,23 @@ try:
         date_to=date_to_iso,
         sort_by=sort_by,
         sort_dir=sort_dir,
-        page=_page,
+        page=page_value,
         page_size=_page_size,
     )
+
+
+try:
+    items, total = _query_page(_page)
+    # Clamp + re-query when the stored page lands past the end (filter
+    # narrowed mid-session, job pruned, URL points to a now-stale page).
+    # Without this, the original load returned an empty offset slice for
+    # the stale page and the indicator below would say "第 X / Y 页"
+    # while rendering zero rows — Codex P2 on PR #197.
+    _total_pages_pre = max(1, (total + _page_size - 1) // _page_size)
+    if _page > _total_pages_pre:
+        _page = _total_pages_pre
+        st.session_state["jobs_page"] = str(_page)
+        items, total = _query_page(_page)
 except Exception as exc:
     render_error_state(
         "无法加载作业列表",
@@ -544,11 +558,9 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
 # click count and the operator had no "what page am I on" signal.
 # ---------------------------------------------------------------------------
 _total_pages = max(1, (total + _page_size - 1) // _page_size)
-# Clamp display page if the URL / session state somehow lands past
-# the end (e.g., filter narrows the result set). list_all_jobs would
-# return [] without crashing, but the indicator should still read a
-# valid page number.
-_display_page = min(_page, _total_pages)
+# ``_page`` is already clamped above (clamp-and-re-query path) so we
+# can render the indicator + control buttons against it directly —
+# the indicator and the dataframe always agree on which page we're on.
 
 if _total_pages > 1 or total > _page_size:
     pg_prev, pg_indicator, pg_next = st.columns([1, 2, 1])
@@ -556,10 +568,10 @@ if _total_pages > 1 or total > _page_size:
         if st.button(
             "← 上一页",
             key="jobs_pg_prev",
-            disabled=_display_page <= 1,
+            disabled=_page <= 1,
             use_container_width=True,
         ):
-            st.session_state["jobs_page"] = str(_display_page - 1)
+            st.session_state["jobs_page"] = str(_page - 1)
             st.rerun()
     with pg_indicator:
         # Centered "第 N / M 页 · 共 X 条" indicator. Renders inside a
@@ -567,7 +579,7 @@ if _total_pages > 1 or total > _page_size:
         # competing for visual weight.
         st.caption(
             f"<div style='text-align:center;padding-top:6px;'>"
-            f"第 {_display_page} / {_total_pages} 页 · 共 {total} 条"
+            f"第 {_page} / {_total_pages} 页 · 共 {total} 条"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -575,10 +587,10 @@ if _total_pages > 1 or total > _page_size:
         if st.button(
             "下一页 →",
             key="jobs_pg_next",
-            disabled=_display_page >= _total_pages,
+            disabled=_page >= _total_pages,
             use_container_width=True,
         ):
-            st.session_state["jobs_page"] = str(_display_page + 1)
+            st.session_state["jobs_page"] = str(_page + 1)
             st.rerun()
 
 # ---------------------------------------------------------------------------

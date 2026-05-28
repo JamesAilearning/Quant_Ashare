@@ -367,16 +367,41 @@ class JobsPagePaginationUiTests(unittest.TestCase):
         self.assertNotIn("jobs_load_more", self.source)
 
     def test_page_indicator_shows_current_total_and_count(self) -> None:
-        # Indicator references the resolved page / total pages / total
-        # rows so the operator always knows where they are.
-        self.assertIn("第 {_display_page} / {_total_pages} 页", self.source)
+        # Indicator references the (already-clamped) ``_page`` /
+        # total pages / total rows so the operator always knows where
+        # they are.
+        self.assertIn("第 {_page} / {_total_pages} 页", self.source)
         self.assertIn("共 {total} 条", self.source)
 
     def test_buttons_disable_at_edges(self) -> None:
         # Prev disabled on page 1, Next disabled on last page so click
         # noise doesn't fire ineffective reruns.
-        self.assertIn("disabled=_display_page <= 1", self.source)
-        self.assertIn("disabled=_display_page >= _total_pages", self.source)
+        self.assertIn("disabled=_page <= 1", self.source)
+        self.assertIn("disabled=_page >= _total_pages", self.source)
+
+    def test_stale_page_is_clamped_and_requery_before_render(self) -> None:
+        """When the stored ``jobs_page`` lands past the result set's
+        last page (filter narrowed mid-session, jobs were pruned, URL
+        points to a now-stale page), the page MUST be clamped AND the
+        query re-issued so the indicator and dataframe agree. The
+        earlier draft of this PR only clamped the indicator after the
+        first ``list_all_jobs`` call ran with the stale page, so the
+        UI rendered ``第 N / N 页`` while showing zero rows
+        (Codex P2 on PR #197)."""
+
+        # The local helper exists and is the *only* call site for
+        # ``list_all_jobs`` on the page (so the re-query path can't
+        # bypass it).
+        self.assertIn("def _query_page(page_value: int)", self.source)
+        # Re-query path runs when ``_page > _total_pages_pre`` after
+        # the initial load.
+        self.assertIn("_total_pages_pre", self.source)
+        self.assertIn("if _page > _total_pages_pre:", self.source)
+        # Re-query happens with the clamped ``_page`` value AND
+        # writes that value back into session_state so a subsequent
+        # rerun also reads the corrected page.
+        self.assertIn('st.session_state["jobs_page"] = str(_page)', self.source)
+        self.assertIn("items, total = _query_page(_page)", self.source)
 
 
 if __name__ == "__main__":
