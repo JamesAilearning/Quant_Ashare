@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from web.operator_ui.theme import SKIP_LINK_TARGET_ID
+
 
 def render_page_header(
     title: str,
@@ -17,11 +19,26 @@ def render_page_header(
         title: Page title (displayed as ``<h1>``).
         subtitle: Optional secondary description below the title.
         actions_html: Optional raw HTML for action buttons, placed right-aligned.
+
+    Side effect:
+        Emits the skip-link target anchor (``<a id="qv2-main-content">``)
+        immediately before the page title. The matching link lives in
+        :func:`web.operator_ui.theme.render_skip_link` and is rendered by
+        ``app.py`` before navigation; the anchor must land HERE (after
+        topbar / sidebar / breadcrumb chrome but before page content) so
+        the skip-link actually skips chrome. Previously both link and
+        anchor lived in ``theme.SKIP_LINK_HTML`` as adjacent siblings,
+        so pressing Enter scrolled to a point still above every piece
+        of chrome the operator wanted to skip — silently useless (UI
+        review P0-4).
     """
 
-    parts = ['<div class="qv2-page-header">']
-    parts.append('<div class="qv2-page-header-main">')
-    parts.append(f'<h1 class="qv2-text-page-title">{title}</h1>')
+    parts = [
+        f'<a id="{SKIP_LINK_TARGET_ID}" tabindex="-1" class="qv2-sr-only">主内容</a>',
+        '<div class="qv2-page-header">',
+        '<div class="qv2-page-header-main">',
+        f'<h1 class="qv2-text-page-title">{title}</h1>',
+    ]
     if subtitle:
         parts.append(f'<p class="qv2-text-body-sm qv2-muted">{subtitle}</p>')
     parts.append("</div>")

@@ -196,6 +196,33 @@ class ResultsPageSourceTests(unittest.TestCase):
         # and via the button's help tooltip.
         self.assertIn("st.caption(bundle_too_large_message)", source)
 
+    def test_results_page_auto_refresh_is_opt_in_with_default_off(self) -> None:
+        """Running-job auto-refresh SHALL be a default-OFF checkbox toggle,
+        not an unconditional ``time.sleep(5) + st.rerun()`` (UI review P0-1).
+
+        The previous implementation locked the operator out of the page
+        for the entire duration of a running job (1-8 hours for a typical
+        pipeline) — reading logs, scrolling charts, copying IDs all got
+        eaten by the next forced rerun. Mirrors the toggle pattern from
+        ``jobs.py:543-553`` so both surfaces behave the same way."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        # Toggle widget must exist with a stable key.
+        self.assertIn('key="results_autorefresh"', source)
+        # The sleep + rerun MUST be guarded by the checkbox value.
+        self.assertIn("if results_auto_refresh:", source)
+        # User-visible label mentioning the 5-second cadence.
+        self.assertIn("每 5 秒自动刷新", source)
+        # Belt-and-braces: the running-status branch MUST instantiate the
+        # checkbox with ``value=False`` (default off). We scope the assert
+        # to the lines around ``results_autorefresh`` so an unrelated
+        # ``value=False`` elsewhere in the file cannot mask a regression.
+        idx = source.index('key="results_autorefresh"')
+        # 400 chars of context covers the st.checkbox(...) call site.
+        window = source[max(0, idx - 400): idx + 200]
+        self.assertIn("value=False", window)
+
     def test_status_header_offers_one_click_copy_buttons(self) -> None:
         """The status header SHALL render one-click 📋 Copy buttons next
         to Run ID and Run directory (TICKET-R3 polish)."""
