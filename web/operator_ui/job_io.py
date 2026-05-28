@@ -334,8 +334,16 @@ def list_all_jobs(
     sort_dir: str = "desc",
     page: int = 1,
     page_size: int = 25,
-) -> tuple[list[JobSummary], int]:
-    """Return a page of unified job summaries plus the total matched count.
+) -> tuple[list[JobSummary], int, int]:
+    """Return a page of unified job summaries plus filter-wide counts.
+
+    Returns ``(page_items, total_filtered, running_count_filtered)``.
+    The third element is the count of running jobs across the FULL
+    filtered set (not just the current page window) so the jobs page's
+    auto-refresh control stays visible while the operator paginates
+    away from page 1 — without it, ``running_count`` would only see
+    the page's slice and the refresh affordance would disappear
+    (Codex P2 on PR #197).
 
     Filters are applied *before* sort, sort before pagination.
 
@@ -402,6 +410,16 @@ def list_all_jobs(
         date_to,
     )
 
+    # Count running jobs across the FULL filtered set BEFORE pagination
+    # so the jobs page's auto-refresh control stays visible while the
+    # operator paginates away from the running rows. Codex P2 on
+    # PR #197 — without this the count was derived from the page slice
+    # downstream and disappeared as soon as the operator clicked
+    # "下一页".
+    running_count_filtered = sum(
+        1 for item in filtered if item.status == "running"
+    )
+
     # Sort
     sorted_items = _apply_sort(filtered, sort_by, sort_dir)
 
@@ -415,7 +433,7 @@ def list_all_jobs(
     end = start + page_size
     page_items = sorted_items[start:end]
 
-    return page_items, total
+    return page_items, total, running_count_filtered
 
 
 def _parse_date_or_raise(value: str, *, field: str) -> None:

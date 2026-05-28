@@ -332,7 +332,7 @@ except (TypeError, ValueError):
     _page = 1
 _page_size = 25
 
-def _query_page(page_value: int) -> tuple[list[Any], int]:
+def _query_page(page_value: int) -> tuple[list[Any], int, int]:
     return list_all_jobs(
         type_filter=type_filter,
         status_filter=status_filter,
@@ -348,7 +348,7 @@ def _query_page(page_value: int) -> tuple[list[Any], int]:
 
 
 try:
-    items, total = _query_page(_page)
+    items, total, running_count = _query_page(_page)
     # Clamp + re-query when the stored page lands past the end (filter
     # narrowed mid-session, job pruned, URL points to a now-stale page).
     # Without this, the original load returned an empty offset slice for
@@ -358,7 +358,14 @@ try:
     if _page > _total_pages_pre:
         _page = _total_pages_pre
         st.session_state["jobs_page"] = str(_page)
-        items, total = _query_page(_page)
+        # Mirror the clamp back into the URL too — the earlier
+        # ``_qp_write("page", ...)`` block ran BEFORE this clamp using
+        # the stale value, so without this write the address bar would
+        # still read ``?page=99`` while the rendered page was N.
+        # Sharing / reloading the URL would re-trigger the clamp
+        # instead of landing on the right page (Codex P3 on PR #197).
+        _qp_write("page", str(_page))
+        items, total, running_count = _query_page(_page)
 except Exception as exc:
     render_error_state(
         "无法加载作业列表",
@@ -369,9 +376,11 @@ except Exception as exc:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Summary bar
+# Summary bar — ``running_count`` is computed by ``list_all_jobs`` over
+# the FULL filtered set (not just the current page) so the auto-refresh
+# control below stays visible while the operator paginates away from
+# the running rows.
 # ---------------------------------------------------------------------------
-running_count = sum(1 for i in items if i.status == "running")
 if total > 0:
     by_type: dict[str, int] = {}
     for item in items:
