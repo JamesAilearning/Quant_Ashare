@@ -19,7 +19,12 @@ from web.operator_ui.components import render_empty_state, render_error_state
 from web.operator_ui.formatting import fmt_metric
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_breadcrumbs, render_page_header
-from web.operator_ui.result_exports import bundle_zip_bytes, metrics_csv_bytes, summary_pdf_bytes
+from web.operator_ui.result_exports import (
+    BundleTooLargeError,
+    bundle_zip_bytes,
+    metrics_csv_bytes,
+    summary_pdf_bytes,
+)
 from web.operator_ui.result_view_helpers import (
     LOG_LEVEL_OPTIONS,
     TIME_RANGE_OPTIONS,
@@ -552,9 +557,21 @@ def _render_header_actions(
         )
     with action_cols[3]:
         bundle_bytes = b""
+        bundle_too_large_message = ""
         if run_dir is not None:
             try:
                 bundle_bytes = bundle_zip_bytes(run_dir)
+            except BundleTooLargeError as exc:
+                # Catch BundleTooLargeError BEFORE the generic ValueError
+                # branch below — the operator needs the size / path hint,
+                # not a silent disabled-button.
+                size_mib = exc.size_bytes / (1024 * 1024)
+                limit_mib = exc.limit_bytes / (1024 * 1024)
+                bundle_too_large_message = (
+                    f"运行目录约 {size_mib:.0f} MiB，超过 UI 下载上限 "
+                    f"{limit_mib:.0f} MiB。请直接在文件系统打包："
+                    f"{exc.run_dir}"
+                )
             except (OSError, ValueError):
                 bundle_bytes = b""
         st.download_button(
@@ -563,7 +580,10 @@ def _render_header_actions(
             file_name=f"{job.get('job_id', 'pipeline')}_bundle.zip",
             mime="application/zip",
             disabled=not bundle_bytes,
+            help=bundle_too_large_message or None,
         )
+        if bundle_too_large_message:
+            st.caption(bundle_too_large_message)
 
     with st.expander("键盘快捷键", expanded=False):
         st.markdown(

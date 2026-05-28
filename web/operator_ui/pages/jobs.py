@@ -13,6 +13,7 @@ Workflow:
 
 from __future__ import annotations
 
+import html
 import time
 from datetime import date, timedelta
 from typing import Any
@@ -514,6 +515,15 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     st.switch_page("pages/results.py")
         with act_copy:
             copy_id = f"jobs_copy_field_{quote_plus(selected.run_id)}"
+            # ``selected.run_id`` can come from the CLI catalog
+            # (``output/runs/_index.jsonl``) where it bypasses the URL
+            # ``_param_guard`` whitelist. A crafted entry containing ``">``
+            # would break out of the value attribute and execute arbitrary
+            # JS in ``window.parent`` (the copy button uses
+            # ``unsafe_allow_javascript=True``). Escape on the way into the
+            # value attribute so the rendered HTML stays well-formed even
+            # if catalog data carries unexpected characters.
+            escaped_run_id = html.escape(selected.run_id, quote=True)
             st.html(
                 (
                     '<button class="qv2-button qv2-button--secondary qv2-button--full" '
@@ -522,7 +532,7 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     "if (el) { el.select(); document.execCommand && document.execCommand('copy'); }"
                     '})()">📋 复制运行 ID</button>'
                     f'<input id={copy_id!r} class="qv2-sr-only" readonly '
-                    f'value="{selected.run_id}" />'
+                    f'value="{escaped_run_id}" />'
                 ),
                 width="content",
                 unsafe_allow_javascript=True,
