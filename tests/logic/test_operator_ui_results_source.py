@@ -129,6 +129,60 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn('role="status"', source)
         self.assertIn('aria-live="polite"', source)
 
+    def test_results_page_inline_styles_removed_and_moved_to_theme_css(self) -> None:
+        """UI review P1-11. ~100 lines of inline CSS in
+        ``_install_styles()`` duplicated DS rules (``.qv2-card`` /
+        ``.qv2-muted`` / ``.qv2-positive`` / ``.qv2-negative`` /
+        ``.qv2-badge``) and silently overrode them with subtly
+        different specs. The page-specific styles moved into theme.css
+        under the ``.qv2-r-*`` namespace; the page itself no longer
+        injects any inline ``<style>`` block."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
+
+        # No inline-styles helper / call site / ``<style>`` ladder.
+        self.assertNotIn("def _install_styles", source)
+        self.assertNotIn("_install_styles()", source)
+        self.assertNotIn("<style>", source)
+
+        # Every page-scoped class lives under the new namespace AND
+        # is actually used in the page module's HTML.
+        for selector in (
+            ".qv2-r-page", ".qv2-r-header", ".qv2-r-header-row",
+            ".qv2-r-run-id", ".qv2-r-muted", ".qv2-r-card",
+            ".qv2-r-card-title", ".qv2-r-primary", ".qv2-r-secondary",
+            ".qv2-r-section-title", ".qv2-r-empty", ".qv2-r-error",
+        ):
+            self.assertIn(selector + " {", css, f"theme.css missing {selector}")
+
+        # And the old un-namespaced clashing class references are gone
+        # from results.py's HTML (the DS still owns ``.qv2-card`` etc.
+        # for other surfaces, but results.py no longer renders them).
+        for bad in (
+            'class="qv2-header"', 'class="qv2-header-row"',
+            'class="qv2-run-id"', 'class="qv2-card"',
+            'class="qv2-card-title"', 'class="qv2-primary',
+            'class="qv2-secondary"', 'class="qv2-section-title"',
+            'class="qv2-empty"', 'class="qv2-error"',
+            "status-success", "status-running", "status-failed",
+            "status-warning", "status-muted",
+        ):
+            self.assertNotIn(bad, source, f"results.py still uses legacy {bad}")
+
+    def test_results_status_badge_uses_design_system_modifier(self) -> None:
+        """Status badge now composes ``qv2-badge qv2-badge--{variant}``
+        from the DS modifier ladder instead of the page's own
+        ``.status-*`` selectors (UI review P1-11). Pin both the
+        renamed helper and the variant-string composition."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("def _status_badge_variant(status:", source)
+        # Composes the DS modifier class in the status header HTML.
+        self.assertIn('class="qv2-badge qv2-badge--{badge_variant}"', source)
+        self.assertNotIn("def _status_class(", source)
+
     def test_results_page_does_not_advertise_unimplemented_kbd_shortcuts(self) -> None:
         """The legacy "键盘快捷键" expander listed 6 shortcuts (?, j/k,
         r, e, 1-5, /) and immediately disclaimed that none of them
@@ -144,8 +198,18 @@ class ResultsPageSourceTests(unittest.TestCase):
 
     def test_results_page_exposes_polished_header_navigation(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
 
-        self.assertIn("position: sticky", source)
+        # Sticky header is part of the result-page CSS namespace. After
+        # UI review P1-11 the style moved out of an inline ``<style>``
+        # in results.py into theme.css under ``.qv2-r-header``, so the
+        # assertion lives against the page-loaded stylesheet instead
+        # of the page-module source.
+        self.assertIn('.qv2-r-header', css)
+        self.assertIn("position: sticky", css)
+        # The page still references the namespaced class so the rule
+        # actually applies on render.
+        self.assertIn('class="qv2-r-header"', source)
         self.assertIn("返回作业列表", source)
         self.assertIn("运行 ID（可复制）", source)
         self.assertIn("运行目录（可复制）", source)

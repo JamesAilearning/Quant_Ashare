@@ -324,17 +324,27 @@ def _fmt_duration(started_at: Any, ended_at: Any) -> str:
     return f"{secs}s"
 
 
-def _status_class(status: Any) -> str:
+def _status_badge_variant(status: Any) -> str:
+    """Map a raw job status to a design-system badge modifier name.
+
+    Returns the variant suffix (``success`` / ``info`` / ``danger`` /
+    ``warning`` / ``neutral``) so the caller can compose
+    ``qv2-badge qv2-badge--{variant}``. The results page used to define
+    its own ``.status-*`` selectors inline; UI review P1-11 removed
+    them in favour of the shared DS variant ladder defined in
+    ``static/theme.css``.
+    """
+
     normalized = str(status or "unknown").lower()
     if normalized in {"success", "completed", "ok"}:
-        return "status-success"
+        return "success"
     if normalized == "running":
-        return "status-running"
+        return "info"
     if normalized in {"failed", "stop_failed"}:
-        return "status-failed"
+        return "danger"
     if normalized in {"stopped", "cancelled", "canceled"}:
-        return "status-warning"
-    return "status-muted"
+        return "warning"
+    return "neutral"
 
 
 def _safe_html(text: Any) -> str:
@@ -343,105 +353,16 @@ def _safe_html(text: Any) -> str:
     return html.escape(str(text or ""))
 
 
-def _install_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        .qv2-page {max-width: 1440px; margin: 0 auto;}
-        .qv2-header {
-            position: sticky;
-            top: 0.75rem;
-            z-index: 10;
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-lg);
-            padding: var(--space-4) var(--space-5);
-            background: var(--bg-card);
-            margin-bottom: var(--space-5);
-            box-shadow: var(--shadow-md);
-        }
-        .qv2-header-row {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: var(--space-4);
-            flex-wrap: wrap;
-        }
-        .qv2-run-id {
-            font-size: 1.25rem;
-            font-weight: var(--weight-bold);
-            color: var(--text-primary);
-        }
-        .qv2-muted {color: var(--text-secondary); font-size: var(--text-sm);}
-        .qv2-badge {
-            display: inline-flex;
-            align-items: center;
-            border-radius: 999px;
-            padding: 4px 10px;
-            font-weight: var(--weight-bold);
-            font-size: 0.8rem;
-            margin-left: var(--space-2);
-        }
-        .status-success {background: var(--positive-bg); color: var(--positive-text);}
-        .status-running {background: var(--info-bg); color: var(--info-text);}
-        .status-failed {background: var(--negative-bg); color: var(--negative-text);}
-        .status-warning {background: var(--warning-bg); color: var(--warning-text);}
-        .status-muted {background: var(--neutral-bg); color: var(--neutral-text);}
-        .qv2-card {
-            border: 1px solid var(--border-subtle);
-            border-radius: var(--radius-lg);
-            background: var(--bg-card);
-            padding: var(--space-5);
-            min-height: 150px;
-            box-shadow: var(--shadow-sm);
-        }
-        .qv2-card-title {
-            text-transform: uppercase;
-            letter-spacing: var(--tracking-wider);
-            font-size: 0.78rem;
-            color: var(--text-secondary);
-            font-weight: var(--weight-bold);
-            margin-bottom: var(--space-3);
-        }
-        .qv2-primary {
-            font-size: 2rem;
-            line-height: 1.15;
-            font-weight: 800;
-            color: var(--text-primary);
-            margin-bottom: var(--space-1);
-        }
-        .qv2-positive {color: var(--positive);}
-        .qv2-negative {color: var(--negative);}
-        .qv2-secondary {
-            color: var(--text-secondary);
-            font-size: 0.92rem;
-            line-height: 1.65;
-        }
-        .qv2-section-title {
-            margin-top: 28px;
-            margin-bottom: 10px;
-            font-size: 1.15rem;
-            font-weight: 800;
-            color: var(--text-primary);
-        }
-        .qv2-empty {
-            border: 1px dashed var(--border-medium);
-            border-radius: var(--radius-lg);
-            padding: var(--space-5);
-            color: var(--text-secondary);
-            background: var(--bg-subtle);
-        }
-        .qv2-error {
-            border-radius: var(--radius-lg);
-            padding: var(--space-3) var(--space-4);
-            color: var(--negative-text);
-            background: var(--negative-bg);
-            border: 1px solid var(--negative);
-            margin: var(--space-3) 0 var(--space-5);
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+# The page used to define an inline-style helper here that
+# ``st.markdown``-ed ~100 lines of CSS, which (a) duplicated rules
+# already in ``static/theme.css`` for
+# ``.qv2-card`` / ``.qv2-muted`` / ``.qv2-positive`` / ``.qv2-negative``
+# / ``.qv2-badge``, and (b) collided with those design-system rules
+# under different visual specs. The page-specific rules now live under
+# the ``.qv2-r-*`` namespace in ``static/theme.css`` (loaded once by
+# ``theme.inject_theme`` before any page renders); the matching HTML
+# class references in this file were updated in the same change
+# (UI review P1-11).
 
 
 def _render_status_header(
@@ -463,22 +384,22 @@ def _render_status_header(
         else _fmt_duration(job.get("started_at"), job.get("ended_at"))
     )
     generated_at = _fmt_text(metadata.get("finished_at") or report.get("generated_at"))
-    status_class = _status_class(status)
+    badge_variant = _status_badge_variant(status)
     run_dir_text = _fmt_text(run_dir)
 
     st.markdown(
         f"""
-        <div class="qv2-header">
-          <div class="qv2-header-row">
+        <div class="qv2-r-header">
+          <div class="qv2-r-header-row">
             <div>
-              <div class="qv2-run-id">
+              <div class="qv2-r-run-id">
                 流水线结果
-                <span class="qv2-badge {status_class}" role="status" aria-live="polite">{_safe_html(status)}</span>
+                <span class="qv2-badge qv2-badge--{badge_variant}" role="status" aria-live="polite">{_safe_html(status)}</span>
               </div>
-              <div class="qv2-muted">作业：{_safe_html(job_id)}</div>
-              <div class="qv2-muted">运行目录：{_safe_html(run_dir_text)}</div>
+              <div class="qv2-r-muted">作业：{_safe_html(job_id)}</div>
+              <div class="qv2-r-muted">运行目录：{_safe_html(run_dir_text)}</div>
             </div>
-            <div class="qv2-muted">
+            <div class="qv2-r-muted">
               <div>开始：{_safe_html(started)}</div>
               <div>结束：{_safe_html(ended)}</div>
               <div>耗时：{_safe_html(duration)}</div>
@@ -493,7 +414,7 @@ def _render_status_header(
     if str(job.get("status") or status).lower() == "failed":
         error = job.get("error") or job.get("stop_error") or f"returncode={job.get('returncode')}"
         st.markdown(
-            f"<div class='qv2-error'>此作业已失败：{_safe_html(error)}</div>",
+            f"<div class='qv2-r-error'>此作业已失败：{_safe_html(error)}</div>",
             unsafe_allow_html=True,
         )
 
@@ -675,7 +596,7 @@ def _render_artifact_issues(issues: Sequence[ArtifactReadIssue]) -> None:
         return
 
     st.markdown(
-        '<div class="qv2-section-title">产物读取问题</div>',
+        '<div class="qv2-r-section-title">产物读取问题</div>',
         unsafe_allow_html=True,
     )
     for issue in issues:
@@ -707,10 +628,10 @@ def _render_card(
     line_html = "<br>".join(_safe_html(line) for line in lines)
     st.markdown(
         f"""
-        <div class="qv2-card" title="{_safe_html(help_text)}">
-          <div class="qv2-card-title">{_safe_html(title)}</div>
-          <div class="qv2-primary{primary_class}">{_safe_html(primary)}</div>
-          <div class="qv2-secondary">{line_html}</div>
+        <div class="qv2-r-card" title="{_safe_html(help_text)}">
+          <div class="qv2-r-card-title">{_safe_html(title)}</div>
+          <div class="qv2-r-primary{primary_class}">{_safe_html(primary)}</div>
+          <div class="qv2-r-secondary">{line_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -869,10 +790,10 @@ def _chart_by_token(charts: Mapping[str, Path], *tokens: str) -> tuple[str, Path
 
 
 def _render_charts(run_dir: Path | None) -> None:
-    st.markdown('<div class="qv2-section-title">图表</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-r-section-title">图表</div>', unsafe_allow_html=True)
     if run_dir is None:
         st.markdown(
-            '<div class="qv2-empty">作业运行目录尚未创建，图表暂不可用。</div>',
+            '<div class="qv2-r-empty">作业运行目录尚未创建，图表暂不可用。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -880,7 +801,7 @@ def _render_charts(run_dir: Path | None) -> None:
     charts = discover_charts(run_dir)
     if not charts:
         st.markdown(
-            '<div class="qv2-empty">尚未发现已生成的 PNG 图表。</div>',
+            '<div class="qv2-r-empty">尚未发现已生成的 PNG 图表。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -1073,10 +994,10 @@ def _render_trades_tab(trades_frame: Any) -> None:
 
 
 def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
-    st.markdown('<div class="qv2-section-title">净值曲线</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-r-section-title">净值曲线</div>', unsafe_allow_html=True)
     if nav_frame is None or nav_frame.empty:
         st.markdown(
-            '<div class="qv2-empty">回测 NAV 产物尚未生成。</div>',
+            '<div class="qv2-r-empty">回测 NAV 产物尚未生成。</div>',
             unsafe_allow_html=True,
         )
         _render_charts(run_dir)
@@ -1098,7 +1019,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     frame = filter_nav_frame_by_range(nav_frame, range_label)
     if frame is None or frame.empty:
         st.markdown(
-            '<div class="qv2-empty">所选时间范围内没有净值数据。</div>',
+            '<div class="qv2-r-empty">所选时间范围内没有净值数据。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -1133,7 +1054,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     )
     st.plotly_chart(nav_fig, use_container_width=True)
 
-    st.markdown('<div class="qv2-section-title">回撤</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-r-section-title">回撤</div>', unsafe_allow_html=True)
     dd_fig = go.Figure()
     if "strategy_drawdown" in frame:
         dd_fig.add_trace(go.Scatter(
@@ -1170,7 +1091,7 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
     rows = metrics.get("monthly_returns")
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or not rows:
         st.markdown(
-            '<div class="qv2-empty">月度收益数据暂不可用。</div>',
+            '<div class="qv2-r-empty">月度收益数据暂不可用。</div>',
             unsafe_allow_html=True,
         )
         return
@@ -1504,7 +1425,7 @@ def _render_pipeline_dashboard(
 
     _render_kpis(report, metrics, positions, config)
     _render_interactive_charts(nav_frame, run_dir)
-    st.markdown('<div class="qv2-section-title">月度收益</div>', unsafe_allow_html=True)
+    st.markdown('<div class="qv2-r-section-title">月度收益</div>', unsafe_allow_html=True)
     _render_monthly_returns(metrics)
 
     tabs = st.tabs(["持仓", "交易", "配置", "阶段耗时", "日志", "原始 JSON"])
@@ -1625,7 +1546,6 @@ def _render_run_not_found(run_id: str) -> None:
         st.switch_page("pages/jobs.py")
 
 
-_install_styles()
 render_page_header("结果", "查看流水线、滚动验证及数据源运行的产物。")
 # FU-8 bundle freshness banner. **Bound to the SELECTED run's bundle**,
 # not the project-default — Codex P1 on PR #169 surfaced that
