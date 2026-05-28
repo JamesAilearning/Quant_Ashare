@@ -14,6 +14,26 @@ except ImportError:
     _HAS_STREAMLIT = False
 
 
+_RESULTS_PAGE = Path("web/operator_ui/pages/results.py")
+_RESULTS_HELPERS = Path("web/operator_ui/pages/_results_helpers.py")
+
+
+def _results_combined_source() -> str:
+    """Read ``results.py`` AND ``_results_helpers.py`` and join them.
+
+    UI review P1-1 (PR-J1) split the page's pure helpers out into a
+    sibling module. Source-grep regression tests that don't care
+    *which* of the two files a name lives in can rely on this combined
+    view; tests that DO care about placement assert against one of the
+    files directly.
+    """
+
+    return "\n".join((
+        _RESULTS_PAGE.read_text(encoding="utf-8"),
+        _RESULTS_HELPERS.read_text(encoding="utf-8"),
+    ))
+
+
 class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_displays_tushare_provider_artifacts(self) -> None:
         source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
@@ -44,7 +64,10 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn('"原始 JSON"', source)
 
     def test_results_page_keeps_pipeline_metrics_artifact_sourced(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        # ``run_dir / "*.parquet"`` literals moved to _results_helpers in
+        # the PR-J1 split; combine the two sources so the assertion is
+        # placement-independent.
+        source = _results_combined_source()
 
         self.assertIn('artifact_name="pipeline_report.json"', source)
         self.assertIn('run_dir / "metrics.json"', source)
@@ -174,14 +197,21 @@ class ResultsPageSourceTests(unittest.TestCase):
         """Status badge now composes ``qv2-badge qv2-badge--{variant}``
         from the DS modifier ladder instead of the page's own
         ``.status-*`` selectors (UI review P1-11). Pin both the
-        renamed helper and the variant-string composition."""
+        renamed helper and the variant-string composition.
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        Helper lives in ``_results_helpers`` after PR-J1; the HTML
+        composition stays on the page module."""
 
-        self.assertIn("def _status_badge_variant(status:", source)
-        # Composes the DS modifier class in the status header HTML.
-        self.assertIn('class="qv2-badge qv2-badge--{badge_variant}"', source)
-        self.assertNotIn("def _status_class(", source)
+        page_source = _RESULTS_PAGE.read_text(encoding="utf-8")
+        helpers_source = _RESULTS_HELPERS.read_text(encoding="utf-8")
+
+        self.assertIn("def _status_badge_variant(status:", helpers_source)
+        # Composes the DS modifier class in the status header HTML
+        # (stays on the page side).
+        self.assertIn('class="qv2-badge qv2-badge--{badge_variant}"', page_source)
+        # Old helper name must be gone from both files.
+        self.assertNotIn("def _status_class(", page_source)
+        self.assertNotIn("def _status_class(", helpers_source)
 
     def test_results_page_does_not_advertise_unimplemented_kbd_shortcuts(self) -> None:
         """The legacy "键盘快捷键" expander listed 6 shortcuts (?, j/k,
@@ -242,7 +272,11 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertNotIn('[0.0, "var(--', source)
 
     def test_results_page_does_not_let_stale_run_metadata_mask_job_failure(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        # ``_resolve_run_dir`` (which contains the job_status guard) moved
+        # to _results_helpers in PR-J1; the header renderer stays on the
+        # page module. Combine the two so the asserts are placement-
+        # independent.
+        source = _results_combined_source()
 
         self.assertIn('job_status not in {"success", "completed", "ok"}', source)
         self.assertIn('status = _fmt_text(job.get("status") or metadata.get("status"))', source)
@@ -265,22 +299,25 @@ class ResultsPageSourceTests(unittest.TestCase):
         touching the filesystem. CLI catalog entries reach this function
         unsanitised; without the guard, ``iterdir`` would already act
         as a directory-existence probe against arbitrary paths
-        (UI review P1-5)."""
+        (UI review P1-5).
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        ``_resolve_run_dir`` moved to ``_results_helpers`` in PR-J1;
+        assertions look there now."""
+
+        helpers = _RESULTS_HELPERS.read_text(encoding="utf-8")
 
         self.assertIn(
             "from web.operator_ui._path_guard import guard_output_path, output_path",
-            source,
+            helpers,
         )
-        self.assertIn("_is_safe_run_dir", source)
+        self.assertIn("_is_safe_run_dir", helpers)
         # Both branches of _resolve_run_dir must short-circuit through
         # the helper. We scope the assert to the function body so a
         # stray ``_is_safe_run_dir`` reference elsewhere can't mask a
         # missing guard on one branch.
-        func_start = source.index("def _resolve_run_dir(")
-        func_end = source.index("def _is_safe_run_dir(")
-        body = source[func_start:func_end]
+        func_start = helpers.index("def _resolve_run_dir(")
+        func_end = helpers.index("def _is_safe_run_dir(")
+        body = helpers[func_start:func_end]
         self.assertGreaterEqual(
             body.count("_is_safe_run_dir("), 2,
             "Both run_dir and output_dir branches must call the guard",
