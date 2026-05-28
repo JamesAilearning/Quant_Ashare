@@ -176,6 +176,26 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("_filter_json_by_query", source)
         self.assertIn("results_raw_json_query", source)
 
+    def test_results_page_handles_bundle_too_large_with_filesystem_hint(self) -> None:
+        """When ``bundle_zip_bytes`` rejects an oversize run, the page MUST
+        surface the size + the filesystem path so the operator can package
+        the run by hand instead of seeing a silently-disabled button.
+
+        See ``BundleTooLargeError`` in ``web/operator_ui/result_exports.py``
+        for why we cap at 500 MiB (1-5 GiB pipeline runs would OOM the
+        Streamlit server)."""
+
+        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+
+        self.assertIn("BundleTooLargeError", source)
+        self.assertIn("except BundleTooLargeError", source)
+        # The hint must mention the filesystem path so operators know what
+        # to package manually.
+        self.assertIn("exc.run_dir", source)
+        # The hint must be surfaced both inline (caption under the button)
+        # and via the button's help tooltip.
+        self.assertIn("st.caption(bundle_too_large_message)", source)
+
     def test_status_header_offers_one_click_copy_buttons(self) -> None:
         """The status header SHALL render one-click 📋 Copy buttons next
         to Run ID and Run directory (TICKET-R3 polish)."""
