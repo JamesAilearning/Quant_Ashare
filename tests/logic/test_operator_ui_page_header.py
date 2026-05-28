@@ -30,12 +30,20 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         """``render_breadcrumbs`` MUST be gone from the module surface.
         Pin its absence so a well-meaning revert that "puts the helper
         back for future use" without callers reintroduces the same dead
-        / misleading affordance (UI review P1-2)."""
+        / misleading affordance (UI review P1-2).
 
-        from web.operator_ui import page_header
+        Asserted at the source-text level rather than via ``import`` so
+        the check still runs in CI cells without ``streamlit`` installed
+        — ``page_header.py`` ``import streamlit as st`` at module top
+        would otherwise raise ``ModuleNotFoundError`` before
+        ``hasattr`` could even run. (Codex P2 on PR #193.)
+        """
 
-        self.assertFalse(
-            hasattr(page_header, "render_breadcrumbs"),
+        source = Path("web/operator_ui/page_header.py").read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            "def render_breadcrumbs(",
+            source,
             "render_breadcrumbs should have been removed alongside its callers",
         )
 
