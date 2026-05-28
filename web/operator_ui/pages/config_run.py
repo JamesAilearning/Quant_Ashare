@@ -51,9 +51,19 @@ def _trading_day_options(calendar_dates: tuple[date, ...]) -> list[str]:
 
 
 def _option_index(options: list[str], default: str) -> int:
+    """Locate ``default`` in ``options``.
+
+    Returns ``-1`` when ``default`` isn't present. Callers MUST treat
+    that as "snap to a safe index AND tell the operator" rather than
+    silently coerce — the previous ``return 0`` fallback let the UI
+    swap, say, ``train_start=2022-01-01`` for ``calendar[0]=2023-06-12``
+    without any visible signal, so operators chased a 'why did my run
+    skip 2022?' ghost (UI review P1-9).
+    """
+
     if default in options:
         return options.index(default)
-    return 0
+    return -1
 
 
 def _select_trading_day(
@@ -67,10 +77,22 @@ def _select_trading_day(
     if not metadata.calendar_dates:
         return st.text_input(label, value=default)  # type: ignore[no-any-return,unused-ignore]
     options = _trading_day_options(metadata.calendar_dates)
+    resolved_index = _option_index(options, default)
+    if resolved_index < 0:
+        # The configured / preset default falls outside the active
+        # provider's calendar. Snap to the earliest available date and
+        # surface a warning so the operator knows the date they
+        # configured isn't what's about to train (UI review P1-9).
+        st.warning(
+            f"⚠ `{label}` 的默认值 **{default}** 不在所选数据源的交易日历内 "
+            f"(`{options[0]}` ~ `{options[-1]}`)，已替换为 **{options[0]}**。"
+            "请确认时间窗，或先在「Tushare 数据」页拉取更长区间的数据。"
+        )
+        resolved_index = 0
     return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
         label,
         options=options,
-        index=_option_index(options, default),
+        index=resolved_index,
         help="仅可在所选数据源日历内的交易日中选择。",
     )
 
