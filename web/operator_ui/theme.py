@@ -249,17 +249,26 @@ def render_appearance_controls(preferences: UserPreferences) -> UserPreferences:
 # App shell helpers — skip link, topbar, settings dialog
 # ---------------------------------------------------------------------------
 
+# Anchor id consumed by the skip-link target. Lives here as a constant so
+# ``page_header.render_page_header`` can mint the matching ``<a id=...>``
+# target tag without a circular import.
+SKIP_LINK_TARGET_ID = "qv2-main-content"
+
 SKIP_LINK_HTML = (
-    '<a class="qv2-skip-link" href="#qv2-main-content">跳到主内容</a>'
-    '<a id="qv2-main-content" tabindex="-1" class="qv2-sr-only">主内容</a>'
+    f'<a class="qv2-skip-link" href="#{SKIP_LINK_TARGET_ID}">跳到主内容</a>'
 )
 
 
 def render_skip_link() -> None:
     """Inject a keyboard-accessible "skip to content" affordance.
 
-    The link is visually hidden until focused; pressing Tab on a fresh page
-    surfaces it and Enter scrolls to the main content anchor.
+    Only the link itself lives here. The matching anchor target
+    (``<a id="qv2-main-content">``) is emitted by
+    :func:`web.operator_ui.page_header.render_page_header` so it lands
+    AFTER the topbar / sidebar / breadcrumb instead of immediately
+    after the link — pressing Enter previously scrolled to a point
+    still above all the chrome the user wanted to skip, making the
+    affordance silently useless (UI review P0-4).
     """
 
     import streamlit as st

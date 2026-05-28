@@ -1577,12 +1577,26 @@ else:
         st=st,
     )
 
-    # Auto-refresh for running jobs
+    # Auto-refresh for running jobs — default OFF so the operator can
+    # read logs / scroll charts / copy IDs without being interrupted by
+    # a forced rerun every 5 seconds. The previous implementation slept
+    # + rerun()ed unconditionally, which made the page unusable for the
+    # 1-8 hours a typical pipeline takes. Pattern mirrors the toggle on
+    # jobs.py:543-553 so both surfaces behave the same way.
     if str(selected_job.get("status", "")).lower() == "running":
-        import time as _time
-        st.info("作业仍在运行 — 每 5 秒自动刷新一次。")
-        _time.sleep(5)
-        st.rerun()
+        results_auto_refresh = st.checkbox(
+            "作业仍在运行 · 每 5 秒自动刷新",
+            value=False,
+            key="results_autorefresh",
+            help=(
+                "勾选后页面每 5 秒自动刷新一次，会打断当前的滚动 / 复制 / "
+                "搜索操作。默认关闭。"
+            ),
+        )
+        if results_auto_refresh:
+            import time as _time
+            _time.sleep(5)
+            st.rerun()
 
     if mode == "tushare_provider":
         _render_tushare_provider(run_dir, artifact_issues)

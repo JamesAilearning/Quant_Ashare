@@ -141,12 +141,25 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("initial_sidebar_state", source)
         self.assertIn("sidebar_collapsed", source)
 
-    def test_skip_link_html_targets_main_anchor(self) -> None:
-        from web.operator_ui.theme import SKIP_LINK_HTML
+    def test_skip_link_html_contains_link_but_not_target_anchor(self) -> None:
+        """``SKIP_LINK_HTML`` now emits ONLY the link; the matching
+        ``<a id="qv2-main-content">`` target moved into
+        ``page_header.render_page_header`` (UI review P0-4) so that
+        pressing Enter on the skip link actually lands past the topbar /
+        sidebar / breadcrumb instead of just below the link itself."""
 
-        self.assertIn('href="#qv2-main-content"', SKIP_LINK_HTML)
-        self.assertIn('id="qv2-main-content"', SKIP_LINK_HTML)
+        from web.operator_ui.theme import SKIP_LINK_HTML, SKIP_LINK_TARGET_ID
+
+        self.assertEqual(SKIP_LINK_TARGET_ID, "qv2-main-content")
+        self.assertIn(f'href="#{SKIP_LINK_TARGET_ID}"', SKIP_LINK_HTML)
         self.assertIn("qv2-skip-link", SKIP_LINK_HTML)
+        # The target anchor MUST NOT live alongside the link — that
+        # placement is exactly the bug P0-4 fixed.
+        self.assertNotIn(
+            f'id="{SKIP_LINK_TARGET_ID}"',
+            SKIP_LINK_HTML,
+            "Skip-link target must live in page_header, not adjacent to the link",
+        )
 
     def test_render_settings_dialog_is_importable(self) -> None:
         """The dialog helper is exported and callable. We do not run it

@@ -80,6 +80,58 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         except Exception as exc:
             self.fail(f"page_header.py raised on import: {exc}")
 
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
+    def test_page_header_emits_skip_link_target_anchor(self) -> None:
+        """``render_page_header`` SHALL inject the skip-link target anchor
+        (``<a id="qv2-main-content">``) at the start of the rendered HTML so
+        the affordance from ``theme.render_skip_link`` actually lands past
+        the topbar / sidebar / breadcrumb instead of immediately after the
+        link itself (UI review P0-4).
+
+        Anchors emitted from this helper land on every page, so the skip
+        link works uniformly without requiring each page to opt in."""
+
+        source = inspect.getsource(
+            __import__(
+                "web.operator_ui.page_header", fromlist=["render_page_header"]
+            ).render_page_header,
+        )
+        # Source-level guard — we cannot drive Streamlit's st.html
+        # capture without a ScriptRunContext, but pinning the literal
+        # tag in source is enough to prevent silent regression.
+        self.assertIn('id="qv2-main-content"', source)
+        self.assertIn("tabindex=\"-1\"", source)
+        # Must be emitted via the parts list so it lands BEFORE the
+        # ``<div class="qv2-page-header">`` opening tag.
+        anchor_index = source.index('id="qv2-main-content"')
+        header_index = source.index('class="qv2-page-header"')
+        self.assertLess(
+            anchor_index,
+            header_index,
+            "Skip-link target anchor must appear before the page-header div",
+        )
+
+    def test_all_pages_render_page_header(self) -> None:
+        """Every operator-facing page module MUST call ``render_page_header``
+        so the skip-link target lands on the page. Stub redirects (e.g.,
+        ``run_history.py``) are exempt — see ``test_all_pages_use_page_header``
+        above for the parallel coverage."""
+
+        pages_dir = Path("web/operator_ui/pages")
+        missing: list[str] = []
+        for path in sorted(pages_dir.glob("*.py")):
+            if path.name.startswith("_") or path.name == "__init__.py":
+                continue
+            if path.name == "run_history.py":
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "render_page_header" not in source:
+                missing.append(path.name)
+        self.assertEqual(
+            missing, [],
+            "Pages without render_page_header lose the skip-link target",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
