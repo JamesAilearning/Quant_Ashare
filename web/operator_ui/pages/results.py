@@ -197,14 +197,27 @@ def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path 
         if not _is_safe_run_dir(runs_dir):
             return None
         if runs_dir.is_dir():
-            candidates = [entry for entry in runs_dir.iterdir() if entry.is_dir()]
-            if candidates:
-                chosen = max(candidates, key=lambda path: path.stat().st_mtime)
-                # And re-guard the chosen candidate — same symlink
-                # threat model applies one level deeper.
-                if not _is_safe_run_dir(chosen):
-                    return None
-                return chosen
+            # Filter each candidate through ``_is_safe_run_dir`` BEFORE
+            # any ``is_dir`` / ``stat`` call runs on it — both of those
+            # follow symlinks and would otherwise leak directory /
+            # existence information about an arbitrary attacker-
+            # controlled target before the guard could block the
+            # return. Equally important, this lets ``_resolve_run_dir``
+            # surface a legitimate non-symlinked run even when a
+            # newer-mtime symlinked sibling resolves outside roots —
+            # the prior "guard the winner only" version returned None
+            # whenever the newest entry happened to be hostile, hiding
+            # valid runs. (Codex P2 round 3 on PR #192.)
+            safe_dir_candidates = [
+                entry
+                for entry in runs_dir.iterdir()
+                if _is_safe_run_dir(entry) and entry.is_dir()
+            ]
+            if safe_dir_candidates:
+                return max(
+                    safe_dir_candidates,
+                    key=lambda path: path.stat().st_mtime,
+                )
     return output_dir
 
 

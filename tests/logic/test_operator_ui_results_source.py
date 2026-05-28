@@ -519,6 +519,121 @@ class ResolveRunDirGuardTests(unittest.TestCase):
                 result = _resolve_run_dir(job, {})
         self.assertEqual(result, run_dir)
 
+    def test_surfaces_legitimate_run_when_newer_symlink_is_unsafe(self) -> None:
+        """When ``runs/`` contains BOTH a legitimate non-symlinked run
+        AND a newer-mtime symlinked entry pointing outside allowed
+        roots, the legitimate one MUST be surfaced. The earlier
+        "guard the winner only" implementation returned None whenever
+        the newest entry happened to be hostile, hiding valid runs
+        from the operator (Codex P2 round 3 on PR #192)."""
+
+        import os
+        import tempfile
+        import time
+        from unittest.mock import patch
+
+        from web.operator_ui.pages.results import _resolve_run_dir
+
+        with tempfile.TemporaryDirectory() as allowed, \
+             tempfile.TemporaryDirectory() as outside:
+            output_dir = Path(allowed) / "good_output"
+            output_dir.mkdir()
+            runs_dir = output_dir / "runs"
+            runs_dir.mkdir()
+            # Legitimate, older run.
+            good_run = runs_dir / "good_run"
+            good_run.mkdir()
+            # Target for the unsafe symlink lives outside roots.
+            evil_target = Path(outside) / "evil_target"
+            evil_target.mkdir()
+            evil_link = runs_dir / "evil_link"
+            try:
+                os.symlink(evil_target, evil_link, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlinks unavailable here: {exc}")
+            # Make the symlink newer so a "newest wins" lookup would
+            # pick it. Touching after symlink creation is sufficient.
+            time.sleep(0.01)
+            os.utime(evil_link, None, follow_symlinks=False)
+
+            with patch(
+                "web.operator_ui._path_guard._ALLOWED_ROOTS",
+                (Path(allowed),),
+            ):
+                job = {"status": "completed", "mode": "pipeline"}
+                config = {"output_dir": str(output_dir)}
+                result = _resolve_run_dir(job, config)
+
+        self.assertEqual(
+            result, good_run,
+            "Legitimate non-symlinked run must survive a newer "
+            "unsafe-symlink sibling",
+        )
+
+    def test_does_not_stat_unsafe_candidates_before_filtering(self) -> None:
+        """Each candidate MUST be filtered through ``_is_safe_run_dir``
+        BEFORE any ``is_dir`` / ``stat`` call runs on it, since both
+        follow symlinks and would otherwise probe attacker-controlled
+        targets (Codex P2 round 3 on PR #192).
+
+        Verified by spying on ``Path.is_dir`` and ``Path.stat``:
+        the count of calls hitting the evil-link path MUST be zero."""
+
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import results as results_module
+
+        with tempfile.TemporaryDirectory() as allowed, \
+             tempfile.TemporaryDirectory() as outside:
+            output_dir = Path(allowed) / "good_output"
+            output_dir.mkdir()
+            runs_dir = output_dir / "runs"
+            runs_dir.mkdir()
+            evil_target = Path(outside) / "evil_target"
+            evil_target.mkdir()
+            evil_link = runs_dir / "evil_link"
+            try:
+                os.symlink(evil_target, evil_link, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlinks unavailable here: {exc}")
+
+            real_is_dir = Path.is_dir
+            real_stat = Path.stat
+            evil_link_resolved = str(evil_link)
+            stat_calls_on_evil: list[str] = []
+            is_dir_calls_on_evil: list[str] = []
+
+            def _stat_spy(self: Path, *args: Any, **kwargs: Any) -> Any:
+                if str(self) == evil_link_resolved:
+                    stat_calls_on_evil.append(str(self))
+                return real_stat(self, *args, **kwargs)
+
+            def _is_dir_spy(self: Path) -> bool:
+                if str(self) == evil_link_resolved:
+                    is_dir_calls_on_evil.append(str(self))
+                return real_is_dir(self)
+
+            with patch(
+                "web.operator_ui._path_guard._ALLOWED_ROOTS",
+                (Path(allowed),),
+            ), patch.object(Path, "stat", _stat_spy), \
+               patch.object(Path, "is_dir", _is_dir_spy):
+                job = {"status": "completed", "mode": "pipeline"}
+                config = {"output_dir": str(output_dir)}
+                results_module._resolve_run_dir(job, config)
+
+        self.assertEqual(
+            is_dir_calls_on_evil, [],
+            "is_dir MUST NOT run on the unsafe symlink — it follows "
+            "the symlink and probes the foreign directory",
+        )
+        self.assertEqual(
+            stat_calls_on_evil, [],
+            "stat MUST NOT run on the unsafe symlink",
+        )
+
     def test_rejects_symlink_runs_subdirectory_pointing_outside_roots(self) -> None:
         """``output_dir`` itself can pass ``guard_output_path`` while its
         ``runs/`` child is a symlink to ``/tmp/outside``. Without
