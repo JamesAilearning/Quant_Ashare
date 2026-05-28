@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
@@ -266,6 +268,259 @@ class ListAllJobsContractTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             list_all_jobs(date_from="May 20")
+
+
+class ListAllJobsPaginationTests(unittest.TestCase):
+    """UI review P1-10: ``list_all_jobs`` returns a real offset slice
+    instead of the cumulative ``sorted_items[: page * page_size]`` form
+    the load-more UX relied on. Pin the new contract so the cumulative
+    pattern can't quietly come back."""
+
+    def _fake_filtered_items(self, count: int) -> list[object]:
+        # We don't need real JobSummary fixtures — the pagination test
+        # cares about list slicing, so patch ``_apply_sort`` to return
+        # a sentinel list of plain integers ordered as the function
+        # would have sorted them.
+        return list(range(count))
+
+    def _list_with_fake_items(
+        self, items: list[object], **kwargs: object
+    ) -> tuple[list[object], int, int]:
+        from web.operator_ui import job_io
+
+        with patch.object(job_io, "_load_ui_jobs", return_value=[]), \
+             patch.object(job_io, "_load_cli_entries", return_value=[]), \
+             patch.object(job_io, "_apply_sort", return_value=items):
+            return job_io.list_all_jobs(**kwargs)  # type: ignore[arg-type]
+
+    def test_page_one_returns_first_page_size_items(self) -> None:
+        items = self._fake_filtered_items(50)
+        page, total, _ = self._list_with_fake_items(items, page=1, page_size=25)
+        self.assertEqual(total, 50)
+        self.assertEqual(page, list(range(0, 25)))
+
+    def test_page_two_returns_next_window_not_cumulative(self) -> None:
+        items = self._fake_filtered_items(50)
+        page, total, _ = self._list_with_fake_items(items, page=2, page_size=25)
+        self.assertEqual(total, 50)
+        # Crucially: items 25..49 ONLY — NOT 0..49. The cumulative
+        # variant returned the full prefix on each click; the real
+        # pagination returns the window for this page only.
+        self.assertEqual(page, list(range(25, 50)))
+
+    def test_last_partial_page_returns_remainder(self) -> None:
+        items = self._fake_filtered_items(53)
+        page, total, _ = self._list_with_fake_items(items, page=3, page_size=25)
+        self.assertEqual(total, 53)
+        self.assertEqual(page, list(range(50, 53)))
+
+    def test_request_past_end_returns_empty_with_intact_total(self) -> None:
+        items = self._fake_filtered_items(10)
+        page, total, _ = self._list_with_fake_items(items, page=99, page_size=25)
+        # Total preserves so the UI can show "past last page" or snap
+        # back to a valid page without re-querying.
+        self.assertEqual(total, 10)
+        self.assertEqual(page, [])
+
+    def test_single_page_dataset_returns_everything(self) -> None:
+        items = self._fake_filtered_items(7)
+        page, total, _ = self._list_with_fake_items(items, page=1, page_size=25)
+        self.assertEqual(total, 7)
+        self.assertEqual(page, list(range(7)))
+
+    def test_empty_dataset_returns_empty_page_with_total_zero(self) -> None:
+        items = self._fake_filtered_items(0)
+        page, total, _ = self._list_with_fake_items(items, page=1, page_size=25)
+        self.assertEqual(total, 0)
+        self.assertEqual(page, [])
+
+    def test_invalid_page_value_raises(self) -> None:
+        from web.operator_ui.job_io import list_all_jobs
+
+        with self.assertRaises(ValueError):
+            list_all_jobs(page=0)
+        with self.assertRaises(ValueError):
+            list_all_jobs(page=-5)
+
+    def test_invalid_page_size_raises(self) -> None:
+        from web.operator_ui.job_io import list_all_jobs
+
+        with self.assertRaises(ValueError):
+            list_all_jobs(page_size=0)
+
+
+class ListAllJobsRunningCountTests(unittest.TestCase):
+    """``list_all_jobs`` MUST return ``running_count`` over the FULL
+    filtered set, not just the current page window — otherwise the
+    jobs page's auto-refresh control disappears when the operator
+    paginates away from running rows (Codex P2 on PR #197)."""
+
+    def _build_summaries(
+        self,
+        *,
+        running_indices: set[int],
+        total_count: int,
+    ) -> list[JobSummary]:
+        summaries: list[JobSummary] = []
+        for i in range(total_count):
+            status = "running" if i in running_indices else "completed"
+            summaries.append(
+                _make(run_id=f"r{i:03d}", status=status, created_at="")
+            )
+        return summaries
+
+    def test_running_count_spans_full_filtered_set_not_current_page(self) -> None:
+        from web.operator_ui import job_io
+
+        # 30 jobs, the running one sits at index 0 (= page 1).
+        items = self._build_summaries(running_indices={0}, total_count=30)
+
+        with patch.object(job_io, "_load_ui_jobs", return_value=[]), \
+             patch.object(job_io, "_load_cli_entries", return_value=[]), \
+             patch.object(job_io, "_apply_filters", return_value=items), \
+             patch.object(job_io, "_apply_sort", return_value=items):
+            page_items, total, running = job_io.list_all_jobs(
+                page=2, page_size=25,
+            )
+
+        self.assertEqual(total, 30)
+        # Page 2 holds items 25..29; none of them are running.
+        self.assertEqual(len(page_items), 5)
+        self.assertFalse(any(p.status == "running" for p in page_items))
+        # But running_count still surfaces the page-1 running job —
+        # this is the whole point of the fix.
+        self.assertEqual(running, 1)
+
+    def test_running_count_zero_when_no_running_in_full_set(self) -> None:
+        from web.operator_ui import job_io
+
+        items = self._build_summaries(running_indices=set(), total_count=10)
+        with patch.object(job_io, "_load_ui_jobs", return_value=[]), \
+             patch.object(job_io, "_load_cli_entries", return_value=[]), \
+             patch.object(job_io, "_apply_filters", return_value=items), \
+             patch.object(job_io, "_apply_sort", return_value=items):
+            _, _, running = job_io.list_all_jobs(page=1, page_size=25)
+        self.assertEqual(running, 0)
+
+    def test_running_count_independent_of_page_window(self) -> None:
+        """Same data, same filter — running_count MUST stay constant
+        across every page the operator navigates to."""
+
+        from web.operator_ui import job_io
+
+        items = self._build_summaries(
+            running_indices={0, 1, 2}, total_count=60,
+        )
+        with patch.object(job_io, "_load_ui_jobs", return_value=[]), \
+             patch.object(job_io, "_load_cli_entries", return_value=[]), \
+             patch.object(job_io, "_apply_filters", return_value=items), \
+             patch.object(job_io, "_apply_sort", return_value=items):
+            _, _, running_p1 = job_io.list_all_jobs(page=1, page_size=25)
+            _, _, running_p2 = job_io.list_all_jobs(page=2, page_size=25)
+            _, _, running_p3 = job_io.list_all_jobs(page=3, page_size=25)
+        self.assertEqual(running_p1, 3)
+        self.assertEqual(running_p2, 3)
+        self.assertEqual(running_p3, 3)
+
+
+class JobsPagePaginationUiTests(unittest.TestCase):
+    """Source-level pin for the jobs page's prev/next pagination UI
+    (UI review P1-10)."""
+
+    def setUp(self) -> None:
+        self.source = Path("web/operator_ui/pages/jobs.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_prev_next_buttons_replace_cumulative_load_more(self) -> None:
+        # Real prev/next buttons with stable keys.
+        self.assertIn('"← 上一页"', self.source)
+        self.assertIn('"下一页 →"', self.source)
+        self.assertIn('key="jobs_pg_prev"', self.source)
+        self.assertIn('key="jobs_pg_next"', self.source)
+        # Cumulative "加载更多" pattern + its session key MUST be gone.
+        self.assertNotIn("加载更多", self.source)
+        self.assertNotIn("jobs_load_more", self.source)
+
+    def test_page_indicator_shows_current_total_and_count(self) -> None:
+        # Indicator references the (already-clamped) ``_page`` /
+        # total pages / total rows so the operator always knows where
+        # they are.
+        self.assertIn("第 {_page} / {_total_pages} 页", self.source)
+        self.assertIn("共 {total} 条", self.source)
+
+    def test_buttons_disable_at_edges(self) -> None:
+        # Prev disabled on page 1, Next disabled on last page so click
+        # noise doesn't fire ineffective reruns.
+        self.assertIn("disabled=_page <= 1", self.source)
+        self.assertIn("disabled=_page >= _total_pages", self.source)
+
+    def test_stale_page_is_clamped_and_requery_before_render(self) -> None:
+        """When the stored ``jobs_page`` lands past the result set's
+        last page (filter narrowed mid-session, jobs were pruned, URL
+        points to a now-stale page), the page MUST be clamped AND the
+        query re-issued so the indicator and dataframe agree. The
+        earlier draft of this PR only clamped the indicator after the
+        first ``list_all_jobs`` call ran with the stale page, so the
+        UI rendered ``第 N / N 页`` while showing zero rows
+        (Codex P2 on PR #197)."""
+
+        # The local helper exists and is the *only* call site for
+        # ``list_all_jobs`` on the page (so the re-query path can't
+        # bypass it).
+        self.assertIn("def _query_page(page_value: int)", self.source)
+        # Re-query path runs when ``_page > _total_pages_pre`` after
+        # the initial load.
+        self.assertIn("_total_pages_pre", self.source)
+        self.assertIn("if _page > _total_pages_pre:", self.source)
+        # Re-query happens with the clamped ``_page`` value AND
+        # writes that value back into session_state so a subsequent
+        # rerun also reads the corrected page.
+        self.assertIn('st.session_state["jobs_page"] = str(_page)', self.source)
+        self.assertIn(
+            "items, total, running_count = _query_page(_page)", self.source
+        )
+
+    def test_clamp_also_writes_page_back_to_url(self) -> None:
+        """The earlier ``_qp_write("page", ...)`` block ran BEFORE the
+        clamp using the stale value, so without an additional URL
+        write the address bar reads ``?page=99`` while the page
+        rendered N. Sharing / reloading would re-trigger the clamp
+        loop instead of landing on the right page (Codex P3 on
+        PR #197). Pin the inline ``_qp_write`` call inside the clamp
+        branch."""
+
+        # Find the clamp branch and check the URL mirror happens
+        # inside it, before the re-query.
+        clamp_idx = self.source.index("if _page > _total_pages_pre:")
+        requery_idx = self.source.index(
+            "items, total, running_count = _query_page(_page)", clamp_idx,
+        )
+        clamp_body = self.source[clamp_idx:requery_idx]
+        self.assertIn(
+            '_qp_write("page", str(_page))',
+            clamp_body,
+            "Clamped page must also be mirrored back to URL inside the clamp branch",
+        )
+
+    def test_running_count_comes_from_list_all_jobs_not_from_page_items(self) -> None:
+        """``running_count`` MUST be unpacked from the
+        ``list_all_jobs`` return tuple (3rd element) — NOT recomputed
+        from the page slice. Otherwise the auto-refresh control
+        disappears when the operator paginates past page 1 even
+        while a job on page 1 is still running (Codex P2 on PR #197)."""
+
+        # The 3-tuple unpack happens (and only happens) inside the
+        # ``_query_page`` call site we already pin above.
+        self.assertIn(
+            "items, total, running_count = _query_page(_page)", self.source,
+        )
+        # The page MUST NOT recompute running_count from the page
+        # slice (the bug the upstream fix closes).
+        self.assertNotIn(
+            'running_count = sum(1 for i in items if i.status == "running")',
+            self.source,
+        )
 
 
 if __name__ == "__main__":

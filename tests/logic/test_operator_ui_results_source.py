@@ -83,7 +83,9 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("策略净值", source)
         self.assertIn("策略回撤", source)
         self.assertIn("月度收益", source)
-        self.assertIn("加载更多", jobs_source)
+        # Jobs page uses real prev/next pagination now (UI review P1-10);
+        # the cumulative "加载更多" button was retired.
+        self.assertIn("jobs_pg_next", jobs_source)
         self.assertIn("list_all_jobs", jobs_source)
 
     def test_results_empty_state_uses_streamlit_navigation(self) -> None:

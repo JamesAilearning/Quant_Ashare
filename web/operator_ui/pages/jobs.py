@@ -332,8 +332,8 @@ except (TypeError, ValueError):
     _page = 1
 _page_size = 25
 
-try:
-    items, total = list_all_jobs(
+def _query_page(page_value: int) -> tuple[list[Any], int, int]:
+    return list_all_jobs(
         type_filter=type_filter,
         status_filter=status_filter,
         source_filter=source_filter,
@@ -342,9 +342,30 @@ try:
         date_to=date_to_iso,
         sort_by=sort_by,
         sort_dir=sort_dir,
-        page=_page,
+        page=page_value,
         page_size=_page_size,
     )
+
+
+try:
+    items, total, running_count = _query_page(_page)
+    # Clamp + re-query when the stored page lands past the end (filter
+    # narrowed mid-session, job pruned, URL points to a now-stale page).
+    # Without this, the original load returned an empty offset slice for
+    # the stale page and the indicator below would say "第 X / Y 页"
+    # while rendering zero rows — Codex P2 on PR #197.
+    _total_pages_pre = max(1, (total + _page_size - 1) // _page_size)
+    if _page > _total_pages_pre:
+        _page = _total_pages_pre
+        st.session_state["jobs_page"] = str(_page)
+        # Mirror the clamp back into the URL too — the earlier
+        # ``_qp_write("page", ...)`` block ran BEFORE this clamp using
+        # the stale value, so without this write the address bar would
+        # still read ``?page=99`` while the rendered page was N.
+        # Sharing / reloading the URL would re-trigger the clamp
+        # instead of landing on the right page (Codex P3 on PR #197).
+        _qp_write("page", str(_page))
+        items, total, running_count = _query_page(_page)
 except Exception as exc:
     render_error_state(
         "无法加载作业列表",
@@ -355,9 +376,11 @@ except Exception as exc:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Summary bar
+# Summary bar — ``running_count`` is computed by ``list_all_jobs`` over
+# the FULL filtered set (not just the current page) so the auto-refresh
+# control below stays visible while the operator paginates away from
+# the running rows.
 # ---------------------------------------------------------------------------
-running_count = sum(1 for i in items if i.status == "running")
 if total > 0:
     by_type: dict[str, int] = {}
     for item in items:
@@ -538,13 +561,46 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
             )
 
 # ---------------------------------------------------------------------------
-# Load more
+# Pagination — real prev/next nav over offset-sliced pages (UI review
+# P1-10). The previous "load more" button returned the first N×size
+# items cumulatively, so dataframe formatting cost grew linearly with
+# click count and the operator had no "what page am I on" signal.
 # ---------------------------------------------------------------------------
-_showing = _page * _page_size
-if _showing < total:
-    if st.button(f"加载更多（剩余 {total - _showing} 条）", key="jobs_load_more"):
-        st.session_state["jobs_page"] = str(_page + 1)
-        st.rerun()
+_total_pages = max(1, (total + _page_size - 1) // _page_size)
+# ``_page`` is already clamped above (clamp-and-re-query path) so we
+# can render the indicator + control buttons against it directly —
+# the indicator and the dataframe always agree on which page we're on.
+
+if _total_pages > 1 or total > _page_size:
+    pg_prev, pg_indicator, pg_next = st.columns([1, 2, 1])
+    with pg_prev:
+        if st.button(
+            "← 上一页",
+            key="jobs_pg_prev",
+            disabled=_page <= 1,
+            use_container_width=True,
+        ):
+            st.session_state["jobs_page"] = str(_page - 1)
+            st.rerun()
+    with pg_indicator:
+        # Centered "第 N / M 页 · 共 X 条" indicator. Renders inside a
+        # ``st.caption`` so it lines up with the buttons without
+        # competing for visual weight.
+        st.caption(
+            f"<div style='text-align:center;padding-top:6px;'>"
+            f"第 {_page} / {_total_pages} 页 · 共 {total} 条"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with pg_next:
+        if st.button(
+            "下一页 →",
+            key="jobs_pg_next",
+            disabled=_page >= _total_pages,
+            use_container_width=True,
+        ):
+            st.session_state["jobs_page"] = str(_page + 1)
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # Auto-refresh (only when there is at least one running job)

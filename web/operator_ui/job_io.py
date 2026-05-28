@@ -334,8 +334,16 @@ def list_all_jobs(
     sort_dir: str = "desc",
     page: int = 1,
     page_size: int = 25,
-) -> tuple[list[JobSummary], int]:
-    """Return a page of unified job summaries plus the total matched count.
+) -> tuple[list[JobSummary], int, int]:
+    """Return a page of unified job summaries plus filter-wide counts.
+
+    Returns ``(page_items, total_filtered, running_count_filtered)``.
+    The third element is the count of running jobs across the FULL
+    filtered set (not just the current page window) so the jobs page's
+    auto-refresh control stays visible while the operator paginates
+    away from page 1 — without it, ``running_count`` would only see
+    the page's slice and the refresh affordance would disappear
+    (Codex P2 on PR #197).
 
     Filters are applied *before* sort, sort before pagination.
 
@@ -356,6 +364,13 @@ def list_all_jobs(
 
     ``sort_by`` is one of :data:`SORT_OPTIONS`; ``sort_dir`` is one of
     :data:`SORT_DIRECTIONS`.  Unknown values raise :class:`ValueError`.
+
+    Pagination is now a **real offset slice**, not the cumulative
+    "load more" pattern. Page N (1-indexed) returns
+    ``sorted_items[(N-1) * page_size : N * page_size]``. A request past
+    the end returns an empty list with the same ``total`` count — the
+    UI surfaces "no items on this page" while still showing the page
+    indicator (UI review P1-10).
     """
     if sort_by not in SORT_OPTIONS:
         raise ValueError(
@@ -366,6 +381,10 @@ def list_all_jobs(
         raise ValueError(
             f"sort_dir={sort_dir!r} not in {SORT_DIRECTIONS}."
         )
+    if page < 1:
+        raise ValueError(f"page={page!r} must be >= 1.")
+    if page_size < 1:
+        raise ValueError(f"page_size={page_size!r} must be >= 1.")
     _parse_date_or_raise(date_from, field="date_from")
     _parse_date_or_raise(date_to, field="date_to")
 
@@ -391,14 +410,30 @@ def list_all_jobs(
         date_to,
     )
 
+    # Count running jobs across the FULL filtered set BEFORE pagination
+    # so the jobs page's auto-refresh control stays visible while the
+    # operator paginates away from the running rows. Codex P2 on
+    # PR #197 — without this the count was derived from the page slice
+    # downstream and disappeared as soon as the operator clicked
+    # "下一页".
+    running_count_filtered = sum(
+        1 for item in filtered if item.status == "running"
+    )
+
     # Sort
     sorted_items = _apply_sort(filtered, sort_by, sort_dir)
 
-    # Paginate — cumulative for load-more UX (page N returns first N*size items)
+    # Paginate — real offset slice. The cumulative "first N*size items"
+    # form (UI review P1-10) made dataframe formatting cost grow
+    # linearly with click count and broke any "what page am I on"
+    # mental model. Page 1 ⇒ items 0..size-1, page 2 ⇒ size..2*size-1,
+    # …, past-end ⇒ [].
     total = len(sorted_items)
-    page_items = sorted_items[: page * page_size]
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = sorted_items[start:end]
 
-    return page_items, total
+    return page_items, total, running_count_filtered
 
 
 def _parse_date_or_raise(value: str, *, field: str) -> None:
