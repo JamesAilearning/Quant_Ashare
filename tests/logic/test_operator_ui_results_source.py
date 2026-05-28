@@ -16,27 +16,30 @@ except ImportError:
 
 _RESULTS_PAGE = Path("web/operator_ui/pages/results.py")
 _RESULTS_HELPERS = Path("web/operator_ui/pages/_results_helpers.py")
+_RESULTS_RENDER = Path("web/operator_ui/pages/_results_render.py")
 
 
 def _results_combined_source() -> str:
-    """Read ``results.py`` AND ``_results_helpers.py`` and join them.
+    """Concatenate the three results modules' source text.
 
-    UI review P1-1 (PR-J1) split the page's pure helpers out into a
-    sibling module. Source-grep regression tests that don't care
-    *which* of the two files a name lives in can rely on this combined
-    view; tests that DO care about placement assert against one of the
-    files directly.
+    UI review P1-1 (PR-J) split the page across three modules: a slim
+    entry (``results.py``), pure helpers (``_results_helpers.py``), and
+    Streamlit-dispatching render functions (``_results_render.py``).
+    Source-grep regression tests that don't care *which* of the three
+    files a name lives in can rely on this combined view; tests that
+    DO care about placement assert against one of the files directly.
     """
 
     return "\n".join((
         _RESULTS_PAGE.read_text(encoding="utf-8"),
         _RESULTS_HELPERS.read_text(encoding="utf-8"),
+        _RESULTS_RENDER.read_text(encoding="utf-8"),
     ))
 
 
 class ResultsPageSourceTests(unittest.TestCase):
     def test_results_page_displays_tushare_provider_artifacts(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn('mode == "tushare_provider"', source)
         self.assertIn("Tushare 数据源产物", source)
@@ -45,14 +48,14 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("metadata.manifest_path", source)
 
     def test_results_page_keeps_provider_jobs_read_only(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("Tushare 数据源作业产出的是 qlib 数据包", source)
         self.assertNotIn("Pipeline(", source)
         self.assertNotIn("WalkForwardEngine(", source)
 
     def test_results_page_renders_pipeline_detail_sections(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("流水线结果", source)
         self.assertIn('"下载 config.yaml"', source)
@@ -81,14 +84,14 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertNotIn("SignalAnalyzer", source)
 
     def test_results_page_surfaces_artifact_read_issues(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("ArtifactReadIssue", source)
         self.assertIn("产物读取问题", source)
         self.assertIn("_render_artifact_issues(issues)", source)
 
     def test_results_page_prefers_structured_artifacts_with_legacy_fallbacks(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("_read_holdings_frame(run_dir, issues)", source)
         self.assertIn("_read_trades_frame(run_dir, issues)", source)
@@ -96,7 +99,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("trades.parquet 文件存在", source)
 
     def test_results_page_supports_run_id_and_interactive_nav(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
         jobs_source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
 
         self.assertIn('st.query_params.get("run_id"', source)
@@ -112,14 +115,14 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("list_all_jobs", jobs_source)
 
     def test_results_empty_state_uses_streamlit_navigation(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn('st.button("配置运行")', source)
         self.assertIn('st.switch_page("pages/config_run.py")', source)
         self.assertNotIn("window.location.href", source)
 
     def test_results_page_exposes_export_and_rerun_actions(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("用此配置重跑", source)
         self.assertIn("prefill_config_yaml", source)
@@ -131,7 +134,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("bundle_zip_bytes(run_dir)", source)
 
     def test_results_page_exposes_holdings_and_trades_filters(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("搜索持仓", source)
         self.assertIn("显示前 N 大持仓", source)
@@ -147,7 +150,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         (The "键盘快捷键" expander was removed in UI review P1-3 — it
         documented shortcuts that don't actually fire any handler.)"""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn('role="status"', source)
         self.assertIn('aria-live="polite"', source)
@@ -161,7 +164,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         under the ``.qv2-r-*`` namespace; the page itself no longer
         injects any inline ``<style>`` block."""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
         css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
 
         # No inline-styles helper / call site / ``<style>`` ladder.
@@ -204,14 +207,18 @@ class ResultsPageSourceTests(unittest.TestCase):
 
         page_source = _RESULTS_PAGE.read_text(encoding="utf-8")
         helpers_source = _RESULTS_HELPERS.read_text(encoding="utf-8")
+        render_source = _RESULTS_RENDER.read_text(encoding="utf-8")
 
         self.assertIn("def _status_badge_variant(status:", helpers_source)
-        # Composes the DS modifier class in the status header HTML
-        # (stays on the page side).
-        self.assertIn('class="qv2-badge qv2-badge--{badge_variant}"', page_source)
-        # Old helper name must be gone from both files.
+        # The DS-modifier HTML composition lives in ``_render_status_header``
+        # — moved to ``_results_render`` in PR-J phase 2.
+        self.assertIn(
+            'class="qv2-badge qv2-badge--{badge_variant}"', render_source,
+        )
+        # Old helper name must be gone from every file.
         self.assertNotIn("def _status_class(", page_source)
         self.assertNotIn("def _status_class(", helpers_source)
+        self.assertNotIn("def _status_class(", render_source)
 
     def test_results_page_does_not_advertise_unimplemented_kbd_shortcuts(self) -> None:
         """The legacy "键盘快捷键" expander listed 6 shortcuts (?, j/k,
@@ -221,13 +228,13 @@ class ResultsPageSourceTests(unittest.TestCase):
         doesn't add the misleading documentation back without wiring
         the JS event listeners."""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertNotIn('st.expander("键盘快捷键"', source)
         self.assertNotIn("Streamlit 没有暴露全局键盘事件接口", source)
 
     def test_results_page_exposes_polished_header_navigation(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
         css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
 
         # Sticky header is part of the result-page CSS namespace. After
@@ -246,7 +253,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn('pages/jobs.py', source)
 
     def test_results_page_uses_shared_nav_drawdown_time_range(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("TIME_RANGE_OPTIONS", source)
         self.assertIn("显示时间范围", source)
@@ -254,7 +261,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("nav_y_range(frame)", source)
 
     def test_results_page_renders_monthly_heatmap_and_log_filters(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("go.Heatmap(", source)
         self.assertIn("月度热力图暂不可用", source)
@@ -263,7 +270,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("filter_log_text(text, search=search, levels=levels)", source)
 
     def test_plotly_trace_colors_use_valid_literals_not_css_variables(self) -> None:
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("PLOTLY_STRATEGY_COLOR", source)
         self.assertIn("PLOTLY_BENCHMARK_COLOR", source)
@@ -288,7 +295,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         """The Raw JSON tab SHALL surface a search input that narrows
         each expander's payload (TICKET-R3 polish)."""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
         self.assertIn("搜索原始 JSON", source)
         self.assertIn("_filter_json_by_query", source)
         self.assertIn("results_raw_json_query", source)
@@ -332,7 +339,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         for why we cap at 500 MiB (1-5 GiB pipeline runs would OOM the
         Streamlit server)."""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         self.assertIn("BundleTooLargeError", source)
         self.assertIn("except BundleTooLargeError", source)
@@ -353,7 +360,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         eaten by the next forced rerun. Mirrors the toggle pattern from
         ``jobs.py:543-553`` so both surfaces behave the same way."""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
 
         # Toggle widget must exist with a stable key.
         self.assertIn('key="results_autorefresh"', source)
@@ -374,7 +381,7 @@ class ResultsPageSourceTests(unittest.TestCase):
         """The status header SHALL render one-click 📋 Copy buttons next
         to Run ID and Run directory (TICKET-R3 polish)."""
 
-        source = Path("web/operator_ui/pages/results.py").read_text(encoding="utf-8")
+        source = _results_combined_source()
         self.assertIn('copy_run_id_btn_', source)
         self.assertIn('copy_run_dir_btn_', source)
         self.assertIn('st.toast(', source)
