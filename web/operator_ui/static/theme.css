@@ -1321,3 +1321,120 @@ section[data-testid="stSidebar"] [data-testid="stSidebarNav"] > span {
     transition: opacity var(--duration-fast) var(--ease-out);
   }
 }
+
+/* ====================================================================== */
+/*  Results page (pages/results.py) — page-scoped styles                  */
+/*                                                                        */
+/*  These selectors used to live inline in ``pages/results.py`` via       */
+/*  ``_install_styles()`` ⇒ ``st.markdown('<style>…</style>')``. They     */
+/*  collided with several design-system selectors (``.qv2-card``,         */
+/*  ``.qv2-muted``, ``.qv2-positive/negative``, ``.qv2-badge``) and       */
+/*  duplicated work that already lived in this file. Moved here under     */
+/*  a dedicated ``.qv2-r-*`` namespace so the page styles cannot          */
+/*  silently override design-system primitives (UI review P1-11).         */
+/*                                                                        */
+/*  For badge variants the results page now reuses the DS modifier        */
+/*  classes (``.qv2-badge--success`` etc.) — no separate ``.status-*``    */
+/*  ladder.                                                               */
+/* ====================================================================== */
+
+.qv2-r-page {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+
+.qv2-r-header {
+  position: sticky;
+  top: 0.75rem;
+  z-index: 10;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-card);
+  margin-bottom: var(--space-5);
+  box-shadow: var(--shadow-md);
+}
+
+.qv2-r-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.qv2-r-run-id {
+  font-size: 1.25rem;
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+}
+
+/* Slightly tighter than the bare ``.qv2-muted`` from the DS — the
+ * results page wants the same colour but a smaller font size for the
+ * subhead lines under the run id. Kept separate so changing the DS
+ * ``.qv2-muted`` doesn't accidentally shrink other surfaces. */
+.qv2-r-muted {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* Wrapper card used by ``_render_card`` (KPI tiles). Slightly larger
+ * min-height than the DS ``.qv2-card`` because KPI tiles need to line
+ * up in a 3-column row even when one of them only has a primary value
+ * and no secondary lines. */
+.qv2-r-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  padding: var(--space-5);
+  min-height: 150px;
+  box-shadow: var(--shadow-sm);
+}
+
+.qv2-r-card-title {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: var(--weight-bold);
+  margin-bottom: var(--space-3);
+}
+
+.qv2-r-primary {
+  font-size: 2rem;
+  line-height: 1.15;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+
+.qv2-r-secondary {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.65;
+}
+
+.qv2-r-section-title {
+  margin-top: 28px;
+  margin-bottom: 10px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.qv2-r-empty {
+  border: 1px dashed var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+}
+
+.qv2-r-error {
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  color: var(--negative-text);
+  background: var(--negative-bg);
+  border: 1px solid var(--negative);
+  margin: var(--space-3) 0 var(--space-5);
+}
