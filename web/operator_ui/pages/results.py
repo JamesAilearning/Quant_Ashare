@@ -187,10 +187,24 @@ def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path 
         return None
     if str(job.get("mode") or "") == "pipeline":
         runs_dir = output_dir / "runs"
+        # Re-check the derived ``runs`` path: even when ``output_dir``
+        # itself resolves under an allowed root, ``runs`` could be a
+        # symlink pointing at an arbitrary directory (or a relative-
+        # parent traversal escape). ``guard_output_path`` resolves the
+        # final path before checking containment, so this catches a
+        # crafted ``runs -> /tmp/outside`` symlink before ``is_dir``
+        # follows it. (Codex P2 follow-up on PR #192.)
+        if not _is_safe_run_dir(runs_dir):
+            return None
         if runs_dir.is_dir():
             candidates = [entry for entry in runs_dir.iterdir() if entry.is_dir()]
             if candidates:
-                return max(candidates, key=lambda path: path.stat().st_mtime)
+                chosen = max(candidates, key=lambda path: path.stat().st_mtime)
+                # And re-guard the chosen candidate — same symlink
+                # threat model applies one level deeper.
+                if not _is_safe_run_dir(chosen):
+                    return None
+                return chosen
     return output_dir
 
 
@@ -1311,6 +1325,27 @@ def _render_logs_tab(job: Mapping[str, Any], issues: list[ArtifactReadIssue]) ->
 _FILTER_JSON_MAX_DEPTH = 32
 
 
+def _truncate_for_st_json(obj: Any, _depth: int = 0) -> Any:
+    """Recursively trim ``obj`` so no branch reaches deeper than
+    :data:`_FILTER_JSON_MAX_DEPTH` levels from this call's root. At the
+    cap, the deep subtree is replaced with ``None`` so the result stays
+    JSON-serialisable AND so Streamlit's ``st.json`` cannot itself
+    recurse over a pathologically deep structure.
+
+    Used by :func:`_filter_json_by_query` on the matched-key branch
+    (where the matched value would otherwise pass through unchanged
+    and bypass the recursion cap — see Codex P2 follow-up on PR #192).
+    """
+
+    if _depth >= _FILTER_JSON_MAX_DEPTH:
+        return None
+    if isinstance(obj, dict):
+        return {k: _truncate_for_st_json(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_truncate_for_st_json(v, _depth + 1) for v in obj]
+    return obj
+
+
 def _filter_json_by_query(obj: Any, query: str, *, _depth: int = 0) -> Any:
     """Recursive substring filter for nested JSON.
 
@@ -1357,7 +1392,16 @@ def _filter_json_by_query(obj: Any, query: str, *, _depth: int = 0) -> Any:
         kept: dict[str, Any] = {}
         for key, value in obj.items():
             if q in str(key).lower():
-                kept[key] = value
+                # Matched-key branch: previously passed ``value`` through
+                # unchanged, so an artifact like
+                # ``{"needle": <100-deep-tree>}`` would still hand the
+                # whole deep subtree to ``st.json`` and reproduce the
+                # same Streamlit serializer recursion the cap was meant
+                # to prevent (Codex P2 follow-up on PR #192). Truncate
+                # the matched value to the same depth budget, sharing
+                # the running ``_depth`` so the budget is global to the
+                # filter call, not reset per matched key.
+                kept[key] = _truncate_for_st_json(value, _depth + 1)
                 continue
             filtered = _filter_json_by_query(value, query, _depth=_depth + 1)
             if filtered not in (None, {}, []):

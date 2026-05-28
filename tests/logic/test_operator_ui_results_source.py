@@ -361,6 +361,55 @@ class FilterJsonByQueryTests(unittest.TestCase):
         result = _filter_json_by_query(payload, "needle")
         self.assertIsNotNone(result)
 
+    def test_caps_matched_key_branch_at_depth(self) -> None:
+        """When a query matches a shallow KEY, the matched value MUST
+        also be truncated at the depth cap. Previously the matched-key
+        branch returned the value unchanged, so an artifact like
+        ``{"needle": <100-deep-tree>}`` would still hand the deep
+        subtree to Streamlit's ``st.json`` and reproduce the exact
+        serializer recursion this cap was meant to prevent (Codex P2
+        follow-up on PR #192)."""
+
+        from web.operator_ui.pages.results import (
+            _FILTER_JSON_MAX_DEPTH,
+            _filter_json_by_query,
+        )
+
+        # Build ``{"needle": {"x": {"x": ... {"x": "leaf"}}}}`` 50 deep.
+        # "needle" matches the top-level key; the value is the deep
+        # chain that must NOT pass through unchanged.
+        deep_depth = 50
+        deep: Any = "leaf"
+        for _ in range(deep_depth):
+            deep = {"x": deep}
+
+        payload = {"needle": deep}
+        result = _filter_json_by_query(payload, "needle")
+
+        # The top-level key "needle" survives.
+        self.assertIsInstance(result, dict)
+        self.assertIn("needle", result)
+
+        # Walk down the chain; we MUST hit ``None`` (the truncation
+        # sentinel) before reaching the 50-deep leaf. Budget consumed
+        # so far at the matched-key branch entry: 1 (top dict) → the
+        # matched-key call truncates from depth 1, so we can step at
+        # most ``_FILTER_JSON_MAX_DEPTH - 1`` x's before truncation.
+        cursor: Any = result["needle"]
+        steps = 0
+        while isinstance(cursor, dict) and "x" in cursor:
+            cursor = cursor["x"]
+            steps += 1
+            if steps > _FILTER_JSON_MAX_DEPTH + 5:
+                self.fail(
+                    "Walked past the depth cap without hitting truncation"
+                )
+        self.assertIsNone(
+            cursor,
+            "Matched-key branch must truncate to None at the depth cap, "
+            f"not return the {deep_depth}-deep subtree unchanged",
+        )
+
     def test_recursion_budget_survives_pathological_list(self) -> None:
         """Lists count toward the same depth budget. A deeply nested
         ``[[[...[v]...]]]`` MUST terminate cleanly (no stack overflow,
@@ -469,6 +518,54 @@ class ResolveRunDirGuardTests(unittest.TestCase):
                 job = {"run_dir": str(run_dir)}
                 result = _resolve_run_dir(job, {})
         self.assertEqual(result, run_dir)
+
+    def test_rejects_symlink_runs_subdirectory_pointing_outside_roots(self) -> None:
+        """``output_dir`` itself can pass ``guard_output_path`` while its
+        ``runs/`` child is a symlink to ``/tmp/outside``. Without
+        re-guarding the derived path, ``runs.is_dir()`` follows the
+        symlink and ``iterdir()`` enumerates the foreign directory
+        (Codex P2 follow-up on PR #192). This test creates the exact
+        attack shape and asserts ``_resolve_run_dir`` returns None."""
+
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from web.operator_ui.pages.results import _resolve_run_dir
+
+        with tempfile.TemporaryDirectory() as allowed, \
+             tempfile.TemporaryDirectory() as outside:
+            output_dir = Path(allowed) / "good_output"
+            output_dir.mkdir()
+            # Populate ``outside`` with a fake run so iterdir would have
+            # something to return if the guard were bypassed.
+            evil_run = Path(outside) / "evil_run"
+            evil_run.mkdir()
+            try:
+                os.symlink(
+                    outside,
+                    output_dir / "runs",
+                    target_is_directory=True,
+                )
+            except (NotImplementedError, OSError) as exc:
+                # Windows requires admin / developer mode for symlinks;
+                # POSIX rarely refuses but we treat this as a platform
+                # capability gate rather than a test failure.
+                self.skipTest(f"symlinks unavailable here: {exc}")
+
+            with patch(
+                "web.operator_ui._path_guard._ALLOWED_ROOTS",
+                (Path(allowed),),
+            ):
+                job = {"status": "completed", "mode": "pipeline"}
+                config = {"output_dir": str(output_dir)}
+                result = _resolve_run_dir(job, config)
+
+        self.assertIsNone(
+            result,
+            "runs/ symlink to a path outside allowed roots must be "
+            "rejected, not returned as a probe-able run directory",
+        )
 
     def test_logs_warning_when_path_rejected(self) -> None:
         """Rejected paths SHALL be WARN-logged so the audit trail
