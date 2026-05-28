@@ -1335,10 +1335,23 @@ def _filter_json_by_query(obj: Any, query: str, *, _depth: int = 0) -> Any:
         return obj
 
     if _depth >= _FILTER_JSON_MAX_DEPTH:
-        # Stop recursing — return the subtree unchanged so the operator
-        # still sees the content (with no filter applied past this depth)
-        # rather than getting a misleading empty / None result.
-        return obj
+        # Stop recursing. Return None so the upstream
+        # ``if filtered not in (None, {}, [])`` prune drops this
+        # branch from the filtered tree.
+        #
+        # An earlier revision of this guard returned the subtree
+        # unchanged, but Codex P2 on PR #192 flagged two problems
+        # with that choice: (a) it misrepresented branches deeper
+        # than the cap as "matched" even when the query never
+        # matched below the cap, surfacing arbitrary deep blobs as
+        # fake hits in the Raw JSON tab; and (b) it handed the
+        # pathologically-deep subtree to ``st.json`` for rendering,
+        # so Streamlit's serialiser would re-recurse over exactly
+        # the adversarial structure this cap is meant to protect
+        # against. Returning None keeps the contract honest (only
+        # branches with a real match survive) AND keeps the deep
+        # subtree out of any downstream recursive code path.
+        return None
 
     if isinstance(obj, dict):
         kept: dict[str, Any] = {}

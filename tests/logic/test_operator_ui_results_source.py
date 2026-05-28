@@ -315,52 +315,57 @@ class FilterJsonByQueryTests(unittest.TestCase):
 
         self.assertEqual(_FILTER_JSON_MAX_DEPTH, 32)
 
-    def test_caps_recursion_on_deeply_nested_input(self) -> None:
-        """Build a 100-deep nested dict and confirm the filter returns
-        without exhausting Python's stack. The cap MUST surface the
-        subtree at the cap (not None) so the operator still sees the
-        upper portion of the data instead of a misleading empty result.
+    def test_caps_recursion_and_prunes_unmatched_branches_below_cap(self) -> None:
+        """A 100-deep dict whose only ``needle`` match lives BELOW the cap
+        MUST surface as no-result (None / empty). Returning the subtree
+        unchanged at the cap (the earlier behaviour) would show the deep
+        branch as a fake hit and hand the adversarial structure back to
+        Streamlit's serializer — the two failure modes Codex P2 on
+        PR #192 flagged.
 
         Adversarial input or a downstream pipeline producing unexpectedly
         nested structures shouldn't be able to hang the Streamlit session
         with a single query (UI review P1-13)."""
 
-        from web.operator_ui.pages.results import (
-            _FILTER_JSON_MAX_DEPTH,
-            _filter_json_by_query,
-        )
+        from web.operator_ui.pages.results import _filter_json_by_query
 
-        # Build a chain ``{"a": {"a": {"a": ... {"a": "leaf-match"}}}}``
-        # 100 deep. Plain Python recursion would not stack-overflow at
-        # 100 frames (sys.setrecursionlimit defaults to 1000), but
-        # capping at 32 is the contract we want to pin.
+        # Build a chain ``{"a": {"a": {"a": ... {"a": "needle"}}}}``
+        # 100 deep. The only match for ``needle`` is at the leaf,
+        # which sits well below _FILTER_JSON_MAX_DEPTH=32.
         depth = 100
         leaf: Any = "needle"
         for _ in range(depth):
             leaf = {"a": leaf}
 
-        # Before the cap was added, this would recurse 100 frames. Now
-        # it stops at 32 and returns the depth-32 subtree unchanged.
         result = _filter_json_by_query(leaf, "needle")
 
-        # Walk the result down ``a`` chain — at most _FILTER_JSON_MAX_DEPTH
-        # levels should have been processed; below the cap we expect the
-        # subtree to come back unchanged (still contains "needle").
-        cursor: Any = result
-        for _ in range(_FILTER_JSON_MAX_DEPTH):
-            self.assertIsInstance(cursor, dict)
-            self.assertIn("a", cursor)
-            cursor = cursor["a"]
-        # At/below the cap we returned the subtree unchanged, so the
-        # remaining chain still resolves down to the "needle" leaf.
-        for _ in range(depth - _FILTER_JSON_MAX_DEPTH):
-            self.assertIsInstance(cursor, dict)
-            cursor = cursor["a"]
-        self.assertEqual(cursor, "needle")
+        # Cap pruned the deep branch, upstream ``not in (None, {}, [])``
+        # check then dropped each ancestor that had nothing else to
+        # keep, so the whole filter collapses to None / empty.
+        self.assertIn(result, (None, {}))
+
+    def test_caps_recursion_preserves_matches_above_cap(self) -> None:
+        """A match that sits ABOVE the cap MUST still be returned. The
+        cap is for protection, not blanket filtering."""
+
+        from web.operator_ui.pages.results import _filter_json_by_query
+
+        # ``needle`` lives at depth 3 — well above the cap.
+        payload: Any = {"a": {"b": {"needle_here": 1}}}
+        for _ in range(50):
+            # Pad with deep noise that never matches; the noise gets
+            # pruned by the cap + downstream prune, but the shallow
+            # match must still survive.
+            payload = {"noise": [[[[payload]]]], **payload}
+
+        result = _filter_json_by_query(payload, "needle")
+        self.assertIsNotNone(result)
 
     def test_recursion_budget_survives_pathological_list(self) -> None:
         """Lists count toward the same depth budget. A deeply nested
-        ``[[[...[v]...]]]`` MUST also terminate cleanly."""
+        ``[[[...[v]...]]]`` MUST terminate cleanly (no stack overflow,
+        no hang) and — since the only ``needle`` lives below the cap —
+        prune to a None / empty result."""
 
         from web.operator_ui.pages.results import _filter_json_by_query
 
@@ -369,13 +374,11 @@ class FilterJsonByQueryTests(unittest.TestCase):
         for _ in range(depth):
             leaf = [leaf]
 
-        # Must not stack-overflow or hang.
+        # Must not stack-overflow or hang. The contract is "cap kicks
+        # in and the unmatched-below-cap branch gets pruned" — same
+        # honest empty result as the dict case above.
         result = _filter_json_by_query(leaf, "needle")
-
-        # We expect a result that's non-None (some prefix of the
-        # structure survives the cap); we don't assert the precise
-        # shape — the contract is "doesn't blow up and produces output".
-        self.assertIsNotNone(result)
+        self.assertIn(result, (None, []))
 
 
 @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
