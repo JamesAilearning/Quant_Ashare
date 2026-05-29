@@ -149,6 +149,23 @@ class BuildRecommendationTests(unittest.TestCase):
         self.assertEqual(len(picks), 5)
         self.assertEqual([p.rank for p in picks], [1, 2, 3, 4, 5])
 
+    def test_negative_topk_rejected(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "topk must be >= 0"):
+            build_recommendation(
+                score_by_inst={"SH600000": 0.5}, masked_pairs=set(),
+                suspended=set(), one_price=set(), name_fn=lambda x: "",
+                as_of_date="2025-06-30", entry_date="2025-07-01", topk=-1,
+            )
+
+    def test_zero_topk_yields_empty_buy_list(self) -> None:
+        picks, frame, _ = build_recommendation(
+            score_by_inst={"SH600000": 0.5, "SH600001": 0.4}, masked_pairs=set(),
+            suspended=set(), one_price=set(), name_fn=lambda x: "",
+            as_of_date="2025-06-30", entry_date="2025-07-01", topk=0,
+        )
+        self.assertEqual(len(picks), 0)
+        self.assertEqual(len(frame), 2)  # audit frame still has all scored rows
+
     def test_stable_sort_preserves_input_order_on_ties(self) -> None:
         # All equal score -> stable sort keeps insertion order (matters for
         # the best_iter=1 model that produces many tied scores).

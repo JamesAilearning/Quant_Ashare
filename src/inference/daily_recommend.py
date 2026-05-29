@@ -381,6 +381,11 @@ def build_recommendation(
     supply the precise reason label. Returns ``(picks, scored_frame,
     n_masked)``. Sorting is stable so equal scores keep input order.
     """
+    if topk < 0:
+        raise DailyRecommendationError(
+            f"topk must be >= 0, got {topk} (a negative head() slice would "
+            "silently drop from the tail rather than truncate)."
+        )
     rows = []
     for inst, score in score_by_inst.items():
         tradable = inst not in masked_pairs
@@ -448,9 +453,12 @@ def _per_regime_sets(
     one_price: set[str] = set()
     if df is None or df.empty:
         return suspended, one_price
+    # Normalize column names so we tolerate either `$volume` or a stripped
+    # `volume` from the provider (lstrip is idempotent on bare names).
+    df = df.rename(columns=lambda c: str(c).lstrip("$"))
     for idx, row in df.iterrows():
         inst = idx[0] if isinstance(idx, tuple) else idx
-        vol, hi, lo, close = row["$volume"], row["$high"], row["$low"], row["$close"]
+        vol, hi, lo, close = row["volume"], row["high"], row["low"], row["close"]
         # Suspension (matches compute_unavailable_mask intent): no close,
         # OR no/zero/negative volume. NaN volume = no trade = suspended
         # (a bare ``vol <= 0`` misses NaN since NaN comparisons are False).
