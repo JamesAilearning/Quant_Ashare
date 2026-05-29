@@ -6,10 +6,25 @@ import math
 import unittest
 from pathlib import Path
 
+_WALK_FORWARD_PAGE = Path("web/operator_ui/pages/walk_forward.py")
+_WALK_FORWARD_HELPERS = Path("web/operator_ui/pages/_walk_forward_helpers.py")
+
 
 class WalkForwardPageSourceTests(unittest.TestCase):
     def _source(self) -> str:
-        return Path("web/operator_ui/pages/walk_forward.py").read_text(encoding="utf-8")
+        """Concatenate the page module + its pure-helpers sibling.
+
+        UI review P1-1 (PR-K) extracted constants, metric helpers,
+        OOS-NAV synthesis, log reader, and the stability-score block to
+        ``_walk_forward_helpers.py``. Source-grep regression tests that
+        don't care *which* file a name lives in stay placement-
+        independent by reading this combined view.
+        """
+
+        return "\n".join((
+            _WALK_FORWARD_PAGE.read_text(encoding="utf-8"),
+            _WALK_FORWARD_HELPERS.read_text(encoding="utf-8"),
+        ))
 
     def test_walk_forward_page_uses_canonical_information_ratio(self) -> None:
         source = self._source()
