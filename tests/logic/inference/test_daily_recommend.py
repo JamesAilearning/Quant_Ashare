@@ -16,6 +16,7 @@ Two tiers (per AGENTS.md "E2E + synthetic unit twin"):
 from __future__ import annotations
 
 import os
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,7 @@ from src.inference.daily_recommend import (
     DailyRecommendationError,
     DailyRecommendationResult,
     RecommendationConfig,
+    _load_model,
     assert_no_lookahead,
     build_recommendation,
     resolve_dates,
@@ -181,6 +183,27 @@ class BuildRecommendationTests(unittest.TestCase):
         )
         self.assertEqual([p.stock_code for p in picks],
                          ["SH600003", "SH600001", "SH600002"])
+
+
+class LoadModelTests(unittest.TestCase):
+    def test_missing_path_raises_domain_error(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "not found"):
+            _load_model(Path("D:/no/such/model_xyz.pkl"))
+
+    def test_corrupt_pickle_raises_domain_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "bad.pkl"
+            p.write_bytes(b"not a valid pickle stream \x00\x01\x02")
+            with self.assertRaisesRegex(DailyRecommendationError, "failed to load"):
+                _load_model(p)
+
+    def test_non_model_object_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "dict.pkl"
+            with p.open("wb") as f:
+                pickle.dump({"not": "a model"}, f)
+            with self.assertRaisesRegex(DailyRecommendationError, "no .predict"):
+                _load_model(p)
 
 
 class WriteOutputsTests(unittest.TestCase):

@@ -246,6 +246,35 @@ def _load_name_map(parquet_path: str | None) -> dict[str, str]:
     return {str(r.ts_code): str(r.name) for r in df.itertuples(index=False)}
 
 
+def _load_model(model_path: Path) -> Any:
+    """Load the pickled qlib model, failing closed with a domain error.
+
+    A missing path, a corrupt / truncated pickle, or an unpickle that
+    needs an unavailable class all raise ``DailyRecommendationError``
+    rather than letting a raw ``UnpicklingError`` / ``EOFError`` /
+    ``ModuleNotFoundError`` escape. The loaded object must expose
+    ``.predict`` (qlib model contract).
+    """
+    if not model_path.exists():
+        raise DailyRecommendationError(f"model artifact not found: {model_path}")
+    import pickle
+    try:
+        with model_path.open("rb") as f:
+            model = pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, OSError, ValueError,
+            AttributeError, ImportError) as exc:
+        raise DailyRecommendationError(
+            f"failed to load model artifact {model_path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if not hasattr(model, "predict"):
+        raise DailyRecommendationError(
+            f"loaded object {type(model).__name__} has no .predict; "
+            "not a qlib model."
+        )
+    return model
+
+
 # --------------------------------------------------------------------------
 # Main entry
 # --------------------------------------------------------------------------
@@ -263,16 +292,7 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
     )
 
     # 1. Load the trained model.
-    model_path = Path(config.model_path)
-    if not model_path.exists():
-        raise DailyRecommendationError(f"model artifact not found: {model_path}")
-    import pickle
-    with model_path.open("rb") as f:
-        model = pickle.load(f)
-    if not hasattr(model, "predict"):
-        raise DailyRecommendationError(
-            f"loaded object {type(model).__name__} has no .predict; not a qlib model."
-        )
+    model = _load_model(Path(config.model_path))
 
     # 2. Build as-of-T features ONCE (dataset reused for predict below).
     dataset, feature_frame = _build_asof_dataset(config, as_of_date)
