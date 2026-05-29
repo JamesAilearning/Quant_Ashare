@@ -769,6 +769,79 @@ def test_evaluate_individual_uses_normal_method_not_rank():
 
 
 # ---------------------------------------------------------------------------
+# w_corr=0 short-circuit (memory + perf optimization)
+# ---------------------------------------------------------------------------
+
+
+def test_within_generation_novelty_returns_zero_when_w_corr_zero():
+    """Direct call to ``_within_generation_novelty`` with w_corr=0 SHALL
+    return 0.0 regardless of any cached values (defensive: even if a
+    caller mutated the cache out-of-band, novelty stays at 0).
+
+    Rationale: on the B-std 12-feature panel,
+    ``pd.DataFrame.stack(future_stack=True)`` inside the novelty loop
+    triggered Windows MemoryError at modest pop sizes despite ~14 GB
+    free RAM (pandas MultiIndex allocation fragments the heap). When
+    the operator opts out of novelty pressure by setting ``w_corr=0``,
+    the term contributes nothing to fitness anyway, so we skip the
+    expensive path.
+    """
+    engine = _engine(seed=1, population_size=4)
+    engine.fitness_config = FitnessConfig(w_corr=0.0)
+    panel, fwd = _make_panel(seed=1)
+
+    # Manually inject a cache entry — even if a caller mutated the cache
+    # out-of-band (e.g. checkpoint resume), novelty must short-circuit.
+    engine._per_generation_values[123] = panel["$close"]
+    novelty = engine._within_generation_novelty(panel["$close"])
+    assert novelty == 0.0
+
+
+def test_within_generation_novelty_skips_cache_write_when_w_corr_zero():
+    """When ``w_corr == 0`` the engine SHALL also skip the
+    ``_per_generation_values`` cache write inside ``evaluate_individual``
+    (otherwise we still pay the per-DataFrame memory cost across the
+    generation even though nothing reads it)."""
+    from src.factor_mining.expression import OperatorCall, Terminal
+
+    engine = _engine(seed=42, population_size=4)
+    engine.fitness_config = FitnessConfig(w_corr=0.0)
+    panel, fwd = _make_panel(seed=42)
+
+    # A construction-time-valid expression that's guaranteed to pass
+    # validity on the synthetic panel: cs_rank($volume) — $volume is
+    # PURE, cs_rank wraps it, and the synthetic panel has plenty of
+    # cross-sectional variance.
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    score, _ = engine.evaluate_individual(expr, panel, fwd)
+    assert score > float("-inf"), "synthetic panel must score finite"
+    assert hash(expr) in engine.fitness_cache
+    assert len(engine._per_generation_values) == 0, (
+        "w_corr=0 must skip the novelty-cache write — otherwise we still "
+        "pay the per-DataFrame memory cost across the generation"
+    )
+
+
+def test_within_generation_novelty_still_writes_cache_when_w_corr_nonzero():
+    """Non-zero ``w_corr`` SHALL still populate ``_per_generation_values``
+    so subsequent novelty comparisons work correctly. The short-circuit
+    is gated EXACTLY by ``w_corr==0``, no looser."""
+    from src.factor_mining.expression import OperatorCall, Terminal
+
+    engine = _engine(seed=42, population_size=4)
+    engine.fitness_config = FitnessConfig(w_corr=0.1)
+    panel, fwd = _make_panel(seed=42)
+
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    score, _ = engine.evaluate_individual(expr, panel, fwd)
+    assert score > float("-inf")
+    assert hash(expr) in engine._per_generation_values, (
+        "w_corr > 0 must populate _per_generation_values so novelty "
+        "comparisons against later expressions work"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Exception classification: KeyError fail-fast, others warn-once + -inf
 # ---------------------------------------------------------------------------
 
