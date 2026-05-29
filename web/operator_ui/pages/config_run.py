@@ -24,6 +24,26 @@ from web.operator_ui.config_presets import (
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError, JobMode
 from web.operator_ui.page_header import render_page_header
+
+# Pure helpers + constants moved to ``_config_run_helpers`` in UI review
+# P1-1. Re-exported here so legacy tests that do
+# ``from web.operator_ui.pages.config_run import _last_n_days_split``
+# (and friends) keep working unchanged. ``noqa: F401`` because the names
+# are exposed for callers and consumed by the page body below. Sits in
+# the top import block (rather than after ``_PRESETS_DIR``) so that
+# running ``ruff check`` against this file alone doesn't trip E402
+# "Module level import not at top of file" — Codex P2 on PR #202.
+from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
+    _PIPELINE_DATE_FALLBACK,
+    _estimate_duration,
+    _last_n_days_split,
+    _option_index,
+    _pipeline_date_defaults,
+    _safe_pipeline_last_index,
+    _six_increasing_indices,
+    _trading_day_options,
+    _walk_forward_date_defaults,
+)
 from web.operator_ui.provider_catalog import (
     ProviderCatalogError,
     delete_provider_catalog_entry,
@@ -41,24 +61,6 @@ from web.operator_ui.training_guards import (
 # ---------------------------------------------------------------------------
 
 _PRESETS_DIR = Path(__file__).resolve().parents[3] / "config" / "presets"
-
-# Pure helpers + constants moved to ``_config_run_helpers`` in UI review
-# P1-1. Re-exported here so legacy tests that do
-# ``from web.operator_ui.pages.config_run import _last_n_days_split``
-# (and friends) keep working unchanged. ``noqa: F401`` because the names
-# are exposed for callers and consumed by the page body / module-level
-# rendering below.
-from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
-    _PIPELINE_DATE_FALLBACK,
-    _estimate_duration,
-    _last_n_days_split,
-    _option_index,
-    _pipeline_date_defaults,
-    _safe_pipeline_last_index,
-    _six_increasing_indices,
-    _trading_day_options,
-    _walk_forward_date_defaults,
-)
 
 
 def _select_trading_day(
