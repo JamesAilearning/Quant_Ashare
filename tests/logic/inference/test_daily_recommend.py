@@ -16,18 +16,23 @@ Two tiers (per AGENTS.md "E2E + synthetic unit twin"):
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.inference.daily_recommend import (
+    _BUY_LIST_COLUMNS,
     DailyRecommendationError,
+    DailyRecommendationResult,
     RecommendationConfig,
     assert_no_lookahead,
     build_recommendation,
     resolve_dates,
+    write_outputs,
 )
 
 _RUN_E2E = os.environ.get("RUN_E2E") == "1"
@@ -155,6 +160,21 @@ class BuildRecommendationTests(unittest.TestCase):
         )
         self.assertEqual([p.stock_code for p in picks],
                          ["SH600003", "SH600001", "SH600002"])
+
+
+class WriteOutputsTests(unittest.TestCase):
+    def test_empty_buy_list_csv_still_has_header(self) -> None:
+        # Empty picks (e.g. --topk 0 or all masked) must still write a CSV
+        # header row so downstream readers don't choke on a column-less file.
+        result = DailyRecommendationResult(
+            as_of_date="2025-06-30", entry_date="2025-07-01",
+            picks=(), n_scored=0, n_masked=0,
+            scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(result, tmp)
+            header = Path(paths["csv"]).read_text(encoding="utf-8-sig").splitlines()[0]
+            self.assertEqual(header.split(","), _BUY_LIST_COLUMNS)
 
 
 # ===========================================================================

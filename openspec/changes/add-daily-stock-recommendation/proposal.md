@@ -38,9 +38,9 @@ first-class, test-enforced contract — not an afterthought.
     (default = latest PIT trading day), `topk`, Alpha158 training
     window (`fit_start`/`fit_end`) needed to fit processors without
     leakage, output dir.
-  * `DailyRecommendationResult` — frozen dataclass: as-of date,
-    ordered list of picks (`instrument`, `name`, `score`, `rank`,
-    `tradable`, `mask_reason`), counts.
+  * `DailyRecommendationResult` — frozen dataclass: as-of date, entry
+    date, ordered list of picks (`rank`, `stock_code`, `stock_name`,
+    `predicted_score`, `tradable_flag`, `unavailable_reason`), counts.
   * `recommend(config) -> DailyRecommendationResult` — loads the
     pickled qlib model, builds the **as-of-`T`** Alpha158 feature
     cross-section, calls `model.predict`, applies the existing

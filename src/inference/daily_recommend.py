@@ -451,11 +451,20 @@ def _per_regime_sets(
     for idx, row in df.iterrows():
         inst = idx[0] if isinstance(idx, tuple) else idx
         vol, hi, lo, close = row["$volume"], row["$high"], row["$low"], row["$close"]
-        if pd.isna(close) or (vol is not None and vol <= 0):
+        # Suspension (matches compute_unavailable_mask intent): no close,
+        # OR no/zero/negative volume. NaN volume = no trade = suspended
+        # (a bare ``vol <= 0`` misses NaN since NaN comparisons are False).
+        if pd.isna(close) or pd.isna(vol) or vol <= 0:
             suspended.add(str(inst))
         elif vol > 0 and hi == lo:
             one_price.add(str(inst))
     return suspended, one_price
+
+
+_BUY_LIST_COLUMNS = [
+    "as_of_date", "entry_date", "rank", "stock_code", "stock_name",
+    "predicted_score", "tradable_flag", "unavailable_reason",
+]
 
 
 def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, str]:
@@ -481,7 +490,11 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
     json_path = out / f"daily_recommendation_{stamp}.json"
     audit_path = out / f"daily_recommendation_{stamp}_scored_full.csv"
 
-    pd.DataFrame(buy_rows).to_csv(csv_path, index=False, encoding="utf-8-sig")
+    # Explicit columns so an empty buy list (e.g. --topk 0, or every
+    # candidate masked) still writes a header row downstream readers expect.
+    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).to_csv(
+        csv_path, index=False, encoding="utf-8-sig",
+    )
     json_path.write_text(json.dumps({
         "as_of_date": result.as_of_date,
         "entry_date": result.entry_date,

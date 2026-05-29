@@ -54,7 +54,7 @@ The path SHALL compute the `T`-day microstructure mask (suspension:
 `$volume <= 0` or `$close` NaN; one-price-lock: `$volume > 0` and
 `$high == $low`) for the candidate universe and SHALL exclude masked
 `(T, instrument)` candidates from the Top-K buy list. The full scored
-frame, including masked names with a `mask_reason`, SHALL be written for
+frame, including masked names with an `unavailable_reason`, SHALL be written for
 audit so the exclusion is inspectable, not silent.
 
 #### Scenario: a stock suspended on T is not recommended
