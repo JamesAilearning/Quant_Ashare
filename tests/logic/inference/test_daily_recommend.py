@@ -74,6 +74,10 @@ class ResolveDatesTests(unittest.TestCase):
         with self.assertRaisesRegex(DailyRecommendationError, "not a trading day"):
             resolve_dates("2025-06-28", calendar=self._CAL)  # Saturday, not in calendar
 
+    def test_unparseable_as_of_raises_domain_error(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "not a parseable date"):
+            resolve_dates("not-a-date", calendar=self._CAL)
+
 
 def _frame_for(dates_instruments: list[tuple[str, str]]) -> pd.DataFrame:
     idx = pd.MultiIndex.from_tuples(

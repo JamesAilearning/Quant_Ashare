@@ -143,7 +143,18 @@ def resolve_dates(
         # cannot be a decision day; its entry T+1 is not in the bundle).
         t = calendar[-2]
     else:
-        t = pd.Timestamp(as_of_date)
+        try:
+            t = pd.Timestamp(as_of_date)
+        except (ValueError, TypeError) as exc:
+            raise DailyRecommendationError(
+                f"as-of date {as_of_date!r} is not a parseable date "
+                "(expected YYYY-MM-DD)."
+            ) from exc
+        if pd.isna(t):
+            raise DailyRecommendationError(
+                f"as-of date {as_of_date!r} is not a parseable date "
+                "(expected YYYY-MM-DD)."
+            )
         if t not in set(calendar):
             raise DailyRecommendationError(
                 f"as-of date {t.date()} is not a trading day in the PIT "
