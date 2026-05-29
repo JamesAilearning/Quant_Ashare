@@ -123,7 +123,7 @@ class BuildRecommendationTests(unittest.TestCase):
         self.assertEqual(set(frame.columns) >= {"as_of_date", "entry_date",
             "stock_code", "stock_name", "predicted_score", "tradable_flag",
             "unavailable_reason"}, True)
-        reason = dict(zip(frame.stock_code, frame.unavailable_reason))
+        reason = dict(zip(frame.stock_code, frame.unavailable_reason, strict=True))
         self.assertEqual(reason["SZ000001"], "suspended")
         self.assertEqual(reason["SZ300750"], "one_price_lock")
         self.assertEqual(reason["SH600000"], "")

@@ -154,13 +154,21 @@ def resolve_dates(
 # --------------------------------------------------------------------------
 # Feature construction (as-of T, leak-free)
 # --------------------------------------------------------------------------
-def prepare_asof_features(config: RecommendationConfig, as_of_date: str) -> pd.DataFrame:
-    """Build the as-of-``T`` Alpha158 INFER feature frame.
+def _build_asof_dataset(
+    config: RecommendationConfig, as_of_date: str,
+) -> tuple[Any, pd.DataFrame]:
+    """Build the as-of-``T`` Alpha158 ``DatasetH`` once and return it with
+    its INFER feature frame.
 
-    Returned frame is indexed by ``(datetime, instrument)`` and contains
-    ONLY rows for ``as_of_date`` (a single trading day). Exposed
-    separately from :func:`recommend` so the look-ahead-bias test can
-    assert ``frame.index.datetime.max() == as_of_date`` directly.
+    Shared by :func:`recommend` (which needs the dataset for
+    ``model.predict``) and :func:`prepare_asof_features` (which needs only
+    the frame), so the (expensive) Alpha158 handler is built exactly once.
+
+    ``end_time=T`` -> qlib loads no bar dated ``> T``. ``fit_end_time``
+    pins normalization to the training window. The INFER data key
+    (``DK_I``) means ``DropnaLabel`` (a LEARN processor) is NOT applied,
+    so a NaN label on the latest day does NOT drop the row — only the
+    (unused) features matter.
     """
     from qlib.contrib.data.handler import Alpha158
     from qlib.data.dataset import DatasetH
@@ -174,12 +182,20 @@ def prepare_asof_features(config: RecommendationConfig, as_of_date: str) -> pd.D
         fit_end_time=config.fit_end,   # <-- normalization fit = training window
     )
     dataset = DatasetH(handler=handler, segments={"infer": [as_of_date, as_of_date]})
-    # DK_I (infer) -> DropnaLabel (a LEARN processor) is NOT applied, so a
-    # NaN label on the latest day does NOT drop the row. Only features.
     feature_frame = dataset.prepare(
         "infer", col_set="feature", data_key=DataHandlerLP.DK_I,
     )
-    return feature_frame
+    return dataset, feature_frame
+
+
+def prepare_asof_features(config: RecommendationConfig, as_of_date: str) -> pd.DataFrame:
+    """Build the as-of-``T`` Alpha158 INFER feature frame.
+
+    Indexed by ``(datetime, instrument)``, rows for ``as_of_date`` only.
+    Exposed separately from :func:`recommend` so the look-ahead-bias test
+    can assert ``frame.index.datetime.max() == as_of_date`` directly.
+    """
+    return _build_asof_dataset(config, as_of_date)[1]
 
 
 # --------------------------------------------------------------------------
@@ -236,8 +252,8 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
             f"loaded object {type(model).__name__} has no .predict; not a qlib model."
         )
 
-    # 2. Build as-of-T features and score.
-    feature_frame = prepare_asof_features(config, as_of_date)
+    # 2. Build as-of-T features ONCE (dataset reused for predict below).
+    dataset, feature_frame = _build_asof_dataset(config, as_of_date)
     if feature_frame.empty:
         raise DailyRecommendationError(
             f"as-of-{as_of_date} feature frame is empty; cannot recommend. "
@@ -246,17 +262,8 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
     # Look-ahead self-guard (cheap, always on): no row may be dated > T.
     assert_no_lookahead(feature_frame, as_of_date)
 
-    from qlib.data.dataset import DatasetH  # noqa: PLC0415
-    from qlib.contrib.data.handler import Alpha158  # noqa: PLC0415
-    from qlib.data.dataset.handler import DataHandlerLP  # noqa: F401,PLC0415
-    # Re-use one handler/dataset for predict to stay on the canonical
-    # qlib predict path (uses DK_I + col_set="feature" internally).
-    handler = Alpha158(
-        instruments=config.instruments,
-        start_time=config.fit_start, end_time=as_of_date,
-        fit_start_time=config.fit_start, fit_end_time=config.fit_end,
-    )
-    dataset = DatasetH(handler=handler, segments={"infer": [as_of_date, as_of_date]})
+    # model.predict stays on the canonical qlib path (uses DK_I +
+    # col_set="feature" internally) against the same dataset.
     scores = model.predict(dataset, segment="infer")
     scores = pd.Series(scores) if not isinstance(scores, pd.Series) else scores
     # Drop NaN SCORES (feature-derived; NOT label). This is the safe
@@ -276,7 +283,9 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
     instruments = [
         idx[-1] if isinstance(idx, tuple) else idx for idx in scores.index
     ]
-    score_by_inst = dict(zip(instruments, [float(v) for v in scores.to_numpy()]))
+    score_by_inst = dict(zip(
+        instruments, [float(v) for v in scores.to_numpy()], strict=True,
+    ))
 
     # 3. Tradability mask (suspension / one-price-lock) on T.
     pit = _build_pit_provider(config)
