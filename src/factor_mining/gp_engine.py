@@ -255,7 +255,15 @@ class GPEngine:
         )
         self.fitness_cache[h] = score
         if score > float("-inf"):
-            self._per_generation_values[h] = result.factor_values
+            # Skip novelty-cache write when w_corr=0 — the cache is read
+            # only by _within_generation_novelty which short-circuits to
+            # 0.0 in that case. Saves O(pop_size × date × ticker) of peak
+            # heap per generation, important on 12-feature panels where
+            # pandas's MultiIndex stack pushed Windows into MemoryError
+            # at modest pop sizes (see empirical_results_b_std.md
+            # "Iteration 5: 12-feature universe").
+            if self.fitness_config.w_corr != 0.0:
+                self._per_generation_values[h] = result.factor_values
             self._all_evaluated[h] = PoolEntry.from_result(
                 expr=expr,
                 result=result,
@@ -272,7 +280,17 @@ class GPEngine:
         cleared at each generation boundary so the novelty calculation
         is invariant to long-history cache state (which would break
         determinism across checkpoint resume).
+
+        Short-circuit: when ``fitness_config.w_corr == 0`` the novelty
+        term contributes nothing to the score (``compute_fitness`` does
+        ``- w_corr * novelty_penalty``), so we skip the expensive
+        per-other-factor stack/join. On the B-std 12-feature universe
+        the per-iteration novelty allocation pattern blew Python's
+        pandas heap; users opting out of novelty pressure (the soft
+        fitness recipe) get the GP search budget for free.
         """
+        if self.fitness_config.w_corr == 0.0:
+            return 0.0
         if not self._per_generation_values or factor_values.empty:
             return 0.0
         new_stack = factor_values.stack(future_stack=True)

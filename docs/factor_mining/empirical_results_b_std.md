@@ -275,3 +275,146 @@ Run artefacts on disk (this workstation):
 - `research/mined_factors/runs/pit_csi300_2018_2023_full_top20_soft/` — top-20 truncation of soft pool
 
 Reproducibility commands are pinned in the per-run `config.yaml` snapshot. None of these artefacts are git-tracked — they live on the operator workstation. The configs that produced them (`config/factor_mining/pit_full*.yaml` and `config_walk_*_pit_full*.yaml`) are also operator-local; the source-controlled equivalents are `config/factor_mining/default.yaml` and `config_walk.yaml`, which document the same parameters with `OPERATOR-FILL` placeholders for PIT paths.
+
+---
+
+## Iteration 5: 12-feature universe (post-`extend-feature-universe-with-daily-basic`)
+
+The single highest-ROI follow-up identified in iterations 1-4 was
+"extend the feature universe with `daily_basic` fundamentals (PE/PB/PS/
+turnover/cap)" — the proposal was authored in PR #182 and shipped via
+PRs #184/185/187 (Tushare ingest + qlib bin builder + grammar
+extension). FeatureRegistry.V1 went 6 → 12 terminals. This iteration
+runs the bake-off on the extended universe.
+
+### Configuration
+
+- `data_basic` ingest 2018-2025 succeeded — 46776 parquet files, ~8.7M rows.
+- qlib bundle rebuilt, calendar still 1942 days (2018-01-02 → 2025-12-31).
+- Operator gotcha discovered along the way: `05_build_qlib_bins.py`
+  silently wipes `instruments/csi300.txt` / `csi500.txt` / `csi800.txt`
+  during rebuild (it only re-emits `all.txt`). Operators MUST re-run
+  `03_resolve_index_membership.py` + `04_build_universe_files.py`
+  + the SH000300 backfill helper after every bin rebuild. The new
+  playbook script `scripts/operator_helpers/run_12feat_playbook.sh`
+  (operator-local, not tracked) sequences these correctly.
+- Two GP attempts at `pop=200/100` with `w_corr=0.1` (the soft-iteration
+  setting from iterations 2-4) **both hit `MemoryError`** inside
+  pandas's `_within_generation_novelty` MultiIndex stack despite 14
+  GB free RAM — the 12-feature panel's heap-allocation pattern in
+  `stack_v3(...)` fragments Python's allocator badly enough that even
+  1.46 MiB allocations fail.
+- **Fix shipped in this iteration's PR**: the engine short-circuits the
+  novelty cache write + read when `w_corr == 0`. Operators opting
+  out of novelty pressure (as the soft recipe does in spirit) now
+  pay zero memory for the term.
+- The successful run used `pop=100, gen=20, w_corr=0` (novelty
+  pressure disabled, smaller population).
+
+### Headline numbers
+
+| Metric | Alpha158 baseline | **MinedFactor 12-feat (w_corr=0)** | vs iter-4 best |
+|---|---:|---:|---:|
+| mean_information_ratio | +0.466 | **-0.624** | -0.094 → **-0.624** (worse) |
+| mean_ic_1d | +0.0247 | +0.0026 | +0.006 → +0.003 (slightly worse) |
+| mean_annualized_return | +4.90% | -3.73% | +0.11% → -3.73% (worse) |
+| worst_drawdown | -12.14% | -9.86% | -7.04% → -9.86% (worse) |
+| `valid_folds_ic_1d` | 22 / 23 | 18 / 23 | (similar) |
+| `design_doc_ir_threshold_met` | — | **FALSE** | — |
+
+The expressivity expansion did NOT close the gap — in fact it
+regressed across every metric vs the iter-4 soft-top-20 best.
+
+### Root cause: novelty-off + extra features → template collapse
+
+The pool inspection tells the story:
+
+- **40 of 50 saved factors USE at least one daily_basic terminal** —
+  the grammar extension worked, GP did adopt fundamentals.
+- **But IS `|IC|` median = 0.0095** vs iter-4 soft pool's 0.017 —
+  signal strength actually went DOWN.
+- **Top expressions are all variants of `cs_*(ts_delta($turnover_rate, N))`**:
+
+  ```
+   #  fitness  IS-IC   expression
+   1  +0.029  +0.011  cs_winsorize(ts_delta($turnover_rate, 20))
+   2  +0.028  +0.010  cs_rank(ts_delta($turnover_rate, 20))
+   3  +0.027  +0.010  cs_rank(ts_delta($turnover_rate, 10))
+   4  +0.026  +0.012  cs_rank(div_safe(ts_delta($turnover_rate, 20), $total_mv))
+   5  +0.025  +0.012  cs_rank(div_safe(ts_rank($close, 60), $turnover_rate))
+   ```
+
+Without novelty pressure, the GP converged on a single semantic
+template ("turnover acceleration") and spent its search budget on
+near-duplicates. The 50-factor pool is essentially the same factor
+repeated 50 times with parameter variations. LightGBM with 50
+highly-correlated features overfits to the noise in their differences
+rather than learning genuine signal from feature diversity.
+
+**Lesson: novelty pressure was load-bearing for diversity. Removing it
+to dodge a memory bug cost us more than the bug would have.** The
+fix going forward is to keep `w_corr > 0` and solve the memory
+problem differently (smaller `pop`, or a streaming novelty
+computation that doesn't allocate full MultiIndex Series).
+
+### Cross-iteration summary
+
+| Iteration | Recipe | OOS IR | OOS IC | Notes |
+|---|---|---:|---:|---|
+| 1 | 6-feat default (`w_corr=0.8`) | -0.304 | -0.002 | novelty crowds out signal |
+| 2 | 6-feat soft (`w_corr=0.1`) | -0.126 | +0.003 | softer fitness, marginally better |
+| 3 | 6-feat soft top-20 | **-0.094** | +0.006 | iter-4 best of the 6-feat runs |
+| 4 | 12-feat soft pop=200 | OOM | OOM | pandas heap fragmented |
+| 5 | **12-feat nocorr pop=100** | -0.624 | +0.003 | template collapse — diversity matters |
+| (Alpha158 baseline, unchanged) | hand-engineered 158 | **+0.466** | **+0.025** | — |
+
+After five iterations across two fitness variants × two feature
+universes × three pool-size knobs, no recipe meets the design doc §10
+IR threshold on csi300 2018-2025. The infrastructure works end-to-end;
+the GP-on-OHLCV+daily_basic recipe does not beat 158 hand-engineered
+features on this universe / window.
+
+### Recommendation: close empirical experiments, open next-epic backlog
+
+The remaining high-ROI directions all require architectural changes
+beyond the iteration loop:
+
+1. **`cs_industry_*` operator family** — industry-bucketed
+   cross-sectional rank/zscore/demean. Alpha158's hand-engineered
+   features implicitly carry industry-mix proxies; explicit industry
+   neutralization at the GP layer would close part of that gap.
+   Requires the industry taxonomy artefact (already built in another
+   workstream) to be reachable from `src/factor_mining/`.
+2. **Multi-objective GP** (NSGA-II flavour) — directly optimise the
+   IR/drawdown/diversity Pareto front instead of bolting penalties
+   onto a scalar fitness. Plausibly closes the
+   novelty-vs-memory dilemma surfaced in iteration 5.
+3. **Different universes** — csi500 / csi800 mid-cap pools have richer
+   inefficiency than csi300 large-caps. The 12-feature recipe might
+   land favourably there. Cheap to validate: the bundle already
+   supports csi500/csi800 universe names.
+4. **Linear model swap** — LightGBM on 50 correlated features is
+   structurally bad. Ridge regression or simple weighted average
+   would absorb the redundancy better. Single-line change at the
+   walk-forward feature_handler / model side.
+
+Each of these is a multi-day epic, not an iteration tweak. The
+factor-mining subsystem itself is feature-complete (Phase 1-6 + 4
+hot-fix/optimisation PRs + the daily_basic extension + this novelty
+short-circuit). Empirical work to clear §10 is now a stack of
+follow-up epics, each independently scoped, to be picked up by future
+dispatch sessions.
+
+### Iteration-5 reproducibility
+
+- `output/walk_forward_mined_pit_full_12feat/walk_forward_report.json` —
+  candidate (18/23 valid, IR = -0.624)
+- `output/walk_forward_compare/pit_full_12feat_compare.json` —
+  Alpha158 vs MinedFactor-12feat
+- `research/mined_factors/runs/pit_csi300_2018_2023_12feat_nocorr_top50/` —
+  pool + GP history + config snapshot
+
+The Alpha158 baseline report (`output/walk_forward_pit_full/...`) is
+unchanged from iteration 1 — the bundle rebuild that added
+daily_basic bins does NOT touch the OHLCV bins Alpha158 reads, so
+the baseline is still apples-to-apples.
