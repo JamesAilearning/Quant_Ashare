@@ -36,7 +36,7 @@ tests/logic/inference/test_daily_recommend.py
 ```
 
 **核心函数（`src/inference/daily_recommend.py`）**：
-- `resolve_dates(as_of_date, calendar=None) -> (T, T+1)` —— 纯逻辑（可注入 calendar 测试）；默认 T=日历最后一天，T+1 不存在则**显式报错**。
+- `resolve_dates(as_of_date, calendar=None) -> (T, T+1)` —— 纯逻辑（可注入 calendar 测试）；默认 T=**日历中最后一个仍有后继交易日的日期**（即数据截止日的前一交易日，使无参 CLI 可用、T+1 存在）；显式传入最后一天（无 T+1）仍**报错**。
 - `prepare_asof_features(config, T) -> DataFrame` —— Alpha158 `end_time=T`、`fit_end=训练期`、`DK_I` + `col_set="feature"`。
 - `assert_no_lookahead(frame, T)` —— 纯，断言 `max(datetime) <= T`，否则抛错。
 - `build_recommendation(...)` —— 纯，排序/Top-K/可交易性/reason 标注。

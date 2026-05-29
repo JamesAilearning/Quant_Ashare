@@ -112,11 +112,15 @@ def resolve_dates(
 ) -> tuple[str, str]:
     """Resolve (as_of_date T, entry_date T+1) against the trading calendar.
 
-    * ``as_of_date is None`` -> T = last trading day in the calendar.
+    * ``as_of_date is None`` -> T = the LATEST trading day that still has a
+      following session in the calendar (i.e. the second-to-last day when
+      the calendar ends at the data cutoff). This keeps the no-argument
+      CLI usable: the last calendar day cannot be a decision day because
+      no T+1 session exists for it in the bundle.
     * Otherwise T must be a real trading day on/before the calendar end.
-    * Entry date is the first trading day strictly after T. If T is the
-      last calendar day, T+1 does not exist -> explicit error (never
-      silently falls back to T).
+    * Entry date is the first trading day strictly after T. If an explicit
+      T is the last calendar day, T+1 does not exist -> explicit error
+      (never silently falls back to T).
 
     ``calendar`` may be supplied (list of dates) to keep this pure and
     unit-testable; when ``None`` it is fetched from the qlib calendar.
@@ -130,7 +134,14 @@ def resolve_dates(
     last = calendar[-1]
 
     if as_of_date is None:
-        t = last
+        if len(calendar) < 2:
+            raise DailyRecommendationError(
+                "calendar has fewer than 2 trading days; cannot form a "
+                "(decision T, entry T+1) pair for the default as-of."
+            )
+        # Latest day that still has a next session (= the bundle's last day
+        # cannot be a decision day; its entry T+1 is not in the bundle).
+        t = calendar[-2]
     else:
         t = pd.Timestamp(as_of_date)
         if t not in set(calendar):

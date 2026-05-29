@@ -45,12 +45,16 @@ class ResolveDatesTests(unittest.TestCase):
 
     _CAL = ["2025-06-25", "2025-06-26", "2025-06-27", "2025-06-30", "2025-07-01"]
 
-    def test_default_as_of_is_last_day_and_has_no_entry(self) -> None:
-        # Default picks the LAST calendar day, which by definition has no
-        # T+1 -> explicit error (this is why real runs pass an earlier
-        # --as-of). The error names the last day, confirming default = last.
-        with self.assertRaisesRegex(DailyRecommendationError, "2025-07-01"):
-            resolve_dates(None, calendar=self._CAL)
+    def test_default_as_of_is_latest_day_with_a_successor(self) -> None:
+        # Default picks the latest day that still has a following session
+        # (the bundle's last day cannot be a decision day — no T+1 in it).
+        t, entry = resolve_dates(None, calendar=self._CAL)
+        self.assertEqual(t, "2025-06-30")    # second-to-last
+        self.assertEqual(entry, "2025-07-01")  # last day = entry
+
+    def test_default_rejects_single_day_calendar(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "fewer than 2"):
+            resolve_dates(None, calendar=["2025-07-01"])
 
     def test_explicit_as_of_resolves_next_trading_day(self) -> None:
         t, entry = resolve_dates("2025-06-27", calendar=self._CAL)

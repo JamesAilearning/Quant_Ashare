@@ -75,20 +75,27 @@ knob; we note this and leave portfolio-diffing to a future change.
 ## Decision 4 — Output schema
 
 `daily_recommendation_<YYYY-MM-DD>.csv` and `.json`, columns:
-`as_of_date, rank, instrument, name, score, tradable, mask_reason`.
-- `name`: best-effort from the tushare `stock_basic` dump if present on
-  disk; otherwise empty with a logged note (names are not in PIT bins).
+`as_of_date, entry_date, rank, stock_code, stock_name, predicted_score,
+tradable_flag, unavailable_reason`.
+- `as_of_date` / `entry_date`: the two time points (data cutoff T /
+  suggested entry T+1) — both always present.
+- `stock_name`: best-effort from the tushare `stock_basic` dump if present
+  on disk; otherwise empty with a logged note (names are not in PIT bins).
   Not a hard dependency.
-- `tradable` / `mask_reason`: from the microstructure mask
+- `tradable_flag` / `unavailable_reason`: from the microstructure mask
   (`""` / `"suspended"` / `"one_price_lock"`). Masked names are excluded
   from the Top-K buy list by default; the full scored frame (with flags)
   is also written for audit.
 
 ## Decision 5 — As-of date resolution
 
-Default `as_of_date` = the **last trading day in the PIT calendar**
-(`D.calendar()[-1]`). A `--as-of YYYY-MM-DD` override (must be a real
-trading day `≤` calendar end) enables historical-day validation runs.
+Default `as_of_date` = the **latest trading day in the PIT calendar that
+still has a following session** (`D.calendar()[-2]` when the calendar ends
+at the data cutoff). The last calendar day cannot be a default decision
+day because its `T+1` entry session is not in the bundle — so defaulting
+to it would make the no-argument CLI always fail. A `--as-of YYYY-MM-DD`
+override (must be a real trading day `≤` calendar end, and itself have a
+`T+1`) enables historical-day validation runs.
 
 ## Known limitations (surfaced, not faked)
 

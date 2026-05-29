@@ -26,16 +26,22 @@ inference.
 
 ### Requirement: Daily recommendation SHALL resolve the as-of date to a real trading day
 
-When no as-of date is supplied, the path SHALL default to the latest
-trading day present in the PIT calendar. When an as-of date is supplied,
-it SHALL be a trading day on or before the calendar's last day; a
-non-trading or out-of-range date SHALL fail with an explicit error
-rather than silently snapping or producing an empty list.
+When no as-of date is supplied, the path SHALL default to the LATEST
+trading day in the PIT calendar that still has a following session (i.e.
+the second-to-last day when the calendar ends at the data cutoff), so a
+next-session (`T+1`) entry exists and the no-argument path is usable. The
+last calendar day SHALL NOT be a default decision day because no `T+1`
+session exists for it in the bundle. When an as-of date is supplied, it
+SHALL be a trading day on or before the calendar's last day; a
+non-trading or out-of-range date — or an explicit last-day with no `T+1`
+— SHALL fail with an explicit error rather than silently snapping or
+producing an empty list.
 
-#### Scenario: default as-of is the last calendar trading day
+#### Scenario: default as-of is the latest day with a following session
 - **WHEN** `recommend` is invoked with no as-of date
-- **THEN** the result's `as_of_date` equals the last trading day in the
-  PIT calendar
+- **THEN** the result's `as_of_date` equals the latest calendar trading
+  day that has a following session
+- **AND** `entry_date` equals that following session
 
 #### Scenario: out-of-range as-of date is rejected
 - **WHEN** `recommend` is invoked with an as-of date after the PIT
@@ -54,30 +60,34 @@ audit so the exclusion is inspectable, not silent.
 #### Scenario: a stock suspended on T is not recommended
 - **WHEN** instrument `SH600000` has `$volume == 0` on the as-of date
 - **THEN** `SH600000` is absent from the Top-K buy list
-- **AND** it appears in the audit frame with `mask_reason = "suspended"`
+- **AND** it appears in the audit frame with
+  `unavailable_reason = "suspended"`
 
 #### Scenario: a one-price-locked stock on T is not recommended
 - **WHEN** instrument `SH600000` has `$volume > 0` and `$high == $low`
   on the as-of date
 - **THEN** `SH600000` is absent from the Top-K buy list
 - **AND** it appears in the audit frame with
-  `mask_reason = "one_price_lock"`
+  `unavailable_reason = "one_price_lock"`
 
 ### Requirement: Daily recommendation SHALL emit a ranked, dated, persisted buy list
 
 The path SHALL rank tradable candidates by predicted score descending,
 truncate to the configured `topk` (default 50), and emit a list whose
-rows carry `as_of_date, rank, instrument, name, score, tradable,
-mask_reason`. Ranks SHALL be contiguous `1..N` with `N ≤ topk`. The list
-SHALL be persisted as both `daily_recommendation_<date>.csv` and
-`.json`, and printed to the terminal.
+rows carry `as_of_date, entry_date, rank, stock_code, stock_name,
+predicted_score, tradable_flag, unavailable_reason`. Ranks SHALL be
+contiguous `1..N` with `N ≤ topk`. The list SHALL be persisted as both
+`daily_recommendation_<date>.csv` and `.json`, and printed to the
+terminal. The two time points — `as_of_date` (data cutoff T) and
+`entry_date` (suggested entry T+1) — SHALL both appear.
 
 #### Scenario: output is ranked and bounded
 - **WHEN** `recommend` produces a result with `topk = 50`
 - **THEN** the buy list has at most 50 rows
-- **AND** rows are ordered by `score` descending with contiguous ranks
-  `1..N`
+- **AND** rows are ordered by `predicted_score` descending with
+  contiguous ranks `1..N`
 - **AND** a `daily_recommendation_<date>.csv` and `.json` are written
+  carrying both `as_of_date` and `entry_date`
 
 ### Requirement: Daily recommendation SHALL use the Alpha158 + LGB signal and align with its execution horizon
 
