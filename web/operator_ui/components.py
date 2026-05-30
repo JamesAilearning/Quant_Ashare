@@ -307,17 +307,26 @@ def render_progress_bar(
     label: str = "",
     max_value: float = 100.0,
 ) -> None:
-    """Render a determinate progress bar."""
+    """Render a determinate progress bar.
+
+    ARIA ``aria-valuenow`` / ``aria-valuemax`` are rendered as integers
+    (UI review P2-8). The spec allows floats, but older screen readers
+    sometimes read fractional digits awkwardly and the percent-string
+    inside the visual bar already conveys precision — the assistive-
+    tech read just needs the round number.
+    """
 
     denominator = max_value if max_value > 0 else 100.0
     percent = max(0.0, min(100.0, (float(value) / denominator) * 100.0))
     label_html = f'<div class="qv2-progress-label">{html.escape(label)}</div>' if label else ""
+    aria_max = int(round(float(max_value)))
+    aria_now = int(round(float(value)))
     markup = (
         '<div class="qv2-progress">'
         f"{label_html}"
         f'<div class="qv2-progress-track" role="progressbar" aria-valuemin="0" '
-        f'aria-valuemax="{html.escape(str(max_value), quote=True)}" '
-        f'aria-valuenow="{html.escape(str(value), quote=True)}">'
+        f'aria-valuemax="{aria_max}" '
+        f'aria-valuenow="{aria_now}">'
         f'<div class="qv2-progress-fill" style="width:{percent:.1f}%"></div>'
         "</div></div>"
     )

@@ -572,6 +572,12 @@ with wf_tabs[0]:
                     "font": {"size": 12},
                     "x": 0,
                 },
+                # UI review P2-9 — server-rendered Plotly transitions
+                # bypassed the ``prefers-reduced-motion`` CSS hook so
+                # vestibular-sensitive users still got the relayout /
+                # range-slider animation. Disabling it globally keeps
+                # the chart static.
+                transition={"duration": 0},
             )
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
@@ -657,6 +663,7 @@ with wf_tabs[2]:
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
                 title={"text": "年化收益", "font": {"size": 12}, "x": 0},
                 yaxis={"tickformat": ".0%"},
+                transition={"duration": 0},  # UI review P2-9.
             )
             st.plotly_chart(f_ar, use_container_width=True)
         with bar_cols[1]:
@@ -677,6 +684,7 @@ with wf_tabs[2]:
                 height=220,
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
                 title={"text": "信息比率（IR）", "font": {"size": 12}, "x": 0},
+                transition={"duration": 0},  # UI review P2-9.
             )
             st.plotly_chart(f_ir, use_container_width=True)
         with bar_cols[2]:
@@ -693,6 +701,7 @@ with wf_tabs[2]:
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
                 title={"text": "最大回撤", "font": {"size": 12}, "x": 0},
                 yaxis={"tickformat": ".0%"},
+                transition={"duration": 0},  # UI review P2-9.
             )
             st.plotly_chart(f_dd, use_container_width=True)
     except ImportError:
