@@ -33,7 +33,12 @@ from web.operator_ui.formatting import (
     format_duration,
     format_relative_time,
 )
-from web.operator_ui.job_io import SORT_OPTIONS, list_all_jobs
+from web.operator_ui.job_io import (
+    SORT_OPTIONS,
+    jobs_eligible_for_cleanup,
+    list_all_jobs,
+)
+from web.operator_ui.job_manager import JobManager, JobManagerError
 from web.operator_ui.page_header import render_page_header
 
 # ---------------------------------------------------------------------------
@@ -616,3 +621,59 @@ if running_count > 0:
     if autorefresh:
         time.sleep(5)
         st.rerun()
+
+# ---------------------------------------------------------------------------
+# Bulk cleanup — delete old completed UI jobs in one click instead of
+# clicking through them one at a time (UI review P2-11). Scoped to
+# UI-launched terminal jobs only; running jobs and CLI-catalogued runs
+# are never touched. Two-step (preview count → explicit confirm) so a
+# stray click can't wipe history.
+# ---------------------------------------------------------------------------
+with st.expander("🧹 清理旧作业", expanded=False):
+    # Eligibility is global (not limited to the current page / filters),
+    # so re-query all UI jobs. The large page_size pulls everything;
+    # the third tuple element (running count) is unused here.
+    _all_ui_jobs, _, _ = list_all_jobs(source_filter="ui", page=1, page_size=100_000)
+    cleanup_days = st.number_input(
+        "删除多少天前的已完成作业",
+        min_value=1,
+        max_value=3650,
+        value=30,
+        key="jobs_cleanup_days",
+        help="只删除 UI 启动的、已结束（成功 / 失败 / 已停止）且早于该天数的作业；"
+        "运行中的作业和 CLI 目录作业不会被删除。",
+    )
+    _eligible = jobs_eligible_for_cleanup(
+        _all_ui_jobs,
+        older_than_days=int(cleanup_days),
+        today=date.today(),
+    )
+    if not _eligible:
+        st.caption(f"没有早于 {int(cleanup_days)} 天的已完成 UI 作业。")
+    else:
+        st.warning(
+            f"将删除 **{len(_eligible)}** 个早于 {int(cleanup_days)} 天的已完成 UI "
+            "作业（含其模型 / 产物目录）。此操作不可撤销。"
+        )
+        confirm = st.checkbox(
+            "我已确认要删除这些作业", key="jobs_cleanup_confirm",
+        )
+        if st.button(
+            f"删除 {len(_eligible)} 个旧作业",
+            key="jobs_cleanup_delete",
+            type="primary",
+            disabled=not confirm,
+        ):
+            deleted, failed = 0, []
+            for run_id in _eligible:
+                try:
+                    JobManager.delete(run_id)
+                    deleted += 1
+                except JobManagerError as exc:
+                    failed.append(f"{run_id}: {exc}")
+            if deleted:
+                st.success(f"已删除 {deleted} 个旧作业。")
+            if failed:
+                st.error("以下作业删除失败：\n- " + "\n- ".join(failed))
+            st.session_state["jobs_cleanup_confirm"] = False
+            st.rerun()

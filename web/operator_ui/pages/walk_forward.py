@@ -40,6 +40,10 @@ from web.operator_ui.formatting import (
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
+from web.operator_ui.result_view_helpers import (
+    LOG_LEVEL_OPTIONS,
+    filter_log_text,
+)
 
 # Pure helpers + constants moved to ``_walk_forward_helpers`` in UI review
 # P1-1. Re-exported here so legacy tests that do
@@ -704,10 +708,35 @@ with wf_tabs[3]:
             "该滚动验证运行目录下还没有 stdout / stderr / runner 日志文件。",
         )
     else:
+        # Search + severity filter, mirroring the pipeline results log
+        # tab so both surfaces behave the same way (UI review P2-12).
+        # The plain ``st.code(text)`` version had no way to grep a
+        # multi-fold log for a single error.
+        wf_log_search = st.text_input(
+            "搜索日志", value="", placeholder="输入文本过滤日志行",
+            key="wf_log_search",
+        )
+        wf_log_levels = st.multiselect(
+            "严重等级",
+            LOG_LEVEL_OPTIONS,
+            default=list(LOG_LEVEL_OPTIONS),
+            key="wf_log_levels",
+            help="全选时不带等级标签的日志行也会显示。",
+        )
         log_tabs = st.tabs([name for name, _ in logs])
         for idx, (_name, text) in enumerate(logs):
             with log_tabs[idx]:
-                st.code(text or "（空）", language="text")
+                filtered_text = filter_log_text(
+                    text, search=wf_log_search, levels=wf_log_levels,
+                )
+                st.caption(
+                    f"显示 {len(filtered_text.splitlines())} / "
+                    f"{len(text.splitlines())} 行日志。"
+                )
+                if filtered_text:
+                    st.code(filtered_text, language="text")
+                else:
+                    st.info("没有日志行符合当前搜索关键字和严重等级筛选。")
 
 # --- Config tab ---------------------------------------------------------------
 with wf_tabs[4]:

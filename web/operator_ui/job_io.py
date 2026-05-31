@@ -8,6 +8,7 @@ import os
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -321,6 +322,55 @@ SORT_OPTIONS: tuple[str, ...] = (
 )
 SORT_DIRECTIONS: tuple[str, ...] = ("desc", "asc")
 
+# Terminal statuses that are safe to bulk-delete. ``running`` /
+# ``pending`` / ``queued`` are deliberately excluded — JobManager.delete
+# also refuses to remove a running job, but filtering here keeps them
+# out of the preview count too.
+_CLEANUP_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"completed", "success", "ok", "failed", "stopped", "cancelled", "stop_failed"}
+)
+
+
+def jobs_eligible_for_cleanup(
+    jobs: list[JobSummary],
+    *,
+    older_than_days: int,
+    today: date,
+) -> list[str]:
+    """Return run_ids of UI-launched jobs old enough to bulk-delete.
+
+    Eligibility (UI review P2-11 "清理 > N 天前的已完成 job"):
+    * ``source == "ui"`` — only UI-managed jobs have a deletable
+      on-disk directory; CLI catalog entries are not removable here.
+    * terminal status (not running / pending) — see
+      :data:`_CLEANUP_TERMINAL_STATUSES`.
+    * the job's timestamp (created_at, else finished_at) is a valid
+      ISO date strictly older than ``today - older_than_days``.
+
+    Pure + deterministic (``today`` injected) so the cleanup preview
+    count is unit-testable without touching the clock or the filesystem.
+    """
+
+    if older_than_days < 0:
+        raise ValueError(f"older_than_days={older_than_days!r} must be >= 0.")
+    cutoff = today - timedelta(days=older_than_days)
+    eligible: list[str] = []
+    for job in jobs:
+        if job.source != "ui":
+            continue
+        if job.status not in _CLEANUP_TERMINAL_STATUSES:
+            continue
+        stamp = (job.created_at or job.finished_at or "")[:10]
+        if not stamp:
+            continue
+        try:
+            job_date = date.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if job_date < cutoff:
+            eligible.append(job.run_id)
+    return eligible
+
 
 def list_all_jobs(
     *,
@@ -440,8 +490,6 @@ def _parse_date_or_raise(value: str, *, field: str) -> None:
     """Validate ISO-date string; raise on malformed input (no silent fallback)."""
     if not value:
         return
-    from datetime import date
-
     try:
         date.fromisoformat(value)
     except ValueError as exc:

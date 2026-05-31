@@ -36,10 +36,12 @@ from web.operator_ui.page_header import render_page_header
 # "Module level import not at top of file" — Codex P2 on PR #202.
 from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _PIPELINE_DATE_FALLBACK,
+    _calibration_seconds_per_unit,
     _estimate_duration,
     _last_n_days_split,
     _option_index,
     _pipeline_date_defaults,
+    _pipeline_work_units,
     _safe_pipeline_last_index,
     _six_increasing_indices,
     _trading_day_options,
@@ -62,6 +64,66 @@ from web.operator_ui.training_guards import (
 # ---------------------------------------------------------------------------
 
 _PRESETS_DIR = Path(__file__).resolve().parents[3] / "config" / "presets"
+
+# How many recent completed pipeline jobs to calibrate the duration
+# estimate against. A small window keeps the estimate responsive to the
+# current machine without over-weighting one outlier (UI review P2-6).
+_ESTIMATE_CALIBRATION_WINDOW = 5
+
+
+def _duration_seconds(started_at: Any, ended_at: Any) -> float | None:
+    """Parse two ISO timestamps into an elapsed-seconds float, or None."""
+
+    if not started_at or not ended_at:
+        return None
+    from datetime import datetime as _dt
+
+    try:
+        start = _dt.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        end = _dt.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    seconds = (end - start).total_seconds()
+    return seconds if seconds > 0 else None
+
+
+def _gather_calibration_seconds_per_unit() -> float | None:
+    """Build a seconds-per-work-unit rate from recent completed pipeline
+    jobs so the duration estimate reflects the actual machine rather than
+    a hardcoded throughput constant (UI review P2-6).
+
+    Best-effort: any read / parse failure just drops that sample. Returns
+    None when there's no usable history, in which case ``_estimate_duration``
+    falls back to its formula.
+    """
+
+    try:
+        jobs = JobManager.list_jobs()
+    except Exception:  # noqa: BLE001 — estimate calibration must never break the form
+        return None
+
+    samples: list[tuple[dict[str, Any], float]] = []
+    for job in jobs:
+        if str(job.get("mode") or "") != "pipeline":
+            continue
+        if str(job.get("status") or "").lower() not in {"success", "completed", "ok"}:
+            continue
+        seconds = _duration_seconds(job.get("started_at"), job.get("ended_at"))
+        if seconds is None:
+            continue
+        config_path = job.get("config_path")
+        if not config_path:
+            continue
+        try:
+            loaded = yaml.safe_load(Path(str(config_path)).read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(loaded, dict):
+            samples.append((loaded, seconds))
+        if len(samples) >= _ESTIMATE_CALIBRATION_WINDOW:
+            break
+
+    return _calibration_seconds_per_unit(samples)
 
 
 def _select_trading_day(
@@ -518,7 +580,10 @@ with form_col:
 
     preview_config = {"mode": mode, **config_dict}
     yaml_text = yaml.dump({k: v for k, v in preview_config.items() if v != ""}, default_flow_style=False, allow_unicode=True)
-    estimated = _estimate_duration(preview_config)
+    # Calibrate the estimate against recent completed pipeline jobs when
+    # available (UI review P2-6); falls back to the formula otherwise.
+    _calibration_rate = _gather_calibration_seconds_per_unit()
+    estimated = _estimate_duration(preview_config, seconds_per_unit=_calibration_rate)
 
     # --- Sticky run bar ---
     st.divider()
