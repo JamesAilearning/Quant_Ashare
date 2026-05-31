@@ -277,6 +277,21 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("stVerticalBlock", source)
         self.assertIn("stColumn", source)
 
+    def test_topbar_tagging_uses_mutation_observer_not_polling(self) -> None:
+        """UI review P2-3: the topbar host-tagging script must re-apply
+        on DOM changes via a ``MutationObserver`` (idempotent,
+        install-once), not the old bounded ``setTimeout`` retry loop that
+        gave up after ~1s and missed later Streamlit reruns."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        self.assertIn("MutationObserver", source)
+        self.assertIn("__qv2TopbarObserver", source)
+        self.assertIn("childList: true, subtree: true", source)
+        # Polling loop + bounded-attempt counter are gone.
+        self.assertNotIn("setTimeout(decorate", source)
+        self.assertNotIn("attempts < 10", source)
+
 
 if __name__ == "__main__":
     unittest.main()

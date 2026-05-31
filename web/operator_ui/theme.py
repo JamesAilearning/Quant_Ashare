@@ -277,17 +277,18 @@ def render_skip_link() -> None:
 
 
 _TOPBAR_HOST_MARKER_CLASS = "qv2-topbar-host-marker"
+# Topbar host-tagging. Same MutationObserver replacement as the nav-icon
+# script (UI review P2-3): the ``setTimeout`` retry loop gave up after
+# ~1s, so a slow first paint or a later Streamlit rerun left the topbar
+# CSS selectors unapplied. ``decorate()`` is idempotent (it bails on
+# already-tagged hosts), the observer re-runs it on subtree changes
+# (rAF-debounced), and installs once via a ``window.parent`` flag.
 _TOPBAR_TAG_SCRIPT = """
 <script>
 (function() {
-  var attempts = 0;
+  var doc = window.parent.document;
   function decorate() {
-    var markers = window.parent.document.querySelectorAll('.qv2-topbar-host-marker');
-    if (markers.length === 0 && attempts < 10) {
-      attempts++;
-      setTimeout(decorate, 100);
-      return;
-    }
+    var markers = doc.querySelectorAll('.qv2-topbar-host-marker');
     markers.forEach(function(marker) {
       // Walk up to the enclosing Streamlit vertical block that wraps the
       // st.container our render_topbar emits.
@@ -304,6 +305,19 @@ _TOPBAR_TAG_SCRIPT = """
     });
   }
   decorate();
+  if (!window.parent.__qv2TopbarObserver) {
+    var scheduled = false;
+    var observer = new MutationObserver(function() {
+      if (scheduled) return;
+      scheduled = true;
+      window.parent.requestAnimationFrame(function() {
+        scheduled = false;
+        decorate();
+      });
+    });
+    observer.observe(doc.body, {childList: true, subtree: true});
+    window.parent.__qv2TopbarObserver = observer;
+  }
 })();
 </script>
 """
