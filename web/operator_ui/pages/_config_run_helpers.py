@@ -186,25 +186,101 @@ def _walk_forward_date_defaults(metadata: ProviderMetadata) -> dict[str, str]:
     return {"overall_start": "2022-01-01", "overall_end": "2026-02-28"}
 
 
-def _estimate_duration(config: dict[str, Any]) -> str:
-    """Heuristic runtime estimate."""
+# Fallback throughput when we have no historical jobs to calibrate
+# against — work units processed per second. The GPU number is ~10× the
+# CPU number; both are deliberate order-of-magnitude guesses (UI review
+# P2-6 — these were previously undocumented magic constants).
+_ESTIMATE_RATE_CPU = 5000.0
+_ESTIMATE_RATE_GPU = 50000.0
+
+
+def _pipeline_work_units(config: dict[str, Any]) -> float:
+    """Return a dimensionless 'work units' size for a pipeline config.
+
+    Proportional to (universe size) × (trading days/yr) × (train years)
+    × (Alpha158 feature count) × (boost rounds) × (backtest overhead) —
+    the dominant drivers of training wall-clock. Used both for the
+    formula-based estimate and to normalise historical job durations
+    into a comparable seconds-per-unit rate (UI review P2-6).
+    """
+
     instruments = str(config.get("instruments", "csi300"))
     n_stocks = 5000 if instruments == "all" else 800 if "800" in instruments else 300
     train_years = 5
-    if config.get("mode") == "pipeline":
-        try:
-            ts = datetime.strptime(str(config.get("train_start", "2022-01-01")), "%Y-%m-%d")
-            te = datetime.strptime(str(config.get("train_end", "2024-12-31")), "%Y-%m-%d")
-            train_years = max(1, int((te - ts).days / 365))
-        except Exception:
-            pass
-    n_est = int(config.get("num_boost_round", 1000))
-    device = str(config.get("compute_device", "cpu"))
-    rate = 50000 if device == "gpu" else 5000
-    est_seconds = n_stocks * 252 * train_years * 158 / rate * (n_est / 1000) * 1.5
-    est_minutes = max(1, int(est_seconds / 60))
+    try:
+        ts = datetime.strptime(str(config.get("train_start", "2022-01-01")), "%Y-%m-%d")
+        te = datetime.strptime(str(config.get("train_end", "2024-12-31")), "%Y-%m-%d")
+        train_years = max(1, int((te - ts).days / 365))
+    except (ValueError, TypeError):
+        pass
+    try:
+        n_est = int(config.get("num_boost_round", 1000))
+    except (ValueError, TypeError):
+        n_est = 1000
+    # 158 ≈ Alpha158 feature count; 1.5 ≈ backtest overhead multiplier.
+    return float(n_stocks) * 252.0 * float(train_years) * 158.0 * (n_est / 1000.0) * 1.5
+
+
+def _calibration_seconds_per_unit(
+    samples: list[tuple[dict[str, Any], float]],
+) -> float | None:
+    """Derive an empirical seconds-per-work-unit rate from recent runs.
+
+    ``samples`` is ``[(config, actual_seconds), …]`` for completed
+    same-mode jobs. Returns the median of ``actual_seconds / work_units``
+    across valid samples, or ``None`` when there's nothing usable —
+    callers fall back to the hardcoded throughput. Median (not mean) so
+    a single anomalous run (machine under load, cold cache) doesn't skew
+    the estimate (UI review P2-6).
+    """
+
+    rates: list[float] = []
+    for cfg, actual_seconds in samples:
+        if actual_seconds is None or actual_seconds <= 0:
+            continue
+        units = _pipeline_work_units(cfg)
+        if units <= 0:
+            continue
+        rates.append(float(actual_seconds) / units)
+    if not rates:
+        return None
+    rates.sort()
+    mid = len(rates) // 2
+    if len(rates) % 2 == 1:
+        return rates[mid]
+    return (rates[mid - 1] + rates[mid]) / 2.0
+
+
+def _format_estimate_minutes(est_minutes: int) -> str:
     if est_minutes >= 60:
         h = est_minutes // 60
         m = est_minutes % 60
         return f"约 {h} 小时 {m} 分"
     return f"约 {est_minutes} 分钟"
+
+
+def _estimate_duration(
+    config: dict[str, Any],
+    *,
+    seconds_per_unit: float | None = None,
+) -> str:
+    """Heuristic runtime estimate.
+
+    When ``seconds_per_unit`` is provided (an empirical rate from
+    :func:`_calibration_seconds_per_unit` over recent jobs), the
+    estimate is work units × that measured rate — far more accurate
+    than the throughput formula across heterogeneous machines. Without
+    it, fall back to the hardcoded CPU/GPU throughput constants. The
+    return string format is unchanged so existing call sites / tests
+    still see "约 N 分钟" / "约 H 小时 M 分" (UI review P2-6).
+    """
+
+    units = _pipeline_work_units(config)
+    if seconds_per_unit is not None and seconds_per_unit > 0:
+        est_seconds = units * seconds_per_unit
+    else:
+        device = str(config.get("compute_device", "cpu"))
+        rate = _ESTIMATE_RATE_GPU if device == "gpu" else _ESTIMATE_RATE_CPU
+        est_seconds = units / rate
+    est_minutes = max(1, int(est_seconds / 60))
+    return _format_estimate_minutes(est_minutes)

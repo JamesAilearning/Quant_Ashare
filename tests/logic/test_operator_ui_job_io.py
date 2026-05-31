@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from web.operator_ui.job_io import (
     _apply_filters,
     _apply_sort,
     _parse_date_or_raise,
+    jobs_eligible_for_cleanup,
 )
 
 
@@ -521,6 +523,66 @@ class JobsPagePaginationUiTests(unittest.TestCase):
             'running_count = sum(1 for i in items if i.status == "running")',
             self.source,
         )
+
+
+class JobsEligibleForCleanupTests(unittest.TestCase):
+    """UI review P2-11: ``jobs_eligible_for_cleanup`` selects UI-launched,
+    terminal-status jobs older than N days for one-click bulk delete."""
+
+    _TODAY = date(2026, 6, 1)
+
+    def test_selects_old_completed_ui_jobs(self) -> None:
+        jobs = [
+            _make(run_id="old", status="completed",
+                  created_at="2026-04-01T00:00:00+00:00"),
+            _make(run_id="recent", status="completed",
+                  created_at="2026-05-30T00:00:00+00:00"),
+        ]
+        out = jobs_eligible_for_cleanup(jobs, older_than_days=30, today=self._TODAY)
+        self.assertEqual(out, ["old"])
+
+    def test_excludes_running_and_pending(self) -> None:
+        jobs = [
+            _make(run_id="run", status="running",
+                  created_at="2026-01-01T00:00:00+00:00"),
+            _make(run_id="pend", status="pending",
+                  created_at="2026-01-01T00:00:00+00:00"),
+            _make(run_id="done", status="failed",
+                  created_at="2026-01-01T00:00:00+00:00"),
+        ]
+        out = jobs_eligible_for_cleanup(jobs, older_than_days=30, today=self._TODAY)
+        self.assertEqual(out, ["done"])
+
+    def test_excludes_cli_jobs(self) -> None:
+        jobs = [
+            _make(run_id="ui", status="completed", source="ui",
+                  created_at="2026-01-01T00:00:00+00:00"),
+            _make(run_id="cli", status="completed", source="cli",
+                  created_at="2026-01-01T00:00:00+00:00"),
+        ]
+        out = jobs_eligible_for_cleanup(jobs, older_than_days=30, today=self._TODAY)
+        self.assertEqual(out, ["ui"])
+
+    def test_excludes_undated_jobs(self) -> None:
+        jobs = [_make(run_id="nodate", status="completed", created_at="")]
+        out = jobs_eligible_for_cleanup(jobs, older_than_days=30, today=self._TODAY)
+        self.assertEqual(out, [])
+
+    def test_boundary_is_strictly_older(self) -> None:
+        # Cutoff = today - 30 = 2026-05-02. A job exactly on the cutoff
+        # is NOT older-than (strict <), one day before IS.
+        jobs = [
+            _make(run_id="on_cutoff", status="completed",
+                  created_at="2026-05-02T00:00:00+00:00"),
+            _make(run_id="before_cutoff", status="completed",
+                  created_at="2026-05-01T00:00:00+00:00"),
+        ]
+        out = jobs_eligible_for_cleanup(jobs, older_than_days=30, today=self._TODAY)
+        self.assertEqual(out, ["before_cutoff"])
+
+    def test_negative_days_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            jobs_eligible_for_cleanup([], older_than_days=-1, today=self._TODAY)
 
 
 if __name__ == "__main__":

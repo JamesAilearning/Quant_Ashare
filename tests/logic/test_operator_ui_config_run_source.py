@@ -514,5 +514,100 @@ class RenderFieldFootgunDocTests(unittest.TestCase):
         self.assertIn("P2-13", body)
 
 
+@unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed in this CI cell")
+class EstimateCalibrationTests(unittest.TestCase):
+    """UI review P2-6: the duration estimate uses an empirical
+    seconds-per-work-unit rate from recent jobs when available, falling
+    back to the hardcoded throughput constants otherwise."""
+
+    def test_work_units_scale_with_config_drivers(self) -> None:
+        from web.operator_ui.pages.config_run import _pipeline_work_units
+
+        small = {"instruments": "csi300", "num_boost_round": 1000,
+                 "train_start": "2024-01-01", "train_end": "2024-12-31"}
+        big = {"instruments": "all", "num_boost_round": 2000,
+               "train_start": "2020-01-01", "train_end": "2024-12-31"}
+        self.assertGreater(_pipeline_work_units(big), _pipeline_work_units(small))
+
+    def test_calibration_returns_median_rate(self) -> None:
+        from web.operator_ui.pages.config_run import (
+            _calibration_seconds_per_unit,
+            _pipeline_work_units,
+        )
+
+        cfg = {"instruments": "csi300", "num_boost_round": 1000,
+               "train_start": "2024-01-01", "train_end": "2024-12-31"}
+        units = _pipeline_work_units(cfg)
+        # Three samples with rates 2, 4, 6 sec/unit → median 4.
+        samples = [(cfg, units * 2), (cfg, units * 4), (cfg, units * 6)]
+        rate = _calibration_seconds_per_unit(samples)
+        self.assertIsNotNone(rate)
+        assert rate is not None
+        self.assertAlmostEqual(rate, 4.0, places=6)
+
+    def test_calibration_none_for_empty_or_invalid_samples(self) -> None:
+        from web.operator_ui.pages.config_run import _calibration_seconds_per_unit
+
+        self.assertIsNone(_calibration_seconds_per_unit([]))
+        # Non-positive durations are dropped.
+        self.assertIsNone(_calibration_seconds_per_unit([({"x": 1}, 0.0)]))
+
+    def test_estimate_uses_calibration_when_provided(self) -> None:
+        from web.operator_ui.pages.config_run import (
+            _estimate_duration,
+            _pipeline_work_units,
+        )
+
+        cfg = {"instruments": "csi300", "num_boost_round": 1000,
+               "train_start": "2024-01-01", "train_end": "2024-12-31"}
+        units = _pipeline_work_units(cfg)
+        # Calibrate to exactly 1 hour: rate so that units*rate = 3600s.
+        rate = 3600.0 / units
+        out = _estimate_duration(cfg, seconds_per_unit=rate)
+        self.assertEqual(out, "约 1 小时 0 分")
+
+    def test_estimate_falls_back_to_formula_without_calibration(self) -> None:
+        from web.operator_ui.pages.config_run import _estimate_duration
+
+        cfg = {"instruments": "csi300", "compute_device": "cpu",
+               "num_boost_round": 1000,
+               "train_start": "2024-01-01", "train_end": "2024-12-31"}
+        out = _estimate_duration(cfg, seconds_per_unit=None)
+        self.assertTrue(out.startswith("约 "))
+
+    def test_config_page_wires_calibration_into_estimate(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+        self.assertIn("_gather_calibration_seconds_per_unit()", source)
+        self.assertIn("seconds_per_unit=_calibration_rate", source)
+
+
+class JobsCleanupUiSourceTests(unittest.TestCase):
+    """UI review P2-11: the jobs page exposes a one-click bulk cleanup
+    section gated behind an explicit confirmation."""
+
+    def test_jobs_page_wires_cleanup_section(self) -> None:
+        source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+        self.assertIn("🧹 清理旧作业", source)
+        self.assertIn("jobs_eligible_for_cleanup(", source)
+        # Two-step: confirm checkbox gates the delete button.
+        self.assertIn('key="jobs_cleanup_confirm"', source)
+        self.assertIn("disabled=not confirm", source)
+        self.assertIn("JobManager.delete(run_id)", source)
+
+
+class WalkForwardLogFilterSourceTests(unittest.TestCase):
+    """UI review P2-12: the walk-forward log tab gains the same search +
+    severity filter the pipeline results log tab already had."""
+
+    def test_walk_forward_log_tab_has_search_and_level_filter(self) -> None:
+        source = Path("web/operator_ui/pages/walk_forward.py").read_text(encoding="utf-8")
+        self.assertIn("from web.operator_ui.result_view_helpers import", source)
+        self.assertIn("filter_log_text", source)
+        self.assertIn('key="wf_log_search"', source)
+        self.assertIn('key="wf_log_levels"', source)
+        # The plain unfiltered ``st.code(text …）`` dump is gone.
+        self.assertNotIn('st.code(text or "（空）"', source)
+
+
 if __name__ == "__main__":
     unittest.main()
