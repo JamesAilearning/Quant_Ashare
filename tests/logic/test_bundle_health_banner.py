@@ -249,6 +249,26 @@ class ResolveDefaultProviderUriTests(unittest.TestCase):
             cfg.write_text("{ this is not: valid: yaml: at all")
             self.assertEqual(resolve_default_provider_uri(cfg), "")
 
+    def test_malformed_yaml_logs_warning(self):
+        """A broken config.yaml still degrades to '' but now leaves a
+        WARN trail so a broken file is distinguishable from a genuinely
+        absent provider_uri (UI review P2-4). Previously the parse error
+        was swallowed silently."""
+        import tempfile
+
+        from web.operator_ui import bundle_health
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("{ this is not: valid: yaml: at all")
+            with self.assertLogs(bundle_health._log.name, level="WARNING") as logs:
+                result = resolve_default_provider_uri(cfg)
+        self.assertEqual(result, "")
+        self.assertEqual(len(logs.records), 1)
+        msg = logs.records[0].getMessage()
+        self.assertIn("treating as unconfigured", msg)
+        self.assertIn(str(cfg), msg)
+
 
 # ---------------------------------------------------------------------------
 # render_bundle_health_banner — stub st

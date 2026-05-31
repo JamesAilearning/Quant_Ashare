@@ -28,6 +28,7 @@ the thinnest possible glue.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ from typing import Any
 # on ``src.data.bundle_manifest`` (which has a different + sparser
 # manifest format for walk-forward freshness validation).
 from web.operator_ui.training_guards import inspect_provider_metadata
+
+_log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config.yaml"
@@ -133,7 +136,18 @@ def resolve_default_provider_uri(
 
         with path.open(encoding="utf-8") as fh:
             raw = yaml.safe_load(fh)
-    except Exception:  # noqa: BLE001 — best-effort
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        # Stay lenient (return "" → "unconfigured" banner) but leave a
+        # log trail: previously a malformed config.yaml vanished
+        # silently and the operator had no way to tell a broken file
+        # apart from a genuinely-absent provider_uri (UI review P2-4).
+        _log.warning(
+            "Could not read provider_uri from %s (%s: %s); "
+            "treating as unconfigured.",
+            path,
+            type(exc).__name__,
+            exc,
+        )
         return ""
     if not isinstance(raw, dict):
         return ""

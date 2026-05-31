@@ -477,5 +477,42 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
         self.assertEqual(captured_warnings, [])
 
 
+class AutoFixWidgetKeyStabilityTests(unittest.TestCase):
+    """UI review P2-10: the auto-fix button's widget key used
+    ``abs(hash(err)) % 10_000_000``. Python's ``hash()`` of a str
+    varies per process (PYTHONHASHSEED), so a server restart re-keyed
+    the button and orphaned any session_state tied to the old key. The
+    key now derives from a stable ``hashlib.md5`` content digest."""
+
+    def test_auto_fix_key_uses_stable_content_hash_not_builtin_hash(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("import hashlib", source)
+        self.assertIn("hashlib.md5(", source)
+        # The process-varying builtin-hash key form must be gone.
+        self.assertNotIn("abs(hash(err))", source)
+        self.assertNotIn("hash(err) %", source)
+        # md5 here is a non-security content digest — flagged so a
+        # security linter / FIPS build doesn't choke.
+        self.assertIn("usedforsecurity=False", source)
+
+
+class RenderFieldFootgunDocTests(unittest.TestCase):
+    """UI review P2-13: ``render_field`` emits ``control_html`` verbatim.
+    Today all call sites pass static literals so there's no live XSS,
+    but the docstring MUST warn so a future caller interpolating
+    operator / artifact data escapes it first."""
+
+    def test_render_field_docstring_warns_about_unescaped_control_html(self) -> None:
+        source = Path("web/operator_ui/components.py").read_text(encoding="utf-8")
+
+        func_start = source.index("def render_field(")
+        # Scope to the function's docstring region.
+        body = source[func_start:func_start + 1200]
+        self.assertIn("verbatim", body)
+        self.assertIn("XSS footgun", body)
+        self.assertIn("P2-13", body)
+
+
 if __name__ == "__main__":
     unittest.main()
