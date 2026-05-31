@@ -344,7 +344,21 @@ def render_field(
     error: str = "",
     required: bool = False,
 ) -> None:
-    """Render a token-backed form field wrapper around provided control HTML."""
+    """Render a token-backed form field wrapper around provided control HTML.
+
+    .. warning::
+        ``control_html`` is emitted **verbatim** into the field markup —
+        it is NOT escaped. The label / help / error text ARE escaped, but
+        the control is intentionally raw so callers can pass real
+        ``<input>`` / ``<select>`` elements. The caller is therefore
+        responsible for escaping any operator- or artifact-derived value
+        it interpolates into ``control_html`` (e.g.
+        ``html.escape(value, quote=True)`` inside the ``value="..."``
+        attribute). Passing unescaped runtime data is an XSS footgun
+        (UI review P2-13). Today every call site passes a static literal,
+        so there is no live vulnerability — this docstring exists to keep
+        it that way.
+    """
 
     required_html = '<span class="qv2-field-required">*</span>' if required else ""
     help_html = f'<div class="qv2-field-help">{html.escape(help_text)}</div>' if help_text else ""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -535,9 +536,18 @@ with form_col:
                     with err_col:
                         st.caption(f"  • {err}")
                     with fix_col:
+                        # ``hash(err)`` varies across processes (PYTHONHASHSEED),
+                        # so a server restart re-keyed the auto-fix button and
+                        # any session_state tied to the old key was orphaned.
+                        # A stable content hash keeps the widget key constant
+                        # for the same error text across restarts (UI review
+                        # P2-10).
+                        err_key = hashlib.md5(
+                            err.encode("utf-8"), usedforsecurity=False
+                        ).hexdigest()[:10]
                         if st.button(
                             fix_label,
-                            key=f"cr_fix_{abs(hash(err)) % 10_000_000}",
+                            key=f"cr_fix_{err_key}",
                             use_container_width=True,
                         ):
                             fix_callable()
