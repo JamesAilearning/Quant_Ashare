@@ -95,6 +95,53 @@ class OperatorUiProgressTests(unittest.TestCase):
         self.assertGreaterEqual(progress["percent"], 92)
         self.assertEqual(progress["label"], "已写入流水线报告")
 
+    def test_pipeline_progress_intermediate_checkpoints_smooth_55_to_92_gap(
+        self,
+    ) -> None:
+        """UI review P2-14: between model.pkl (55%) and the report (92%)
+        the bar used to sit still through the whole train→backtest
+        stretch then jump. Intermediate artifacts now move it in steps:
+        predictions (62) → positions (70) → metrics (80) → nav/holdings
+        (86)."""
+
+        from web.operator_ui.progress import build_job_progress
+
+        scenarios = [
+            ("predictions.parquet", 62, "已生成模型预测"),
+            ("metrics.json", 80, "已计算回测指标"),
+            ("nav.parquet", 86, "已写入回测净值 / 持仓明细"),
+            ("holdings.parquet", 86, "已写入回测净值 / 持仓明细"),
+        ]
+        for artifact, expected_percent, expected_label in scenarios:
+            with self.subTest(artifact=artifact):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    job_dir = root / "job"
+                    job_dir.mkdir()
+                    output_dir = root / "output"
+                    run_dir = output_dir / "runs" / "run_1"
+                    run_dir.mkdir(parents=True)
+                    # model.pkl present so we're in the 55%+ regime, plus
+                    # the intermediate artifact under test. No report yet.
+                    (run_dir / "model.pkl").write_text("x", encoding="utf-8")
+                    (run_dir / artifact).write_text("x", encoding="utf-8")
+                    config_path = job_dir / "config.yaml"
+                    config_path.write_text(
+                        f"output_dir: {output_dir}\n", encoding="utf-8",
+                    )
+
+                    progress = build_job_progress(
+                        job_dir,
+                        {
+                            "status": "running",
+                            "mode": "pipeline",
+                            "config_path": str(config_path),
+                        },
+                    )
+
+                self.assertEqual(progress["percent"], expected_percent)
+                self.assertEqual(progress["label"], expected_label)
+
     def test_job_manager_status_attaches_progress(self) -> None:
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "test_job"

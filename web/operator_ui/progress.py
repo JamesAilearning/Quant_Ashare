@@ -111,9 +111,24 @@ def _estimate_pipeline(job_dir: Path, config: Mapping[str, Any], job: Mapping[st
         if (run_dir / "model.pkl").is_file():
             percent = max(percent, 55)
             label = "已写入模型产物"
+        # Intermediate checkpoints between model training (55%) and the
+        # final report (92%). Without these the bar sat at 55% for the
+        # whole train→backtest stretch (the longest wall-clock phase)
+        # then jumped to 95% in a few seconds, reading as "stuck"
+        # (UI review P2-14). predictions → metrics → nav/holdings are
+        # the artifacts the pipeline emits in order during that window.
+        if (run_dir / "predictions.parquet").is_file():
+            percent = max(percent, 62)
+            label = "已生成模型预测"
         if (run_dir / "positions.json").is_file():
             percent = max(percent, 70)
             label = "已写入回测持仓"
+        if (run_dir / "metrics.json").is_file():
+            percent = max(percent, 80)
+            label = "已计算回测指标"
+        if (run_dir / "nav.parquet").is_file() or (run_dir / "holdings.parquet").is_file():
+            percent = max(percent, 86)
+            label = "已写入回测净值 / 持仓明细"
         if (run_dir / "pipeline_report.json").is_file():
             percent = max(percent, 92)
             label = "已写入流水线报告"

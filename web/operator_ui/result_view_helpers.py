@@ -40,22 +40,50 @@ def filter_nav_frame_by_range(frame: Any, range_label: str) -> Any:
     return working.drop(columns=["_qv2_date"])
 
 
+# Only force the NAV chart's y-axis to include the 1.0 baseline when the
+# series stays close to it. Once the strategy compounds well above 1.0
+# (e.g. a 3× run) or drops well below, anchoring on 1.0 squashes the
+# curve into a thin band and the operator can't read the shape. Beyond
+# this window we let the axis auto-fit the data and draw a 1.0 reference
+# line separately (UI review P2-5).
+_NAV_BASELINE_INCLUDE_HIGH = 1.5
+_NAV_BASELINE_INCLUDE_LOW = 0.7
+
+
 def nav_y_range(frame: Any) -> list[float] | None:
-    """Return a display range that always includes the normalized 1.0 line."""
+    """Return a display range for the NAV chart's y-axis.
+
+    Includes the normalized 1.0 baseline only when the data stays within
+    ``[_NAV_BASELINE_INCLUDE_LOW, _NAV_BASELINE_INCLUDE_HIGH]`` — outside
+    that the curve would be flattened against the baseline, so we fit the
+    data instead and rely on a separate ``add_hline(y=1.0)`` reference
+    (UI review P2-5). Returns ``None`` when there's no numeric data.
+    """
 
     if frame is None or getattr(frame, "empty", True):
         return None
 
     import pandas as pd
 
-    values: list[float] = [1.0]
+    data_values: list[float] = []
     for column in ("strategy_nav", "benchmark_nav"):
         if column not in frame:
             continue
         series = pd.to_numeric(frame[column], errors="coerce").dropna()
-        values.extend(float(value) for value in series.tolist())
-    if not values:
+        data_values.extend(float(value) for value in series.tolist())
+    if not data_values:
         return None
+
+    data_low = min(data_values)
+    data_high = max(data_values)
+
+    # Include the 1.0 baseline only while the series hugs it; once the
+    # NAV ranges far from 1.0, anchoring there flattens the curve.
+    if data_high <= _NAV_BASELINE_INCLUDE_HIGH and data_low >= _NAV_BASELINE_INCLUDE_LOW:
+        values = [*data_values, 1.0]
+    else:
+        values = data_values
+
     low = min(values)
     high = max(values)
     if low == high:

@@ -691,6 +691,15 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     y_range = nav_y_range(frame)
     if y_range is not None:
         nav_axis["range"] = y_range
+    # 1.0 break-even reference line. ``nav_y_range`` now only anchors the
+    # axis on 1.0 while the curve hugs it; once NAV ranges far from 1.0
+    # the axis auto-fits and this dotted line keeps the break-even level
+    # visible without flattening the curve (UI review P2-5).
+    nav_fig.add_hline(
+        y=1.0,
+        line={"width": 1, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dot"},
+        opacity=0.6,
+    )
     nav_fig.update_layout(
         height=420,
         hovermode="x unified",
