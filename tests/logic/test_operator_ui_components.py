@@ -135,10 +135,9 @@ class OperatorUiComponentsTests(unittest.TestCase):
     @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_progress_bar_aria_values_are_integers(self) -> None:
         """ARIA ``aria-valuenow`` / ``aria-valuemax`` MUST render as
-        integers — older screen readers read fractional digits awkwardly
-        and the percent string inside the visual bar already conveys
-        precision (UI review P2-8). The fix rounds both values to
-        ``int(round(float(...)))``."""
+        integers on the 0–100 percent scale (UI review P2-8). Older
+        screen readers read fractional digits awkwardly; the percent
+        string inside the visual bar already conveys precision."""
 
         from unittest.mock import patch
 
@@ -165,6 +164,35 @@ class OperatorUiComponentsTests(unittest.TestCase):
         # The visible width inside the track still carries the precise
         # percent so operators see exact progress.
         self.assertIn("width:62.7%", html_text)
+
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
+    def test_progress_bar_aria_uses_percent_scale_for_fractional_units(self) -> None:
+        """Codex follow-up on PR #205: a fractional caller scale like
+        ``render_progress_bar(0.25, max_value=1.0)`` must announce ARIA
+        on the 0–100 percent scale (``aria-valuenow="25"
+        aria-valuemax="100"``) — NOT ``round(0.25)=0`` of ``round(1.0)=1``
+        which told assistive tech "0% progress" while the bar visibly
+        showed 25%."""
+
+        from unittest.mock import patch
+
+        captured: list[str] = []
+
+        def _capture(markup: str, **_: object) -> None:
+            captured.append(markup)
+
+        with patch("streamlit.html", side_effect=_capture):
+            from web.operator_ui.components import render_progress_bar
+
+            render_progress_bar(0.25, max_value=1.0)
+
+        html_text = captured[0]
+        self.assertIn('aria-valuenow="25"', html_text)
+        self.assertIn('aria-valuemax="100"', html_text)
+        # The misleading raw-unit rounding must be gone.
+        self.assertNotIn('aria-valuenow="0"', html_text)
+        self.assertNotIn('aria-valuemax="1"', html_text)
+        self.assertIn("width:25.0%", html_text)
 
 
 class ResultsCardTooltipA11yTests(unittest.TestCase):

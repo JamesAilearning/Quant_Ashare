@@ -309,23 +309,26 @@ def render_progress_bar(
 ) -> None:
     """Render a determinate progress bar.
 
-    ARIA ``aria-valuenow`` / ``aria-valuemax`` are rendered as integers
-    (UI review P2-8). The spec allows floats, but older screen readers
-    sometimes read fractional digits awkwardly and the percent-string
-    inside the visual bar already conveys precision — the assistive-
-    tech read just needs the round number.
+    ARIA values are announced on a 0–100 **percent** scale rather than
+    the caller's raw units (UI review P2-8 + Codex follow-up on PR #205).
+    Integers keep older screen readers from reading fractional digits
+    awkwardly; deriving them from the clamped percent — not
+    ``round(value)`` / ``round(max_value)`` — means a fractional scale
+    like ``render_progress_bar(0.25, max_value=1.0)`` announces
+    ``aria-valuenow="25" aria-valuemax="100"`` instead of the misleading
+    ``0`` of ``1`` that raw rounding produced. The visible fill keeps the
+    precise ``%.1f`` width so sighted operators still see exact progress.
     """
 
     denominator = max_value if max_value > 0 else 100.0
     percent = max(0.0, min(100.0, (float(value) / denominator) * 100.0))
     label_html = f'<div class="qv2-progress-label">{html.escape(label)}</div>' if label else ""
-    aria_max = int(round(float(max_value)))
-    aria_now = int(round(float(value)))
+    aria_now = int(round(percent))
     markup = (
         '<div class="qv2-progress">'
         f"{label_html}"
         f'<div class="qv2-progress-track" role="progressbar" aria-valuemin="0" '
-        f'aria-valuemax="{aria_max}" '
+        f'aria-valuemax="100" '
         f'aria-valuenow="{aria_now}">'
         f'<div class="qv2-progress-fill" style="width:{percent:.1f}%"></div>'
         "</div></div>"
