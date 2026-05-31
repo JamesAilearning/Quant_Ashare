@@ -73,6 +73,25 @@ class ResultViewHelperTests(unittest.TestCase):
         self.assertIsNone(nav_y_range(pd.DataFrame()))
         self.assertIsNone(nav_y_range(pd.DataFrame({"other": [1, 2]})))
 
+    def test_break_even_hline_gated_to_visible_range(self) -> None:
+        """Codex follow-up on PR #207: the ``add_hline(y=1.0)`` break-even
+        reference must only be drawn when 1.0 is inside the displayed
+        y-range. For a 3× run the axis fits ~2.8–3.2, so an unconditional
+        hline at y=1.0 would be clipped off-screen — invisible exactly
+        when the curve is wholly above break-even. The render gates it
+        behind a ``show_baseline`` range check."""
+        from pathlib import Path
+
+        source = Path(
+            "web/operator_ui/pages/_results_render.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("show_baseline", source)
+        self.assertIn("y_range[0] <= 1.0 <= y_range[1]", source)
+        # The hline must sit under the gate, not be emitted
+        # unconditionally.
+        self.assertIn("if show_baseline:", source)
+
     def test_filter_log_text_searches_and_filters_severity(self) -> None:
         from web.operator_ui.result_view_helpers import filter_log_text
 
