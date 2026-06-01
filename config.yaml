@@ -14,17 +14,21 @@ region: "cn"
 # newer data dump.
 #
 # PIT bundle coverage: 2018-01-02 → 2025-12-31 (D:/qlib_data/my_cn_data_pit).
-# Windows below are aligned to that span (clean PIT data, no survivorship bias).
+# Windows below sit inside that span (clean PIT data, no survivorship bias)
+# AND leave a >=2 trading-day embargo gap between train/valid and
+# valid/test: Alpha158 labels look ahead, so FeatureDatasetBuilder rejects
+# adjacent segment boundaries. test_end stops a few days short of the
+# bundle tail so the single-fold backtest has a T+1 bar to execute on.
 # ``instruments: "csi300"`` resolves to <provider>/instruments/csi300.txt, which
 # the PIT bundle ships — no change needed beyond the provider_uri switch.
 instruments: "csi300"
 feature_handler: "Alpha158"
 train_start: "2018-01-02"
-train_end: "2023-12-31"
-valid_start: "2024-01-01"
-valid_end: "2024-12-31"
-test_start: "2025-01-01"
-test_end: "2025-12-31"
+train_end: "2023-12-20"
+valid_start: "2024-01-02"
+valid_end: "2024-12-18"
+test_start: "2025-01-02"
+test_end: "2025-12-19"
 
 # model
 model_type: "LGBModel"
