@@ -292,6 +292,29 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertNotIn("setTimeout(decorate", source)
         self.assertNotIn("attempts < 10", source)
 
+    def test_topbar_action_tagging_retries_until_column_exists(self) -> None:
+        """Codex on PR #209: Streamlit builds the topbar's horizontal
+        block incrementally, so the action column can be absent when the
+        marker is first seen. The host must NOT be marked fully-done on
+        that first pass (which froze ``.qv2-topbar-actions`` until a
+        reload); the action tagging uses a SEPARATE completion flag so
+        the observer keeps retrying until the column appears."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        # Separate completion flag for the action column.
+        self.assertIn("data-qv2-topbar-actions-tagged", source)
+        # The whole-host early-return on ``data-qv2-topbar-host`` (which
+        # caused the freeze) must be gone — host styling is now applied
+        # idempotently every pass.
+        self.assertNotIn("host.hasAttribute('data-qv2-topbar-host')", source)
+        # The early-return guard now keys on the action flag, so passes
+        # before the column exists fall through and retry.
+        self.assertIn(
+            "host.getAttribute('data-qv2-topbar-actions-tagged') === 'true'",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

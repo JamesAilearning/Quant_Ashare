@@ -293,15 +293,27 @@ _TOPBAR_TAG_SCRIPT = """
       // Walk up to the enclosing Streamlit vertical block that wraps the
       // st.container our render_topbar emits.
       var host = marker.closest('[data-testid="stVerticalBlock"]');
-      if (!host || host.hasAttribute('data-qv2-topbar-host')) return;
+      if (!host) return;
+      // Host-level styling is idempotent — (re)apply every pass. This is
+      // what the [data-qv2-topbar-host="true"] + .qv2-topbar CSS hooks
+      // key on.
       host.setAttribute('data-qv2-topbar-host', 'true');
       host.classList.add('qv2-topbar');
-      // Tag the action column (the last stColumn inside the topbar row)
-      // so .qv2-topbar-actions styling applies to the Settings button.
+      // The action column (last stColumn in the topbar row) may not
+      // exist yet when the marker is first inserted — Streamlit builds
+      // the horizontal block incrementally. Track its tagging with a
+      // SEPARATE flag and keep retrying on later observer passes until
+      // the column appears; the old code marked the whole host done on
+      // the first pass, so a not-yet-built action column never got the
+      // .qv2-topbar-actions class until a full reload (Codex on PR #209).
+      if (host.getAttribute('data-qv2-topbar-actions-tagged') === 'true') return;
       var action = host.querySelector(
         '[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child'
       );
-      if (action) action.classList.add('qv2-topbar-actions');
+      if (action) {
+        action.classList.add('qv2-topbar-actions');
+        host.setAttribute('data-qv2-topbar-actions-tagged', 'true');
+      }
     });
   }
   decorate();
