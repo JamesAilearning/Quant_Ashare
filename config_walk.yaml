@@ -9,21 +9,26 @@
 # its best valid loss in the first few rounds, so even 1000-round
 # budgets won't materially change the resulting IC.
 #
-# Verified bundle tail: 2026-03-06 (D:/qlib_data/my_cn_data).
+# PIT bundle coverage: 2018-01-02 → 2025-12-31 (D:/qlib_data/my_cn_data_pit).
 
 # qlib runtime — read by scripts/run_walk_forward.py
-provider_uri: "D:/qlib_data/my_cn_data"
+provider_uri: "D:/qlib_data/my_cn_data_pit"
 region: "cn"
 
 # Universe & features
 instruments: "csi300"
 feature_handler: "Alpha158"
 
-# Overall walk-forward range. With 24m train + 3m valid + 3m test
-# windows stepping every 3m, this produces ~8 non-overlapping OOS
-# test periods spanning 2024-04 through 2026-02.
-overall_start: "2022-01-01"
-overall_end:   "2026-02-28"
+# Overall walk-forward range. WalkForwardEngine._generate_windows adds
+# calendar months to overall_start, so the anchor must be the 1st of a
+# month (NOT the bundle's first trading day 2018-01-02) to keep folds
+# month/quarter-aligned. With 24m train + 3m valid + 3m test stepping
+# every 3m, this yields the documented first test 2020-04→2020-06 and
+# last test 2025-10→2025-12 (matches docs/factor_mining/
+# empirical_results_b_std.md's 23-fold setup). qlib clips the non-trading
+# 2018-01-01 anchor to the first real trading day when loading data.
+overall_start: "2018-01-01"
+overall_end:   "2025-12-31"
 
 # Window sizes (months)
 train_months: 24
@@ -83,7 +88,7 @@ n_drop: 5
 commission_rate: 0.0005
 # CN stamp tax: omit ``stamp_tax_schedule`` to inherit
 # CN_STAMP_TAX_SCHEDULE_DEFAULT (2008-09-19=10bps, 2023-08-28=5bps).
-# This walk-forward window (2022-2026) crosses 2023-08-28 — the
+# This walk-forward window (2018-2025) crosses 2023-08-28 — the
 # runtime will WARN and apply a trading-day-weighted scalar across
 # the two segments per fold. Audit P0-4 / openspec/changes/
 # add-stamp-tax-schedule.
