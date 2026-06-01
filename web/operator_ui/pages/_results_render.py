@@ -711,6 +711,21 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     y_range = nav_y_range(frame)
     if y_range is not None:
         nav_axis["range"] = y_range
+    # 1.0 break-even reference line — drawn ONLY when 1.0 actually falls
+    # within the displayed y-axis range. ``nav_y_range`` no longer forces
+    # 1.0 into the range for far-from-baseline runs (that flattened the
+    # curve, UI review P2-5); but an unconditional ``add_hline(y=1.0)``
+    # would then sit outside the axis and get clipped — invisible exactly
+    # for the 3× run it was meant to help (Codex follow-up on PR #207).
+    # When 1.0 is off-axis the curve is wholly above/below break-even and
+    # the line carries no information, so we skip it.
+    show_baseline = y_range is None or (y_range[0] <= 1.0 <= y_range[1])
+    if show_baseline:
+        nav_fig.add_hline(
+            y=1.0,
+            line={"width": 1, "color": PLOTLY_BENCHMARK_COLOR, "dash": "dot"},
+            opacity=0.6,
+        )
     nav_fig.update_layout(
         height=420,
         hovermode="x unified",

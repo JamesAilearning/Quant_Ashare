@@ -78,7 +78,8 @@ class SummariseBundleHealthTests(unittest.TestCase):
                 self.assertEqual(s.provider_uri, "")
                 self.assertIsNone(s.tail_date)
                 self.assertIsNone(s.instrument_count)
-                self.assertIn("No bundle configured", s.message)
+                # Banner copy is Chinese (UI review P2-1).
+                self.assertIn("未配置数据包", s.message)
 
     def test_missing_path_error_status(self):
         s = summarise_bundle_health("/this/path/does/not/exist")
@@ -102,8 +103,8 @@ class SummariseBundleHealthTests(unittest.TestCase):
             self.assertEqual(s.status, "ok")
             self.assertEqual(s.tail_date, "2026-03-06")
             self.assertEqual(s.instrument_count, 4128)
-            self.assertIn("tail_date 2026-03-06", s.message)
-            self.assertIn("4128 instruments", s.message)
+            self.assertIn("末日 2026-03-06", s.message)
+            self.assertIn("4128 个标的", s.message)
 
     def test_bundle_with_warnings_marked_warning(self):
         """A bundle that's reachable but missing calendar / universes
@@ -120,7 +121,7 @@ class SummariseBundleHealthTests(unittest.TestCase):
             # No calendars/ or instruments/ → inspector emits warnings
             s = summarise_bundle_health(str(bundle))
             self.assertEqual(s.status, "warning")
-            self.assertIn("warnings:", s.message)
+            self.assertIn("条警告：", s.message)
 
     def test_bundle_with_no_metadata_files_warning(self):
         """A directory that exists but has no manifest / validation /
@@ -298,7 +299,9 @@ class RenderBundleHealthBannerTests(unittest.TestCase):
             self.assertEqual(summary.status, "ok")
             self.assertEqual(len(stub.captions), 1)
             self.assertIn("🟢", stub.captions[0])
-            self.assertIn("tail_date 2026-03-06", stub.captions[0])
+            self.assertIn("末日 2026-03-06", stub.captions[0])
+            # Banner label is Chinese now (UI review P2-1).
+            self.assertIn("数据包：", stub.captions[0])
 
     def test_renders_error_caption(self):
         stub = _StubSt()

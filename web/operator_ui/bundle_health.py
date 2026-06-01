@@ -191,7 +191,7 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
         return BundleHealthSummary(
             provider_uri="",
             status="unconfigured",
-            message="No bundle configured (set provider_uri in config.yaml).",
+            message="未配置数据包（请在 config.yaml 里设置 provider_uri）。",
             tail_date=None,
             instrument_count=None,
         )
@@ -223,13 +223,18 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
         if metadata.coverage_end_date else None
     )
 
+    # Banner copy is Chinese to match the rest of the operator UI
+    # (UI review P2-1). The status enum stays English (it's never shown
+    # to the operator — only the badge + this message are), and
+    # ``metadata.warnings`` text is passed through verbatim because it
+    # originates in ``training_guards`` (already localised there).
     parts: list[str] = []
     if tail_date_iso:
-        parts.append(f"tail_date {tail_date_iso}")
+        parts.append(f"末日 {tail_date_iso}")
     if metadata.instrument_count is not None:
-        parts.append(f"{metadata.instrument_count} instruments")
+        parts.append(f"{metadata.instrument_count} 个标的")
     if metadata.warnings:
-        parts.append(f"{len(metadata.warnings)} warnings: " + "; ".join(
+        parts.append(f"{len(metadata.warnings)} 条警告：" + "；".join(
             metadata.warnings[:2],
         ))
 
@@ -240,14 +245,14 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
         # files were found. This usually means "path exists but
         # isn't a qlib bundle" — surface as warning rather than ok.
         status = "warning"
-        parts.append("No bundle metadata found.")
+        parts.append("未找到数据包元数据。")
     else:
         status = "ok"
 
     return BundleHealthSummary(
         provider_uri=raw,
         status=status,
-        message=" | ".join(parts) if parts else "Bundle reachable.",
+        message=" | ".join(parts) if parts else "数据包可访问。",
         tail_date=tail_date_iso,
         instrument_count=metadata.instrument_count,
         warnings=metadata.warnings,
@@ -298,7 +303,7 @@ def render_bundle_health_banner(
         if len(display_uri) > 60:
             display_uri = "…" + display_uri[-59:]
         st.caption(
-            f"{badge} Bundle: ``{display_uri}`` — {summary.message}",
+            f"{badge} 数据包：``{display_uri}`` — {summary.message}",
         )
     else:
         st.caption(f"{badge} {summary.message}")
