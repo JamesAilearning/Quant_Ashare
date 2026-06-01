@@ -166,21 +166,27 @@ def _pipeline_log_phase(job_dir: Path) -> tuple[int, str] | None:
     appears in the job's stdout/stderr logs, or ``None`` if no marker
     is present yet.
 
-    Reads only the trailing 64 KiB of each log so a multi-MB training
-    log doesn't get fully loaded on every progress poll.
+    Reads only the trailing 64 KiB of each log by seeking from EOF, so a
+    multi-MB training log isn't loaded whole into memory on every
+    progress poll (Codex follow-up on PR #207). Mirrors the bounded-tail
+    read in ``job_io._extract_failure_detail``.
     """
 
+    tail_bytes = 64 * 1024
     blob = ""
     for name in ("stdout.log", "stderr.log"):
         path = job_dir / name
         try:
-            if not (path.is_file() and path.stat().st_size > 0):
-                continue
-            data = path.read_bytes()
+            with path.open("rb") as handle:
+                try:
+                    handle.seek(-tail_bytes, 2)  # 2 = SEEK_END
+                except OSError:
+                    handle.seek(0)
+                data = handle.read()
         except OSError:
             continue
-        tail = data[-64 * 1024:] if len(data) > 64 * 1024 else data
-        blob += tail.decode("utf-8", errors="replace")
+        if data:
+            blob += data.decode("utf-8", errors="replace")
     if not blob:
         return None
     best: tuple[int, str] | None = None

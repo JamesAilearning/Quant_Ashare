@@ -183,6 +183,44 @@ class OperatorUiProgressTests(unittest.TestCase):
                 self.assertEqual(p["percent"], 55)
                 self.assertEqual(p["label"], "已写入模型产物")
 
+    def test_pipeline_log_phase_reads_only_trailing_window(self) -> None:
+        """Codex follow-up on PR #207: the phase reader seeks from EOF
+        and reads only the last 64 KiB, so a marker that sits BEFORE
+        that trailing window (as in a long verbose log) is not seen —
+        proving the whole file isn't loaded each poll. A marker WITHIN
+        the trailing window is still found."""
+
+        marker = "Running canonical backtest..."
+        pad = "x" * (80 * 1024)  # 80 KiB > 64 KiB tail window
+
+        # Marker only at the very start, then >64 KiB of padding → the
+        # tail read should miss it, so we stay at the model checkpoint.
+        p = self._pipeline_progress(
+            run_files={"model.pkl": "x"},
+            log_text=marker + "\n" + pad,
+        )
+        self.assertEqual(p["percent"], 55)
+
+        # Marker in the trailing window → found.
+        p = self._pipeline_progress(
+            run_files={"model.pkl": "x"},
+            log_text=pad + "\n" + marker + "\n",
+        )
+        self.assertEqual(p["percent"], 65)
+
+    def test_pipeline_log_phase_seeks_from_eof(self) -> None:
+        """Source pin: the reader must seek from EOF (SEEK_END) rather
+        than ``read_bytes()`` the whole file (Codex follow-up PR #207)."""
+
+        from pathlib import Path as _P
+
+        source = _P("web/operator_ui/progress.py").read_text(encoding="utf-8")
+        self.assertIn("handle.seek(-tail_bytes, 2)", source)
+        # The whole-file read in this helper must be gone.
+        func = source[source.index("def _pipeline_log_phase("):]
+        func = func[: func.index("\n\n\n") if "\n\n\n" in func else len(func)]
+        self.assertNotIn("read_bytes()", func)
+
     def test_job_manager_status_attaches_progress(self) -> None:
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "test_job"
