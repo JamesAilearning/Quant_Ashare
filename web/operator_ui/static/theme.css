@@ -1400,6 +1400,26 @@ section[data-testid="stSidebar"] [data-testid="stSidebarNav"] > span {
   margin-bottom: var(--space-3);
 }
 
+/* Focusable ⓘ tooltip anchor on KPI cards. Lives inside the card title
+ * row so it inherits the small font + secondary colour but is keyboard-
+ * reachable on its own (UI review P2-2). The ``title`` attribute still
+ * provides the mouse-hover tooltip; ``aria-label`` on the anchor lets
+ * screen readers announce the same text on focus. */
+.qv2-r-card-tooltip {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 0 4px;
+  font-size: 0.85em;
+  color: var(--text-tertiary);
+  cursor: help;
+  border-radius: var(--radius-sm);
+}
+.qv2-r-card-tooltip:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  color: var(--text-primary);
+}
+
 .qv2-r-primary {
   font-size: 2rem;
   line-height: 1.15;

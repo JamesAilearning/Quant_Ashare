@@ -321,11 +321,31 @@ def _render_card(
     *,
     help_text: str,
 ) -> None:
+    """Render a KPI card with an accessible help-text affordance.
+
+    Previously the card carried the help text exclusively via the HTML
+    ``title=`` attribute, which only fires on mouse hover and is invisible
+    to keyboard / screen-reader users (UI review P2-2). The help text now
+    rides on a focusable ``ⓘ`` tooltip anchor next to the card title:
+    * ``title="..."`` — mouse hover still surfaces it.
+    * ``aria-label="..."`` — screen readers announce it when the anchor
+      receives focus.
+    * ``tabindex="0"`` — keyboard users can Tab to the anchor and either
+      hear the screen-reader read or read the visible title attribute.
+    """
+
     line_html = "<br>".join(_safe_html(line) for line in lines)
+    escaped_help = _safe_html(help_text)
+    tooltip_anchor = ""
+    if help_text:
+        tooltip_anchor = (
+            ' <span class="qv2-r-card-tooltip" tabindex="0" role="note" '
+            f'aria-label="{escaped_help}" title="{escaped_help}">ⓘ</span>'
+        )
     st.markdown(
         f"""
-        <div class="qv2-r-card" title="{_safe_html(help_text)}">
-          <div class="qv2-r-card-title">{_safe_html(title)}</div>
+        <div class="qv2-r-card">
+          <div class="qv2-r-card-title">{_safe_html(title)}{tooltip_anchor}</div>
           <div class="qv2-r-primary{primary_class}">{_safe_html(primary)}</div>
           <div class="qv2-r-secondary">{line_html}</div>
         </div>
@@ -698,6 +718,11 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
         yaxis=nav_axis,
         xaxis={"title": ""},
         legend={"orientation": "h", "yanchor": "bottom", "y": -0.24, "xanchor": "left", "x": 0},
+        # Disable Plotly's relayout/range-slider transition animation —
+        # theme.css already respects ``prefers-reduced-motion``, and
+        # those server-rendered transitions bypassed that CSS hook so
+        # vestibular-sensitive users still got motion (UI review P2-9).
+        transition={"duration": 0},
     )
     st.plotly_chart(nav_fig, use_container_width=True)
 
@@ -730,6 +755,7 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
         yaxis={"title": "", "tickformat": ".1%"},
         xaxis={"title": ""},
         legend={"orientation": "h", "yanchor": "bottom", "y": -0.28, "xanchor": "left", "x": 0},
+        transition={"duration": 0},  # UI review P2-9 — reduced-motion respect.
     )
     st.plotly_chart(dd_fig, use_container_width=True)
 
@@ -792,6 +818,7 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
                 # decimal ticks like "2,025.4 / 2,025.2 / 2,025".
                 xaxis={"title": "", "type": "category"},
                 yaxis={"title": "", "type": "category"},
+                transition={"duration": 0},  # UI review P2-9.
             )
             st.plotly_chart(fig, use_container_width=True)
         except (ImportError, ValueError, TypeError):

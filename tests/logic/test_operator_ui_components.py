@@ -132,6 +132,125 @@ class OperatorUiComponentsTests(unittest.TestCase):
         except Exception as exc:
             self.fail(f"components.py raised on import: {exc}")
 
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
+    def test_progress_bar_aria_values_are_integers(self) -> None:
+        """ARIA ``aria-valuenow`` / ``aria-valuemax`` MUST render as
+        integers on the 0–100 percent scale (UI review P2-8). Older
+        screen readers read fractional digits awkwardly; the percent
+        string inside the visual bar already conveys precision."""
+
+        from unittest.mock import patch
+
+        captured: list[str] = []
+
+        def _capture(markup: str, **_: object) -> None:
+            captured.append(markup)
+
+        with patch("streamlit.html", side_effect=_capture):
+            from web.operator_ui.components import render_progress_bar
+
+            # 62.7 — not a tie so Python's banker-rounding doesn't bite
+            # us (``round(62.5) == 62`` would otherwise mask the fix).
+            render_progress_bar(62.7, max_value=100.0, label="进度")
+
+        self.assertEqual(len(captured), 1)
+        html_text = captured[0]
+        # Integer rounded value (not 62.7 / not "62.7").
+        self.assertIn('aria-valuenow="63"', html_text)
+        self.assertIn('aria-valuemax="100"', html_text)
+        # Defence in depth: no float-string for either ARIA attribute.
+        self.assertNotIn("aria-valuenow=\"62.7\"", html_text)
+        self.assertNotIn("aria-valuemax=\"100.0\"", html_text)
+        # The visible width inside the track still carries the precise
+        # percent so operators see exact progress.
+        self.assertIn("width:62.7%", html_text)
+
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
+    def test_progress_bar_aria_uses_percent_scale_for_fractional_units(self) -> None:
+        """Codex follow-up on PR #205: a fractional caller scale like
+        ``render_progress_bar(0.25, max_value=1.0)`` must announce ARIA
+        on the 0–100 percent scale (``aria-valuenow="25"
+        aria-valuemax="100"``) — NOT ``round(0.25)=0`` of ``round(1.0)=1``
+        which told assistive tech "0% progress" while the bar visibly
+        showed 25%."""
+
+        from unittest.mock import patch
+
+        captured: list[str] = []
+
+        def _capture(markup: str, **_: object) -> None:
+            captured.append(markup)
+
+        with patch("streamlit.html", side_effect=_capture):
+            from web.operator_ui.components import render_progress_bar
+
+            render_progress_bar(0.25, max_value=1.0)
+
+        html_text = captured[0]
+        self.assertIn('aria-valuenow="25"', html_text)
+        self.assertIn('aria-valuemax="100"', html_text)
+        # The misleading raw-unit rounding must be gone.
+        self.assertNotIn('aria-valuenow="0"', html_text)
+        self.assertNotIn('aria-valuemax="1"', html_text)
+        self.assertIn("width:25.0%", html_text)
+
+
+class ResultsCardTooltipA11yTests(unittest.TestCase):
+    """UI review P2-2: ``_render_card`` used to put its help text in the
+    HTML ``title=`` attribute only. ``title=`` fires on mouse hover,
+    not on keyboard focus, so keyboard-only and screen-reader users
+    never saw the explanation. The fix moves the help text onto a
+    focusable ``ⓘ`` tooltip anchor with ``aria-label`` (read by screen
+    readers on focus), ``title=`` (kept for mouse hover), and
+    ``tabindex="0"`` (Tab-reachable)."""
+
+    def test_card_emits_focusable_tooltip_anchor_with_aria_label(self) -> None:
+        render_source = Path(
+            "web/operator_ui/pages/_results_render.py"
+        ).read_text(encoding="utf-8")
+
+        # Focusable anchor exists.
+        self.assertIn('class="qv2-r-card-tooltip"', render_source)
+        self.assertIn('tabindex="0"', render_source)
+        # Anchor announces via aria-label (not just title=).
+        self.assertIn('aria-label="{escaped_help}"', render_source)
+        # The card itself no longer carries ``title=`` — moved onto the
+        # focusable anchor.
+        self.assertNotIn('"qv2-r-card" title="', render_source)
+
+    def test_theme_css_styles_card_tooltip_with_focus_indicator(self) -> None:
+        css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
+
+        self.assertIn(".qv2-r-card-tooltip {", css)
+        # Focus-visible outline so keyboard users see where they are.
+        self.assertIn(".qv2-r-card-tooltip:focus-visible {", css)
+
+
+class PlotlyReducedMotionTests(unittest.TestCase):
+    """UI review P2-9: server-rendered Plotly transitions (relayout /
+    range-slider drag) bypassed the ``prefers-reduced-motion`` CSS hook
+    so vestibular-sensitive users still got motion. Every interactive
+    chart now passes ``transition={"duration": 0}`` to
+    ``fig.update_layout`` so the relayout animation stays put."""
+
+    def test_results_render_charts_disable_plotly_transition(self) -> None:
+        source = Path(
+            "web/operator_ui/pages/_results_render.py"
+        ).read_text(encoding="utf-8")
+
+        # All three ``fig.update_layout`` calls (nav, drawdown, monthly
+        # heatmap) carry the transition-disable kwarg.
+        self.assertGreaterEqual(source.count('transition={"duration": 0}'), 3)
+
+    def test_walk_forward_charts_disable_plotly_transition(self) -> None:
+        source = Path(
+            "web/operator_ui/pages/walk_forward.py"
+        ).read_text(encoding="utf-8")
+
+        # Four charts on the walk-forward page (stitched NAV + 3 metric
+        # bar charts) all carry the transition-disable kwarg.
+        self.assertGreaterEqual(source.count('transition={"duration": 0}'), 4)
+
 
 if __name__ == "__main__":
     unittest.main()
