@@ -2,8 +2,9 @@
 # Short training (20 rounds), 1-month test window, default cost model.
 # Use: D:/Python/Python11/python.exe main.py config_smoke.yaml
 
-# qlib runtime
-provider_uri: "D:/qlib_data/my_cn_data"
+# qlib runtime — PIT bundle (coverage 2018-01-02 → 2025-12-31).
+# Smoke windows below (2024-2025) already fall inside that span.
+provider_uri: "D:/qlib_data/my_cn_data_pit"
 region: "cn"
 
 # features
