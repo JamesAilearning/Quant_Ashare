@@ -277,6 +277,50 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("stVerticalBlock", source)
         self.assertIn("stColumn", source)
 
+    def test_topbar_tagging_uses_mutation_observer_not_polling(self) -> None:
+        """UI review P2-3: the topbar host-tagging script must re-apply
+        on DOM changes via a ``MutationObserver`` (idempotent,
+        install-once), not the old bounded ``setTimeout`` retry loop that
+        gave up after ~1s and missed later Streamlit reruns."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        self.assertIn("MutationObserver", source)
+        self.assertIn("__qv2TopbarObserver", source)
+        self.assertIn("childList: true, subtree: true", source)
+        # Polling loop + bounded-attempt counter are gone.
+        self.assertNotIn("setTimeout(decorate", source)
+        self.assertNotIn("attempts < 10", source)
+
+    def test_topbar_decoration_is_idempotent_with_no_permanent_flags(self) -> None:
+        """Codex on PR #209 (+ follow-up): topbar decoration must be
+        fully idempotent with NO permanent per-host "done" flags.
+
+        Two bugs this guards against:
+        * The original ``hasAttribute('data-qv2-topbar-host')`` early-
+          return froze action tagging when the column didn't exist yet.
+        * The first follow-up's ``data-qv2-topbar-actions-tagged`` flag
+          went stale when a Streamlit rerun REPLACED the action column —
+          decorate() skipped the new (untagged) element.
+
+        The decorator now re-queries the action column and re-applies
+        ``.qv2-topbar-actions`` every observer pass (``classList.add`` is
+        a no-op when already present), so a freshly-built or
+        freshly-replaced column always ends up tagged."""
+
+        source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
+
+        # No permanent flags of either generation are READ or WRITTEN
+        # (the name may still appear in an explanatory comment, so we
+        # assert on the get/setAttribute calls, not the bare string).
+        self.assertNotIn("host.hasAttribute('data-qv2-topbar-host')", source)
+        self.assertNotIn("getAttribute('data-qv2-topbar-actions-tagged')", source)
+        self.assertNotIn("setAttribute('data-qv2-topbar-actions-tagged'", source)
+        # Action column is re-queried + re-tagged every pass.
+        self.assertIn("action.classList.add('qv2-topbar-actions')", source)
+        # Still driven by a MutationObserver (not setTimeout polling).
+        self.assertIn("MutationObserver", source)
+
 
 if __name__ == "__main__":
     unittest.main()

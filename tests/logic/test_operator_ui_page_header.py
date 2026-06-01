@@ -89,6 +89,21 @@ class OperatorUiPageHeaderTests(unittest.TestCase):
         self.assertIn("qv2-nav-icon", source)
         self.assertIn("JobManager", source)
 
+    def test_nav_icon_injection_uses_mutation_observer_not_polling(self) -> None:
+        """UI review P2-3: the nav-icon script must re-apply on DOM
+        changes via a ``MutationObserver`` (idempotent, install-once),
+        not the old bounded ``setTimeout`` retry loop that gave up after
+        ~1s and missed slow paints / later Streamlit reruns."""
+
+        source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
+
+        self.assertIn("MutationObserver", source)
+        self.assertIn("__qv2NavIconObserver", source)
+        self.assertIn("childList: true, subtree: true", source)
+        # The polling loop and its bounded-attempt counter are gone.
+        self.assertNotIn("setTimeout(decorate", source)
+        self.assertNotIn("attempt < 10", source)
+
     def test_theme_css_contains_nav_tokens(self) -> None:
         css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
 

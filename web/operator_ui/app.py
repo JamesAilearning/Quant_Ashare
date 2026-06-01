@@ -70,20 +70,24 @@ _ICON_MAP = {
     "滚动验证": "\U0001f501",        # 🔁
     "设计系统": "\U0001f3a8",        # 🎨
 }
+# Nav-icon injection. A ``MutationObserver`` replaces the old
+# ``setTimeout`` retry loop (UI review P2-3): the loop ran at most 10
+# times over ~1.2s then gave up, so on a slow first paint — or any
+# later Streamlit rerun that rebuilds the sidebar DOM — the icons
+# silently dropped. The observer re-applies ``decorate()`` whenever the
+# document subtree changes (rAF-debounced so a burst of mutations
+# coalesces into one pass), and installs itself exactly once via a flag
+# on ``window.parent`` so repeated script emissions don't stack
+# observers.
 _ICON_SCRIPT = """
 <script>
 (function() {
   var icons = %s;
-  var attempt = 0;
+  var doc = window.parent.document;
   function decorate() {
-    var links = window.parent.document.querySelectorAll(
+    var links = doc.querySelectorAll(
       '[data-testid="stSidebarNav"] a, [data-testid="stSidebarNav"] span'
     );
-    if (links.length === 0 && attempt < 10) {
-      attempt++;
-      setTimeout(decorate, 120);
-      return;
-    }
     links.forEach(function(el) {
       var text = (el.textContent || '').trim();
       if (icons[text] && !el.querySelector('.qv2-nav-icon')) {
@@ -95,6 +99,19 @@ _ICON_SCRIPT = """
     });
   }
   decorate();
+  if (!window.parent.__qv2NavIconObserver) {
+    var scheduled = false;
+    var observer = new MutationObserver(function() {
+      if (scheduled) return;
+      scheduled = true;
+      window.parent.requestAnimationFrame(function() {
+        scheduled = false;
+        decorate();
+      });
+    });
+    observer.observe(doc.body, {childList: true, subtree: true});
+    window.parent.__qv2NavIconObserver = observer;
+  }
 })();
 </script>
 """ % str(_ICON_MAP).replace("'", '"')

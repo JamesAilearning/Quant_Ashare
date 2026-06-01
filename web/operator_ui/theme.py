@@ -277,33 +277,63 @@ def render_skip_link() -> None:
 
 
 _TOPBAR_HOST_MARKER_CLASS = "qv2-topbar-host-marker"
+# Topbar host-tagging. Same MutationObserver replacement as the nav-icon
+# script (UI review P2-3): the ``setTimeout`` retry loop gave up after
+# ~1s, so a slow first paint or a later Streamlit rerun left the topbar
+# CSS selectors unapplied. ``decorate()`` is idempotent (it bails on
+# already-tagged hosts), the observer re-runs it on subtree changes
+# (rAF-debounced), and installs once via a ``window.parent`` flag.
 _TOPBAR_TAG_SCRIPT = """
 <script>
 (function() {
-  var attempts = 0;
+  var doc = window.parent.document;
   function decorate() {
-    var markers = window.parent.document.querySelectorAll('.qv2-topbar-host-marker');
-    if (markers.length === 0 && attempts < 10) {
-      attempts++;
-      setTimeout(decorate, 100);
-      return;
-    }
+    var markers = doc.querySelectorAll('.qv2-topbar-host-marker');
     markers.forEach(function(marker) {
       // Walk up to the enclosing Streamlit vertical block that wraps the
       // st.container our render_topbar emits.
       var host = marker.closest('[data-testid="stVerticalBlock"]');
-      if (!host || host.hasAttribute('data-qv2-topbar-host')) return;
+      if (!host) return;
+      // Everything here is idempotent and re-applied on EVERY observer
+      // pass — no permanent "done" flags. Host styling
+      // ([data-qv2-topbar-host] + .qv2-topbar) AND the action-column
+      // tagging are re-derived from the live DOM each time:
+      //   * A not-yet-built action column (Streamlit builds the
+      //     horizontal block incrementally) is picked up on a later
+      //     pass once it exists — no freeze.
+      //   * A column REPLACED by a Streamlit rerun gets re-tagged,
+      //     because we re-query + re-add the class rather than trust a
+      //     stale per-host flag that would skip the new element.
+      // ``classList.add`` is a cheap no-op when the class is already
+      // present, so re-applying every pass is safe. (Codex on PR #209:
+      // the original ``hasAttribute('data-qv2-topbar-host')`` early-
+      // return froze action tagging; the first follow-up's
+      // ``data-qv2-topbar-actions-tagged`` flag then went stale when the
+      // column was replaced on rerun — dropping the flag fixes both.)
       host.setAttribute('data-qv2-topbar-host', 'true');
       host.classList.add('qv2-topbar');
-      // Tag the action column (the last stColumn inside the topbar row)
-      // so .qv2-topbar-actions styling applies to the Settings button.
       var action = host.querySelector(
         '[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child'
       );
-      if (action) action.classList.add('qv2-topbar-actions');
+      if (action) {
+        action.classList.add('qv2-topbar-actions');
+      }
     });
   }
   decorate();
+  if (!window.parent.__qv2TopbarObserver) {
+    var scheduled = false;
+    var observer = new MutationObserver(function() {
+      if (scheduled) return;
+      scheduled = true;
+      window.parent.requestAnimationFrame(function() {
+        scheduled = false;
+        decorate();
+      });
+    });
+    observer.observe(doc.body, {childList: true, subtree: true});
+    window.parent.__qv2TopbarObserver = observer;
+  }
 })();
 </script>
 """
