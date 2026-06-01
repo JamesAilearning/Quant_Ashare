@@ -294,25 +294,29 @@ _TOPBAR_TAG_SCRIPT = """
       // st.container our render_topbar emits.
       var host = marker.closest('[data-testid="stVerticalBlock"]');
       if (!host) return;
-      // Host-level styling is idempotent — (re)apply every pass. This is
-      // what the [data-qv2-topbar-host="true"] + .qv2-topbar CSS hooks
-      // key on.
+      // Everything here is idempotent and re-applied on EVERY observer
+      // pass — no permanent "done" flags. Host styling
+      // ([data-qv2-topbar-host] + .qv2-topbar) AND the action-column
+      // tagging are re-derived from the live DOM each time:
+      //   * A not-yet-built action column (Streamlit builds the
+      //     horizontal block incrementally) is picked up on a later
+      //     pass once it exists — no freeze.
+      //   * A column REPLACED by a Streamlit rerun gets re-tagged,
+      //     because we re-query + re-add the class rather than trust a
+      //     stale per-host flag that would skip the new element.
+      // ``classList.add`` is a cheap no-op when the class is already
+      // present, so re-applying every pass is safe. (Codex on PR #209:
+      // the original ``hasAttribute('data-qv2-topbar-host')`` early-
+      // return froze action tagging; the first follow-up's
+      // ``data-qv2-topbar-actions-tagged`` flag then went stale when the
+      // column was replaced on rerun — dropping the flag fixes both.)
       host.setAttribute('data-qv2-topbar-host', 'true');
       host.classList.add('qv2-topbar');
-      // The action column (last stColumn in the topbar row) may not
-      // exist yet when the marker is first inserted — Streamlit builds
-      // the horizontal block incrementally. Track its tagging with a
-      // SEPARATE flag and keep retrying on later observer passes until
-      // the column appears; the old code marked the whole host done on
-      // the first pass, so a not-yet-built action column never got the
-      // .qv2-topbar-actions class until a full reload (Codex on PR #209).
-      if (host.getAttribute('data-qv2-topbar-actions-tagged') === 'true') return;
       var action = host.querySelector(
         '[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:last-child'
       );
       if (action) {
         action.classList.add('qv2-topbar-actions');
-        host.setAttribute('data-qv2-topbar-actions-tagged', 'true');
       }
     });
   }

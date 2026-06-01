@@ -292,28 +292,34 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertNotIn("setTimeout(decorate", source)
         self.assertNotIn("attempts < 10", source)
 
-    def test_topbar_action_tagging_retries_until_column_exists(self) -> None:
-        """Codex on PR #209: Streamlit builds the topbar's horizontal
-        block incrementally, so the action column can be absent when the
-        marker is first seen. The host must NOT be marked fully-done on
-        that first pass (which froze ``.qv2-topbar-actions`` until a
-        reload); the action tagging uses a SEPARATE completion flag so
-        the observer keeps retrying until the column appears."""
+    def test_topbar_decoration_is_idempotent_with_no_permanent_flags(self) -> None:
+        """Codex on PR #209 (+ follow-up): topbar decoration must be
+        fully idempotent with NO permanent per-host "done" flags.
+
+        Two bugs this guards against:
+        * The original ``hasAttribute('data-qv2-topbar-host')`` early-
+          return froze action tagging when the column didn't exist yet.
+        * The first follow-up's ``data-qv2-topbar-actions-tagged`` flag
+          went stale when a Streamlit rerun REPLACED the action column —
+          decorate() skipped the new (untagged) element.
+
+        The decorator now re-queries the action column and re-applies
+        ``.qv2-topbar-actions`` every observer pass (``classList.add`` is
+        a no-op when already present), so a freshly-built or
+        freshly-replaced column always ends up tagged."""
 
         source = Path("web/operator_ui/theme.py").read_text(encoding="utf-8")
 
-        # Separate completion flag for the action column.
-        self.assertIn("data-qv2-topbar-actions-tagged", source)
-        # The whole-host early-return on ``data-qv2-topbar-host`` (which
-        # caused the freeze) must be gone — host styling is now applied
-        # idempotently every pass.
+        # No permanent flags of either generation are READ or WRITTEN
+        # (the name may still appear in an explanatory comment, so we
+        # assert on the get/setAttribute calls, not the bare string).
         self.assertNotIn("host.hasAttribute('data-qv2-topbar-host')", source)
-        # The early-return guard now keys on the action flag, so passes
-        # before the column exists fall through and retry.
-        self.assertIn(
-            "host.getAttribute('data-qv2-topbar-actions-tagged') === 'true'",
-            source,
-        )
+        self.assertNotIn("getAttribute('data-qv2-topbar-actions-tagged')", source)
+        self.assertNotIn("setAttribute('data-qv2-topbar-actions-tagged'", source)
+        # Action column is re-queried + re-tagged every pass.
+        self.assertIn("action.classList.add('qv2-topbar-actions')", source)
+        # Still driven by a MutationObserver (not setTimeout polling).
+        self.assertIn("MutationObserver", source)
 
 
 if __name__ == "__main__":
