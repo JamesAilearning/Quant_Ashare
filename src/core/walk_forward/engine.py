@@ -378,8 +378,16 @@ class WalkForwardEngine:
             """Trading day ``gap``+1 positions before the first trading day
             >= ``anchor`` — leaves exactly ``gap`` trading days strictly
             between the returned date and ``anchor``. ``None`` when the
-            calendar lacks enough history before ``anchor``."""
+            anchor is beyond calendar coverage, or the calendar lacks
+            enough history before it."""
             iv = bisect.bisect_left(cal, anchor)  # cal[iv] >= anchor
+            if iv >= len(cal):
+                # anchor is after the last trading day — the fold's
+                # valid/test segment would fall outside calendar coverage
+                # (future / truncated bundle). Treat as uncovered, not a
+                # tail-date fold that would pass embargo but point at empty
+                # data downstream.
+                return None
             idx = iv - (gap + 1)
             if idx < 0:
                 return None

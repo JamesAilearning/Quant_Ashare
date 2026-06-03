@@ -147,6 +147,23 @@ class WalkForwardEmbargoGapTests(unittest.TestCase):
             self.assertEqual(trading_days_between(tr_e, va_s, _CAL), 0)
             self.assertEqual(trading_days_between(va_e, te_s, _CAL), 0)
 
+    def test_anchor_beyond_calendar_is_skipped(self) -> None:
+        """A fold whose valid/test START anchor falls after the calendar's
+        last day (future / truncated bundle) is SKIPPED — not emitted with a
+        tail calendar date that would pass the embargo check while
+        valid_start/test_start point outside coverage. Every emitted fold's
+        start anchors stay within the calendar."""
+        short_cal = _business_days(date(2017, 1, 2), date(2023, 12, 31))
+        folds = [
+            tuple(date.fromisoformat(x) for x in w)
+            for w in WalkForwardEngine._generate_windows(_cfg(), calendar=short_cal)
+        ]
+        last = short_cal[-1]
+        self.assertGreater(len(folds), 0)  # early folds still inside coverage
+        for _tr_s, _tr_e, va_s, _va_e, te_s, _te_e in folds:
+            self.assertLessEqual(va_s, last, "valid_start beyond calendar coverage")
+            self.assertLessEqual(te_s, last, "test_start beyond calendar coverage")
+
 
 if __name__ == "__main__":
     unittest.main()
