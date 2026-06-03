@@ -451,7 +451,8 @@ class WalkForwardEngine:
         if isinstance(value, date):
             return value
         import pandas as pd  # only the qlib-calendar path (Timestamps) reaches here
-        return pd.Timestamp(value).date()
+        ts = pd.Timestamp(value)
+        return date(ts.year, ts.month, ts.day)
 
     @classmethod
     def _load_trading_calendar(cls) -> list[date]:

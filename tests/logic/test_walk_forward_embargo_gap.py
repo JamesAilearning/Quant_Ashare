@@ -19,9 +19,11 @@ from __future__ import annotations
 import unittest
 from datetime import date, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from dateutil.relativedelta import relativedelta
 
+import src.data._segment_embargo as _embargo
 from src.core.walk_forward.engine import WalkForwardEngine
 from src.data._segment_embargo import (
     LABEL_LOOKAHEAD_DAYS,
@@ -129,6 +131,21 @@ class WalkForwardEmbargoGapTests(unittest.TestCase):
         for _tr_s, tr_e, va_s, va_e, te_s, _te_e in self.folds:
             self.assertEqual(trading_days_between(tr_e, va_s, _CAL), LABEL_LOOKAHEAD_DAYS)
             self.assertEqual(trading_days_between(va_e, te_s, _CAL), LABEL_LOOKAHEAD_DAYS)
+
+    def test_gap_zero_reduces_to_adjacent(self) -> None:
+        """gap == 0 (a future zero-lookahead handler) reduces to adjacent
+        boundaries: 0 trading days strictly between the segments — i.e. the
+        gap really is read from the guard constant (here patched to 0), not
+        a hardcoded 2."""
+        with patch.object(_embargo, "LABEL_LOOKAHEAD_DAYS", 0):
+            folds = [
+                tuple(date.fromisoformat(x) for x in w)
+                for w in WalkForwardEngine._generate_windows(_cfg(), calendar=_CAL)
+            ]
+        self.assertGreater(len(folds), 0)
+        for _tr_s, tr_e, va_s, va_e, te_s, _te_e in folds:
+            self.assertEqual(trading_days_between(tr_e, va_s, _CAL), 0)
+            self.assertEqual(trading_days_between(va_e, te_s, _CAL), 0)
 
 
 if __name__ == "__main__":
