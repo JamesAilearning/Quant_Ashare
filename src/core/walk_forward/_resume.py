@@ -447,12 +447,20 @@ def decide_fold(
     config_fingerprint: str,
     discovered: Mapping[int, FoldManifest],
     resume_mode: ResumeMode,
+    valid_period: str | None = None,
 ) -> ResumeDecision:
     """Apply the resume policy to one fold.
 
     Pure: no I/O. The engine constructs the inputs and calls this once
     per window; the returned :class:`ResumeDecision` drives whether
     the fold runs or is loaded from manifest.
+
+    ``valid_period`` is optional for backward compatibility; when supplied
+    it is included in the window-mismatch check. This matters since the
+    embargo-gap change made ``valid_end`` calendar-dependent: a different
+    bundle vintage can shift ``valid_end`` (hence ``valid_period``) while
+    ``train_period`` / ``test_period`` stay equal, and without this check
+    AUTO-resume would wrongly reuse a fold trained on the old valid window.
     """
     if resume_mode.should_force_rerun(fold_index):
         reason = (
@@ -484,13 +492,15 @@ def decide_fold(
     if (
         manifest.train_period != train_period
         or manifest.test_period != test_period
+        or (valid_period is not None and manifest.valid_period != valid_period)
     ):
         return ResumeDecision(
             fold_index=fold_index, skip=False, manifest=None,
             reason=(
                 f"window_mismatch:"
-                f"manifest=({manifest.train_period},{manifest.test_period}) "
-                f"current=({train_period},{test_period})"
+                f"manifest=({manifest.train_period},{manifest.valid_period},"
+                f"{manifest.test_period}) "
+                f"current=({train_period},{valid_period},{test_period})"
             ),
         )
 
