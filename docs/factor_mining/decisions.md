@@ -22,7 +22,7 @@
 |---|----------|----------|-----------|
 | D1 | Transaction cost model | **B — annualized round-trip, cost_rate = 0.003** | ✅ Final |
 | D2 | Industry / size neutralization | **v1: none; grammar keeps `group_by` hook for v2** | ✅ Final (locked post-Phase-0) |
-| D3 | Feature universe | **6 PIT bin fields: `$open $high $low $close $volume $money`** | ✅ Final (locked post-Phase-0) |
+| D3 | Feature universe | **superseded → 12 fields (6 OHLCV/money + 6 `daily_basic`); see D3 amendment** | ⚠️ 6 fundamentals PENDING C2 GP validation |
 | D4 | Promotion workflow | **Manual gated** | ✅ Final |
 | D5 | PIT data gate strictness | **Zero `qlib.data`/`qlib.init` matches under `src/factor_mining/`** | ✅ Final |
 
@@ -88,6 +88,23 @@ class CSOperator:
 ---
 
 ## D3: Feature Universe — DECIDED (Final, post-Phase 0)
+
+> **⚠️ AMENDMENT (C2 — supersedes the "6 fields Final" text below).** The
+> archived OpenSpec change `extend-feature-universe-with-daily-basic`
+> (#187, 2026-05-27) extended the terminal universe from 6 to **12
+> fields**: the 6 OHLCV/money fields below **plus 6 `daily_basic`
+> fundamentals** `$pe $pb $ps $turnover_rate $circ_mv $total_mv`. The live
+> source of truth is `FeatureRegistry.V1` in
+> `src/factor_mining/grammar.py` (12 fields) — NOT this section and NOT
+> any config key (the dead `features:` key in
+> `config/factor_mining/default.yaml` was removed in C2).
+>
+> **This is NOT a confirmation that 12 fields is correct.** Whether the 6
+> `daily_basic` fundamentals earn their place is **PENDING C2 validation**
+> — a fair GP-vs-Alpha158 comparison on the C1 leak-free (embargo-gapped)
+> walk-forward folds against the clean Alpha158 baseline (mean IR ≈ 0.30,
+> see `docs/phase_c1_result.md`). The 6 fundamentals stay or go based on
+> that result. The original 6-field rationale below is kept for history.
 
 **Decision**: v1 feature universe is the **6 fields the PIT qlib bins
 actually contain**:
