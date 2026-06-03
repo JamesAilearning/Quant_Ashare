@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +22,22 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.run_walk_forward import _parse_cli  # noqa: E402
 from src.core.walk_forward._resume import _ResumeKind  # noqa: E402
 from src.core.walk_forward.config import WalkForwardConfig  # noqa: E402
+
+
+def _synthetic_trading_calendar() -> list[date]:
+    """Continuous Mon-Fri calendar injected via _load_trading_calendar so
+    run() needs no real qlib bundle (the embargo gap added in
+    fix-walk-forward-embargo-gap makes _generate_windows read the calendar)."""
+    out, d = [], date(2015, 1, 1)
+    while d <= date(2027, 12, 31):
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+_SYNTH_CAL = _synthetic_trading_calendar()
+
 
 # ---------------------------------------------------------------------------
 # WalkForwardConfig has the new field
@@ -148,6 +165,8 @@ class EnginePassesCacheDirToBuilderTests(unittest.TestCase):
             return_value={},
         ), patch(
             "src.core.walk_forward.engine.write_aggregate_report",
+        ), patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=_SYNTH_CAL,
         ):
             # Run the engine — _run_single_fold will hit our spy, raise,
             # and the engine will install a NaN-placeholder fold.
@@ -185,6 +204,8 @@ class EnginePassesCacheDirToBuilderTests(unittest.TestCase):
                 return_value={},
             ), patch(
                 "src.core.walk_forward.engine.write_aggregate_report",
+            ), patch.object(
+                WalkForwardEngine, "_load_trading_calendar", return_value=_SYNTH_CAL,
             ):
                 WalkForwardEngine.run(cfg)
 
@@ -228,6 +249,8 @@ class EnginePassesCacheDirToBuilderTests(unittest.TestCase):
                 return_value={},
             ), patch(
                 "src.core.walk_forward.engine.write_aggregate_report",
+            ), patch.object(
+                WalkForwardEngine, "_load_trading_calendar", return_value=_SYNTH_CAL,
             ):
                 WalkForwardEngine.run(cfg)
 
@@ -266,6 +289,8 @@ class EnginePassesCacheDirToBuilderTests(unittest.TestCase):
                 return_value={},
             ), patch(
                 "src.core.walk_forward.engine.write_aggregate_report",
+            ), patch.object(
+                WalkForwardEngine, "_load_trading_calendar", return_value=_SYNTH_CAL,
             ):
                 WalkForwardEngine.run(cfg)
 
