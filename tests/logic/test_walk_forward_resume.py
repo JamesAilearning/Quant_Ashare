@@ -454,6 +454,38 @@ class DecideFoldTests(unittest.TestCase):
         self.assertFalse(decision.skip)
         self.assertIn("window_mismatch", decision.reason)
 
+    def test_auto_with_valid_period_mismatch_reruns(self) -> None:
+        """valid_period differs (the embargo-gap change made valid_end
+        calendar-dependent, so a different bundle vintage can shift it)
+        while train_period & test_period match → the fold must RE-RUN,
+        not resume a stale-valid-window artifact."""
+        m = self._make_manifest(0, fingerprint="fp1", train="A", test="B")
+        decision = decide_fold(
+            fold_index=0,
+            train_period="A", test_period="B",
+            valid_period=m.valid_period + " (shifted)",  # differs from manifest
+            config_fingerprint="fp1",
+            discovered={0: m},
+            resume_mode=ResumeMode.AUTO,
+        )
+        self.assertFalse(decision.skip)
+        self.assertIn("window_mismatch", decision.reason)
+
+    def test_auto_with_matching_valid_period_still_skips(self) -> None:
+        """When valid_period also matches, resume still works — the new
+        check must not cause false re-runs."""
+        m = self._make_manifest(0, fingerprint="fp1", train="A", test="B")
+        decision = decide_fold(
+            fold_index=0,
+            train_period="A", test_period="B",
+            valid_period=m.valid_period,  # matches
+            config_fingerprint="fp1",
+            discovered={0: m},
+            resume_mode=ResumeMode.AUTO,
+        )
+        self.assertTrue(decision.skip)
+        self.assertEqual(decision.reason, "resumed_from_manifest")
+
     def test_force_rerun_ignores_matching_manifest(self) -> None:
         m = self._make_manifest(0, fingerprint="fp1")
         decision = decide_fold(

@@ -131,6 +131,7 @@ class WalkForwardEngine:
             decision = decide_fold(
                 fold_index=i,
                 train_period=f"{train_s} ~ {train_e}",
+                valid_period=f"{valid_s} ~ {valid_e}",
                 test_period=f"{test_s} ~ {test_e}",
                 config_fingerprint=config_fingerprint,
                 discovered=discovered_manifests,
