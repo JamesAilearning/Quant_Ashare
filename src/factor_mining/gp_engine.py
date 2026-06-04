@@ -501,8 +501,12 @@ class GPEngine:
         evaluator so coverage is measured members-only on real-PIT
         panels; None preserves the legacy all-cells coverage.
         """
-        if universe_mask is not None:
-            self._universe_mask = universe_mask
+        # Assign on EVERY run, including None: omitting the mask selects
+        # all-cells coverage (per the docstring), so reusing an engine that
+        # previously ran with a PIT mask for a later mask-free run must reset
+        # rather than retain stale membership from the old panel. Codex P2
+        # on #217.
+        self._universe_mask = universe_mask
         # Guard a resumed run against mixed coverage denominators: scores
         # cached under one mode (members-only vs all-cells) are incomparable
         # to scores this run would produce under the other, so discard them

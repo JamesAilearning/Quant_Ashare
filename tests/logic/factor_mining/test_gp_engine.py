@@ -574,6 +574,30 @@ def test_run_keeps_cache_when_coverage_denominator_matches(monkeypatch):
     assert not any("discarding" in msg for msg in warnings), warnings
 
 
+def test_run_without_mask_resets_universe_mask_to_all_cells(monkeypatch):
+    """Reusing an engine: a mask-free run after a members-mode run must reset
+    to all-cells coverage (None means all-cells), not retain the stale mask
+    from the previous panel (Codex P2 on #217)."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=77, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=77, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)  # members
+    assert engine._universe_mask is not None
+    assert engine._coverage_denominator == "members"
+
+    # Reuse the SAME engine, omitting the mask -> must flip to all-cells and
+    # drop the stale mask (not keep scoring against the old membership).
+    engine.run(panel, fwd, n_generations=0)
+    assert engine._universe_mask is None
+    assert engine._coverage_denominator == "all_cells"
+    assert any(
+        "coverage_denominator" in msg and "discarding" in msg for msg in warnings
+    ), warnings
+
+
 # ---------------------------------------------------------------------------
 # Codex PR #143 P1 regression: pool-entry ``method`` default.
 #
