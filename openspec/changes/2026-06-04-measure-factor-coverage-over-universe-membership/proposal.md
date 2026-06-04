@@ -72,6 +72,14 @@ it is "coverage denominator = universe members, not the union".
    - `GPEngine.run(..., universe_mask=None)` stores the mask;
      `evaluate_individual` forwards `self._universe_mask` to
      `evaluate_factor`. (No signature change to `evaluate_individual`.)
+   - Checkpoint resume guard (Codex P1 on #217): the coverage-denominator
+     mode (`"members"`/`"all_cells"`) is persisted in `save_checkpoint` and
+     restored in `load_checkpoint`; on `run`, if a resumed engine's cached
+     scores were produced under a different denominator than the resumed run
+     uses, `fitness_cache`/`_all_evaluated` are discarded and re-scored —
+     mirroring the existing `evaluator_method` invalidation. Without this, a
+     members-mode run resumed without the mask would silently mix members
+     and all-cells coverage and could again reject valid factors.
 3. `src/factor_mining/miner.py`:
    - `build_universe_mask(config)` — returns
      `FactorMiningDataView.universe_mask()` in PIT mode, `None` in

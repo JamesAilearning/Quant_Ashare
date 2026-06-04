@@ -496,6 +496,85 @@ def test_load_matching_method_checkpoint_keeps_caches(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Coverage-denominator resume guard (Codex P1 on #217)
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_embeds_coverage_denominator(tmp_path):
+    """Saved payloads tag the coverage denominator (members vs all-cells)
+    so a resume can detect a mismatch and avoid mixing semantics."""
+    import json
+
+    engine = _engine(seed=11, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=11, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)
+    ckpt_path = engine.save_checkpoint(tmp_path / "ckpt.json")
+    state = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    assert state["coverage_denominator"] == "members"
+    resumed = GPEngine.load_checkpoint(ckpt_path, fitness_config=FitnessConfig())
+    assert resumed._coverage_denominator == "members"
+
+
+def test_checkpoint_coverage_denominator_all_cells_without_mask(tmp_path):
+    """A mask-free run records all-cells (legacy / synthetic mode)."""
+    import json
+
+    engine = _engine(seed=12, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=12, n_tickers=4, n_dates=15)
+    engine.run(panel, fwd, n_generations=1)  # no universe_mask
+    ckpt_path = engine.save_checkpoint(tmp_path / "ckpt.json")
+    state = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    assert state["coverage_denominator"] == "all_cells"
+
+
+def test_run_discards_cache_on_coverage_denominator_mismatch(monkeypatch):
+    """Resuming a members-mode run in all-cells mode (load_checkpoint drops
+    the in-memory mask and the caller forgets to re-supply it) MUST discard
+    the incomparable cached scores rather than silently mix denominators."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=55, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=55, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)  # members
+    assert engine._coverage_denominator == "members"
+    # fitness_cache holds every evaluated expr (valid or -inf); _all_evaluated
+    # may be empty on a tiny synthetic panel where no factor clears validity.
+    assert engine.fitness_cache
+
+    # Simulate the resume-without-mask path; n_generations=0 lets us observe
+    # the discard before any re-scoring repopulates the caches.
+    engine._universe_mask = None
+    engine.run(panel, fwd, n_generations=0)  # all_cells -> mismatch
+    assert engine._coverage_denominator == "all_cells"
+    assert engine.fitness_cache == {}
+    assert engine._all_evaluated == {}
+    assert any(
+        "coverage_denominator" in msg and "discarding" in msg for msg in warnings
+    ), warnings
+
+
+def test_run_keeps_cache_when_coverage_denominator_matches(monkeypatch):
+    """Same coverage mode across a resume preserves cached scores (no
+    spurious discard)."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=66, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=66, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)
+    n_cached = len(engine.fitness_cache)
+    assert n_cached > 0
+    engine.run(panel, fwd, universe_mask=mask, n_generations=0)  # same members mode
+    assert len(engine.fitness_cache) == n_cached
+    assert not any("discarding" in msg for msg in warnings), warnings
+
+
+# ---------------------------------------------------------------------------
 # Codex PR #143 P1 regression: pool-entry ``method`` default.
 #
 # When a checkpoint passes the evaluator_method gate (so caches aren't

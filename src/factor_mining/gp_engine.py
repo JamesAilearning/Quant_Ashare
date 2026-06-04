@@ -169,6 +169,12 @@ class GPEngine:
         # members-only. None for synthetic / dense panels — see
         # evaluator._coverage.
         self._universe_mask: pd.DataFrame | None = None
+        # Coverage-denominator mode ("members"/"all_cells") under which the
+        # scores cached in fitness_cache/_all_evaluated were produced. Set on
+        # ``run`` and persisted in checkpoints so a resume can't silently mix
+        # members-only and all-cells coverage (Codex P1 on PR #217). None
+        # until the first run / checkpoint load.
+        self._coverage_denominator: str | None = None
 
     # ------------------------------------------------------------------
     # Population lifecycle
@@ -497,6 +503,32 @@ class GPEngine:
         """
         if universe_mask is not None:
             self._universe_mask = universe_mask
+        # Guard a resumed run against mixed coverage denominators: scores
+        # cached under one mode (members-only vs all-cells) are incomparable
+        # to scores this run would produce under the other, so discard them
+        # and let the resumed generation re-score cleanly. Mirrors the
+        # evaluator_method invalidation in load_checkpoint. Codex P1 on #217.
+        effective_denominator = (
+            "members" if self._universe_mask is not None else "all_cells"
+        )
+        if (
+            self._coverage_denominator is not None
+            and self._coverage_denominator != effective_denominator
+            and (self.fitness_cache or self._all_evaluated)
+        ):
+            _log.warning(
+                "coverage_denominator=%r from checkpoint != this run %r — "
+                "discarding fitness_cache (%d) and all_evaluated (%d); resumed "
+                "generation re-scores from scratch to avoid mixing coverage "
+                "semantics.",
+                self._coverage_denominator,
+                effective_denominator,
+                len(self.fitness_cache),
+                len(self._all_evaluated),
+            )
+            self.fitness_cache = {}
+            self._all_evaluated = {}
+        self._coverage_denominator = effective_denominator
         if not self.population:
             self.initialize_population()
         n_gens = (
@@ -558,6 +590,14 @@ class GPEngine:
             # resume or must be discarded — see the Codex P1 note on the
             # ``FITNESS_EVALUATOR_METHOD`` constant above.
             "evaluator_method": FITNESS_EVALUATOR_METHOD,
+            # Coverage-denominator mode the cached scores were produced under
+            # (Codex P1 on #217). ``run`` discards the cache on resume if this
+            # disagrees with the resumed run's mode.
+            "coverage_denominator": (
+                self._coverage_denominator
+                if self._coverage_denominator is not None
+                else ("members" if self._universe_mask is not None else "all_cells")
+            ),
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
             "fitness_cache": {
@@ -604,6 +644,11 @@ class GPEngine:
             Expression.from_dict(d) for d in state["population"]
         ]
         engine.history = [GenerationStats(**s) for s in state["history"]]
+        # Restore the coverage-denominator mode so ``run`` can detect a
+        # members/all-cells mismatch on resume and discard incomparable
+        # cached scores (Codex P1 on #217). Legacy checkpoints predate the
+        # universe mask → all-cells.
+        engine._coverage_denominator = state.get("coverage_denominator", "all_cells")
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
