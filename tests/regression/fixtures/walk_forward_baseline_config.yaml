@@ -1,0 +1,14 @@
+# C1 干净 walk-forward baseline 复现配置(2026-06-01,docs/phase_c1_result.md)。
+# 与 phase_c1 worktree 当时的 config_walk_c1_gpu.yaml 字节级一致 —— 仅 GPU +
+# 独立 output_dir 与 main 的 config_walk.yaml 拉开,其余 wf 参数(provider_uri、
+# overall_start/end、Alpha158、csi300、24/3/3、step 3、LGB、ensemble=3、
+# topk=50、n_drop=5、benchmark SH000300、commission/slippage/印花税)沿用
+# config_walk.yaml,经 extends 解析。
+#
+# tests/regression/test_walk_forward_aggregate_baseline.py 在 RUN_E2E=1 下读
+# 本文件、跑完 WF、与 walk_forward_baseline_metrics.json 对 5 项 headline
+# 做 ±5% 漂移断言。
+extends: config_walk.yaml
+
+compute_device: gpu
+output_dir: output/walk_forward_c1_gpu
