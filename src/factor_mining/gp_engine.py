@@ -164,6 +164,11 @@ class GPEngine:
         # Track (exception_type, expr_hash) we've already warned about
         # so a recurring per-expression failure doesn't spam the log.
         self._evaluation_warning_keys: set[tuple[str, int]] = set()
+        # Optional universe-membership mask (date × ticker bool), set by
+        # ``run`` on real-PIT runs so the evaluator measures coverage
+        # members-only. None for synthetic / dense panels — see
+        # evaluator._coverage.
+        self._universe_mask: pd.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Population lifecycle
@@ -219,6 +224,7 @@ class GPEngine:
             # method that produced them — see ``save_checkpoint``.
             result = evaluate_factor(
                 expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD,
+                universe_mask=self._universe_mask,
             )
         except KeyError as exc:
             # The evaluator raises KeyError only when a Terminal references
@@ -481,8 +487,16 @@ class GPEngine:
         fwd_ret: pd.DataFrame,
         *,
         n_generations: int | None = None,
+        universe_mask: pd.DataFrame | None = None,
     ) -> FactorPool:
-        """Run the GP loop and return the final ``FactorPool``."""
+        """Run the GP loop and return the final ``FactorPool``.
+
+        ``universe_mask`` (date × ticker bool) is forwarded to the
+        evaluator so coverage is measured members-only on real-PIT
+        panels; None preserves the legacy all-cells coverage.
+        """
+        if universe_mask is not None:
+            self._universe_mask = universe_mask
         if not self.population:
             self.initialize_population()
         n_gens = (

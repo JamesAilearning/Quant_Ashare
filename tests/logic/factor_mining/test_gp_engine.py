@@ -748,9 +748,9 @@ def test_evaluate_individual_uses_normal_method_not_rank():
     captured_methods: list[str] = []
     original = gp_mod.evaluate_factor
 
-    def recorder(expr, panel, fwd_ret, *, method="rank"):
+    def recorder(expr, panel, fwd_ret, *, method="rank", universe_mask=None):
         captured_methods.append(method)
-        return original(expr, panel, fwd_ret, method=method)
+        return original(expr, panel, fwd_ret, method=method, universe_mask=universe_mask)
 
     engine = _engine(seed=314, population_size=4, n_generations=1)
     panel, fwd = _make_panel(seed=314, n_tickers=5, n_dates=20)
@@ -888,7 +888,7 @@ def test_evaluate_individual_warns_once_per_exception():
 
     original = gp_mod.evaluate_factor
 
-    def raiser(_expr, _panel, _fwd, *, method="rank"):  # noqa: ARG001
+    def raiser(_expr, _panel, _fwd, *, method="rank", universe_mask=None):  # noqa: ARG001
         raise ValueError("synthetic overflow")
 
     gp_mod.evaluate_factor = raiser

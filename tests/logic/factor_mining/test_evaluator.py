@@ -180,6 +180,68 @@ def test_evaluate_factor_coverage_excludes_nan_cells():
     assert result.coverage == pytest.approx(28 / 30, abs=1e-9)
 
 
+def test_evaluate_factor_coverage_uses_universe_mask_denominator():
+    # Members-only coverage: a union ticker that is never a member (its
+    # panel cells all NaN) must NOT drag coverage down. Union coverage =
+    # 30/40 = 0.75 (< 0.8 gate); members-only (A,B,C) = 30/30 = 1.0.
+    tickers = list("ABCD")
+    dates = pd.date_range("2024-01-01", periods=10)
+    panel = _make_panel(tickers, dates)
+    panel["$volume"].loc[:, "D"] = np.nan
+    fwd = pd.DataFrame(
+        np.random.default_rng(7).normal(0, 0.02, size=(10, 4)),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    r_union = evaluate_factor(expr, panel, fwd, method="rank")
+    assert r_union.coverage == pytest.approx(30 / 40, abs=1e-9)
+    mask = pd.DataFrame(True, index=dates, columns=tickers)
+    mask.loc[:, "D"] = False  # D is never a universe member
+    r_mask = evaluate_factor(expr, panel, fwd, method="rank", universe_mask=mask)
+    assert r_mask.coverage == pytest.approx(1.0, abs=1e-9)
+
+
+def test_evaluate_factor_coverage_mask_penalizes_missing_member_cell():
+    # A is a member every day but missing data on 2 days → those NaN
+    # member cells still count against coverage (28/30), so the validity
+    # gate keeps biting genuinely-undefined factors.
+    tickers = list("ABC")
+    dates = pd.date_range("2024-01-01", periods=10)
+    panel = _make_panel(tickers, dates)
+    panel["$volume"].iloc[0, 0] = np.nan
+    panel["$volume"].iloc[1, 0] = np.nan
+    fwd = pd.DataFrame(
+        np.random.default_rng(9).normal(0, 0.02, size=(10, 3)),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    mask = pd.DataFrame(True, index=dates, columns=tickers)
+    r = evaluate_factor(expr, panel, fwd, method="rank", universe_mask=mask)
+    assert r.coverage == pytest.approx(28 / 30, abs=1e-9)
+
+
+def test_evaluate_factor_coverage_mask_none_equals_all_member_mask():
+    # universe_mask=None reproduces the legacy all-cells fraction, which
+    # equals the members-only result when every ticker is a member.
+    tickers = list("ABC")
+    dates = pd.date_range("2024-01-01", periods=10)
+    panel = _make_panel(tickers, dates)
+    panel["$volume"].iloc[0, 0] = np.nan
+    fwd = pd.DataFrame(
+        np.random.default_rng(11).normal(0, 0.02, size=(10, 3)),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    r_none = evaluate_factor(expr, panel, fwd, method="rank")
+    full_mask = pd.DataFrame(True, index=dates, columns=tickers)
+    r_full = evaluate_factor(expr, panel, fwd, method="rank", universe_mask=full_mask)
+    assert r_none.coverage == pytest.approx(29 / 30, abs=1e-9)
+    assert r_full.coverage == pytest.approx(r_none.coverage, abs=1e-9)
+
+
 def test_evaluate_factor_method_normal_separates_pearson_from_rank():
     """When ``method='normal'`` and the factor↔return relationship is
     monotone but non-linear, ``ic_mean`` (Pearson) and ``rank_ic_mean``

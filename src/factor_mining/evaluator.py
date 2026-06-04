@@ -138,13 +138,50 @@ def _turnover_daily(factor_values: pd.DataFrame) -> float:
     return val if np.isfinite(val) else 0.0
 
 
-def _coverage(factor_values: pd.DataFrame) -> float:
-    """Fraction of cells in ``factor_values`` that are non-NaN."""
+def _coverage(
+    factor_values: pd.DataFrame,
+    universe_mask: pd.DataFrame | None = None,
+) -> float:
+    """Fraction of factor cells that are non-NaN.
+
+    When ``universe_mask`` is supplied (a boolean date × ticker frame of
+    universe membership), coverage is measured **relative to member
+    cells only**: the denominator is the count of (date, ticker) cells
+    where the ticker is a universe member on that day, and the numerator
+    is the count of those member cells that also carry a finite factor
+    value.
+
+    This is the correct denominator for a survivorship-corrected PIT
+    panel. Such a panel is the *union* of every ticker that was ever a
+    member over the window, so on any given day a large fraction of the
+    union columns are legitimately NaN simply because those tickers are
+    not members that day (not yet listed, rotated out, or delisted).
+    Counting those non-member cells as "missing coverage" makes
+    ``coverage_min`` unsatisfiable on real data: even a perfect factor
+    like ``cs_rank($close)`` scores ~0.62 union-coverage and fails the
+    0.8 gate, so every GP candidate is rejected (n_invalid == population).
+    Members-only, that same factor scores ~0.99.
+
+    When ``universe_mask`` is None (synthetic / dense panels, or any
+    caller that does not supply membership), the denominator is ALL
+    cells — the original behaviour, preserved for backward compatibility.
+    """
     if factor_values.empty:
         return 0.0
     arr = factor_values.to_numpy()
-    finite = np.isfinite(arr).sum()
-    return float(finite) / float(arr.size) if arr.size > 0 else 0.0
+    finite = np.isfinite(arr)
+    if universe_mask is None:
+        return float(finite.sum()) / float(arr.size) if arr.size > 0 else 0.0
+    mask = (
+        universe_mask.reindex(index=factor_values.index, columns=factor_values.columns)
+        .fillna(False)
+        .to_numpy(dtype=bool)
+    )
+    denom = int(mask.sum())
+    if denom == 0:
+        return 0.0
+    num = int((finite & mask).sum())
+    return float(num) / float(denom)
 
 
 def _n_obs_per_day_min(
@@ -167,6 +204,7 @@ def evaluate_factor(
     forward_return: pd.DataFrame,
     *,
     method: str = "rank",
+    universe_mask: pd.DataFrame | None = None,
 ) -> EvaluationResult:
     """Walk ``expr``, compute its factor values, then produce the
     full metric bundle against ``forward_return``.
@@ -194,6 +232,12 @@ def evaluate_factor(
         ``w_ic·|ic_mean|`` and ``w_rankic·|rank_ic_mean|`` are
         independent (Pearson + Spearman) rather than a redundant
         ``(w_ic + w_rankic)·|rank|``.
+    universe_mask
+        Optional boolean date × ticker frame of universe membership. When
+        supplied, ``coverage`` is computed members-only (denominator =
+        member cells), which is what survivorship-corrected PIT panels
+        need — see ``_coverage``. When None (synthetic / dense panels),
+        coverage falls back to the all-cells fraction (legacy behaviour).
     """
     walked = evaluate_expression(expr, panel)
     if not isinstance(walked, pd.DataFrame):
@@ -226,6 +270,6 @@ def evaluate_factor(
         rank_ic_std=rank_std,
         rank_ir=_ir(rank_mean, rank_std),
         turnover_daily=_turnover_daily(factor_values),
-        coverage=_coverage(factor_values),
+        coverage=_coverage(factor_values, universe_mask),
         n_obs_per_day_min=_n_obs_per_day_min(factor_values, fwd),
     )
