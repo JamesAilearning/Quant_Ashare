@@ -13,6 +13,7 @@ panel + forward-return data via parameters.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass
@@ -169,12 +170,13 @@ class GPEngine:
         # members-only. None for synthetic / dense panels — see
         # evaluator._coverage.
         self._universe_mask: pd.DataFrame | None = None
-        # Coverage-denominator mode ("members"/"all_cells") under which the
-        # scores cached in fitness_cache/_all_evaluated were produced. Set on
-        # ``run`` and persisted in checkpoints so a resume can't silently mix
-        # members-only and all-cells coverage (Codex P1 on PR #217). None
-        # until the first run / checkpoint load.
-        self._coverage_denominator: str | None = None
+        # Coverage-cache key under which the scores in fitness_cache /
+        # _all_evaluated were produced: "all_cells" or "members:<mask
+        # fingerprint>". Set on ``run`` and persisted in checkpoints so a
+        # resume/reuse with a different mask (or mode) invalidates the now-
+        # incomparable cache instead of silently mixing coverage semantics
+        # (Codex P1+P2 on PR #217). None until the first run / checkpoint load.
+        self._coverage_key: str | None = None
 
     # ------------------------------------------------------------------
     # Population lifecycle
@@ -507,32 +509,34 @@ class GPEngine:
         # rather than retain stale membership from the old panel. Codex P2
         # on #217.
         self._universe_mask = universe_mask
-        # Guard a resumed run against mixed coverage denominators: scores
-        # cached under one mode (members-only vs all-cells) are incomparable
-        # to scores this run would produce under the other, so discard them
-        # and let the resumed generation re-score cleanly. Mirrors the
-        # evaluator_method invalidation in load_checkpoint. Codex P1 on #217.
-        effective_denominator = (
-            "members" if self._universe_mask is not None else "all_cells"
-        )
+        # Guard a resume/reuse against an incomparable cache: scores cached
+        # under a different coverage key — all-cells vs members, OR a
+        # different member mask (different universe / date range) — are not
+        # comparable to what this run would produce, so discard them and let
+        # the run re-score cleanly. ``evaluate_individual`` returns cached
+        # scores by expression hash without recomputing coverage, so a coarse
+        # members/all-cells check is not enough; the key embeds a mask
+        # fingerprint. Mirrors the evaluator_method invalidation in
+        # load_checkpoint. Codex P1+P2 on #217.
+        run_coverage_key = _coverage_key_for(self._universe_mask)
         if (
-            self._coverage_denominator is not None
-            and self._coverage_denominator != effective_denominator
+            self._coverage_key is not None
+            and self._coverage_key != run_coverage_key
             and (self.fitness_cache or self._all_evaluated)
         ):
             _log.warning(
-                "coverage_denominator=%r from checkpoint != this run %r — "
-                "discarding fitness_cache (%d) and all_evaluated (%d); resumed "
-                "generation re-scores from scratch to avoid mixing coverage "
-                "semantics.",
-                self._coverage_denominator,
-                effective_denominator,
+                "coverage cache key %r (prior run/checkpoint) != this run %r "
+                "— discarding fitness_cache (%d) and all_evaluated (%d); "
+                "re-scoring from scratch to avoid mixing coverage semantics "
+                "across a mask/mode change.",
+                self._coverage_key,
+                run_coverage_key,
                 len(self.fitness_cache),
                 len(self._all_evaluated),
             )
             self.fitness_cache = {}
             self._all_evaluated = {}
-        self._coverage_denominator = effective_denominator
+        self._coverage_key = run_coverage_key
         if not self.population:
             self.initialize_population()
         n_gens = (
@@ -594,13 +598,14 @@ class GPEngine:
             # resume or must be discarded — see the Codex P1 note on the
             # ``FITNESS_EVALUATOR_METHOD`` constant above.
             "evaluator_method": FITNESS_EVALUATOR_METHOD,
-            # Coverage-denominator mode the cached scores were produced under
-            # (Codex P1 on #217). ``run`` discards the cache on resume if this
-            # disagrees with the resumed run's mode.
-            "coverage_denominator": (
-                self._coverage_denominator
-                if self._coverage_denominator is not None
-                else ("members" if self._universe_mask is not None else "all_cells")
+            # Coverage-cache key the cached scores were produced under
+            # ("all_cells" / "members:<mask fingerprint>"; Codex P1+P2 on
+            # #217). ``run`` discards the cache on resume if this disagrees
+            # with the resumed run's key (mode OR mask change).
+            "coverage_key": (
+                self._coverage_key
+                if self._coverage_key is not None
+                else _coverage_key_for(self._universe_mask)
             ),
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
@@ -648,11 +653,16 @@ class GPEngine:
             Expression.from_dict(d) for d in state["population"]
         ]
         engine.history = [GenerationStats(**s) for s in state["history"]]
-        # Restore the coverage-denominator mode so ``run`` can detect a
-        # members/all-cells mismatch on resume and discard incomparable
-        # cached scores (Codex P1 on #217). Legacy checkpoints predate the
-        # universe mask → all-cells.
-        engine._coverage_denominator = state.get("coverage_denominator", "all_cells")
+        # Restore the coverage-cache key so ``run`` can detect a mode OR mask
+        # change on resume and discard incomparable cached scores (Codex
+        # P1+P2 on #217). Fall back to a mid-review ``coverage_denominator``
+        # field, then to all-cells for legacy checkpoints that predate the
+        # universe mask.
+        engine._coverage_key = (
+            state.get("coverage_key")
+            or state.get("coverage_denominator")
+            or "all_cells"
+        )
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
@@ -678,6 +688,30 @@ class GPEngine:
             for h, d in state["all_evaluated"].items()
         }
         return engine
+
+
+def _mask_fingerprint(mask: pd.DataFrame) -> str:
+    """Stable 16-hex content fingerprint of a universe-membership mask.
+
+    Captures index, columns, and the boolean cells so two different masks
+    (different universe or date range) yield different keys — needed to
+    invalidate cached scores when the mask CHANGES across a reuse/resume,
+    not only when the coarse members/all-cells mode changes (Codex P2 on
+    #217). Uses sha256 (not the salted builtin ``hash``) so it is stable
+    across processes and round-trips through a checkpoint.
+    """
+    h = hashlib.sha256()
+    h.update("|".join(map(str, mask.index)).encode("utf-8"))
+    h.update(b"\x00cols\x00")
+    h.update("|".join(map(str, mask.columns)).encode("utf-8"))
+    h.update(np.ascontiguousarray(mask.to_numpy(dtype=bool)).tobytes())
+    return h.hexdigest()[:16]
+
+
+def _coverage_key_for(mask: pd.DataFrame | None) -> str:
+    """Coverage-cache key for a run: ``"all_cells"`` when no mask, else
+    ``"members:<fingerprint>"`` so a different mask invalidates the cache."""
+    return "all_cells" if mask is None else f"members:{_mask_fingerprint(mask)}"
 
 
 def _serialise_rng_state(state):

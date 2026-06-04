@@ -11,11 +11,13 @@
 - [x] `GPEngine.run(..., universe_mask=None)` stores the mask.
 - [x] `evaluate_individual` forwards `self._universe_mask` to
       `evaluate_factor` (signature unchanged).
-- [x] Checkpoint resume guard (Codex P1 on #217): persist the
-      coverage-denominator mode in `save_checkpoint`, restore in
-      `load_checkpoint`, and discard `fitness_cache`/`_all_evaluated` in
-      `run` when the resumed denominator differs (no silent members/all-cells
-      mixing).
+- [x] Checkpoint resume/reuse guard (Codex P1+P2 on #217): persist a
+      coverage-cache key ("all_cells" / "members:<mask fingerprint>") in
+      `save_checkpoint`, restore in `load_checkpoint`, and discard
+      `fitness_cache`/`_all_evaluated` in `run` when the key differs — a mode
+      change OR a different member mask (fingerprint), not just the coarse
+      members/all-cells mode. `run` also assigns the mask on every call so a
+      mask-free reuse resets to all-cells.
 
 ## 3. Miner wiring
 - [x] `build_universe_mask(config)` — `FactorMiningDataView.universe_mask()`
@@ -30,9 +32,10 @@
 - [x] `universe_mask=None` reproduces the legacy all-cells fraction
       (existing `test_evaluate_factor_coverage_excludes_nan_cells` stays
       green).
-- [x] Resume guard (test_gp_engine): checkpoint persists/restores the
-      coverage-denominator; a members→all-cells resume discards the cache
-      and warns; a matching resume keeps it.
+- [x] Resume/reuse guard (test_gp_engine): checkpoint persists/restores the
+      coverage-cache key; members→all-cells AND different-member-mask resumes
+      discard the cache and warn; a matching (same mask) resume keeps it; a
+      mask-free reuse resets to all-cells.
 
 ## 5. Validation
 - [x] Real-PIT spot-check: cs_rank(ts_pctchange($close,5)) members

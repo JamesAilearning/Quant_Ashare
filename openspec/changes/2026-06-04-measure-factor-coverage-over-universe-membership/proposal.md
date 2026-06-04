@@ -72,14 +72,16 @@ it is "coverage denominator = universe members, not the union".
    - `GPEngine.run(..., universe_mask=None)` stores the mask;
      `evaluate_individual` forwards `self._universe_mask` to
      `evaluate_factor`. (No signature change to `evaluate_individual`.)
-   - Checkpoint resume guard (Codex P1 on #217): the coverage-denominator
-     mode (`"members"`/`"all_cells"`) is persisted in `save_checkpoint` and
-     restored in `load_checkpoint`; on `run`, if a resumed engine's cached
-     scores were produced under a different denominator than the resumed run
-     uses, `fitness_cache`/`_all_evaluated` are discarded and re-scored —
-     mirroring the existing `evaluator_method` invalidation. Without this, a
-     members-mode run resumed without the mask would silently mix members
-     and all-cells coverage and could again reject valid factors.
+   - Checkpoint resume/reuse guard (Codex P1+P2 on #217): a coverage-cache
+     key (`"all_cells"`, or `"members:<mask fingerprint>"`) is persisted in
+     `save_checkpoint` and restored in `load_checkpoint`; on `run`, if a
+     resumed/reused engine's cached scores were produced under a different
+     key — a mode change (members↔all-cells) OR a different member mask
+     (different universe / date range) — `fitness_cache`/`_all_evaluated` are
+     discarded and re-scored, mirroring the `evaluator_method` invalidation.
+     `evaluate_individual` returns cached scores by expression hash without
+     recomputing coverage, so a coarse mode check is not enough — the key
+     embeds a content fingerprint of the mask.
 3. `src/factor_mining/miner.py`:
    - `build_universe_mask(config)` — returns
      `FactorMiningDataView.universe_mask()` in PIT mode, `None` in
