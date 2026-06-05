@@ -64,8 +64,10 @@ it is "coverage denominator = universe members, not the union".
 
 1. `src/factor_mining/evaluator.py`:
    - `_coverage(factor_values, universe_mask=None)` — members-only
-     denominator when `universe_mask` is given (reindexed to the factor's
-     index/columns, `fillna(False)`); all-cells fallback when None.
+     denominator over the mask's own domain, with the factor aligned ONTO
+     the mask (so a member cell the factor panel omits stays in the
+     denominator as uncovered rather than being dropped, which would inflate
+     coverage — Codex P2 on #217); all-cells fallback when None.
    - `evaluate_factor(..., *, method, universe_mask=None)` — new optional
      keyword forwarded to `_coverage`.
 2. `src/factor_mining/gp_engine.py`:

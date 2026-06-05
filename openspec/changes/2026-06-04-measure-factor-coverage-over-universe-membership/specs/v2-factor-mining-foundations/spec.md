@@ -32,6 +32,10 @@
 - **WHEN** `evaluate_factor` is called with a `universe_mask` and the factor is NaN on a cell where the ticker IS a member that day
 - **THEN** that cell counts against `coverage` (numerator excludes it, denominator includes it), so the validity gate still rejects genuinely-undefined factors
 
+#### Scenario: a member cell absent from the factor counts as uncovered
+- **WHEN** `evaluate_factor` is called with a `universe_mask` that marks a (date, ticker) as a member but that cell is absent from `factor_values` entirely (e.g. the PIT provider omits an all-missing member ticker/row)
+- **THEN** the denominator is computed over the mask's own domain and the factor is aligned onto the mask, so the absent member cell is counted as uncovered (in the denominator, not in the numerator) rather than dropped — coverage is not inflated
+
 #### Scenario: no universe mask reproduces legacy all-cells coverage
 - **WHEN** `evaluate_factor` is called with `universe_mask=None` (the default) on a panel with some NaN factor cells
 - **THEN** `coverage` equals the count of non-NaN cells divided by the total cell count (the pre-change behaviour, preserved for synthetic / dense panels)

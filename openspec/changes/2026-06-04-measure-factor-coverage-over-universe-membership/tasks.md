@@ -32,6 +32,8 @@
 - [x] `universe_mask=None` reproduces the legacy all-cells fraction
       (existing `test_evaluate_factor_coverage_excludes_nan_cells` stays
       green).
+- [x] a member cell ABSENT from the factor (mask-only member) counts as
+      uncovered — denominator over the mask domain, not dropped/inflated.
 - [x] Resume/reuse guard (test_gp_engine): checkpoint persists/restores the
       coverage-cache key; members→all-cells AND different-member-mask resumes
       discard the cache and warn; a matching (same mask) resume keeps it; a

@@ -242,6 +242,29 @@ def test_evaluate_factor_coverage_mask_none_equals_all_member_mask():
     assert r_full.coverage == pytest.approx(r_none.coverage, abs=1e-9)
 
 
+def test_evaluate_factor_coverage_counts_mask_only_member_cells_as_uncovered():
+    """A member the factor panel omits entirely (mask True, absent from
+    factor_values) must count as UNCOVERED — kept in the denominator, not
+    dropped — so coverage is not inflated (Codex P2 on #217)."""
+    tickers = list("ABC")
+    dates = pd.date_range("2024-01-01", periods=10)
+    panel = _make_panel(tickers, dates)
+    fwd = pd.DataFrame(
+        np.random.default_rng(31).normal(0, 0.02, size=(10, 3)),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+    # The mask declares a 4th member "D" that the panel/factor never produces.
+    mask = pd.DataFrame(
+        True, index=dates, columns=pd.Index(list("ABCD"), name="instrument"),
+    )
+    result = evaluate_factor(expr, panel, fwd, method="rank", universe_mask=mask)
+    # 4 members × 10 = 40 member cells; A,B,C finite (30), D absent (10
+    # uncovered) → 30/40, NOT 1.0 (which dropping D from the denom would give).
+    assert result.coverage == pytest.approx(30 / 40, abs=1e-9)
+
+
 def test_evaluate_factor_method_normal_separates_pearson_from_rank():
     """When ``method='normal'`` and the factor↔return relationship is
     monotone but non-linear, ``ic_mean`` (Pearson) and ``rank_ic_mean``

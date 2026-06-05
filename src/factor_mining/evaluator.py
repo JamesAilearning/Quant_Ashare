@@ -162,24 +162,34 @@ def _coverage(
     0.8 gate, so every GP candidate is rejected (n_invalid == population).
     Members-only, that same factor scores ~0.99.
 
+    The denominator is computed over the MASK's own domain, and the factor
+    is aligned ONTO the mask (not the reverse): a member (date, ticker) that
+    the factor panel omits entirely — e.g. a member ticker/row the PIT
+    provider drops because it is all-missing, while ``universe_mask`` still
+    reports it in-universe — stays in the denominator as *uncovered*
+    (reindex → NaN → not finite) instead of being silently dropped, which
+    would inflate coverage (Codex P2 on #217).
+
     When ``universe_mask`` is None (synthetic / dense panels, or any
     caller that does not supply membership), the denominator is ALL
     cells — the original behaviour, preserved for backward compatibility.
     """
     if factor_values.empty:
         return 0.0
-    arr = factor_values.to_numpy()
-    finite = np.isfinite(arr)
     if universe_mask is None:
+        arr = factor_values.to_numpy()
+        finite = np.isfinite(arr)
         return float(finite.sum()) / float(arr.size) if arr.size > 0 else 0.0
-    mask = (
-        universe_mask.reindex(index=factor_values.index, columns=factor_values.columns)
-        .fillna(False)
-        .to_numpy(dtype=bool)
-    )
+    mask = universe_mask.fillna(False).to_numpy(dtype=bool)
     denom = int(mask.sum())
     if denom == 0:
         return 0.0
+    # Align the factor onto the mask's (index, columns) so member cells the
+    # factor omits become NaN (uncovered) rather than shrinking the denom.
+    aligned = factor_values.reindex(
+        index=universe_mask.index, columns=universe_mask.columns
+    )
+    finite = np.isfinite(aligned.to_numpy())
     num = int((finite & mask).sum())
     return float(num) / float(denom)
 
