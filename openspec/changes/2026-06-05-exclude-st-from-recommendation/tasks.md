@@ -21,6 +21,9 @@
 - [x] `recommend` builds the current-ST set from the already-loaded
       active-stocks snapshot (no second load path) and passes it through.
 - [x] `DailyRecommendationResult.n_st_excluded`; JSON + CLI summary carry it.
+- [x] CLI exposes `--name-source` + `--st-max-age-days` (Codex P2 on #222:
+      the now-required name source must be overridable for non-default
+      layouts, like `--provider-uri` / `--delisted-registry`).
 
 ## 3. Fail-loud on bad ST data
 - [x] `_validate_st_snapshot` — raise if `name_source_parquet` is None /
