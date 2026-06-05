@@ -92,6 +92,7 @@ GP 和 Alpha158 走**同一** WalkForwardEngine(#212 之后)+ backtest_runner
 ```yaml
 extends: config_walk.yaml
 overall_start: "2020-10-01"
+adjust_mode: "post_adjusted"        # required — PITDataProvider inits qlib POST; see §3
 feature_handler: "MinedFactor"
 mined_factor_pool_dir: "output/mined_factors/c2b_top50_frozen"
 mined_factor_delisted_registry_path: "D:/qlib_data/tushare_raw/delisted_registry.parquet"
@@ -102,6 +103,7 @@ output_dir: "output/walk_forward_mined_oos"
 ```yaml
 extends: config_walk.yaml
 overall_start: "2020-10-01"
+adjust_mode: "post_adjusted"        # same as GP — only variable stays feature_handler
 output_dir: "output/walk_forward_oos"
 ```
 
