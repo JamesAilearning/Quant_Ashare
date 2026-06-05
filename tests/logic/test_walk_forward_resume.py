@@ -88,8 +88,10 @@ class FingerprintTests(unittest.TestCase):
         )
 
     def test_includes_feature_handler(self) -> None:
-        a = _make_config(feature_handler="Alpha158")
-        b = _make_config(feature_handler="MinedFactor")
+        # Both post_adjusted so the only differing field is feature_handler
+        # (and so the MinedFactor config satisfies the PIT post_adjusted guard).
+        a = _make_config(feature_handler="Alpha158", adjust_mode="post_adjusted")
+        b = _make_config(feature_handler="MinedFactor", adjust_mode="post_adjusted")
         self.assertNotEqual(
             compute_config_fingerprint(a),
             compute_config_fingerprint(b),

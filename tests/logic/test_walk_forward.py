@@ -191,6 +191,46 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(WalkForwardError, "signal_to_execution_lag"):
             WalkForwardConfig(signal_to_execution_lag=-1)
 
+    # --- PIT/MinedFactor handler requires post_adjusted (#218 C2-b diagnosis) ---
+
+    def test_minedfactor_requires_post_adjusted(self):
+        """A PIT/MinedFactor handler with a non-post adjust_mode is rejected at
+        construction with an actionable message (not a runtime crash)."""
+        with self.assertRaisesRegex(WalkForwardError, "post_adjusted"):
+            WalkForwardConfig(
+                feature_handler="MinedFactor", adjust_mode="pre_adjusted",
+            )
+
+    def test_minedfactor_post_adjusted_constructs(self):
+        cfg = WalkForwardConfig(
+            feature_handler="MinedFactor", adjust_mode="post_adjusted",
+        )
+        self.assertEqual(cfg.feature_handler, "MinedFactor")
+        self.assertEqual(cfg.adjust_mode, "post_adjusted")
+
+    def test_non_pit_handler_unaffected_by_post_adjusted_rule(self):
+        """The PIT post_adjusted rule must NOT touch Alpha158 — pre_adjusted is
+        still valid for the production line."""
+        cfg = WalkForwardConfig(
+            feature_handler="Alpha158", adjust_mode="pre_adjusted",
+        )
+        self.assertEqual(cfg.adjust_mode, "pre_adjusted")
+
+    def test_shipped_config_walk_mined_satisfies_post_adjusted_guard(self):
+        """Regression guard for the shipped config_walk_mined.yaml: it must set
+        post_adjusted so it constructs under the new guard."""
+        from dataclasses import fields
+
+        from src.core._yaml_loader import load_yaml_with_inheritance
+
+        repo_root = Path(__file__).resolve().parents[2]
+        raw = load_yaml_with_inheritance(repo_root / "config_walk_mined.yaml")
+        self.assertEqual(raw.get("feature_handler"), "MinedFactor")
+        self.assertEqual(raw.get("adjust_mode"), "post_adjusted")
+        valid = {f.name for f in fields(WalkForwardConfig)}
+        cfg = WalkForwardConfig(**{k: v for k, v in raw.items() if k in valid})
+        self.assertEqual(cfg.adjust_mode, "post_adjusted")
+
     def test_rejects_unknown_adjust_mode(self):
         with self.assertRaisesRegex(WalkForwardError, "adjust_mode"):
             WalkForwardConfig(adjust_mode="auto")
