@@ -100,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  as_of_date (data cutoff, T)   : {result.as_of_date}")
     print(f"  entry_date (suggested buy, T+1): {result.entry_date}")
     print(f"  universe={config.instruments}  scored={result.n_scored}  "
-          f"untradable_masked={result.n_masked}  buy_list={len(result.picks)}")
+          f"untradable_masked={result.n_masked}  st_excluded={result.n_st_excluded}  "
+          f"buy_list={len(result.picks)}")
     print("=" * 64)
     print(f"  {'rank':>4}  {'code':<10} {'score':>10}  name")
     for p in result.picks:
