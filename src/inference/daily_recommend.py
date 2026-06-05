@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from src.core.microstructure_mask import (
     compute_unavailable_mask,
 )
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
+from src.data.st_status import current_st_codes
 
 _logger = get_logger(__name__)
 
@@ -76,11 +78,17 @@ class RecommendationConfig:
     # only), so feature VALUES are identical to a pre_adjusted-tagged run —
     # the Step 1 model (trained under the pre tag) predicts identically.
     adjust_mode: str = "post_adjusted"
-    # Best-effort current-name source (tushare stock_basic dump). Names
-    # are not in PIT bins; missing file -> blank names + a logged note.
+    # Current-name source (tushare stock_basic dump). Supplies display names
+    # AND the current-ST set used to exclude ST/*ST from the buy list, so it
+    # is REQUIRED: recommend() fails loud if it is missing or stale rather
+    # than emitting a list that could silently include ST names.
     name_source_parquet: str | None = (
         "D:/qlib_data/tushare_raw/active_stocks.parquet"
     )
+    # ST snapshot staleness tolerance: the name source's file mtime may lag
+    # the as-of date by at most this many calendar days. A stale snapshot can
+    # miss a recent ST designation and leak it into the list -> fail loud.
+    st_snapshot_max_age_days: int = 7
     out_dir: str = "output/daily_recommend"
 
 
@@ -100,7 +108,8 @@ class DailyRecommendationResult:
     entry_date: str       # T+1 trading day — suggested entry
     picks: tuple[RecommendationPick, ...]
     n_scored: int         # tradable + non-NaN-score candidates considered
-    n_masked: int         # dropped by tradability mask
+    n_masked: int         # dropped by the microstructure tradability mask
+    n_st_excluded: int    # dropped because currently ST/*ST
     scored_frame: pd.DataFrame  # full audit frame (incl. masked names)
 
 
@@ -247,6 +256,88 @@ def _load_name_map(parquet_path: str | None) -> dict[str, str]:
     return {str(r.ts_code): str(r.name) for r in df.itertuples(index=False)}
 
 
+def _st_snapshot_is_stale(
+    snapshot_date: date, as_of_date: str, max_age_days: int,
+) -> bool:
+    """True if the ST snapshot lags the as-of date by more than the tolerance.
+
+    Pure (date arithmetic only) -> unit-testable. Only a snapshot OLDER than
+    the as-of date can be stale: a newer snapshot (e.g. a current snapshot used
+    for a historical inference date) is the inference path's correct "current
+    ST" — point-in-time ST history is PR2's concern, not this guard's.
+    """
+    asof = date.fromisoformat(as_of_date)
+    return (asof - snapshot_date).days > max_age_days
+
+
+def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path:
+    """Fail-loud guard: the current-ST source must exist, be fresh, and carry
+    the required schema.
+
+    ST filtering needs the active-stocks snapshot; a missing, stale, or
+    malformed snapshot would silently leak ST names into the list, so we refuse
+    to emit one.
+
+    Staleness uses the file mtime as the snapshot date because active_stocks
+    carries NO embedded snapshot/as-of column (only per-stock list_date) —
+    verified against the real file. mtime is a WEAK proxy: a sync / copy tool
+    that rewrites mtime to "now" makes a stale file look fresh and lets this
+    guard pass silently — the opposite of fail-loud. The proper fix is an
+    embedded snapshot_date column written at fetch time (see the proposal's
+    near-term backlog); until then mtime catches only the untouched-file case.
+    Returns the validated path.
+    """
+    raw = config.name_source_parquet
+    if not raw:
+        raise DailyRecommendationError(
+            "ST filtering requires name_source_parquet (the active-stocks "
+            "snapshot); got None. Refusing to emit a list that could silently "
+            "include ST names."
+        )
+    path = Path(raw)
+    if not path.exists():
+        raise DailyRecommendationError(
+            f"ST filtering requires the active-stocks snapshot at {path}; file "
+            "not found. Refusing to emit a possibly-unfiltered list."
+        )
+    snapshot_date = date.fromtimestamp(path.stat().st_mtime)
+    if _st_snapshot_is_stale(
+        snapshot_date, as_of_date, config.st_snapshot_max_age_days,
+    ):
+        raise DailyRecommendationError(
+            f"ST snapshot {path.name} is stale: file dated {snapshot_date} lags "
+            f"as-of {as_of_date} by more than {config.st_snapshot_max_age_days} "
+            "day(s). A stale snapshot can miss a recent ST designation and leak "
+            "it into the list. Refresh active_stocks.parquet (re-fetch tushare "
+            "stock_basic) or raise st_snapshot_max_age_days."
+        )
+    # Schema: the required ST filter reads ts_code + name. A present, fresh, but
+    # malformed snapshot (columns dropped by an upstream schema change, or an
+    # empty file) would make _load_name_map fall back to {} and silently
+    # DISABLE ST filtering — exactly the leak this guard exists to prevent.
+    try:
+        df = pd.read_parquet(path)
+    except Exception as exc:
+        raise DailyRecommendationError(
+            f"ST snapshot {path} could not be read as parquet "
+            f"({type(exc).__name__}: {exc}). Refusing to emit a "
+            "possibly-unfiltered list."
+        ) from exc
+    missing = [c for c in ("ts_code", "name") if c not in df.columns]
+    if missing:
+        raise DailyRecommendationError(
+            f"ST snapshot {path.name} is missing required column(s) {missing} "
+            f"(has {list(df.columns)}); cannot build the current-ST set. "
+            "Refusing to emit a possibly-unfiltered list."
+        )
+    if df.empty:
+        raise DailyRecommendationError(
+            f"ST snapshot {path.name} has zero rows; cannot build the "
+            "current-ST set. Refusing to emit a possibly-unfiltered list."
+        )
+    return path
+
+
 def _load_model(model_path: Path) -> Any:
     """Load the pickled qlib model, failing closed with a domain error.
 
@@ -344,31 +435,44 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
     masked_pairs = {inst for (d, inst) in mask_result.masked if d == as_of_date}
     suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), as_of_date)
 
-    # 4. Names (best-effort, current).
+    # 4. Names + current-ST exclusion set. The name source is REQUIRED here
+    # (fail-loud if missing/stale): it supplies both display names AND the
+    # ST/*ST set we must exclude. _validate_st_snapshot refuses to emit a
+    # list that could silently include ST names.
+    _validate_st_snapshot(config, as_of_date)
     name_map = _load_name_map(config.name_source_parquet)
 
     def _name(inst: str) -> str:
         return name_map.get(_qlib_code_to_ts_code(inst), "")
 
-    # 5. Build full scored audit frame + Top-K tradable buy list (pure).
-    picks, scored_frame, n_masked = build_recommendation(
+    # Current-ST set keyed by qlib instrument (matches score_by_inst), built
+    # from the already-loaded snapshot — no second load path.
+    st_excluded = current_st_codes({inst: _name(inst) for inst in score_by_inst})
+
+    # 5. Build full scored audit frame + Top-K tradable buy list (pure). ST
+    # names are dropped from the candidate pool BEFORE the Top-K slice, so the
+    # buy list holds K tradable, non-ST names (not K minus the ST hits).
+    picks, scored_frame, n_excluded = build_recommendation(
         score_by_inst=score_by_inst,
         masked_pairs=masked_pairs,
         suspended=suspended,
         one_price=one_price,
+        st_excluded=st_excluded,
         name_fn=_name,
         as_of_date=as_of_date,
         entry_date=entry_date,
         topk=config.topk,
     )
+    n_st = int((scored_frame["unavailable_reason"] == "st").sum())
+    n_masked = n_excluded - n_st
     _logger.info(
-        "scored=%d, masked(untradable)=%d, buy-list=%d",
-        len(scored_frame), n_masked, len(picks),
+        "scored=%d, masked(untradable)=%d, st-excluded=%d, buy-list=%d",
+        len(scored_frame), n_masked, n_st, len(picks),
     )
     return DailyRecommendationResult(
         as_of_date=as_of_date, entry_date=entry_date, picks=picks,
-        n_scored=len(scored_frame) - n_masked, n_masked=n_masked,
-        scored_frame=scored_frame,
+        n_scored=len(scored_frame) - n_excluded, n_masked=n_masked,
+        n_st_excluded=n_st, scored_frame=scored_frame,
     )
 
 
@@ -457,13 +561,19 @@ def build_recommendation(
     as_of_date: str,
     entry_date: str,
     topk: int,
+    st_excluded: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[tuple[RecommendationPick, ...], pd.DataFrame, int]:
     """Pure ranking + tradability + Top-K assembly (no qlib, no IO).
 
     ``masked_pairs`` is the AUTHORITATIVE untradable set (from the reused
-    ``compute_unavailable_mask``); ``suspended`` / ``one_price`` only
-    supply the precise reason label. Returns ``(picks, scored_frame,
-    n_masked)``. Sorting is stable so equal scores keep input order.
+    ``compute_unavailable_mask``); ``suspended`` / ``one_price`` only supply
+    the precise reason label. ``st_excluded`` is the current-ST set: those
+    names are dropped from the candidate pool BEFORE the Top-K slice (so the
+    list keeps K tradable, non-ST picks) and carry reason ``"st"`` in the audit
+    frame. Microstructure masking takes precedence over the ST label when a
+    name is both. Returns ``(picks, scored_frame, n_excluded)`` where
+    ``n_excluded`` counts every not-tradable row (masked OR ST). Sorting is
+    stable so equal scores keep input order.
     """
     if topk < 0:
         raise DailyRecommendationError(
@@ -472,15 +582,20 @@ def build_recommendation(
         )
     rows = []
     for inst, score in score_by_inst.items():
-        tradable = inst not in masked_pairs
-        if tradable:
-            reason = ""
-        elif inst in suspended:
-            reason = "suspended"
-        elif inst in one_price:
-            reason = "one_price_lock"
+        if inst in masked_pairs:
+            tradable = False
+            if inst in suspended:
+                reason = "suspended"
+            elif inst in one_price:
+                reason = "one_price_lock"
+            else:
+                reason = "unavailable"  # masked by canonical filter, regime unclassified
+        elif inst in st_excluded:
+            tradable = False
+            reason = "st"
         else:
-            reason = "unavailable"  # masked by canonical filter, regime unclassified
+            tradable = True
+            reason = ""
         rows.append({
             "stock_code": inst, "stock_name": name_fn(inst),
             "predicted_score": score, "tradable_flag": tradable,
@@ -508,8 +623,8 @@ def build_recommendation(
         )
         for i, r in enumerate(tradable.itertuples(index=False))
     )
-    n_masked = int((~scored_frame["tradable_flag"]).sum())
-    return picks, scored_frame, n_masked
+    n_excluded = int((~scored_frame["tradable_flag"]).sum())
+    return picks, scored_frame, n_excluded
 
 
 def _build_pit_provider(config: RecommendationConfig) -> Any:
@@ -592,6 +707,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         "entry_date": result.entry_date,
         "n_scored": result.n_scored,
         "n_masked": result.n_masked,
+        "n_st_excluded": result.n_st_excluded,
         "picks": buy_rows,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     result.scored_frame.to_csv(audit_path, index=False, encoding="utf-8-sig")

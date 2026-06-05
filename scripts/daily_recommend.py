@@ -47,6 +47,10 @@ _logger = get_logger("src.scripts.daily_recommend")
 _DEFAULT_MODEL = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
 _DEFAULT_PROVIDER = "D:/qlib_data/my_cn_data_pit"
 _DEFAULT_REGISTRY = "D:/qlib_data/tushare_raw/delisted_registry.parquet"
+# Mirrors RecommendationConfig.name_source_parquet — the active-stocks snapshot
+# is REQUIRED for the ST filter, so the CLI must let a non-default layout point
+# at it (otherwise _validate_st_snapshot fails "file not found" with no escape).
+_DEFAULT_NAME_SOURCE = "D:/qlib_data/tushare_raw/active_stocks.parquet"
 _DEFAULT_FIT_START = "2018-01-02"
 _DEFAULT_FIT_END = "2023-12-20"
 
@@ -62,6 +66,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--provider-uri", default=_DEFAULT_PROVIDER, help="PIT qlib provider_uri.")
     p.add_argument("--delisted-registry", default=_DEFAULT_REGISTRY,
                    help="PIT delisted registry parquet.")
+    p.add_argument("--name-source", default=_DEFAULT_NAME_SOURCE,
+                   help="Active-stocks snapshot parquet. REQUIRED for the ST "
+                        "filter (supplies current names + the current-ST set).")
+    p.add_argument("--st-max-age-days", type=int, default=7,
+                   help="Max days the ST snapshot may lag the as-of date "
+                        "before it is rejected as stale (default 7).")
     p.add_argument("--instruments", default="csi300", help="Universe (default csi300).")
     p.add_argument("--fit-start", default=_DEFAULT_FIT_START,
                    help="Training fit-window start (must match the model).")
@@ -83,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         instruments=args.instruments,
         as_of_date=args.as_of,
         topk=args.topk,
+        name_source_parquet=args.name_source,
+        st_snapshot_max_age_days=args.st_max_age_days,
         out_dir=args.out_dir,
     )
 
@@ -100,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  as_of_date (data cutoff, T)   : {result.as_of_date}")
     print(f"  entry_date (suggested buy, T+1): {result.entry_date}")
     print(f"  universe={config.instruments}  scored={result.n_scored}  "
-          f"untradable_masked={result.n_masked}  buy_list={len(result.picks)}")
+          f"untradable_masked={result.n_masked}  st_excluded={result.n_st_excluded}  "
+          f"buy_list={len(result.picks)}")
     print("=" * 64)
     print(f"  {'rank':>4}  {'code':<10} {'score':>10}  name")
     for p in result.picks:
