@@ -271,10 +271,12 @@ def _st_snapshot_is_stale(
 
 
 def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path:
-    """Fail-loud guard: the current-ST source must exist and be fresh.
+    """Fail-loud guard: the current-ST source must exist, be fresh, and carry
+    the required schema.
 
-    ST filtering needs the active-stocks snapshot; a missing or stale snapshot
-    would silently leak ST names into the list, so we refuse to emit one.
+    ST filtering needs the active-stocks snapshot; a missing, stale, or
+    malformed snapshot would silently leak ST names into the list, so we refuse
+    to emit one.
 
     Staleness uses the file mtime as the snapshot date because active_stocks
     carries NO embedded snapshot/as-of column (only per-stock list_date) —
@@ -308,6 +310,30 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path
             "day(s). A stale snapshot can miss a recent ST designation and leak "
             "it into the list. Refresh active_stocks.parquet (re-fetch tushare "
             "stock_basic) or raise st_snapshot_max_age_days."
+        )
+    # Schema: the required ST filter reads ts_code + name. A present, fresh, but
+    # malformed snapshot (columns dropped by an upstream schema change, or an
+    # empty file) would make _load_name_map fall back to {} and silently
+    # DISABLE ST filtering — exactly the leak this guard exists to prevent.
+    try:
+        df = pd.read_parquet(path)
+    except Exception as exc:
+        raise DailyRecommendationError(
+            f"ST snapshot {path} could not be read as parquet "
+            f"({type(exc).__name__}: {exc}). Refusing to emit a "
+            "possibly-unfiltered list."
+        ) from exc
+    missing = [c for c in ("ts_code", "name") if c not in df.columns]
+    if missing:
+        raise DailyRecommendationError(
+            f"ST snapshot {path.name} is missing required column(s) {missing} "
+            f"(has {list(df.columns)}); cannot build the current-ST set. "
+            "Refusing to emit a possibly-unfiltered list."
+        )
+    if df.empty:
+        raise DailyRecommendationError(
+            f"ST snapshot {path.name} has zero rows; cannot build the "
+            "current-ST set. Refusing to emit a possibly-unfiltered list."
         )
     return path
 

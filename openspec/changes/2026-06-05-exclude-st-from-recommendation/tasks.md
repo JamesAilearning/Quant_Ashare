@@ -24,7 +24,10 @@
 
 ## 3. Fail-loud on bad ST data
 - [x] `_validate_st_snapshot` — raise if `name_source_parquet` is None /
-      missing / stale (mtime lags as-of by > `st_snapshot_max_age_days`).
+      missing / stale (mtime lags as-of by > `st_snapshot_max_age_days`) /
+      malformed (unreadable, missing `ts_code`/`name` column, or empty —
+      Codex P1 on #222: a fresh-but-malformed snapshot would let
+      `_load_name_map` return {} and silently disable ST filtering).
 - [x] `_st_snapshot_is_stale(snapshot_date, as_of_date, max_age_days)` — pure
       staleness predicate; only OLD snapshots are stale (newer is left to PR2).
 - [x] `RecommendationConfig.st_snapshot_max_age_days` (default 7).
@@ -43,7 +46,8 @@
 - [x] `build_recommendation` without `st_excluded` is backward-compatible.
 - [x] staleness predicate: within / at / beyond tolerance, newer snapshot.
 - [x] fail-loud: None source raises; missing file raises; stale file raises;
-      fresh file passes (mtime via `os.utime`).
+      malformed schema (missing `name`) raises; empty snapshot raises; fresh
+      valid file passes (mtime via `os.utime`).
 
 ## 5. Quality gates
 - [x] `ruff check` clean on changed files.

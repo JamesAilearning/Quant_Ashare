@@ -28,14 +28,16 @@ precedence in the audit label.
 - **THEN** the buy list contains the `K` highest-scoring non-ST names
 - **AND** no ST name appears in the buy list
 
-### Requirement: Daily recommendation SHALL fail loud when the current-ST source is missing or stale
+### Requirement: Daily recommendation SHALL fail loud when the current-ST source is missing, stale, or malformed
 
 Because excluding ST requires the current name snapshot, the path SHALL
 treat that snapshot as REQUIRED: if `name_source_parquet` is unset or the
-file is absent, or if the snapshot's file date lags the as-of date by more
-than `st_snapshot_max_age_days`, the path SHALL raise an explicit error and
-emit no list, rather than silently producing a list that could include ST
-names. A snapshot newer than the as-of date SHALL NOT be treated as stale.
+file is absent, if the snapshot's file date lags the as-of date by more than
+`st_snapshot_max_age_days`, or if the snapshot is unreadable / missing the
+required `ts_code` or `name` columns / empty, the path SHALL raise an explicit
+error and emit no list, rather than silently producing a list that could
+include ST names. A snapshot newer than the as-of date SHALL NOT be treated
+as stale.
 
 #### Scenario: a missing current-ST source is rejected
 - **WHEN** `recommend` is invoked with no `name_source_parquet` (or a path
@@ -46,3 +48,10 @@ names. A snapshot newer than the as-of date SHALL NOT be treated as stale.
 - **WHEN** the active-stocks snapshot file's date lags the as-of date by
   more than `st_snapshot_max_age_days`
 - **THEN** an explicit error is raised and no list is produced
+
+#### Scenario: a malformed current-ST snapshot is rejected
+- **WHEN** the snapshot is present and fresh but is unreadable, is missing
+  the `ts_code` or `name` column, or has zero rows
+- **THEN** an explicit error is raised and no list is produced
+- **AND** the path does NOT fall back to an empty name map that would
+  silently disable ST filtering

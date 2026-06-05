@@ -385,15 +385,40 @@ class ValidateStSnapshotTests(unittest.TestCase):
             with self.assertRaisesRegex(DailyRecommendationError, "stale"):
                 _validate_st_snapshot(self._config(str(p)), "2025-06-30")
 
-    def test_fresh_file_passes(self) -> None:
+    def test_fresh_valid_file_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "active.parquet"
-            p.write_bytes(b"x")
+            pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["平安银行"]}).to_parquet(p)
             recent = datetime(2025, 6, 29).timestamp()  # 1d before as-of
             os.utime(p, (recent, recent))
             self.assertEqual(
                 _validate_st_snapshot(self._config(str(p)), "2025-06-30"), p,
             )
+
+    def test_malformed_schema_raises(self) -> None:
+        # Present + fresh but the 'name' column dropped (upstream schema change)
+        # -> must NOT pass, else _load_name_map returns {} and ST filtering is
+        # silently disabled (Codex P1 on #222).
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "industry": ["银行"]},
+            ).to_parquet(p)
+            recent = datetime(2025, 6, 29).timestamp()
+            os.utime(p, (recent, recent))
+            with self.assertRaisesRegex(
+                DailyRecommendationError, "missing required column",
+            ):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+    def test_empty_snapshot_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame({"ts_code": [], "name": []}).to_parquet(p)
+            recent = datetime(2025, 6, 29).timestamp()
+            os.utime(p, (recent, recent))
+            with self.assertRaisesRegex(DailyRecommendationError, "zero rows"):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
 
 
 class LoadModelTests(unittest.TestCase):
