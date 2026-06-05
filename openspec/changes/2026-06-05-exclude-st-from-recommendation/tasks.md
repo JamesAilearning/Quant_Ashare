@@ -95,6 +95,11 @@
 - [x] `test_backtest_runner.py::ProvenanceFingerprintTests`: ST off-vs-on and
       different namechange content each change the fingerprint; st_mask block
       surfaced in `config` (Codex P2).
+- [x] `test_baseline_st_provenance_consistency.py` (non-E2E forcing guard,
+      Codex P2 "or hide" on #223): FAILS when the resolved config enables ST
+      but the committed baseline fixture's `_provenance.config_keys` lacks
+      `namechange_path` — CI-enforces the on-branch regen (red until done),
+      closing the small-drift hiding gap. Skips if the fixture is absent.
 
 ## 8. Operator action + remaining backlog
 - [ ] Operator (this PR, RUN_E2E): regenerate the C1 baseline

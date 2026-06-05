@@ -142,12 +142,19 @@ headline drift vs the +0.301 reference (csi300 has very little ST → expect a
 look-ahead bug — check the per-fold `fold_NN_st_mask_audit.csv` to confirm the
 drop is a small, named set, e.g. 乐视退, not a broad sweep), then commit the
 regenerated `walk_forward_baseline_metrics.json` **onto the PR2 branch before
-merging**. This must close inside PR2: the drift test is E2E-gated, so CI
-cannot catch the mismatch — merging code-that-excludes-ST with a
-baseline-that-includes-ST would leave `main` in an inconsistent state (a wrong
-baseline + a window where the policy and the fixture disagree). The whole point
-of the same-PR policy is that a CI-invisible inconsistency must be closed by
-process, on the branch, before merge.
+merging**. This must close inside PR2.
+
+This is **CI-enforced**, not process-only. The drift test is E2E-gated and,
+worse, would PASS if the ST drift is under its ±5% tolerance — silently leaving
+a stale baseline (Codex's "or hide", #223). So
+`tests/governance/test_baseline_st_provenance_consistency.py` (non-E2E, fast
+suite) FAILS while `config_walk.yaml` enables ST but the committed baseline's
+`_provenance.config_keys` lacks `namechange_path`. The PR CI is therefore **red
+until the regenerated baseline is committed on-branch** (its `config_keys` then
+include `namechange_path`) — turning "regenerate before merge" from a promise
+into a gate CI can see. The companion
+`test_config_walk_st_mask_enabled.py` pins the config so the ST setting cannot
+silently revert.
 
 ## PIT coverage limitation (documented)
 
