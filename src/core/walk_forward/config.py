@@ -7,6 +7,7 @@ from typing import Any
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core.attribution_industry_loader import assert_industry_config_complete_or_empty
 from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_POST,
     ADJUST_MODE_PRE,
     EXECUTION_PRICE_CLOSE,
     SUPPORTED_ADJUST_MODES,
@@ -24,6 +25,15 @@ from src.core.model_trainer import (
 
 class WalkForwardError(RuntimeError):
     """Raised on structural misuse of the walk-forward engine."""
+
+
+# Feature handlers that resolve factors through the PIT layer
+# (``PITDataProvider``), which pins the canonical qlib runtime to
+# ``post_adjusted``. A ``WalkForwardConfig`` using one of these MUST set
+# ``adjust_mode == post_adjusted`` — enforced in ``__post_init__`` (see
+# v2-canonical-runtime-orchestration). A ``frozenset`` is deliberately the
+# right size: do NOT grow this into a dynamic "provider declares its mode".
+_PIT_FEATURE_HANDLERS = frozenset({"MinedFactor"})
 
 
 @dataclass(frozen=True)
@@ -245,6 +255,23 @@ class WalkForwardConfig:
             raise WalkForwardError(
                 f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
                 f"got {self.adjust_mode!r}."
+            )
+        # PIT/MinedFactor factors are built on post-adjusted PIT prices
+        # (PITDataProvider pins the canonical runtime to post_adjusted). A
+        # walk-forward in any other mode aborts every fold with a cryptic
+        # QlibRuntimeInitError (single-canonical-runtime conflict), or would
+        # silently score post-built factors against mismatched prices. Fail
+        # loud at construction. See v2-canonical-runtime-orchestration.
+        if (
+            self.feature_handler in _PIT_FEATURE_HANDLERS
+            and self.adjust_mode != ADJUST_MODE_POST
+        ):
+            raise WalkForwardError(
+                f"feature_handler={self.feature_handler!r} resolves factors via "
+                "PITDataProvider, which builds them on post-adjusted prices, so "
+                "the walk-forward runtime must match. Set "
+                f'adjust_mode: "{ADJUST_MODE_POST}" in the config (got '
+                f"{self.adjust_mode!r})."
             )
         # ``model_type`` must be in the supported set up-front. Previously
         # this was only validated when ``compute_device == "gpu"`` (via the
