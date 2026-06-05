@@ -40,6 +40,7 @@ from src.core.microstructure_mask import (
     compute_unavailable_mask,
 )
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
+from src.data.pit._common import qlib_to_ts_code
 from src.data.st_status import current_st_codes
 
 _logger = get_logger(__name__)
@@ -233,12 +234,6 @@ def prepare_asof_features(config: RecommendationConfig, as_of_date: str) -> pd.D
 # --------------------------------------------------------------------------
 # Names (best-effort, current name only)
 # --------------------------------------------------------------------------
-def _qlib_code_to_ts_code(code: str) -> str:
-    """``SH600000`` -> ``600000.SH`` (tushare ts_code format)."""
-    exch, num = code[:2].upper(), code[2:]
-    return f"{num}.{exch}"
-
-
 def _load_name_map(parquet_path: str | None) -> dict[str, str]:
     if not parquet_path:
         return {}
@@ -443,7 +438,7 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
     name_map = _load_name_map(config.name_source_parquet)
 
     def _name(inst: str) -> str:
-        return name_map.get(_qlib_code_to_ts_code(inst), "")
+        return name_map.get(qlib_to_ts_code(inst), "")
 
     # Current-ST set keyed by qlib instrument (matches score_by_inst), built
     # from the already-loaded snapshot — no second load path.

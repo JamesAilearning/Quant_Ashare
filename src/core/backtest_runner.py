@@ -45,6 +45,13 @@ from src.core.risk_constraints import (
     MinimalRiskConstraints,
     RiskConstraintError,
 )
+from src.data.st_history import (
+    StHistoryError,
+    assert_covers,
+    build_st_lookup,
+    compute_st_mask,
+    load_namechange,
+)
 
 _logger = get_logger(__name__)
 
@@ -76,6 +83,8 @@ class BacktestRunner:
         compute_baselines: bool = True,
         pit_provider: Any | None = None,
         risk_constraints: MinimalRiskConstraints | None = None,
+        namechange_path: str | None = None,
+        st_audit_path: str | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -312,6 +321,81 @@ class BacktestRunner:
                 n_masked_dropped,
             )
 
+        # A-share ST/*ST mask (C2-d PR2) — parallel to the microstructure mask.
+        # Drops (execution-date, instrument) rows whose instrument was ST/*ST on
+        # that historical day, reconstructed point-in-time from the tushare
+        # namechange table (as-of start_date; see src/data/st_history.py). ST is
+        # a SELECTION-time exclusion only — the model was trained on the full
+        # panel (ST included) upstream. Runs on the SHIFTED predictions, so it
+        # filters by EXECUTION date, exactly like the microstructure mask.
+        # ST mask provenance — recorded in the fingerprint below so two runs of
+        # the same request with different ST inputs (off vs on, or a different
+        # namechange snapshot) get DIFFERENT fingerprints despite different
+        # official metrics (Codex P2 on #223).
+        st_mask_provenance: dict[str, Any] = {"namechange_path": None}
+        if namechange_path is None:
+            _logger.warning(
+                "BacktestRunner: ST mask DISABLED (no namechange_path) — this "
+                "backtest's universe still includes ST/*ST names. Set "
+                "namechange_path to exclude them (C2-d PR2)."
+            )
+        else:
+            try:
+                namechange = load_namechange(namechange_path)
+                assert_covers(namechange, request.evaluation_end)
+                st_lookup = build_st_lookup(namechange)
+            except StHistoryError as exc:
+                raise BacktestRunnerError(
+                    f"BacktestRunner.run: ST mask construction failed ({exc}). "
+                    "Refusing to fall back to an ST-unmasked backtest."
+                ) from exc
+            with open(namechange_path, "rb") as nc_file:
+                namechange_sha = hashlib.sha256(nc_file.read()).hexdigest()[:16]
+            st_pairs = [
+                (
+                    ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10],
+                    str(inst),
+                )
+                for ts, inst in zip(
+                    shifted_predictions.index.get_level_values("datetime"),
+                    shifted_predictions.index.get_level_values("instrument"),
+                    strict=True,
+                )
+            ]
+            st_mask, st_attribution = compute_st_mask(st_pairs, st_lookup)
+            shifted_predictions, n_st_dropped = apply_mask_to_predictions(
+                shifted_predictions, st_mask,
+            )
+            if n_st_dropped:
+                sample = sorted({inst for _d, inst in st_mask})[:5]
+                _logger.warning(
+                    "BacktestRunner: ST mask dropped %d (date, instrument) "
+                    "candidates (PIT-historical ST/*ST) before strategy "
+                    "construction; %d distinct instrument(s) (e.g. %s). "
+                    "C2-d PR2.",
+                    n_st_dropped, len({i for _d, i in st_mask}), sample,
+                )
+            if st_audit_path is not None:
+                import csv
+                with open(
+                    st_audit_path, "w", newline="", encoding="utf-8-sig",
+                ) as audit_file:
+                    writer = csv.DictWriter(
+                        audit_file,
+                        fieldnames=["date", "instrument", "ts_code", "name"],
+                    )
+                    writer.writeheader()
+                    writer.writerows(st_attribution)
+                _logger.info(
+                    "BacktestRunner: wrote ST mask audit (%d row(s)) -> %s",
+                    len(st_attribution), st_audit_path,
+                )
+            st_mask_provenance = {
+                "namechange_path": namechange_path,
+                "namechange_sha256": namechange_sha,
+                "n_st_masked": n_st_dropped,
+            }
+
         strategy = TopkDropoutStrategy(
             signal=shifted_predictions,
             topk=topk,
@@ -462,7 +546,7 @@ class BacktestRunner:
             "positions_days": len(positions_map),
         }
 
-        provenance = cls._build_provenance(request, topk, n_drop)
+        provenance = cls._build_provenance(request, topk, n_drop, st_mask_provenance)
 
         return CanonicalBacktestOutput(
             metric_status=OFFICIAL_METRIC_STATUS,
@@ -742,6 +826,7 @@ class BacktestRunner:
         request: CanonicalBacktestInput,
         topk: int,
         n_drop: int,
+        st_mask: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -759,8 +844,16 @@ class BacktestRunner:
         ``runtime.region`` triple — into the same JSON blob so the
         fingerprint changes whenever any of those change.
         """
-        # Strategy params not captured by CanonicalBacktestInput.
-        strategy_dict = {"topk": topk, "n_drop": n_drop}
+        # Strategy params not captured by CanonicalBacktestInput. ``st_mask``
+        # (Codex P2 on #223): the namechange path + content hash change the
+        # official universe and metrics, so they must move the fingerprint —
+        # otherwise the same request run ST-off vs ST-on shares a fingerprint
+        # despite different metrics. None -> {"namechange_path": None}.
+        strategy_dict: dict[str, Any] = {
+            "topk": topk,
+            "n_drop": n_drop,
+            "st_mask": dict(st_mask) if st_mask is not None else {"namechange_path": None},
+        }
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)

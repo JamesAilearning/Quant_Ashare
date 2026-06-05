@@ -1126,6 +1126,58 @@ class ProvenanceFingerprintTests(unittest.TestCase):
             "Different provider_uri must produce different fingerprint",
         )
 
+    def test_fingerprint_changes_with_st_mask_on_vs_off(self) -> None:
+        """ST mask off vs on → different fingerprint + st_mask surfaced in
+        config (Codex P2 on #223: ST inputs change official metrics)."""
+        request = self._make_request()
+        runtime = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime,
+        ):
+            prov_off = BacktestRunner._build_provenance(request, topk=50, n_drop=5)
+            prov_on = BacktestRunner._build_provenance(
+                request, topk=50, n_drop=5,
+                st_mask={"namechange_path": "/d/nc.parquet",
+                         "namechange_sha256": "abc123", "n_st_masked": 7},
+            )
+        self.assertNotEqual(
+            prov_off["config_fingerprint"], prov_on["config_fingerprint"],
+            "ST mask on vs off must change the fingerprint",
+        )
+        self.assertEqual(prov_off["config"]["st_mask"], {"namechange_path": None})
+        self.assertEqual(
+            prov_on["config"]["st_mask"]["namechange_sha256"], "abc123",
+        )
+
+    def test_fingerprint_changes_with_namechange_content(self) -> None:
+        """Same namechange path, different content hash → different fingerprint
+        (a re-fetched snapshot changes the official ST-excluded metrics)."""
+        request = self._make_request()
+        runtime = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+
+        def _prov(sha: str):
+            with patch(
+                "src.core.backtest_runner.get_canonical_qlib_config",
+                return_value=runtime,
+            ):
+                return BacktestRunner._build_provenance(
+                    request, topk=50, n_drop=5,
+                    st_mask={"namechange_path": "/d/nc.parquet",
+                             "namechange_sha256": sha, "n_st_masked": 7},
+                )
+
+        self.assertNotEqual(
+            _prov("aaa")["config_fingerprint"], _prov("bbb")["config_fingerprint"],
+            "Different namechange content must change the fingerprint",
+        )
+
     def test_fingerprint_changes_with_data_adjust_mode(self) -> None:
         """Same provider, different adjust_mode → different fingerprint."""
         request = self._make_request()

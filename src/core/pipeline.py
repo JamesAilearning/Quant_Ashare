@@ -125,6 +125,11 @@ class PipelineConfig:
     signal_to_execution_lag: int = 1
     topk: int = 50
     n_drop: int = 5
+    # Tushare namechange parquet for PIT historical ST/*ST exclusion in the
+    # backtest (C2-d PR2). None -> ST mask disabled (the backtest universe
+    # still includes ST, logged as a WARN). Set to all_namechanges.parquet to
+    # exclude ST point-in-time.
+    namechange_path: str | None = None
     # A-share price-move bound: 0.095 = main board ±10%,
     # 0.195 = ChiNext/STAR ±20%, 0.045 = ST ±5%. Must match the
     # dominant board of the universe; canonical contract bounds check.
@@ -479,6 +484,11 @@ class Pipeline:
             predictions=model_result.predictions,
             topk=config.topk,
             n_drop=config.n_drop,
+            namechange_path=config.namechange_path,
+            # Per-run dir (output/runs/{ts}_{uniq}_{fp}), NOT config.output_dir —
+            # so the audit lands with the run's other artifacts and a re-run
+            # cannot overwrite it (Codex P2 on #223).
+            st_audit_path=str(output_dir / "st_mask_audit.csv"),
         )
 
         # Step 6: Factor analysis (optional)

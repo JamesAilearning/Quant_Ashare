@@ -134,6 +134,21 @@ def compute_config_fingerprint(config: Any) -> str:
     raw = dataclasses.asdict(config)
     for key in _FINGERPRINT_EXCLUDE_FIELDS:
         raw.pop(key, None)
+    # Fold the namechange snapshot's CONTENT (not just its path) into the
+    # fingerprint. Each fold's ST-masked metrics depend on the parquet's
+    # contents, so a re-fetched all_namechanges.parquet at the SAME path MUST
+    # invalidate resume rather than reuse stale ST-mask folds — the path string
+    # alone (already in ``raw``) would not change (Codex P1 on #223). The
+    # backtest's own provenance hashes the file after a fold runs, but this
+    # resume/skip decision happens before that.
+    namechange_path = raw.get("namechange_path")
+    if isinstance(namechange_path, str) and namechange_path.strip():
+        nc_file = Path(namechange_path)
+        raw["namechange_content_sha256"] = (
+            hashlib.sha256(nc_file.read_bytes()).hexdigest()
+            if nc_file.is_file()
+            else "MISSING"
+        )
     payload = json.dumps(raw, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 

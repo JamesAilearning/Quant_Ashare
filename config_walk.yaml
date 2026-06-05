@@ -19,6 +19,14 @@ region: "cn"
 instruments: "csi300"
 feature_handler: "Alpha158"
 
+# PIT historical ST/*ST exclusion (C2-d PR2). The backtest drops names that
+# were ST/*ST on each execution day (reconstructed point-in-time from the
+# tushare namechange table; see src/data/st_history.py). Machine-specific path,
+# matching provider_uri's style above. Enabling this changes the WF aggregate
+# vs the includes-ST C1 baseline — the baseline MUST be regenerated in the same
+# PR via RUN_E2E (tests/regression/fixtures/README.md).
+namechange_path: "D:/qlib_data/tushare_raw/all_namechanges.parquet"
+
 # Overall walk-forward range. WalkForwardEngine._generate_windows adds
 # calendar months to overall_start, so the anchor must be the 1st of a
 # month (NOT the bundle's first trading day 2018-01-02) to keep folds

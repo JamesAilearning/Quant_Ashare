@@ -11,12 +11,13 @@ names (suspension / one-price-lock via the microstructure mask) — it does
 recommended for purchase. The fix is to drop current ST names from the
 candidate pool before the Top-K slice.
 
-The PIT-correct ST history needed for the **backtest** already exists
-(`all_namechanges.parquet`, 8042 rows, 3502 with an ST marker), but wiring
-it into the walk-forward changes the C1 baseline and needs a heavy RUN_E2E
-re-generation. To keep this change small and baseline-neutral, this PR does
-the **inference side only** (current ST, from the active-stocks snapshot the
-path already loads); the backtest side is a separate PR (see Scope boundary).
+The same exclusion must reach the **backtest**, or the historical performance
+numbers describe an includes-ST strategy the live list no longer follows. This
+capability is delivered in two PRs sharing one OpenSpec change: **PR1** the
+inference side (current ST from the active-stocks snapshot) and **PR2** the
+walk-forward side (PIT-historical ST from `all_namechanges`, as-of each
+execution date) plus the same-PR RUN_E2E C1-baseline regeneration. Both use one
+shared ST predicate so they cannot drift.
 
 ## Goals
 
@@ -34,13 +35,22 @@ path already loads); the backtest side is a separate PR (see Scope boundary).
 
 ## Non-Goals
 
-- **Not** the backtest / walk-forward ST filter or the C1 baseline
-  regeneration — that is PR2 (see Scope boundary).
 - **Not** changing the universe-file construction (`all.txt` / csi*); ST is
-  filtered at the prediction layer, consistent with how suspension is handled.
-- **Not** changing the model, features, ranking, or topk semantics.
-- **Not** point-in-time ST history; inference uses the current snapshot, which
-  is correct for a "today" decision.
+  filtered at the prediction/selection layer, consistent with how suspension
+  is handled.
+- **Not** changing the model, features, ranking, or topk semantics. The
+  backtest ST mask is **selection-only** — the model still trains on the full
+  panel (ST included).
+- **Not** ST-masking the single-fold `Pipeline.run` (`config.yaml`) backtest.
+  `config.yaml` sets no `namechange_path`, so its (unconditional) backtest step
+  runs **ST-UNMASKED** (logged as a WARN). That single-fold backtest is a
+  training sanity check, NOT an ST-strategy-faithful metric — only the
+  walk-forward (`config_walk.yaml`) excludes ST. The daily list (inference) is
+  ST-excluded regardless. (To make the single-fold faithful too, set
+  `namechange_path` in `config.yaml`; deliberately left off to keep PR2 scoped
+  to the WF baseline.)
+- **Not** using `change_reason` for ST detection (decided name-only — see
+  "Name-only blind spot" below).
 
 ## What Changes
 
@@ -78,22 +88,97 @@ path already loads); the backtest side is a separate PR (see Scope boundary).
    `tests/logic/inference/test_daily_recommend.py` (filter-then-take-K, reason
    label, mask precedence, staleness predicate, fail-loud missing/stale).
 
-## Scope boundary & known intermediate inconsistency
+### Backtest side (PR2)
 
-This PR filters ST on the **inference (daily list)** side only, using the
-**current** snapshot. It deliberately does **not** touch the backtest.
+5. `src/data/st_history.py` (new, pure): PIT historical-ST reconstruction as an
+   **as-of `start_date` step function** (`name_on` / `is_st_on`): the name in
+   effect on date D is the row with the greatest `start_date <= D`. `end_date`
+   is **ignored** (51% null + heavy interval overlap in the real data —
+   unreliable); `start_date` is 0% null. **Full-row dedup** (the table is ~40%
+   exact duplicates) — NOT key-subset, so same-`(ts,start)` different-name rows
+   are kept and a period is ST if **any** name that day is ST. Defaults to
+   **non-ST** before an instrument's first record / for an absent instrument.
+   `change_reason` is **deliberately not used** (see the resolved decision
+   below). Reuses PR1's `is_st_name`. `compute_st_mask(pairs, lookup)` returns
+   the `(date, instrument)` drop-set + an attribution list.
+6. `src/data/pit/_common.py`: `qlib_to_ts_code` (inverse of `to_qlib_ticker`),
+   extracted from `daily_recommend._qlib_code_to_ts_code` so the inference ST
+   filter and the backtest ST mask share one conversion (no behaviour change to
+   the inference path — same logic, now shared + tested).
+7. `src/core/backtest_runner.py`: a **parallel ST mask** at the existing
+   `apply_mask_to_predictions` seam (after the microstructure mask, before
+   `TopkDropoutStrategy`), evaluated on the **execution date** of the shifted
+   predictions. New optional `namechange_path` / `st_audit_path` kwargs:
+   `namechange_path=None` → ST mask disabled with a WARN (backward compatible);
+   set → fail-loud on missing/unreadable/malformed/uncovered namechange, drop
+   ST `(date, instrument)` rows, WARN with counts, and write the attribution
+   CSV to `st_audit_path`. **Selection-only**: the model trains on the full
+   panel (ST included) upstream; only the buy-list selection is masked. The ST
+   inputs (namechange path + content `sha256` + masked count) are folded into
+   `_build_provenance`, so the run fingerprint changes when ST masking is
+   toggled or the namechange snapshot changes (Codex P2 on #223).
+8. `namechange_path` config field on `WalkForwardConfig` + `PipelineConfig`
+   (default `None`); threaded at both `BacktestRunner.run` call sites
+   (`pipeline.py`, `walk_forward/engine.py`); enabled in `config_walk.yaml`
+   (the canonical WF config the C1 baseline extends).
+9. Tests: `tests/logic/test_st_history.py` (as-of/boundary/dedup/ambiguity/
+   default/mask-seam/fail-loud); `tests/data_pipeline/test_common.py`
+   (`qlib_to_ts_code`).
 
-Until the follow-up PR (PR2 — backtest-side PIT historical-ST mask from
-`all_namechanges` + a same-PR RUN_E2E C1-baseline regeneration) lands:
+## Scope — both sides done; intermediate inconsistency RESOLVED
 
-- the walk-forward backtest universe **still includes ST names**, so the
-  committed C1 baseline (mean IR +0.301) reflects an *includes-ST* strategy;
-- therefore the backtest does **not yet validate** the ST-excluded list this
-  PR produces. The daily list excludes ST; the historical performance numbers
-  do not yet reflect that exclusion.
+Both sides now exclude ST: inference (current snapshot) and backtest
+(PIT-historical, as-of). The PR1-era intermediate inconsistency (the WF
+baseline reflecting an includes-ST universe) is **resolved by this PR**: the
+canonical `config_walk.yaml` enables the namechange ST mask, so a regenerated
+C1 baseline reflects the ST-excluded universe.
 
-This is a known, temporary inconsistency made explicit here so it is not a
-silent gap. It is resolved by PR2.
+**Operator action — BEFORE merge, on the PR2 branch (not auto-run by the
+agent):** regenerate the C1 baseline under `RUN_E2E=1`
+(`python scripts/generate_regression_baseline.py
+tests/regression/fixtures/walk_forward_baseline_config.yaml`), eyeball the
+headline drift vs the +0.301 reference (csi300 has very little ST → expect a
+**small** drift; a large IR swing is a red flag for over-exclusion / a
+look-ahead bug — check the per-fold `fold_NN_st_mask_audit.csv` to confirm the
+drop is a small, named set, e.g. 乐视退, not a broad sweep), then commit the
+regenerated `walk_forward_baseline_metrics.json` **onto the PR2 branch before
+merging**. This must close inside PR2.
+
+This is **CI-enforced**, not process-only. The drift test is E2E-gated and,
+worse, would PASS if the ST drift is under its ±5% tolerance — silently leaving
+a stale baseline (Codex's "or hide", #223). So
+`tests/governance/test_baseline_st_provenance_consistency.py` (non-E2E, fast
+suite) FAILS while `config_walk.yaml` enables ST but the committed baseline's
+`_provenance.config_keys` lacks `namechange_path`. The PR CI is therefore **red
+until the regenerated baseline is committed on-branch** (its `config_keys` then
+include `namechange_path`) — turning "regenerate before merge" from a promise
+into a gate CI can see. The companion
+`test_config_walk_st_mask_enabled.py` pins the config so the ST setting cannot
+silently revert.
+
+## PIT coverage limitation (documented)
+
+`assert_covers` guards the **end** of the window (the namechange snapshot must
+reach the eval end — the recency/staleness concern). The **start** is covered
+by reconstruction semantics, not an extra check: before an instrument's first
+namechange record, `is_st_on` defaults to **non-ST**. This is correct because a
+stock's pre-first-record name is its original/IPO name, and a stock is never ST
+at IPO (ST is a post-listing designation). The namechange table reaches back to
+2010-06 (global min `start_date`), well before the 2018+ backtest window, so it
+is not truncated at the start.
+
+The residual blind spot is **per-stock completeness**: 776 of 1555 ts_codes
+have their earliest record after 2018, and ~366 of those are ST-ever. For the
+typical case the earliest record is the stock's *first* ST transition (before
+it, the non-ST IPO name — the default is correct). But if tushare's history is
+missing an *earlier* ST record for a stock (e.g. an earliest record that is
+already `*ST`, implying a prior plain-`ST` period not in the table), the
+window-early ST is silently treated as non-ST. Incidence on csi300 is low; the
+mitigations are (a) tushare namechange being the canonical complete source,
+(b) the per-fold `st_mask_audit.csv` letting the operator spot an anomalous
+drop pattern during the baseline regen, and (c) the manual-override escape
+hatch. A per-stock start-coverage check (cross-referencing `list_date`) is
+deferred — a table-level check cannot catch this and would be theater.
 
 ## Near-term backlog (NOT done here — must be scheduled, not "someday")
 
@@ -107,30 +192,40 @@ column when fetching active_stocks (tushare `stock_basic`) and switch
 and lives in the data-fetch layer; it is the correct, sync-proof staleness
 signal and should be scheduled near-term, not deferred indefinitely.
 
-**Name-only predicate has a structural blind spot — PR2 decision point.** The
-zero-false-negative scan only covers names that *carry* an ST marker. It
-structurally cannot see a current snapshot row whose name has *dropped* the
-marker entirely (the `*金亚` class: name shows no `ST`, but `change_reason`
-says `*ST`). `is_st_name` is name-only by design, so it returns `False` for
-such a row and the stock would slip into the list. PR1 scopes this to
-namechange-history (PR2 cross-checks `change_reason`). **PR2 must explicitly
-decide whether to feed that `change_reason` cross-check into the
-current/inference path too** — i.e. for each active stock, consult its latest
-namechange `change_reason` to recover a "dropped-marker" current ST.
-Otherwise the inference side stays name-only and this corner (the one blind
-spot the reconciliation cannot detect) never closes. Incidence is low, but
-it is a real PR2 decision, not a silent gap.
+**Name-only blind spot — DECIDED (PR2): name-only, no `change_reason` rescue.**
+PR1 flagged the truncated-name corner (`*金亚`: name shows no `ST` but
+`change_reason` says `*ST`) for a possible PR2 `change_reason` cross-check.
+PR2's read of the real `all_namechanges` data **closes that loop in favour of
+name-only**: `change_reason` disagrees with the name in ~795 rows (788 ST-name
+/ non-became-ST-reason e.g. 摘帽; 7 became-ST-reason / non-ST-name, one of which
+— 001267 汇绿生态 — has no marker at all and a reason-rescue would *wrongly*
+exclude it), so using it would trade a tiny false-negative for a worse
+false-positive. The blind spot itself is ~zero impact: of the 7 truncated rows,
+only 乐视退 touches csi300 and it is delisted (handled by the delisting layer).
+The escape hatch, if a specific gap is ever found, is a curated manual-override
+file (mirroring `data/manual_delistings.yaml`) — NOT an automatic
+`change_reason` rule. This applies to **both** the inference and backtest paths
+(both name-only), so the inference-side follow-up loop is closed too.
 
 ## Impact
 
-- **Affected specs**: `v2-daily-stock-recommendation` (ADDED — two
-  requirements: current-ST exclusion; fail-loud on missing/stale ST source).
-- **Affected code**: `src/data/st_status.py` (new),
-  `src/inference/daily_recommend.py`, `scripts/daily_recommend.py`.
-- **Affected tests**: `tests/logic/test_st_status.py` (new),
-  `tests/logic/inference/test_daily_recommend.py` (ST classes added).
-- **Behaviour change**: the name source becomes REQUIRED for `recommend`
-  (it was optional, for names only); a missing/stale source now fails loud.
-  The buy list now excludes current ST names.
-- **Risk**: low and inference-only; no backtest/baseline impact; the shared
-  predicate is validated against the real tushare markers.
+- **Affected specs**: `v2-daily-stock-recommendation` (ADDED — inference:
+  current-ST exclusion + fail-loud on missing/stale/malformed ST source;
+  backtest: PIT-historical ST exclusion at selection before TopkDropout).
+- **Affected code**: PR1 — `src/data/st_status.py` (new),
+  `src/inference/daily_recommend.py`, `scripts/daily_recommend.py`. PR2 —
+  `src/data/st_history.py` (new), `src/data/pit/_common.py` (`qlib_to_ts_code`),
+  `src/core/backtest_runner.py`, `src/core/pipeline.py`,
+  `src/core/walk_forward/{config,engine}.py`, `config_walk.yaml`.
+- **Affected tests**: `tests/logic/test_st_status.py`,
+  `tests/logic/test_st_history.py`, `tests/data_pipeline/test_common.py` (new),
+  `tests/logic/inference/test_daily_recommend.py` (ST classes).
+- **Behaviour change**: the buy list excludes current ST; the WF backtest
+  (via `config_walk.yaml`) excludes PIT-historical ST → the C1 baseline must be
+  regenerated (operator RUN_E2E, this PR). `BacktestRunner.run` gains optional
+  `namechange_path`/`st_audit_path` (default None → ST mask off + WARN, so
+  existing callers are unaffected). The inference name source is REQUIRED.
+- **Risk**: backtest masking is selection-only (training untouched) and
+  default-off (no caller breaks); the shared predicate is validated against the
+  real tushare markers; PIT reconstruction uses only `start_date` (no
+  look-ahead) and fails loud on missing/stale/uncovered data.
