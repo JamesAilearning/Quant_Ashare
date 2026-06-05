@@ -31,6 +31,7 @@ from src.inference.daily_recommend import (
     DailyRecommendationResult,
     RecommendationConfig,
     _load_model,
+    _scores_to_inst_map,
     assert_no_lookahead,
     build_recommendation,
     resolve_dates,
@@ -104,6 +105,66 @@ class AssertNoLookaheadTests(unittest.TestCase):
         empty = _frame_for([]).iloc[0:0]
         with self.assertRaises(DailyRecommendationError):
             assert_no_lookahead(empty, "2025-06-30")
+
+
+class ScoresToInstMapTests(unittest.TestCase):
+    """The fail-loud instrument->score collapse (single date + unique keys).
+
+    Covers the gap the previous inline ``dict(zip(..., strict=True))`` left:
+    ``strict=True`` only checked length parity (which can never differ here),
+    so a duplicate instrument or a multi-date index was silently collapsed.
+    """
+
+    def _series(self, pairs: list[tuple[str, str, float]]) -> pd.Series:
+        """Build a ``(datetime, instrument)``-MultiIndexed score Series."""
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp(d), i) for d, i, _ in pairs],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series([v for *_, v in pairs], index=idx)
+
+    def test_unique_multiindex_tuple_form(self) -> None:
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-06-30", "SZ000001", 0.8),
+        ])
+        self.assertEqual(
+            _scores_to_inst_map(s), {"SH600000": 0.9, "SZ000001": 0.8},
+        )
+
+    def test_unique_flat_index_form(self) -> None:
+        # Defensive non-MultiIndex path: each index entry IS the instrument
+        # (kept whole, not sliced to its last character).
+        s = pd.Series([0.5, 0.4], index=["SH600000", "SZ000001"])
+        self.assertEqual(
+            _scores_to_inst_map(s), {"SH600000": 0.5, "SZ000001": 0.4},
+        )
+
+    def test_empty_series_returns_empty_map(self) -> None:
+        # recommend() guards empty upstream; the helper is still empty-safe.
+        self.assertEqual(_scores_to_inst_map(pd.Series([], dtype=float)), {})
+
+    def test_duplicate_instruments_raise(self) -> None:
+        # Same date, same instrument twice -> dict(zip) would silently drop one.
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-06-30", "SH600000", 0.1),
+        ])
+        with self.assertRaisesRegex(
+            DailyRecommendationError, "duplicate instruments",
+        ):
+            _scores_to_inst_map(s)
+
+    def test_multi_date_raises(self) -> None:
+        # Two distinct dates -> idx[-1] would alias an instrument across days.
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-07-01", "SZ000001", 0.8),
+        ])
+        with self.assertRaisesRegex(
+            DailyRecommendationError, "distinct dates",
+        ):
+            _scores_to_inst_map(s)
 
 
 class BuildRecommendationTests(unittest.TestCase):

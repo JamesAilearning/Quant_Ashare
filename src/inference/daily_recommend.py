@@ -26,6 +26,7 @@ them.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -321,13 +322,10 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
             f"all scores NaN for as-of {as_of_date}; cannot recommend."
         )
 
-    # Normalise score index to a flat instrument -> score map for T.
-    instruments = [
-        idx[-1] if isinstance(idx, tuple) else idx for idx in scores.index
-    ]
-    score_by_inst = dict(zip(
-        instruments, [float(v) for v in scores.to_numpy()], strict=True,
-    ))
+    # Normalise score index to a flat instrument -> score map for T. Fail-loud
+    # on a multi-date index or duplicate instruments rather than letting
+    # dict(zip) silently drop a key (see _scores_to_inst_map).
+    score_by_inst = _scores_to_inst_map(scores)
 
     # 3. Tradability mask (suspension / one-price-lock) on T.
     pit = _build_pit_provider(config)
@@ -392,6 +390,61 @@ def assert_no_lookahead(feature_frame: pd.DataFrame, as_of_date: str) -> pd.Time
             f"{max_dt.date()} > as-of {as_of_date}. Refusing to emit a list."
         )
     return max_dt
+
+
+def _scores_to_inst_map(scores: pd.Series) -> dict[str, float]:
+    """Collapse a single-as-of-date prediction Series to ``{instrument: score}``.
+
+    ``scores`` is the qlib ``model.predict`` output for the ``[T, T]`` infer
+    segment — a Series indexed by ``(datetime, instrument)`` (MultiIndex) or,
+    defensively, a flat instrument index. The recommendation list is built on
+    the returned map, so a silent key collapse (``dict`` keeps last-write-wins
+    on a duplicate instrument) would emit a truncated / mis-scored buy list
+    with no error.
+
+    Two fail-loud guards, neither covered by the previous
+    ``dict(zip(..., strict=True))`` — ``strict=True`` only checks length parity,
+    which can never differ here since both operands derive from the same Series,
+    so it guarded nothing that could actually go wrong:
+
+    * **single date** — for a ``(datetime, instrument)`` MultiIndex, exactly
+      one distinct datetime (a flat index has no datetime level and skips this
+      check). Catches an infer segment widened beyond ``[T, T]``, which would
+      alias the same instrument across days and silently keep only the last.
+    * **unique instruments** — no instrument appears twice. Catches a malformed
+      universe file or a panel-integrity anomaly.
+
+    Pure (no qlib / IO) -> unit-testable. An empty Series returns ``{}``.
+    """
+    idx = scores.index
+    # The single-date guard only applies to a (datetime, instrument)
+    # MultiIndex. A flat instrument index has no datetime level, so it skips
+    # the date check — reading get_level_values(0) on a flat index returns the
+    # instrument labels, which would false-fire "multi-date" on any 2+-name
+    # cross-section — and goes straight to the duplicate check.
+    if isinstance(idx, pd.MultiIndex):
+        datetimes = set(idx.get_level_values(0))
+        if len(datetimes) > 1:
+            raise DailyRecommendationError(
+                f"prediction spans {len(datetimes)} distinct dates "
+                f"{sorted(str(d) for d in datetimes)}; expected a single as-of "
+                "date. The instrument->score map would alias the same "
+                "instrument across days. Refusing to emit a list."
+            )
+        instruments = list(idx.get_level_values(-1))
+    else:
+        instruments = list(idx)
+    dupes = sorted(str(k) for k, c in Counter(instruments).items() if c > 1)
+    if dupes:
+        shown = ", ".join(dupes[:10]) + (" ..." if len(dupes) > 10 else "")
+        raise DailyRecommendationError(
+            f"duplicate instruments in single-date prediction: {shown} "
+            f"({len(dupes)} distinct code(s) repeated). Universe file or "
+            "segment-width anomaly; refusing to emit a list (dict(zip) would "
+            "silently drop the duplicates)."
+        )
+    values = [float(v) for v in scores.to_numpy()]
+    return dict(zip(instruments, values, strict=True))
 
 
 def build_recommendation(
