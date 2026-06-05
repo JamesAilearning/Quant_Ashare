@@ -14,8 +14,11 @@
 This document records the first end-to-end empirical evaluation of the
 factor-mining subsystem against the design doc's success criterion
 (§10: "Adding mined factors improves OOS Sharpe ≥ 10% vs Alpha158-only
-baseline"). It is the canonical reference for "does GP factor mining
-work as configured today, on the data we have?"
+baseline"). It was the first such evaluation; its verdict is **superseded**
+(see the note above), so this file is no longer the canonical reference. The
+canonical answer to "does GP factor mining work as configured today?" now
+lives in `docs/phase_c2b_dryrun_result.md` (decision: `decisions.md` D6); this
+file is kept for its root-cause analysis only.
 
 **TL;DR: No, not as currently configured.** The infrastructure is
 complete and bug-free, but on a real 8-year csi300 walk-forward the
