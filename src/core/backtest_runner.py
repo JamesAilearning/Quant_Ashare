@@ -328,6 +328,11 @@ class BacktestRunner:
         # a SELECTION-time exclusion only — the model was trained on the full
         # panel (ST included) upstream. Runs on the SHIFTED predictions, so it
         # filters by EXECUTION date, exactly like the microstructure mask.
+        # ST mask provenance — recorded in the fingerprint below so two runs of
+        # the same request with different ST inputs (off vs on, or a different
+        # namechange snapshot) get DIFFERENT fingerprints despite different
+        # official metrics (Codex P2 on #223).
+        st_mask_provenance: dict[str, Any] = {"namechange_path": None}
         if namechange_path is None:
             _logger.warning(
                 "BacktestRunner: ST mask DISABLED (no namechange_path) — this "
@@ -344,6 +349,8 @@ class BacktestRunner:
                     f"BacktestRunner.run: ST mask construction failed ({exc}). "
                     "Refusing to fall back to an ST-unmasked backtest."
                 ) from exc
+            with open(namechange_path, "rb") as nc_file:
+                namechange_sha = hashlib.sha256(nc_file.read()).hexdigest()[:16]
             st_pairs = [
                 (
                     ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10],
@@ -383,6 +390,11 @@ class BacktestRunner:
                     "BacktestRunner: wrote ST mask audit (%d row(s)) -> %s",
                     len(st_attribution), st_audit_path,
                 )
+            st_mask_provenance = {
+                "namechange_path": namechange_path,
+                "namechange_sha256": namechange_sha,
+                "n_st_masked": n_st_dropped,
+            }
 
         strategy = TopkDropoutStrategy(
             signal=shifted_predictions,
@@ -534,7 +546,7 @@ class BacktestRunner:
             "positions_days": len(positions_map),
         }
 
-        provenance = cls._build_provenance(request, topk, n_drop)
+        provenance = cls._build_provenance(request, topk, n_drop, st_mask_provenance)
 
         return CanonicalBacktestOutput(
             metric_status=OFFICIAL_METRIC_STATUS,
@@ -814,6 +826,7 @@ class BacktestRunner:
         request: CanonicalBacktestInput,
         topk: int,
         n_drop: int,
+        st_mask: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -831,8 +844,16 @@ class BacktestRunner:
         ``runtime.region`` triple — into the same JSON blob so the
         fingerprint changes whenever any of those change.
         """
-        # Strategy params not captured by CanonicalBacktestInput.
-        strategy_dict = {"topk": topk, "n_drop": n_drop}
+        # Strategy params not captured by CanonicalBacktestInput. ``st_mask``
+        # (Codex P2 on #223): the namechange path + content hash change the
+        # official universe and metrics, so they must move the fingerprint —
+        # otherwise the same request run ST-off vs ST-on shares a fingerprint
+        # despite different metrics. None -> {"namechange_path": None}.
+        strategy_dict: dict[str, Any] = {
+            "topk": topk,
+            "n_drop": n_drop,
+            "st_mask": dict(st_mask) if st_mask is not None else {"namechange_path": None},
+        }
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)

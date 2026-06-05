@@ -78,6 +78,9 @@
 - [x] fail-loud: `load_namechange` (missing/unreadable/missing-col/empty) +
       `assert_covers` (latest record before eval end) raise `StHistoryError`
       -> `BacktestRunnerError` (no ST-unmasked fallback).
+- [x] Provenance (Codex P2 on #223): `_build_provenance` folds the ST inputs
+      (namechange path + content sha256 + masked count) into the fingerprint,
+      so ST off-vs-on and a changed namechange snapshot move the fingerprint.
 
 ## 7. Backtest tests (PR2)
 - [x] `test_st_history.py`: start_date-inclusive boundary; as-of step
@@ -89,6 +92,9 @@
       empty/build-missing-col) + `assert_covers` stale/ok.
 - [x] `test_common.py`: `qlib_to_ts_code` exchanges + ts-passthrough +
       round-trip with `to_qlib_ticker` (no inference regression).
+- [x] `test_backtest_runner.py::ProvenanceFingerprintTests`: ST off-vs-on and
+      different namechange content each change the fingerprint; st_mask block
+      surfaced in `config` (Codex P2).
 
 ## 8. Operator action + remaining backlog
 - [ ] Operator (this PR, RUN_E2E): regenerate the C1 baseline

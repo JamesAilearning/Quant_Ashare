@@ -113,7 +113,10 @@ shared ST predicate so they cannot drift.
    set → fail-loud on missing/unreadable/malformed/uncovered namechange, drop
    ST `(date, instrument)` rows, WARN with counts, and write the attribution
    CSV to `st_audit_path`. **Selection-only**: the model trains on the full
-   panel (ST included) upstream; only the buy-list selection is masked.
+   panel (ST included) upstream; only the buy-list selection is masked. The ST
+   inputs (namechange path + content `sha256` + masked count) are folded into
+   `_build_provenance`, so the run fingerprint changes when ST masking is
+   toggled or the namechange snapshot changes (Codex P2 on #223).
 8. `namechange_path` config field on `WalkForwardConfig` + `PipelineConfig`
    (default `None`); threaded at both `BacktestRunner.run` call sites
    (`pipeline.py`, `walk_forward/engine.py`); enabled in `config_walk.yaml`
