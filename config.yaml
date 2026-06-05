@@ -31,12 +31,29 @@ test_start: "2025-01-02"
 test_end: "2025-12-19"
 
 # model
+#
+# Tuned set, aligned to config_walk.yaml's model block. The previous values
+# (learning_rate 0.0421 / num_leaves 210 / max_depth 8 / no L2) were the
+# pathological "best_iteration plateau" set documented in
+# src/core/model_trainer.py (ModelTrainConfig docstring) and config_walk.yaml:
+# the high lr + over-expressive trees + no regularisation drove valid loss to
+# its local optimum on the first split, so early-stopping fired at
+# best_iter ≈ 1 — one giant tree, almost no score discrimination (top-50
+# collapsed to a handful of distinct values). config_walk.yaml fixed this for
+# the WF folds (best_iter 5-470); this brings the canonical training path
+# (which trains the model daily_recommend loads) to the same tuned set.
 model_type: "LGBModel"
 num_boost_round: 1000
 early_stopping_rounds: 50
-learning_rate: 0.0421
-max_depth: 8
-num_leaves: 210
+learning_rate: 0.005
+max_depth: 6
+num_leaves: 64
+lambda_l1: 0.0
+lambda_l2: 1.0
+min_data_in_leaf: 50
+feature_fraction: 0.8
+bagging_fraction: 0.8
+bagging_freq: 5
 
 # backtest
 benchmark_code: "SH000300"
