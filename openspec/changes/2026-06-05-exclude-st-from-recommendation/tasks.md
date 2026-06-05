@@ -81,6 +81,13 @@
 - [x] Provenance (Codex P2 on #223): `_build_provenance` folds the ST inputs
       (namechange path + content sha256 + masked count) into the fingerprint,
       so ST off-vs-on and a changed namechange snapshot move the fingerprint.
+- [x] WF resume (Codex P1 on #223): `compute_config_fingerprint` folds the
+      namechange file CONTENT hash, so a re-fetched snapshot at the same path
+      invalidates resume (the path string alone would not) — the skip decision
+      happens before the backtest's own provenance hash.
+- [x] Single-fold ST audit writes to the per-run dir
+      (`output/runs/{ts}_{uniq}_{fp}/`), not `config.output_dir` (Codex P2 on
+      #223), so a re-run cannot overwrite an earlier run's audit.
 
 ## 7. Backtest tests (PR2)
 - [x] `test_st_history.py`: start_date-inclusive boundary; as-of step
@@ -95,6 +102,9 @@
 - [x] `test_backtest_runner.py::ProvenanceFingerprintTests`: ST off-vs-on and
       different namechange content each change the fingerprint; st_mask block
       surfaced in `config` (Codex P2).
+- [x] `test_walk_forward_resume.py::FingerprintTests`: same namechange path +
+      changed content → different fingerprint (resume re-runs); off-vs-on
+      differ (Codex P1).
 - [x] `test_baseline_st_provenance_consistency.py` (non-E2E forcing guard,
       Codex P2 "or hide" on #223): FAILS when the resolved config enables ST
       but the committed baseline fixture's `_provenance.config_keys` lacks

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -103,6 +104,36 @@ class FingerprintTests(unittest.TestCase):
             compute_config_fingerprint(cfg),
             compute_config_fingerprint(cfg),
         )
+
+    def test_includes_namechange_content(self) -> None:
+        """Same namechange_path, different file CONTENT → different fingerprint
+        (Codex P1 on #223: a re-fetched snapshot at the same path must
+        invalidate resume; the path string alone would not change). Only the
+        file bytes are hashed, so a plain byte file exercises it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "namechange.parquet"
+            p.write_bytes(b"snapshot-A")
+            cfg = _make_config(namechange_path=str(p))
+            fp_a = compute_config_fingerprint(cfg)
+            p.write_bytes(b"snapshot-B-different")
+            fp_b = compute_config_fingerprint(cfg)
+            self.assertNotEqual(
+                fp_a, fp_b,
+                "Same namechange_path, different content must change the "
+                "fingerprint so resume re-runs the folds.",
+            )
+            p.write_bytes(b"snapshot-A")  # same content -> stable again
+            self.assertEqual(compute_config_fingerprint(cfg), fp_a)
+
+    def test_namechange_off_vs_on_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "namechange.parquet"
+            p.write_bytes(b"x")
+            off = _make_config()  # namechange_path defaults to None
+            on = _make_config(namechange_path=str(p))
+            self.assertNotEqual(
+                compute_config_fingerprint(off), compute_config_fingerprint(on),
+            )
 
     def test_rejects_non_dataclass(self) -> None:
         with self.assertRaises(TypeError):
