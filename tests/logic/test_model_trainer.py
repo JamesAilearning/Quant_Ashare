@@ -721,29 +721,31 @@ class ModelTrainerE2ETests(unittest.TestCase):
 
 
 class LGBRegularisationFieldsTests(unittest.TestCase):
-    """ModelTrainConfig now exposes LGB regularisation / sampling
-    knobs (``lambda_l1``, ``lambda_l2``, ``min_data_in_leaf``,
+    """ModelTrainConfig exposes LGB regularisation / sampling knobs
+    (``lambda_l1``, ``lambda_l2``, ``min_data_in_leaf``,
     ``feature_fraction``, ``bagging_fraction``, ``bagging_freq``).
 
     Why: walk-forward's first end-to-end run had every fold's
     ``best_iteration`` come in at 1-6 — LGB pushed valid loss to its
     local optimum on the first split because there was zero L1/L2
     regularisation, large ``num_leaves``, and a high learning rate.
-    Without these knobs available at the config layer, an operator
-    cannot tune the model to actually train past that plateau.
-
-    Defaults below mirror LightGBM's own defaults so adding the fields
-    does not change behaviour for callers that don't set them.
+    The *defaults* are now the tuned set (matching ``config_walk.yaml``)
+    so an under-specified config inherits values that train past that
+    plateau, instead of the pathological qlib-Alpha158 / neutral-reg
+    combo (C2-c).
     """
 
-    def test_defaults_match_lightgbm_defaults(self) -> None:
+    def test_defaults_are_tuned_not_pathological(self) -> None:
         cfg = ModelTrainConfig(model_type="LGBModel")
+        self.assertEqual(cfg.learning_rate, 0.005)
+        self.assertEqual(cfg.max_depth, 6)
+        self.assertEqual(cfg.num_leaves, 64)
         self.assertEqual(cfg.lambda_l1, 0.0)
-        self.assertEqual(cfg.lambda_l2, 0.0)
-        self.assertEqual(cfg.min_data_in_leaf, 20)
-        self.assertEqual(cfg.feature_fraction, 1.0)
-        self.assertEqual(cfg.bagging_fraction, 1.0)
-        self.assertEqual(cfg.bagging_freq, 0)
+        self.assertEqual(cfg.lambda_l2, 1.0)
+        self.assertEqual(cfg.min_data_in_leaf, 50)
+        self.assertEqual(cfg.feature_fraction, 0.8)
+        self.assertEqual(cfg.bagging_fraction, 0.8)
+        self.assertEqual(cfg.bagging_freq, 5)
         self.assertEqual(cfg.compute_device, "cpu")
 
     def test_create_model_forwards_regularisation_to_lgbmodel(self) -> None:
@@ -945,7 +947,7 @@ class LGBOnlyValidationGatedByModelTypeTests(unittest.TestCase):
     ``bagging_fraction``, ``bagging_freq``) only get validated when
     ``model_type == "LGBModel"``. Otherwise a perfectly legal
     ``CatBoostModel(max_depth=4)`` would fail the LGB ``num_leaves <=
-    2^max_depth`` check on the default ``num_leaves=210`` even though
+    2^max_depth`` check on an LGB-unsafe ``num_leaves=210`` even though
     CatBoost ignores the field entirely.
     """
 

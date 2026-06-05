@@ -386,18 +386,22 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         self.assertEqual(cfg.region, "cn")
         self.assertEqual(cfg.signal_to_execution_lag, 1)
 
-    def test_lgb_regularisation_defaults_match_lightgbm(self) -> None:
-        """The new ``lambda_l1`` / ``lambda_l2`` / ``min_data_in_leaf`` /
-        ``feature_fraction`` / ``bagging_fraction`` / ``bagging_freq``
-        fields default to LightGBM's own defaults so no behaviour
-        change creeps in for callers that don't set them."""
+    def test_lgb_defaults_are_tuned_not_pathological(self) -> None:
+        """LGB hyperparameter defaults are the *tuned* set (matching
+        ``config_walk.yaml``), NOT the qlib-Alpha158 / neutral-reg combo
+        that trained to best_iteration~1 (C2-c). Pin the literal values
+        so a future regression to the pathological defaults is caught.
+        """
         cfg = PipelineConfig(provider_uri="/tmp/fake")
+        self.assertEqual(cfg.learning_rate, 0.005)
+        self.assertEqual(cfg.max_depth, 6)
+        self.assertEqual(cfg.num_leaves, 64)
         self.assertEqual(cfg.lambda_l1, 0.0)
-        self.assertEqual(cfg.lambda_l2, 0.0)
-        self.assertEqual(cfg.min_data_in_leaf, 20)
-        self.assertEqual(cfg.feature_fraction, 1.0)
-        self.assertEqual(cfg.bagging_fraction, 1.0)
-        self.assertEqual(cfg.bagging_freq, 0)
+        self.assertEqual(cfg.lambda_l2, 1.0)
+        self.assertEqual(cfg.min_data_in_leaf, 50)
+        self.assertEqual(cfg.feature_fraction, 0.8)
+        self.assertEqual(cfg.bagging_fraction, 0.8)
+        self.assertEqual(cfg.bagging_freq, 5)
 
     def test_rejects_partial_industry_taxonomy_config(self) -> None:
         with self.assertRaisesRegex(PipelineError, "industry_artifact_path"):

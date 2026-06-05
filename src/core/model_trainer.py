@@ -71,34 +71,40 @@ _MAX_LEARNING_RATE = 1.0
 class ModelTrainConfig:
     """Frozen configuration for model training.
 
-    The LGB regularisation / sampling fields below were added so the
-    walk-forward operator can break LGBModel out of the "best_iteration
-    plateau" we observed in the first end-to-end run (every fold's
-    early-stopping fired after ≤6 rounds because the high default
-    learning_rate combined with no L1/L2 regularisation pushed valid
-    loss to its local optimum on the first split). The defaults match
-    LightGBM's own defaults so existing callers get unchanged behaviour;
-    config files (e.g. ``config_walk.yaml``) override them with values
-    that let the boosted trees actually train.
+    The LGB hyperparameter defaults below are the *tuned* set that lets
+    LGBModel train past the "best_iteration plateau" observed in the
+    first end-to-end run (every fold's early-stopping fired after a
+    handful of rounds: an aggressive learning_rate over very wide trees
+    with zero L1/L2 and no subsampling drove valid loss to its local
+    optimum on the first split). These defaults match
+    ``config_walk.yaml`` — the canonical tuned walk-forward config — so
+    a caller that overrides every model field resolves to the same
+    values as one that overrides none ("explicit = default"). They are
+    deliberately NOT qlib's Alpha158 benchmark
+    ``learning_rate``/``num_leaves`` with neutral regularisation: that
+    combination is the pathological set that produced best_iteration~1
+    (C2-c).
     """
 
     model_type: str
     num_boost_round: int = 1000
     early_stopping_rounds: int = 50
-    learning_rate: float = 0.0421
-    max_depth: int = 8
-    num_leaves: int = 210
+    learning_rate: float = 0.005
+    max_depth: int = 6
+    num_leaves: int = 64
     seed: int = 42
     # ---- LGB regularisation / sampling ----
-    # All defaults below mirror LightGBM's own defaults so introducing
-    # the fields does not change behaviour for callers that don't set
-    # them. LGBModel accepts every kwarg LightGBM does via **kwargs.
+    # Tuned defaults (match config_walk.yaml). ``lambda_l1`` stays 0.0;
+    # ``lambda_l2`` / ``min_data_in_leaf`` / ``feature_fraction`` /
+    # ``bagging_*`` are the regularised values that keep the booster
+    # training past best_iteration~1. LGBModel accepts every kwarg
+    # LightGBM does via **kwargs.
     lambda_l1: float = 0.0
-    lambda_l2: float = 0.0
-    min_data_in_leaf: int = 20
-    feature_fraction: float = 1.0
-    bagging_fraction: float = 1.0
-    bagging_freq: int = 0
+    lambda_l2: float = 1.0
+    min_data_in_leaf: int = 50
+    feature_fraction: float = 0.8
+    bagging_fraction: float = 0.8
+    bagging_freq: int = 5
     # Explicit compute backend request. ``cpu`` preserves existing
     # behaviour. ``gpu`` is currently approved only for qlib LGBModel
     # and is passed through to LightGBM as ``device_type='gpu'``.
