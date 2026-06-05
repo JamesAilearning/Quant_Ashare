@@ -631,6 +631,8 @@ class WalkForwardEngine:
             predictions=predictions,
             topk=config.topk,
             n_drop=config.n_drop,
+            namechange_path=config.namechange_path,
+            st_audit_path=str(output_dir / f"fold_{fold_index:02d}_st_mask_audit.csv"),
         )
 
         ann_ret, max_dd, ir = extract_cost_metrics(backtest_output.risk_analysis, fold_index)

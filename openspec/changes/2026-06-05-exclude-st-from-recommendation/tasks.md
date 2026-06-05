@@ -58,19 +58,49 @@
       `src/inference/daily_recommend.py`.
 - [x] `pytest tests/logic/test_st_status.py tests/logic/inference/` green
       (41 passed, 2 RUN_E2E skipped).
+- [x] PR2: full `tests/logic tests/governance tests/data_pipeline` green
+      (2290 passed, 25 RUN_E2E skipped); `ruff` + `mypy --strict` clean on the
+      7 changed src files; `openspec validate --strict` passes.
 
-## 6. Scope boundary + near-term backlog (documented, NOT done here)
-- [ ] PR2: backtest-side PIT historical-ST mask from `all_namechanges` +
-      same-PR RUN_E2E C1-baseline regeneration. Until then the WF baseline
-      reflects an includes-ST universe and does not validate the ST-excluded
-      list (made explicit in proposal.md "Scope boundary").
-- [ ] Near-term (not "someday"): write a `snapshot_date`/`as_of` column when
-      fetching active_stocks (tushare `stock_basic`) and switch
-      `_validate_st_snapshot` to read it instead of file mtime — the
-      sync-proof staleness signal (proposal.md "Near-term backlog").
-- [ ] PR2 decision point: name-only `is_st_name` cannot see a current row whose
-      name DROPPED the ST marker (the `*金亚` class — the one blind spot the
-      zero-false-negative scan can't detect). PR2 must decide whether to feed
-      its `change_reason` cross-check into the inference path too; otherwise the
-      inference side stays name-only and that corner never closes
-      (proposal.md "Name-only predicate has a structural blind spot").
+## 6. Backtest-side exclusion (PR2)
+- [x] `src/data/st_history.py` (new, pure): as-of `start_date` step function
+      (`name_on` / `is_st_on`), `end_date` ignored, full-row dedup (not
+      key-subset), same-day any-ST, default non-ST before first record; reuses
+      `is_st_name`; `compute_st_mask(pairs, lookup)` -> drop-set + attribution.
+- [x] `src/data/pit/_common.py`: `qlib_to_ts_code` extracted from
+      `daily_recommend` (shared, same logic, no inference regression).
+- [x] `backtest_runner.py`: parallel ST mask at the `apply_mask_to_predictions`
+      seam (after microstructure, before TopkDropout), on the execution date;
+      `namechange_path`/`st_audit_path` kwargs (None -> disabled + WARN);
+      selection-only (training panel untouched); attribution CSV written.
+- [x] `namechange_path` on `WalkForwardConfig` + `PipelineConfig` (default
+      None); threaded at both call sites; enabled in `config_walk.yaml`.
+- [x] fail-loud: `load_namechange` (missing/unreadable/missing-col/empty) +
+      `assert_covers` (latest record before eval end) raise `StHistoryError`
+      -> `BacktestRunnerError` (no ST-unmasked fallback).
+
+## 7. Backtest tests (PR2)
+- [x] `test_st_history.py`: start_date-inclusive boundary; as-of step
+      (became→摘帽); future start no look-ahead; default non-ST before first /
+      absent ts; end_date ignored; full-row dedup collapses; same-`(ts,start)`
+      different-name NOT deduped + any-ST; same-day all-non-ST stays non-ST;
+      `compute_st_mask` pairs+attribution + mask-seam via
+      `apply_mask_to_predictions`; fail-loud (missing/unreadable/missing-col/
+      empty/build-missing-col) + `assert_covers` stale/ok.
+- [x] `test_common.py`: `qlib_to_ts_code` exchanges + ts-passthrough +
+      round-trip with `to_qlib_ticker` (no inference regression).
+
+## 8. Operator action + remaining backlog
+- [ ] Operator (this PR, RUN_E2E): regenerate the C1 baseline
+      (`scripts/generate_regression_baseline.py
+      tests/regression/fixtures/walk_forward_baseline_config.yaml`), eyeball the
+      small expected drift vs +0.301 (large swing = red flag; check
+      `fold_NN_st_mask_audit.csv` for a small named drop set), commit the new
+      `walk_forward_baseline_metrics.json` in this PR.
+- [ ] Near-term (not "someday"): `snapshot_date`/`as_of` column at fetch time
+      for BOTH active_stocks (inference staleness) and namechange, replacing the
+      mtime / latest-record-date proxies (proposal.md "Near-term backlog").
+- [x] DECIDED: name-only, no `change_reason` rescue (data shows ~795
+      name/reason disagreements; blind spot ~0 on csi300). Closes the PR1
+      inference-side `change_reason` follow-up loop for both paths; manual
+      override is the escape hatch if a specific gap is found.

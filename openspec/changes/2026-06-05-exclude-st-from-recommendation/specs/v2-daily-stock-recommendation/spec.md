@@ -55,3 +55,41 @@ as stale.
 - **THEN** an explicit error is raised and no list is produced
 - **AND** the path does NOT fall back to an empty name map that would
   silently disable ST filtering
+
+### Requirement: The walk-forward backtest SHALL exclude PIT-historical ST/*ST names from the selection set before TopkDropout
+
+When a namechange source is configured, the walk-forward backtest SHALL drop,
+from the (signal-lag-shifted) prediction set passed to `TopkDropoutStrategy`,
+every `(execution_date, instrument)` whose instrument was ST/*ST on that
+execution date. ST status SHALL be reconstructed point-in-time as the name in
+effect on the date — the namechange row with the greatest `start_date <= date`
+(`end_date` SHALL NOT be used) — and a row whose `start_date` is after the date
+SHALL NOT be consulted (no look-ahead). The exclusion SHALL be selection-time
+only: ST names SHALL remain in the model's training panel. When the configured
+namechange source is missing, unreadable, malformed, or does not cover the
+evaluation window, the backtest SHALL fail loud rather than run ST-unmasked. A
+per-run ST mask audit listing the dropped `(date, instrument, ts_code, name)`
+rows SHALL be written for operator review.
+
+#### Scenario: a name ST on the execution date is dropped
+- **WHEN** instrument `X` was ST/*ST (per its as-of namechange name) on
+  execution date `D` and a namechange source is configured
+- **THEN** the `(D, X)` candidate is absent from the set passed to
+  `TopkDropoutStrategy`
+- **AND** it appears in the ST mask audit with its as-of name
+
+#### Scenario: a name that became ST only after D is not dropped for D
+- **WHEN** instrument `X`'s earliest ST namechange has `start_date` after `D`
+- **THEN** `(D, X)` is NOT dropped (the status reflects `D`, not a later
+  relabel)
+
+#### Scenario: training is unaffected by the selection mask
+- **WHEN** the ST mask drops names from the selection set
+- **THEN** the model for that fold was still trained on a panel that included
+  those names (the mask runs on predictions, never on the training data)
+
+#### Scenario: missing or uncovered namechange fails loud
+- **WHEN** the configured namechange source is absent, malformed, or its latest
+  record predates the evaluation window
+- **THEN** the backtest raises and produces no metrics (no ST-unmasked
+  fallback)

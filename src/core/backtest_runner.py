@@ -45,6 +45,13 @@ from src.core.risk_constraints import (
     MinimalRiskConstraints,
     RiskConstraintError,
 )
+from src.data.st_history import (
+    StHistoryError,
+    assert_covers,
+    build_st_lookup,
+    compute_st_mask,
+    load_namechange,
+)
 
 _logger = get_logger(__name__)
 
@@ -76,6 +83,8 @@ class BacktestRunner:
         compute_baselines: bool = True,
         pit_provider: Any | None = None,
         risk_constraints: MinimalRiskConstraints | None = None,
+        namechange_path: str | None = None,
+        st_audit_path: str | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -311,6 +320,69 @@ class BacktestRunner:
                 mask_result.n_one_price_days,
                 n_masked_dropped,
             )
+
+        # A-share ST/*ST mask (C2-d PR2) — parallel to the microstructure mask.
+        # Drops (execution-date, instrument) rows whose instrument was ST/*ST on
+        # that historical day, reconstructed point-in-time from the tushare
+        # namechange table (as-of start_date; see src/data/st_history.py). ST is
+        # a SELECTION-time exclusion only — the model was trained on the full
+        # panel (ST included) upstream. Runs on the SHIFTED predictions, so it
+        # filters by EXECUTION date, exactly like the microstructure mask.
+        if namechange_path is None:
+            _logger.warning(
+                "BacktestRunner: ST mask DISABLED (no namechange_path) — this "
+                "backtest's universe still includes ST/*ST names. Set "
+                "namechange_path to exclude them (C2-d PR2)."
+            )
+        else:
+            try:
+                namechange = load_namechange(namechange_path)
+                assert_covers(namechange, request.evaluation_end)
+                st_lookup = build_st_lookup(namechange)
+            except StHistoryError as exc:
+                raise BacktestRunnerError(
+                    f"BacktestRunner.run: ST mask construction failed ({exc}). "
+                    "Refusing to fall back to an ST-unmasked backtest."
+                ) from exc
+            st_pairs = [
+                (
+                    ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10],
+                    str(inst),
+                )
+                for ts, inst in zip(
+                    shifted_predictions.index.get_level_values("datetime"),
+                    shifted_predictions.index.get_level_values("instrument"),
+                    strict=True,
+                )
+            ]
+            st_mask, st_attribution = compute_st_mask(st_pairs, st_lookup)
+            shifted_predictions, n_st_dropped = apply_mask_to_predictions(
+                shifted_predictions, st_mask,
+            )
+            if n_st_dropped:
+                sample = sorted({inst for _d, inst in st_mask})[:5]
+                _logger.warning(
+                    "BacktestRunner: ST mask dropped %d (date, instrument) "
+                    "candidates (PIT-historical ST/*ST) before strategy "
+                    "construction; %d distinct instrument(s) (e.g. %s). "
+                    "C2-d PR2.",
+                    n_st_dropped, len({i for _d, i in st_mask}), sample,
+                )
+            if st_audit_path is not None:
+                import csv
+                with open(
+                    st_audit_path, "w", newline="", encoding="utf-8-sig",
+                ) as audit_file:
+                    writer = csv.DictWriter(
+                        audit_file,
+                        fieldnames=["date", "instrument", "ts_code", "name"],
+                    )
+                    writer.writeheader()
+                    writer.writerows(st_attribution)
+                _logger.info(
+                    "BacktestRunner: wrote ST mask audit (%d row(s)) -> %s",
+                    len(st_attribution), st_audit_path,
+                )
 
         strategy = TopkDropoutStrategy(
             signal=shifted_predictions,

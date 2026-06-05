@@ -87,6 +87,12 @@ class WalkForwardConfig:
     adjust_mode: str = ADJUST_MODE_PRE
     signal_to_execution_lag: int = 1
     limit_threshold: float = 0.095
+    # Tushare namechange parquet for PIT historical ST/*ST exclusion in the
+    # backtest (C2-d PR2). None -> ST mask disabled (the WF universe still
+    # includes ST, logged as a WARN per fold). Set to all_namechanges.parquet
+    # to exclude ST point-in-time; the C1 baseline must be regenerated when
+    # this is enabled (tests/regression/fixtures/README.md).
+    namechange_path: str | None = None
 
     # Cross-fold model ensemble.
     #
