@@ -496,6 +496,139 @@ def test_load_matching_method_checkpoint_keeps_caches(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Coverage-cache key resume/reuse guard (Codex P1+P2 on #217)
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_embeds_coverage_key(tmp_path):
+    """Saved payloads tag the coverage-cache key (all-cells / members:<fp>)
+    so a resume can detect a mode-or-mask change and avoid mixing semantics."""
+    import json
+
+    engine = _engine(seed=11, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=11, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)
+    ckpt_path = engine.save_checkpoint(tmp_path / "ckpt.json")
+    state = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    assert state["coverage_key"].startswith("members:")
+    resumed = GPEngine.load_checkpoint(ckpt_path, fitness_config=FitnessConfig())
+    assert resumed._coverage_key == engine._coverage_key
+
+
+def test_checkpoint_coverage_key_all_cells_without_mask(tmp_path):
+    """A mask-free run records all-cells (legacy / synthetic mode)."""
+    import json
+
+    engine = _engine(seed=12, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=12, n_tickers=4, n_dates=15)
+    engine.run(panel, fwd, n_generations=1)  # no universe_mask
+    ckpt_path = engine.save_checkpoint(tmp_path / "ckpt.json")
+    state = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    assert state["coverage_key"] == "all_cells"
+
+
+def test_run_discards_cache_on_members_to_all_cells(monkeypatch):
+    """Resuming a members-mode run in all-cells mode (load_checkpoint drops
+    the in-memory mask and the caller forgets to re-supply it) MUST discard
+    the incomparable cached scores rather than silently mix denominators."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=55, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=55, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)  # members
+    assert engine._coverage_key.startswith("members:")
+    # fitness_cache holds every evaluated expr (valid or -inf); _all_evaluated
+    # may be empty on a tiny synthetic panel where no factor clears validity.
+    assert engine.fitness_cache
+
+    # Simulate the resume-without-mask path; n_generations=0 lets us observe
+    # the discard before any re-scoring repopulates the caches.
+    engine._universe_mask = None
+    engine.run(panel, fwd, n_generations=0)  # all_cells -> mismatch
+    assert engine._coverage_key == "all_cells"
+    assert engine.fitness_cache == {}
+    assert engine._all_evaluated == {}
+    assert any(
+        "coverage cache key" in msg and "discarding" in msg for msg in warnings
+    ), warnings
+
+
+def test_run_discards_cache_on_different_member_mask(monkeypatch):
+    """Two DIFFERENT non-None masks (different universe / date range) are both
+    "members" mode but NOT comparable: their cache keys differ by mask
+    fingerprint, so the second run must discard the first run's cached scores
+    instead of reusing stale coverage by expression hash (Codex P2 on #217)."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=88, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=88, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask_a = pd.DataFrame(True, index=close.index, columns=close.columns)
+    mask_b = mask_a.copy()
+    mask_b.iloc[:, 0] = False  # a genuinely different membership
+    engine.run(panel, fwd, universe_mask=mask_a, n_generations=1)
+    key_a = engine._coverage_key
+    assert key_a.startswith("members:")
+    assert engine.fitness_cache
+
+    engine.run(panel, fwd, universe_mask=mask_b, n_generations=0)
+    assert engine._coverage_key.startswith("members:")
+    assert engine._coverage_key != key_a  # different mask -> different key
+    assert engine.fitness_cache == {}     # stale scores discarded
+    assert engine._all_evaluated == {}
+    assert any(
+        "coverage cache key" in msg and "discarding" in msg for msg in warnings
+    ), warnings
+
+
+def test_run_keeps_cache_when_coverage_key_matches(monkeypatch):
+    """Same mask across a resume preserves cached scores (no spurious
+    discard) — an equal-content mask hashes to the same fingerprint."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=66, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=66, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)
+    n_cached = len(engine.fitness_cache)
+    assert n_cached > 0
+    # A fresh but equal-content mask object must hash identically -> no discard.
+    same_mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=same_mask, n_generations=0)
+    assert len(engine.fitness_cache) == n_cached
+    assert not any("discarding" in msg for msg in warnings), warnings
+
+
+def test_run_without_mask_resets_universe_mask_to_all_cells(monkeypatch):
+    """Reusing an engine: a mask-free run after a members-mode run must reset
+    to all-cells coverage (None means all-cells), not retain the stale mask
+    from the previous panel (Codex P2 on #217)."""
+    warnings = _capture_gp_engine_warnings(monkeypatch)
+
+    engine = _engine(seed=77, population_size=4, n_generations=2)
+    panel, fwd = _make_panel(seed=77, n_tickers=4, n_dates=15)
+    close = panel["$close"]
+    mask = pd.DataFrame(True, index=close.index, columns=close.columns)
+    engine.run(panel, fwd, universe_mask=mask, n_generations=1)  # members
+    assert engine._universe_mask is not None
+    assert engine._coverage_key.startswith("members:")
+
+    # Reuse the SAME engine, omitting the mask -> must flip to all-cells and
+    # drop the stale mask (not keep scoring against the old membership).
+    engine.run(panel, fwd, n_generations=0)
+    assert engine._universe_mask is None
+    assert engine._coverage_key == "all_cells"
+    assert any(
+        "coverage cache key" in msg and "discarding" in msg for msg in warnings
+    ), warnings
+
+
+# ---------------------------------------------------------------------------
 # Codex PR #143 P1 regression: pool-entry ``method`` default.
 #
 # When a checkpoint passes the evaluator_method gate (so caches aren't
@@ -748,9 +881,9 @@ def test_evaluate_individual_uses_normal_method_not_rank():
     captured_methods: list[str] = []
     original = gp_mod.evaluate_factor
 
-    def recorder(expr, panel, fwd_ret, *, method="rank"):
+    def recorder(expr, panel, fwd_ret, *, method="rank", universe_mask=None):
         captured_methods.append(method)
-        return original(expr, panel, fwd_ret, method=method)
+        return original(expr, panel, fwd_ret, method=method, universe_mask=universe_mask)
 
     engine = _engine(seed=314, population_size=4, n_generations=1)
     panel, fwd = _make_panel(seed=314, n_tickers=5, n_dates=20)
@@ -888,7 +1021,7 @@ def test_evaluate_individual_warns_once_per_exception():
 
     original = gp_mod.evaluate_factor
 
-    def raiser(_expr, _panel, _fwd, *, method="rank"):  # noqa: ARG001
+    def raiser(_expr, _panel, _fwd, *, method="rank", universe_mask=None):  # noqa: ARG001
         raise ValueError("synthetic overflow")
 
     gp_mod.evaluate_factor = raiser
