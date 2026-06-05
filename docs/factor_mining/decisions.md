@@ -101,11 +101,12 @@ class CSOperator:
 > `config/factor_mining/default.yaml` was removed in C2).
 >
 > **This is NOT a confirmation that 12 fields is correct.** Whether the 6
-> `daily_basic` fundamentals earn their place is **PENDING C2 validation**
-> — a fair GP-vs-Alpha158 comparison on the C1 leak-free (embargo-gapped)
-> walk-forward folds against the clean Alpha158 baseline (mean IR ≈ 0.30,
-> see `docs/phase_c1_result.md`). The 6 fundamentals stay or go based on
-> that result. The original 6-field rationale below is kept for history.
+> `daily_basic` fundamentals earn their place was to be settled by a fair
+> GP-vs-Alpha158 comparison — but **that validation is now moot: GP is
+> shelved (see D6).** The 6 fields remain in `FeatureRegistry.V1`, simply
+> unexercised by a production GP line; re-opening their evaluation is gated
+> on D6's revisit conditions. The original 6-field rationale below is kept
+> for history.
 
 **Decision**: v1 feature universe is the **6 fields the PIT qlib bins
 actually contain**:
