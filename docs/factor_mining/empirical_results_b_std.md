@@ -1,10 +1,24 @@
 # Empirical results: GP factor mining on B-std (csi300, 2018-2025)
 
+> **⚠️ SUPERSEDED (C2-b, 2026-06-05).** The "GP loses" conclusion below was
+> produced on a CONTAMINATED comparison: the walk-forward predated the #212
+> embargo gap (train→valid / valid→test label look-ahead) AND scored GP
+> factors over (part of) the same period they were selected on (IS/OOS
+> selection bias). Those numbers are unreliable as stated. The clean, fair
+> verdict — leak-free embargo-gapped folds, frozen IS-only factor selection,
+> same-window Alpha158 baseline — is in `docs/phase_c2b_dryrun_result.md`
+> (decision: `decisions.md` D6). It independently reaches the same direction
+> (GP shelved), but rigorously. Keep this document for the root-cause
+> analysis only.
+
 This document records the first end-to-end empirical evaluation of the
 factor-mining subsystem against the design doc's success criterion
 (§10: "Adding mined factors improves OOS Sharpe ≥ 10% vs Alpha158-only
-baseline"). It is the canonical reference for "does GP factor mining
-work as configured today, on the data we have?"
+baseline"). It was the first such evaluation; its verdict is **superseded**
+(see the note above), so this file is no longer the canonical reference. The
+canonical answer to "does GP factor mining work as configured today?" now
+lives in `docs/phase_c2b_dryrun_result.md` (decision: `decisions.md` D6); this
+file is kept for its root-cause analysis only.
 
 **TL;DR: No, not as currently configured.** The infrastructure is
 complete and bug-free, but on a real 8-year csi300 walk-forward the

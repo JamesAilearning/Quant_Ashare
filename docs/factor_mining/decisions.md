@@ -22,9 +22,10 @@
 |---|----------|----------|-----------|
 | D1 | Transaction cost model | **B — annualized round-trip, cost_rate = 0.003** | ✅ Final |
 | D2 | Industry / size neutralization | **v1: none; grammar keeps `group_by` hook for v2** | ✅ Final (locked post-Phase-0) |
-| D3 | Feature universe | **superseded → 12 fields (6 OHLCV/money + 6 `daily_basic`); see D3 amendment** | ⚠️ 6 fundamentals PENDING C2 GP validation |
+| D3 | Feature universe | **superseded → 12 fields (6 OHLCV/money + 6 `daily_basic`); see D3 amendment** | ⚠️ → moot: the 6 fundamentals' GP-validation is shelved with GP (see D6) |
 | D4 | Promotion workflow | **Manual gated** | ✅ Final |
 | D5 | PIT data gate strictness | **Zero `qlib.data`/`qlib.init` matches under `src/factor_mining/`** | ✅ Final |
+| D6 | GP factor mining in production | **Shelved — not on the recommendation path** | ✅ Decided (C2-b; revisit-gated) |
 
 ---
 
@@ -100,11 +101,12 @@ class CSOperator:
 > `config/factor_mining/default.yaml` was removed in C2).
 >
 > **This is NOT a confirmation that 12 fields is correct.** Whether the 6
-> `daily_basic` fundamentals earn their place is **PENDING C2 validation**
-> — a fair GP-vs-Alpha158 comparison on the C1 leak-free (embargo-gapped)
-> walk-forward folds against the clean Alpha158 baseline (mean IR ≈ 0.30,
-> see `docs/phase_c1_result.md`). The 6 fundamentals stay or go based on
-> that result. The original 6-field rationale below is kept for history.
+> `daily_basic` fundamentals earn their place was to be settled by a fair
+> GP-vs-Alpha158 comparison — but **that validation is now moot: GP is
+> shelved (see D6).** The 6 fields remain in `FeatureRegistry.V1`, simply
+> unexercised by a production GP line; re-opening their evaluation is gated
+> on D6's revisit conditions. The original 6-field rationale below is kept
+> for history.
 
 **Decision**: v1 feature universe is the **6 fields the PIT qlib bins
 actually contain**:
@@ -240,6 +242,53 @@ grep -rn "qlib\.data\|qlib\.init\|from qlib" src/factor_mining/
 
 **Phase 2 enforcement**: the grep above runs as part of the Phase 2
 spec's governance test. Failure to satisfy it blocks merge.
+
+---
+
+## D6: GP Factor Mining in Production — DECIDED (Shelved, C2-b, 2026-06-05)
+
+**Decision**: the GP factor-mining line is **shelved** — it does NOT go on
+the production stock-recommendation path. Alpha158 stays the sole feature
+source for the canonical pipeline. (The GP subsystem and its coverage fix
+remain in the tree, correct and tested — see #217 — just unused in
+production.)
+
+**Why — a fair OOS comparison shows no edge.** A leak-free, same-window
+dry-run (C2-b): the same 11 walk-forward OOS folds (2023-Q1 .. 2025-Q3),
+same pipeline (#212 embargo gap, #179 risk constraints, #181 microstructure
+mask, same LGB config, same PIT bundle) — the only variable is the feature
+handler. GP top-50 (frozen by in-sample fitness, mined 2018-2021) vs
+Alpha158:
+
+- mean IR: **GP −0.10** vs **Alpha158 +0.19**
+- mean IC(1d): **GP ≈0.0004** (no predictive power) vs **Alpha158 ≈0.035**
+- annualized return: **GP −0.85%** vs **Alpha158 +3.4%**
+
+The GP factors were already **weak in-sample** (top-50 IS `|rank_ic|` ≤ 0.011,
+fitness all negative) and OOS IC collapsed to ≈0 — i.e. the current GP
+grammar/fitness does not find signal even in-sample, so a bigger eval budget
+alone is unlikely to fix it.
+
+**Revisit conditions** (what would reopen this): only after (a) the Alpha158
+signal is demonstrably exhausted on this universe/window, AND (b) the GP
+grammar / fitness is redesigned (not merely a larger eval budget). Any
+re-evaluation MUST use the same fair protocol — leak-free embargo-gapped
+folds, frozen IS-only factor selection, same-window Alpha158 baseline.
+
+**This also makes D3's "PENDING C2 GP validation" moot**: whether the 6
+`daily_basic` fundamentals earn their place was to be settled by GP; with GP
+shelved, that question is parked alongside it (the fields remain in
+`FeatureRegistry.V1`, simply unexercised by a production GP line).
+
+**Evidence**: `docs/phase_c2b_dryrun_result.md` (full comparison table +
+caveats). Caveat: this is a single-frozen-mining dry-run on a small smoke
+pool (200×20), single OOS window — a directional verdict, strong enough to
+shelve, not a permanent close.
+
+**Supersedes**: the "GP loses" conclusion in `empirical_results_b_std.md`
+was based on a contaminated comparison (label look-ahead pre-#212 + IS/OOS
+selection bias) and is voided; this clean verdict replaces it (see that
+file's top note).
 
 ---
 
