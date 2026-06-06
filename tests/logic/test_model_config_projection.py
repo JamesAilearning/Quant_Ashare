@@ -44,8 +44,13 @@ class ModelConfigProjectionTests(unittest.TestCase):
         self.assertIsInstance(config, ModelTrainConfig)
         self.assertEqual(config.num_boost_round, 123)
         self.assertEqual(config.early_stopping_rounds, 50)
+        # Tuned defaults fill in for everything not supplied (C2-c).
         self.assertEqual(config.lambda_l1, 0.0)
-        self.assertEqual(config.bagging_freq, 0)
+        self.assertEqual(config.lambda_l2, 1.0)
+        self.assertEqual(config.min_data_in_leaf, 50)
+        self.assertEqual(config.feature_fraction, 0.8)
+        self.assertEqual(config.bagging_fraction, 0.8)
+        self.assertEqual(config.bagging_freq, 5)
         self.assertEqual(config.compute_device, "cpu")
 
     def test_missing_required_model_type_is_loud(self) -> None:
