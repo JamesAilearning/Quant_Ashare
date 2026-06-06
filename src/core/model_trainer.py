@@ -84,6 +84,12 @@ class ModelTrainConfig:
     ``learning_rate``/``num_leaves`` with neutral regularisation: that
     combination is the pathological set that produced best_iteration~1
     (C2-c).
+
+    Note: ``learning_rate`` and ``max_depth`` are generic (also consumed
+    by XGBModel / CatBoostModel via ``_create_model``); these tuned
+    values are LGB-oriented, so non-LGB callers should set their own.
+    ``num_leaves`` and the regularisation/sampling fields are LGB-only
+    and are not forwarded to other model types.
     """
 
     model_type: str
