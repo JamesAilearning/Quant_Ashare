@@ -19,6 +19,7 @@ import os
 import pickle
 import tempfile
 import unittest
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,9 @@ from src.inference.daily_recommend import (
     DailyRecommendationResult,
     RecommendationConfig,
     _load_model,
+    _scores_to_inst_map,
+    _st_snapshot_is_stale,
+    _validate_st_snapshot,
     assert_no_lookahead,
     build_recommendation,
     resolve_dates,
@@ -104,6 +108,66 @@ class AssertNoLookaheadTests(unittest.TestCase):
         empty = _frame_for([]).iloc[0:0]
         with self.assertRaises(DailyRecommendationError):
             assert_no_lookahead(empty, "2025-06-30")
+
+
+class ScoresToInstMapTests(unittest.TestCase):
+    """The fail-loud instrument->score collapse (single date + unique keys).
+
+    Covers the gap the previous inline ``dict(zip(..., strict=True))`` left:
+    ``strict=True`` only checked length parity (which can never differ here),
+    so a duplicate instrument or a multi-date index was silently collapsed.
+    """
+
+    def _series(self, pairs: list[tuple[str, str, float]]) -> pd.Series:
+        """Build a ``(datetime, instrument)``-MultiIndexed score Series."""
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp(d), i) for d, i, _ in pairs],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series([v for *_, v in pairs], index=idx)
+
+    def test_unique_multiindex_tuple_form(self) -> None:
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-06-30", "SZ000001", 0.8),
+        ])
+        self.assertEqual(
+            _scores_to_inst_map(s), {"SH600000": 0.9, "SZ000001": 0.8},
+        )
+
+    def test_unique_flat_index_form(self) -> None:
+        # Defensive non-MultiIndex path: each index entry IS the instrument
+        # (kept whole, not sliced to its last character).
+        s = pd.Series([0.5, 0.4], index=["SH600000", "SZ000001"])
+        self.assertEqual(
+            _scores_to_inst_map(s), {"SH600000": 0.5, "SZ000001": 0.4},
+        )
+
+    def test_empty_series_returns_empty_map(self) -> None:
+        # recommend() guards empty upstream; the helper is still empty-safe.
+        self.assertEqual(_scores_to_inst_map(pd.Series([], dtype=float)), {})
+
+    def test_duplicate_instruments_raise(self) -> None:
+        # Same date, same instrument twice -> dict(zip) would silently drop one.
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-06-30", "SH600000", 0.1),
+        ])
+        with self.assertRaisesRegex(
+            DailyRecommendationError, "duplicate instruments",
+        ):
+            _scores_to_inst_map(s)
+
+    def test_multi_date_raises(self) -> None:
+        # Two distinct dates -> idx[-1] would alias an instrument across days.
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-07-01", "SZ000001", 0.8),
+        ])
+        with self.assertRaisesRegex(
+            DailyRecommendationError, "distinct dates",
+        ):
+            _scores_to_inst_map(s)
 
 
 class BuildRecommendationTests(unittest.TestCase):
@@ -185,6 +249,178 @@ class BuildRecommendationTests(unittest.TestCase):
                          ["SH600003", "SH600001", "SH600002"])
 
 
+class StExclusionInBuildRecommendationTests(unittest.TestCase):
+    """ST names drop out of the pool BEFORE the Top-K slice (filter-then-K)."""
+
+    def test_st_excluded_from_picks_and_labelled(self) -> None:
+        scores = {
+            "SH600000": 0.9,   # tradable
+            "SZ000004": 0.85,  # *ST -> excluded
+            "SH600519": 0.8,   # tradable
+            "SZ000078": 0.7,   # ST  -> excluded
+            "SH601318": 0.6,   # tradable
+        }
+        st = {"SZ000004", "SZ000078"}
+        picks, frame, n_excl = build_recommendation(
+            score_by_inst=scores, masked_pairs=set(), suspended=set(),
+            one_price=set(), st_excluded=st, name_fn=lambda x: "",
+            as_of_date="2025-06-30", entry_date="2025-07-01", topk=10,
+        )
+        self.assertEqual([p.stock_code for p in picks],
+                         ["SH600000", "SH600519", "SH601318"])  # no ST
+        self.assertEqual(n_excl, 2)
+        reason = dict(zip(frame.stock_code, frame.unavailable_reason, strict=True))
+        self.assertEqual(reason["SZ000004"], "st")
+        self.assertEqual(reason["SZ000078"], "st")
+
+    def test_filter_then_take_k_keeps_k_non_st(self) -> None:
+        # 6 names, 2 ST interspersed by score; topk=3 must return the 3 highest
+        # NON-ST names (K from the non-ST pool, not K minus the ST hits).
+        scores = {
+            "SZ000004": 1.0,   # *ST (highest) -> excluded
+            "SH600000": 0.9,
+            "SZ000078": 0.8,   # ST -> excluded
+            "SH600519": 0.7,
+            "SH601318": 0.6,
+            "SH600036": 0.5,
+        }
+        st = {"SZ000004", "SZ000078"}
+        picks, _frame, _ = build_recommendation(
+            score_by_inst=scores, masked_pairs=set(), suspended=set(),
+            one_price=set(), st_excluded=st, name_fn=lambda x: "",
+            as_of_date="2025-06-30", entry_date="2025-07-01", topk=3,
+        )
+        self.assertEqual(len(picks), 3)
+        self.assertEqual([p.stock_code for p in picks],
+                         ["SH600000", "SH600519", "SH601318"])
+
+    def test_microstructure_mask_takes_precedence_over_st(self) -> None:
+        # Both masked (suspended) AND ST -> the microstructure reason wins.
+        scores = {"SZ000004": 0.9}
+        picks, frame, n_excl = build_recommendation(
+            score_by_inst=scores, masked_pairs={"SZ000004"},
+            suspended={"SZ000004"}, one_price=set(), st_excluded={"SZ000004"},
+            name_fn=lambda x: "", as_of_date="2025-06-30",
+            entry_date="2025-07-01", topk=10,
+        )
+        self.assertEqual(len(picks), 0)
+        self.assertEqual(n_excl, 1)
+        reason = dict(zip(frame.stock_code, frame.unavailable_reason, strict=True))
+        self.assertEqual(reason["SZ000004"], "suspended")
+
+    def test_fewer_than_k_after_st_filter_returns_available_no_error(self) -> None:
+        # topk exceeds the non-ST pool -> return however many remain (no error,
+        # no padding). CSI300 won't hit this, but a small universe could.
+        scores = {
+            "SZ000004": 0.9,   # *ST -> excluded
+            "SH600000": 0.8,
+            "SZ000078": 0.7,   # ST -> excluded
+            "SH600519": 0.6,
+        }
+        st = {"SZ000004", "SZ000078"}
+        picks, _frame, _ = build_recommendation(
+            score_by_inst=scores, masked_pairs=set(), suspended=set(),
+            one_price=set(), st_excluded=st, name_fn=lambda x: "",
+            as_of_date="2025-06-30", entry_date="2025-07-01", topk=5,
+        )
+        self.assertEqual(len(picks), 2)  # 2 non-ST, not 5, not an error
+        self.assertEqual([p.stock_code for p in picks], ["SH600000", "SH600519"])
+
+    def test_no_st_set_is_backward_compatible(self) -> None:
+        # Omitting st_excluded keeps the pre-ST behaviour (nothing dropped).
+        scores = {"SH600000": 0.9, "SZ000004": 0.8}
+        picks, _frame, n_excl = build_recommendation(
+            score_by_inst=scores, masked_pairs=set(), suspended=set(),
+            one_price=set(), name_fn=lambda x: "", as_of_date="2025-06-30",
+            entry_date="2025-07-01", topk=10,
+        )
+        self.assertEqual([p.stock_code for p in picks], ["SH600000", "SZ000004"])
+        self.assertEqual(n_excl, 0)
+
+
+class StSnapshotStalenessTests(unittest.TestCase):
+    """The pure staleness predicate (snapshot date vs as-of, tolerance)."""
+
+    def test_within_tolerance_is_fresh(self) -> None:
+        self.assertFalse(_st_snapshot_is_stale(date(2025, 6, 27), "2025-06-30", 7))
+
+    def test_exactly_at_tolerance_is_fresh(self) -> None:
+        self.assertFalse(_st_snapshot_is_stale(date(2025, 6, 23), "2025-06-30", 7))
+
+    def test_beyond_tolerance_is_stale(self) -> None:
+        self.assertTrue(_st_snapshot_is_stale(date(2025, 6, 22), "2025-06-30", 7))
+
+    def test_newer_snapshot_is_never_stale(self) -> None:
+        # Snapshot dated AFTER as-of -> negative age -> not stale here (PR2
+        # handles point-in-time history; this guard only catches OLD snapshots).
+        self.assertFalse(_st_snapshot_is_stale(date(2025, 7, 15), "2025-06-30", 7))
+
+
+class ValidateStSnapshotTests(unittest.TestCase):
+    """Fail-loud guard on a missing / stale current-ST source."""
+
+    def _config(self, path: str | None, max_age: int = 7) -> RecommendationConfig:
+        return RecommendationConfig(
+            model_path="m", provider_uri="p", delisted_registry_path="r",
+            fit_start=_FIT_START, fit_end=_FIT_END,
+            name_source_parquet=path, st_snapshot_max_age_days=max_age,
+        )
+
+    def test_none_source_raises(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "requires name_source"):
+            _validate_st_snapshot(self._config(None), "2025-06-30")
+
+    def test_missing_file_raises(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "not found"):
+            _validate_st_snapshot(
+                self._config("D:/no/such/active_xyz.parquet"), "2025-06-30",
+            )
+
+    def test_stale_file_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            p.write_bytes(b"x")
+            old = datetime(2025, 6, 30).timestamp() - 30 * 86400  # 30d stale
+            os.utime(p, (old, old))
+            with self.assertRaisesRegex(DailyRecommendationError, "stale"):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+    def test_fresh_valid_file_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["平安银行"]}).to_parquet(p)
+            recent = datetime(2025, 6, 29).timestamp()  # 1d before as-of
+            os.utime(p, (recent, recent))
+            self.assertEqual(
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30"), p,
+            )
+
+    def test_malformed_schema_raises(self) -> None:
+        # Present + fresh but the 'name' column dropped (upstream schema change)
+        # -> must NOT pass, else _load_name_map returns {} and ST filtering is
+        # silently disabled (Codex P1 on #222).
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame(
+                {"ts_code": ["000001.SZ"], "industry": ["银行"]},
+            ).to_parquet(p)
+            recent = datetime(2025, 6, 29).timestamp()
+            os.utime(p, (recent, recent))
+            with self.assertRaisesRegex(
+                DailyRecommendationError, "missing required column",
+            ):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+    def test_empty_snapshot_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame({"ts_code": [], "name": []}).to_parquet(p)
+            recent = datetime(2025, 6, 29).timestamp()
+            os.utime(p, (recent, recent))
+            with self.assertRaisesRegex(DailyRecommendationError, "zero rows"):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+
 class LoadModelTests(unittest.TestCase):
     def test_missing_path_raises_domain_error(self) -> None:
         with self.assertRaisesRegex(DailyRecommendationError, "not found"):
@@ -212,7 +448,7 @@ class WriteOutputsTests(unittest.TestCase):
         # header row so downstream readers don't choke on a column-less file.
         result = DailyRecommendationResult(
             as_of_date="2025-06-30", entry_date="2025-07-01",
-            picks=(), n_scored=0, n_masked=0,
+            picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
             scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
         )
         with tempfile.TemporaryDirectory() as tmp:

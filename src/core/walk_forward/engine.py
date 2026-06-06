@@ -90,8 +90,8 @@ class WalkForwardEngine:
         config_fingerprint = compute_config_fingerprint(config)
         discovered_manifests = FoldManifest.discover(output_dir)
 
-        # Generate fold windows
-        windows = cls._generate_windows(config)
+        # Generate fold windows (embargo-gapped; calendar from qlib runtime)
+        windows = cls._generate_windows(config, calendar=cls._load_trading_calendar())
         if not windows:
             raise WalkForwardError(
                 "No valid fold windows could be generated with the given config. "
@@ -131,6 +131,7 @@ class WalkForwardEngine:
             decision = decide_fold(
                 fold_index=i,
                 train_period=f"{train_s} ~ {train_e}",
+                valid_period=f"{valid_s} ~ {valid_e}",
                 test_period=f"{test_s} ~ {test_e}",
                 config_fingerprint=config_fingerprint,
                 discovered=discovered_manifests,
@@ -335,9 +336,63 @@ class WalkForwardEngine:
     # ── real methods ──────────────────────────────────────────────
 
     @classmethod
-    def _generate_windows(cls, config: WalkForwardConfig) -> list[tuple[str, ...]]:
-        """Generate (train_s, train_e, valid_s, valid_e, test_s, test_e) tuples."""
+    def _generate_windows(
+        cls,
+        config: WalkForwardConfig,
+        calendar: Sequence[date] | None = None,
+    ) -> list[tuple[str, ...]]:
+        """Generate (train_s, train_e, valid_s, valid_e, test_s, test_e) tuples.
+
+        An Alpha158 label-lookahead embargo gap of ``LABEL_LOOKAHEAD_DAYS``
+        trading days is inserted between adjacent segments by pulling
+        ``train_end`` and ``valid_end`` BACK onto the trading calendar. The
+        month-aligned start anchors (``train_s``/``valid_s``/``test_s``) and
+        ``test_e`` are unchanged, so the quarter grid / documented fold
+        layout is preserved; only the train/valid segment *tails* shrink by
+        ``gap`` trading days, and those discarded days belong to no segment.
+
+        This ADDS a gap; it does not weaken the embargo guard. The gap size
+        is read from ``src.data._segment_embargo.LABEL_LOOKAHEAD_DAYS`` (the
+        guard's own constant) so generator and guard can never drift — see
+        ``openspec/changes/fix-walk-forward-embargo-gap``.
+
+        ``calendar`` (sorted trading-day dates) is injected for testability;
+        when ``None`` it is read from the initialized qlib calendar (``run``
+        guarantees qlib is initialized before this is called). ``gap == 0``
+        (a future handler with no label lookahead) reduces to adjacent
+        boundaries.
+        """
+        import bisect
+
         from dateutil.relativedelta import relativedelta
+
+        from src.data._segment_embargo import LABEL_LOOKAHEAD_DAYS
+
+        if calendar is None:
+            from qlib.data import D
+            calendar = list(D.calendar())
+        # Normalize + sort + de-dup the trading calendar for bisect/index.
+        cal = sorted({cls._to_date(d) for d in calendar})
+        gap = LABEL_LOOKAHEAD_DAYS
+
+        def _end_before(anchor: date) -> date | None:
+            """Trading day ``gap``+1 positions before the first trading day
+            >= ``anchor`` — leaves exactly ``gap`` trading days strictly
+            between the returned date and ``anchor``. ``None`` when the
+            anchor is beyond calendar coverage, or the calendar lacks
+            enough history before it."""
+            iv = bisect.bisect_left(cal, anchor)  # cal[iv] >= anchor
+            if iv >= len(cal):
+                # anchor is after the last trading day — the fold's
+                # valid/test segment would fall outside calendar coverage
+                # (future / truncated bundle). Treat as uncovered, not a
+                # tail-date fold that would pass embargo but point at empty
+                # data downstream.
+                return None
+            idx = iv - (gap + 1)
+            if idx < 0:
+                return None
+            return cal[idx]
 
         start = date.fromisoformat(config.overall_start)
         end = date.fromisoformat(config.overall_end)
@@ -347,11 +402,17 @@ class WalkForwardEngine:
 
         while True:
             train_s = cursor
-            train_e = train_s + relativedelta(months=config.train_months) - relativedelta(days=1)
-            valid_s = train_e + relativedelta(days=1)
-            valid_e = valid_s + relativedelta(months=config.valid_months) - relativedelta(days=1)
-            test_s = valid_e + relativedelta(days=1)
+            # Month-aligned start anchors — identical to the pre-embargo
+            # logic (old valid_s = train_e+1day = train_s+train_months;
+            # old test_s = valid_e+1day = valid_s+valid_months).
+            valid_s = train_s + relativedelta(months=config.train_months)
+            test_s = valid_s + relativedelta(months=config.valid_months)
             test_e = test_s + relativedelta(months=config.test_months) - relativedelta(days=1)
+
+            # Embargo gap: pull the two segment ENDS back onto the calendar
+            # so each adjacent pair has >= gap trading days between them.
+            train_e = _end_before(valid_s)
+            valid_e = _end_before(test_s)
 
             if test_e > end:
                 # Try fitting partial last fold up to overall_end
@@ -361,6 +422,20 @@ class WalkForwardEngine:
                 # +1 because both start and end dates are inclusive
                 if (test_e - test_s).days + 1 < 10:
                     break
+
+            # Skip a fold the calendar cannot embargo (too little history
+            # before the anchor, or the pulled-back end collapses the
+            # segment) — same spirit as the partial-last-fold guard above.
+            if (
+                train_e is None
+                or valid_e is None
+                or train_e <= train_s
+                or valid_e <= valid_s
+            ):
+                cursor = cursor + relativedelta(months=config.step_months)
+                if cursor + relativedelta(months=config.train_months) >= end:
+                    break
+                continue
 
             windows.append((
                 train_s.isoformat(), train_e.isoformat(),
@@ -375,6 +450,28 @@ class WalkForwardEngine:
                 break
 
         return windows
+
+    @staticmethod
+    def _to_date(value: Any) -> date:
+        """Normalize a calendar entry (date / datetime / pd.Timestamp / ISO
+        str) to a plain ``datetime.date`` for embargo-gap arithmetic."""
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        import pandas as pd  # only the qlib-calendar path (Timestamps) reaches here
+        ts = pd.Timestamp(value)
+        return date(ts.year, ts.month, ts.day)
+
+    @classmethod
+    def _load_trading_calendar(cls) -> list[date]:
+        """Trading-day calendar from the initialized qlib runtime, as
+        ``datetime.date`` list. Isolated behind a method so tests inject a
+        synthetic calendar (patching this) instead of standing up a qlib
+        bundle; ``run`` guarantees qlib is initialized before this is called.
+        """
+        from qlib.data import D
+        return [cls._to_date(d) for d in D.calendar()]
 
     @classmethod
     def _run_single_fold(
@@ -534,6 +631,8 @@ class WalkForwardEngine:
             predictions=predictions,
             topk=config.topk,
             n_drop=config.n_drop,
+            namechange_path=config.namechange_path,
+            st_audit_path=str(output_dir / f"fold_{fold_index:02d}_st_mask_audit.csv"),
         )
 
         ann_ret, max_dd, ir = extract_cost_metrics(backtest_output.risk_analysis, fold_index)

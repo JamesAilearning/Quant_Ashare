@@ -179,6 +179,37 @@ def build_panel(config: MinerConfig):
     )
 
 
+def build_universe_mask(config: MinerConfig):
+    """Universe-membership mask (date × ticker bool) for the run, or None.
+
+    PIT mode returns the boolean membership frame from
+    ``FactorMiningDataView.universe_mask`` so the evaluator can measure
+    coverage members-only (see ``evaluator._coverage``) — without it, a
+    survivorship-corrected panel's legitimate non-member NaNs make
+    ``coverage_min`` unsatisfiable and every GP candidate is rejected.
+    Synthetic mode has no membership concept (dense panel) and returns
+    None, which the evaluator treats as the legacy all-cells denominator.
+    """
+    if config.data.mode != "pit":
+        return None
+    from src.pit.query import PITDataProvider  # noqa: PLC0415
+
+    from .pit_adapter import FactorMiningDataView  # noqa: PLC0415
+
+    data = config.data
+    provider = PITDataProvider(
+        provider_uri=data.pit_provider_uri,
+        delisted_registry_path=data.delisted_registry_path,
+    )
+    view = FactorMiningDataView(
+        provider,
+        start=data.start_date,
+        end=data.end_date,
+        universe_name=data.universe_name,
+    )
+    return view.universe_mask()
+
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -212,8 +243,9 @@ def run_mining(config: MinerConfig) -> RunResult:
     consumers (handler, walk-forward) will load.
     """
     panel, fwd = build_panel(config)
+    universe_mask = build_universe_mask(config)
     engine = GPEngine(config.gp, config.fitness)
-    pool = engine.run(panel, fwd)
+    pool = engine.run(panel, fwd, universe_mask=universe_mask)
 
     full_pool_size = len(pool)
     if config.pool_top_k is not None and full_pool_size > config.pool_top_k:

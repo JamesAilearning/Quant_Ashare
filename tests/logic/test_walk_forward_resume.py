@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -88,8 +89,10 @@ class FingerprintTests(unittest.TestCase):
         )
 
     def test_includes_feature_handler(self) -> None:
-        a = _make_config(feature_handler="Alpha158")
-        b = _make_config(feature_handler="MinedFactor")
+        # Both post_adjusted so the only differing field is feature_handler
+        # (and so the MinedFactor config satisfies the PIT post_adjusted guard).
+        a = _make_config(feature_handler="Alpha158", adjust_mode="post_adjusted")
+        b = _make_config(feature_handler="MinedFactor", adjust_mode="post_adjusted")
         self.assertNotEqual(
             compute_config_fingerprint(a),
             compute_config_fingerprint(b),
@@ -101,6 +104,36 @@ class FingerprintTests(unittest.TestCase):
             compute_config_fingerprint(cfg),
             compute_config_fingerprint(cfg),
         )
+
+    def test_includes_namechange_content(self) -> None:
+        """Same namechange_path, different file CONTENT → different fingerprint
+        (Codex P1 on #223: a re-fetched snapshot at the same path must
+        invalidate resume; the path string alone would not change). Only the
+        file bytes are hashed, so a plain byte file exercises it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "namechange.parquet"
+            p.write_bytes(b"snapshot-A")
+            cfg = _make_config(namechange_path=str(p))
+            fp_a = compute_config_fingerprint(cfg)
+            p.write_bytes(b"snapshot-B-different")
+            fp_b = compute_config_fingerprint(cfg)
+            self.assertNotEqual(
+                fp_a, fp_b,
+                "Same namechange_path, different content must change the "
+                "fingerprint so resume re-runs the folds.",
+            )
+            p.write_bytes(b"snapshot-A")  # same content -> stable again
+            self.assertEqual(compute_config_fingerprint(cfg), fp_a)
+
+    def test_namechange_off_vs_on_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "namechange.parquet"
+            p.write_bytes(b"x")
+            off = _make_config()  # namechange_path defaults to None
+            on = _make_config(namechange_path=str(p))
+            self.assertNotEqual(
+                compute_config_fingerprint(off), compute_config_fingerprint(on),
+            )
 
     def test_rejects_non_dataclass(self) -> None:
         with self.assertRaises(TypeError):
@@ -453,6 +486,38 @@ class DecideFoldTests(unittest.TestCase):
         )
         self.assertFalse(decision.skip)
         self.assertIn("window_mismatch", decision.reason)
+
+    def test_auto_with_valid_period_mismatch_reruns(self) -> None:
+        """valid_period differs (the embargo-gap change made valid_end
+        calendar-dependent, so a different bundle vintage can shift it)
+        while train_period & test_period match → the fold must RE-RUN,
+        not resume a stale-valid-window artifact."""
+        m = self._make_manifest(0, fingerprint="fp1", train="A", test="B")
+        decision = decide_fold(
+            fold_index=0,
+            train_period="A", test_period="B",
+            valid_period=m.valid_period + " (shifted)",  # differs from manifest
+            config_fingerprint="fp1",
+            discovered={0: m},
+            resume_mode=ResumeMode.AUTO,
+        )
+        self.assertFalse(decision.skip)
+        self.assertIn("window_mismatch", decision.reason)
+
+    def test_auto_with_matching_valid_period_still_skips(self) -> None:
+        """When valid_period also matches, resume still works — the new
+        check must not cause false re-runs."""
+        m = self._make_manifest(0, fingerprint="fp1", train="A", test="B")
+        decision = decide_fold(
+            fold_index=0,
+            train_period="A", test_period="B",
+            valid_period=m.valid_period,  # matches
+            config_fingerprint="fp1",
+            discovered={0: m},
+            resume_mode=ResumeMode.AUTO,
+        )
+        self.assertTrue(decision.skip)
+        self.assertEqual(decision.reason, "resumed_from_manifest")
 
     def test_force_rerun_ignores_matching_manifest(self) -> None:
         m = self._make_manifest(0, fingerprint="fp1")

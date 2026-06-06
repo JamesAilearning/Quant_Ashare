@@ -44,3 +44,7 @@ tests/regression/fixtures/fold0_expected_metrics.json
 # preset overrides.
 config/presets/my_*.yaml
 config/presets/*.local.yaml
+
+# Research paper PDFs are kept locally only (large binaries); track the
+# curated notes (docs/research/paper_notes.md), not the source PDFs.
+docs/research/*.pdf

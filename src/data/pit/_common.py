@@ -42,6 +42,27 @@ def to_qlib_ticker(ts_code: str) -> str:
     return ts_code
 
 
+def qlib_to_ts_code(code: str) -> str:
+    """Inverse of :func:`to_qlib_ticker`: ``SH600000`` -> ``600000.SH``.
+
+    Maps a qlib-style instrument (``<exchange><6-digit>``, e.g. ``SH600000``,
+    ``SZ000001``, ``BJ832317``) back to the Tushare ``ts_code`` form
+    (``<6-digit>.<exchange>``). Shared by the daily-recommendation ST filter
+    (PR1) and the backtest historical-ST mask (PR2) so neither carries a
+    private copy of the conversion.
+
+    A value that already contains ``.`` (already ts-style) or whose shape is
+    not ``<2-letter><digits>`` is returned unchanged — defer the failure to a
+    validation step rather than silently mangling it (mirrors
+    :func:`to_qlib_ticker`).
+    """
+    if "." in code:
+        return code
+    if len(code) > 2 and code[:2].isalpha():
+        return f"{code[2:]}.{code[:2].upper()}"
+    return code
+
+
 def to_iso_date(yyyymmdd: str) -> str:
     """``"20220630"`` → ``"2022-06-30"``.
 
@@ -55,4 +76,4 @@ def to_iso_date(yyyymmdd: str) -> str:
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
 
 
-__all__ = ["to_iso_date", "to_qlib_ticker"]
+__all__ = ["qlib_to_ts_code", "to_iso_date", "to_qlib_ticker"]

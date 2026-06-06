@@ -134,6 +134,21 @@ def compute_config_fingerprint(config: Any) -> str:
     raw = dataclasses.asdict(config)
     for key in _FINGERPRINT_EXCLUDE_FIELDS:
         raw.pop(key, None)
+    # Fold the namechange snapshot's CONTENT (not just its path) into the
+    # fingerprint. Each fold's ST-masked metrics depend on the parquet's
+    # contents, so a re-fetched all_namechanges.parquet at the SAME path MUST
+    # invalidate resume rather than reuse stale ST-mask folds — the path string
+    # alone (already in ``raw``) would not change (Codex P1 on #223). The
+    # backtest's own provenance hashes the file after a fold runs, but this
+    # resume/skip decision happens before that.
+    namechange_path = raw.get("namechange_path")
+    if isinstance(namechange_path, str) and namechange_path.strip():
+        nc_file = Path(namechange_path)
+        raw["namechange_content_sha256"] = (
+            hashlib.sha256(nc_file.read_bytes()).hexdigest()
+            if nc_file.is_file()
+            else "MISSING"
+        )
     payload = json.dumps(raw, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -447,12 +462,20 @@ def decide_fold(
     config_fingerprint: str,
     discovered: Mapping[int, FoldManifest],
     resume_mode: ResumeMode,
+    valid_period: str | None = None,
 ) -> ResumeDecision:
     """Apply the resume policy to one fold.
 
     Pure: no I/O. The engine constructs the inputs and calls this once
     per window; the returned :class:`ResumeDecision` drives whether
     the fold runs or is loaded from manifest.
+
+    ``valid_period`` is optional for backward compatibility; when supplied
+    it is included in the window-mismatch check. This matters since the
+    embargo-gap change made ``valid_end`` calendar-dependent: a different
+    bundle vintage can shift ``valid_end`` (hence ``valid_period``) while
+    ``train_period`` / ``test_period`` stay equal, and without this check
+    AUTO-resume would wrongly reuse a fold trained on the old valid window.
     """
     if resume_mode.should_force_rerun(fold_index):
         reason = (
@@ -484,13 +507,15 @@ def decide_fold(
     if (
         manifest.train_period != train_period
         or manifest.test_period != test_period
+        or (valid_period is not None and manifest.valid_period != valid_period)
     ):
         return ResumeDecision(
             fold_index=fold_index, skip=False, manifest=None,
             reason=(
                 f"window_mismatch:"
-                f"manifest=({manifest.train_period},{manifest.test_period}) "
-                f"current=({train_period},{test_period})"
+                f"manifest=({manifest.train_period},{manifest.valid_period},"
+                f"{manifest.test_period}) "
+                f"current=({train_period},{valid_period},{test_period})"
             ),
         )
 

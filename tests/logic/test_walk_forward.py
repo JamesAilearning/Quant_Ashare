@@ -1,6 +1,7 @@
 """Tests for src.core.walk_forward — walk-forward rolling backtest engine."""
 
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,29 @@ from src.core.walk_forward import (
     WalkForwardEngine,
     WalkForwardError,
 )
+from src.data._segment_embargo import (
+    LABEL_LOOKAHEAD_DAYS,
+    trading_days_between,
+    validate_segment_embargo,
+)
+
+
+def _wf_business_cal(
+    start: date = date(2015, 1, 1), end: date = date(2027, 12, 31),
+) -> list[date]:
+    """Synthetic continuous Mon-Fri trading calendar for _generate_windows
+    tests (the embargo-gap logic depends only on the trading-day sequence,
+    not on which days are holidays). Wide enough to cover every test's
+    overall window."""
+    out, d = [], start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+_WF_CAL = _wf_business_cal()
 
 
 class WalkForwardValidationTests(unittest.TestCase):
@@ -30,16 +54,23 @@ class WalkForwardValidationTests(unittest.TestCase):
             test_months=3,
             step_months=3,
         )
-        windows = WalkForwardEngine._generate_windows(config)
-        # First fold: train 2022-01-01~2023-12-31, valid 2024-01-01~2024-03-31, test 2024-04-01~2024-06-30
+        windows = WalkForwardEngine._generate_windows(config, calendar=_WF_CAL)
         self.assertGreater(len(windows), 0)
-        first = windows[0]
-        self.assertEqual(first[0], "2022-01-01")  # train_start
-        self.assertEqual(first[1], "2023-12-31")  # train_end
-        self.assertEqual(first[2], "2024-01-01")  # valid_start
-        self.assertEqual(first[3], "2024-03-31")  # valid_end
-        self.assertEqual(first[4], "2024-04-01")  # test_start
-        self.assertEqual(first[5], "2024-06-30")  # test_end
+        first = tuple(date.fromisoformat(x) for x in windows[0])
+        tr_s, tr_e, va_s, va_e, te_s, te_e = first
+        # Start anchors + test_end stay month-aligned (unchanged by the
+        # embargo gap — only the train/valid segment tails move back).
+        self.assertEqual(tr_s, date(2022, 1, 1))   # train_start
+        self.assertEqual(va_s, date(2024, 1, 1))   # valid_start
+        self.assertEqual(te_s, date(2024, 4, 1))   # test_start
+        self.assertEqual(te_e, date(2024, 6, 30))  # test_end
+        # train_end / valid_end pulled back to open the embargo gap; the
+        # guard's own validator must accept the fold on BOTH boundaries.
+        self.assertEqual(validate_segment_embargo(
+            train_end=tr_e, valid_start=va_s, valid_end=va_e,
+            test_start=te_s, calendar=_WF_CAL), [])
+        self.assertEqual(trading_days_between(tr_e, va_s, _WF_CAL), LABEL_LOOKAHEAD_DAYS)
+        self.assertEqual(trading_days_between(va_e, te_s, _WF_CAL), LABEL_LOOKAHEAD_DAYS)
 
     def test_window_generation_too_short(self):
         config = WalkForwardConfig(
@@ -49,7 +80,7 @@ class WalkForwardValidationTests(unittest.TestCase):
             valid_months=3,
             test_months=3,
         )
-        windows = WalkForwardEngine._generate_windows(config)
+        windows = WalkForwardEngine._generate_windows(config, calendar=_WF_CAL)
         self.assertEqual(len(windows), 0)
 
     def test_default_config_values(self):
@@ -71,7 +102,7 @@ class WalkForwardValidationTests(unittest.TestCase):
             test_months=3,
             step_months=3,
         )
-        windows = WalkForwardEngine._generate_windows(config)
+        windows = WalkForwardEngine._generate_windows(config, calendar=_WF_CAL)
         # Should have multiple folds
         self.assertGreater(len(windows), 3)
         # Non-overlapping test periods
@@ -159,6 +190,46 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
     def test_rejects_negative_signal_to_execution_lag(self):
         with self.assertRaisesRegex(WalkForwardError, "signal_to_execution_lag"):
             WalkForwardConfig(signal_to_execution_lag=-1)
+
+    # --- PIT/MinedFactor handler requires post_adjusted (#218 C2-b diagnosis) ---
+
+    def test_minedfactor_requires_post_adjusted(self):
+        """A PIT/MinedFactor handler with a non-post adjust_mode is rejected at
+        construction with an actionable message (not a runtime crash)."""
+        with self.assertRaisesRegex(WalkForwardError, "post_adjusted"):
+            WalkForwardConfig(
+                feature_handler="MinedFactor", adjust_mode="pre_adjusted",
+            )
+
+    def test_minedfactor_post_adjusted_constructs(self):
+        cfg = WalkForwardConfig(
+            feature_handler="MinedFactor", adjust_mode="post_adjusted",
+        )
+        self.assertEqual(cfg.feature_handler, "MinedFactor")
+        self.assertEqual(cfg.adjust_mode, "post_adjusted")
+
+    def test_non_pit_handler_unaffected_by_post_adjusted_rule(self):
+        """The PIT post_adjusted rule must NOT touch Alpha158 — pre_adjusted is
+        still valid for the production line."""
+        cfg = WalkForwardConfig(
+            feature_handler="Alpha158", adjust_mode="pre_adjusted",
+        )
+        self.assertEqual(cfg.adjust_mode, "pre_adjusted")
+
+    def test_shipped_config_walk_mined_satisfies_post_adjusted_guard(self):
+        """Regression guard for the shipped config_walk_mined.yaml: it must set
+        post_adjusted so it constructs under the new guard."""
+        from dataclasses import fields
+
+        from src.core._yaml_loader import load_yaml_with_inheritance
+
+        repo_root = Path(__file__).resolve().parents[2]
+        raw = load_yaml_with_inheritance(repo_root / "config_walk_mined.yaml")
+        self.assertEqual(raw.get("feature_handler"), "MinedFactor")
+        self.assertEqual(raw.get("adjust_mode"), "post_adjusted")
+        valid = {f.name for f in fields(WalkForwardConfig)}
+        cfg = WalkForwardConfig(**{k: v for k, v in raw.items() if k in valid})
+        self.assertEqual(cfg.adjust_mode, "post_adjusted")
 
     def test_rejects_unknown_adjust_mode(self):
         with self.assertRaisesRegex(WalkForwardError, "adjust_mode"):
@@ -1570,6 +1641,8 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
                 side_effect=fake_single_fold,
             ), patch(
                 "src.core.walk_forward.engine.WalkForwardEngine._write_aggregate_report"
+            ), patch.object(
+                WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
             ):
                 WalkForwardEngine.run(config)
 
@@ -1690,6 +1763,8 @@ class FoldFailureContinuationTests(unittest.TestCase):
         ), patch.object(
             WalkForwardEngine, "_run_single_fold",
             side_effect=fake_single_fold,
+        ), patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
         ):
             config = WalkForwardConfig(
                 overall_start="2022-01-01",
@@ -1755,6 +1830,8 @@ class FoldFailureContinuationTests(unittest.TestCase):
         ), patch.object(
             WalkForwardEngine, "_run_single_fold",
             side_effect=fake_single_fold,
+        ), patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
         ):
             config = WalkForwardConfig(
                 overall_start="2022-01-01",

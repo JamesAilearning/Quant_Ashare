@@ -78,6 +78,7 @@ def test_load_config_with_mined_factor_keys_parses(tmp_path):
     cfg = _write_yaml(tmp_path / "wf.yaml", [
         *_baseline_yaml_lines(),
         'feature_handler: "MinedFactor"',
+        'adjust_mode: "post_adjusted"',
         f'mined_factor_pool_dir: "{pool_dir.as_posix()}"',
         f'mined_factor_delisted_registry_path: "{(tmp_path / "registry.parquet").as_posix()}"',
         'mined_factor_pit_provider_uri: "D:/qlib_data/my_cn_data"',
@@ -137,6 +138,7 @@ def test_bundle_missing_pool_dir_raises(tmp_path):
     cfg = _write_yaml(tmp_path / "wf.yaml", [
         *_baseline_yaml_lines(),
         'feature_handler: "MinedFactor"',
+        'adjust_mode: "post_adjusted"',
         'mined_factor_delisted_registry_path: "registry.parquet"',
     ])
     wf_config, qlib_config = _load_config(str(cfg))
@@ -152,6 +154,7 @@ def test_bundle_missing_registry_raises(tmp_path):
     cfg = _write_yaml(tmp_path / "wf.yaml", [
         *_baseline_yaml_lines(),
         'feature_handler: "MinedFactor"',
+        'adjust_mode: "post_adjusted"',
         f'mined_factor_pool_dir: "{pool_dir.as_posix()}"',
     ])
     wf_config, qlib_config = _load_config(str(cfg))
@@ -168,6 +171,7 @@ def test_bundle_pit_uri_defaults_to_provider_uri(tmp_path):
         'provider_uri: "/data/pit"',
         'region: "cn"',
         'feature_handler: "MinedFactor"',
+        'adjust_mode: "post_adjusted"',
         f'mined_factor_pool_dir: "{pool_dir.as_posix()}"',
         f'mined_factor_delisted_registry_path: "{(tmp_path / "reg.parquet").as_posix()}"',
     ])
@@ -189,6 +193,7 @@ def test_bundle_pit_uri_explicit_divergence_warns(tmp_path, caplog):
         'provider_uri: "/data/qlib_legacy"',
         'region: "cn"',
         'feature_handler: "MinedFactor"',
+        'adjust_mode: "post_adjusted"',
         f'mined_factor_pool_dir: "{pool_dir.as_posix()}"',
         f'mined_factor_delisted_registry_path: "{(tmp_path / "reg.parquet").as_posix()}"',
         'mined_factor_pit_provider_uri: "/data/qlib_pit"',
@@ -220,6 +225,7 @@ def test_main_binds_handler_between_qlib_init_and_engine_run(tmp_path, monkeypat
     cfg = _write_yaml(tmp_path / "wf.yaml", [
         *_baseline_yaml_lines(),
         'feature_handler: "MinedFactor"',
+        'adjust_mode: "post_adjusted"',
         f'mined_factor_pool_dir: "{pool_dir.as_posix()}"',
         f'mined_factor_delisted_registry_path: "{(tmp_path / "reg.parquet").as_posix()}"',
         f'output_dir: "{(tmp_path / "out").as_posix()}"',

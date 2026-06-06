@@ -2,18 +2,21 @@
 # Short training (20 rounds), 1-month test window, default cost model.
 # Use: D:/Python/Python11/python.exe main.py config_smoke.yaml
 
-# qlib runtime
-provider_uri: "D:/qlib_data/my_cn_data"
+# qlib runtime — PIT bundle (coverage 2018-01-02 → 2025-12-31).
+# Smoke windows below sit inside that span and leave a >=2 trading-day
+# embargo gap between train/valid and valid/test (Alpha158 labels look
+# ahead, so adjacent boundaries are rejected by FeatureDatasetBuilder).
+provider_uri: "D:/qlib_data/my_cn_data_pit"
 region: "cn"
 
 # features
 instruments: "csi300"
 feature_handler: "Alpha158"
 train_start: "2024-01-01"
-train_end: "2025-06-30"
+train_end: "2025-06-20"
 valid_start: "2025-07-01"
-valid_end: "2025-09-30"
-test_start: "2025-10-01"
+valid_end: "2025-09-19"
+test_start: "2025-10-09"
 test_end: "2025-10-31"
 
 # model — tiny for speed

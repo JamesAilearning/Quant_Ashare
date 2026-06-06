@@ -22,6 +22,11 @@
 extends: config_walk.yaml
 
 feature_handler: "MinedFactor"
+# REQUIRED for MinedFactor: PITDataProvider builds factors on post-adjusted
+# PIT prices, so the walk-forward runtime must run post_adjusted too.
+# WalkForwardConfig enforces this — omitting it fails config construction with
+# an actionable error (instead of a cryptic runtime QlibRuntimeInitError).
+adjust_mode: "post_adjusted"
 output_dir: "output/walk_forward_mined"
 
 # Operator-fill — point at the promoted pool from step 3 above.

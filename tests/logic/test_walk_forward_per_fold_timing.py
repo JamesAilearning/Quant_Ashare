@@ -20,6 +20,7 @@ import math
 import sys
 import unittest
 from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,22 @@ from src.core.walk_forward.aggregate import (  # noqa: E402
 )
 from src.core.walk_forward.config import WalkForwardConfig  # noqa: E402
 from src.core.walk_forward.engine import WalkForwardEngine  # noqa: E402
+
+
+def _synthetic_trading_calendar() -> list[date]:
+    """Continuous Mon-Fri calendar covering every test window — injected via
+    _load_trading_calendar so run() needs no real qlib bundle (the embargo
+    gap added in fix-walk-forward-embargo-gap makes _generate_windows read
+    the trading calendar)."""
+    out, d = [], date(2015, 1, 1)
+    while d <= date(2027, 12, 31):
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+_SYNTH_CAL = _synthetic_trading_calendar()
 
 
 def _fold(idx: int, *, duration=None, started=None, finished=None,
@@ -350,6 +367,8 @@ class EngineStampsTimingTests(unittest.TestCase):
                 return_value={},
             ), patch(
                 "src.core.walk_forward.engine.write_aggregate_report",
+            ), patch.object(
+                WalkForwardEngine, "_load_trading_calendar", return_value=_SYNTH_CAL,
             ):
                 return WalkForwardEngine.run(config)
 
