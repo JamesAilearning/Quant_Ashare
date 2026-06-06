@@ -111,5 +111,5 @@
 - [x] 7.1 Spec delta at
   `openspec/changes/fix-lgb-default-hyperparams/specs/v2-model-training-config-consistency/spec.md`
   (ADDED requirement).
-- [ ] 7.2 At archive time, fold the new requirement into
+- [x] 7.2 At archive time, fold the new requirement into
   `openspec/specs/v2-model-training-config-consistency/spec.md`.
