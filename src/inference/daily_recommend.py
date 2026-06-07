@@ -90,6 +90,13 @@ class RecommendationConfig:
     # the as-of date by at most this many calendar days. A stale snapshot can
     # miss a recent ST designation and leak it into the list -> fail loud.
     st_snapshot_max_age_days: int = 7
+    # Bundle (price/feature data) staleness tolerance: the qlib bundle's last
+    # trading day may lag the EXTERNAL today by at most this many CALENDAR days.
+    # Default 14 covers the longest A-share holiday (Spring Festival ~9-10 days,
+    # during which no new data is normal) plus a buffer, while still catching a
+    # genuinely stale bundle (weeks/months behind) so recommend() refuses rather
+    # than silently scoring on stale prices. See _assert_bundle_fresh.
+    bundle_max_age_days: int = 14
     out_dir: str = "output/daily_recommend"
 
 
@@ -265,6 +272,41 @@ def _st_snapshot_is_stale(
     return (asof - snapshot_date).days > max_age_days
 
 
+def _bundle_is_stale(bundle_last_day: date, today: date, max_age_days: int) -> bool:
+    """True if the bundle's last trading day lags ``today`` by more than the
+    tolerance (in CALENDAR days). Pure -> unit-testable. A bundle whose last day
+    is on/after ``today`` is never stale.
+    """
+    return (today - bundle_last_day).days > max_age_days
+
+
+def _assert_bundle_fresh(
+    bundle_last_day: date, today: date, max_age_days: int,
+) -> None:
+    """Fail-loud guard: refuse if the price/feature bundle is stale.
+
+    ``resolve_dates`` picks the as-of date from the BUNDLE's own calendar, so a
+    stale bundle would silently treat a weeks/months-old day as "today" and emit
+    a list scored on stale prices (the daily-automation worst case). This
+    compares the bundle's last trading day against an EXTERNAL ``today`` (the
+    system date in production, injectable for tests) and raises rather than
+    emitting. The tolerance is generous enough (default 14 calendar days) that a
+    normal pre-holiday gap — Spring Festival is ~9-10 days with no new data —
+    does NOT trip it, while a genuinely stale bundle (weeks/months behind) does.
+    Pure -> unit-testable.
+    """
+    if _bundle_is_stale(bundle_last_day, today, max_age_days):
+        lag = (today - bundle_last_day).days
+        raise DailyRecommendationError(
+            f"Price/feature bundle is STALE: last trading day {bundle_last_day} "
+            f"lags today {today} by {lag} calendar day(s) (> {max_age_days}). "
+            "The qlib bundle has not been updated, so a list now would be scored "
+            "on stale prices. Refusing to emit. Update the bundle (re-fetch "
+            "tushare + rebuild the qlib bins) before recommending, or raise "
+            "bundle_max_age_days for an intentional historical run."
+        )
+
+
 def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path:
     """Fail-loud guard: the current-ST source must exist, be fresh, and carry
     the required schema.
@@ -365,7 +407,9 @@ def _load_model(model_path: Path) -> Any:
 # --------------------------------------------------------------------------
 # Main entry
 # --------------------------------------------------------------------------
-def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
+def recommend(
+    config: RecommendationConfig, *, now: date | None = None,
+) -> DailyRecommendationResult:
     init_qlib_canonical(QlibRuntimeConfig(
         provider_uri=config.provider_uri,
         region=config.region,
@@ -373,6 +417,21 @@ def recommend(config: RecommendationConfig) -> DailyRecommendationResult:
     ))
 
     as_of_date, entry_date = resolve_dates(config.as_of_date)
+
+    # Phase 2: price/feature-data freshness guard. resolve_dates picks the
+    # as-of date from the BUNDLE's own calendar, so a stale bundle would
+    # silently score on weeks/months-old prices and emit a stale list with no
+    # error. Compare the bundle's last trading day against an EXTERNAL today
+    # (system date; injectable via ``now`` for tests/determinism) and refuse if
+    # it lags by more than bundle_max_age_days.
+    from qlib.data import D
+    bundle_last_day = pd.Timestamp(list(D.calendar())[-1]).date()
+    _assert_bundle_fresh(
+        bundle_last_day,
+        now if now is not None else date.today(),
+        config.bundle_max_age_days,
+    )
+
     _logger.info(
         "Daily recommendation: as_of(T)=%s, entry(T+1)=%s, universe=%s, topk=%d",
         as_of_date, entry_date, config.instruments, config.topk,

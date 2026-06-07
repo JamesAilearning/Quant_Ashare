@@ -31,6 +31,8 @@ from src.inference.daily_recommend import (
     DailyRecommendationError,
     DailyRecommendationResult,
     RecommendationConfig,
+    _assert_bundle_fresh,
+    _bundle_is_stale,
     _load_model,
     _scores_to_inst_map,
     _st_snapshot_is_stale,
@@ -419,6 +421,48 @@ class ValidateStSnapshotTests(unittest.TestCase):
             os.utime(p, (recent, recent))
             with self.assertRaisesRegex(DailyRecommendationError, "zero rows"):
                 _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+
+class BundleFreshnessTests(unittest.TestCase):
+    """Phase 2 price/feature-data staleness guard: a stale bundle must REFUSE
+    rather than silently score on weeks/months-old prices (resolve_dates picks
+    the as-of from the bundle's own calendar, so it can't catch its own
+    staleness)."""
+
+    def test_is_stale_predicate(self) -> None:
+        # gap < tol -> fresh; gap == tol -> fresh (inclusive); gap > tol -> stale
+        self.assertFalse(_bundle_is_stale(date(2026, 6, 1), date(2026, 6, 10), 14))
+        self.assertFalse(_bundle_is_stale(date(2026, 5, 27), date(2026, 6, 10), 14))  # 14 == tol
+        self.assertTrue(_bundle_is_stale(date(2026, 5, 26), date(2026, 6, 10), 14))   # 15 > tol
+        # bundle on/after today -> never stale (non-positive gap)
+        self.assertFalse(_bundle_is_stale(date(2026, 6, 15), date(2026, 6, 10), 14))
+
+    def test_fresh_bundle_passes(self) -> None:
+        _assert_bundle_fresh(date(2026, 6, 8), date(2026, 6, 10), 14)  # 2d, no raise
+
+    def test_holiday_boundary_does_not_false_fire(self) -> None:
+        # Last trading day before a long holiday (Spring Festival ~9-10 days with
+        # no new data is normal) + default tolerance 14 -> must NOT raise.
+        _assert_bundle_fresh(date(2026, 2, 13), date(2026, 2, 22), 14)  # ~9 days
+
+    def test_stale_bundle_raises_with_actionable_message(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "bundle is STALE"):
+            _assert_bundle_fresh(date(2025, 12, 30), date(2026, 6, 7), 14)  # ~5 months
+        try:
+            _assert_bundle_fresh(date(2025, 12, 30), date(2026, 6, 7), 14)
+        except DailyRecommendationError as exc:
+            msg = str(exc)
+            self.assertIn("last trading day 2025-12-30", msg)
+            self.assertIn("Update the bundle", msg)  # actionable
+
+    def test_reference_today_is_injectable(self) -> None:
+        # Same bundle day: stale under a far 'today', fresh under an injected
+        # 'today' near the bundle -> the reference is injectable + deterministic
+        # (not hardcoded to datetime.now()).
+        bundle = date(2025, 12, 30)
+        with self.assertRaises(DailyRecommendationError):
+            _assert_bundle_fresh(bundle, date(2026, 6, 7), 14)   # far -> stale
+        _assert_bundle_fresh(bundle, date(2025, 12, 31), 14)     # near -> fresh
 
 
 class LoadModelTests(unittest.TestCase):
