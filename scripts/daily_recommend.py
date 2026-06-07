@@ -72,6 +72,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--st-max-age-days", type=int, default=7,
                    help="Max days the ST snapshot may lag the as-of date "
                         "before it is rejected as stale (default 7).")
+    p.add_argument("--bundle-max-age-days", type=int, default=14,
+                   help="Max CALENDAR days the qlib bundle's last trading day "
+                        "may lag today before the price/feature data is "
+                        "rejected as stale (default 14; covers A-share "
+                        "holidays). Raise it for an intentional historical run.")
     p.add_argument("--instruments", default="csi300", help="Universe (default csi300).")
     p.add_argument("--fit-start", default=_DEFAULT_FIT_START,
                    help="Training fit-window start (must match the model).")
@@ -95,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         topk=args.topk,
         name_source_parquet=args.name_source,
         st_snapshot_max_age_days=args.st_max_age_days,
+        bundle_max_age_days=args.bundle_max_age_days,
         out_dir=args.out_dir,
     )
 
