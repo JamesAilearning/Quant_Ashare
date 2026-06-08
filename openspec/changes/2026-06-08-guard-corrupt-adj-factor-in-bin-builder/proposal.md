@@ -23,13 +23,15 @@ more likely; this guard is a prerequisite for trusting an unattended rebuild
 ## What Changes
 
 - `src/data/pit/qlib_bin_builder.py`:
-  - `QlibBinBuilder._validate_adj_factor(out, tushare_code)` — fail-loud check
-    that every `adj_factor` value that will scale prices is finite and strictly
-    positive; raises `QlibBinBuilderError` naming the ticker, the offending
-    `trade_date`(s), and the bad value(s).
-  - `_apply_adjustment` calls it AFTER `ffill().fillna(1.0)` (so a
-    legitimately-missing factor filled to `1.0` still passes) and BEFORE the
-    OHLC multiply, on the post-merge column that actually scales prices.
+  - `QlibBinBuilder._validate_adj_factor(adj_df, tushare_code)` — fail-loud check
+    that every raw `adj_factor` value that will scale prices is finite (not
+    `inf` / `NaN`) and strictly positive; raises `QlibBinBuilderError` naming the
+    ticker, the offending `trade_date`(s), and the bad value(s).
+  - `_apply_adjustment` calls it on the RAW `adj_factor` source BEFORE the
+    merge / `ffill().fillna(1.0)`, so a present row with a corrupt factor
+    (including a raw `NaN`) is caught rather than masked by the fill. A date
+    simply ABSENT from the source (no row) still falls through the left-merge and
+    fills to `1.0` (the documented no-adjustment behavior), so it is not flagged.
 - Mirrors the publisher's existing non-finite / non-positive adjustment-factor
   validation as a DELIBERATE short-term duplicate (the production builder must
   NOT import the publisher — wrong dependency direction); a shared validator is
