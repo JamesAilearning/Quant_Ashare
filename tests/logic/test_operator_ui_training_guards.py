@@ -210,6 +210,21 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
         self.assertTrue(result.ok, f"unexpected errors: {result.errors}")
         self.assertFalse(any("非生产 bundle" in item for item in result.errors))
 
+    def test_non_production_bundle_error_message(self) -> None:
+        """The centralised refusal used by every launch path (pipeline guard +
+        the walk_forward / mode-agnostic checks in config_run.py)."""
+        from web.operator_ui.training_guards import non_production_bundle_error
+
+        msg = non_production_bundle_error(
+            "D:/x/output/operator_ui/results/job_1/qlib_provider")
+        self.assertIsNotNone(msg)
+        assert msg is not None  # narrow for mypy
+        self.assertIn("非生产 bundle", msg)
+        self.assertIn("scripts/data_pipeline", msg)
+        # production bundle / empty -> None (no refusal)
+        self.assertIsNone(non_production_bundle_error("D:/qlib_data/my_cn_data_pit"))
+        self.assertIsNone(non_production_bundle_error(""))
+
 
 class SegmentEmbargoTests(unittest.TestCase):
     """Regression tests for the label-lookahead embargo validator

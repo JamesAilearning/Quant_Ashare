@@ -56,6 +56,24 @@ class NoTrainOnUiInspectionBundleTests(unittest.TestCase):
                     "non-production results/.../qlib_provider bundle.",
                 )
 
+    def test_config_run_refuses_inspection_bundle_on_every_launch_path(self) -> None:
+        """The non-production refusal must cover BOTH launch modes. ``pipeline``
+        goes through ``validate_pipeline_training_inputs``; ``walk_forward`` does
+        NOT — so config_run.py must call ``non_production_bundle_error`` directly
+        on the walk_forward branch AND as a mode-agnostic pre-launch check.
+        Regression for codex P1 on PR #231 (walk_forward could bypass the
+        inspection-bundle refusal)."""
+        src = (_ROOT / "web" / "operator_ui" / "pages" / "config_run.py").read_text(
+            encoding="utf-8",
+        )
+        self.assertGreaterEqual(
+            src.count("non_production_bundle_error("), 2,
+            "config_run.py must apply non_production_bundle_error on the "
+            "walk_forward path AND as a mode-agnostic pre-launch check — "
+            "otherwise a walk_forward launch bypasses the inspection-bundle "
+            "refusal (codex P1).",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
