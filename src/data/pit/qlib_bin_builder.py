@@ -388,9 +388,19 @@ class QlibBinBuilder:
         adj = self._load_adj_factor(tushare_code)
         out = daily.copy()
         if adj is None or adj.empty:
-            # No adjustment data — keep raw prices.
+            # No adjustment data at all — keep raw prices (factor 1.0).
             out["adj_factor"] = 1.0
         else:
+            # P1-10 (Phase 3 P3-1): validate the RAW adj_factor BEFORE the
+            # ffill/fillna can mask a corrupt value. A present row whose factor
+            # is non-finite (inf / NaN) or <= 0 is corrupt and fails loud here;
+            # validating post-fill would miss a raw NaN entirely, since
+            # ffill/fillna sanitizes it to a prior factor or 1.0 first (codex P2
+            # on PR #230). A date simply ABSENT from the adj source is not a row
+            # here, so it still falls through the left-merge and fills to 1.0
+            # (the documented no-adjustment behavior). Mirrors the publisher,
+            # which likewise validates its raw staged adj_factor.
+            self._validate_adj_factor(adj, tushare_code)
             out = out.merge(
                 adj[["trade_date", "adj_factor"]],
                 on="trade_date", how="left",
@@ -406,6 +416,53 @@ class QlibBinBuilder:
         if "amount" in out.columns:
             out["money"] = pd.to_numeric(out["amount"], errors="coerce") * TUSHARE_AMOUNT_KYUAN_TO_YUAN
         return out
+
+    @staticmethod
+    def _validate_adj_factor(adj_df: pd.DataFrame, tushare_code: str) -> None:
+        """Fail-loud if any RAW adj_factor that will scale prices is non-finite
+        (inf / NaN) or <= 0.
+
+        Validates the raw adj_factor source (before the per-day ffill/fillna in
+        ``_apply_adjustment``), so a present-row ``NaN`` is caught rather than
+        silently sanitized to a prior factor / 1.0. A corrupt factor would
+        otherwise multiply into the OHLC columns: inf -> inf prices, 0 -> zeroed,
+        negative -> sign-flipped, NaN -> a wrong / unadjusted price, all written
+        straight into the production PIT bins.
+
+        Verbatim mirror of the operator-UI publisher's staged-adj validation
+        (``src/data/tushare/provider_bundle/publisher.py``: the non-finite /
+        non-positive adjustment-factor checks on the raw staged frame) — same
+        predicate AND same raw input; only the control flow differs (the builder
+        ORs the two conditions and raises immediately, having no
+        error-accumulation framework). A date ABSENT from this source is not a
+        row here, so it is NOT flagged — it falls through the left-merge and
+        fills to 1.0 (the documented no-adjustment behavior).
+
+        Kept as a DELIBERATE short-term duplicate rather than a shared validator
+        while the publisher-retirement (builder unification) assessment is open;
+        the production builder must NOT import the publisher (wrong dependency
+        direction). P1-10 / Phase 3 P3-1.
+        """
+        factor = pd.to_numeric(adj_df["adj_factor"], errors="coerce")
+        non_finite = ~np.isfinite(factor)
+        non_positive = factor <= 0
+        bad = non_finite | non_positive
+        if not bool(bad.any()):
+            return
+        offenders = adj_df.loc[bad, ["trade_date", "adj_factor"]].head(5)
+        sample = ", ".join(
+            f"({td}: {val})"
+            for td, val in offenders.itertuples(index=False, name=None)
+        )
+        raise QlibBinBuilderError(
+            f"{tushare_code}: adj_factor must be finite and > 0, but "
+            f"{int(bad.sum())} row(s) are non-finite (inf/NaN) or <= 0. A "
+            "non-finite factor yields inf / unadjusted prices, 0 zeroes them, "
+            "and a negative factor sign-flips them; all silently corrupt the "
+            f"bins. First offenders (trade_date: adj_factor): {sample}. Refusing "
+            "to write corrupt bins; fix the tushare adj_factor dump for this "
+            "ticker."
+        )
 
     def _merge_daily_basic(
         self, daily: pd.DataFrame, tushare_code: str,
