@@ -47,11 +47,6 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _trading_day_options,
     _walk_forward_date_defaults,
 )
-from web.operator_ui.provider_catalog import (
-    ProviderCatalogError,
-    delete_provider_catalog_entry,
-    list_provider_catalog_entries,
-)
 from web.operator_ui.training_guards import (
     ProviderMetadata,
     inspect_provider_metadata,
@@ -310,30 +305,10 @@ with form_col:
 
     # --- Data section ---
     with st.expander("📊 数据", expanded=True):
-        provider_entries = list_provider_catalog_entries()
-        selected_entry = None
-        if provider_entries:
-            provider_options = ["手动填写 provider_uri"] + [e.label for e in provider_entries]
-            provider_by_label = {e.label: e for e in provider_entries}
-            selected_label = st.selectbox("已保存的数据源", provider_options, key="cr_provider_label")
-            if selected_label != "手动填写 provider_uri":
-                selected_entry = provider_by_label[selected_label]
-                st.session_state["cr_provider_uri"] = selected_entry.provider_uri
-                st.caption(f"使用：{selected_entry.provider_uri}")
-                if st.button("🗑 删除该已保存数据源", key="cr_del_provider"):
-                    try:
-                        delete_provider_catalog_entry(selected_entry.job_id)
-                    except ProviderCatalogError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.session_state["cr_provider_uri"] = ""
-                        st.success("已删除。")
-                        st.rerun()
-            else:
-                selected_entry = None
-        else:
-            st.caption("尚无已保存的数据源。请手动填写 URI，或先到「Tushare 数据」页拉取数据。")
-
+        # The publisher / UI Tushare ingest + its saved-provider catalog were
+        # retired (unify U3). Point provider_uri at a PRODUCTION bundle built by
+        # the data-pipeline scripts (scripts/data_pipeline/); QUANT_PROVIDER_URI
+        # is the env default for that bundle (ops Phase 1).
         provider_uri = st.text_input(
             "provider_uri *",
             placeholder="D:/qlib_data/my_cn_data",

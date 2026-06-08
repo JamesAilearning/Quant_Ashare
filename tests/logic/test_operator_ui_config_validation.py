@@ -53,24 +53,13 @@ class ConfigValidationTests(unittest.TestCase):
         } | {"provider_uri", "region"}
         self.assertEqual(WALK_FORWARD_KEYS, expected)
 
-    def test_tushare_provider_keys_match_config_fields(self) -> None:
-        from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
-        from web.operator_ui.config_forms import TUSHARE_PROVIDER_KEYS
-
-        expected = {
-            field.name
-            for field in TushareQlibProviderBundleConfig.__dataclass_fields__.values()
-        }
-        self.assertEqual(TUSHARE_PROVIDER_KEYS, expected)
-
 
 class LazyImportTests(unittest.TestCase):
     """Regression for bug.md P2-2: ``config_forms`` previously
-    triggered ``src.core.pipeline``/``src.core.walk_forward``/
-    ``src.data.tushare.provider_bundle`` imports at module load,
-    each of which transitively imports qlib. Streamlit imports every
-    page module to build the sidebar, so the UI would crash on any
-    machine without qlib. The lazy ``__getattr__`` (PEP 562) defers
+    triggered ``src.core.pipeline`` / ``src.core.walk_forward`` imports
+    at module load, each of which transitively imports qlib. Streamlit
+    imports every page module to build the sidebar, so the UI would crash
+    on any machine without qlib. The lazy ``__getattr__`` (PEP 562) defers
     those imports until first key-set access.
     """
 
@@ -85,8 +74,7 @@ class LazyImportTests(unittest.TestCase):
         script = (
             "import sys\n"
             "import web.operator_ui.config_forms  # noqa: F401\n"
-            "heavy = ['src.core.pipeline', 'src.core.walk_forward',\n"
-            "         'src.data.tushare.provider_bundle']\n"
+            "heavy = ['src.core.pipeline', 'src.core.walk_forward']\n"
             "loaded = [m for m in heavy if m in sys.modules]\n"
             "if loaded:\n"
             "    raise SystemExit(f'eagerly loaded: {loaded}')\n"

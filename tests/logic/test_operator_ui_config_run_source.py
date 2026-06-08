@@ -44,18 +44,6 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("validate_pipeline_training_inputs(", source)
         self.assertIn("disabled=(not provider_uri_valid or bool(guard_errors))", source)
 
-    def test_saved_provider_picker_populates_provider_uri_state(self) -> None:
-        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
-
-        self.assertIn("list_provider_catalog_entries()", source)
-        self.assertIn('"已保存的数据源"', source)
-        self.assertIn('cr_provider_uri', source)
-
-    def test_config_page_exposes_delete_controls_for_saved_data(self) -> None:
-        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
-
-        self.assertIn("delete_provider_catalog_entry(selected_entry.job_id)", source)
-
     def test_jobs_page_references_job_manager(self) -> None:
         source = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
 
@@ -120,53 +108,6 @@ class ConfigRunPageSourceTests(unittest.TestCase):
                 (presets_dir / f"{name}.yaml").is_file(),
                 f"Missing preset: {name}.yaml",
             )
-
-    def test_tushare_extracted_to_dedicated_page(self) -> None:
-        """Tushare ingestion SHALL live on its own page (pages/tushare.py)
-        so model-run config never mixes with data-ingestion controls
-        (TICKET-C polish — Codex review on PR1)."""
-
-        config_run = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
-        tushare_page = Path("web/operator_ui/pages/tushare.py")
-
-        self.assertTrue(tushare_page.is_file(), "pages/tushare.py SHALL exist")
-        tushare_src = tushare_page.read_text(encoding="utf-8")
-
-        # The dedicated page owns the form and the token gating.
-        self.assertIn('st.form("tushare_provider_form")', tushare_src)
-        self.assertIn('TUSHARE_TOKEN', tushare_src)
-        self.assertIn('JobManager.start', tushare_src)
-        self.assertIn('"tushare_provider"', tushare_src)
-
-        # Config & Run no longer carries Tushare-specific imports or wiring.
-        self.assertNotIn('st.form("tushare_provider_form")', config_run)
-        self.assertNotIn('TUSHARE_PROVIDER_KEYS', config_run)
-        self.assertNotIn('ADJUST_MODE_PRE', config_run)
-        self.assertNotIn('"tushare_provider"', config_run)
-
-    def test_tushare_token_never_appears_in_yaml_or_preview(self) -> None:
-        """Hard rule: the token is environment-only and SHALL NOT appear
-        in any YAML preview, st.code rendering, or persisted state on the
-        Tushare page (project secrets policy)."""
-
-        tushare_src = Path("web/operator_ui/pages/tushare.py").read_text(encoding="utf-8")
-
-        # The page reads the env var to gate, but never copies it into
-        # st.code / st.text / config dict / session_state.
-        self.assertNotIn("st.code(", tushare_src)
-        self.assertNotIn('TUSHARE_TOKEN"]', tushare_src.replace("os.environ.get(", "X"))
-        # Token is referenced only via os.environ.get(... ).strip() bool check.
-        self.assertIn('os.environ.get("TUSHARE_TOKEN"', tushare_src)
-        # Token name SHALL NOT show up in any user-facing value:
-        # the only allowed occurrences are env-var reference + caption /
-        # warning copy. None of them write the token's value anywhere.
-
-    def test_app_nav_includes_tushare_page(self) -> None:
-        """The Tushare page SHALL be reachable from the sidebar nav."""
-
-        app_src = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
-        self.assertIn('tushare.py', app_src)
-        self.assertIn('"Tushare 数据"', app_src)
 
     def test_yaml_preview_offers_copy_and_diff(self) -> None:
         """The YAML preview pane SHALL surface a Copy button and a

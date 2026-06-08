@@ -116,7 +116,9 @@ def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
     if not provider_path.is_dir():
         errors.append(f"provider_uri must be a directory: {provider_path}")
 
-    metadata_root = _metadata_root(provider_path)
+    # Publisher retired (U3): a bundle's metadata (when present) lives in the
+    # bundle dir itself, so read it from the provider path directly.
+    metadata_root = provider_path
     validation_path = _first_existing(
         metadata_root / "validation.json",
         provider_path / "validation.json",
@@ -446,18 +448,6 @@ def non_production_bundle_error(provider_uri: str) -> str | None:
         "不能作为训练 / 回测数据源。生产 bundle 由数据流水线脚本 "
         "(scripts/data_pipeline/) 构建；请把 provider_uri 指向生产 bundle。"
     )
-
-
-def _metadata_root(provider_path: Path) -> Path:
-    # The publisher writes manifest.json / validation.json in the PARENT of the
-    # ``qlib_provider`` bundle dir (…/results/<job>/{manifest,validation}.json),
-    # so metadata for such a bundle is read from the parent. (This publisher
-    # accommodation — together with the rest of the publisher inspection — is
-    # slated for removal when the publisher is retired; U1 only closes the
-    # train-on-inspection-bundle footgun, it does not delete inspection.)
-    if provider_path.name == "qlib_provider":
-        return provider_path.parent
-    return provider_path
 
 
 def _first_existing(*paths: Path) -> Path | None:

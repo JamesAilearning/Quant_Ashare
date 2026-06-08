@@ -46,8 +46,8 @@ def _build_minimal_provider(tmp_path: Path) -> tuple[Path, Path]:
 
     Format matches what Phase B.2's QlibBinBuilder writes, but we
     skip the builder dependency so this test runs before PR #103
-    merges. See `src.data.tushare.provider_bundle.publisher
-    ._write_qlib_bundle` for the canonical bin layout.
+    merges. See `src.data.pit.qlib_bin_builder.QlibBinBuilder` for the
+    canonical bin layout.
 
     Tickers:
       - SH600519 (active) — present 2020-01-02 through 2020-01-10

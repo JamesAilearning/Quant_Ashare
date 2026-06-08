@@ -65,7 +65,6 @@ elif _completed:
 _ICON_MAP = {
     "作业": "\U0001f4cb",            # 📋
     "配置运行": "\U0001f680",        # 🚀
-    "Tushare 数据": "\U0001f4e6",   # 📦
     "结果": "\U0001f4c8",            # 📈
     "滚动验证": "\U0001f501",        # 🔁
     "设计系统": "\U0001f3a8",        # 🎨
@@ -155,7 +154,6 @@ _navigation: dict[str, list[Any]] = {
     "运行": [
         st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
         st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
-        st.Page(str(_PAGES_DIR / "tushare.py"), title="Tushare 数据"),
     ],
     "分析": [
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),

@@ -6,7 +6,6 @@ not import qlib, Tushare, or core runtime engines.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -32,8 +31,6 @@ def build_job_progress(job_dir: Path, job: Mapping[str, Any]) -> Progress:
     if status == "stop_failed":
         return _progress(_estimate_percent(job_dir, mode, config), "停止失败", _terminal_detail(job))
 
-    if mode == "tushare_provider":
-        return _estimate_tushare_provider(job_dir, config)
     if mode == "pipeline":
         return _estimate_pipeline(job_dir, config, job)
     if mode == "walk_forward":
@@ -44,54 +41,11 @@ def build_job_progress(job_dir: Path, job: Mapping[str, Any]) -> Progress:
 
 
 def _estimate_percent(job_dir: Path, mode: str, config: Mapping[str, Any]) -> int:
-    if mode == "tushare_provider":
-        return int(_estimate_tushare_provider(job_dir, config)["percent"])
     if mode == "pipeline":
         return int(_estimate_pipeline(job_dir, config, {})["percent"])
     if mode == "walk_forward":
         return int(_estimate_walk_forward(job_dir, config, {})["percent"])
     return 0
-
-
-def _estimate_tushare_provider(job_dir: Path, config: Mapping[str, Any]) -> Progress:
-    percent = 5
-    label = "正在启动 Tushare 拉取"
-    detail = _log_detail(job_dir)
-
-    if _has_logs(job_dir):
-        percent = 15
-        label = "Tushare CLI 运行中"
-
-    staging_dir = _optional_path(config.get("staging_dir"))
-    if staging_dir and _has_any_file(staging_dir):
-        percent = max(percent, 30)
-        label = "已下载 Tushare 暂存数据"
-        detail = f"staging_dir={staging_dir}"
-
-    output_dir = _optional_path(config.get("output_dir"))
-    if output_dir and output_dir.is_dir():
-        percent = max(percent, 40)
-        label = "正在准备 qlib 数据源"
-        detail = f"output_dir={output_dir}"
-        if (output_dir / "calendars").is_dir():
-            percent = max(percent, 50)
-            label = "已写入 qlib 日历"
-        features_dir = output_dir / "features"
-        if features_dir.is_dir():
-            feature_files = _count_files(features_dir, cap=5000)
-            percent = max(percent, min(90, 55 + feature_files // 150))
-            label = "正在写入 qlib 特征文件"
-            suffix = "+" if feature_files >= 5000 else ""
-            detail = f"已检测到 {feature_files}{suffix} 个特征文件"
-
-    manifest_path = _optional_path(config.get("manifest_path"))
-    validation_path = _optional_path(config.get("validation_path"))
-    if (manifest_path and manifest_path.is_file()) or (validation_path and validation_path.is_file()):
-        percent = max(percent, 95)
-        label = "已生成数据源校验产物"
-        detail = _validation_detail(manifest_path, validation_path) or detail
-
-    return _progress(percent, label, detail)
 
 
 def _estimate_pipeline(job_dir: Path, config: Mapping[str, Any], job: Mapping[str, Any]) -> Progress:
@@ -285,34 +239,6 @@ def _terminal_detail(job: Mapping[str, Any]) -> str:
     return ""
 
 
-def _validation_detail(manifest_path: Path | None, validation_path: Path | None) -> str:
-    validation = _read_json(validation_path)
-    if validation:
-        health = validation.get("health")
-        rows = validation.get("row_count")
-        instruments = validation.get("instrument_count")
-        return f"validation_health={health}, rows={rows}, instruments={instruments}"
-    manifest = _read_json(manifest_path)
-    if manifest:
-        health = manifest.get("validation_health")
-        rows = manifest.get("row_count")
-        instruments = manifest.get("instrument_count")
-        return f"validation_health={health}, rows={rows}, instruments={instruments}"
-    return ""
-
-
-def _read_json(path: Path | None) -> dict[str, Any]:
-    if path is None or not path.is_file():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if isinstance(loaded, dict):
-        return loaded
-    return {}
-
-
 def _has_any_file(path: Path) -> bool:
     if not path.is_dir():
         return False
@@ -330,21 +256,6 @@ def _has_nonempty_file(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
-
-
-def _count_files(path: Path, *, cap: int) -> int:
-    count = 0
-    if not path.is_dir():
-        return count
-    try:
-        for child in path.rglob("*"):
-            if child.is_file():
-                count += 1
-                if count >= cap:
-                    return count
-    except OSError:
-        return count
-    return count
 
 
 def _progress(percent: int, label: str, detail: str = "") -> Progress:

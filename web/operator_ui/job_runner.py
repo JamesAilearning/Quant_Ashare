@@ -219,8 +219,6 @@ def main(argv: list[str] | None = None) -> None:
         cmd.append("main.py")
     elif mode == "walk_forward":
         cmd.append("scripts/run_walk_forward.py")
-    elif mode == "tushare_provider":
-        cmd.append("scripts/ingest_tushare_qlib_provider.py")
     else:
         _write_job_json(job_dir, {
             "status": "failed",
