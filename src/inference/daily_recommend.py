@@ -26,8 +26,9 @@ them.
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -82,9 +83,14 @@ class RecommendationConfig:
     # Current-name source (tushare stock_basic dump). Supplies display names
     # AND the current-ST set used to exclude ST/*ST from the buy list, so it
     # is REQUIRED: recommend() fails loud if it is missing or stale rather
-    # than emitting a list that could silently include ST names.
-    name_source_parquet: str | None = (
-        "D:/qlib_data/tushare_raw/active_stocks.parquet"
+    # than emitting a list that could silently include ST names. Overridable
+    # via the QUANT_NAME_SOURCE env var (default = the value below, so behaviour
+    # is unchanged when it is unset); read per-instance via default_factory.
+    name_source_parquet: str | None = field(
+        default_factory=lambda: os.environ.get(
+            "QUANT_NAME_SOURCE",
+            "D:/qlib_data/tushare_raw/active_stocks.parquet",
+        )
     )
     # ST snapshot staleness tolerance: the name source's file mtime may lag
     # the as-of date by at most this many calendar days. A stale snapshot can

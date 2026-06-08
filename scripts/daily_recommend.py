@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
+import os
 import sys
 from pathlib import Path
 
@@ -43,14 +44,26 @@ from src.inference.daily_recommend import (  # noqa: E402
 
 _logger = get_logger("src.scripts.daily_recommend")
 
-# Phase B clean-PIT defaults.
-_DEFAULT_MODEL = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
-_DEFAULT_PROVIDER = "D:/qlib_data/my_cn_data_pit"
-_DEFAULT_REGISTRY = "D:/qlib_data/tushare_raw/delisted_registry.parquet"
+# Phase B clean-PIT defaults. Each is overridable via a QUANT_* env var (the
+# default = the current path, so behaviour is unchanged when it is unset); the
+# same var names drive the YAML configs (${QUANT_*:-default}), so setting e.g.
+# QUANT_PROVIDER_URI once moves both the pipeline configs and this CLI. The CLI
+# flags below still take precedence over the env default.
+_DEFAULT_MODEL = os.environ.get(
+    "QUANT_MODEL_PATH", "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
+)
+_DEFAULT_PROVIDER = os.environ.get(
+    "QUANT_PROVIDER_URI", "D:/qlib_data/my_cn_data_pit"
+)
+_DEFAULT_REGISTRY = os.environ.get(
+    "QUANT_DELISTED_REGISTRY", "D:/qlib_data/tushare_raw/delisted_registry.parquet"
+)
 # Mirrors RecommendationConfig.name_source_parquet — the active-stocks snapshot
 # is REQUIRED for the ST filter, so the CLI must let a non-default layout point
 # at it (otherwise _validate_st_snapshot fails "file not found" with no escape).
-_DEFAULT_NAME_SOURCE = "D:/qlib_data/tushare_raw/active_stocks.parquet"
+_DEFAULT_NAME_SOURCE = os.environ.get(
+    "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet"
+)
 _DEFAULT_FIT_START = "2018-01-02"
 _DEFAULT_FIT_END = "2023-12-20"
 

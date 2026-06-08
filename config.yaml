@@ -2,7 +2,7 @@
 # Copy this file and modify for your strategy experiments.
 
 # qlib runtime
-provider_uri: "D:/qlib_data/my_cn_data_pit"
+provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"
 region: "cn"
 
 # features

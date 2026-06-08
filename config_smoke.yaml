@@ -6,7 +6,7 @@
 # Smoke windows below sit inside that span and leave a >=2 trading-day
 # embargo gap between train/valid and valid/test (Alpha158 labels look
 # ahead, so adjacent boundaries are rejected by FeatureDatasetBuilder).
-provider_uri: "D:/qlib_data/my_cn_data_pit"
+provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"
 region: "cn"
 
 # features
