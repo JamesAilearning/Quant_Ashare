@@ -8,7 +8,7 @@ path safety) live in ``pages/_results_helpers.py``.
 After phase 2, ``pages/results.py`` is reduced to a slim entry: imports,
 re-exports for the test surface, and the module-level page dispatch
 (JobManager poll → job selectbox → dispatch to ``_render_pipeline_dashboard``
-/ ``_render_walk_forward_summary`` / ``_render_tushare_provider``).
+/ ``_render_walk_forward_summary``).
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ from web.operator_ui.pages._results_helpers import (
     _metric_color,
     _nested,
     _read_holdings_frame,
-    _read_json_artifact,
     _read_metadata,
     _read_metrics,
     _read_nav_frame,
@@ -69,7 +68,6 @@ from web.operator_ui.result_view_helpers import (
     filter_nav_frame_by_range,
     nav_y_range,
 )
-from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
 
 
 def _render_status_header(
@@ -1055,44 +1053,6 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
             for f in folds
         ])
         st.dataframe(df, use_container_width=True)
-
-
-def _render_tushare_provider(run_dir: Path | None, issues: list[ArtifactReadIssue]) -> None:
-    st.header("Tushare 数据源产物")
-    if run_dir is None:
-        st.info("数据源产物目录暂不可用。")
-        return
-
-    metadata = inspect_provider_metadata(str(run_dir))
-    st.json(provider_metadata_summary(metadata))
-
-    for error in metadata.errors:
-        st.error(error)
-    for warning in metadata.warnings:
-        st.warning(warning)
-
-    validation = _read_json_artifact(
-        metadata.validation_path,
-        issues,
-        artifact_name="validation.json",
-    )
-    if validation:
-        st.subheader("校验")
-        st.json(validation)
-
-    manifest = _read_json_artifact(metadata.manifest_path, issues, artifact_name="manifest.json")
-    if manifest:
-        st.subheader("清单")
-        st.json(manifest)
-
-    _render_artifact_issues(issues)
-
-    st.info(
-        "Tushare 数据源作业产出的是 qlib 数据包，仅供检视数据健康度，"
-        "不会生成流水线 / 滚动验证 / 训练图表。**请勿**把这里的 qlib_provider "
-        "路径作为训练运行的 provider_uri——它是一次性的非生产 bundle；"
-        "生产 bundle 由 scripts/data_pipeline/ 构建。"
-    )
 
 
 def _query_run_id() -> str:

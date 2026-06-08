@@ -1,14 +1,13 @@
 """Streamlit configuration forms and validation.
 
-Heavy config classes (``PipelineConfig``, ``WalkForwardConfig``,
-``TushareQlibProviderBundleConfig``) transitively import ``qlib``,
-which is intentionally NOT a pyproject.toml dependency (see
-``pyproject.toml`` lines 12-14). Streamlit auto-imports every page
-module at startup to build the sidebar, so a top-level import of
-those config classes here would crash the entire UI on any
-environment without qlib. The page modules that consume
-``PIPELINE_KEYS`` / ``WALK_FORWARD_KEYS`` / ``TUSHARE_PROVIDER_KEYS``
-only need the field-name sets, not the config classes themselves;
+Heavy config classes (``PipelineConfig``, ``WalkForwardConfig``)
+transitively import ``qlib``, which is intentionally NOT a
+pyproject.toml dependency (see ``pyproject.toml`` lines 12-14).
+Streamlit auto-imports every page module at startup to build the
+sidebar, so a top-level import of those config classes here would
+crash the entire UI on any environment without qlib. The page modules
+that consume ``PIPELINE_KEYS`` / ``WALK_FORWARD_KEYS`` only need the
+field-name sets, not the config classes themselves;
 :pep:`562` ``__getattr__`` defers the import to first access.
 (bug.md P2-2.)
 """
@@ -61,19 +60,9 @@ def _walk_forward_keys() -> frozenset[str]:
     return _KEY_SET_CACHE["walk_forward"]
 
 
-def _tushare_provider_keys() -> frozenset[str]:
-    if "tushare" not in _KEY_SET_CACHE:
-        from src.data.tushare.provider_bundle import TushareQlibProviderBundleConfig
-        _KEY_SET_CACHE["tushare"] = frozenset(
-            _dataclass_field_names(TushareQlibProviderBundleConfig)
-        )
-    return _KEY_SET_CACHE["tushare"]
-
-
 _LAZY_ATTRS = {
     "PIPELINE_KEYS": _pipeline_keys,
     "WALK_FORWARD_KEYS": _walk_forward_keys,
-    "TUSHARE_PROVIDER_KEYS": _tushare_provider_keys,
 }
 
 

@@ -156,8 +156,7 @@ def _calendar_path(provider_uri: str | Path) -> Path:
     """Return the bundle's calendar file path. The calendar is the
     fingerprint surface for :func:`compute_bundle_content_hash` —
     pinned to ``calendars/day.txt`` to match the qlib bundle layout
-    (see ``src/data/pit/qlib_bin_builder.py`` and the references in
-    ``src/pit/query.py`` / ``src/data/tushare/provider_bundle/_utils.py``).
+    (see ``src/data/pit/qlib_bin_builder.py`` and ``src/pit/query.py``).
     """
     return Path(provider_uri) / "calendars" / "day.txt"
 

@@ -38,7 +38,10 @@ def _write_provider(root: Path) -> Path:
     (provider / "instruments" / "all.txt").write_text(
         "SH600000\t2025-01-02\t2025-12-31\n", encoding="utf-8"
     )
-    (root / "validation.json").write_text(
+    # validation.json lives INSIDE the bundle dir. (The publisher's old
+    # parent-dir layout — read via training_guards._metadata_root — was retired
+    # with the publisher in U3; metadata is now read from the provider dir.)
+    (provider / "validation.json").write_text(
         json.dumps({
             "health": "ok",
             "coverage_start_date": "2025-01-02",
@@ -53,7 +56,7 @@ def _write_provider(root: Path) -> Path:
 
 
 class OperatorUiTrainingGuardTests(unittest.TestCase):
-    def test_provider_metadata_reads_adjacent_validation_and_provider_files(self) -> None:
+    def test_provider_metadata_reads_validation_and_provider_files(self) -> None:
         from web.operator_ui.training_guards import inspect_provider_metadata, provider_metadata_summary
 
         with tempfile.TemporaryDirectory() as tmp:

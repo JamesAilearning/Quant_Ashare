@@ -30,46 +30,6 @@ class OperatorUiProgressTests(unittest.TestCase):
         self.assertEqual(progress["label"], "已完成")
         self.assertIn("run_dir=", progress["detail"])
 
-    def test_tushare_progress_uses_provider_artifacts(self) -> None:
-        from web.operator_ui.progress import build_job_progress
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            job_dir = root / "job"
-            job_dir.mkdir()
-            output_dir = root / "qlib_provider"
-            features_dir = output_dir / "features" / "SH600000"
-            features_dir.mkdir(parents=True)
-            (features_dir / "close.day.bin").write_bytes(b"data")
-            staging_dir = root / "staging"
-            staging_dir.mkdir()
-            (staging_dir / "daily.csv").write_text("trade_date,ts_code\n", encoding="utf-8")
-            validation_path = root / "validation.json"
-            validation_path.write_text(
-                json.dumps({"health": "ok", "row_count": 10, "instrument_count": 1}),
-                encoding="utf-8",
-            )
-            config_path = job_dir / "config.yaml"
-            config_path.write_text(
-                f"output_dir: {output_dir}\n"
-                f"staging_dir: {staging_dir}\n"
-                f"validation_path: {validation_path}\n",
-                encoding="utf-8",
-            )
-
-            progress = build_job_progress(
-                job_dir,
-                {
-                    "status": "running",
-                    "mode": "tushare_provider",
-                    "config_path": str(config_path),
-                },
-            )
-
-        self.assertGreaterEqual(progress["percent"], 95)
-        self.assertEqual(progress["label"], "已生成数据源校验产物")
-        self.assertIn("validation_health=ok", progress["detail"])
-
     def test_pipeline_progress_detects_report_artifact(self) -> None:
         from web.operator_ui.progress import build_job_progress
 

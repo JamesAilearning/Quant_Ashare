@@ -14,8 +14,8 @@ Pipeline (Phase B.2, per docs/pit/pit_universe_design.md §5 Stage 5)
        -> <output_dir>/features/<ticker_lower>/{pe,pb,ps,turnover_rate,circ_mv,total_mv}.day.bin
           (only when a daily_basic parquet exists for the ticker)
 
-qlib bin format (matches src/data/tushare/provider_bundle/publisher.py
-``_write_qlib_bundle``):
+qlib bin format (qlib's native per-ticker bin layout — this builder is the
+canonical writer):
 
 - ``calendars/day.txt`` — one ISO date per line, sorted.
 - ``features/<lowercase_ticker>/<field>.day.bin`` — little-endian
@@ -105,7 +105,7 @@ BIN_DAILY_BASIC_FIELDS: tuple[str, ...] = (
     "pe", "pb", "ps", "turnover_rate", "circ_mv", "total_mv",
 )
 
-# Tushare unit conversions (per src/data/tushare/provider_bundle/_types).
+# Tushare unit conversions.
 TUSHARE_VOL_LOTS_TO_SHARES = 100  # vol is in 手 (100 shares)
 TUSHARE_AMOUNT_KYUAN_TO_YUAN = 1000  # amount is in 千元
 
@@ -429,19 +429,13 @@ class QlibBinBuilder:
         negative -> sign-flipped, NaN -> a wrong / unadjusted price, all written
         straight into the production PIT bins.
 
-        Verbatim mirror of the operator-UI publisher's staged-adj validation
-        (``src/data/tushare/provider_bundle/publisher.py``: the non-finite /
-        non-positive adjustment-factor checks on the raw staged frame) — same
-        predicate AND same raw input; only the control flow differs (the builder
-        ORs the two conditions and raises immediately, having no
-        error-accumulation framework). A date ABSENT from this source is not a
-        row here, so it is NOT flagged — it falls through the left-merge and
-        fills to 1.0 (the documented no-adjustment behavior).
-
-        Kept as a DELIBERATE short-term duplicate rather than a shared validator
-        while the publisher-retirement (builder unification) assessment is open;
-        the production builder must NOT import the publisher (wrong dependency
-        direction). P1-10 / Phase 3 P3-1.
+        This is the SOLE adj_factor validity guard for the production bundle.
+        (The operator-UI Tushare publisher previously ran an equivalent
+        non-finite / non-positive check on its own staged frame; that publisher
+        was retired in unify U3, leaving ``QlibBinBuilder`` as the only builder.)
+        A date ABSENT from the source is not a row here, so it is NOT flagged —
+        it falls through the left-merge and fills to 1.0 (the documented
+        no-adjustment behavior). P1-10 / Phase 3 P3-1.
         """
         factor = pd.to_numeric(adj_df["adj_factor"], errors="coerce")
         non_finite = ~np.isfinite(factor)
@@ -534,8 +528,7 @@ class QlibBinBuilder:
         return sorted(_to_iso_date(d) for d in dates)
 
     # ------------------------------------------------------------------
-    # Bin writers (matches src/data/tushare/provider_bundle/publisher
-    #              ::_write_qlib_bundle)
+    # Bin writers (qlib's native per-ticker bin layout)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -606,8 +599,7 @@ class QlibBinBuilder:
         mask (the row drop in ``_clip_to_listing_window``) propagates
         to daily_basic bins for free.
 
-        The bin file layout matches qlib's native format and
-        ``src/data/tushare/provider_bundle/publisher.py``: first
+        The bin file layout matches qlib's native format: first
         ``float32`` is ``start_index`` (offset into the calendar
         where this ticker's data begins), followed by one value per
         consecutive calendar day from ``start_index`` to ``start_index +

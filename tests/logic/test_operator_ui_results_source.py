@@ -38,22 +38,6 @@ def _results_combined_source() -> str:
 
 
 class ResultsPageSourceTests(unittest.TestCase):
-    def test_results_page_displays_tushare_provider_artifacts(self) -> None:
-        source = _results_combined_source()
-
-        self.assertIn('mode == "tushare_provider"', source)
-        self.assertIn("Tushare 数据源产物", source)
-        self.assertIn("inspect_provider_metadata(str(run_dir))", source)
-        self.assertIn("metadata.validation_path", source)
-        self.assertIn("metadata.manifest_path", source)
-
-    def test_results_page_keeps_provider_jobs_read_only(self) -> None:
-        source = _results_combined_source()
-
-        self.assertIn("Tushare 数据源作业产出的是 qlib 数据包", source)
-        self.assertNotIn("Pipeline(", source)
-        self.assertNotIn("WalkForwardEngine(", source)
-
     def test_results_page_renders_pipeline_detail_sections(self) -> None:
         source = _results_combined_source()
 

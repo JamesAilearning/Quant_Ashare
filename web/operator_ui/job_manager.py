@@ -26,7 +26,7 @@ from web.operator_ui.progress import build_job_progress
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 JOB_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "jobs"
 RESULT_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "results"
-JobMode = Literal["pipeline", "walk_forward", "tushare_provider"]
+JobMode = Literal["pipeline", "walk_forward"]
 
 
 class JobManagerError(RuntimeError):
@@ -106,15 +106,7 @@ class JobManager:
         # Force output paths under the UI result root so report_reader
         # and job history never have to chase machine-local defaults.
         result_dir = RESULT_ROOT / job_id
-        if mode == "tushare_provider":
-            provider_dir = result_dir / "qlib_provider"
-            config["output_dir"] = str(provider_dir)
-            config.setdefault("staging_dir", str(result_dir / "staging"))
-            config.setdefault("manifest_path", str(result_dir / "manifest.json"))
-            config.setdefault("validation_path", str(result_dir / "validation.json"))
-            config.setdefault("comparison_path", str(result_dir / "comparison.json"))
-        else:
-            config["output_dir"] = str(result_dir)
+        config["output_dir"] = str(result_dir)
 
         config_path = job_dir / "config.yaml"
         _write_config_yaml(config, config_path)

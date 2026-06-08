@@ -19,7 +19,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 _UI_FILES = (
-    _ROOT / "web" / "operator_ui" / "pages" / "tushare.py",
+    # (pages/tushare.py — the Tushare ingest page — was retired in U3.)
     _ROOT / "web" / "operator_ui" / "pages" / "_results_render.py",
 )
 

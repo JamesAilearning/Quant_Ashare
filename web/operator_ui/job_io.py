@@ -83,7 +83,7 @@ class JobSummary:
     """Normalised view of a single run, regardless of launch source."""
 
     run_id: str
-    type: str  # pipeline / walk_forward / tushare_provider
+    type: str  # pipeline / walk_forward
     status: str
     source: str = "ui"  # "ui" or "cli"
     created_at: str = ""
@@ -201,7 +201,7 @@ def _extract_failure_detail(job_dir: Path, *, max_chars: int = 200) -> str:
 
 def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     job_id = str(raw.get("job_id") or raw.get("run_id") or "")
-    mode = str(raw.get("mode") or "").replace("tushare_provider", "provider")
+    mode = str(raw.get("mode") or "")
     status = str(raw.get("status") or "unknown")
     if status == "success":
         status = "completed"

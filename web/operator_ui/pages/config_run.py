@@ -47,11 +47,6 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _trading_day_options,
     _walk_forward_date_defaults,
 )
-from web.operator_ui.provider_catalog import (
-    ProviderCatalogError,
-    delete_provider_catalog_entry,
-    list_provider_catalog_entries,
-)
 from web.operator_ui.training_guards import (
     ProviderMetadata,
     inspect_provider_metadata,
@@ -147,7 +142,7 @@ def _select_trading_day(
         st.warning(
             f"⚠ `{label}` 的默认值 **{default}** 不在所选数据源的交易日历内 "
             f"(`{options[0]}` ~ `{options[-1]}`)，已替换为 **{options[0]}**。"
-            "请确认时间窗，或先在「Tushare 数据」页拉取更长区间的数据。"
+            "请确认时间窗，或重建覆盖更长区间的生产 bundle（scripts/data_pipeline/）。"
         )
         resolved_index = 0
     return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
@@ -310,30 +305,10 @@ with form_col:
 
     # --- Data section ---
     with st.expander("📊 数据", expanded=True):
-        provider_entries = list_provider_catalog_entries()
-        selected_entry = None
-        if provider_entries:
-            provider_options = ["手动填写 provider_uri"] + [e.label for e in provider_entries]
-            provider_by_label = {e.label: e for e in provider_entries}
-            selected_label = st.selectbox("已保存的数据源", provider_options, key="cr_provider_label")
-            if selected_label != "手动填写 provider_uri":
-                selected_entry = provider_by_label[selected_label]
-                st.session_state["cr_provider_uri"] = selected_entry.provider_uri
-                st.caption(f"使用：{selected_entry.provider_uri}")
-                if st.button("🗑 删除该已保存数据源", key="cr_del_provider"):
-                    try:
-                        delete_provider_catalog_entry(selected_entry.job_id)
-                    except ProviderCatalogError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.session_state["cr_provider_uri"] = ""
-                        st.success("已删除。")
-                        st.rerun()
-            else:
-                selected_entry = None
-        else:
-            st.caption("尚无已保存的数据源。请手动填写 URI，或先到「Tushare 数据」页拉取数据。")
-
+        # The publisher / UI Tushare ingest + its saved-provider catalog were
+        # retired (unify U3). Point provider_uri at a PRODUCTION bundle built by
+        # the data-pipeline scripts (scripts/data_pipeline/); QUANT_PROVIDER_URI
+        # is the env default for that bundle (ops Phase 1).
         provider_uri = st.text_input(
             "provider_uri *",
             placeholder="D:/qlib_data/my_cn_data",
@@ -805,9 +780,8 @@ if provider_uri_valid:
         st.json(provider_metadata_summary(provider_metadata))
 
 # ---------------------------------------------------------------------------
-# Tushare ingestion lives on its own page now (pages/tushare.py) — extracted
-# from this file in the Config & Run polish PR so data ingestion never bleeds
-# into the model-run form. Use the sidebar's "Tushare Data" entry to pull a
-# fresh bin store, then come back here and paste the resulting path into
-# ``provider_uri``.
+# Data ingestion is NOT done in the UI. The Tushare publisher + its ingest page
+# were retired (unify U3) — production qlib bundles are built by the data-pipeline
+# scripts (scripts/data_pipeline/); point ``provider_uri`` at one
+# (QUANT_PROVIDER_URI is its env default, ops Phase 1).
 # ---------------------------------------------------------------------------

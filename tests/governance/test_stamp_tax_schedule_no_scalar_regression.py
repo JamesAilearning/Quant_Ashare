@@ -54,7 +54,6 @@ _SHIPPED_CONFIG_YAMLS: tuple[str, ...] = (
     "config_walk.yaml",
     "config_smoke.yaml",
     "config_tushare.yaml",
-    "config_tushare_qlib_provider.yaml",
     "config_walk_mined.yaml",
     "config_walk_n1.yaml",
     "config_walk_n2.yaml",

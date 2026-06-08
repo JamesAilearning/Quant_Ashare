@@ -1,5 +1,5 @@
-"""Results page entry — read-only dashboard for pipeline / walk-forward /
-Tushare-provider artifacts.
+"""Results page entry — read-only dashboard for pipeline / walk-forward
+artifacts.
 
 The page implementation is split across three modules (UI review P1-1):
 
@@ -95,11 +95,10 @@ from web.operator_ui.pages._results_render import (  # noqa: F401
     _render_status_header,
     _render_timings_tab,
     _render_trades_tab,
-    _render_tushare_provider,
     _render_walk_forward_summary,
 )
 
-render_page_header("结果", "查看流水线、滚动验证及数据源运行的产物。")
+render_page_header("结果", "查看流水线、滚动验证运行的产物。")
 # FU-8 bundle freshness banner. **Bound to the SELECTED run's bundle**,
 # not the project-default — Codex P1 on PR #169 surfaced that
 # rendering with ``provider_uri=None`` here would show
@@ -131,14 +130,14 @@ st.html(theme_detect_script, width="content", unsafe_allow_javascript=True)
 jobs = JobManager.list_jobs()
 viewable_jobs = [
     job for job in jobs
-    if str(job.get("mode") or "") in {"pipeline", "walk_forward", "tushare_provider"}
+    if str(job.get("mode") or "") in {"pipeline", "walk_forward"}
 ]
 
 if not viewable_jobs:
     render_empty_state(
         "📄",
         "暂无可查看的运行",
-        "请先运行流水线、滚动验证或 Tushare 数据源作业。",
+        "请先运行流水线或滚动验证作业。",
     )
     if st.button("配置运行"):
         st.switch_page("pages/config_run.py")
@@ -203,48 +202,47 @@ else:
             _time.sleep(5)
             st.rerun()
 
-    if mode == "tushare_provider":
-        _render_tushare_provider(run_dir, artifact_issues)
-    else:
-        pipeline_report = (
-            _read_json_artifact(
-                run_dir / "pipeline_report.json",
-                artifact_issues,
-                artifact_name="pipeline_report.json",
-            )
-            if run_dir is not None
-            else {}
+    # (tushare_provider mode + its inspection view were retired in U3 — only
+    # pipeline / walk_forward jobs render here now.)
+    pipeline_report = (
+        _read_json_artifact(
+            run_dir / "pipeline_report.json",
+            artifact_issues,
+            artifact_name="pipeline_report.json",
         )
-        wf_report: dict[str, Any] = (
-            _read_json_artifact(
-                run_dir / "walk_forward_report.json",
-                artifact_issues,
-                artifact_name="walk_forward_report.json",
-            )
-            if run_dir is not None
-            else {}
+        if run_dir is not None
+        else {}
+    )
+    wf_report: dict[str, Any] = (
+        _read_json_artifact(
+            run_dir / "walk_forward_report.json",
+            artifact_issues,
+            artifact_name="walk_forward_report.json",
         )
+        if run_dir is not None
+        else {}
+    )
 
-        if mode == "pipeline" or pipeline_report:
-            _render_pipeline_dashboard(
-                job=selected_job,
-                run_dir=run_dir,
-                report=pipeline_report,
-                config=config,
-                config_path=config_path,
-                config_bytes=config_bytes,
-                issues=artifact_issues,
-            )
-        elif mode == "walk_forward" or wf_report:
-            if wf_report:
-                _render_artifact_issues(artifact_issues)
-                _render_walk_forward_summary(wf_report)
-                _render_charts(run_dir)
-            else:
-                _render_artifact_issues(artifact_issues)
-                st.warning("此运行目录里还没有 walk_forward_report.json。")
-                _render_config_tab(config_path, config_bytes, config)
-                _render_logs_tab(selected_job, artifact_issues)
+    if mode == "pipeline" or pipeline_report:
+        _render_pipeline_dashboard(
+            job=selected_job,
+            run_dir=run_dir,
+            report=pipeline_report,
+            config=config,
+            config_path=config_path,
+            config_bytes=config_bytes,
+            issues=artifact_issues,
+        )
+    elif mode == "walk_forward" or wf_report:
+        if wf_report:
+            _render_artifact_issues(artifact_issues)
+            _render_walk_forward_summary(wf_report)
+            _render_charts(run_dir)
         else:
             _render_artifact_issues(artifact_issues)
-            st.warning("此运行目录里既没有 pipeline_report.json 也没有 walk_forward_report.json。")
+            st.warning("此运行目录里还没有 walk_forward_report.json。")
+            _render_config_tab(config_path, config_bytes, config)
+            _render_logs_tab(selected_job, artifact_issues)
+    else:
+        _render_artifact_issues(artifact_issues)
+        st.warning("此运行目录里既没有 pipeline_report.json 也没有 walk_forward_report.json。")

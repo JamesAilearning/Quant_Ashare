@@ -55,7 +55,7 @@ def _find_run_dir(output_dir: Path) -> str | None:
     wf_report = output_dir / "walk_forward_report.json"
     if wf_report.is_file():
         return str(output_dir)
-    # Tushare provider ingest: output_dir is the generated qlib provider.
+    # A bundle-shaped output_dir (has calendars/ or features/) is its own run dir.
     if (output_dir / "calendars").is_dir() or (output_dir / "features").is_dir():
         return str(output_dir)
     # Pipeline: run dir is under runs/ subfolder
@@ -219,8 +219,6 @@ def main(argv: list[str] | None = None) -> None:
         cmd.append("main.py")
     elif mode == "walk_forward":
         cmd.append("scripts/run_walk_forward.py")
-    elif mode == "tushare_provider":
-        cmd.append("scripts/ingest_tushare_qlib_provider.py")
     else:
         _write_job_json(job_dir, {
             "status": "failed",
