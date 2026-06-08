@@ -78,6 +78,57 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn(".qv2-settings-section", css)
         self.assertIn(".qv2-mobile-only", css)
 
+    def test_theme_css_has_no_bare_style_close_tag(self) -> None:
+        """``inject_theme`` wraps the whole stylesheet in ``<style>…</style>``.
+
+        A ``<style>`` element is parsed as raw text, so the browser closes
+        it at the FIRST ``</style>`` it sees — even one buried in a CSS
+        comment. When that happens every rule after that point stops
+        applying AND its raw text spills into the page body (the
+        ``.qv2-r-*`` results-page regression: a comment contained
+        ``...'<style>…</style>'...`` which prematurely closed the element).
+
+        ``</style>`` is never valid inside a stylesheet, so this is the
+        fail-LOUD primary guard: any bare ``</style`` (any case) in
+        ``theme.css`` fails CI on the spot, rather than relying on the
+        runtime escape net in ``_escape_style_close``.
+        """
+
+        from web.operator_ui.theme import load_theme_css
+
+        css = load_theme_css()
+
+        self.assertIsNone(
+            re.search(r"</style", css, flags=re.IGNORECASE),
+            "theme.css contains a bare `</style>` token — it will prematurely "
+            "close the injected <style> element and leak CSS as body text. "
+            "Rewrite the offending comment/string so the literal `</style>` "
+            "does not appear.",
+        )
+
+    def test_escape_style_close_defuses_premature_close(self) -> None:
+        """The runtime fail-safe net escapes any ``</style>`` (any case)
+        so it can no longer terminate the wrapping ``<style>`` element,
+        while leaving ordinary CSS untouched."""
+
+        from web.operator_ui.theme import _escape_style_close
+
+        # bare close tags (any case) are defused — no `</style` survives
+        for raw in ("a{}</style>", "x</STYLE>y", "/* ...'<style>…</style>' */"):
+            escaped = _escape_style_close(raw)
+            self.assertIsNone(
+                re.search(r"</style", escaped, flags=re.IGNORECASE),
+                f"`</style` survived escaping of {raw!r}",
+            )
+            self.assertIn("<\\/", escaped)
+
+        # case of the tag name is preserved (defensive, comment-only text)
+        self.assertEqual(_escape_style_close("</STYLE>"), "<\\/STYLE>")
+        # an opening `<style>` (harmless inside raw-text) and ordinary CSS
+        # are left byte-for-byte unchanged
+        benign = ".qv2-r-card{color:var(--text)} /* <style> opener only */"
+        self.assertEqual(_escape_style_close(benign), benign)
+
     def test_preference_script_sets_document_attributes(self) -> None:
         from web.operator_ui.theme import UserPreferences, preference_attribute_script
 
