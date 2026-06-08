@@ -149,17 +149,26 @@ class ExpandEnvVarsHelperTests(unittest.TestCase):
         # The drive-letter colon is the ONLY real risk of the ${VAR:-default}
         # mechanism — lock that an unset env var expands to the FULL path with
         # the ``D:`` colon intact (and that a set var overrides it).
-        _set_env("QUANT_PROVIDER_URI", None)
-        self.assertEqual(
-            expand_env_vars("${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"),
-            "D:/qlib_data/my_cn_data_pit",
-        )
-        _set_env("QUANT_PROVIDER_URI", "E:/elsewhere/bundle")
-        self.assertEqual(
-            expand_env_vars("${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"),
-            "E:/elsewhere/bundle",
-        )
-        _set_env("QUANT_PROVIDER_URI", None)
+        # QUANT_PROVIDER_URI is a REAL (non-prefixed) var, so this class's
+        # _PREFIX-only fixture would NOT restore it. Save + restore by hand
+        # via try/finally so a process that starts with QUANT_PROVIDER_URI set
+        # (a local / E2E run pointing at a non-default bundle) does not leak as
+        # unset into later tests. ``os.environ.pop`` captures the original (the
+        # helper can't return it); ``_set_env(name, saved)`` restores it —
+        # None -> re-delete, str -> set back. (codex P3 on PR #229.)
+        saved = os.environ.pop("QUANT_PROVIDER_URI", None)
+        try:
+            self.assertEqual(
+                expand_env_vars("${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"),
+                "D:/qlib_data/my_cn_data_pit",
+            )
+            _set_env("QUANT_PROVIDER_URI", "E:/elsewhere/bundle")
+            self.assertEqual(
+                expand_env_vars("${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"),
+                "E:/elsewhere/bundle",
+            )
+        finally:
+            _set_env("QUANT_PROVIDER_URI", saved)
 
 
 class LoadYamlWithInheritanceEnvVarTests(unittest.TestCase):
