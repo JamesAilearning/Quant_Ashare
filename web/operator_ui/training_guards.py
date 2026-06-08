@@ -186,6 +186,19 @@ def validate_pipeline_training_inputs(
     errors: list[str] = list(metadata.errors)
     warnings: list[str] = list(metadata.warnings)
 
+    # A non-production operator-UI Tushare inspection bundle
+    # (…/operator_ui/results/<job>/qlib_provider) must NEVER be a training /
+    # backtest source — it is a one-off, inspection-only bundle. Production
+    # bundles come from the data-pipeline scripts (scripts/data_pipeline/).
+    if _is_non_production_ui_bundle(metadata.provider_path):
+        errors.append(
+            "provider_uri 指向运维 UI 的 Tushare 检视产物"
+            "（…/operator_ui/results/<job>/qlib_provider）——这是一次性、"
+            "仅供检视的非生产 bundle，不能作为训练 / 回测数据源。生产 bundle "
+            "由数据流水线脚本 (scripts/data_pipeline/) 构建；请把 provider_uri "
+            "指向生产 bundle。"
+        )
+
     parsed = {
         "train_start": _parse_required_date("train_start", train_start, errors),
         "train_end": _parse_required_date("train_end", train_end, errors),
@@ -395,7 +408,34 @@ def _validate_instruments(
         )
 
 
+def _is_non_production_ui_bundle(provider_path: Path | None) -> bool:
+    """True for an operator-UI Tushare *inspection* bundle — a path shaped like
+    ``…/operator_ui/results/<job_id>/qlib_provider``.
+
+    These are one-off, inspection-only bundles produced by the UI Tushare page;
+    they must never be used as a training / backtest ``provider_uri``. Production
+    bundles come from the data-pipeline scripts (``scripts/data_pipeline/``) and
+    never live under ``operator_ui/results``. Requiring all three markers
+    (``qlib_provider`` name + ``operator_ui`` + ``results`` in the path) keeps
+    this from ever false-flagging a production bundle.
+    """
+    if provider_path is None:
+        return False
+    parts = provider_path.parts
+    return (
+        provider_path.name == "qlib_provider"
+        and "operator_ui" in parts
+        and "results" in parts
+    )
+
+
 def _metadata_root(provider_path: Path) -> Path:
+    # The publisher writes manifest.json / validation.json in the PARENT of the
+    # ``qlib_provider`` bundle dir (…/results/<job>/{manifest,validation}.json),
+    # so metadata for such a bundle is read from the parent. (This publisher
+    # accommodation — together with the rest of the publisher inspection — is
+    # slated for removal when the publisher is retired; U1 only closes the
+    # train-on-inspection-bundle footgun, it does not delete inspection.)
     if provider_path.name == "qlib_provider":
         return provider_path.parent
     return provider_path

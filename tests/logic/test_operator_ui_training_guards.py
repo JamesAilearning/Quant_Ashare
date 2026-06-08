@@ -147,6 +147,69 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(any("instruments='csi300' 不在数据源的" in item for item in result.errors))
 
+    def test_is_non_production_ui_bundle_detection(self) -> None:
+        """The detector flags ONLY a …/operator_ui/results/<job>/qlib_provider
+        path, never a production bundle (U1 footgun guard)."""
+        from web.operator_ui.training_guards import _is_non_production_ui_bundle
+
+        self.assertTrue(_is_non_production_ui_bundle(
+            Path("D:/x/output/operator_ui/results/job_123/qlib_provider")))
+        # production bundle — not flagged
+        self.assertFalse(_is_non_production_ui_bundle(
+            Path("D:/qlib_data/my_cn_data_pit")))
+        # a bare qlib_provider NOT under operator_ui/results — not flagged
+        self.assertFalse(_is_non_production_ui_bundle(
+            Path("D:/somewhere/qlib_provider")))
+        self.assertFalse(_is_non_production_ui_bundle(None))
+
+    def test_pipeline_guard_rejects_ui_results_bundle_as_training_source(self) -> None:
+        """A non-production UI inspection bundle
+        (…/operator_ui/results/<job>/qlib_provider) must be rejected as a
+        training provider_uri — even when its dates/instruments are otherwise
+        valid. A production bundle at the same date config passes."""
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ui_root = Path(tmp) / "output" / "operator_ui" / "results" / "job_x"
+            provider = _write_provider(ui_root)  # ui_root/qlib_provider
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any("非生产 bundle" in item for item in result.errors),
+            f"expected non-production reject, got: {result.errors}",
+        )
+
+    def test_pipeline_guard_accepts_production_bundle_same_dates(self) -> None:
+        """Control for the reject above: the SAME valid date config on a
+        production-style bundle (NOT under operator_ui/results) passes."""
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp) / "my_cn_data_pit_root")
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+            )
+
+        self.assertTrue(result.ok, f"unexpected errors: {result.errors}")
+        self.assertFalse(any("非生产 bundle" in item for item in result.errors))
+
 
 class SegmentEmbargoTests(unittest.TestCase):
     """Regression tests for the label-lookahead embargo validator
