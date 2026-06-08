@@ -388,20 +388,24 @@ class QlibBinBuilder:
         adj = self._load_adj_factor(tushare_code)
         out = daily.copy()
         if adj is None or adj.empty:
-            # No adjustment data — keep raw prices.
+            # No adjustment data at all — keep raw prices (factor 1.0).
             out["adj_factor"] = 1.0
         else:
+            # P1-10 (Phase 3 P3-1): validate the RAW adj_factor BEFORE the
+            # ffill/fillna can mask a corrupt value. A present row whose factor
+            # is non-finite (inf / NaN) or <= 0 is corrupt and fails loud here;
+            # validating post-fill would miss a raw NaN entirely, since
+            # ffill/fillna sanitizes it to a prior factor or 1.0 first (codex P2
+            # on PR #230). A date simply ABSENT from the adj source is not a row
+            # here, so it still falls through the left-merge and fills to 1.0
+            # (the documented no-adjustment behavior). Mirrors the publisher,
+            # which likewise validates its raw staged adj_factor.
+            self._validate_adj_factor(adj, tushare_code)
             out = out.merge(
                 adj[["trade_date", "adj_factor"]],
                 on="trade_date", how="left",
             )
             out["adj_factor"] = out["adj_factor"].ffill().fillna(1.0)
-        # P1-10 (Phase 3 P3-1): refuse to multiply a corrupt adj_factor into
-        # prices. Validated AFTER ffill/fillna (so a legitimately-missing factor
-        # filled to 1.0 passes) and BEFORE the multiply below, on the post-merge
-        # column that actually scales OHLC. Covers both branches — the no-adj
-        # branch is all 1.0 and passes trivially.
-        self._validate_adj_factor(out, tushare_code)
         for col in ("open", "high", "low", "close"):
             if col in out.columns:
                 out[col] = pd.to_numeric(out[col], errors="coerce") * out["adj_factor"]
@@ -414,42 +418,50 @@ class QlibBinBuilder:
         return out
 
     @staticmethod
-    def _validate_adj_factor(out: pd.DataFrame, tushare_code: str) -> None:
-        """Fail-loud if any adj_factor that scales prices is non-finite or <= 0.
+    def _validate_adj_factor(adj_df: pd.DataFrame, tushare_code: str) -> None:
+        """Fail-loud if any RAW adj_factor that will scale prices is non-finite
+        (inf / NaN) or <= 0.
 
-        A corrupt adj_factor (inf, 0, or negative — e.g. a bad row from an
-        automated tushare pull) would otherwise multiply silently into the OHLC
-        columns: inf yields inf prices, 0 zeroes them, and a negative factor
-        sign-flips them, all written straight into the production PIT bins. This
-        mirrors the validation the operator-UI publisher already runs on its
-        staged adj_factor (``src/data/tushare/provider_bundle/publisher.py``'s
-        non-finite / non-positive adjustment-factor checks).
+        Validates the raw adj_factor source (before the per-day ffill/fillna in
+        ``_apply_adjustment``), so a present-row ``NaN`` is caught rather than
+        silently sanitized to a prior factor / 1.0. A corrupt factor would
+        otherwise multiply into the OHLC columns: inf -> inf prices, 0 -> zeroed,
+        negative -> sign-flipped, NaN -> a wrong / unadjusted price, all written
+        straight into the production PIT bins.
 
-        Kept as a DELIBERATE short-term duplicate of the publisher check rather
-        than a shared validator while the publisher-retirement (builder
-        unification) assessment is open; if the builders are unified the
-        publisher copy goes away, and if not we extract one shared helper then.
-        The production builder must NOT import the publisher (wrong dependency
+        Verbatim mirror of the operator-UI publisher's staged-adj validation
+        (``src/data/tushare/provider_bundle/publisher.py``: the non-finite /
+        non-positive adjustment-factor checks on the raw staged frame) — same
+        predicate AND same raw input; only the control flow differs (the builder
+        ORs the two conditions and raises immediately, having no
+        error-accumulation framework). A date ABSENT from this source is not a
+        row here, so it is NOT flagged — it falls through the left-merge and
+        fills to 1.0 (the documented no-adjustment behavior).
+
+        Kept as a DELIBERATE short-term duplicate rather than a shared validator
+        while the publisher-retirement (builder unification) assessment is open;
+        the production builder must NOT import the publisher (wrong dependency
         direction). P1-10 / Phase 3 P3-1.
         """
-        factor = pd.to_numeric(out["adj_factor"], errors="coerce")
+        factor = pd.to_numeric(adj_df["adj_factor"], errors="coerce")
         non_finite = ~np.isfinite(factor)
         non_positive = factor <= 0
         bad = non_finite | non_positive
         if not bool(bad.any()):
             return
-        offenders = out.loc[bad, ["trade_date", "adj_factor"]].head(5)
+        offenders = adj_df.loc[bad, ["trade_date", "adj_factor"]].head(5)
         sample = ", ".join(
             f"({td}: {val})"
             for td, val in offenders.itertuples(index=False, name=None)
         )
         raise QlibBinBuilderError(
             f"{tushare_code}: adj_factor must be finite and > 0, but "
-            f"{int(bad.sum())} row(s) are non-finite or <= 0. A non-finite "
-            "factor yields inf prices, 0 zeroes them, and a negative factor "
-            "sign-flips them; all silently corrupt the bins. First offenders "
-            f"(trade_date: adj_factor): {sample}. Refusing to write corrupt "
-            "bins; fix the tushare adj_factor dump for this ticker."
+            f"{int(bad.sum())} row(s) are non-finite (inf/NaN) or <= 0. A "
+            "non-finite factor yields inf / unadjusted prices, 0 zeroes them, "
+            "and a negative factor sign-flips them; all silently corrupt the "
+            f"bins. First offenders (trade_date: adj_factor): {sample}. Refusing "
+            "to write corrupt bins; fix the tushare adj_factor dump for this "
+            "ticker."
         )
 
     def _merge_daily_basic(

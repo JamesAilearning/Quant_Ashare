@@ -397,6 +397,19 @@ class AdjFactorGuardTests(unittest.TestCase):
         self.assertNotIn("20200101", msg)  # clean rows are NOT flagged
         self.assertNotIn("20200103", msg)
 
+    def test_nan_factor_flags_the_bad_row(self) -> None:
+        # A raw NaN in a present row is the case codex P2 (PR #230) caught:
+        # ffill().fillna(1.0) would mask it post-merge, so the guard MUST
+        # validate the RAW source — which is what _apply_adjustment now does.
+        df = self._factor_df([1.0, float("nan"), 2.0])  # bad row = 20200102
+        with self.assertRaises(QlibBinBuilderError) as ctx:
+            QlibBinBuilder._validate_adj_factor(df, "600519.SH")
+        msg = str(ctx.exception)
+        self.assertIn("20200102", msg)
+        self.assertIn("nan", msg)
+        self.assertNotIn("20200101", msg)
+        self.assertNotIn("20200103", msg)
+
     def test_zero_factor_raises_with_date(self) -> None:
         df = self._factor_df([1.0, 0.0])  # bad row = 20200102
         with self.assertRaisesRegex(QlibBinBuilderError, r"finite and > 0"):
@@ -453,6 +466,28 @@ class AdjFactorGuardTests(unittest.TestCase):
                 tmp_path, 2020, "600519.SH", dates, factor=-1.0,
             )
             with self.assertRaisesRegex(QlibBinBuilderError, r"600519\.SH"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_build_raises_on_nan_adj_factor(self) -> None:
+        # Regression for codex P2 on PR #230: a raw NaN factor used to be masked
+        # by ffill().fillna(1.0) and silently build UNADJUSTED bins; the
+        # raw-source guard now fails loud instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            dates = ["20200102", "20200103"]
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates, close=100.0)
+            _write_adj_factor_year(
+                tmp_path, 2020, "600519.SH", dates, factor=float("nan"),
+            )
+            with self.assertRaisesRegex(
+                QlibBinBuilderError, r"adj_factor must be finite",
+            ):
                 QlibBinBuilder(
                     tushare_dir=tmp_path,
                     delisted_registry_path=tmp_path / "registry.parquet",
