@@ -1326,7 +1326,7 @@ section[data-testid="stSidebar"] [data-testid="stSidebarNav"] > span {
 /*  Results page (pages/results.py) — page-scoped styles                  */
 /*                                                                        */
 /*  These selectors used to live inline in ``pages/results.py`` via       */
-/*  ``_install_styles()`` ⇒ ``st.markdown('<style>…</style>')``. They     */
+/*  ``_install_styles()`` ⇒ an inline ``st.markdown`` style block. They   */
 /*  collided with several design-system selectors (``.qv2-card``,         */
 /*  ``.qv2-muted``, ``.qv2-positive/negative``, ``.qv2-badge``) and       */
 /*  duplicated work that already lived in this file. Moved here under     */

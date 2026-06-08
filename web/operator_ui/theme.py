@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -90,6 +91,31 @@ def load_theme_css(path: Path = THEME_CSS_PATH) -> str:
     """Read the centralized token CSS file."""
 
     return path.read_text(encoding="utf-8")
+
+
+def _escape_style_close(css: str) -> str:
+    """Defuse any literal ``</style>`` inside the stylesheet text.
+
+    ``inject_theme`` wraps the whole stylesheet in ``<style>…</style>``.
+    A ``<style>`` element is parsed as raw text, so the browser closes it
+    at the FIRST ``</style>`` it sees — even one buried in a CSS comment.
+    Everything after that point would then spill into the page body as
+    visible text (see the results-page ``.qv2-r-*`` regression). A literal
+    ``</style>`` is never valid inside a stylesheet, so escaping the slash
+    is loss-free.
+
+    This is a fail-SAFE net only. The primary, fail-LOUD guard is the
+    static test that rejects a bare ``</style>`` in ``theme.css``
+    (``tests/.../test_operator_ui_theme.py``) so the footgun is caught in
+    CI rather than silently papered over here.
+    """
+
+    return re.sub(
+        r"</style",
+        lambda m: "<\\/" + m.group(0)[2:],
+        css,
+        flags=re.IGNORECASE,
+    )
 
 
 def preference_attribute_script(preferences: UserPreferences) -> str:
@@ -202,7 +228,10 @@ def inject_theme(preferences: UserPreferences | None = None) -> UserPreferences:
     import streamlit as st
 
     current = preferences or load_preferences()
-    st.markdown(f"<style>{load_theme_css()}</style>", unsafe_allow_html=True)
+    st.markdown(
+        f"<style>{_escape_style_close(load_theme_css())}</style>",
+        unsafe_allow_html=True,
+    )
     st.html(preference_attribute_script(current), width="content", unsafe_allow_javascript=True)
     return current
 
