@@ -37,8 +37,10 @@ def _parse_instruments(raw: str) -> str | list[str]:
 
 render_page_header(
     "Tushare 数据",
-    "把 A 股日频数据拉到本地 qlib bin 存储里。完成后将产出的目录路径填到"
-    "「配置运行」页面的 ``provider_uri`` 字段。",
+    "把 A 股日频数据拉到本地 qlib bin 存储里，用于检视数据健康度。"
+    "产出的是一次性检视用的**非生产** bundle，**请勿**作为训练 / 回测的 "
+    "``provider_uri``；生产 bundle 由数据流水线脚本 "
+    "(scripts/data_pipeline/) 构建。",
 )
 
 # ---------------------------------------------------------------------------
@@ -139,6 +141,7 @@ if pull_tushare:
             "可能正在使用不完整的快照。建议先删除 staging 目录再重拉。"
         )
     st.info(
-        f"完成后，把 ``output/operator_ui/results/{job_id}/qlib_provider`` "
-        "作为「配置运行」页的 ``provider_uri``。"
+        f"完成后产物在 ``output/operator_ui/results/{job_id}/qlib_provider``，"
+        "仅供检视数据健康度。**请勿**把它作为训练 / 回测的 ``provider_uri`` "
+        "——那是一次性的非生产 bundle；生产 bundle 由 scripts/data_pipeline/ 构建。"
     )

@@ -1088,8 +1088,10 @@ def _render_tushare_provider(run_dir: Path | None, issues: list[ArtifactReadIssu
     _render_artifact_issues(issues)
 
     st.info(
-        "Tushare 数据源作业产出的是 qlib 数据包，不会生成流水线 / 滚动验证 / "
-        "训练图表。把这里的 qlib_provider 路径填到训练运行的 provider_uri 即可。"
+        "Tushare 数据源作业产出的是 qlib 数据包，仅供检视数据健康度，"
+        "不会生成流水线 / 滚动验证 / 训练图表。**请勿**把这里的 qlib_provider "
+        "路径作为训练运行的 provider_uri——它是一次性的非生产 bundle；"
+        "生产 bundle 由 scripts/data_pipeline/ 构建。"
     )
 
 

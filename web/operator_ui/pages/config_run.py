@@ -55,6 +55,7 @@ from web.operator_ui.provider_catalog import (
 from web.operator_ui.training_guards import (
     ProviderMetadata,
     inspect_provider_metadata,
+    non_production_bundle_error,
     provider_metadata_summary,
     validate_pipeline_training_inputs,
 )
@@ -536,6 +537,13 @@ with form_col:
     else:
         guard_errors.extend(provider_metadata.errors)
         guard_warnings.extend(provider_metadata.warnings)
+        # walk_forward does NOT run validate_pipeline_training_inputs, so the
+        # non-production-bundle refusal (which lives in that guard) must be
+        # applied here too — otherwise a rolling-validation launch bypasses it
+        # (codex P1 on PR #231).
+        _wf_non_production_msg = non_production_bundle_error(provider_uri)
+        if _wf_non_production_msg:
+            guard_errors.append(_wf_non_production_msg)
 
     _GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
     if compute_device == "gpu" and model_type != "LGBModel":
@@ -647,6 +655,14 @@ with form_col:
         # accidentally enabled. Doing the check here catches the stale
         # frame and surfaces the actual error instead of launching a
         # job that will fail in qlib with a confusing missing-file trace.
+        #
+        # Mode-agnostic: refuse a non-production UI inspection bundle on EVERY
+        # launch path. The pipeline-only recheck below would otherwise let a
+        # walk_forward launch slip through (codex P1 on PR #231).
+        _np_msg = non_production_bundle_error(provider_uri)
+        if _np_msg:
+            st.error("提交前的最终校验失败，作业未启动：\n- " + _np_msg)
+            st.stop()
         if mode == "pipeline":
             _final_guard = validate_pipeline_training_inputs(
                 provider_uri=provider_uri,
