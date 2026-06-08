@@ -144,6 +144,23 @@ class ExpandEnvVarsHelperTests(unittest.TestCase):
             "D:/qlib_data/my_cn_data",
         )
 
+    def test_quant_production_default_keeps_drive_letter_colon(self) -> None:
+        # Phase 1 P1-1: the production placeholders use a Windows ``D:/`` default.
+        # The drive-letter colon is the ONLY real risk of the ${VAR:-default}
+        # mechanism — lock that an unset env var expands to the FULL path with
+        # the ``D:`` colon intact (and that a set var overrides it).
+        _set_env("QUANT_PROVIDER_URI", None)
+        self.assertEqual(
+            expand_env_vars("${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"),
+            "D:/qlib_data/my_cn_data_pit",
+        )
+        _set_env("QUANT_PROVIDER_URI", "E:/elsewhere/bundle")
+        self.assertEqual(
+            expand_env_vars("${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"),
+            "E:/elsewhere/bundle",
+        )
+        _set_env("QUANT_PROVIDER_URI", None)
+
 
 class LoadYamlWithInheritanceEnvVarTests(unittest.TestCase):
     """End-to-end tests that go through the full YAML loader."""
