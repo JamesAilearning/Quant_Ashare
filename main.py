@@ -11,8 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import yaml
-
+from src.core._yaml_loader import load_yaml_with_inheritance
 from src.core.canonical_backtest_contract import (
     stamp_tax_schedule_migration_snippet,
 )
@@ -28,11 +27,14 @@ def _load_config(path: str) -> PipelineConfig:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-
-    if not isinstance(raw, dict):
-        raise ValueError(f"Config file must be a YAML mapping, got {type(raw).__name__}")
+    # Resolve ``${VAR:-default}`` env-var references (provider_uri and the
+    # other parameterized paths use them as of ops Phase 1) and any ``extends``
+    # chain — the SAME loader scripts/run_walk_forward.py uses. A plain
+    # ``yaml.safe_load`` would leave the literal ``${...}`` placeholder in
+    # provider_uri and qlib would initialise against an invalid path. The loader
+    # raises (YamlInheritanceError) if the YAML root is not a mapping, so no
+    # separate isinstance guard is needed here.
+    raw = load_yaml_with_inheritance(config_path)
 
     # Legacy scalar ``stamp_tax_bps`` was replaced by
     # ``stamp_tax_schedule`` as part of the audit-P0-4 cost-model

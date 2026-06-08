@@ -9,6 +9,15 @@ path that was previously hardcoded.
 This test machine-locks that invariant (not just "no existing test went red"):
 with every QUANT_* unset, every one of the 9 sites must resolve to its current
 literal. If anyone edits a default, this fails immediately and names the site.
+
+The YAML sites are checked through their REAL entry points — ``main._load_config``
+for config.yaml / config_smoke.yaml (``python main.py``) and the
+``load_yaml_with_inheritance`` loader for config_walk.yaml (exactly what
+scripts/run_walk_forward.py calls). Testing the loader alone is NOT enough: it
+passes even if an entry point reads the config with a plain ``yaml.safe_load``
+and never expands the ``${VAR}`` placeholder — the gap codex caught on PR #229,
+where main.py did precisely that. Going through the entry point locks that class
+of bug shut.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+import main  # noqa: E402  (project-root entry point: python main.py [config])
 from src.core._yaml_loader import load_yaml_with_inheritance  # noqa: E402
 from src.inference.daily_recommend import RecommendationConfig  # noqa: E402
 
@@ -64,19 +74,30 @@ class PathParamDefaultsTests(unittest.TestCase):
             else:
                 os.environ[v] = old
 
-    # --- YAML side (4) ---
+    # --- YAML side (4) — checked through the REAL entry points ---
     def test_config_yaml_provider_uri_default(self) -> None:
-        cfg = load_yaml_with_inheritance(_PROJECT_ROOT / "config.yaml")
-        self.assertEqual(cfg["provider_uri"], _PROVIDER)
+        # Through main._load_config (``python main.py``), NOT the loader
+        # directly — locks that the entry point actually expands ${VAR}.
+        cfg = main._load_config(str(_PROJECT_ROOT / "config.yaml"))
+        self.assertEqual(cfg.provider_uri, _PROVIDER)
 
     def test_config_smoke_provider_uri_default(self) -> None:
-        cfg = load_yaml_with_inheritance(_PROJECT_ROOT / "config_smoke.yaml")
-        self.assertEqual(cfg["provider_uri"], _PROVIDER)
+        cfg = main._load_config(str(_PROJECT_ROOT / "config_smoke.yaml"))
+        self.assertEqual(cfg.provider_uri, _PROVIDER)
 
     def test_config_walk_provider_and_namechange_defaults(self) -> None:
+        # config_walk.yaml's entry point (scripts/run_walk_forward.py) calls
+        # load_yaml_with_inheritance directly, so the loader IS its real path.
         cfg = load_yaml_with_inheritance(_PROJECT_ROOT / "config_walk.yaml")
         self.assertEqual(cfg["provider_uri"], _PROVIDER)
         self.assertEqual(cfg["namechange_path"], _NAMECHANGE)
+
+    def test_main_load_config_env_override_reaches_provider_uri(self) -> None:
+        # A SET var must override at the main.py boundary (proves the entry
+        # point reads the env, not just that the default literal is correct).
+        os.environ["QUANT_PROVIDER_URI"] = "E:/custom/bundle_pit"
+        cfg = main._load_config(str(_PROJECT_ROOT / "config.yaml"))
+        self.assertEqual(cfg.provider_uri, "E:/custom/bundle_pit")
 
     # --- Python side (5) ---
     def test_recommendation_config_name_source_default(self) -> None:
