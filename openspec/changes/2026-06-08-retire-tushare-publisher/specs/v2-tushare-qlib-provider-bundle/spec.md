@@ -23,7 +23,7 @@ Tushare ingest path any more.
 
 ### Requirement: Generated qlib bundles SHALL declare adjustment semantics explicitly
 
-**Reason**: Retired with the publisher (unify U3); the production builder writes a single POST-adjusted PIT bundle.
+**Reason**: Retired with the publisher (unify U3); the production builder writes a single PIT bundle with one adjustment basis — PRE-ADJUSTED prices (`close × adj_factor`), per `qlib_bin_builder`'s documented adjusted-price contract (absolute adjusted prices are not PIT-correct features; consumers use within-ticker ratios).
 
 ### Requirement: Generated qlib bundles SHALL support explicitly configured benchmark indexes
 

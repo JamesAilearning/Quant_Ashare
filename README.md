@@ -30,21 +30,23 @@ V1 is used as a source of lessons and migration principles, not as an implementa
 
 ## Tushare Market Data
 
-Tushare OHLCV training data is opt-in. The shipped publisher builds a
-separate qlib provider bundle; it does not change `config.yaml` or the
-canonical training source by default.
+A-share OHLCV training data is built into a survivorship-corrected,
+point-in-time qlib bundle by the data-pipeline scripts under
+`scripts/data_pipeline/` (`01_fetch_tushare` → `05_build_qlib_bins` →
+`06_validate_pit_data`). See the
+[PIT migration guide](docs/pit/migration_guide.md) for the full chain and the
+exact arguments.
 
 ```powershell
 $env:TUSHARE_TOKEN = "your_pro_token_here"
 python -m pip install -e ".[tushare]"
-python scripts/ingest_tushare_qlib_provider.py config_tushare_qlib_provider.yaml
+# Then run scripts/data_pipeline/ 01 → 06 (see the migration guide above).
 ```
 
-To train on the generated bundle, copy your strategy config and explicitly set
-`provider_uri` to the generated `output/qlib_tushare` directory. Keep
-`adjust_mode` aligned with the ingest config's `data_adjust_mode`. The example
-config also publishes `SH000300` from Tushare `index_daily` so canonical
-backtests can read the benchmark from the same opt-in provider path. Benchmark
-index rows are not added to `instruments/all.txt`; set `instruments: "all"` in
-the training config unless you separately publish an index-specific instrument
-file such as `csi300.txt`.
+Point `provider_uri` at the built bundle (e.g. `D:/qlib_data/my_cn_data_pit`);
+`QUANT_PROVIDER_URI` is its env default (ops Phase 1), so the shipped configs'
+`${QUANT_PROVIDER_URI:-…}` resolves to it automatically.
+
+> The earlier operator-UI "Tushare 数据" ingest page and its standalone
+> publisher were retired (unify U3); the `scripts/data_pipeline/` chain is the
+> single production bundle builder.
