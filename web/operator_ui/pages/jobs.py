@@ -406,7 +406,7 @@ if total == 0 and not _active:
     render_empty_state(
         "\U0001f4cb",
         "暂无作业",
-        "通过「配置运行」启动你的第一个流水线，或在「Tushare 数据」拉取数据。",
+        "通过「配置运行」启动你的第一个流水线或滚动验证作业。",
         action_label="配置运行",
         action_on_click="window.location.href='/config_run'",
     )

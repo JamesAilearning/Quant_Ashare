@@ -1,5 +1,5 @@
-"""Results page entry — read-only dashboard for pipeline / walk-forward /
-Tushare-provider artifacts.
+"""Results page entry — read-only dashboard for pipeline / walk-forward
+artifacts.
 
 The page implementation is split across three modules (UI review P1-1):
 
@@ -137,7 +137,7 @@ if not viewable_jobs:
     render_empty_state(
         "📄",
         "暂无可查看的运行",
-        "请先运行流水线、滚动验证或 Tushare 数据源作业。",
+        "请先运行流水线或滚动验证作业。",
     )
     if st.button("配置运行"):
         st.switch_page("pages/config_run.py")

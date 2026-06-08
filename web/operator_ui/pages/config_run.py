@@ -142,7 +142,7 @@ def _select_trading_day(
         st.warning(
             f"⚠ `{label}` 的默认值 **{default}** 不在所选数据源的交易日历内 "
             f"(`{options[0]}` ~ `{options[-1]}`)，已替换为 **{options[0]}**。"
-            "请确认时间窗，或先在「Tushare 数据」页拉取更长区间的数据。"
+            "请确认时间窗，或重建覆盖更长区间的生产 bundle（scripts/data_pipeline/）。"
         )
         resolved_index = 0
     return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
@@ -780,9 +780,8 @@ if provider_uri_valid:
         st.json(provider_metadata_summary(provider_metadata))
 
 # ---------------------------------------------------------------------------
-# Tushare ingestion lives on its own page now (pages/tushare.py) — extracted
-# from this file in the Config & Run polish PR so data ingestion never bleeds
-# into the model-run form. Use the sidebar's "Tushare Data" entry to pull a
-# fresh bin store, then come back here and paste the resulting path into
-# ``provider_uri``.
+# Data ingestion is NOT done in the UI. The Tushare publisher + its ingest page
+# were retired (unify U3) — production qlib bundles are built by the data-pipeline
+# scripts (scripts/data_pipeline/); point ``provider_uri`` at one
+# (QUANT_PROVIDER_URI is its env default, ops Phase 1).
 # ---------------------------------------------------------------------------

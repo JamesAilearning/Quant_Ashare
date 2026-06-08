@@ -55,7 +55,7 @@ def _find_run_dir(output_dir: Path) -> str | None:
     wf_report = output_dir / "walk_forward_report.json"
     if wf_report.is_file():
         return str(output_dir)
-    # Tushare provider ingest: output_dir is the generated qlib provider.
+    # A bundle-shaped output_dir (has calendars/ or features/) is its own run dir.
     if (output_dir / "calendars").is_dir() or (output_dir / "features").is_dir():
         return str(output_dir)
     # Pipeline: run dir is under runs/ subfolder

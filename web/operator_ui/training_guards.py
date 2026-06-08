@@ -409,8 +409,10 @@ def _is_non_production_ui_bundle(provider_path: Path | None) -> bool:
     """True for an operator-UI Tushare *inspection* bundle — a path shaped like
     ``…/operator_ui/results/<job_id>/qlib_provider``.
 
-    These are one-off, inspection-only bundles produced by the UI Tushare page;
-    they must never be used as a training / backtest ``provider_uri``. Production
+    These are one-off, inspection-only bundles under an operator-UI results
+    layout (the legacy Tushare ingest output; the ingest page was retired in U3,
+    but this stays as a permanent backstop). They must never be used as a
+    training / backtest ``provider_uri``. Production
     bundles come from the data-pipeline scripts (``scripts/data_pipeline/``) and
     never live under ``operator_ui/results``. Requiring all three markers
     (``qlib_provider`` name + ``operator_ui`` + ``results`` in the path) keeps
