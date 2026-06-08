@@ -396,6 +396,12 @@ class QlibBinBuilder:
                 on="trade_date", how="left",
             )
             out["adj_factor"] = out["adj_factor"].ffill().fillna(1.0)
+        # P1-10 (Phase 3 P3-1): refuse to multiply a corrupt adj_factor into
+        # prices. Validated AFTER ffill/fillna (so a legitimately-missing factor
+        # filled to 1.0 passes) and BEFORE the multiply below, on the post-merge
+        # column that actually scales OHLC. Covers both branches — the no-adj
+        # branch is all 1.0 and passes trivially.
+        self._validate_adj_factor(out, tushare_code)
         for col in ("open", "high", "low", "close"):
             if col in out.columns:
                 out[col] = pd.to_numeric(out[col], errors="coerce") * out["adj_factor"]
@@ -406,6 +412,45 @@ class QlibBinBuilder:
         if "amount" in out.columns:
             out["money"] = pd.to_numeric(out["amount"], errors="coerce") * TUSHARE_AMOUNT_KYUAN_TO_YUAN
         return out
+
+    @staticmethod
+    def _validate_adj_factor(out: pd.DataFrame, tushare_code: str) -> None:
+        """Fail-loud if any adj_factor that scales prices is non-finite or <= 0.
+
+        A corrupt adj_factor (inf, 0, or negative — e.g. a bad row from an
+        automated tushare pull) would otherwise multiply silently into the OHLC
+        columns: inf yields inf prices, 0 zeroes them, and a negative factor
+        sign-flips them, all written straight into the production PIT bins. This
+        mirrors the validation the operator-UI publisher already runs on its
+        staged adj_factor (``src/data/tushare/provider_bundle/publisher.py``'s
+        non-finite / non-positive adjustment-factor checks).
+
+        Kept as a DELIBERATE short-term duplicate of the publisher check rather
+        than a shared validator while the publisher-retirement (builder
+        unification) assessment is open; if the builders are unified the
+        publisher copy goes away, and if not we extract one shared helper then.
+        The production builder must NOT import the publisher (wrong dependency
+        direction). P1-10 / Phase 3 P3-1.
+        """
+        factor = pd.to_numeric(out["adj_factor"], errors="coerce")
+        non_finite = ~np.isfinite(factor)
+        non_positive = factor <= 0
+        bad = non_finite | non_positive
+        if not bool(bad.any()):
+            return
+        offenders = out.loc[bad, ["trade_date", "adj_factor"]].head(5)
+        sample = ", ".join(
+            f"({td}: {val})"
+            for td, val in offenders.itertuples(index=False, name=None)
+        )
+        raise QlibBinBuilderError(
+            f"{tushare_code}: adj_factor must be finite and > 0, but "
+            f"{int(bad.sum())} row(s) are non-finite or <= 0. A non-finite "
+            "factor yields inf prices, 0 zeroes them, and a negative factor "
+            "sign-flips them; all silently corrupt the bins. First offenders "
+            f"(trade_date: adj_factor): {sample}. Refusing to write corrupt "
+            "bins; fix the tushare adj_factor dump for this ticker."
+        )
 
     def _merge_daily_basic(
         self, daily: pd.DataFrame, tushare_code: str,

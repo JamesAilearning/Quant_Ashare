@@ -360,5 +360,128 @@ class ConstantsTests(unittest.TestCase):
         self.assertEqual(TUSHARE_AMOUNT_KYUAN_TO_YUAN, 1000)
 
 
+class AdjFactorGuardTests(unittest.TestCase):
+    """P1-10 / Phase 3 P3-1: a corrupt adj_factor (inf / 0 / negative) must
+    fail loud at build time, never silently multiply into the production bins
+    (inf -> inf prices, 0 -> zeroed, negative -> sign-flipped). Mirrors the
+    publisher's staged-adj validation on the production builder path."""
+
+    @staticmethod
+    def _factor_df(factors: list[float]) -> pd.DataFrame:
+        """A minimal post-merge frame: trade_date + OHLC + adj_factor, one row
+        per factor. Dates are distinct so the error can name the bad one."""
+        n = len(factors)
+        dates = [f"202001{str(i + 1).zfill(2)}" for i in range(n)]
+        return pd.DataFrame({
+            "trade_date": dates,
+            "open": [10.0] * n, "high": [10.5] * n,
+            "low": [9.5] * n, "close": [10.0] * n,
+            "adj_factor": factors,
+        })
+
+    # --- direct unit tests on the guard (no disk) ---
+    def test_clean_factors_pass(self) -> None:
+        # All finite + strictly positive -> no raise.
+        QlibBinBuilder._validate_adj_factor(
+            self._factor_df([1.0, 2.0, 3.5]), "600519.SH",
+        )
+
+    def test_inf_factor_flags_only_the_bad_row(self) -> None:
+        df = self._factor_df([1.0, float("inf"), 2.0])  # bad row = 20200102
+        with self.assertRaises(QlibBinBuilderError) as ctx:
+            QlibBinBuilder._validate_adj_factor(df, "600519.SH")
+        msg = str(ctx.exception)
+        self.assertIn("600519.SH", msg)
+        self.assertIn("20200102", msg)   # the corrupt date is named
+        self.assertIn("inf", msg)        # ... with its value
+        self.assertNotIn("20200101", msg)  # clean rows are NOT flagged
+        self.assertNotIn("20200103", msg)
+
+    def test_zero_factor_raises_with_date(self) -> None:
+        df = self._factor_df([1.0, 0.0])  # bad row = 20200102
+        with self.assertRaisesRegex(QlibBinBuilderError, r"finite and > 0"):
+            QlibBinBuilder._validate_adj_factor(df, "000001.SZ")
+        self.assertIn(
+            "20200102",
+            str(self._raise_and_capture(self._factor_df([1.0, 0.0]), "000001.SZ")),
+        )
+
+    def test_negative_factor_raises_with_ticker_and_value(self) -> None:
+        df = self._factor_df([1.0, -1.5])
+        with self.assertRaises(QlibBinBuilderError) as ctx:
+            QlibBinBuilder._validate_adj_factor(df, "600000.SH")
+        msg = str(ctx.exception)
+        self.assertIn("600000.SH", msg)
+        self.assertIn("-1.5", msg)
+
+    @staticmethod
+    def _raise_and_capture(df: pd.DataFrame, code: str) -> QlibBinBuilderError:
+        try:
+            QlibBinBuilder._validate_adj_factor(df, code)
+        except QlibBinBuilderError as exc:
+            return exc
+        raise AssertionError("expected QlibBinBuilderError")
+
+    # --- integration via build() (guard is actually wired into the pipeline) ---
+    def test_build_raises_on_inf_adj_factor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            dates = ["20200102", "20200103"]
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates, close=100.0)
+            _write_adj_factor_year(
+                tmp_path, 2020, "600519.SH", dates, factor=float("inf"),
+            )
+            with self.assertRaisesRegex(
+                QlibBinBuilderError, r"adj_factor must be finite",
+            ):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_build_raises_on_negative_adj_factor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            dates = ["20200102"]
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates, close=100.0)
+            _write_adj_factor_year(
+                tmp_path, 2020, "600519.SH", dates, factor=-1.0,
+            )
+            with self.assertRaisesRegex(QlibBinBuilderError, r"600519\.SH"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_build_passes_with_clean_adj_factor(self) -> None:
+        # Positive control: a clean factor still builds and adjusts (100 * 2).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            dates = ["20200102", "20200103"]
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates, close=100.0)
+            _write_adj_factor_year(
+                tmp_path, 2020, "600519.SH", dates, factor=2.0,
+            )
+            out = tmp_path / "provider"
+            QlibBinBuilder(
+                tushare_dir=tmp_path,
+                delisted_registry_path=tmp_path / "registry.parquet",
+                output_dir=out,
+            ).build()
+            cal = (out / "calendars" / "day.txt").read_text(
+                encoding="utf-8",
+            ).splitlines()
+            _, close = _read_bin_values(out, "SH600519", "close", cal)
+            self.assertTrue(np.allclose(close[:2], [200.0, 200.0]))
+
+
 if __name__ == "__main__":
     unittest.main()
