@@ -329,6 +329,47 @@ class MergeTests(unittest.TestCase):
         merged = merge_manifest(prev, narrower)  # does not raise
         self.assertEqual(merged.endpoints["stock_basic"].holes, ())  # healed
 
+    def test_namechange_narrower_scope_is_refused(self) -> None:
+        # codex P1-A: namechange is a date-scoped aggregate endpoint (its hole is
+        # a date range), so it MUST be in the narrower-scope guard set.
+        prev = _bm(
+            [_result("namechange", 0)],
+            (_hole("namechange", "range=20180101-20251231"),),
+            start="20180101", end="20251231",
+        )
+        narrower = _bm([_result("namechange", 1)], (), start="20250101", end="20251231")
+        with self.assertRaisesRegex(FetchManifestError, "narrower-scope"):
+            merge_manifest(prev, narrower)
+
+    def test_skipped_aggregate_does_not_advance_coverage(self) -> None:
+        # codex P1-B: a wider run that SKIPS a prior narrow aggregate file (nothing
+        # written, units_written=0) must NOT claim the wider coverage — the data on
+        # disk is still the narrow file. Coverage stays the actually-fetched range.
+        prev = _bm([_result("namechange", 1)], (), start="20200101", end="20251231")
+        wider_skip = _bm([_result("namechange", 0)], (), start="20180101", end="20251231")
+        merged = merge_manifest(prev, wider_skip)
+        self.assertEqual(merged.endpoints["namechange"].coverage_start_date, "20200101")
+        self.assertEqual(merged.endpoints["namechange"].coverage_end_date, "20251231")
+
+    def test_written_run_advances_coverage(self) -> None:
+        # the complement: when the run DID write (units_written > 0), coverage
+        # spans the widest range (a genuinely wider fetch is recorded).
+        prev = _bm([_result("daily", 1)], (), start="20200101", end="20231231")
+        wider_written = _bm([_result("daily", 9)], (), start="20180101", end="20251231")
+        merged = merge_manifest(prev, wider_written)
+        self.assertEqual(merged.endpoints["daily"].coverage_start_date, "20180101")
+        self.assertEqual(merged.endpoints["daily"].coverage_end_date, "20251231")
+
+    def test_hole_free_narrower_run_is_allowed(self) -> None:
+        # the guard fires only when there are prior holes to wrongly drop; a
+        # hole-free narrower run is harmless and proceeds without regressing
+        # coverage (the wider actually-fetched range is kept).
+        prev = _bm([_result("daily", 5)], (), start="20180101", end="20251231")  # no holes
+        narrower = _bm([_result("daily", 0)], (), start="20250101", end="20251231")
+        merged = merge_manifest(prev, narrower)  # does NOT raise
+        self.assertEqual(merged.endpoints["daily"].coverage_start_date, "20180101")
+        self.assertEqual(merged.endpoints["daily"].coverage_end_date, "20251231")
+
 
 class ClearTests(unittest.TestCase):
 

@@ -147,11 +147,13 @@ def merge_manifest(
         prev_ep = prev.endpoints.get(ep)
         # codex P1: a self-heal drops a prev hole that is absent from this run's
         # holes — valid ONLY if this run RE-ATTEMPTED that hole. For a date-scoped
-        # endpoint, a NARROWER range does not re-attempt out-of-range units, so a
-        # narrower-scope merge would silently drop their holes (a silent partial).
-        # Refuse it (incremental narrower fetches are P3-6).
+        # endpoint that HAS prior holes, a NARROWER range does not re-attempt the
+        # out-of-range holed units, so a narrower-scope merge would silently drop
+        # their holes (a silent partial). Refuse it (a hole-free narrower run is
+        # harmless; narrower incremental fetches are P3-6).
         if (
             prev_ep is not None
+            and prev_ep.holes
             and ep in _DATE_SCOPED_ENDPOINTS
             and (cur.coverage_start_date > prev_ep.coverage_start_date
                  or cur.coverage_end_date < prev_ep.coverage_end_date)
@@ -160,10 +162,10 @@ def merge_manifest(
                 f"refusing narrower-scope merge for endpoint {ep!r}: this run "
                 f"covered [{cur.coverage_start_date}, {cur.coverage_end_date}] but "
                 f"the manifest already covers [{prev_ep.coverage_start_date}, "
-                f"{prev_ep.coverage_end_date}]. A narrower range does not re-attempt "
-                f"every prior hole, so self-healing would silently drop out-of-range "
-                f"holes. Re-run the full range, or clear the manifest (narrower "
-                f"incremental fetches are P3-6)."
+                f"{prev_ep.coverage_end_date}] with unresolved holes. A narrower "
+                f"range does not re-attempt every prior hole, so self-healing would "
+                f"silently drop out-of-range holes. Re-run the full range, or clear "
+                f"the manifest (narrower incremental fetches are P3-6)."
             )
         prev_holes = {h.unit: h for h in (prev_ep.holes if prev_ep else ())}
         carried: list[FetchHole] = []
@@ -172,14 +174,19 @@ def merge_manifest(
             prior = prev_holes.get(h.unit)
             attempts = prior.attempts + h.attempts if prior else h.attempts
             carried.append(replace(h, attempts=attempts))
-        # A prev hole ABSENT from cur.holes self-healed this run → it is simply
-        # not in `carried`, i.e. dropped. Coverage spans the widest seen range.
-        cov_start = _min_yyyymmdd(
-            prev_ep.coverage_start_date if prev_ep else None, cur.coverage_start_date,
-        )
-        cov_end = _max_yyyymmdd(
-            prev_ep.coverage_end_date if prev_ep else None, cur.coverage_end_date,
-        )
+        # codex P1-B: coverage reflects what was ACTUALLY fetched, not what was
+        # requested. A run that wrote NOTHING for this endpoint (every file
+        # skipped by resume — e.g. a wider run that skips a prior narrow aggregate
+        # file like namechange / suspend_d / index_weight) did NOT establish its
+        # requested range, so coverage must NOT advance to it; keep the prior
+        # actually-fetched coverage. A run that wrote data spans the widest range.
+        if prev_ep is None:
+            cov_start, cov_end = cur.coverage_start_date, cur.coverage_end_date
+        elif cur.units_written > 0:
+            cov_start = _min_yyyymmdd(prev_ep.coverage_start_date, cur.coverage_start_date)
+            cov_end = _max_yyyymmdd(prev_ep.coverage_end_date, cur.coverage_end_date)
+        else:
+            cov_start, cov_end = prev_ep.coverage_start_date, prev_ep.coverage_end_date
         merged[ep] = EndpointCoverage(
             status="holes" if carried else "complete",
             coverage_start_date=cov_start,

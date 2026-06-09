@@ -20,17 +20,22 @@ than parsing an unrecognized / partial shape (which the next merge could treat a
 Each run SHALL be merged onto the prior manifest: for an endpoint that ran this
 run, a hole whose exact `(endpoint, unit)` was re-attempted-and-succeeded SHALL
 be REMOVED (self-healed); a unit that still failed SHALL keep its hole with its
-attempt count ACCUMULATED across runs; `coverage_end_date` SHALL only advance;
-and an endpoint that did NOT run this run SHALL be preserved untouched. The merge
-SHALL NOT remove a hole that did not self-heal (that would be a silent partial)
-and SHALL NOT retain a hole that did self-heal (that would be a false alarm). A
-full `clear` SHALL be available for a fresh rebuild. The manifest SHALL be
-written on the completed-run path (with or without holes) and SHALL be skipped
-under `--dry-run`. Self-heal assumes full-scope runs: a NARROWER-scope re-run of
-a date-scoped endpoint (one whose `[coverage_start_date, coverage_end_date]` no
-longer covers the recorded coverage) does NOT re-attempt every prior hole, so the
-merge SHALL REFUSE it (fail-loud) rather than silently drop the out-of-range
-holes (`stock_basic` is exempt — it re-fetches the whole universe regardless of
+attempt count ACCUMULATED across runs; and an endpoint that did NOT run this run
+SHALL be preserved untouched. Coverage SHALL reflect what was ACTUALLY fetched,
+not what was requested: a run that wrote nothing for an endpoint (every file
+skipped by resume — e.g. a wider run that skips a prior narrow aggregate file
+like `namechange` / `suspend_d` / `index_weight`) SHALL NOT advance that
+endpoint's coverage to its requested range; only a run that wrote data advances
+coverage (to the widest range seen). The merge SHALL NOT remove a hole that did
+not self-heal (that would be a silent partial) and SHALL NOT retain a hole that
+did self-heal (that would be a false alarm). A full `clear` SHALL be available
+for a fresh rebuild. The manifest SHALL be written on the completed-run path
+(with or without holes) and SHALL be skipped under `--dry-run`. Self-heal assumes
+full-scope runs: a NARROWER-scope re-run of a date-scoped endpoint that still has
+UNRESOLVED holes (one whose `[coverage_start_date, coverage_end_date]` no longer
+covers the recorded coverage) does NOT re-attempt every prior hole, so the merge
+SHALL REFUSE it (fail-loud) rather than silently drop the out-of-range holes
+(`stock_basic` is exempt — it re-fetches the whole universe regardless of
 date). This capability SHALL only record — it SHALL NOT gate any consumer (P3-4c)
 and SHALL NOT itself drive narrower incremental fetches (P3-6).
 
@@ -55,7 +60,7 @@ and SHALL NOT itself drive narrower incremental fetches (P3-6).
   re-ran that endpoint
 - **THEN** if the unit succeeded this run its hole is removed (self-healed)
 - **AND** if the unit still failed its hole is kept with its attempt count
-  accumulated, and `coverage_end_date` only advances
+  accumulated, and coverage advances (only when data was actually written)
 
 #### Scenario: merge red line — an endpoint that did not run keeps its holes (no wrong-removal)
 - **WHEN** the prior manifest has holes in endpoint A and endpoint B, and this
@@ -72,12 +77,20 @@ and SHALL NOT itself drive narrower incremental fetches (P3-6).
 
 #### Scenario: merge red line — a narrower-scope re-run is refused (no scope-drop)
 - **WHEN** the prior manifest covers a wider date range for a date-scoped endpoint
-  and this run re-fetches that endpoint over a NARROWER range that no longer
-  covers the recorded coverage
+  that still has UNRESOLVED holes, and this run re-fetches that endpoint over a
+  NARROWER range that no longer covers the recorded coverage
 - **THEN** the merge raises rather than treating the never-re-attempted
   out-of-range holes as self-healed
-- **AND** a same-or-wider range merges normally, and `stock_basic` (date-agnostic)
-  is not refused
+- **AND** a same-or-wider range merges normally, a hole-free narrower run is
+  allowed (no holes at risk), and `stock_basic` (date-agnostic) is not refused
+
+#### Scenario: coverage reflects what was fetched, not what was requested
+- **WHEN** a wider run SKIPS a prior narrow aggregate file (`namechange` /
+  `suspend_d` / `index_weight`) because it already exists, writing nothing
+- **THEN** the endpoint's coverage stays at the actually-fetched narrow range,
+  not the wider requested one — so a downstream gate cannot mistake the skipped
+  wider request for fetched data
+- **AND** a run that actually wrote data advances coverage to the widest range
 
 #### Scenario: clear resets the manifest for a fresh rebuild
 - **WHEN** the manifest is cleared
