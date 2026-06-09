@@ -116,11 +116,39 @@ STOCK_BASIC_FIELDS = (
 
 
 class TushareFetcherError(RuntimeError):
-    """Raised when the fetcher cannot continue (rate-limit exhaustion,
-    unexpected vendor error, malformed config, etc.). Distinct from
-    :class:`TushareClientError` (which is the per-call boundary) so
-    callers can distinguish fetcher-orchestration failures from raw
-    Tushare failures."""
+    """Raised when the fetcher cannot continue (unexpected vendor error,
+    malformed config, missing prerequisite, a NON-retryable hard error, etc.).
+    Distinct from :class:`TushareClientError` (which is the per-call boundary)
+    so callers can distinguish fetcher-orchestration failures from raw Tushare
+    failures."""
+
+
+class FetchHoleError(RuntimeError):
+    """Raised by :meth:`TushareFetcher._safe_call` when a RETRYABLE call
+    exhausts its retries.
+
+    This is the *recoverable* failure (P3-4a continue-on-error): the calling
+    per-endpoint loop records a hole (:class:`FetchHole`) and continues to the
+    next unit rather than aborting the whole run — one transient blip no longer
+    kills a multi-hour backfill. A NON-retryable :class:`TushareClientError`
+    (token / permission / param) is re-raised by ``_safe_call`` instead and
+    aborts fast — there is no point hammering a call that will fail identically.
+
+    Carries only the retry outcome; the semantic unit (ticker / year / index /
+    status) is supplied by the catching loop, which holds that context.
+    """
+
+    def __init__(
+        self, api_name: str, *, reason_class: str, attempts: int, last_error: str,
+    ) -> None:
+        super().__init__(
+            f"Tushare {api_name} exhausted {attempts} retryable attempts "
+            f"({reason_class}); recorded as a hole. Last error: {last_error}"
+        )
+        self.api_name = api_name
+        self.reason_class = reason_class
+        self.attempts = attempts
+        self.last_error = last_error
 
 
 @dataclass(frozen=True)
@@ -178,6 +206,24 @@ class TushareFetchResult:
     skipped: int = 0
 
 
+@dataclass(frozen=True)
+class FetchHole:
+    """A unit that could not be fetched after exhausting retryable retries.
+
+    Recorded by the per-endpoint loops under continue-on-error (P3-4a) and
+    surfaced via :attr:`TushareFetcher.holes`. ``last_error`` is the client's
+    already-sanitised error string (the token never appears in
+    ``TushareClientError`` messages — ``client.py`` is the secrets boundary);
+    ``unit`` is a stable human/JSON label so P3-4b can persist it verbatim.
+    """
+
+    endpoint: str
+    unit: str
+    reason_class: str
+    attempts: int
+    last_error: str
+
+
 class TushareFetcher:
     """Orchestrator that pulls the Phase A.1 endpoints into a directory.
 
@@ -188,6 +234,18 @@ class TushareFetcher:
     def __init__(self, client: TushareClient, config: TushareFetcherConfig) -> None:
         self._client = client
         self._config = config
+        # Units skipped after exhausting retryable retries (continue-on-error,
+        # P3-4a). Reset at the start of every fetch(). In-memory only — P3-4b
+        # persists these to a fetch manifest.
+        self._holes: list[FetchHole] = []
+
+    @property
+    def holes(self) -> tuple[FetchHole, ...]:
+        """Units skipped after exhausting retryable retries during the last
+        ``fetch()`` (or a direct ``_fetch_*`` call). Empty == a complete pull.
+        The CLI turns a non-empty result into a non-zero exit + a hole report,
+        so a holey dump is never mistaken for a complete one."""
+        return tuple(self._holes)
 
     # ------------------------------------------------------------------
     # Public orchestrator
@@ -196,11 +254,16 @@ class TushareFetcher:
     def fetch(self) -> list[TushareFetchResult]:
         """Pull every endpoint in the configured set, in fixed order.
 
-        Per-endpoint failures surface as :class:`TushareFetcherError`
-        without retry beyond rate-limit backoff. Operator re-runs to
-        resume from the failing endpoint (file-existence checkpoint
-        means already-written files are skipped).
+        Continue-on-error (P3-4a): a unit (ticker+year, index, status) whose
+        call EXHAUSTS its retryable retries is recorded as a hole
+        (:attr:`holes`) and the loop continues — one transient blip no longer
+        aborts a multi-hour backfill. A NON-retryable error (token / permission
+        / param) still aborts fast (it would fail identically on every unit).
+        Resume stays per-file-existence; the CLI returns non-zero + a hole
+        report when :attr:`holes` is non-empty, so a holey dump is never
+        mistaken for a complete one. Inspect :attr:`holes` after the call.
         """
+        self._holes = []
         # Honour --dry-run: do NOT create output_dir (Codex review #99
         # PR comment). dry-run promises no filesystem side-effects.
         if not self._config.dry_run:
@@ -233,12 +296,16 @@ class TushareFetcher:
             if self._config.dry_run:
                 _logger.info("  [dry-run] would write %s (list_status=%r)", path, status)
                 continue
-            df = self._safe_call(
-                "stock_basic",
-                exchange="",
-                list_status=status,
-                fields=STOCK_BASIC_FIELDS,
-            )
+            try:
+                df = self._safe_call(
+                    "stock_basic",
+                    exchange="",
+                    list_status=status,
+                    fields=STOCK_BASIC_FIELDS,
+                )
+            except FetchHoleError as hole:
+                self._record_hole("stock_basic", f"list_status={status} ({label})", hole)
+                continue
             self._atomic_write_parquet(df, path)
             _logger.info("  wrote %d rows to %s", len(df), path)
             written += 1
@@ -254,12 +321,20 @@ class TushareFetcher:
         if self._config.dry_run:
             _logger.info("  [dry-run] would write %s", path)
             return TushareFetchResult("namechange", 0, 0, skipped=0)
-        df = self._safe_call(
-            "namechange",
-            start_date=self._config.start_date,
-            end_date=self._config.end_date,
-            fields="ts_code,name,start_date,end_date,ann_date,change_reason",
-        )
+        try:
+            df = self._safe_call(
+                "namechange",
+                start_date=self._config.start_date,
+                end_date=self._config.end_date,
+                fields="ts_code,name,start_date,end_date,ann_date,change_reason",
+            )
+        except FetchHoleError as hole:
+            self._record_hole(
+                "namechange",
+                f"range={self._config.start_date}-{self._config.end_date}",
+                hole,
+            )
+            return TushareFetchResult("namechange", 0, 0, skipped=0)
         self._atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult("namechange", 1, len(df))
@@ -273,12 +348,20 @@ class TushareFetcher:
         if self._config.dry_run:
             _logger.info("  [dry-run] would write %s", path)
             return TushareFetchResult("suspend_d", 0, 0, skipped=0)
-        df = self._safe_call(
-            "suspend_d",
-            start_date=self._config.start_date,
-            end_date=self._config.end_date,
-            fields="ts_code,trade_date,suspend_timing,suspend_type",
-        )
+        try:
+            df = self._safe_call(
+                "suspend_d",
+                start_date=self._config.start_date,
+                end_date=self._config.end_date,
+                fields="ts_code,trade_date,suspend_timing,suspend_type",
+            )
+        except FetchHoleError as hole:
+            self._record_hole(
+                "suspend_d",
+                f"range={self._config.start_date}-{self._config.end_date}",
+                hole,
+            )
+            return TushareFetchResult("suspend_d", 0, 0, skipped=0)
         self._atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult("suspend_d", 1, len(df))
@@ -311,6 +394,7 @@ class TushareFetcher:
                              path, start_year, end_year)
                 continue
             chunks: list[pd.DataFrame] = []
+            holed = False
             for year in range(start_year, end_year + 1):
                 y_start = f"{year}0101"
                 y_end = f"{year}1231"
@@ -318,15 +402,26 @@ class TushareFetcher:
                     y_start = self._config.start_date
                 if y_end > self._config.end_date:
                     y_end = self._config.end_date
-                chunk = self._safe_call(
-                    "index_weight",
-                    index_code=idx,
-                    start_date=y_start,
-                    end_date=y_end,
-                    fields="index_code,con_code,trade_date,weight",
-                )
+                try:
+                    chunk = self._safe_call(
+                        "index_weight",
+                        index_code=idx,
+                        start_date=y_start,
+                        end_date=y_end,
+                        fields="index_code,con_code,trade_date,weight",
+                    )
+                except FetchHoleError as hole:
+                    # index_weight writes ONE file per index. A partial file
+                    # would be SKIPPED by file-existence resume and the hole
+                    # never filled, so record the hole and leave the file
+                    # missing — a re-run re-fetches the whole index.
+                    self._record_hole("index_weight", f"index={idx} year={year}", hole)
+                    holed = True
+                    break
                 if not chunk.empty:
                     chunks.append(chunk)
+            if holed:
+                continue
             if not chunks:
                 # No data across the whole range — write empty parquet so
                 # resume on a subsequent run skips this index.
@@ -387,7 +482,26 @@ class TushareFetcher:
         self, *, endpoint: str, subdir: str, fields: str,
     ) -> TushareFetchResult:
         """Common loop for ``daily`` / ``adj_factor`` / ``daily_basic`` — per (year, ticker)."""
-        tickers = self._load_ticker_universe()
+        try:
+            tickers = self._load_ticker_universe()
+        except TushareFetcherError:
+            # The ticker universe is unavailable. If stock_basic holed THIS run
+            # (a transient failure left active/delisted incomplete), this
+            # per-ticker endpoint cannot run through no fault of usage: record a
+            # prerequisite hole and skip it (continue-on-error), so the run
+            # completes-with-holes (exit 3) and a re-run fills stock_basic first,
+            # then this endpoint. If stock_basic was simply never fetched (no
+            # hole this run), it is a usage error — re-raise for the hard abort.
+            if any(h.endpoint == "stock_basic" for h in self._holes):
+                self._add_hole(
+                    endpoint,
+                    "prerequisite stock_basic incomplete",
+                    reason_class="prerequisite",
+                    attempts=0,
+                    last_error="ticker universe unavailable: stock_basic holed this run",
+                )
+                return TushareFetchResult(endpoint, 0, 0, skipped=0)
+            raise
         out_root = self._config.output_dir / subdir
         start_year = int(self._config.start_date[:4])
         end_year = int(self._config.end_date[:4])
@@ -417,13 +531,17 @@ class TushareFetcher:
                             endpoint, len(tickers), year,
                         )
                     continue
-                df = self._safe_call(
-                    endpoint,
-                    ts_code=ticker,
-                    start_date=year_start,
-                    end_date=year_end,
-                    fields=fields,
-                )
+                try:
+                    df = self._safe_call(
+                        endpoint,
+                        ts_code=ticker,
+                        start_date=year_start,
+                        end_date=year_end,
+                        fields=fields,
+                    )
+                except FetchHoleError as hole:
+                    self._record_hole(endpoint, f"ts_code={ticker} year={year}", hole)
+                    continue
                 if df.empty and not self._config.write_empty_placeholders:
                     continue
                 self._atomic_write_parquet(df, path)
@@ -478,7 +596,12 @@ class TushareFetcher:
         Re-raises non-retryable ``TushareClientError`` immediately so
         the operator sees true failures (missing token, malformed
         parameter, account-permission errors) without 5 minutes of
-        misleading retries.
+        misleading retries — these abort the whole run fast.
+
+        On retryable EXHAUSTION (all ``MAX_RATE_LIMIT_RETRIES`` attempts
+        failed) raises :class:`FetchHoleError` instead — the recoverable
+        signal the per-endpoint loops turn into a recorded hole and
+        continue past (P3-4a continue-on-error).
         """
         last_err: TushareClientError | None = None
         for attempt in range(MAX_RATE_LIMIT_RETRIES):
@@ -511,10 +634,52 @@ class TushareFetcher:
                         "  Transient Tushare error on %s attempt %d/%d (final): %s",
                         api_name, attempt + 1, MAX_RATE_LIMIT_RETRIES, exc,
                     )
-        raise TushareFetcherError(
-            f"Tushare {api_name} failed {MAX_RATE_LIMIT_RETRIES} retryable "
-            f"attempts (rate limit, network, or 5xx); aborting. "
-            f"Last error: {last_err}"
+        # Retryable retries exhausted: a RECOVERABLE hole, not a hard abort.
+        # The calling per-endpoint loop catches this, records the unit, and
+        # continues (P3-4a). Non-retryable errors took the ``raise`` above and
+        # abort fast.
+        raise FetchHoleError(
+            api_name,
+            reason_class="transient",
+            attempts=MAX_RATE_LIMIT_RETRIES,
+            last_error=self._sanitize_error(last_err),
+        )
+
+    @staticmethod
+    def _sanitize_error(exc: TushareClientError | None) -> str:
+        """Bounded, token-free error string for a hole record.
+
+        ``TushareClientError`` never carries the token (``client.py`` is the
+        secrets boundary), so this only bounds the length so a verbose vendor
+        error body cannot bloat the (P3-4b) manifest or a log line.
+        """
+        if exc is None:
+            return ""
+        return f"{type(exc).__name__}: {str(exc)[:300]}"
+
+    def _add_hole(
+        self, endpoint: str, unit: str, *,
+        reason_class: str, attempts: int, last_error: str,
+    ) -> None:
+        """Append a :class:`FetchHole` and log it loudly so the operator sees it
+        as it happens (the CLI also reports the full set + a non-zero exit at the
+        end). Used both for a retry-exhausted call (via :meth:`_record_hole`) and
+        for a unit skipped because a prerequisite (``stock_basic``) holed earlier
+        in the same run."""
+        self._holes.append(FetchHole(
+            endpoint=endpoint, unit=unit, reason_class=reason_class,
+            attempts=attempts, last_error=last_error,
+        ))
+        _logger.warning(
+            "  HOLE: %s [%s] (%s, %d attempts) — continuing. %s",
+            endpoint, unit, reason_class, attempts, last_error,
+        )
+
+    def _record_hole(self, endpoint: str, unit: str, err: FetchHoleError) -> None:
+        """Record a hole for a unit whose call exhausted its retryable retries."""
+        self._add_hole(
+            endpoint, unit, reason_class=err.reason_class,
+            attempts=err.attempts, last_error=err.last_error,
         )
 
     @staticmethod

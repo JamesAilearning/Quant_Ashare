@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.data.tushare.client import TushareClientError  # noqa: E402
 from src.data.tushare.fetcher import (  # noqa: E402
     ENDPOINTS,
+    FetchHoleError,
     TushareFetcher,
     TushareFetcherConfig,
     TushareFetcherError,
@@ -451,7 +452,10 @@ class RateLimitTests(unittest.TestCase):
         # No retries — exactly one call, then re-raise
         self.assertEqual(client.call.call_count, 1)
 
-    def test_rate_limit_exhaustion_raises_fetcher_error(self) -> None:
+    def test_rate_limit_exhaustion_records_hole_not_abort(self) -> None:
+        # P3-4a continue-on-error: an exhausted retryable call no longer aborts
+        # the run — it is recorded as a hole and the loop continues. Both
+        # stock_basic buckets (L, D) exhaust → 2 holes, fetch() does NOT raise.
         client = _make_client(
             lambda api, **p: (_ for _ in ()).throw(
                 TushareClientError("returned None — rate limit exceeded")
@@ -464,14 +468,21 @@ class RateLimitTests(unittest.TestCase):
                     output_dir=Path(tmp), endpoints=("stock_basic",),
                     rate_limit_sleep_ms=0,
                 )
-                with self.assertRaisesRegex(TushareFetcherError, "rate limit"):
-                    TushareFetcher(client, cfg).fetch()
+                fetcher = TushareFetcher(client, cfg)
+                results = fetcher.fetch()  # does NOT raise
+
+        self.assertEqual(results[0].files_written, 0)
+        self.assertEqual(len(fetcher.holes), 2)
+        self.assertTrue(all(h.endpoint == "stock_basic" for h in fetcher.holes))
+        self.assertTrue(all(h.reason_class == "transient" for h in fetcher.holes))
 
     def test_no_sleep_after_final_rate_limit_attempt(self) -> None:
         """Regression for Codex review on PR #99: the final allowed retry
-        attempt MUST NOT sleep before raising — otherwise an exhausted
-        call wastes a full backoff period (~300s) before surfacing the
-        failure, compounding badly inside per-ticker loops.
+        attempt MUST NOT sleep before surfacing the failure — otherwise an
+        exhausted call wastes a full backoff period (~300s) before raising,
+        compounding badly inside per-ticker loops. Tested on ``_safe_call``
+        directly so a single call's retry/sleep schedule is isolated (P3-4a:
+        exhaustion now raises ``FetchHoleError``).
         """
         from src.data.tushare.fetcher import MAX_RATE_LIMIT_RETRIES
 
@@ -484,19 +495,17 @@ class RateLimitTests(unittest.TestCase):
         with patch("src.data.tushare.fetcher.time.sleep") as mock_sleep:
             with tempfile.TemporaryDirectory() as tmp:
                 cfg = TushareFetcherConfig(
-                    output_dir=Path(tmp), endpoints=("stock_basic",),
-                    rate_limit_sleep_ms=0,  # disable per-call sleep
+                    output_dir=Path(tmp), rate_limit_sleep_ms=0,  # disable per-call sleep
                 )
-                with self.assertRaises(TushareFetcherError):
-                    TushareFetcher(client, cfg).fetch()
+                fetcher = TushareFetcher(client, cfg)
+                with self.assertRaises(FetchHoleError):
+                    fetcher._safe_call("daily", ts_code="600000.SH")
 
-        # Sleep called exactly MAX_RATE_LIMIT_RETRIES - 1 times for the
-        # exhausted bucket (no sleep after the final attempt). The
-        # rate_limit_sleep_ms=0 path is short-circuited so per-call
-        # sleep contributes 0 to the count.
+        # Sleep called exactly MAX_RATE_LIMIT_RETRIES - 1 times (no sleep after
+        # the final attempt). rate_limit_sleep_ms=0 short-circuits the per-call
+        # sleep so it contributes 0.
         self.assertEqual(mock_sleep.call_count, MAX_RATE_LIMIT_RETRIES - 1)
-        # Client was called MAX_RATE_LIMIT_RETRIES times (each attempt
-        # makes one network call).
+        # One network call per attempt.
         self.assertEqual(client.call.call_count, MAX_RATE_LIMIT_RETRIES)
 
 
@@ -633,9 +642,11 @@ class RetryableErrorClassificationTests(unittest.TestCase):
         )
 
         # Fail with ConnectionError-style message every attempt;
-        # safe_call should hit MAX_RATE_LIMIT_RETRIES retries before
-        # raising — proving the retry path engages, not bailing on
-        # attempt 1 like the pre-PR behaviour.
+        # _safe_call should hit MAX_RATE_LIMIT_RETRIES retries before raising
+        # FetchHoleError — proving the retry path engages on a network error,
+        # not bailing on attempt 1 like the pre-PR behaviour. (P3-4a:
+        # exhaustion raises FetchHoleError, which the per-endpoint loop turns
+        # into a recorded hole.)
         client = MagicMock()
         client.call.side_effect = TushareClientError(
             "ConnectionError: HTTPConnectionPool(host='api.waditu.com', "
@@ -644,14 +655,11 @@ class RetryableErrorClassificationTests(unittest.TestCase):
         with patch("src.data.tushare.fetcher.time.sleep"):
             with tempfile.TemporaryDirectory() as tmp:
                 cfg = TushareFetcherConfig(
-                    output_dir=Path(tmp), endpoints=("stock_basic",),
-                    rate_limit_sleep_ms=0,
+                    output_dir=Path(tmp), rate_limit_sleep_ms=0,
                 )
-                with self.assertRaisesRegex(
-                    TushareFetcherError,
-                    "rate limit, network, or 5xx",
-                ):
-                    TushareFetcher(client, cfg).fetch()
+                fetcher = TushareFetcher(client, cfg)
+                with self.assertRaises(FetchHoleError):
+                    fetcher._safe_call("adj_factor", ts_code="600000.SH")
         # MAX_RATE_LIMIT_RETRIES attempts — pre-PR this would have
         # been exactly 1 because ConnectionError didn't match
         # ``_is_rate_limit_error``.
@@ -675,7 +683,10 @@ class AtomicWriteTests(unittest.TestCase):
 
 class TokenLeakTests(unittest.TestCase):
 
-    def test_fetcher_error_does_not_leak_token(self) -> None:
+    def test_holes_do_not_leak_token(self) -> None:
+        # The fetcher never holds the token (the client does), and
+        # TushareClientError is the client's secrets boundary — so a recorded
+        # hole's sanitised last_error can never carry the token (P3-4a).
         client = _make_client(
             lambda api, **p: (_ for _ in ()).throw(
                 TushareClientError("returned None — rate limit")
@@ -689,12 +700,251 @@ class TokenLeakTests(unittest.TestCase):
                     output_dir=Path(tmp), endpoints=("stock_basic",),
                     rate_limit_sleep_ms=0,
                 )
-                try:
-                    TushareFetcher(client, cfg).fetch()
-                except TushareFetcherError as exc:
-                    self.assertNotIn("super-secret-token", str(exc))
-                else:
-                    self.fail("Expected TushareFetcherError")
+                fetcher = TushareFetcher(client, cfg)
+                fetcher.fetch()
+
+        self.assertTrue(fetcher.holes)  # holes were recorded, not aborted
+        for h in fetcher.holes:
+            self.assertNotIn("super-secret-token", h.last_error)
+
+
+class ContinueOnErrorTests(unittest.TestCase):
+    """P3-4a: a unit that exhausts retryable retries becomes a hole and the run
+    continues; a non-retryable error aborts fast (no hole-spamming)."""
+
+    def _prep_stock_basic(self, tmp: Path, tickers: list[str]) -> None:
+        df_active = pd.DataFrame({"ts_code": tickers[: len(tickers) // 2 or 1]})
+        df_delisted = pd.DataFrame({"ts_code": tickers[len(tickers) // 2 or 1:]})
+        df_active.to_parquet(tmp / "active_stocks.parquet", index=False)
+        df_delisted.to_parquet(tmp / "delisted_stocks.parquet", index=False)
+
+    def test_per_ticker_hole_continues_to_next_ticker(self) -> None:
+        tickers = ["600000.SH", "600001.SH", "600002.SH"]
+        bad = "600001.SH"
+
+        def side_effect(api, **p):
+            if p.get("ts_code") == bad:
+                raise TushareClientError("returned None — rate limit exceeded")
+            return pd.DataFrame({
+                "ts_code": [p["ts_code"]], "trade_date": ["20200101"],
+                "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
+                "vol": [0.0], "amount": [0.0],
+            })
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                self._prep_stock_basic(tmp_path, tickers)
+                cfg = TushareFetcherConfig(
+                    output_dir=tmp_path, endpoints=("daily",),
+                    start_date="20200101", end_date="20201231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                results = fetcher.fetch()  # does NOT raise
+                d2020 = tmp_path / "daily" / "2020"
+                self.assertTrue((d2020 / "600000.SH.parquet").exists())
+                self.assertTrue((d2020 / "600002.SH.parquet").exists())
+                self.assertFalse((d2020 / "600001.SH.parquet").exists())
+
+        self.assertEqual(results[0].files_written, 2)
+        self.assertEqual(len(fetcher.holes), 1)
+        self.assertEqual(fetcher.holes[0].endpoint, "daily")
+        self.assertIn("600001.SH", fetcher.holes[0].unit)
+        self.assertIn("year=2020", fetcher.holes[0].unit)
+        self.assertEqual(fetcher.holes[0].reason_class, "transient")
+
+    def test_non_retryable_aborts_fast_no_hole(self) -> None:
+        tickers = ["600000.SH", "600001.SH"]
+
+        def side_effect(api, **p):
+            raise TushareClientError("Tushare API 'daily' invalid token / 权限不足")
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                self._prep_stock_basic(tmp_path, tickers)
+                cfg = TushareFetcherConfig(
+                    output_dir=tmp_path, endpoints=("daily",),
+                    start_date="20200101", end_date="20201231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                with self.assertRaises(TushareClientError):
+                    fetcher.fetch()
+
+        # Hard error aborts fast — NO holes spammed, NO retries.
+        self.assertEqual(len(fetcher.holes), 0)
+        self.assertEqual(client.call.call_count, 1)
+
+    def test_holes_accumulate_across_endpoints(self) -> None:
+        # ANTI-RESET red line: ONE fetch() run covers every configured endpoint
+        # and accumulates EVERY endpoint's holes into one ledger. The per-fetch()
+        # reset (`self._holes = []`) happens ONCE before the endpoint loop, so a
+        # hole recorded by an early endpoint (namechange, 2nd) must still be
+        # present after a later endpoint (daily, 5th) has run — it must NOT be
+        # wiped. Without this, 01.main's single end-of-run `.holes` read would
+        # silently see only the last endpoint's holes = a partial dump passing
+        # as complete.
+        tickers = ["600000.SH", "600001.SH"]
+        bad_ticker = "600001.SH"
+
+        def side_effect(api, **p):
+            # namechange always exhausts; daily exhausts ONLY the bad ticker.
+            if api == "namechange":
+                raise TushareClientError("returned None — rate limit exceeded")
+            if api == "daily" and p.get("ts_code") == bad_ticker:
+                raise TushareClientError("returned None — rate limit exceeded")
+            return pd.DataFrame({
+                "ts_code": [p.get("ts_code", "X")], "trade_date": ["20200101"],
+                "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
+                "vol": [0.0], "amount": [0.0],
+            })
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                # Pre-seed the universe so `daily` runs without `stock_basic`
+                # in the endpoint set (stock_basic and daily can't both hole —
+                # a holed stock_basic leaves no universe and daily would abort).
+                self._prep_stock_basic(tmp_path, tickers)
+                cfg = TushareFetcherConfig(
+                    output_dir=tmp_path, endpoints=("namechange", "daily"),
+                    start_date="20200101", end_date="20201231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                fetcher.fetch()  # ONE call spanning both endpoints
+
+        # Both endpoints' holes survived into the single ledger.
+        self.assertEqual(len(fetcher.holes), 2)
+        self.assertEqual(
+            {h.endpoint for h in fetcher.holes}, {"namechange", "daily"}
+        )
+        # The namechange hole (recorded during the 2nd endpoint) is STILL at
+        # index 0 after daily (5th endpoint) ran — not wiped by a reset.
+        self.assertEqual(fetcher.holes[0].endpoint, "namechange")
+        daily_holes = [h for h in fetcher.holes if h.endpoint == "daily"]
+        self.assertEqual(len(daily_holes), 1)
+        self.assertIn(bad_ticker, daily_holes[0].unit)
+
+    def test_stock_basic_hole_skips_dependents_not_hard_abort(self) -> None:
+        # P1 (codex): a stock_basic hole must NOT hard-abort the dependent
+        # per-ticker endpoints via _load_ticker_universe. They skip with a
+        # `prerequisite` hole so the run completes-with-holes instead of taking
+        # the hard-abort path (which would lose the holes + return exit 1).
+        def side_effect(api, **p):
+            if api == "stock_basic":
+                raise TushareClientError("returned None — rate limit exceeded")
+            self.fail(
+                f"dependent endpoint {api!r} must not call the API when the "
+                "universe is absent"
+            )
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("stock_basic", "daily"),
+                    start_date="20200101", end_date="20201231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                results = fetcher.fetch()  # must NOT raise
+
+        endpoints_with_holes = {h.endpoint for h in fetcher.holes}
+        self.assertIn("stock_basic", endpoints_with_holes)
+        self.assertIn("daily", endpoints_with_holes)  # recorded, not aborted
+        daily_holes = [h for h in fetcher.holes if h.endpoint == "daily"]
+        self.assertEqual(len(daily_holes), 1)
+        self.assertEqual(daily_holes[0].reason_class, "prerequisite")
+        daily_result = next(r for r in results if r.endpoint == "daily")
+        self.assertEqual(daily_result.files_written, 0)
+
+    def test_missing_stock_basic_without_hole_still_hard_aborts(self) -> None:
+        # The fix must NOT swallow a genuine usage error: when stock_basic was
+        # never fetched (no hole this run), a per-ticker endpoint still hard-
+        # aborts so the operator learns they skipped a prerequisite.
+        client = _make_client(lambda api, **p: pd.DataFrame())
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("daily",),
+                start_date="20200101", end_date="20201231",
+                rate_limit_sleep_ms=0,
+            )
+            fetcher = TushareFetcher(client, cfg)
+            with self.assertRaisesRegex(TushareFetcherError, "stock_basic"):
+                fetcher.fetch()
+        self.assertEqual(len(fetcher.holes), 0)
+
+
+class CliExitCodeTests(unittest.TestCase):
+    """P3-4a: ``01_fetch_tushare.main`` returns non-zero (3) when the fetch
+    finished with holes, 0 when clean — so a holey dump is never mistaken for a
+    complete one by an orchestrator."""
+
+    @staticmethod
+    def _load_cli():
+        import importlib.util
+        path = PROJECT_ROOT / "scripts" / "data_pipeline" / "01_fetch_tushare.py"
+        spec = importlib.util.spec_from_file_location("_fetch01_under_test", path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_main_returns_3_when_holes(self) -> None:
+        mod = self._load_cli()
+        client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                TushareClientError("returned None — rate limit exceeded")
+            )
+        )
+        with patch("src.data.tushare.fetcher.time.sleep"), \
+                patch.object(mod.TushareClient, "from_environment", return_value=client):
+            with tempfile.TemporaryDirectory() as tmp:
+                rc = mod.main([
+                    "--output-dir", tmp, "--endpoints", "stock_basic",
+                    "--rate-limit-sleep-ms", "0",
+                ])
+        self.assertEqual(rc, 3)
+
+    def test_main_returns_0_when_clean(self) -> None:
+        mod = self._load_cli()
+        client = _make_client(lambda api, **p: _stock_basic_df(p["list_status"]))
+        with patch("src.data.tushare.fetcher.time.sleep"), \
+                patch.object(mod.TushareClient, "from_environment", return_value=client):
+            with tempfile.TemporaryDirectory() as tmp:
+                rc = mod.main([
+                    "--output-dir", tmp, "--endpoints", "stock_basic",
+                    "--rate-limit-sleep-ms", "0",
+                ])
+        self.assertEqual(rc, 0)
+
+    def test_main_stock_basic_hole_exits_3_not_1(self) -> None:
+        # P1 (codex): a stock_basic hole in a run that also has dependent
+        # endpoints must exit 3 (completed-with-holes), NOT 1 (hard abort) —
+        # the dependent endpoints skip with a prerequisite hole rather than
+        # aborting via _load_ticker_universe.
+        mod = self._load_cli()
+
+        def side_effect(api, **p):
+            if api == "stock_basic":
+                raise TushareClientError("returned None — rate limit exceeded")
+            return pd.DataFrame()  # daily never actually called (universe absent)
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"), \
+                patch.object(mod.TushareClient, "from_environment", return_value=client):
+            with tempfile.TemporaryDirectory() as tmp:
+                rc = mod.main([
+                    "--output-dir", tmp, "--endpoints", "stock_basic,daily",
+                    "--rate-limit-sleep-ms", "0",
+                ])
+        self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":
