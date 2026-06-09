@@ -523,6 +523,30 @@ class CliManifestIntegrationTests(unittest.TestCase):
                 rc2 = mod.main(common + ["--start-date", "20250101", "--end-date", "20251231"])
             self.assertEqual(rc2, 1)
 
+    def test_main_returns_1_on_manifest_write_oserror(self) -> None:
+        # codex P2: a manifest WRITE OSError (disk full / permissions / rename
+        # failure) after a completed fetch must surface as a clean exit 1, not a
+        # traceback. We patch the CLI's write_manifest reference so only the
+        # manifest write fails (the fetch's own parquet writes are unaffected).
+        mod = self._load_cli()
+        client = MagicMock()
+        client.call = MagicMock(
+            side_effect=lambda api, **p: self._daily_row(p.get("ts_code", "X")),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed_universe(out, ["600000.SH", "600001.SH"])
+            args = [
+                "--output-dir", str(out), "--endpoints", "daily",
+                "--start-date", "20250101", "--end-date", "20251231",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client), \
+                    patch.object(mod, "write_manifest", side_effect=OSError("disk full")):
+                rc = mod.main(args)
+            self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

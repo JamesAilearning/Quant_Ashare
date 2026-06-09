@@ -195,16 +195,18 @@ def main(argv: list[str] | None = None) -> int:
     if not config.dry_run:
         manifest_path = config.output_dir / MANIFEST_FILENAME
         # The whole read → build → merge → write is fail-loud: read_manifest
-        # rejects an unusable prior manifest, and merge_manifest refuses a
-        # narrower-scope merge — both raise FetchManifestError, which must surface
-        # as a clean non-zero exit, not an escaping traceback (codex P2).
+        # rejects an unusable prior manifest, merge_manifest refuses a
+        # narrower-scope merge (both FetchManifestError), and write_manifest can
+        # raise OSError (disk full / permissions / rename failure). All of these
+        # MUST surface as a clean non-zero exit, not an escaping traceback after
+        # the fetch already ran (codex P2).
         try:
             prev_manifest = read_manifest(manifest_path)
             current_manifest = build_manifest(
                 results, fetcher.holes, config.start_date, config.end_date,
             )
             write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
-        except FetchManifestError as exc:
+        except (FetchManifestError, OSError) as exc:
             _logger.error("Fetch manifest update failed: %s", exc)
             return 1
         _logger.info("Wrote fetch manifest: %s", manifest_path)

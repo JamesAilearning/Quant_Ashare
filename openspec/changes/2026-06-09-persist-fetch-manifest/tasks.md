@@ -46,12 +46,13 @@
       keeps the actually-fetched coverage (no over-claim); a run that wrote data
       advances coverage.
 - [x] CLI FAIL-LOUD (codex P2): a non-object manifest fails loud; `main` returns
-      `1` (not a traceback) when a narrower-scope rerun makes the merge refuse.
+      `1` (not a traceback) when a narrower-scope rerun makes the merge refuse,
+      and when the manifest WRITE raises `OSError` (disk full / permissions).
 - [x] CLEAR: removes the manifest (→ fresh); no-op when absent.
 - [x] INTEGRATION: through `01.main` twice — run 1 records the hole (exit 3),
       run 2 (unit now succeeds) self-heals it (exit 0), asserting the hole left
       no file/`.tmp` and run 2 re-fetches ONLY the holed unit (real resume).
 
 ## 3. Verification
-- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (29 tests).
+- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (30 tests).
 - [x] Full fast suite green; `ruff` + `mypy --strict` clean.
