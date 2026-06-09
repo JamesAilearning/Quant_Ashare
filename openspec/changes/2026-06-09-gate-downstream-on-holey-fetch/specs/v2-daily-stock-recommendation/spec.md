@@ -7,9 +7,11 @@
 `recommend` SHALL refuse to emit a buy list from a price/feature bundle that was
 built from a HOLEY tushare fetch, or that lacks a fetch-integrity stamp, unless the
 operator explicitly opts in. Right after the staleness guard, it SHALL read the
-bundle's `_fetch_integrity.json` stamp (written by the qlib bin builder): a stamp
-marked `built_from_holey_fetch`, OR a MISSING stamp (completeness cannot be
-confirmed — e.g. a bundle built before this contract existed), SHALL raise
+bundle's `_fetch_integrity.json` stamp (written by the qlib bin builder) from the
+SAME normalized `provider_uri` qlib initialized against (so an `~`-prefixed or
+whitespaced URI is not read from a non-existent literal path): a stamp marked
+`built_from_holey_fetch`, OR a MISSING stamp (completeness cannot be confirmed —
+e.g. a bundle built before this contract existed), SHALL raise
 `DailyRecommendationError` rather than rank a list on survivorship-incomplete data,
 unless `allow_holey_recommend` (`--allow-holey-recommend`) is set. This decision
 SHALL be INDEPENDENT of the build-side `--allow-holey-fetch`: the stamp carries the

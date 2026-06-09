@@ -23,7 +23,9 @@
 ## 2. Tests (mock + synthetic stamps / manifests, no real fetch / qlib bundle)
 - [x] STAMP CONTRACT: write→read round-trip (clean + holey, fields match);
       injected timestamp; atomic (no `.tmp`); missing → None; non-object /
-      non-UTF-8 / unknown-schema / missing-field → `BundleIntegrityError`.
+      non-UTF-8 / unknown-schema / missing-field / wrong-field-type (codex P2) →
+      `BundleIntegrityError`. Layer 2 normalizes `provider_uri` before reading
+      the stamp (codex P2: a whitespaced URI still finds a clean stamp).
 - [x] LAYER 1: holey manifest → build raises; missing manifest → build raises;
       partial fetch missing a required endpoint (no holes) → build raises (codex
       P1); complete → builds + stamp clean; holey + `allow_holey_fetch` → builds +

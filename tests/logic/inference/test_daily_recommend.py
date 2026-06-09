@@ -647,6 +647,14 @@ class HoleyGateTests(unittest.TestCase):
             with self.assertRaises(DailyRecommendationError):
                 _assert_bundle_fetch_complete(tmp, allow_holey_recommend=False)
 
+    def test_provider_uri_is_normalized_before_reading_stamp(self) -> None:
+        # codex P2: the gate must read the stamp from the SAME normalized path qlib
+        # initializes against. A whitespaced URI (normalized away) must still find a
+        # clean stamp and pass — not read a non-existent literal path and refuse.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_bundle_integrity(Path(tmp), built_from_holey_fetch=False)
+            _assert_bundle_fetch_complete(f"  {tmp}  ", allow_holey_recommend=False)  # no raise
+
 
 if __name__ == "__main__":
     unittest.main()

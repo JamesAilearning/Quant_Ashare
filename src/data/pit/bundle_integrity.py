@@ -21,6 +21,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from src.data.tushare.fetcher import FetchHole
 
@@ -109,25 +110,41 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             f"unknown bundle-integrity schema_version {version!r} in {path} "
             f"(expected {SCHEMA_VERSION}); refusing to parse."
         )
-    try:
-        holes = tuple(
-            FetchHole(
-                endpoint=h["endpoint"],
-                unit=h["unit"],
-                reason_class=h["reason_class"],
-                attempts=h["attempts"],
-                last_error=h["last_error"],
-            )
-            for h in raw["holes"]
+    # codex P2: validate each field's TYPE, not just presence — a hand-edited /
+    # corrupt stamp with e.g. "built_from_holey_fetch": 0 must fail loud, not be
+    # read as a clean (falsy) bundle.
+    ctx = f"bundle integrity stamp {path}"
+    holes = tuple(
+        FetchHole(
+            endpoint=_require(h, "endpoint", str, ctx),
+            unit=_require(h, "unit", str, ctx),
+            reason_class=_require(h, "reason_class", str, ctx),
+            attempts=_require(h, "attempts", int, ctx),
+            last_error=_require(h, "last_error", str, ctx),
         )
-        return BundleIntegrity(
-            schema_version=raw["schema_version"],
-            built_from_holey_fetch=raw["built_from_holey_fetch"],
-            built_at=raw["built_at"],
-            holes=holes,
-        )
-    except (KeyError, TypeError, AttributeError) as exc:
+        for h in _require(raw, "holes", list, ctx)
+    )
+    return BundleIntegrity(
+        schema_version=SCHEMA_VERSION,  # already validated equal above
+        built_from_holey_fetch=_require(raw, "built_from_holey_fetch", bool, ctx),
+        built_at=_require(raw, "built_at", str, ctx),
+        holes=holes,
+    )
+
+
+def _require(obj: Any, key: str, typ: type, ctx: str) -> Any:
+    """Fetch ``obj[key]`` and validate it is present and of type ``typ``, else
+    raise :class:`BundleIntegrityError`. ``bool`` is a subclass of ``int``, so an
+    ``int`` field explicitly rejects a bool (and vice versa via ``isinstance``)."""
+    if not isinstance(obj, dict):
+        raise BundleIntegrityError(f"{ctx}: expected a JSON object, got {type(obj).__name__}")
+    if key not in obj:
+        raise BundleIntegrityError(f"{ctx}: missing required field {key!r}")
+    val = obj[key]
+    if typ is int and isinstance(val, bool):
+        raise BundleIntegrityError(f"{ctx}: field {key!r} must be int, got bool")
+    if not isinstance(val, typ):
         raise BundleIntegrityError(
-            f"malformed bundle integrity stamp {path} (missing or invalid field: "
-            f"{exc}); refusing to parse."
-        ) from exc
+            f"{ctx}: field {key!r} must be {typ.__name__}, got {type(val).__name__}"
+        )
+    return val

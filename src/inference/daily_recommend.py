@@ -40,7 +40,11 @@ from src.core.microstructure_mask import (
     MicrostructureMaskError,
     compute_unavailable_mask,
 )
-from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
+from src.core.qlib_runtime import (
+    QlibRuntimeConfig,
+    _normalize_provider_uri,
+    init_qlib_canonical,
+)
 from src.data.pit._common import qlib_to_ts_code
 from src.data.pit.bundle_integrity import INTEGRITY_FILENAME, read_bundle_integrity
 from src.data.st_status import current_st_codes
@@ -336,7 +340,11 @@ def _assert_bundle_fetch_complete(
     """
     if allow_holey_recommend:
         return
-    integrity = read_bundle_integrity(Path(provider_uri))
+    # codex P2: read the stamp from the SAME normalized path qlib initialized
+    # against (expanduser / abspath / realpath / normcase), not the raw string —
+    # otherwise `~/...` or a whitespaced URI reads from a non-existent literal path
+    # and a clean bundle is wrongly reported as unstamped.
+    integrity = read_bundle_integrity(Path(_normalize_provider_uri(provider_uri)))
     if integrity is None:
         raise DailyRecommendationError(
             f"Bundle {provider_uri} has no fetch-integrity stamp "

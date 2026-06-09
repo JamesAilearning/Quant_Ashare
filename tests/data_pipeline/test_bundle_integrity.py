@@ -112,7 +112,37 @@ class ReadFailLoudTests(unittest.TestCase):
                 json.dumps({"schema_version": SCHEMA_VERSION, "built_at": "x", "holes": []}),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(BundleIntegrityError, "malformed"):
+            with self.assertRaisesRegex(BundleIntegrityError, "missing required field"):
+                read_bundle_integrity(Path(tmp))
+
+    def test_wrong_field_type_fails_loud(self) -> None:
+        # codex P2: a present-but-wrong-type field (int for the bool) must fail
+        # loud, not be read as a falsy/clean stamp.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / INTEGRITY_FILENAME).write_text(
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION, "built_from_holey_fetch": 0,
+                    "built_at": "x", "holes": [],
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BundleIntegrityError, "must be bool"):
+                read_bundle_integrity(Path(tmp))
+
+    def test_wrong_hole_field_type_fails_loud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / INTEGRITY_FILENAME).write_text(
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION, "built_from_holey_fetch": True,
+                    "built_at": "x",
+                    "holes": [{
+                        "endpoint": "daily", "unit": "u", "reason_class": "t",
+                        "attempts": "five", "last_error": "e",  # attempts not int
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BundleIntegrityError, "must be int"):
                 read_bundle_integrity(Path(tmp))
 
 
