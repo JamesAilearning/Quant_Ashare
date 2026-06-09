@@ -39,6 +39,11 @@ from src.data.pit.qlib_bin_builder import (  # noqa: E402
     BIN_DAILY_BASIC_FIELDS,
     QlibBinBuilder,
 )
+from src.data.tushare.fetch_manifest import (  # noqa: E402
+    MANIFEST_FILENAME,
+    build_manifest,
+    write_manifest,
+)
 
 # ----------------------------------------------------------------------
 # Fixture writers (mirror tests/data_pipeline/test_qlib_bin_builder.py)
@@ -53,6 +58,11 @@ def _write_active(path: Path, tickers: list[str]) -> None:
     })
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
+    # P3-4c: build() gates on a COMPLETE fetch manifest; seed a hole-free one
+    # (empty endpoints => complete) so these builder-logic tests pass the gate.
+    write_manifest(
+        path.parent / MANIFEST_FILENAME, build_manifest([], (), "20000101", "20251231"),
+    )
 
 
 def _write_registry(path: Path, rows: list[dict]) -> None:

@@ -95,6 +95,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="Training fit-window start (must match the model).")
     p.add_argument("--fit-end", default=_DEFAULT_FIT_END,
                    help="Training fit-window end (must match the model).")
+    p.add_argument(
+        "--allow-holey-recommend", action="store_true",
+        help="Recommend even if the bundle was built from a holey tushare fetch "
+             "(or lacks a fetch-integrity stamp) (P3-4c). SEPARATE from the "
+             "build-side --allow-holey-fetch: building partial data does not "
+             "sanction trading on it, so this is a second explicit opt-in.")
     return p
 
 
@@ -115,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         st_snapshot_max_age_days=args.st_max_age_days,
         bundle_max_age_days=args.bundle_max_age_days,
         out_dir=args.out_dir,
+        allow_holey_recommend=args.allow_holey_recommend,
     )
 
     try:
