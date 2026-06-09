@@ -41,6 +41,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.tushare.client import TushareClient, TushareClientError  # noqa: E402
+from src.data.tushare.fetch_manifest import (  # noqa: E402
+    MANIFEST_FILENAME,
+    FetchManifestError,
+    build_manifest,
+    merge_manifest,
+    read_manifest,
+    write_manifest,
+)
 from src.data.tushare.fetcher import (  # noqa: E402
     DEFAULT_INDICES,
     DEFAULT_RATE_LIMIT_SLEEP_MS,
@@ -179,6 +187,21 @@ def main(argv: list[str] | None = None) -> int:
         total_skipped += r.skipped
     _logger.info("  %-14s  files_written=%5d  rows=%10d  skipped=%5d",
                  "TOTAL", total_written, total_rows, total_skipped)
+
+    # P3-4b: persist this run's coverage + holes to fetch_manifest.json, merged
+    # with the prior run so a unit re-fetched this run self-heals its hole (and a
+    # still-failing unit's hole stays). Skipped under --dry-run (no side effects).
+    # Downstream gating on a holey manifest is P3-4c; this only records.
+    if not config.dry_run:
+        manifest_path = config.output_dir / MANIFEST_FILENAME
+        try:
+            prev_manifest = read_manifest(manifest_path)
+        except FetchManifestError as exc:
+            _logger.error("Existing fetch manifest is unusable: %s", exc)
+            return 1
+        current_manifest = build_manifest(results, fetcher.holes, config.end_date)
+        write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
+        _logger.info("Wrote fetch manifest: %s", manifest_path)
 
     # Continue-on-error (P3-4a): the fetch finished, but any unit whose call
     # exhausted its retryable retries (or a per-ticker endpoint skipped because
