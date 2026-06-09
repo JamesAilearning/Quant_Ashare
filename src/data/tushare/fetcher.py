@@ -411,11 +411,15 @@ class TushareFetcher:
                         fields="index_code,con_code,trade_date,weight",
                     )
                 except FetchHoleError as hole:
-                    # index_weight writes ONE file per index. A partial file
-                    # would be SKIPPED by file-existence resume and the hole
-                    # never filled, so record the hole and leave the file
-                    # missing — a re-run re-fetches the whole index.
-                    self._record_hole("index_weight", f"index={idx} year={year}", hole)
+                    # index_weight writes ONE file per index, so a hole is the
+                    # WHOLE index (a partial file would be SKIPPED by resume and
+                    # the hole never filled — a re-run re-fetches the whole index).
+                    # The unit is the index ALONE, NOT the first-failing year:
+                    # that year varies run-to-run (whichever transient failure
+                    # hits first), so including it would make a re-run's hole look
+                    # like a different unit and the manifest merge would drop the
+                    # prior un-healed hole as if self-healed (codex P1).
+                    self._record_hole("index_weight", f"index={idx}", hole)
                     holed = True
                     break
                 if not chunk.empty:

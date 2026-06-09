@@ -24,7 +24,11 @@ Each run SHALL be merged onto the prior manifest: for an endpoint that ran this
 run, a hole whose exact `(endpoint, unit)` was re-attempted-and-succeeded SHALL
 be REMOVED (self-healed); a unit that still failed SHALL keep its hole with its
 attempt count ACCUMULATED across runs; and an endpoint that did NOT run this run
-SHALL be preserved untouched. Coverage SHALL reflect what was ACTUALLY fetched,
+SHALL be preserved untouched. Because the merge matches holes by exact
+`(endpoint, unit)`, each hole's `unit` SHALL be STABLE across runs: in particular
+an `index_weight` hole SHALL identify the whole index (`index={code}`), NOT the
+first-failing year, which varies run-to-run and would make a re-failed index look
+like a different unit so the merge would drop the prior un-healed hole. Coverage SHALL reflect what was ACTUALLY fetched,
 not what was requested: a run that wrote nothing for an endpoint (every file
 skipped by resume — e.g. a wider run that skips a prior narrow aggregate file
 like `namechange` / `suspend_d` / `index_weight`) SHALL NOT advance that

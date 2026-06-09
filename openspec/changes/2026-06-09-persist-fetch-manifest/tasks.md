@@ -20,6 +20,9 @@
       nothing for an endpoint (all files skipped by resume, e.g. a wider run that
       skips a prior narrow aggregate file) does NOT advance its coverage; only a
       run that wrote data advances it.
+- [x] codex P1 (index_weight): the `index_weight` hole unit is STABLE per-index
+      (`index={code}`, not the first-failing year), so a re-failed index matches
+      the prior hole and is not dropped as falsely self-healed (fetcher fix).
 - [x] `01_fetch_tushare.main`: on the completed-run path (not `--dry-run`), read
       prev → build current (start+end) → merge → write atomically.
 - [x] codex P2: the whole read/build/merge/write is inside the CLI's
@@ -48,6 +51,9 @@
 - [x] CLI FAIL-LOUD (codex P2): a non-object manifest fails loud; `main` returns
       `1` (not a traceback) when a narrower-scope rerun makes the merge refuse,
       and when the manifest WRITE raises `OSError` (disk full / permissions).
+- [x] STABLE UNIT (codex P1): the `index_weight` hole unit is `index={code}` (no
+      year) at the fetcher; a re-failed index keeps its prior hole through the
+      merge (attempts accumulated), not dropped.
 - [x] CLEAR: removes the manifest (→ fresh); no-op when absent.
 - [x] INTEGRATION: through `01.main` twice — run 1 records the hole (exit 3),
       run 2 (unit now succeeds) self-heals it (exit 0), asserting the hole left

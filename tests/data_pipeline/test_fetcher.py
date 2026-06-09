@@ -880,6 +880,30 @@ class ContinueOnErrorTests(unittest.TestCase):
                 fetcher.fetch()
         self.assertEqual(len(fetcher.holes), 0)
 
+    def test_index_weight_hole_unit_is_per_index_not_per_year(self) -> None:
+        # codex P1 (P3-4b): the index_weight hole unit must be STABLE per-index —
+        # it must NOT include the first-failing year (which varies run-to-run),
+        # else a re-run that fails at a different year yields a different unit
+        # string and the manifest merge drops the prior un-healed hole.
+        def side_effect(api, **p):
+            raise TushareClientError("returned None — rate limit exceeded")
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("index_weight",),
+                    indices=("000300.SH",),
+                    start_date="20200101", end_date="20231231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                fetcher.fetch()  # does not raise
+
+        self.assertEqual(len(fetcher.holes), 1)
+        self.assertEqual(fetcher.holes[0].endpoint, "index_weight")
+        self.assertEqual(fetcher.holes[0].unit, "index=000300.SH")  # no year
+
 
 class CliExitCodeTests(unittest.TestCase):
     """P3-4a: ``01_fetch_tushare.main`` returns non-zero (3) when the fetch

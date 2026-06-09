@@ -379,6 +379,27 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(merged.endpoints["daily"].coverage_start_date, "20180101")
         self.assertEqual(merged.endpoints["daily"].coverage_end_date, "20251231")
 
+    def test_index_weight_hole_with_stable_unit_survives_rerun(self) -> None:
+        # codex P1: index_weight holes use a STABLE per-index unit, so a re-run
+        # that re-fails the index (at whatever first-failing year) produces the
+        # SAME unit — the prior hole is KEPT (attempts accumulated), never dropped
+        # as falsely self-healed while the index file is still missing.
+        prev = _bm(
+            [_result("index_weight", 0)],
+            (_hole("index_weight", "index=000300.SH", attempts=5),),
+            start="20200101", end="20231231",
+        )
+        cur = _bm(
+            [_result("index_weight", 0)],
+            (_hole("index_weight", "index=000300.SH", attempts=5),),
+            start="20200101", end="20231231",
+        )
+        merged = merge_manifest(prev, cur)
+        kept = merged.endpoints["index_weight"].holes
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].unit, "index=000300.SH")
+        self.assertEqual(kept[0].attempts, 10)  # accumulated → kept, not dropped
+
 
 class ClearTests(unittest.TestCase):
 
