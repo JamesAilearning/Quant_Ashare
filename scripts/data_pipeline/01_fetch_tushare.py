@@ -145,6 +145,35 @@ def main(argv: list[str] | None = None) -> int:
         total_skipped += r.skipped
     _logger.info("  %-14s  files_written=%5d  rows=%10d  skipped=%5d",
                  "TOTAL", total_written, total_rows, total_skipped)
+
+    # Continue-on-error (P3-4a): the fetch finished, but any unit whose call
+    # exhausted its retryable retries was recorded as a hole instead of
+    # aborting the whole run. A holey dump MUST NOT be mistaken for a complete
+    # one — report the holes loudly and exit non-zero so an orchestrator (and
+    # the operator) treat this as "completed with holes", never "success".
+    # Re-run with the same --output-dir to fill them (file-existence resume
+    # re-fetches only the missing units).
+    holes = fetcher.holes
+    if holes:
+        _logger.error("")
+        _logger.error("=== HOLES (%d) — fetch is INCOMPLETE ===", len(holes))
+        by_endpoint: dict[str, int] = {}
+        for h in holes:
+            by_endpoint[h.endpoint] = by_endpoint.get(h.endpoint, 0) + 1
+        for endpoint, count in sorted(by_endpoint.items()):
+            _logger.error("  %-14s  holes=%5d", endpoint, count)
+        for h in holes[:20]:
+            _logger.error(
+                "    - %s [%s] (%s): %s",
+                h.endpoint, h.unit, h.reason_class, h.last_error,
+            )
+        if len(holes) > 20:
+            _logger.error("    ... and %d more", len(holes) - 20)
+        _logger.error(
+            "Re-run with the same --output-dir to fill the holes "
+            "(existing files are skipped; only the missing units are re-fetched)."
+        )
+        return 3
     return 0
 
 
