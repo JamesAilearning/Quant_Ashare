@@ -45,6 +45,7 @@ from src.data.tushare.fetcher import (  # noqa: E402
     DEFAULT_INDICES,
     DEFAULT_RATE_LIMIT_SLEEP_MS,
     ENDPOINTS,
+    FetchHole,
     TushareFetcher,
     TushareFetcherConfig,
     TushareFetcherError,
@@ -55,6 +56,35 @@ from src.data.tushare.fetcher import (  # noqa: E402
 # the script is run via ``python scripts/...``) would silently drop log
 # output. Pin under ``src.scripts.*`` so handlers attach correctly.
 _logger = get_logger("src.scripts.data_pipeline.fetch_tushare")
+
+
+def _log_hole_report(holes: tuple[FetchHole, ...]) -> None:
+    """Print a per-endpoint hole report (no-op when there are no holes).
+
+    Called on BOTH the completed-with-holes path AND the hard-abort path so a
+    recorded hole is never silently lost — even when a later prerequisite
+    failure aborts the run, the holes accumulated before it are surfaced.
+    """
+    if not holes:
+        return
+    _logger.error("")
+    _logger.error("=== HOLES (%d) — fetch is INCOMPLETE ===", len(holes))
+    by_endpoint: dict[str, int] = {}
+    for h in holes:
+        by_endpoint[h.endpoint] = by_endpoint.get(h.endpoint, 0) + 1
+    for endpoint, count in sorted(by_endpoint.items()):
+        _logger.error("  %-14s  holes=%5d", endpoint, count)
+    for h in holes[:20]:
+        _logger.error(
+            "    - %s [%s] (%s): %s",
+            h.endpoint, h.unit, h.reason_class, h.last_error,
+        )
+    if len(holes) > 20:
+        _logger.error("    ... and %d more", len(holes) - 20)
+    _logger.error(
+        "Re-run with the same --output-dir to fill the holes "
+        "(existing files are skipped; only the missing units are re-fetched)."
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -128,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
         results = fetcher.fetch()
     except (TushareFetcherError, TushareClientError) as exc:
         _logger.error("Fetch failed: %s", exc)
+        # A hard abort still surfaces any holes recorded before it, so a
+        # recorded hole is never silently lost (the abort dominates the exit
+        # code — this stays the hard-abort path, return 1).
+        _log_hole_report(fetcher.holes)
         return 1
 
     _logger.info("")
@@ -147,32 +181,16 @@ def main(argv: list[str] | None = None) -> int:
                  "TOTAL", total_written, total_rows, total_skipped)
 
     # Continue-on-error (P3-4a): the fetch finished, but any unit whose call
-    # exhausted its retryable retries was recorded as a hole instead of
-    # aborting the whole run. A holey dump MUST NOT be mistaken for a complete
-    # one — report the holes loudly and exit non-zero so an orchestrator (and
-    # the operator) treat this as "completed with holes", never "success".
-    # Re-run with the same --output-dir to fill them (file-existence resume
-    # re-fetches only the missing units).
+    # exhausted its retryable retries (or a per-ticker endpoint skipped because
+    # stock_basic holed) was recorded as a hole instead of aborting the whole
+    # run. A holey dump MUST NOT be mistaken for a complete one — report the
+    # holes loudly and exit non-zero so an orchestrator (and the operator) treat
+    # this as "completed with holes", never "success". Re-run with the same
+    # --output-dir to fill them (file-existence resume re-fetches only the
+    # missing units).
     holes = fetcher.holes
     if holes:
-        _logger.error("")
-        _logger.error("=== HOLES (%d) — fetch is INCOMPLETE ===", len(holes))
-        by_endpoint: dict[str, int] = {}
-        for h in holes:
-            by_endpoint[h.endpoint] = by_endpoint.get(h.endpoint, 0) + 1
-        for endpoint, count in sorted(by_endpoint.items()):
-            _logger.error("  %-14s  holes=%5d", endpoint, count)
-        for h in holes[:20]:
-            _logger.error(
-                "    - %s [%s] (%s): %s",
-                h.endpoint, h.unit, h.reason_class, h.last_error,
-            )
-        if len(holes) > 20:
-            _logger.error("    ... and %d more", len(holes) - 20)
-        _logger.error(
-            "Re-run with the same --output-dir to fill the holes "
-            "(existing files are skipped; only the missing units are re-fetched)."
-        )
+        _log_hole_report(holes)
         return 3
     return 0
 

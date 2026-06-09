@@ -831,6 +831,55 @@ class ContinueOnErrorTests(unittest.TestCase):
         self.assertEqual(len(daily_holes), 1)
         self.assertIn(bad_ticker, daily_holes[0].unit)
 
+    def test_stock_basic_hole_skips_dependents_not_hard_abort(self) -> None:
+        # P1 (codex): a stock_basic hole must NOT hard-abort the dependent
+        # per-ticker endpoints via _load_ticker_universe. They skip with a
+        # `prerequisite` hole so the run completes-with-holes instead of taking
+        # the hard-abort path (which would lose the holes + return exit 1).
+        def side_effect(api, **p):
+            if api == "stock_basic":
+                raise TushareClientError("returned None — rate limit exceeded")
+            self.fail(
+                f"dependent endpoint {api!r} must not call the API when the "
+                "universe is absent"
+            )
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("stock_basic", "daily"),
+                    start_date="20200101", end_date="20201231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                results = fetcher.fetch()  # must NOT raise
+
+        endpoints_with_holes = {h.endpoint for h in fetcher.holes}
+        self.assertIn("stock_basic", endpoints_with_holes)
+        self.assertIn("daily", endpoints_with_holes)  # recorded, not aborted
+        daily_holes = [h for h in fetcher.holes if h.endpoint == "daily"]
+        self.assertEqual(len(daily_holes), 1)
+        self.assertEqual(daily_holes[0].reason_class, "prerequisite")
+        daily_result = next(r for r in results if r.endpoint == "daily")
+        self.assertEqual(daily_result.files_written, 0)
+
+    def test_missing_stock_basic_without_hole_still_hard_aborts(self) -> None:
+        # The fix must NOT swallow a genuine usage error: when stock_basic was
+        # never fetched (no hole this run), a per-ticker endpoint still hard-
+        # aborts so the operator learns they skipped a prerequisite.
+        client = _make_client(lambda api, **p: pd.DataFrame())
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("daily",),
+                start_date="20200101", end_date="20201231",
+                rate_limit_sleep_ms=0,
+            )
+            fetcher = TushareFetcher(client, cfg)
+            with self.assertRaisesRegex(TushareFetcherError, "stock_basic"):
+                fetcher.fetch()
+        self.assertEqual(len(fetcher.holes), 0)
+
 
 class CliExitCodeTests(unittest.TestCase):
     """P3-4a: ``01_fetch_tushare.main`` returns non-zero (3) when the fetch
@@ -874,6 +923,28 @@ class CliExitCodeTests(unittest.TestCase):
                     "--rate-limit-sleep-ms", "0",
                 ])
         self.assertEqual(rc, 0)
+
+    def test_main_stock_basic_hole_exits_3_not_1(self) -> None:
+        # P1 (codex): a stock_basic hole in a run that also has dependent
+        # endpoints must exit 3 (completed-with-holes), NOT 1 (hard abort) —
+        # the dependent endpoints skip with a prerequisite hole rather than
+        # aborting via _load_ticker_universe.
+        mod = self._load_cli()
+
+        def side_effect(api, **p):
+            if api == "stock_basic":
+                raise TushareClientError("returned None — rate limit exceeded")
+            return pd.DataFrame()  # daily never actually called (universe absent)
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"), \
+                patch.object(mod.TushareClient, "from_environment", return_value=client):
+            with tempfile.TemporaryDirectory() as tmp:
+                rc = mod.main([
+                    "--output-dir", tmp, "--endpoints", "stock_basic,daily",
+                    "--rate-limit-sleep-ms", "0",
+                ])
+        self.assertEqual(rc, 3)
 
 
 if __name__ == "__main__":

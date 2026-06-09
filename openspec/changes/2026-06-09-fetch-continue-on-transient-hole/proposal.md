@@ -36,13 +36,22 @@ downstream builder would bake a survivorship-corrupted bundle from it.
     unit, and continues. `index_weight` leaves the index file unwritten on a
     holed year-chunk (a partial one-file-per-index would be skipped by
     file-existence resume and never filled).
+  - A per-`(ticker, year)` endpoint whose prerequisite `stock_basic` holed THIS
+    run (incomplete ticker universe) skips with a recorded `prerequisite` hole
+    instead of hard-aborting on `_load_ticker_universe` — otherwise a transient
+    `stock_basic` blip in the all-endpoints run would take the hard-abort path
+    and the continue-on-hole promise would not hold for `stock_basic`. A
+    `stock_basic` never fetched at all (no hole this run) still hard-aborts (a
+    real usage error).
   - The retry / backoff schedule and the `_is_retryable_error` classifier are
     UNCHANGED — only the terminal action on exhaustion changes (abort → hole).
 - `scripts/data_pipeline/01_fetch_tushare.py`: after the summary, a non-empty
-  `fetcher.holes` prints a per-endpoint hole report and returns exit code `3`;
-  a clean run still returns `0`. Continue-on-error is always on; the non-zero
-  exit (plus the P3-4c downstream gate) is what keeps a holey dump from being
-  trusted.
+  `fetcher.holes` prints a per-endpoint hole report (extracted as
+  `_log_hole_report`) and returns exit code `3`; a clean run still returns `0`.
+  The same report is emitted on the hard-abort path too, so holes accumulated
+  before an abort are never silently lost. Continue-on-error is always on; the
+  non-zero exit (plus the P3-4c downstream gate) is what keeps a holey dump from
+  being trusted.
 
 ## Non-Goals
 

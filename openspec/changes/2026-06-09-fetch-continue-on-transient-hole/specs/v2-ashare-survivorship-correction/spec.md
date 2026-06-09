@@ -21,6 +21,15 @@ only the missing units. The retry / backoff schedule and the retryable /
 non-retryable classifier SHALL be unchanged — only the terminal action on
 retryable exhaustion changes.
 
+A per-`(ticker, year)` endpoint whose prerequisite `stock_basic` holed THIS run
+(leaving the ticker universe incomplete) SHALL skip with a recorded prerequisite
+hole rather than hard-abort on the missing universe — otherwise the prerequisite
+failure would take the hard-abort path and the continue-on-hole behavior would
+not actually hold for `stock_basic`. A `stock_basic` that was simply never
+fetched at all (no hole this run) SHALL still hard-abort, so a skipped
+prerequisite remains a loud usage error. Holes accumulated before ANY hard abort
+SHALL still be reported, so no recorded hole is silently lost.
+
 #### Scenario: a transient-exhausted unit is recorded and the run continues
 - **WHEN** one unit's call exhausts all retryable retries (rate-limit / network /
   5xx) while other units in the same endpoint succeed
@@ -49,3 +58,13 @@ retryable exhaustion changes.
   earlier endpoint's hole is NOT wiped by a later endpoint, so the CLI's single
   end-of-run report and exit code reflect the whole run, never just the last
   endpoint
+
+#### Scenario: a stock_basic hole skips dependents instead of hard-aborting
+- **WHEN** `stock_basic` holes (its universe is left incomplete) in a run that
+  also includes a dependent per-ticker endpoint (`daily` / `adj_factor` /
+  `daily_basic`)
+- **THEN** the dependent endpoint is recorded as a prerequisite hole and skipped
+  (not hard-aborted), so the run completes-with-holes and the CLI exits non-zero
+  (`3`), never the hard-abort code (`1`)
+- **AND** a `stock_basic` prerequisite that was never fetched at all (no hole
+  this run) still hard-aborts, so a skipped prerequisite stays a loud usage error

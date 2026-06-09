@@ -482,7 +482,26 @@ class TushareFetcher:
         self, *, endpoint: str, subdir: str, fields: str,
     ) -> TushareFetchResult:
         """Common loop for ``daily`` / ``adj_factor`` / ``daily_basic`` — per (year, ticker)."""
-        tickers = self._load_ticker_universe()
+        try:
+            tickers = self._load_ticker_universe()
+        except TushareFetcherError:
+            # The ticker universe is unavailable. If stock_basic holed THIS run
+            # (a transient failure left active/delisted incomplete), this
+            # per-ticker endpoint cannot run through no fault of usage: record a
+            # prerequisite hole and skip it (continue-on-error), so the run
+            # completes-with-holes (exit 3) and a re-run fills stock_basic first,
+            # then this endpoint. If stock_basic was simply never fetched (no
+            # hole this run), it is a usage error — re-raise for the hard abort.
+            if any(h.endpoint == "stock_basic" for h in self._holes):
+                self._add_hole(
+                    endpoint,
+                    "prerequisite stock_basic incomplete",
+                    reason_class="prerequisite",
+                    attempts=0,
+                    last_error="ticker universe unavailable: stock_basic holed this run",
+                )
+                return TushareFetchResult(endpoint, 0, 0, skipped=0)
+            raise
         out_root = self._config.output_dir / subdir
         start_year = int(self._config.start_date[:4])
         end_year = int(self._config.end_date[:4])
@@ -638,20 +657,29 @@ class TushareFetcher:
             return ""
         return f"{type(exc).__name__}: {str(exc)[:300]}"
 
-    def _record_hole(self, endpoint: str, unit: str, err: FetchHoleError) -> None:
-        """Append a :class:`FetchHole` for a unit that exhausted its retries,
-        and log it loudly so the operator sees the hole as it happens (the CLI
-        also reports the full set + a non-zero exit at the end)."""
+    def _add_hole(
+        self, endpoint: str, unit: str, *,
+        reason_class: str, attempts: int, last_error: str,
+    ) -> None:
+        """Append a :class:`FetchHole` and log it loudly so the operator sees it
+        as it happens (the CLI also reports the full set + a non-zero exit at the
+        end). Used both for a retry-exhausted call (via :meth:`_record_hole`) and
+        for a unit skipped because a prerequisite (``stock_basic``) holed earlier
+        in the same run."""
         self._holes.append(FetchHole(
-            endpoint=endpoint,
-            unit=unit,
-            reason_class=err.reason_class,
-            attempts=err.attempts,
-            last_error=err.last_error,
+            endpoint=endpoint, unit=unit, reason_class=reason_class,
+            attempts=attempts, last_error=last_error,
         ))
         _logger.warning(
             "  HOLE: %s [%s] (%s, %d attempts) — continuing. %s",
-            endpoint, unit, err.reason_class, err.attempts, err.last_error,
+            endpoint, unit, reason_class, attempts, last_error,
+        )
+
+    def _record_hole(self, endpoint: str, unit: str, err: FetchHoleError) -> None:
+        """Record a hole for a unit whose call exhausted its retryable retries."""
+        self._add_hole(
+            endpoint, unit, reason_class=err.reason_class,
+            attempts=err.attempts, last_error=err.last_error,
         )
 
     @staticmethod
