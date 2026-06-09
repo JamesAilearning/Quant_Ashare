@@ -57,6 +57,8 @@
       manifest — on ANY hard abort, not only when holes were recorded, since the
       run may have left partial output (e.g. stock_basic writes active then aborts
       on delisted) with the completed-run update never running; a re-run rebuilds.
+      The invalidation is itself fail-loud: a `clear_manifest` `OSError` (read-only
+      dir / permission) is caught so `main` still returns `1` cleanly (codex P2).
 - [x] STABLE UNIT (codex P1): the `index_weight` hole unit is `index={code}` (no
       year) at the fetcher; a re-failed index keeps its prior hole through the
       merge (attempts accumulated), not dropped.
@@ -66,5 +68,5 @@
       no file/`.tmp` and run 2 re-fetches ONLY the holed unit (real resume).
 
 ## 3. Verification
-- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (35 tests).
+- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (36 tests).
 - [x] Full fast suite green; `ruff` + `mypy --strict` clean.

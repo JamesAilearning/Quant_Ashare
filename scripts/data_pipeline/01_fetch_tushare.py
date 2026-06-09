@@ -180,11 +180,22 @@ def main(argv: list[str] | None = None) -> int:
         # rebuilds it (resume fills the gaps).
         if not config.dry_run:
             manifest_path = config.output_dir / MANIFEST_FILENAME
-            clear_manifest(manifest_path)
-            _logger.error(
-                "Invalidated %s (hard abort; the run may have left partial "
-                "output). Re-run to rebuild it.", manifest_path,
-            )
+            # codex P2: clear_manifest itself can raise OSError (read-only dir,
+            # permission, locked file). Catch it so the hard-abort path still
+            # returns 1 cleanly instead of escaping as a traceback; warn loudly
+            # that a stale manifest may remain.
+            try:
+                clear_manifest(manifest_path)
+                _logger.error(
+                    "Invalidated %s (hard abort; the run may have left partial "
+                    "output). Re-run to rebuild it.", manifest_path,
+                )
+            except OSError as clear_exc:
+                _logger.error(
+                    "Hard abort AND could not invalidate %s (%s) — a stale "
+                    "manifest may remain; remove it before trusting the dir.",
+                    manifest_path, clear_exc,
+                )
         return 1
 
     _logger.info("")

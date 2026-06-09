@@ -657,6 +657,29 @@ class CliManifestIntegrationTests(unittest.TestCase):
             self.assertEqual(len(client.call.call_args_list), 2)  # active ok, delisted aborted
             self.assertFalse(manifest_path.exists())  # invalidated despite NO hole
 
+    def test_main_returns_1_when_manifest_invalidation_fails(self) -> None:
+        # codex P2: if clear_manifest raises OSError (read-only dir / permission /
+        # locked file) on the hard-abort path, main must still return 1 cleanly,
+        # not escape as a traceback.
+        mod = self._load_cli()
+
+        def side_effect(api, **p):
+            raise TushareClientError("namechange invalid token / 权限不足")  # hard abort
+
+        client = MagicMock()
+        client.call = MagicMock(side_effect=side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            args = [
+                "--output-dir", str(out), "--endpoints", "namechange",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client), \
+                    patch.object(mod, "clear_manifest", side_effect=OSError("read-only dir")):
+                rc = mod.main(args)
+            self.assertEqual(rc, 1)  # clean exit despite the invalidation failure
+
 
 if __name__ == "__main__":
     unittest.main()

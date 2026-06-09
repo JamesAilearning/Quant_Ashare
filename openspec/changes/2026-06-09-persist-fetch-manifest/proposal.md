@@ -64,6 +64,11 @@ unknown `schema_version` (codex P2).
 - No narrower incremental drive — 4b REFUSES a narrower-scope merge (fail-loud);
   actually SUPPORTING narrower incremental fetches (the merge gaining per-unit
   scope awareness so it self-heals only re-attempted units) is **P3-6**.
-- No change to the fetcher's continue-on-error, retry/backoff, or resume.
-- The manifest is written only on the completed-run path; a hard abort leaves
-  the prior manifest untouched (the run is incomplete; holes are still logged).
+- No change to the fetcher's continue-on-error, retry/backoff, or resume — the
+  only fetcher change is making the `index_weight` hole UNIT stable per-index
+  (`index={code}`) so the merge can match it across runs (codex P1).
+- The manifest is written only on the completed-run path (skipped under
+  `--dry-run`); on a HARD abort it is INVALIDATED rather than updated — the
+  completed-run merge never ran and the run may have left partial output, so a
+  stale "complete" manifest must not be left covering the dir (a re-run rebuilds
+  it; the invalidation itself is fail-loud if it cannot delete the file).
