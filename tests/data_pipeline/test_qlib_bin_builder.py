@@ -44,11 +44,16 @@ def _write_active(path: Path, tickers: list[str]) -> None:
     })
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
-    # P3-4c: build() now gates on a COMPLETE fetch manifest. These tests exercise
-    # builder LOGIC (not the gate — that has dedicated tests), so seed a hole-free
-    # manifest (empty endpoints => no holes => complete) alongside the raw dump.
+    # P3-4c: build() gates on a COMPLETE fetch manifest (no holes AND the required
+    # endpoints present). These tests exercise builder LOGIC (not the gate — that
+    # has dedicated tests), so seed a hole-free manifest covering the required
+    # endpoints alongside the raw dump.
     write_manifest(
-        path.parent / MANIFEST_FILENAME, build_manifest([], (), "20000101", "20251231"),
+        path.parent / MANIFEST_FILENAME,
+        build_manifest(
+            [TushareFetchResult(e, 1, 0, 0) for e in ("stock_basic", "daily", "adj_factor")],
+            (), "20000101", "20251231",
+        ),
     )
 
 
@@ -195,6 +200,27 @@ class FetchGateTests(unittest.TestCase):
             self.assertTrue(integ.built_from_holey_fetch)
             self.assertEqual(len(integ.holes), 1)
             self.assertEqual(integ.holes[0].endpoint, "daily")
+
+    def test_partial_fetch_missing_required_endpoint_refuses(self) -> None:
+        # codex P1: a partial fetch (here only stock_basic) has NO holes but never
+        # fetched daily / adj_factor, so "no holes" is NOT "complete" — the gate
+        # must require the bundle's endpoints to be present, not just hole-free.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [TushareFetchResult("stock_basic", 2, 0, 0)],  # daily/adj_factor absent
+                    (), "20000101", "20251231",
+                ),
+            )
+            _write_registry(tmp_path / "registry.parquet", [])
+            with self.assertRaisesRegex(QlibBinBuilderError, "never fetched"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
 
 
 class HappyPathTests(unittest.TestCase):

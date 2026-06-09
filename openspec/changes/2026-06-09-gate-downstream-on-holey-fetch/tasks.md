@@ -8,8 +8,10 @@
 - [x] `src/data/tushare/fetch_manifest.py`: `all_holes(m)` + `is_complete(m)`.
 - [x] Layer 1: `QlibBinBuilder(__init__ ..., allow_holey_fetch=False)`; `build()`
       reads `{tushare_dir}/fetch_manifest.json`, refuses (QlibBinBuilderError) a
-      holey OR missing manifest unless allowed, and stamps the bundle's integrity
-      (clean / holey + holes) inside staging (promoted atomically).
+      holey OR missing manifest OR one missing a required endpoint
+      (`BUNDLE_REQUIRED_ENDPOINTS` = stock_basic / daily / adj_factor — absence of
+      holes is not completeness, codex P1) unless allowed, and stamps the bundle's
+      integrity (clean / holey + holes) inside staging (promoted atomically).
       `05_build_qlib_bins.py`: `--allow-holey-fetch`.
 - [x] Layer 2: `RecommendationConfig.allow_holey_recommend=False`;
       `recommend()` calls `_assert_bundle_fetch_complete` after the staleness guard
@@ -23,8 +25,10 @@
       injected timestamp; atomic (no `.tmp`); missing → None; non-object /
       non-UTF-8 / unknown-schema / missing-field → `BundleIntegrityError`.
 - [x] LAYER 1: holey manifest → build raises; missing manifest → build raises;
-      complete → builds + stamp clean; holey + `allow_holey_fetch` → builds +
-      stamp holey + holes. (Existing builder-logic tests seed a complete manifest.)
+      partial fetch missing a required endpoint (no holes) → build raises (codex
+      P1); complete → builds + stamp clean; holey + `allow_holey_fetch` → builds +
+      stamp holey + holes. (Existing builder-logic tests seed a complete manifest
+      covering the required endpoints.)
 - [x] LAYER 2: holey stamp → recommend gate raises; `allow_holey_recommend` →
       passes; missing stamp → raises; `allow` → passes; clean → passes silently.
 - [x] RED LINE (non-transitive): a bundle stamped built-from-holey-fetch (the

@@ -116,6 +116,16 @@ BIN_DAILY_BASIC_FIELDS: tuple[str, ...] = (
 TUSHARE_VOL_LOTS_TO_SHARES = 100  # vol is in 手 (100 shares)
 TUSHARE_AMOUNT_KYUAN_TO_YUAN = 1000  # amount is in 千元
 
+# P3-4c: the fetch endpoints whose data this builder consumes for a bundle —
+# the universe (stock_basic -> active_stocks), the OHLCV core (daily), and the
+# adjustment (adj_factor). The build gate requires the fetch manifest to CONFIRM
+# these were fetched, not merely that it recorded no holes: a partial
+# `01_fetch_tushare --endpoints ...` run that never fetched daily/adj_factor has
+# no holes yet is not a complete bundle fetch (codex P1). daily_basic is optional
+# (the builder emits its bins only when present); namechange / suspend_d /
+# index_weight feed OTHER pipeline steps, not the bin builder.
+BUNDLE_REQUIRED_ENDPOINTS: tuple[str, ...] = ("stock_basic", "daily", "adj_factor")
+
 
 # Consolidated into ``src.data.pit._common`` (bug.md P2-4).
 from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
@@ -169,19 +179,33 @@ class QlibBinBuilder:
         # survivorship-incomplete bundle that only surfaces much later. Refuse
         # loudly unless the operator explicitly opted in to a partial build.
         manifest = read_manifest(self._tushare_dir / MANIFEST_FILENAME)
-        built_from_holey_fetch = manifest is None or not is_complete(manifest)
         fetch_holes = all_holes(manifest) if manifest is not None else ()
+        missing_required = (
+            set(BUNDLE_REQUIRED_ENDPOINTS)
+            if manifest is None
+            else set(BUNDLE_REQUIRED_ENDPOINTS) - set(manifest.endpoints)
+        )
+        # Incomplete = MISSING manifest, recorded HOLES, or a required endpoint the
+        # manifest never confirms was fetched. The last guards a partial
+        # `01_fetch_tushare --endpoints ...` run whose manifest has no holes yet
+        # never fetched daily / adj_factor — "no holes" alone would wrongly read as
+        # complete (codex P1).
+        built_from_holey_fetch = (
+            manifest is None or not is_complete(manifest) or bool(missing_required)
+        )
         if built_from_holey_fetch and not self._allow_holey_fetch:
-            detail = (
-                "no fetch_manifest.json found (cannot confirm the fetch is complete)"
-                if manifest is None
-                else f"{len(fetch_holes)} hole(s) across "
-                     f"{len({h.endpoint for h in fetch_holes})} endpoint(s)"
-            )
+            if manifest is None:
+                detail = "no fetch_manifest.json found (cannot confirm the fetch is complete)"
+            elif fetch_holes:
+                detail = (f"{len(fetch_holes)} hole(s) across "
+                          f"{len({h.endpoint for h in fetch_holes})} endpoint(s)")
+            else:
+                detail = (f"required endpoint(s) {sorted(missing_required)} were "
+                          "never fetched (not in the manifest)")
             raise QlibBinBuilderError(
                 f"Refusing to build from an INCOMPLETE tushare fetch ({detail}) in "
-                f"{self._tushare_dir}: a holey fetch bakes a survivorship-incomplete "
-                "bundle. Re-fetch to fill the holes, or pass allow_holey_fetch=True "
+                f"{self._tushare_dir}: it bakes a survivorship-incomplete bundle. "
+                "Re-fetch to complete it, or pass allow_holey_fetch=True "
                 "(--allow-holey-fetch) to build a research/inspection bundle from "
                 "partial data. NOTE: that override is build-only — the bundle is "
                 "stamped built-from-holey-fetch and is still refused at the recommend "

@@ -44,6 +44,7 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
     build_manifest,
     write_manifest,
 )
+from src.data.tushare.fetcher import TushareFetchResult  # noqa: E402
 
 # ----------------------------------------------------------------------
 # Fixture writers (mirror tests/data_pipeline/test_qlib_bin_builder.py)
@@ -58,10 +59,15 @@ def _write_active(path: Path, tickers: list[str]) -> None:
     })
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
-    # P3-4c: build() gates on a COMPLETE fetch manifest; seed a hole-free one
-    # (empty endpoints => complete) so these builder-logic tests pass the gate.
+    # P3-4c: build() gates on a COMPLETE fetch manifest (no holes AND required
+    # endpoints present); seed a hole-free one covering them so these
+    # builder-logic tests pass the gate.
     write_manifest(
-        path.parent / MANIFEST_FILENAME, build_manifest([], (), "20000101", "20251231"),
+        path.parent / MANIFEST_FILENAME,
+        build_manifest(
+            [TushareFetchResult(e, 1, 0, 0) for e in ("stock_basic", "daily", "adj_factor")],
+            (), "20000101", "20251231",
+        ),
     )
 
 
