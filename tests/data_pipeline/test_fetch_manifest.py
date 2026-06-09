@@ -569,11 +569,13 @@ class CliManifestIntegrationTests(unittest.TestCase):
                 rc2 = mod.main(common + ["--start-date", "20250101", "--end-date", "20251231"])
             self.assertEqual(rc2, 1)
 
-    def test_main_returns_1_on_manifest_write_oserror(self) -> None:
+    def test_main_returns_1_and_invalidates_on_manifest_write_oserror(self) -> None:
         # codex P2: a manifest WRITE OSError (disk full / permissions / rename
         # failure) after a completed fetch must surface as a clean exit 1, not a
-        # traceback. We patch the CLI's write_manifest reference so only the
-        # manifest write fails (the fetch's own parquet writes are unaffected).
+        # traceback. AND because the fetch already mutated the dir, the now-stale
+        # PRIOR manifest must be invalidated (else a gate reads stale-complete for
+        # a possibly-partial dir). We patch the CLI's write_manifest so only the
+        # manifest write fails (the fetch's parquet writes are unaffected).
         mod = self._load_cli()
         client = MagicMock()
         client.call = MagicMock(
@@ -582,6 +584,10 @@ class CliManifestIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             self._seed_universe(out, ["600000.SH", "600001.SH"])
+            manifest_path = out / MANIFEST_FILENAME
+            # a pre-existing (stale-once-the-run-mutates-the-dir) manifest
+            write_manifest(manifest_path, _bm([_result("daily", 1)], ()))
+            self.assertTrue(manifest_path.exists())
             args = [
                 "--output-dir", str(out), "--endpoints", "daily",
                 "--start-date", "20250101", "--end-date", "20251231",
@@ -592,6 +598,7 @@ class CliManifestIntegrationTests(unittest.TestCase):
                     patch.object(mod, "write_manifest", side_effect=OSError("disk full")):
                 rc = mod.main(args)
             self.assertEqual(rc, 1)
+            self.assertFalse(manifest_path.exists())  # stale prior manifest invalidated
 
     def test_main_invalidates_manifest_on_hard_abort_with_holes(self) -> None:
         # codex P2: a run that records a hole and then hits a hard (non-retryable)

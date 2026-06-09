@@ -53,12 +53,13 @@
 - [x] CLI FAIL-LOUD (codex P2): a non-object / non-UTF-8 manifest fails loud;
       `main` returns `1` (not a traceback) when a narrower-scope rerun makes the
       merge refuse, and when the manifest WRITE raises `OSError`.
-- [x] HARD-ABORT (codex P2/P1): a hard (non-retryable) abort INVALIDATES the
-      manifest — on ANY hard abort, not only when holes were recorded, since the
-      run may have left partial output (e.g. stock_basic writes active then aborts
-      on delisted) with the completed-run update never running; a re-run rebuilds.
-      The invalidation is itself fail-loud: a `clear_manifest` `OSError` (read-only
-      dir / permission) is caught so `main` still returns `1` cleanly (codex P2).
+- [x] INVALIDATE-ON-MUTATION (codex P1/P2): whenever the fetch mutated the dir but
+      the completed-run manifest update did not land — ANY hard abort, OR a
+      manifest read/merge/write failure on the success path — the manifest is
+      INVALIDATED via a shared `_invalidate_manifest` helper, so a stale "complete"
+      manifest never covers a partial dir; a re-run rebuilds it. The invalidation
+      is itself fail-loud but non-fatal (a `clear_manifest` `OSError` is caught so
+      `main` still returns `1` cleanly).
 - [x] STABLE UNIT (codex P1): the `index_weight` hole unit is `index={code}` (no
       year) at the fetcher; a re-failed index keeps its prior hole through the
       merge (attempts accumulated), not dropped.

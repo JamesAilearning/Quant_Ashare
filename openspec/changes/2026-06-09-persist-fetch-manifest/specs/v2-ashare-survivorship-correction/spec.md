@@ -40,13 +40,15 @@ mistake a stale narrow dump for the requested range. The merge SHALL NOT remove 
 not self-heal (that would be a silent partial) and SHALL NOT retain a hole that
 did self-heal (that would be a false alarm). A full `clear` SHALL be available
 for a fresh rebuild. The manifest SHALL be written on the completed-run path
-(with or without holes) and SHALL be skipped under `--dry-run`. On ANY HARD abort
-(a non-retryable error) the completed-run manifest update does not run, yet the
-aborted run may have left PARTIAL output (files written before the abort, with or
-without a recorded hole — e.g. `stock_basic` writes `active_stocks` then aborts on
-the delisted call). The manifest SHALL therefore be INVALIDATED on any hard abort,
-so a stale "complete" manifest never covers a possibly-partial dir; a re-run
-rebuilds it. Self-heal assumes
+(with or without holes) and SHALL be skipped under `--dry-run`. Whenever the
+fetch has mutated the output dir but the completed-run manifest update did NOT
+land — ANY HARD abort (a non-retryable error; e.g. `stock_basic` writes
+`active_stocks` then aborts on the delisted call), OR a manifest read / merge /
+write failure on the success path — the manifest SHALL be INVALIDATED, so a stale
+"complete" manifest never covers a possibly-partial dir; a re-run rebuilds it. The
+invalidation is itself fail-loud but non-fatal (if the manifest file cannot be
+removed, the CLI warns and still returns non-zero rather than escaping). Self-heal
+assumes full-scope runs: a NARROWER-scope re-run of a date-scoped endpoint that still has
 full-scope runs: a NARROWER-scope re-run of a date-scoped endpoint that still has
 UNRESOLVED holes (one whose `[coverage_start_date, coverage_end_date]` no longer
 covers the recorded coverage) does NOT re-attempt every prior hole, so the merge

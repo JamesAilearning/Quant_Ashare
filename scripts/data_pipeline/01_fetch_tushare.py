@@ -96,6 +96,24 @@ def _log_hole_report(holes: tuple[FetchHole, ...]) -> None:
     )
 
 
+def _invalidate_manifest(manifest_path: Path, reason: str) -> None:
+    """Remove a now-stale manifest so it cannot cover a partial output dir, after
+    the fetch has already mutated the dir but the completed-run manifest update
+    did not land (a hard abort, or a manifest read/merge/write failure). The
+    removal is itself fail-loud but non-fatal — if the file cannot be deleted
+    (read-only dir / permission / lock) we warn rather than escape a traceback."""
+    try:
+        clear_manifest(manifest_path)
+        _logger.error(
+            "Invalidated %s (%s). Re-run to rebuild it.", manifest_path, reason,
+        )
+    except OSError as exc:
+        _logger.error(
+            "Could not invalidate %s (%s): %s — a stale manifest may remain; "
+            "remove it before trusting the dir.", manifest_path, reason, exc,
+        )
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Fetch raw Tushare data for the A-share survivorship "
@@ -171,31 +189,17 @@ def main(argv: list[str] | None = None) -> int:
         # recorded hole is never silently lost (the abort dominates the exit
         # code — this stays the hard-abort path, return 1).
         _log_hole_report(fetcher.holes)
-        # codex P1: the completed-run manifest update below never runs on a hard
-        # abort, but a mid-run abort can leave PARTIAL output — files written
+        # codex P1/P2: the completed-run manifest update below never runs on a
+        # hard abort, but a mid-run abort can leave PARTIAL output — files written
         # before the abort, with or without a recorded hole (e.g. stock_basic
-        # writes active_stocks then aborts on the delisted call). So INVALIDATE
-        # the manifest on ANY hard abort: a stale "complete" manifest must not be
-        # left covering a dir the aborted run may have made partial. A re-run
-        # rebuilds it (resume fills the gaps).
+        # writes active_stocks then aborts on the delisted call). INVALIDATE the
+        # manifest on ANY hard abort so a stale "complete" manifest never covers a
+        # possibly-partial dir; a re-run rebuilds it (resume fills the gaps).
         if not config.dry_run:
-            manifest_path = config.output_dir / MANIFEST_FILENAME
-            # codex P2: clear_manifest itself can raise OSError (read-only dir,
-            # permission, locked file). Catch it so the hard-abort path still
-            # returns 1 cleanly instead of escaping as a traceback; warn loudly
-            # that a stale manifest may remain.
-            try:
-                clear_manifest(manifest_path)
-                _logger.error(
-                    "Invalidated %s (hard abort; the run may have left partial "
-                    "output). Re-run to rebuild it.", manifest_path,
-                )
-            except OSError as clear_exc:
-                _logger.error(
-                    "Hard abort AND could not invalidate %s (%s) — a stale "
-                    "manifest may remain; remove it before trusting the dir.",
-                    manifest_path, clear_exc,
-                )
+            _invalidate_manifest(
+                config.output_dir / MANIFEST_FILENAME,
+                "hard abort; the run may have left partial output",
+            )
         return 1
 
     _logger.info("")
@@ -234,6 +238,13 @@ def main(argv: list[str] | None = None) -> int:
             write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
         except (FetchManifestError, OSError) as exc:
             _logger.error("Fetch manifest update failed: %s", exc)
+            # codex P2: the fetch already mutated the output dir, but this update
+            # did not land — leaving the PRIOR manifest in place would let a gate
+            # read stale "complete" coverage for a now-partial dir. Invalidate it
+            # (same reason as the hard-abort path); a re-run rebuilds it.
+            _invalidate_manifest(
+                manifest_path, "manifest update failed after the fetch mutated the dir",
+            )
             return 1
         _logger.info("Wrote fetch manifest: %s", manifest_path)
 
