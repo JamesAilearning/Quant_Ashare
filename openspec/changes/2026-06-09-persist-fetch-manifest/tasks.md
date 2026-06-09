@@ -50,9 +50,12 @@
 - [x] COVERAGE (codex P1-B): a wider run that SKIPS a prior narrow aggregate file
       keeps the actually-fetched coverage (no over-claim); a run that wrote data
       advances coverage.
-- [x] CLI FAIL-LOUD (codex P2): a non-object manifest fails loud; `main` returns
-      `1` (not a traceback) when a narrower-scope rerun makes the merge refuse,
-      and when the manifest WRITE raises `OSError` (disk full / permissions).
+- [x] CLI FAIL-LOUD (codex P2): a non-object / non-UTF-8 manifest fails loud;
+      `main` returns `1` (not a traceback) when a narrower-scope rerun makes the
+      merge refuse, and when the manifest WRITE raises `OSError`.
+- [x] HARD-ABORT (codex P2): a run that recorded holes then hit a hard
+      (non-retryable) abort INVALIDATES the manifest (the update never ran), so a
+      later gate does not trust the now-partial dir; a re-run rebuilds it.
 - [x] STABLE UNIT (codex P1): the `index_weight` hole unit is `index={code}` (no
       year) at the fetcher; a re-failed index keeps its prior hole through the
       merge (attempts accumulated), not dropped.
@@ -62,5 +65,5 @@
       no file/`.tmp` and run 2 re-fetches ONLY the holed unit (real resume).
 
 ## 3. Verification
-- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (30 tests).
+- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (34 tests).
 - [x] Full fast suite green; `ruff` + `mypy --strict` clean.

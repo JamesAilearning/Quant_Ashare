@@ -209,6 +209,16 @@ class ReadTests(unittest.TestCase):
             with self.assertRaisesRegex(FetchManifestError, "not a JSON object"):
                 read_manifest(path)
 
+    def test_non_utf8_manifest_fails_loud(self) -> None:
+        # codex P2: a corrupt / non-UTF-8 manifest makes read_text raise
+        # UnicodeDecodeError before json.loads — it must fail loud as a
+        # FetchManifestError, not escape as a traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / MANIFEST_FILENAME
+            path.write_bytes(b"\xff\xfe\x00 not valid utf-8 \x80\x81")
+            with self.assertRaisesRegex(FetchManifestError, "unreadable"):
+                read_manifest(path)
+
 
 class MergeTests(unittest.TestCase):
 
@@ -582,6 +592,37 @@ class CliManifestIntegrationTests(unittest.TestCase):
                     patch.object(mod, "write_manifest", side_effect=OSError("disk full")):
                 rc = mod.main(args)
             self.assertEqual(rc, 1)
+
+    def test_main_invalidates_manifest_on_hard_abort_with_holes(self) -> None:
+        # codex P2: a run that records a hole and then hits a hard (non-retryable)
+        # abort never reaches the manifest update; the CLI INVALIDATES the prior
+        # (stale) manifest so a later gate does not trust the now-partial dir.
+        mod = self._load_cli()
+
+        def side_effect(api, **p):
+            if api == "namechange":
+                raise TushareClientError("returned None — rate limit exceeded")  # transient → hole
+            if api == "suspend_d":
+                raise TushareClientError("Tushare suspend_d invalid token / 权限不足")  # hard
+            return pd.DataFrame()
+
+        client = MagicMock()
+        client.call = MagicMock(side_effect=side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            manifest_path = out / MANIFEST_FILENAME
+            # a pre-existing manifest that would otherwise falsely survive the abort
+            write_manifest(manifest_path, _bm([_result("daily", 1)], ()))
+            self.assertTrue(manifest_path.exists())
+            args = [
+                "--output-dir", str(out), "--endpoints", "namechange,suspend_d",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(args)
+            self.assertEqual(rc, 1)  # hard abort
+            self.assertFalse(manifest_path.exists())  # invalidated (re-run rebuilds)
 
 
 if __name__ == "__main__":

@@ -217,7 +217,10 @@ def read_manifest(path: Path) -> FetchManifest | None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        # codex P2: a corrupt / non-UTF-8 manifest makes read_text raise
+        # UnicodeDecodeError BEFORE json.loads — fold it into the fail-loud path
+        # too, so the CLI surfaces a clean error rather than a traceback.
         raise FetchManifestError(f"unreadable fetch manifest {path}: {exc}") from exc
     # codex P2: valid JSON that is not an OBJECT (e.g. `[]`, a string, a number)
     # would make the `.get(...)` below raise AttributeError outside the fail-loud

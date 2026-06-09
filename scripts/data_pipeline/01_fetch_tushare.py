@@ -45,6 +45,7 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
     MANIFEST_FILENAME,
     FetchManifestError,
     build_manifest,
+    clear_manifest,
     merge_manifest,
     read_manifest,
     write_manifest,
@@ -170,6 +171,18 @@ def main(argv: list[str] | None = None) -> int:
         # recorded hole is never silently lost (the abort dominates the exit
         # code — this stays the hard-abort path, return 1).
         _log_hole_report(fetcher.holes)
+        # codex P2: the manifest update below only runs on success, so holes
+        # recorded before this abort would never reach the manifest — a later
+        # gate would not see them. If this aborted run recorded holes, INVALIDATE
+        # the manifest so the now-partial dump is not left covered by a stale
+        # "complete" manifest; a re-run rebuilds it (resume re-discovers the holes).
+        if not config.dry_run and fetcher.holes:
+            manifest_path = config.output_dir / MANIFEST_FILENAME
+            clear_manifest(manifest_path)
+            _logger.error(
+                "Invalidated %s (hard abort after recording %d hole(s)); re-run "
+                "to rebuild it.", manifest_path, len(fetcher.holes),
+            )
         return 1
 
     _logger.info("")

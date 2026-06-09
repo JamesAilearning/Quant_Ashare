@@ -14,11 +14,11 @@ manifest — the prior file stays intact until the complete new one is swapped i
 Reading SHALL treat a MISSING manifest as a fresh start (not an error) and SHALL
 fail loud on an unknown `schema_version`, a MISSING required field (e.g. the
 `endpoints` member or any per-endpoint / per-hole key), a non-object JSON document
-(e.g. `[]`), or malformed JSON, rather than parsing an unrecognized / partial
-shape (which the next merge could treat as "no prior holes" and erase recorded
-ones). Every manifest read / merge / write failure (including a refused
-narrower-scope merge) SHALL surface through the CLI as a clean non-zero exit, not
-an escaping traceback.
+(e.g. `[]`), a non-UTF-8 / corrupt-encoding file, or malformed JSON, rather than
+parsing an unrecognized / partial shape (which the next merge could treat as "no
+prior holes" and erase recorded ones). Every manifest read / merge / write
+failure (including a refused narrower-scope merge) SHALL surface through the CLI
+as a clean non-zero exit, not an escaping traceback.
 
 Each run SHALL be merged onto the prior manifest: for an endpoint that ran this
 run, a hole whose exact `(endpoint, unit)` was re-attempted-and-succeeded SHALL
@@ -40,7 +40,11 @@ mistake a stale narrow dump for the requested range. The merge SHALL NOT remove 
 not self-heal (that would be a silent partial) and SHALL NOT retain a hole that
 did self-heal (that would be a false alarm). A full `clear` SHALL be available
 for a fresh rebuild. The manifest SHALL be written on the completed-run path
-(with or without holes) and SHALL be skipped under `--dry-run`. Self-heal assumes
+(with or without holes) and SHALL be skipped under `--dry-run`. On a HARD abort
+(a non-retryable error) AFTER holes were recorded, the manifest update does not
+run, so the manifest SHALL be INVALIDATED — those holes would otherwise be
+invisible to a later gate while the dir is left partial; a re-run rebuilds it.
+Self-heal assumes
 full-scope runs: a NARROWER-scope re-run of a date-scoped endpoint that still has
 UNRESOLVED holes (one whose `[coverage_start_date, coverage_end_date]` no longer
 covers the recorded coverage) does NOT re-attempt every prior hole, so the merge
