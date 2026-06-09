@@ -121,10 +121,19 @@ def build_manifest(
     endpoints: dict[str, EndpointCoverage] = {}
     for r in results:
         ep_holes = tuple(holes_by_ep.get(r.endpoint, ()))
+        # Coverage reflects FETCHED data: an endpoint that wrote nothing and
+        # holed nothing was entirely SKIPPED by resume (its files already
+        # existed), so THIS run established no coverage for it — record it empty
+        # rather than claim the requested range. Otherwise a first manifest built
+        # over a pre-existing narrow dump (no prior manifest to fall back to)
+        # would over-claim the requested wide range (codex P2). A written or
+        # holed endpoint records the requested range. The merge keeps the prior
+        # actually-fetched coverage when a later run skips (units_written == 0).
+        established = r.files_written > 0 or bool(ep_holes)
         endpoints[r.endpoint] = EndpointCoverage(
             status="holes" if ep_holes else "complete",
-            coverage_start_date=coverage_start_date,
-            coverage_end_date=coverage_end_date,
+            coverage_start_date=coverage_start_date if established else "",
+            coverage_end_date=coverage_end_date if established else "",
             units_written=r.files_written,
             holes=ep_holes,
         )

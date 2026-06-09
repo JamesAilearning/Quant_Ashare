@@ -33,7 +33,10 @@ not what was requested: a run that wrote nothing for an endpoint (every file
 skipped by resume — e.g. a wider run that skips a prior narrow aggregate file
 like `namechange` / `suspend_d` / `index_weight`) SHALL NOT advance that
 endpoint's coverage to its requested range; only a run that wrote data advances
-coverage (to the widest range seen). The merge SHALL NOT remove a hole that did
+coverage (to the widest range seen). When such a skipped endpoint has NO prior
+coverage to keep — the FIRST manifest built over a pre-existing dump — its
+coverage SHALL be recorded EMPTY (not the requested range), so a gate cannot
+mistake a stale narrow dump for the requested range. The merge SHALL NOT remove a hole that did
 not self-heal (that would be a silent partial) and SHALL NOT retain a hole that
 did self-heal (that would be a false alarm). A full `clear` SHALL be available
 for a fresh rebuild. The manifest SHALL be written on the completed-run path

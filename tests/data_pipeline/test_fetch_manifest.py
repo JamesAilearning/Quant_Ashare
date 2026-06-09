@@ -360,6 +360,21 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(merged.endpoints["namechange"].coverage_start_date, "20200101")
         self.assertEqual(merged.endpoints["namechange"].coverage_end_date, "20251231")
 
+    def test_first_run_skipped_endpoint_claims_empty_coverage(self) -> None:
+        # codex P2: on the FIRST manifest (no prior to fall back to), an endpoint
+        # entirely SKIPPED by resume (pre-existing file, units_written=0, no holes)
+        # must NOT claim the requested range — its coverage is empty (this run
+        # established none), so a gate cannot mistake a stale narrow dump for it.
+        first_skip = _bm([_result("namechange", 0)], (), start="20180101", end="20251231")
+        merged = merge_manifest(None, first_skip)
+        self.assertEqual(merged.endpoints["namechange"].coverage_start_date, "")
+        self.assertEqual(merged.endpoints["namechange"].coverage_end_date, "")
+        # a written endpoint on first run DOES record the range
+        first_written = _bm([_result("namechange", 1)], (), start="20180101", end="20251231")
+        nm = merge_manifest(None, first_written).endpoints["namechange"]
+        self.assertEqual(nm.coverage_start_date, "20180101")
+        self.assertEqual(nm.coverage_end_date, "20251231")
+
     def test_written_run_advances_coverage(self) -> None:
         # the complement: when the run DID write (units_written > 0), coverage
         # spans the widest range (a genuinely wider fetch is recorded).

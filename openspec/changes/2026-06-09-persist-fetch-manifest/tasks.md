@@ -16,10 +16,12 @@
 - [x] codex P1: REFUSE a narrower-scope merge of a date-scoped endpoint that still
       has unresolved holes — fail-loud, never drop out-of-range holes; `stock_basic`
       exempt (date-agnostic); a hole-free narrower run is allowed.
-- [x] codex P1-B: coverage reflects what was ACTUALLY fetched — a run that wrote
-      nothing for an endpoint (all files skipped by resume, e.g. a wider run that
-      skips a prior narrow aggregate file) does NOT advance its coverage; only a
-      run that wrote data advances it.
+- [x] codex P1-B / P2: coverage reflects what was ACTUALLY fetched — a run that
+      wrote nothing for an endpoint (all files skipped by resume) does NOT advance
+      its coverage; only a run that wrote data advances it. On the FIRST manifest
+      (no prior coverage), a skipped endpoint records EMPTY coverage, not the
+      requested range, so a first manifest over a pre-existing dump cannot
+      over-claim.
 - [x] codex P1 (index_weight): the `index_weight` hole unit is STABLE per-index
       (`index={code}`, not the first-failing year), so a re-failed index matches
       the prior hole and is not dropped as falsely self-healed (fetcher fix).
