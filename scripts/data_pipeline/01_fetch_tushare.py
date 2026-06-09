@@ -41,6 +41,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.tushare.client import TushareClient, TushareClientError  # noqa: E402
+from src.data.tushare.fetch_manifest import (  # noqa: E402
+    MANIFEST_FILENAME,
+    FetchManifestError,
+    build_manifest,
+    clear_manifest,
+    merge_manifest,
+    read_manifest,
+    write_manifest,
+)
 from src.data.tushare.fetcher import (  # noqa: E402
     DEFAULT_INDICES,
     DEFAULT_RATE_LIMIT_SLEEP_MS,
@@ -85,6 +94,24 @@ def _log_hole_report(holes: tuple[FetchHole, ...]) -> None:
         "Re-run with the same --output-dir to fill the holes "
         "(existing files are skipped; only the missing units are re-fetched)."
     )
+
+
+def _invalidate_manifest(manifest_path: Path, reason: str) -> None:
+    """Remove a now-stale manifest so it cannot cover a partial output dir, after
+    the fetch has already mutated the dir but the completed-run manifest update
+    did not land (a hard abort, or a manifest read/merge/write failure). The
+    removal is itself fail-loud but non-fatal — if the file cannot be deleted
+    (read-only dir / permission / lock) we warn rather than escape a traceback."""
+    try:
+        clear_manifest(manifest_path)
+        _logger.error(
+            "Invalidated %s (%s). Re-run to rebuild it.", manifest_path, reason,
+        )
+    except OSError as exc:
+        _logger.error(
+            "Could not invalidate %s (%s): %s — a stale manifest may remain; "
+            "remove it before trusting the dir.", manifest_path, reason, exc,
+        )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -162,6 +189,17 @@ def main(argv: list[str] | None = None) -> int:
         # recorded hole is never silently lost (the abort dominates the exit
         # code — this stays the hard-abort path, return 1).
         _log_hole_report(fetcher.holes)
+        # codex P1/P2: the completed-run manifest update below never runs on a
+        # hard abort, but a mid-run abort can leave PARTIAL output — files written
+        # before the abort, with or without a recorded hole (e.g. stock_basic
+        # writes active_stocks then aborts on the delisted call). INVALIDATE the
+        # manifest on ANY hard abort so a stale "complete" manifest never covers a
+        # possibly-partial dir; a re-run rebuilds it (resume fills the gaps).
+        if not config.dry_run:
+            _invalidate_manifest(
+                config.output_dir / MANIFEST_FILENAME,
+                "hard abort; the run may have left partial output",
+            )
         return 1
 
     _logger.info("")
@@ -179,6 +217,36 @@ def main(argv: list[str] | None = None) -> int:
         total_skipped += r.skipped
     _logger.info("  %-14s  files_written=%5d  rows=%10d  skipped=%5d",
                  "TOTAL", total_written, total_rows, total_skipped)
+
+    # P3-4b: persist this run's coverage + holes to fetch_manifest.json, merged
+    # with the prior run so a unit re-fetched this run self-heals its hole (and a
+    # still-failing unit's hole stays). Skipped under --dry-run (no side effects).
+    # Downstream gating on a holey manifest is P3-4c; this only records.
+    if not config.dry_run:
+        manifest_path = config.output_dir / MANIFEST_FILENAME
+        # The whole read → build → merge → write is fail-loud: read_manifest
+        # rejects an unusable prior manifest, merge_manifest refuses a
+        # narrower-scope merge (both FetchManifestError), and write_manifest can
+        # raise OSError (disk full / permissions / rename failure). All of these
+        # MUST surface as a clean non-zero exit, not an escaping traceback after
+        # the fetch already ran (codex P2).
+        try:
+            prev_manifest = read_manifest(manifest_path)
+            current_manifest = build_manifest(
+                results, fetcher.holes, config.start_date, config.end_date,
+            )
+            write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
+        except (FetchManifestError, OSError) as exc:
+            _logger.error("Fetch manifest update failed: %s", exc)
+            # codex P2: the fetch already mutated the output dir, but this update
+            # did not land — leaving the PRIOR manifest in place would let a gate
+            # read stale "complete" coverage for a now-partial dir. Invalidate it
+            # (same reason as the hard-abort path); a re-run rebuilds it.
+            _invalidate_manifest(
+                manifest_path, "manifest update failed after the fetch mutated the dir",
+            )
+            return 1
+        _logger.info("Wrote fetch manifest: %s", manifest_path)
 
     # Continue-on-error (P3-4a): the fetch finished, but any unit whose call
     # exhausted its retryable retries (or a per-ticker endpoint skipped because

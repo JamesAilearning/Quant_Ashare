@@ -329,11 +329,13 @@ class TushareFetcher:
                 fields="ts_code,name,start_date,end_date,ann_date,change_reason",
             )
         except FetchHoleError as hole:
-            self._record_hole(
-                "namechange",
-                f"range={self._config.start_date}-{self._config.end_date}",
-                hole,
-            )
+            # codex P2: namechange is a SINGLE file covering the run's range, so
+            # the hole IS the whole file — the unit is a stable "file", NOT the
+            # range (which varies run-to-run and would make a wider/narrower
+            # re-failure look like a different unit, so the merge could not match
+            # the prior hole and would reset attempts / drop it). The range lives
+            # in the manifest's coverage fields, not the hole unit.
+            self._record_hole("namechange", "file", hole)
             return TushareFetchResult("namechange", 0, 0, skipped=0)
         self._atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
@@ -356,11 +358,9 @@ class TushareFetcher:
                 fields="ts_code,trade_date,suspend_timing,suspend_type",
             )
         except FetchHoleError as hole:
-            self._record_hole(
-                "suspend_d",
-                f"range={self._config.start_date}-{self._config.end_date}",
-                hole,
-            )
+            # codex P2: like namechange, suspend_d is a single file — stable
+            # "file" unit, not the run's range (see _fetch_namechange).
+            self._record_hole("suspend_d", "file", hole)
             return TushareFetchResult("suspend_d", 0, 0, skipped=0)
         self._atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
@@ -411,11 +411,15 @@ class TushareFetcher:
                         fields="index_code,con_code,trade_date,weight",
                     )
                 except FetchHoleError as hole:
-                    # index_weight writes ONE file per index. A partial file
-                    # would be SKIPPED by file-existence resume and the hole
-                    # never filled, so record the hole and leave the file
-                    # missing — a re-run re-fetches the whole index.
-                    self._record_hole("index_weight", f"index={idx} year={year}", hole)
+                    # index_weight writes ONE file per index, so a hole is the
+                    # WHOLE index (a partial file would be SKIPPED by resume and
+                    # the hole never filled — a re-run re-fetches the whole index).
+                    # The unit is the index ALONE, NOT the first-failing year:
+                    # that year varies run-to-run (whichever transient failure
+                    # hits first), so including it would make a re-run's hole look
+                    # like a different unit and the manifest merge would drop the
+                    # prior un-healed hole as if self-healed (codex P1).
+                    self._record_hole("index_weight", f"index={idx}", hole)
                     holed = True
                     break
                 if not chunk.empty:
