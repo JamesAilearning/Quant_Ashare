@@ -63,6 +63,15 @@ from src.data.tushare.fetcher import FetchHole, TushareFetchResult
 SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "fetch_manifest.json"
 
+# Endpoints whose holes are DATE-scoped: a narrower-range re-run does not
+# re-attempt every prior hole, so self-healing one is only safe when this run's
+# range covers the prior coverage. The merge refuses a narrower-scope merge for
+# these (codex P1). stock_basic is the exception — it re-fetches the whole ticker
+# universe regardless of date range, so its holes always re-attempt.
+_DATE_SCOPED_ENDPOINTS = frozenset({
+    "daily", "adj_factor", "daily_basic", "namechange", "suspend_d", "index_weight",
+})
+
 
 class FetchManifestError(RuntimeError):
     """Raised on an unreadable / unknown-schema manifest — fail-loud rather than
@@ -74,6 +83,7 @@ class EndpointCoverage:
     """Per-endpoint coverage + hole state recorded in the manifest."""
 
     status: str  # "complete" | "holes"
+    coverage_start_date: str  # YYYYMMDD
     coverage_end_date: str  # YYYYMMDD
     units_written: int
     holes: tuple[FetchHole, ...]
@@ -91,16 +101,18 @@ class FetchManifest:
 def build_manifest(
     results: list[TushareFetchResult],
     holes: tuple[FetchHole, ...],
+    coverage_start_date: str,
     coverage_end_date: str,
     *,
     now: datetime | None = None,
 ) -> FetchManifest:
     """Build THIS run's manifest from the fetcher's ``results`` + ``holes``.
 
-    Only the endpoints that ran (present in ``results``) appear. ``now`` is
-    injectable for tests / determinism — the same value-injection pattern as the
-    Phase 2 staleness guard (``recommend(..., now=...)``); the production default
-    is the system clock.
+    Only the endpoints that ran (present in ``results``) appear, each tagged with
+    this run's ``[coverage_start_date, coverage_end_date]`` so the merge can refuse
+    a later narrower-scope run. ``now`` is injectable for tests / determinism — the
+    same value-injection pattern as the Phase 2 staleness guard
+    (``recommend(..., now=...)``); the production default is the system clock.
     """
     stamp = (now if now is not None else datetime.now(tz=timezone.utc)).isoformat()
     holes_by_ep: dict[str, list[FetchHole]] = {}
@@ -111,6 +123,7 @@ def build_manifest(
         ep_holes = tuple(holes_by_ep.get(r.endpoint, ()))
         endpoints[r.endpoint] = EndpointCoverage(
             status="holes" if ep_holes else "complete",
+            coverage_start_date=coverage_start_date,
             coverage_end_date=coverage_end_date,
             units_written=r.files_written,
             holes=ep_holes,
@@ -132,6 +145,26 @@ def merge_manifest(
     merged: dict[str, EndpointCoverage] = dict(prev.endpoints)
     for ep, cur in current.endpoints.items():
         prev_ep = prev.endpoints.get(ep)
+        # codex P1: a self-heal drops a prev hole that is absent from this run's
+        # holes — valid ONLY if this run RE-ATTEMPTED that hole. For a date-scoped
+        # endpoint, a NARROWER range does not re-attempt out-of-range units, so a
+        # narrower-scope merge would silently drop their holes (a silent partial).
+        # Refuse it (incremental narrower fetches are P3-6).
+        if (
+            prev_ep is not None
+            and ep in _DATE_SCOPED_ENDPOINTS
+            and (cur.coverage_start_date > prev_ep.coverage_start_date
+                 or cur.coverage_end_date < prev_ep.coverage_end_date)
+        ):
+            raise FetchManifestError(
+                f"refusing narrower-scope merge for endpoint {ep!r}: this run "
+                f"covered [{cur.coverage_start_date}, {cur.coverage_end_date}] but "
+                f"the manifest already covers [{prev_ep.coverage_start_date}, "
+                f"{prev_ep.coverage_end_date}]. A narrower range does not re-attempt "
+                f"every prior hole, so self-healing would silently drop out-of-range "
+                f"holes. Re-run the full range, or clear the manifest (narrower "
+                f"incremental fetches are P3-6)."
+            )
         prev_holes = {h.unit: h for h in (prev_ep.holes if prev_ep else ())}
         carried: list[FetchHole] = []
         for h in cur.holes:
@@ -140,13 +173,17 @@ def merge_manifest(
             attempts = prior.attempts + h.attempts if prior else h.attempts
             carried.append(replace(h, attempts=attempts))
         # A prev hole ABSENT from cur.holes self-healed this run → it is simply
-        # not in `carried`, i.e. dropped. coverage_end_date only advances.
-        cov = _max_yyyymmdd(
+        # not in `carried`, i.e. dropped. Coverage spans the widest seen range.
+        cov_start = _min_yyyymmdd(
+            prev_ep.coverage_start_date if prev_ep else None, cur.coverage_start_date,
+        )
+        cov_end = _max_yyyymmdd(
             prev_ep.coverage_end_date if prev_ep else None, cur.coverage_end_date,
         )
         merged[ep] = EndpointCoverage(
             status="holes" if carried else "complete",
-            coverage_end_date=cov,
+            coverage_start_date=cov_start,
+            coverage_end_date=cov_end,
             units_written=cur.units_written,
             holes=tuple(carried),
         )
@@ -200,6 +237,13 @@ def _max_yyyymmdd(a: str | None, b: str) -> str:
     return a if a >= b else b
 
 
+def _min_yyyymmdd(a: str | None, b: str) -> str:
+    """Earlier of two ``YYYYMMDD`` strings (lexicographic == chronological here)."""
+    if a is None:
+        return b
+    return a if a <= b else b
+
+
 def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
     return {
         "schema_version": m.schema_version,
@@ -207,6 +251,7 @@ def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
         "endpoints": {
             ep: {
                 "status": cov.status,
+                "coverage_start_date": cov.coverage_start_date,
                 "coverage_end_date": cov.coverage_end_date,
                 "units_written": cov.units_written,
                 "holes": [
@@ -225,26 +270,37 @@ def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
 
 
 def _manifest_from_dict(raw: dict[str, Any]) -> FetchManifest:
-    endpoints: dict[str, EndpointCoverage] = {}
-    for ep, cov in raw.get("endpoints", {}).items():
-        holes = tuple(
-            FetchHole(
-                endpoint=ep,
-                unit=h["unit"],
-                reason_class=h["reason_class"],
-                attempts=h["attempts"],
-                last_error=h["last_error"],
+    # codex P2: require every field explicitly — a missing `endpoints` (or any
+    # per-endpoint / per-hole key) must FAIL LOUD, never silently parse as an
+    # empty / partial manifest (which the next merge would treat as "no prior
+    # holes" and erase recorded non-run holes).
+    try:
+        endpoints: dict[str, EndpointCoverage] = {}
+        for ep, cov in raw["endpoints"].items():
+            holes = tuple(
+                FetchHole(
+                    endpoint=ep,
+                    unit=h["unit"],
+                    reason_class=h["reason_class"],
+                    attempts=h["attempts"],
+                    last_error=h["last_error"],
+                )
+                for h in cov["holes"]
             )
-            for h in cov.get("holes", [])
+            endpoints[ep] = EndpointCoverage(
+                status=cov["status"],
+                coverage_start_date=cov["coverage_start_date"],
+                coverage_end_date=cov["coverage_end_date"],
+                units_written=cov["units_written"],
+                holes=holes,
+            )
+        return FetchManifest(
+            schema_version=raw["schema_version"],
+            fetched_at=raw["fetched_at"],
+            endpoints=endpoints,
         )
-        endpoints[ep] = EndpointCoverage(
-            status=cov["status"],
-            coverage_end_date=cov["coverage_end_date"],
-            units_written=cov["units_written"],
-            holes=holes,
-        )
-    return FetchManifest(
-        schema_version=raw["schema_version"],
-        fetched_at=raw["fetched_at"],
-        endpoints=endpoints,
-    )
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise FetchManifestError(
+            f"malformed fetch manifest (missing or invalid field: {exc}); "
+            "refusing to parse — delete it to rebuild."
+        ) from exc

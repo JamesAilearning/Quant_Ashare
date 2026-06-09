@@ -49,12 +49,18 @@ def _result(endpoint, files_written=0):
     return TushareFetchResult(endpoint, files_written, 0, 0)
 
 
+def _bm(results, holes, end="20251231", *, start="20180101", now=None):
+    """Thin wrapper over build_manifest defaulting the coverage start, so same-
+    range tests stay terse; narrower-scope tests pass start=/end= explicitly."""
+    return build_manifest(results, holes, start, end, now=now)
+
+
 class BuildAndWriteTests(unittest.TestCase):
 
     def test_build_fields_and_injected_timestamp(self) -> None:
         results = [_result("daily", 100), _result("namechange", 1)]
         holes = (_hole("daily", "ts_code=600001.SH year=2020", attempts=5),)
-        m = build_manifest(results, holes, "20251231", now=FIXED_NOW)
+        m = _bm(results, holes, "20251231", now=FIXED_NOW)
 
         self.assertEqual(m.schema_version, SCHEMA_VERSION)
         self.assertEqual(m.fetched_at, FIXED_NOW.isoformat())  # injected, not wall-clock
@@ -73,7 +79,7 @@ class BuildAndWriteTests(unittest.TestCase):
                 "daily", "ts_code=X year=2020", reason_class="transient",
                 attempts=5, last_error="TushareClientError: rate limit",
             ),)
-            m = build_manifest([_result("daily", 7)], holes, "20251231", now=FIXED_NOW)
+            m = _bm([_result("daily", 7)], holes, "20251231", now=FIXED_NOW)
             write_manifest(path, m)
 
             self.assertTrue(path.exists())
@@ -91,7 +97,7 @@ class BuildAndWriteTests(unittest.TestCase):
     def test_default_timestamp_is_system_clock(self) -> None:
         # now=None → system clock, NOT the fixed sentinel (just assert it differs
         # and is a non-empty ISO string).
-        m = build_manifest([_result("daily", 1)], (), "20251231")
+        m = _bm([_result("daily", 1)], (), "20251231")
         self.assertTrue(m.fetched_at)
         self.assertNotEqual(m.fetched_at, FIXED_NOW.isoformat())
 
@@ -101,10 +107,10 @@ class AtomicWriteTests(unittest.TestCase):
     def test_failed_replace_leaves_prev_manifest_intact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / MANIFEST_FILENAME
-            old = build_manifest([_result("daily", 1)], (), "20231231", now=FIXED_NOW)
+            old = _bm([_result("daily", 1)], (), "20231231", now=FIXED_NOW)
             write_manifest(path, old)  # establish the prior value
 
-            new = build_manifest(
+            new = _bm(
                 [_result("daily", 2)], (), "20251231",
                 now=datetime(2027, 1, 1, tzinfo=timezone.utc),
             )
@@ -127,7 +133,7 @@ class AtomicWriteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / MANIFEST_FILENAME
             write_manifest(
-                path, build_manifest([_result("daily", 1)], (), "20251231", now=FIXED_NOW),
+                path, _bm([_result("daily", 1)], (), "20251231", now=FIXED_NOW),
             )
             self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
 
@@ -164,31 +170,61 @@ class ReadTests(unittest.TestCase):
             with self.assertRaises(FetchManifestError):
                 read_manifest(path)
 
+    def test_missing_endpoints_member_fails_loud(self) -> None:
+        # codex P2: valid version but NO `endpoints` member → must fail loud, not
+        # silently parse as an empty manifest (which the next merge would treat as
+        # "no prior holes" and erase recorded non-run holes).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / MANIFEST_FILENAME
+            path.write_text(
+                json.dumps({"schema_version": 1, "fetched_at": "x"}), encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FetchManifestError, "malformed"):
+                read_manifest(path)
+
+    def test_missing_endpoint_field_fails_loud(self) -> None:
+        # an endpoint entry missing a required key (here coverage_start_date) →
+        # fail loud rather than silently dropping/zeroing it.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / MANIFEST_FILENAME
+            path.write_text(
+                json.dumps({
+                    "schema_version": 1, "fetched_at": "x",
+                    "endpoints": {"daily": {
+                        "status": "complete", "coverage_end_date": "20251231",
+                        "units_written": 1, "holes": [],
+                    }},
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FetchManifestError, "malformed"):
+                read_manifest(path)
+
 
 class MergeTests(unittest.TestCase):
 
     def test_prev_none_returns_current(self) -> None:
-        cur = build_manifest([_result("daily", 1)], (), "20251231", now=FIXED_NOW)
+        cur = _bm([_result("daily", 1)], (), "20251231", now=FIXED_NOW)
         self.assertIs(merge_manifest(None, cur), cur)
 
     def test_self_healed_hole_is_dropped(self) -> None:
         # prev holed X@2020; this run ran daily and did NOT hole X@2020 → healed.
-        prev = build_manifest(
+        prev = _bm(
             [_result("daily", 1)], (_hole("daily", "ts_code=X year=2020"),),
             "20251231", now=FIXED_NOW,
         )
-        cur = build_manifest([_result("daily", 2)], (), "20251231", now=FIXED_NOW)
+        cur = _bm([_result("daily", 2)], (), "20251231", now=FIXED_NOW)
         merged = merge_manifest(prev, cur)
         self.assertEqual(merged.endpoints["daily"].holes, ())
         self.assertEqual(merged.endpoints["daily"].status, "complete")
 
     def test_unhealed_hole_stays_with_attempts_accumulated(self) -> None:
         # prev holed X@2020 (5 attempts); this run holes X@2020 again (5 attempts).
-        prev = build_manifest(
+        prev = _bm(
             [_result("daily", 0)], (_hole("daily", "ts_code=X year=2020", attempts=5),),
             "20251231", now=FIXED_NOW,
         )
-        cur = build_manifest(
+        cur = _bm(
             [_result("daily", 0)], (_hole("daily", "ts_code=X year=2020", attempts=5),),
             "20251231", now=FIXED_NOW,
         )
@@ -198,12 +234,14 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(kept[0].unit, "ts_code=X year=2020")
         self.assertEqual(kept[0].attempts, 10)  # 5 + 5 accumulated across runs
 
-    def test_coverage_end_date_advances_and_never_regresses(self) -> None:
-        prev = build_manifest([_result("daily", 1)], (), "20231231", now=FIXED_NOW)
-        cur = build_manifest([_result("daily", 1)], (), "20251231", now=FIXED_NOW)
-        self.assertEqual(merge_manifest(prev, cur).endpoints["daily"].coverage_end_date, "20251231")
-        # an older current does not pull coverage backwards
-        self.assertEqual(merge_manifest(cur, prev).endpoints["daily"].coverage_end_date, "20251231")
+    def test_coverage_end_date_advances_on_wider_run(self) -> None:
+        # a same-or-wider run advances coverage_end_date (a NARROWER run is
+        # refused by the guard — see test_narrower_scope_merge_is_refused).
+        prev = _bm([_result("daily", 1)], (), start="20180101", end="20231231")
+        cur = _bm([_result("daily", 1)], (), start="20180101", end="20251231")
+        merged = merge_manifest(prev, cur)
+        self.assertEqual(merged.endpoints["daily"].coverage_end_date, "20251231")
+        self.assertEqual(merged.endpoints["daily"].coverage_start_date, "20180101")
 
     # ---- merge-precision RED LINE: two independent counter-examples ----
 
@@ -212,7 +250,7 @@ class MergeTests(unittest.TestCase):
         # This run ran ONLY daily (and healed it). suspend_d did NOT run, so its
         # hole MUST be preserved — dropping it would silently mark an incomplete
         # endpoint complete.
-        prev = build_manifest(
+        prev = _bm(
             [_result("daily", 0), _result("suspend_d", 0)],
             (
                 _hole("daily", "ts_code=X year=2020"),
@@ -220,7 +258,7 @@ class MergeTests(unittest.TestCase):
             ),
             "20251231", now=FIXED_NOW,
         )
-        cur = build_manifest([_result("daily", 5)], (), "20251231", now=FIXED_NOW)
+        cur = _bm([_result("daily", 5)], (), "20251231", now=FIXED_NOW)
         merged = merge_manifest(prev, cur)
 
         self.assertEqual(merged.endpoints["daily"].holes, ())  # daily healed
@@ -236,7 +274,7 @@ class MergeTests(unittest.TestCase):
         # "赖着 = false alarm": prev holed X@2020 AND Y@2021 in daily. This run
         # heals X@2020 but Y@2021 still holes. Merge must DROP X@2020 (gone) and
         # KEEP Y@2021 — precise per-unit, not all-or-nothing in either direction.
-        prev = build_manifest(
+        prev = _bm(
             [_result("daily", 0)],
             (
                 _hole("daily", "ts_code=X year=2020"),
@@ -244,7 +282,7 @@ class MergeTests(unittest.TestCase):
             ),
             "20251231", now=FIXED_NOW,
         )
-        cur = build_manifest(
+        cur = _bm(
             [_result("daily", 1)],
             (_hole("daily", "ts_code=Y year=2021"),),  # only Y still holes; X healed
             "20251231", now=FIXED_NOW,
@@ -254,6 +292,43 @@ class MergeTests(unittest.TestCase):
         units = {h.unit for h in merged.endpoints["daily"].holes}
         self.assertEqual(units, {"ts_code=Y year=2021"})  # X gone (not lingering), Y kept
 
+    def test_narrower_scope_merge_is_refused(self) -> None:
+        # codex P1: prev covered 2018-2025 with a daily hole at 2020. A re-run
+        # scoped only to 2025 never re-attempts the 2020 unit, so treating its
+        # absence from this run's holes as self-healed would silently drop it.
+        # The merge REFUSES a narrower-scope date-scoped merge.
+        prev = _bm(
+            [_result("daily", 0)], (_hole("daily", "ts_code=X year=2020"),),
+            start="20180101", end="20251231",
+        )
+        narrower = _bm([_result("daily", 1)], (), start="20250101", end="20251231")
+        with self.assertRaisesRegex(FetchManifestError, "narrower-scope"):
+            merge_manifest(prev, narrower)
+
+    def test_wider_or_equal_scope_merge_self_heals(self) -> None:
+        # a same-or-wider range re-attempts every prior hole → self-heal is safe.
+        prev = _bm(
+            [_result("daily", 0)], (_hole("daily", "ts_code=X year=2020"),),
+            start="20180101", end="20251231",
+        )
+        wider = _bm([_result("daily", 1)], (), start="20170101", end="20261231")
+        merged = merge_manifest(prev, wider)  # does not raise
+        self.assertEqual(merged.endpoints["daily"].holes, ())  # healed
+        self.assertEqual(merged.endpoints["daily"].coverage_start_date, "20170101")
+        self.assertEqual(merged.endpoints["daily"].coverage_end_date, "20261231")
+
+    def test_stock_basic_narrower_scope_is_not_refused(self) -> None:
+        # stock_basic is date-agnostic (re-fetches the whole universe), so a
+        # narrower date range does NOT refuse it — its holes always re-attempt.
+        prev = _bm(
+            [_result("stock_basic", 0)],
+            (_hole("stock_basic", "list_status=L (active_stocks)"),),
+            start="20180101", end="20251231",
+        )
+        narrower = _bm([_result("stock_basic", 2)], (), start="20250101", end="20251231")
+        merged = merge_manifest(prev, narrower)  # does not raise
+        self.assertEqual(merged.endpoints["stock_basic"].holes, ())  # healed
+
 
 class ClearTests(unittest.TestCase):
 
@@ -261,7 +336,7 @@ class ClearTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / MANIFEST_FILENAME
             write_manifest(
-                path, build_manifest([_result("daily", 1)], (), "20251231", now=FIXED_NOW),
+                path, _bm([_result("daily", 1)], (), "20251231", now=FIXED_NOW),
             )
             self.assertTrue(path.exists())
             clear_manifest(path)

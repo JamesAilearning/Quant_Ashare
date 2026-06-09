@@ -6,13 +6,16 @@
 
 The Tushare fetch SHALL persist each run's per-endpoint coverage and holes to
 `{output_dir}/fetch_manifest.json` — a document carrying `schema_version`,
-`fetched_at`, and, per endpoint, `status` / `coverage_end_date` / `units_written`
-/ `holes[]` (each hole keeping the P3-4a `reason_class` / `attempts` /
-`last_error`). The manifest SHALL be written ATOMICALLY (temp file + rename) so a
-crash mid-write never exposes a half-written manifest — the prior file stays
-intact until the complete new one is swapped in. Reading SHALL treat a MISSING
-manifest as a fresh start (not an error) and SHALL fail loud on an unknown
-`schema_version` (or malformed JSON) rather than parsing an unrecognized shape.
+`fetched_at`, and, per endpoint, `status` / `coverage_start_date` /
+`coverage_end_date` / `units_written` / `holes[]` (each hole keeping the P3-4a
+`reason_class` / `attempts` / `last_error`). The manifest SHALL be written
+ATOMICALLY (temp file + rename) so a crash mid-write never exposes a half-written
+manifest — the prior file stays intact until the complete new one is swapped in.
+Reading SHALL treat a MISSING manifest as a fresh start (not an error) and SHALL
+fail loud on an unknown `schema_version`, a MISSING required field (e.g. the
+`endpoints` member or any per-endpoint / per-hole key), or malformed JSON, rather
+than parsing an unrecognized / partial shape (which the next merge could treat as
+"no prior holes" and erase recorded ones).
 
 Each run SHALL be merged onto the prior manifest: for an endpoint that ran this
 run, a hole whose exact `(endpoint, unit)` was re-attempted-and-succeeded SHALL
@@ -23,9 +26,13 @@ SHALL NOT remove a hole that did not self-heal (that would be a silent partial)
 and SHALL NOT retain a hole that did self-heal (that would be a false alarm). A
 full `clear` SHALL be available for a fresh rebuild. The manifest SHALL be
 written on the completed-run path (with or without holes) and SHALL be skipped
-under `--dry-run`. This capability SHALL only record — it SHALL NOT gate any
-consumer (P3-4c) and SHALL NOT drive incremental fetches (P3-6); the merge
-assumes full-scope runs.
+under `--dry-run`. Self-heal assumes full-scope runs: a NARROWER-scope re-run of
+a date-scoped endpoint (one whose `[coverage_start_date, coverage_end_date]` no
+longer covers the recorded coverage) does NOT re-attempt every prior hole, so the
+merge SHALL REFUSE it (fail-loud) rather than silently drop the out-of-range
+holes (`stock_basic` is exempt — it re-fetches the whole universe regardless of
+date). This capability SHALL only record — it SHALL NOT gate any consumer (P3-4c)
+and SHALL NOT itself drive narrower incremental fetches (P3-6).
 
 #### Scenario: a run writes the manifest atomically with an injectable timestamp
 - **WHEN** a fetch run completes and builds its manifest (with an injected
@@ -35,11 +42,13 @@ assumes full-scope runs.
 - **AND** a write whose rename fails leaves the PRIOR manifest intact and valid
   (no half-written file)
 
-#### Scenario: a missing manifest is fresh and an unknown schema fails loud
+#### Scenario: a missing manifest is fresh and a malformed one fails loud
 - **WHEN** the manifest file does not exist
 - **THEN** reading returns a fresh/empty result, not an error
-- **AND** WHEN the manifest carries an unknown or missing `schema_version` (or is
-  malformed), reading raises rather than silently parsing it
+- **AND** WHEN the manifest carries an unknown or missing `schema_version`, is
+  missing a required field (the `endpoints` member or any per-endpoint / per-hole
+  key), or is malformed JSON, reading raises rather than silently parsing a
+  partial shape
 
 #### Scenario: a self-healed hole is removed and an un-healed hole is kept
 - **WHEN** the prior manifest recorded a hole for `(endpoint, unit)` and this run
@@ -60,6 +69,15 @@ assumes full-scope runs.
   one but the other still fails
 - **THEN** the healed unit's hole is dropped while the still-failing unit's hole
   is kept — a healed hole never lingers, and a still-failing one is never lost
+
+#### Scenario: merge red line — a narrower-scope re-run is refused (no scope-drop)
+- **WHEN** the prior manifest covers a wider date range for a date-scoped endpoint
+  and this run re-fetches that endpoint over a NARROWER range that no longer
+  covers the recorded coverage
+- **THEN** the merge raises rather than treating the never-re-attempted
+  out-of-range holes as self-healed
+- **AND** a same-or-wider range merges normally, and `stock_basic` (date-agnostic)
+  is not refused
 
 #### Scenario: clear resets the manifest for a fresh rebuild
 - **WHEN** the manifest is cleared

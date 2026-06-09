@@ -199,7 +199,9 @@ def main(argv: list[str] | None = None) -> int:
         except FetchManifestError as exc:
             _logger.error("Existing fetch manifest is unusable: %s", exc)
             return 1
-        current_manifest = build_manifest(results, fetcher.holes, config.end_date)
+        current_manifest = build_manifest(
+            results, fetcher.holes, config.start_date, config.end_date,
+        )
         write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
         _logger.info("Wrote fetch manifest: %s", manifest_path)
 
