@@ -904,6 +904,28 @@ class ContinueOnErrorTests(unittest.TestCase):
         self.assertEqual(fetcher.holes[0].endpoint, "index_weight")
         self.assertEqual(fetcher.holes[0].unit, "index=000300.SH")  # no year
 
+    def test_aggregate_hole_unit_is_stable_file_not_range(self) -> None:
+        # codex P2 (P3-4b): namechange / suspend_d are SINGLE-file endpoints, so
+        # their hole unit must be a stable "file", NOT the run's date range (which
+        # varies run-to-run and would make a wider/narrower re-failure look like a
+        # different unit so the merge could not match the prior hole).
+        def side_effect(api, **p):
+            raise TushareClientError("returned None — rate limit exceeded")
+
+        client = _make_client(side_effect)
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("namechange", "suspend_d"),
+                    start_date="20200101", end_date="20231231",
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                fetcher.fetch()  # does not raise
+
+        by_ep = {h.endpoint: h.unit for h in fetcher.holes}
+        self.assertEqual(by_ep, {"namechange": "file", "suspend_d": "file"})  # no range
+
 
 class CliExitCodeTests(unittest.TestCase):
     """P3-4a: ``01_fetch_tushare.main`` returns non-zero (3) when the fetch

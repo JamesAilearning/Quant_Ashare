@@ -22,9 +22,11 @@
       (no prior coverage), a skipped endpoint records EMPTY coverage, not the
       requested range, so a first manifest over a pre-existing dump cannot
       over-claim.
-- [x] codex P1 (index_weight): the `index_weight` hole unit is STABLE per-index
-      (`index={code}`, not the first-failing year), so a re-failed index matches
-      the prior hole and is not dropped as falsely self-healed (fetcher fix).
+- [x] codex P1/P2 (stable hole units): a hole `unit` must not embed the run's
+      range/first-failing year. `index_weight` → `index={code}` (not the year);
+      single-file `namechange` / `suspend_d` → stable `file` (not `range=…`), so a
+      wider/narrower re-failure matches the prior hole (attempts accumulate / it
+      self-heals) instead of looking like a different unit (fetcher fix).
 - [x] `01_fetch_tushare.main`: on the completed-run path (not `--dry-run`), read
       prev → build current (start+end) → merge → write atomically.
 - [x] codex P2: the whole read/build/merge/write is inside the CLI's
@@ -69,5 +71,5 @@
       no file/`.tmp` and run 2 re-fetches ONLY the holed unit (real resume).
 
 ## 3. Verification
-- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (36 tests).
+- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (37 tests).
 - [x] Full fast suite green; `ruff` + `mypy --strict` clean.

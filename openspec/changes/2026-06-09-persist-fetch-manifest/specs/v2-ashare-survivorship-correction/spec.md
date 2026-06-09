@@ -25,10 +25,13 @@ run, a hole whose exact `(endpoint, unit)` was re-attempted-and-succeeded SHALL
 be REMOVED (self-healed); a unit that still failed SHALL keep its hole with its
 attempt count ACCUMULATED across runs; and an endpoint that did NOT run this run
 SHALL be preserved untouched. Because the merge matches holes by exact
-`(endpoint, unit)`, each hole's `unit` SHALL be STABLE across runs: in particular
-an `index_weight` hole SHALL identify the whole index (`index={code}`), NOT the
-first-failing year, which varies run-to-run and would make a re-failed index look
-like a different unit so the merge would drop the prior un-healed hole. Coverage SHALL reflect what was ACTUALLY fetched,
+`(endpoint, unit)`, each hole's `unit` SHALL be STABLE across runs and SHALL NOT
+embed the run's date range or first-failing year (which vary run-to-run and would
+make a re-failure look like a different unit, so the merge would reset attempts or
+drop the prior un-healed hole): an `index_weight` hole identifies the whole index
+(`index={code}`), and a single-file endpoint (`namechange` / `suspend_d`) uses a
+stable `file` unit — the range each covers lives in the coverage fields, not the
+unit. Coverage SHALL reflect what was ACTUALLY fetched,
 not what was requested: a run that wrote nothing for an endpoint (every file
 skipped by resume — e.g. a wider run that skips a prior narrow aggregate file
 like `namechange` / `suspend_d` / `index_weight`) SHALL NOT advance that

@@ -273,7 +273,7 @@ class MergeTests(unittest.TestCase):
             [_result("daily", 0), _result("suspend_d", 0)],
             (
                 _hole("daily", "ts_code=X year=2020"),
-                _hole("suspend_d", "range=20000101-20251231"),
+                _hole("suspend_d", "file"),
             ),
             "20251231", now=FIXED_NOW,
         )
@@ -284,9 +284,7 @@ class MergeTests(unittest.TestCase):
         # suspend_d untouched — never silently removed for an endpoint that did not run
         self.assertIn("suspend_d", merged.endpoints)
         self.assertEqual(len(merged.endpoints["suspend_d"].holes), 1)
-        self.assertEqual(
-            merged.endpoints["suspend_d"].holes[0].unit, "range=20000101-20251231",
-        )
+        self.assertEqual(merged.endpoints["suspend_d"].holes[0].unit, "file")
         self.assertEqual(merged.endpoints["suspend_d"].status, "holes")
 
     def test_counterexample_healed_hole_does_not_linger(self) -> None:
@@ -349,11 +347,12 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(merged.endpoints["stock_basic"].holes, ())  # healed
 
     def test_namechange_narrower_scope_is_refused(self) -> None:
-        # codex P1-A: namechange is a date-scoped aggregate endpoint (its hole is
-        # a date range), so it MUST be in the narrower-scope guard set.
+        # codex P1-A: namechange is a date-scoped aggregate endpoint, so it MUST be
+        # in the narrower-scope guard set (its hole unit is the stable "file"; the
+        # range it covers lives in coverage_start/end, which the guard compares).
         prev = _bm(
             [_result("namechange", 0)],
-            (_hole("namechange", "range=20180101-20251231"),),
+            (_hole("namechange", "file"),),
             start="20180101", end="20251231",
         )
         narrower = _bm([_result("namechange", 1)], (), start="20250101", end="20251231")
@@ -424,6 +423,25 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertEqual(kept[0].unit, "index=000300.SH")
         self.assertEqual(kept[0].attempts, 10)  # accumulated → kept, not dropped
+
+    def test_aggregate_hole_survives_wider_rerun(self) -> None:
+        # codex P2: namechange / suspend_d holes use a stable "file" unit, so a
+        # WIDER re-run that fails again matches the prior hole — attempts
+        # accumulate, the hole is NOT dropped/reset just because the requested
+        # range changed (its coverage advances, but the hole identity is stable).
+        prev = _bm(
+            [_result("namechange", 0)], (_hole("namechange", "file", attempts=5),),
+            start="20200101", end="20201231",
+        )
+        wider = _bm(
+            [_result("namechange", 0)], (_hole("namechange", "file", attempts=5),),
+            start="20180101", end="20251231",
+        )
+        merged = merge_manifest(prev, wider)
+        kept = merged.endpoints["namechange"].holes
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].unit, "file")
+        self.assertEqual(kept[0].attempts, 10)  # accumulated, not reset
 
 
 class ClearTests(unittest.TestCase):
