@@ -200,6 +200,15 @@ class ReadTests(unittest.TestCase):
             with self.assertRaisesRegex(FetchManifestError, "malformed"):
                 read_manifest(path)
 
+    def test_non_object_manifest_fails_loud(self) -> None:
+        # codex P2: valid JSON that is not an object (e.g. a list) must fail loud,
+        # not raise AttributeError from `.get(...)` outside the fail-loud path.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / MANIFEST_FILENAME
+            path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+            with self.assertRaisesRegex(FetchManifestError, "not a JSON object"):
+                read_manifest(path)
+
 
 class MergeTests(unittest.TestCase):
 
@@ -481,6 +490,38 @@ class CliManifestIntegrationTests(unittest.TestCase):
             assert m2 is not None
             self.assertEqual(m2.endpoints["daily"].holes, ())  # self-healed
             self.assertEqual(m2.endpoints["daily"].status, "complete")
+
+    def test_main_returns_1_on_narrower_scope_refusal(self) -> None:
+        # codex P2: a narrower-scope rerun makes merge_manifest raise; main() must
+        # catch it and return 1 cleanly, NOT escape as a traceback.
+        mod = self._load_cli()
+        bad = "600001.SH"
+
+        def side_effect(api, **p):
+            if api == "daily" and p.get("ts_code") == bad:
+                raise TushareClientError("returned None — rate limit exceeded")
+            return self._daily_row(p.get("ts_code", "X"))
+
+        client = MagicMock()
+        client.call = MagicMock(side_effect=side_effect)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed_universe(out, ["600000.SH", bad])
+            common = [
+                "--output-dir", str(out), "--endpoints", "daily",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client):
+                # run 1: wide range, bad ticker holes → manifest records a daily
+                # hole with coverage 2024-2025.
+                rc1 = mod.main(common + ["--start-date", "20240101", "--end-date", "20251231"])
+                self.assertEqual(rc1, 3)
+                # run 2: NARROWER range → merge_manifest refuses → main returns 1
+                # cleanly (no traceback escaping).
+                rc2 = mod.main(common + ["--start-date", "20250101", "--end-date", "20251231"])
+            self.assertEqual(rc2, 1)
 
 
 if __name__ == "__main__":

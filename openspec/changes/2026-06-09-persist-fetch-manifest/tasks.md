@@ -22,6 +22,10 @@
       run that wrote data advances it.
 - [x] `01_fetch_tushare.main`: on the completed-run path (not `--dry-run`), read
       prev → build current (start+end) → merge → write atomically.
+- [x] codex P2: the whole read/build/merge/write is inside the CLI's
+      `FetchManifestError` catch, so a refused narrower-scope merge surfaces as a
+      clean non-zero exit, not a traceback; `read_manifest` rejects a non-object
+      JSON document (e.g. `[]`) as `FetchManifestError`.
 
 ## 2. Tests (mock + synthetic manifests, no real fetch)
 - [x] WRITE: fields correct + injected timestamp; write→read roundtrip.
@@ -41,11 +45,13 @@
 - [x] COVERAGE (codex P1-B): a wider run that SKIPS a prior narrow aggregate file
       keeps the actually-fetched coverage (no over-claim); a run that wrote data
       advances coverage.
+- [x] CLI FAIL-LOUD (codex P2): a non-object manifest fails loud; `main` returns
+      `1` (not a traceback) when a narrower-scope rerun makes the merge refuse.
 - [x] CLEAR: removes the manifest (→ fresh); no-op when absent.
 - [x] INTEGRATION: through `01.main` twice — run 1 records the hole (exit 3),
       run 2 (unit now succeeds) self-heals it (exit 0), asserting the hole left
       no file/`.tmp` and run 2 re-fetches ONLY the holed unit (real resume).
 
 ## 3. Verification
-- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (27 tests).
+- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (29 tests).
 - [x] Full fast suite green; `ruff` + `mypy --strict` clean.

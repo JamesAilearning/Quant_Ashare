@@ -210,6 +210,14 @@ def read_manifest(path: Path) -> FetchManifest | None:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise FetchManifestError(f"unreadable fetch manifest {path}: {exc}") from exc
+    # codex P2: valid JSON that is not an OBJECT (e.g. `[]`, a string, a number)
+    # would make the `.get(...)` below raise AttributeError outside the fail-loud
+    # path. Reject it as a FetchManifestError so the CLI surfaces it cleanly.
+    if not isinstance(raw, dict):
+        raise FetchManifestError(
+            f"fetch manifest {path} is not a JSON object (got {type(raw).__name__}); "
+            f"refusing to parse — delete it to rebuild."
+        )
     version = raw.get("schema_version")
     if version != SCHEMA_VERSION:
         raise FetchManifestError(

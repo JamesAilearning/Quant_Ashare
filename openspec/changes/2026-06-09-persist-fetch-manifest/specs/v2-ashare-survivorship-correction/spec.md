@@ -13,9 +13,12 @@ ATOMICALLY (temp file + rename) so a crash mid-write never exposes a half-writte
 manifest — the prior file stays intact until the complete new one is swapped in.
 Reading SHALL treat a MISSING manifest as a fresh start (not an error) and SHALL
 fail loud on an unknown `schema_version`, a MISSING required field (e.g. the
-`endpoints` member or any per-endpoint / per-hole key), or malformed JSON, rather
-than parsing an unrecognized / partial shape (which the next merge could treat as
-"no prior holes" and erase recorded ones).
+`endpoints` member or any per-endpoint / per-hole key), a non-object JSON document
+(e.g. `[]`), or malformed JSON, rather than parsing an unrecognized / partial
+shape (which the next merge could treat as "no prior holes" and erase recorded
+ones). Every manifest read / merge / write failure (including a refused
+narrower-scope merge) SHALL surface through the CLI as a clean non-zero exit, not
+an escaping traceback.
 
 Each run SHALL be merged onto the prior manifest: for an endpoint that ran this
 run, a hole whose exact `(endpoint, unit)` was re-attempted-and-succeeded SHALL

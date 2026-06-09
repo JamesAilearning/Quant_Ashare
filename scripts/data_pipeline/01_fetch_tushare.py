@@ -194,15 +194,19 @@ def main(argv: list[str] | None = None) -> int:
     # Downstream gating on a holey manifest is P3-4c; this only records.
     if not config.dry_run:
         manifest_path = config.output_dir / MANIFEST_FILENAME
+        # The whole read → build → merge → write is fail-loud: read_manifest
+        # rejects an unusable prior manifest, and merge_manifest refuses a
+        # narrower-scope merge — both raise FetchManifestError, which must surface
+        # as a clean non-zero exit, not an escaping traceback (codex P2).
         try:
             prev_manifest = read_manifest(manifest_path)
+            current_manifest = build_manifest(
+                results, fetcher.holes, config.start_date, config.end_date,
+            )
+            write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
         except FetchManifestError as exc:
-            _logger.error("Existing fetch manifest is unusable: %s", exc)
+            _logger.error("Fetch manifest update failed: %s", exc)
             return 1
-        current_manifest = build_manifest(
-            results, fetcher.holes, config.start_date, config.end_date,
-        )
-        write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
         _logger.info("Wrote fetch manifest: %s", manifest_path)
 
     # Continue-on-error (P3-4a): the fetch finished, but any unit whose call
