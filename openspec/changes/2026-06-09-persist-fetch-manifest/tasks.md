@@ -53,9 +53,10 @@
 - [x] CLI FAIL-LOUD (codex P2): a non-object / non-UTF-8 manifest fails loud;
       `main` returns `1` (not a traceback) when a narrower-scope rerun makes the
       merge refuse, and when the manifest WRITE raises `OSError`.
-- [x] HARD-ABORT (codex P2): a run that recorded holes then hit a hard
-      (non-retryable) abort INVALIDATES the manifest (the update never ran), so a
-      later gate does not trust the now-partial dir; a re-run rebuilds it.
+- [x] HARD-ABORT (codex P2/P1): a hard (non-retryable) abort INVALIDATES the
+      manifest — on ANY hard abort, not only when holes were recorded, since the
+      run may have left partial output (e.g. stock_basic writes active then aborts
+      on delisted) with the completed-run update never running; a re-run rebuilds.
 - [x] STABLE UNIT (codex P1): the `index_weight` hole unit is `index={code}` (no
       year) at the fetcher; a re-failed index keeps its prior hole through the
       merge (attempts accumulated), not dropped.
@@ -65,5 +66,5 @@
       no file/`.tmp` and run 2 re-fetches ONLY the holed unit (real resume).
 
 ## 3. Verification
-- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (34 tests).
+- [x] `pytest tests/data_pipeline/test_fetch_manifest.py` green (35 tests).
 - [x] Full fast suite green; `ruff` + `mypy --strict` clean.

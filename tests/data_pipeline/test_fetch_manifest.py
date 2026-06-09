@@ -624,6 +624,39 @@ class CliManifestIntegrationTests(unittest.TestCase):
             self.assertEqual(rc, 1)  # hard abort
             self.assertFalse(manifest_path.exists())  # invalidated (re-run rebuilds)
 
+    def test_main_invalidates_manifest_on_hard_abort_without_holes(self) -> None:
+        # codex P1: a hard abort that wrote PARTIAL output but recorded NO hole
+        # (e.g. stock_basic writes active_stocks then aborts on the delisted call)
+        # must still invalidate the stale manifest — invalidation is on ANY hard
+        # abort, not only when holes were recorded.
+        mod = self._load_cli()
+
+        def side_effect(api, **p):
+            if api == "stock_basic" and p.get("list_status") == "L":
+                return pd.DataFrame({"ts_code": ["600000.SH"]})  # active written
+            if api == "stock_basic":
+                raise TushareClientError("stock_basic invalid token / 权限不足")  # delisted hard
+            return pd.DataFrame()
+
+        client = MagicMock()
+        client.call = MagicMock(side_effect=side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            manifest_path = out / MANIFEST_FILENAME
+            write_manifest(manifest_path, _bm([_result("daily", 1)], ()))
+            self.assertTrue(manifest_path.exists())
+            args = [
+                "--output-dir", str(out), "--endpoints", "stock_basic",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(args)
+            self.assertEqual(rc, 1)  # hard abort
+            self.assertTrue((out / "active_stocks.parquet").exists())  # partial output
+            self.assertEqual(len(client.call.call_args_list), 2)  # active ok, delisted aborted
+            self.assertFalse(manifest_path.exists())  # invalidated despite NO hole
+
 
 if __name__ == "__main__":
     unittest.main()

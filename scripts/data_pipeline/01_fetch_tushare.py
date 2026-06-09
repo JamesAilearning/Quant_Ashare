@@ -171,17 +171,19 @@ def main(argv: list[str] | None = None) -> int:
         # recorded hole is never silently lost (the abort dominates the exit
         # code — this stays the hard-abort path, return 1).
         _log_hole_report(fetcher.holes)
-        # codex P2: the manifest update below only runs on success, so holes
-        # recorded before this abort would never reach the manifest — a later
-        # gate would not see them. If this aborted run recorded holes, INVALIDATE
-        # the manifest so the now-partial dump is not left covered by a stale
-        # "complete" manifest; a re-run rebuilds it (resume re-discovers the holes).
-        if not config.dry_run and fetcher.holes:
+        # codex P1: the completed-run manifest update below never runs on a hard
+        # abort, but a mid-run abort can leave PARTIAL output — files written
+        # before the abort, with or without a recorded hole (e.g. stock_basic
+        # writes active_stocks then aborts on the delisted call). So INVALIDATE
+        # the manifest on ANY hard abort: a stale "complete" manifest must not be
+        # left covering a dir the aborted run may have made partial. A re-run
+        # rebuilds it (resume fills the gaps).
+        if not config.dry_run:
             manifest_path = config.output_dir / MANIFEST_FILENAME
             clear_manifest(manifest_path)
             _logger.error(
-                "Invalidated %s (hard abort after recording %d hole(s)); re-run "
-                "to rebuild it.", manifest_path, len(fetcher.holes),
+                "Invalidated %s (hard abort; the run may have left partial "
+                "output). Re-run to rebuild it.", manifest_path,
             )
         return 1
 
