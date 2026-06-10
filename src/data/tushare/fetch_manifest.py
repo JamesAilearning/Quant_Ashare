@@ -257,6 +257,32 @@ def clear_manifest(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def all_holes(manifest: FetchManifest) -> tuple[FetchHole, ...]:
+    """Every hole across all endpoints, flattened (for a downstream completeness
+    gate / provenance stamp — P3-4c)."""
+    return tuple(h for ep in manifest.endpoints.values() for h in ep.holes)
+
+
+def is_complete(manifest: FetchManifest) -> bool:
+    """A fetch is complete when NO endpoint has any hole. A downstream build
+    gate (P3-4c) treats a holey — or entirely MISSING — manifest as incomplete
+    and refuses unless explicitly overridden."""
+    return not any(ep.holes for ep in manifest.endpoints.values())
+
+
+def covered_endpoints(manifest: FetchManifest) -> frozenset[str]:
+    """Endpoints whose coverage was actually ESTABLISHED — both coverage dates
+    non-empty. ``build_manifest`` records a SKIPPED endpoint (wrote nothing, holed
+    nothing — e.g. a first manifest over a pre-existing dump) with EMPTY coverage,
+    so it is NOT covered here. A downstream build gate (P3-4c) treats a required
+    endpoint that is absent OR has empty coverage as not fetched — absence of holes
+    on an empty-coverage endpoint is NOT confirmation it was fetched."""
+    return frozenset(
+        name for name, ep in manifest.endpoints.items()
+        if ep.coverage_start_date and ep.coverage_end_date
+    )
+
+
 def _max_yyyymmdd(a: str | None, b: str) -> str:
     """Later of two ``YYYYMMDD`` strings (lexicographic == chronological here)."""
     if a is None:

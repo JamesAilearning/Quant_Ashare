@@ -83,6 +83,15 @@ import numpy as np
 import pandas as pd
 
 from src.core.logger import get_logger
+from src.data.pit.bundle_integrity import write_bundle_integrity
+from src.data.tushare.fetch_manifest import (
+    MANIFEST_FILENAME,
+    FetchManifestError,
+    all_holes,
+    covered_endpoints,
+    is_complete,
+    read_manifest,
+)
 
 _logger = get_logger(__name__)
 
@@ -108,6 +117,16 @@ BIN_DAILY_BASIC_FIELDS: tuple[str, ...] = (
 # Tushare unit conversions.
 TUSHARE_VOL_LOTS_TO_SHARES = 100  # vol is in 手 (100 shares)
 TUSHARE_AMOUNT_KYUAN_TO_YUAN = 1000  # amount is in 千元
+
+# P3-4c: the fetch endpoints whose data this builder consumes for a bundle —
+# the universe (stock_basic -> active_stocks), the OHLCV core (daily), and the
+# adjustment (adj_factor). The build gate requires the fetch manifest to CONFIRM
+# these were fetched, not merely that it recorded no holes: a partial
+# `01_fetch_tushare --endpoints ...` run that never fetched daily/adj_factor has
+# no holes yet is not a complete bundle fetch (codex P1). daily_basic is optional
+# (the builder emits its bins only when present); namechange / suspend_d /
+# index_weight feed OTHER pipeline steps, not the bin builder.
+BUNDLE_REQUIRED_ENDPOINTS: tuple[str, ...] = ("stock_basic", "daily", "adj_factor")
 
 
 # Consolidated into ``src.data.pit._common`` (bug.md P2-4).
@@ -140,16 +159,79 @@ class QlibBinBuilder:
         tushare_dir: Path,
         delisted_registry_path: Path,
         output_dir: Path,
+        *,
+        allow_holey_fetch: bool = False,
     ) -> None:
         self._tushare_dir = tushare_dir
         self._delisted_registry_path = delisted_registry_path
         self._output_dir = output_dir
+        # P3-4c Layer 1: when False (default), build() refuses a holey / missing
+        # fetch_manifest. True (operator's --allow-holey-fetch) builds a partial
+        # research bundle anyway, stamped built-from-holey-fetch.
+        self._allow_holey_fetch = allow_holey_fetch
 
     # ------------------------------------------------------------------
     # Public orchestrator
     # ------------------------------------------------------------------
 
     def build(self) -> QlibBinBuilderResult:
+        # P3-4c Layer 1: gate on the P3-4b fetch manifest BEFORE doing any work.
+        # A holey (some endpoint failed) OR missing (cannot confirm) manifest means
+        # the raw tushare dump is incomplete; building from it would bake a
+        # survivorship-incomplete bundle that only surfaces much later. Refuse
+        # loudly unless the operator explicitly opted in to a partial build.
+        try:
+            manifest = read_manifest(self._tushare_dir / MANIFEST_FILENAME)
+        except FetchManifestError as exc:
+            # codex P2: a corrupt / unknown-schema manifest is UNREADABLE provenance,
+            # not mere incompleteness. Re-raise as a QlibBinBuilderError so the 05
+            # CLI's fail-loud path catches it (it only catches QlibBinBuilderError,
+            # not FetchManifestError) instead of exiting on a traceback — and do so
+            # REGARDLESS of allow_holey_fetch (the override accepts partial data, not
+            # corruption; remove the manifest to rebuild from scratch).
+            raise QlibBinBuilderError(
+                f"Refusing to build: the fetch manifest in {self._tushare_dir} is "
+                f"UNREADABLE ({exc}). Re-fetch to regenerate it, or remove it to "
+                "rebuild from scratch — --allow-holey-fetch accepts partial data, "
+                "not a corrupt manifest."
+            ) from exc
+        fetch_holes = all_holes(manifest) if manifest is not None else ()
+        # Required endpoints whose coverage the manifest never ESTABLISHED — absent,
+        # OR present with empty coverage (a skipped first-manifest endpoint over a
+        # pre-existing dump; build_manifest records empty coverage exactly so this
+        # gate can catch it). "No holes" on such an endpoint is NOT confirmation it
+        # was fetched (codex P1).
+        missing_required = (
+            set(BUNDLE_REQUIRED_ENDPOINTS)
+            if manifest is None
+            else set(BUNDLE_REQUIRED_ENDPOINTS) - covered_endpoints(manifest)
+        )
+        # Incomplete = MISSING manifest, recorded HOLES, or a required endpoint the
+        # manifest never confirms was fetched (absent / empty coverage). The last
+        # guards a partial `01_fetch_tushare --endpoints ...` run, or a first
+        # manifest over a stale pre-existing dump.
+        built_from_holey_fetch = (
+            manifest is None or not is_complete(manifest) or bool(missing_required)
+        )
+        if built_from_holey_fetch and not self._allow_holey_fetch:
+            if manifest is None:
+                detail = "no fetch_manifest.json found (cannot confirm the fetch is complete)"
+            elif fetch_holes:
+                detail = (f"{len(fetch_holes)} hole(s) across "
+                          f"{len({h.endpoint for h in fetch_holes})} endpoint(s)")
+            else:
+                detail = (f"required endpoint(s) {sorted(missing_required)} were "
+                          "never fetched (absent, or recorded with empty coverage)")
+            raise QlibBinBuilderError(
+                f"Refusing to build from an INCOMPLETE tushare fetch ({detail}) in "
+                f"{self._tushare_dir}: it bakes a survivorship-incomplete bundle. "
+                "Re-fetch to complete it, or pass allow_holey_fetch=True "
+                "(--allow-holey-fetch) to build a research/inspection bundle from "
+                "partial data. NOTE: that override is build-only — the bundle is "
+                "stamped built-from-holey-fetch and is still refused at the recommend "
+                "boundary unless --allow-holey-recommend is passed there separately."
+            )
+
         active_df = self._load_active_stocks()
         delisted_df = self._load_delisted_registry()
 
@@ -215,6 +297,14 @@ class QlibBinBuilder:
                     staging,
                     daily_basic_fields=per_ticker_daily_basic_fields.get(qlib_ticker, ()),
                 )
+            # P3-4c: stamp the bundle with its fetch-integrity provenance (clean,
+            # or built-from-holey-fetch + which holes) INSIDE staging, so it is
+            # promoted atomically with the bins. The recommend boundary gates on it.
+            write_bundle_integrity(
+                staging,
+                built_from_holey_fetch=built_from_holey_fetch,
+                holes=fetch_holes,
+            )
             # Promote staging to final location
             if self._output_dir.exists():
                 # Backup pattern: rename existing to .bak before swap

@@ -40,8 +40,17 @@ from src.core.microstructure_mask import (
     MicrostructureMaskError,
     compute_unavailable_mask,
 )
-from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
+from src.core.qlib_runtime import (
+    QlibRuntimeConfig,
+    _normalize_provider_uri,
+    init_qlib_canonical,
+)
 from src.data.pit._common import qlib_to_ts_code
+from src.data.pit.bundle_integrity import (
+    INTEGRITY_FILENAME,
+    BundleIntegrityError,
+    read_bundle_integrity,
+)
 from src.data.st_status import current_st_codes
 
 _logger = get_logger(__name__)
@@ -104,6 +113,12 @@ class RecommendationConfig:
     # than silently scoring on stale prices. See _assert_bundle_fresh.
     bundle_max_age_days: int = 14
     out_dir: str = "output/daily_recommend"
+    # P3-4c Layer 2: refuse to recommend from a bundle stamped
+    # built-from-holey-fetch (or lacking a fetch-integrity stamp) unless the
+    # operator explicitly opts in HERE. This is SEPARATE from the build override
+    # (--allow-holey-fetch): building a partial research bundle does not sanction
+    # trading on it. See _assert_bundle_fetch_complete.
+    allow_holey_recommend: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,6 +328,60 @@ def _assert_bundle_fresh(
         )
 
 
+def _assert_bundle_fetch_complete(
+    provider_uri: str, *, allow_holey_recommend: bool,
+) -> None:
+    """Fail-loud guard (P3-4c Layer 2): refuse to recommend from a bundle built
+    from a HOLEY tushare fetch, or one lacking a fetch-integrity stamp.
+
+    The qlib bin builder stamps each bundle (``_fetch_integrity.json``) with whether
+    it was built from a complete fetch. A holey bundle ranks on
+    survivorship-incomplete data; a MISSING stamp means completeness cannot be
+    confirmed (e.g. a pre-P3-4c bundle). Either way refuse rather than emit a list
+    — unless the operator opts in HERE. This is INDEPENDENT of the build-side
+    ``--allow-holey-fetch``: the stamp carries the FACT (was the fetch holey?), not
+    the authorization to trade on it, so each boundary must opt in on its own. A
+    CORRUPT / unknown-schema stamp fails loud REGARDLESS of the override — the
+    override accepts a holey or MISSING stamp (known states), not an unreadable one.
+    """
+    # Read FIRST, from the SAME normalized path qlib initialized against
+    # (expanduser / abspath / realpath / normcase, not the raw string — otherwise a
+    # `~/...` or whitespaced URI reads a non-existent literal path and a clean
+    # bundle looks unstamped, codex P2). A corrupt / unknown-schema stamp raises
+    # BundleIntegrityError, which we surface as fail-loud BEFORE honouring the
+    # override — `--allow-holey-recommend` accepts incompleteness, not corruption
+    # (codex P2).
+    try:
+        integrity = read_bundle_integrity(Path(_normalize_provider_uri(provider_uri)))
+    except BundleIntegrityError as exc:
+        raise DailyRecommendationError(
+            f"Bundle {provider_uri} has an UNREADABLE fetch-integrity stamp: {exc} "
+            "Refusing to recommend on corrupt provenance — a holey or missing stamp "
+            "can be overridden with --allow-holey-recommend, a corrupt one cannot."
+        ) from exc
+    if allow_holey_recommend:
+        return
+    if integrity is None:
+        raise DailyRecommendationError(
+            f"Bundle {provider_uri} has no fetch-integrity stamp "
+            f"({INTEGRITY_FILENAME}); cannot confirm it was built from a complete "
+            "tushare fetch. Refusing to recommend on possibly-incomplete data. "
+            "Rebuild the bundle (scripts/data_pipeline/05_build_qlib_bins) to stamp "
+            "it, or pass --allow-holey-recommend for an intentional run on an "
+            "unstamped bundle."
+        )
+    if integrity.built_from_holey_fetch:
+        raise DailyRecommendationError(
+            f"Bundle {provider_uri} was BUILT FROM A HOLEY tushare fetch "
+            f"({len(integrity.holes)} recorded hole(s)): its data is "
+            "survivorship-incomplete, so a list now would rank on partial data. "
+            "Refusing to recommend. Re-fetch to fill the holes and rebuild, or pass "
+            "--allow-holey-recommend for an intentional research run. This is a "
+            "SEPARATE decision from the build-side --allow-holey-fetch that produced "
+            "the bundle — building partial data does not sanction trading on it."
+        )
+
+
 def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path:
     """Fail-loud guard: the current-ST source must exist, be fresh, and carry
     the required schema.
@@ -436,6 +505,12 @@ def recommend(
         bundle_last_day,
         now if now is not None else date.today(),
         config.bundle_max_age_days,
+    )
+    # P3-4c Layer 2: refuse a bundle built from a holey tushare fetch (or one
+    # lacking a fetch-integrity stamp) unless explicitly allowed here — a decision
+    # SEPARATE from the build-side --allow-holey-fetch.
+    _assert_bundle_fetch_complete(
+        config.provider_uri, allow_holey_recommend=config.allow_holey_recommend,
     )
 
     _logger.info(

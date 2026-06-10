@@ -49,6 +49,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--tushare-dir", required=True, type=Path)
     p.add_argument("--delisted-registry", required=True, type=Path)
     p.add_argument("--output-dir", required=True, type=Path)
+    p.add_argument(
+        "--allow-holey-fetch", action="store_true",
+        help="Build even if the tushare fetch_manifest is holey/missing (P3-4c). "
+             "Produces a research/inspection bundle stamped built-from-holey-fetch; "
+             "it is STILL refused at the recommend boundary unless "
+             "--allow-holey-recommend is passed there separately.",
+    )
     return p
 
 
@@ -59,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         tushare_dir=args.tushare_dir,
         delisted_registry_path=args.delisted_registry,
         output_dir=args.output_dir,
+        allow_holey_fetch=args.allow_holey_fetch,
     )
     try:
         result = builder.build()

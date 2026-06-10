@@ -26,11 +26,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data.pit.bundle_integrity import INTEGRITY_FILENAME, write_bundle_integrity
+from src.data.tushare.fetcher import FetchHole
 from src.inference.daily_recommend import (
     _BUY_LIST_COLUMNS,
     DailyRecommendationError,
     DailyRecommendationResult,
     RecommendationConfig,
+    _assert_bundle_fetch_complete,
     _assert_bundle_fresh,
     _bundle_is_stale,
     _load_model,
@@ -587,6 +590,79 @@ class RealBundleLookaheadTests(unittest.TestCase):
         # NaNs must align identically, finite values must be equal.
         self.assertTrue(np.array_equal(np.isnan(a), np.isnan(b)))
         self.assertTrue(np.allclose(a[~np.isnan(a)], b[~np.isnan(b)], atol=0, rtol=0))
+
+
+class HoleyGateTests(unittest.TestCase):
+    """P3-4c Layer 2: recommend refuses a bundle built from a HOLEY fetch (or one
+    lacking a fetch-integrity stamp) unless allow_holey_recommend — a decision
+    SEPARATE from the build-side --allow-holey-fetch."""
+
+    @staticmethod
+    def _holey_stamp(bundle: Path) -> None:
+        # Exactly what QlibBinBuilder writes under --allow-holey-fetch.
+        write_bundle_integrity(
+            bundle,
+            built_from_holey_fetch=True,
+            holes=(FetchHole(
+                endpoint="daily", unit="ts_code=600001.SH year=2020",
+                reason_class="transient", attempts=5, last_error="rate limit",
+            ),),
+        )
+
+    def test_clean_stamp_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            write_bundle_integrity(Path(tmp), built_from_holey_fetch=False)
+            _assert_bundle_fetch_complete(tmp, allow_holey_recommend=False)  # no raise
+
+    def test_holey_stamp_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._holey_stamp(Path(tmp))
+            with self.assertRaisesRegex(DailyRecommendationError, "HOLEY"):
+                _assert_bundle_fetch_complete(tmp, allow_holey_recommend=False)
+
+    def test_holey_stamp_passes_with_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self._holey_stamp(Path(tmp))
+            _assert_bundle_fetch_complete(tmp, allow_holey_recommend=True)  # no raise
+
+    def test_missing_stamp_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:  # no stamp written
+            with self.assertRaisesRegex(
+                DailyRecommendationError, "no fetch-integrity stamp",
+            ):
+                _assert_bundle_fetch_complete(tmp, allow_holey_recommend=False)
+
+    def test_missing_stamp_passes_with_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _assert_bundle_fetch_complete(tmp, allow_holey_recommend=True)  # no raise
+
+    def test_build_override_does_not_sanction_recommend(self) -> None:
+        # RED LINE (non-transitive): a bundle built with --allow-holey-fetch is
+        # stamped built_from_holey_fetch=True, but recommend with
+        # allow_holey_recommend=False STILL refuses. The stamp propagates the FACT
+        # (the fetch was holey), never the authorization to trade on it — building
+        # a partial research bundle is a separate decision from recommending on it.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._holey_stamp(Path(tmp))  # build-side --allow-holey-fetch happened
+            with self.assertRaises(DailyRecommendationError):
+                _assert_bundle_fetch_complete(tmp, allow_holey_recommend=False)
+
+    def test_provider_uri_is_normalized_before_reading_stamp(self) -> None:
+        # codex P2: the gate must read the stamp from the SAME normalized path qlib
+        # initializes against. A whitespaced URI (normalized away) must still find a
+        # clean stamp and pass — not read a non-existent literal path and refuse.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_bundle_integrity(Path(tmp), built_from_holey_fetch=False)
+            _assert_bundle_fetch_complete(f"  {tmp}  ", allow_holey_recommend=False)  # no raise
+
+    def test_corrupt_stamp_fails_loud_even_with_override(self) -> None:
+        # codex P2: --allow-holey-recommend accepts a HOLEY or MISSING stamp (known
+        # states), not a CORRUPT one. A malformed stamp must fail loud regardless of
+        # the override — corruption is not the incompleteness the override accepts.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / INTEGRITY_FILENAME).write_text("{ not json", encoding="utf-8")
+            with self.assertRaisesRegex(DailyRecommendationError, "UNREADABLE"):
+                _assert_bundle_fetch_complete(tmp, allow_holey_recommend=True)
 
 
 if __name__ == "__main__":

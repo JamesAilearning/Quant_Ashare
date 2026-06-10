@@ -20,6 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.data.pit.bundle_integrity import read_bundle_integrity  # noqa: E402
 from src.data.pit.qlib_bin_builder import (  # noqa: E402
     BIN_FEATURE_FIELDS,
     TUSHARE_AMOUNT_KYUAN_TO_YUAN,
@@ -27,6 +28,12 @@ from src.data.pit.qlib_bin_builder import (  # noqa: E402
     QlibBinBuilder,
     QlibBinBuilderError,
 )
+from src.data.tushare.fetch_manifest import (  # noqa: E402
+    MANIFEST_FILENAME,
+    build_manifest,
+    write_manifest,
+)
+from src.data.tushare.fetcher import FetchHole, TushareFetchResult  # noqa: E402
 
 
 def _write_active(path: Path, tickers: list[str]) -> None:
@@ -37,6 +44,17 @@ def _write_active(path: Path, tickers: list[str]) -> None:
     })
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
+    # P3-4c: build() gates on a COMPLETE fetch manifest (no holes AND the required
+    # endpoints present). These tests exercise builder LOGIC (not the gate — that
+    # has dedicated tests), so seed a hole-free manifest covering the required
+    # endpoints alongside the raw dump.
+    write_manifest(
+        path.parent / MANIFEST_FILENAME,
+        build_manifest(
+            [TushareFetchResult(e, 1, 0, 0) for e in ("stock_basic", "daily", "adj_factor")],
+            (), "20000101", "20251231",
+        ),
+    )
 
 
 def _write_registry(path: Path, rows: list[dict]) -> None:
@@ -102,6 +120,154 @@ def _read_bin_values(provider_dir: Path, qlib_ticker: str, field: str,
     out = np.full(len(calendar), np.nan, dtype="float32")
     out[start: start + len(payload)] = payload
     return start, out
+
+
+def _write_holey_manifest(tushare_dir: Path) -> None:
+    """A fetch manifest that COVERS the required endpoints but records a daily hole
+    — so the only incompleteness is the hole, not a missing/empty endpoint."""
+    write_manifest(
+        tushare_dir / MANIFEST_FILENAME,
+        build_manifest(
+            [
+                TushareFetchResult("stock_basic", 1, 0, 0),
+                TushareFetchResult("adj_factor", 1, 0, 0),
+                TushareFetchResult("daily", 0, 0, 0),  # holed below
+            ],
+            (FetchHole(
+                endpoint="daily", unit="ts_code=600519.SH year=2020",
+                reason_class="transient", attempts=5, last_error="rate limit",
+            ),),
+            "20000101", "20251231",
+        ),
+    )
+
+
+class FetchGateTests(unittest.TestCase):
+    """P3-4c Layer 1: build() refuses a holey / missing fetch manifest unless
+    allow_holey_fetch, and stamps the bundle's fetch integrity either way."""
+
+    def test_holey_manifest_refuses_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_holey_manifest(tmp_path)
+            _write_registry(tmp_path / "registry.parquet", [])
+            with self.assertRaisesRegex(QlibBinBuilderError, "INCOMPLETE"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_missing_manifest_refuses_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_registry(tmp_path / "registry.parquet", [])  # no fetch_manifest.json
+            with self.assertRaisesRegex(QlibBinBuilderError, "no fetch_manifest"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_complete_manifest_builds_and_stamps_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])  # complete manifest
+            _write_daily_year(tmp_path, 2020, "600519.SH", ["20200102", "20200103"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            out = tmp_path / "provider"
+            QlibBinBuilder(
+                tushare_dir=tmp_path,
+                delisted_registry_path=tmp_path / "registry.parquet",
+                output_dir=out,
+            ).build()
+            integ = read_bundle_integrity(out)
+            assert integ is not None
+            self.assertFalse(integ.built_from_holey_fetch)
+            self.assertEqual(integ.holes, ())
+
+    def test_holey_build_with_override_stamps_holey(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_holey_manifest(tmp_path)  # OVERWRITE the complete manifest seeded above
+            _write_daily_year(tmp_path, 2020, "600519.SH", ["20200102", "20200103"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            out = tmp_path / "provider"
+            QlibBinBuilder(
+                tushare_dir=tmp_path,
+                delisted_registry_path=tmp_path / "registry.parquet",
+                output_dir=out,
+                allow_holey_fetch=True,
+            ).build()
+            integ = read_bundle_integrity(out)
+            assert integ is not None
+            self.assertTrue(integ.built_from_holey_fetch)
+            self.assertEqual(len(integ.holes), 1)
+            self.assertEqual(integ.holes[0].endpoint, "daily")
+
+    def test_partial_fetch_missing_required_endpoint_refuses(self) -> None:
+        # codex P1: a partial fetch (here only stock_basic) has NO holes but never
+        # fetched daily / adj_factor, so "no holes" is NOT "complete" — the gate
+        # must require the bundle's endpoints to be present, not just hole-free.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [TushareFetchResult("stock_basic", 2, 0, 0)],  # daily/adj_factor absent
+                    (), "20000101", "20251231",
+                ),
+            )
+            _write_registry(tmp_path / "registry.parquet", [])
+            with self.assertRaisesRegex(QlibBinBuilderError, "never fetched"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_empty_coverage_required_endpoint_refuses_build(self) -> None:
+        # codex P1 (round-3): a required endpoint recorded with EMPTY coverage —
+        # skipped over a pre-existing dump (wrote nothing, holed nothing) — is NOT
+        # confirmed fetched even with no holes; the gate must still refuse.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [
+                        TushareFetchResult("stock_basic", 1, 0, 0),  # fetched
+                        TushareFetchResult("daily", 0, 0, 0),        # skipped => empty cov
+                        TushareFetchResult("adj_factor", 0, 0, 0),   # skipped => empty cov
+                    ],
+                    (), "20000101", "20251231",
+                ),
+            )
+            _write_registry(tmp_path / "registry.parquet", [])
+            with self.assertRaisesRegex(QlibBinBuilderError, "empty coverage"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_corrupt_manifest_refuses_as_builder_error(self) -> None:
+        # codex P2 (round-5): a corrupt manifest must surface as QlibBinBuilderError
+        # (the 05 CLI's fail-loud path), not an escaping FetchManifestError — and is
+        # NOT bypassable by allow_holey_fetch (corruption != partial data).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / MANIFEST_FILENAME).write_text("{ not json", encoding="utf-8")
+            _write_registry(tmp_path / "registry.parquet", [])
+            for allow in (False, True):
+                with self.assertRaisesRegex(QlibBinBuilderError, "UNREADABLE"):
+                    QlibBinBuilder(
+                        tushare_dir=tmp_path,
+                        delisted_registry_path=tmp_path / "registry.parquet",
+                        output_dir=tmp_path / "provider",
+                        allow_holey_fetch=allow,
+                    ).build()
 
 
 class HappyPathTests(unittest.TestCase):
@@ -295,11 +461,15 @@ class FailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _write_registry(tmp_path / "registry.parquet", [])
+            # allow_holey_fetch bypasses the P3-4c fetch gate (this test does not
+            # write active_stocks, hence no seeded manifest) so build() reaches the
+            # missing-active_stocks check under test.
             with self.assertRaisesRegex(QlibBinBuilderError, "active_stocks"):
                 QlibBinBuilder(
                     tushare_dir=tmp_path,
                     delisted_registry_path=tmp_path / "registry.parquet",
                     output_dir=tmp_path / "provider",
+                    allow_holey_fetch=True,
                 ).build()
 
     def test_missing_registry_raises(self) -> None:
