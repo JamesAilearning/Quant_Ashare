@@ -87,6 +87,7 @@ from src.data.pit.bundle_integrity import write_bundle_integrity
 from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
     all_holes,
+    covered_endpoints,
     is_complete,
     read_manifest,
 )
@@ -180,16 +181,20 @@ class QlibBinBuilder:
         # loudly unless the operator explicitly opted in to a partial build.
         manifest = read_manifest(self._tushare_dir / MANIFEST_FILENAME)
         fetch_holes = all_holes(manifest) if manifest is not None else ()
+        # Required endpoints whose coverage the manifest never ESTABLISHED — absent,
+        # OR present with empty coverage (a skipped first-manifest endpoint over a
+        # pre-existing dump; build_manifest records empty coverage exactly so this
+        # gate can catch it). "No holes" on such an endpoint is NOT confirmation it
+        # was fetched (codex P1).
         missing_required = (
             set(BUNDLE_REQUIRED_ENDPOINTS)
             if manifest is None
-            else set(BUNDLE_REQUIRED_ENDPOINTS) - set(manifest.endpoints)
+            else set(BUNDLE_REQUIRED_ENDPOINTS) - covered_endpoints(manifest)
         )
         # Incomplete = MISSING manifest, recorded HOLES, or a required endpoint the
-        # manifest never confirms was fetched. The last guards a partial
-        # `01_fetch_tushare --endpoints ...` run whose manifest has no holes yet
-        # never fetched daily / adj_factor — "no holes" alone would wrongly read as
-        # complete (codex P1).
+        # manifest never confirms was fetched (absent / empty coverage). The last
+        # guards a partial `01_fetch_tushare --endpoints ...` run, or a first
+        # manifest over a stale pre-existing dump.
         built_from_holey_fetch = (
             manifest is None or not is_complete(manifest) or bool(missing_required)
         )
@@ -201,7 +206,7 @@ class QlibBinBuilder:
                           f"{len({h.endpoint for h in fetch_holes})} endpoint(s)")
             else:
                 detail = (f"required endpoint(s) {sorted(missing_required)} were "
-                          "never fetched (not in the manifest)")
+                          "never fetched (absent, or recorded with empty coverage)")
             raise QlibBinBuilderError(
                 f"Refusing to build from an INCOMPLETE tushare fetch ({detail}) in "
                 f"{self._tushare_dir}: it bakes a survivorship-incomplete bundle. "

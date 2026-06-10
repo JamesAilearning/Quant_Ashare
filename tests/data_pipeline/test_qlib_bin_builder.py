@@ -123,11 +123,16 @@ def _read_bin_values(provider_dir: Path, qlib_ticker: str, field: str,
 
 
 def _write_holey_manifest(tushare_dir: Path) -> None:
-    """A fetch manifest with a recorded daily hole (status != complete)."""
+    """A fetch manifest that COVERS the required endpoints but records a daily hole
+    — so the only incompleteness is the hole, not a missing/empty endpoint."""
     write_manifest(
         tushare_dir / MANIFEST_FILENAME,
         build_manifest(
-            [TushareFetchResult("daily", 0, 0, 0)],
+            [
+                TushareFetchResult("stock_basic", 1, 0, 0),
+                TushareFetchResult("adj_factor", 1, 0, 0),
+                TushareFetchResult("daily", 0, 0, 0),  # holed below
+            ],
             (FetchHole(
                 endpoint="daily", unit="ts_code=600519.SH year=2020",
                 reason_class="transient", attempts=5, last_error="rate limit",
@@ -216,6 +221,31 @@ class FetchGateTests(unittest.TestCase):
             )
             _write_registry(tmp_path / "registry.parquet", [])
             with self.assertRaisesRegex(QlibBinBuilderError, "never fetched"):
+                QlibBinBuilder(
+                    tushare_dir=tmp_path,
+                    delisted_registry_path=tmp_path / "registry.parquet",
+                    output_dir=tmp_path / "provider",
+                ).build()
+
+    def test_empty_coverage_required_endpoint_refuses_build(self) -> None:
+        # codex P1 (round-3): a required endpoint recorded with EMPTY coverage —
+        # skipped over a pre-existing dump (wrote nothing, holed nothing) — is NOT
+        # confirmed fetched even with no holes; the gate must still refuse.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [
+                        TushareFetchResult("stock_basic", 1, 0, 0),  # fetched
+                        TushareFetchResult("daily", 0, 0, 0),        # skipped => empty cov
+                        TushareFetchResult("adj_factor", 0, 0, 0),   # skipped => empty cov
+                    ],
+                    (), "20000101", "20251231",
+                ),
+            )
+            _write_registry(tmp_path / "registry.parquet", [])
+            with self.assertRaisesRegex(QlibBinBuilderError, "empty coverage"):
                 QlibBinBuilder(
                     tushare_dir=tmp_path,
                     delisted_registry_path=tmp_path / "registry.parquet",

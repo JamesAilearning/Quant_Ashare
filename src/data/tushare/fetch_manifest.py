@@ -270,6 +270,19 @@ def is_complete(manifest: FetchManifest) -> bool:
     return not any(ep.holes for ep in manifest.endpoints.values())
 
 
+def covered_endpoints(manifest: FetchManifest) -> frozenset[str]:
+    """Endpoints whose coverage was actually ESTABLISHED — both coverage dates
+    non-empty. ``build_manifest`` records a SKIPPED endpoint (wrote nothing, holed
+    nothing — e.g. a first manifest over a pre-existing dump) with EMPTY coverage,
+    so it is NOT covered here. A downstream build gate (P3-4c) treats a required
+    endpoint that is absent OR has empty coverage as not fetched — absence of holes
+    on an empty-coverage endpoint is NOT confirmation it was fetched."""
+    return frozenset(
+        name for name, ep in manifest.endpoints.items()
+        if ep.coverage_start_date and ep.coverage_end_date
+    )
+
+
 def _max_yyyymmdd(a: str | None, b: str) -> str:
     """Later of two ``YYYYMMDD`` strings (lexicographic == chronological here)."""
     if a is None:
