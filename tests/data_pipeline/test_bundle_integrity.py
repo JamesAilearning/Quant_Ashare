@@ -145,6 +145,25 @@ class ReadFailLoudTests(unittest.TestCase):
             with self.assertRaisesRegex(BundleIntegrityError, "must be int"):
                 read_bundle_integrity(Path(tmp))
 
+    def test_clean_stamp_listing_holes_fails_loud(self) -> None:
+        # codex P2: a stamp claiming clean (built_from_holey_fetch=false) while
+        # listing holes is internally inconsistent — fail loud, don't accept it as
+        # clean (the recommend gate keys on the flag alone).
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / INTEGRITY_FILENAME).write_text(
+                json.dumps({
+                    "schema_version": SCHEMA_VERSION, "built_from_holey_fetch": False,
+                    "built_at": "x",
+                    "holes": [{
+                        "endpoint": "daily", "unit": "u", "reason_class": "t",
+                        "attempts": 1, "last_error": "e",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(BundleIntegrityError, "inconsistent"):
+                read_bundle_integrity(Path(tmp))
+
 
 if __name__ == "__main__":
     unittest.main()

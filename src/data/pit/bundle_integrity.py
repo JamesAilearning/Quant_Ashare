@@ -124,9 +124,19 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
         )
         for h in _require(raw, "holes", list, ctx)
     )
+    built_from_holey_fetch = _require(raw, "built_from_holey_fetch", bool, ctx)
+    # codex P2: a "clean" stamp that nonetheless lists holes is internally
+    # inconsistent (a hand edit, or a buggy write_bundle_integrity caller). The
+    # recommend gate keys on built_from_holey_fetch alone, so accepting this would
+    # treat semantically corrupt provenance as clean — fail loud instead.
+    if not built_from_holey_fetch and holes:
+        raise BundleIntegrityError(
+            f"{ctx}: inconsistent — built_from_holey_fetch is false but {len(holes)} "
+            "hole(s) are listed; refusing to parse a clean stamp that records holes."
+        )
     return BundleIntegrity(
         schema_version=SCHEMA_VERSION,  # already validated equal above
-        built_from_holey_fetch=_require(raw, "built_from_holey_fetch", bool, ctx),
+        built_from_holey_fetch=built_from_holey_fetch,
         built_at=_require(raw, "built_at", str, ctx),
         holes=holes,
     )

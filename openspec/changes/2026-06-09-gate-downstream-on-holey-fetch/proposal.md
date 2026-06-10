@@ -21,12 +21,16 @@ is the deliberate caution this project wants.
 - New `src/data/pit/bundle_integrity.py` — the build → recommend contract:
   `BundleIntegrity` + `write_bundle_integrity` (atomic) + `read_bundle_integrity`
   (missing → `None`; malformed / non-object / non-UTF-8 / unknown-schema /
-  missing-field / wrong-field-type → `BundleIntegrityError`). The stamp lives at
+  missing-field / wrong-field-type / internally-inconsistent (a clean stamp that
+  lists holes) → `BundleIntegrityError`). The stamp lives at
   `{bundle}/_fetch_integrity.json` (`built_from_holey_fetch` + the fetch holes).
   Layer 1 also requires the manifest to record the bundle's endpoints, not just
-  absence of holes; Layer 2 normalizes `provider_uri` the same way qlib does
-  before reading the stamp.
-- `src/data/tushare/fetch_manifest.py`: `all_holes(m)` + `is_complete(m)` helpers.
+  absence of holes, and surfaces a CORRUPT manifest as a `QlibBinBuilderError`
+  (not an escaping `FetchManifestError`); Layer 2 normalizes `provider_uri` the
+  same way qlib does before reading the stamp, and fails loud on a corrupt stamp
+  even under the override.
+- `src/data/tushare/fetch_manifest.py`: `all_holes(m)` + `is_complete(m)` +
+  `covered_endpoints(m)` helpers.
 - **Layer 1 (build gate)** — `QlibBinBuilder` (`scripts/data_pipeline/05_build_qlib_bins.py`):
   `build()` reads the fetch manifest from `--tushare-dir`. A HOLEY or MISSING
   manifest (the latter consistent with P3-4b invalidating it on a hard abort)

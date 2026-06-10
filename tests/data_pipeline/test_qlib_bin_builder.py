@@ -252,6 +252,23 @@ class FetchGateTests(unittest.TestCase):
                     output_dir=tmp_path / "provider",
                 ).build()
 
+    def test_corrupt_manifest_refuses_as_builder_error(self) -> None:
+        # codex P2 (round-5): a corrupt manifest must surface as QlibBinBuilderError
+        # (the 05 CLI's fail-loud path), not an escaping FetchManifestError — and is
+        # NOT bypassable by allow_holey_fetch (corruption != partial data).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / MANIFEST_FILENAME).write_text("{ not json", encoding="utf-8")
+            _write_registry(tmp_path / "registry.parquet", [])
+            for allow in (False, True):
+                with self.assertRaisesRegex(QlibBinBuilderError, "UNREADABLE"):
+                    QlibBinBuilder(
+                        tushare_dir=tmp_path,
+                        delisted_registry_path=tmp_path / "registry.parquet",
+                        output_dir=tmp_path / "provider",
+                        allow_holey_fetch=allow,
+                    ).build()
+
 
 class HappyPathTests(unittest.TestCase):
 

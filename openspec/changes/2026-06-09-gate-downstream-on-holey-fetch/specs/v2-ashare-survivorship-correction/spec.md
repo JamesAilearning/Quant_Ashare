@@ -42,6 +42,13 @@ override is build-only: it SHALL NOT sanction recommending from the bundle.
 - **THEN** `build()` raises — absence of holes is not completeness when the
   bundle's core inputs were never fetched or their coverage was never established
 
+#### Scenario: a corrupt manifest fails loud as a builder error
+- **WHEN** the fetch manifest exists but is unreadable (malformed / non-UTF-8 /
+  unknown schema)
+- **THEN** `build()` raises a `QlibBinBuilderError` (so the CLI's fail-loud path
+  catches it, not an escaping `FetchManifestError`), REGARDLESS of
+  `allow_holey_fetch` — corruption is not the partial data the override accepts
+
 #### Scenario: a complete fetch builds and stamps clean
 - **WHEN** the fetch manifest is present with no holes
 - **THEN** the bundle is built and stamped `built_from_holey_fetch = false`

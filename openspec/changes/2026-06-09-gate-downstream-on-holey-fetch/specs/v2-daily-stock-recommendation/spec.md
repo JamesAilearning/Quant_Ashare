@@ -17,10 +17,11 @@ unless `allow_holey_recommend` (`--allow-holey-recommend`) is set. This decision
 SHALL be INDEPENDENT of the build-side `--allow-holey-fetch`: the stamp carries the
 FACT that the fetch was holey, never the authorization to trade on it, so building
 a partial bundle SHALL NOT by itself permit recommending from it. A clean stamp
-SHALL pass silently. A CORRUPT or unknown-schema stamp SHALL fail loud REGARDLESS
-of `allow_holey_recommend` — the override accepts a holey or MISSING stamp (known
-states), not an unreadable one; the stamp SHALL be read (and a corrupt one
-surfaced) BEFORE the override is honoured.
+SHALL pass silently. A CORRUPT stamp — malformed / unknown-schema / wrong-typed,
+or INTERNALLY INCONSISTENT (marked clean yet listing holes) — SHALL fail loud
+REGARDLESS of `allow_holey_recommend`: the override accepts a holey or MISSING
+stamp (known states), not an unreadable or self-contradictory one; the stamp SHALL
+be read (and a corrupt one surfaced) BEFORE the override is honoured.
 
 #### Scenario: a holey-stamped bundle refuses recommendation
 - **WHEN** the bundle's stamp is `built_from_holey_fetch = true` and

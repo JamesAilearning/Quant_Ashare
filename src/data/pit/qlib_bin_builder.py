@@ -86,6 +86,7 @@ from src.core.logger import get_logger
 from src.data.pit.bundle_integrity import write_bundle_integrity
 from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
+    FetchManifestError,
     all_holes,
     covered_endpoints,
     is_complete,
@@ -179,7 +180,21 @@ class QlibBinBuilder:
         # the raw tushare dump is incomplete; building from it would bake a
         # survivorship-incomplete bundle that only surfaces much later. Refuse
         # loudly unless the operator explicitly opted in to a partial build.
-        manifest = read_manifest(self._tushare_dir / MANIFEST_FILENAME)
+        try:
+            manifest = read_manifest(self._tushare_dir / MANIFEST_FILENAME)
+        except FetchManifestError as exc:
+            # codex P2: a corrupt / unknown-schema manifest is UNREADABLE provenance,
+            # not mere incompleteness. Re-raise as a QlibBinBuilderError so the 05
+            # CLI's fail-loud path catches it (it only catches QlibBinBuilderError,
+            # not FetchManifestError) instead of exiting on a traceback — and do so
+            # REGARDLESS of allow_holey_fetch (the override accepts partial data, not
+            # corruption; remove the manifest to rebuild from scratch).
+            raise QlibBinBuilderError(
+                f"Refusing to build: the fetch manifest in {self._tushare_dir} is "
+                f"UNREADABLE ({exc}). Re-fetch to regenerate it, or remove it to "
+                "rebuild from scratch — --allow-holey-fetch accepts partial data, "
+                "not a corrupt manifest."
+            ) from exc
         fetch_holes = all_holes(manifest) if manifest is not None else ()
         # Required endpoints whose coverage the manifest never ESTABLISHED — absent,
         # OR present with empty coverage (a skipped first-manifest endpoint over a
