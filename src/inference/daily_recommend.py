@@ -46,7 +46,11 @@ from src.core.qlib_runtime import (
     init_qlib_canonical,
 )
 from src.data.pit._common import qlib_to_ts_code
-from src.data.pit.bundle_integrity import INTEGRITY_FILENAME, read_bundle_integrity
+from src.data.pit.bundle_integrity import (
+    INTEGRITY_FILENAME,
+    BundleIntegrityError,
+    read_bundle_integrity,
+)
 from src.data.st_status import current_st_codes
 
 _logger = get_logger(__name__)
@@ -336,15 +340,27 @@ def _assert_bundle_fetch_complete(
     confirmed (e.g. a pre-P3-4c bundle). Either way refuse rather than emit a list
     — unless the operator opts in HERE. This is INDEPENDENT of the build-side
     ``--allow-holey-fetch``: the stamp carries the FACT (was the fetch holey?), not
-    the authorization to trade on it, so each boundary must opt in on its own.
+    the authorization to trade on it, so each boundary must opt in on its own. A
+    CORRUPT / unknown-schema stamp fails loud REGARDLESS of the override — the
+    override accepts a holey or MISSING stamp (known states), not an unreadable one.
     """
+    # Read FIRST, from the SAME normalized path qlib initialized against
+    # (expanduser / abspath / realpath / normcase, not the raw string — otherwise a
+    # `~/...` or whitespaced URI reads a non-existent literal path and a clean
+    # bundle looks unstamped, codex P2). A corrupt / unknown-schema stamp raises
+    # BundleIntegrityError, which we surface as fail-loud BEFORE honouring the
+    # override — `--allow-holey-recommend` accepts incompleteness, not corruption
+    # (codex P2).
+    try:
+        integrity = read_bundle_integrity(Path(_normalize_provider_uri(provider_uri)))
+    except BundleIntegrityError as exc:
+        raise DailyRecommendationError(
+            f"Bundle {provider_uri} has an UNREADABLE fetch-integrity stamp: {exc} "
+            "Refusing to recommend on corrupt provenance — a holey or missing stamp "
+            "can be overridden with --allow-holey-recommend, a corrupt one cannot."
+        ) from exc
     if allow_holey_recommend:
         return
-    # codex P2: read the stamp from the SAME normalized path qlib initialized
-    # against (expanduser / abspath / realpath / normcase), not the raw string —
-    # otherwise `~/...` or a whitespaced URI reads from a non-existent literal path
-    # and a clean bundle is wrongly reported as unstamped.
-    integrity = read_bundle_integrity(Path(_normalize_provider_uri(provider_uri)))
     if integrity is None:
         raise DailyRecommendationError(
             f"Bundle {provider_uri} has no fetch-integrity stamp "

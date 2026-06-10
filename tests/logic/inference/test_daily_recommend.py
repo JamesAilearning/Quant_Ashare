@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.pit.bundle_integrity import write_bundle_integrity
+from src.data.pit.bundle_integrity import INTEGRITY_FILENAME, write_bundle_integrity
 from src.data.tushare.fetcher import FetchHole
 from src.inference.daily_recommend import (
     _BUY_LIST_COLUMNS,
@@ -654,6 +654,15 @@ class HoleyGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             write_bundle_integrity(Path(tmp), built_from_holey_fetch=False)
             _assert_bundle_fetch_complete(f"  {tmp}  ", allow_holey_recommend=False)  # no raise
+
+    def test_corrupt_stamp_fails_loud_even_with_override(self) -> None:
+        # codex P2: --allow-holey-recommend accepts a HOLEY or MISSING stamp (known
+        # states), not a CORRUPT one. A malformed stamp must fail loud regardless of
+        # the override — corruption is not the incompleteness the override accepts.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / INTEGRITY_FILENAME).write_text("{ not json", encoding="utf-8")
+            with self.assertRaisesRegex(DailyRecommendationError, "UNREADABLE"):
+                _assert_bundle_fetch_complete(tmp, allow_holey_recommend=True)
 
 
 if __name__ == "__main__":

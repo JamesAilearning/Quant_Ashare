@@ -34,7 +34,9 @@
       clean; holey + `allow_holey_fetch` → builds + stamp holey + holes. (Existing
       builder-logic tests seed a manifest covering the required endpoints.)
 - [x] LAYER 2: holey stamp → recommend gate raises; `allow_holey_recommend` →
-      passes; missing stamp → raises; `allow` → passes; clean → passes silently.
+      passes; missing stamp → raises; `allow` → passes; clean → passes silently; a
+      CORRUPT stamp fails loud even WITH the override (codex P2 round-4: the
+      override accepts incompleteness, not corruption — stamp read before override).
 - [x] RED LINE (non-transitive): a bundle stamped built-from-holey-fetch (the
       build override) is STILL refused at the recommend gate without
       `allow_holey_recommend`.
