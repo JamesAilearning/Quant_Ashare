@@ -144,17 +144,27 @@ class DailyUpdatePlan:
     validate: list[str] = field(default_factory=list)
 
 
-def build_plan(config: DailyUpdateConfig) -> DailyUpdatePlan:
-    """Assemble every stage's argv up front (pure; also what --dry-run prints)."""
-    end_date = config.end_date or (
-        (config.now if config.now is not None else date.today()).strftime("%Y%m%d")
-    )
+def build_plan(
+    config: DailyUpdateConfig, *, run_date: date | None = None,
+) -> DailyUpdatePlan:
+    """Assemble every stage's argv up front (pure; also what --dry-run prints).
+
+    ``run_date`` is the ONE frozen date of this run (codex P2): it drives the
+    default fetch end_date AND the stock_basic snapshot stamp
+    (``--snapshot-date``), so a fetch spanning midnight stamps the planned
+    date — the same date the snapshot stage later verifies — instead of
+    whatever the wall clock says when the write finally happens.
+    """
+    if run_date is None:
+        run_date = config.now if config.now is not None else date.today()
+    end_date = config.end_date or run_date.strftime("%Y%m%d")
     staging = new_dir(config.provider_dir)
     fetch = [
         "--output-dir", str(config.tushare_dir),
         "--start-date", config.start_date,
         "--end-date", end_date,
         "--refresh-current",
+        "--snapshot-date", run_date.strftime("%Y%m%d"),
     ]
     if config.rate_limit_sleep_ms is not None:
         fetch += ["--rate-limit-sleep-ms", str(config.rate_limit_sleep_ms)]
@@ -191,29 +201,32 @@ def build_plan(config: DailyUpdateConfig) -> DailyUpdatePlan:
     )
 
 
-def _verify_snapshot_refreshed(config: DailyUpdateConfig) -> int:
-    """The snapshot stage: prove the fetch refreshed active_stocks TODAY.
+def _verify_snapshot_refreshed(config: DailyUpdateConfig, run_date: date) -> int:
+    """The snapshot stage: prove the fetch refreshed active_stocks for THIS run.
 
-    Reads the embedded snapshot_date (P3-5). A missing / unreadable / stale
-    stamp fails loud (EXIT_SNAPSHOT_STALE) — unless the operator passed
-    --allow-holey-fetch, which already sanctions building from partial data;
-    then it warns and continues (the fetch manifest carries the stock_basic
-    hole, so the bundle is stamped built-from-holey-fetch downstream anyway).
+    Reads the embedded snapshot_date (P3-5) and compares it against the ONE
+    frozen ``run_date`` (the same value the fetch stamped via --snapshot-date —
+    codex P2: recomputing "today" here after an hours-long fetch would fail a
+    run that crossed midnight even though it refreshed for the planned date).
+    A missing / unreadable / mismatched stamp fails loud (EXIT_SNAPSHOT_STALE)
+    — unless the operator passed --allow-holey-fetch, which already sanctions
+    building from partial data; then it warns and continues (the fetch
+    manifest carries the stock_basic hole, so the bundle is stamped
+    built-from-holey-fetch downstream anyway).
     """
-    today = config.now if config.now is not None else date.today()
     path = config.tushare_dir / "active_stocks.parquet"
     try:
         snapshot = embedded_snapshot_date(
             pd.read_parquet(path), source=str(path),
         )
         problem = (
-            None if snapshot == today
-            else f"embedded snapshot_date {snapshot} != run date {today}"
+            None if snapshot == run_date
+            else f"embedded snapshot_date {snapshot} != run date {run_date}"
         )
     except (OSError, ValueError, SnapshotDateError) as exc:
         problem = str(exc)
     if problem is None:
-        _logger.info("Snapshot stage OK: active_stocks refreshed for %s.", today)
+        _logger.info("Snapshot stage OK: active_stocks refreshed for %s.", run_date)
         return EXIT_OK
     if config.allow_holey_fetch:
         _logger.warning(
@@ -243,7 +256,11 @@ def run_daily_update(
     active = dict(_default_runners())
     if runners:
         active.update(runners)
-    plan = build_plan(config)
+    # Freeze the ONE run date up front (codex P2): the fetch stamp, the default
+    # end_date, and the snapshot verification all use THIS value, so an
+    # hours-long fetch crossing midnight cannot fail its own snapshot check.
+    run_date = config.now if config.now is not None else date.today()
+    plan = build_plan(config, run_date=run_date)
 
     if config.dry_run:
         _logger.info("[dry-run] daily update plan — nothing will be executed:")
@@ -279,7 +296,7 @@ def run_daily_update(
         return EXIT_FETCH_HARD
 
     # Stage 2: prove the active-stocks snapshot was refreshed today.
-    rc = _verify_snapshot_refreshed(config)
+    rc = _verify_snapshot_refreshed(config, run_date)
     if rc != EXIT_OK:
         return rc
 

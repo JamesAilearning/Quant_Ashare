@@ -412,6 +412,46 @@ class RefreshCurrentTests(unittest.TestCase):
             df = pd.read_parquet(tmp_path / "active_stocks.parquet")
             self.assertEqual(set(df["snapshot_date"]), {"20260610"})
 
+    def test_prior_manifest_hole_forces_retry_across_year_boundary(self) -> None:
+        # codex P1: a refresh failure leaves YESTERDAY's file + a manifest
+        # hole. After the year rolls over, that unit is no longer end_year, so
+        # exists-skip would shadow it forever and the merge would drop its
+        # never-re-attempted hole as self-healed. force_retry_units (wired
+        # from the prior manifest by the 01 CLI) must re-pull EXACTLY that
+        # unit while same-year siblings stay resume-skipped.
+        tickers = ["600000.SH", "600001.SH"]
+        client = _make_client(self._daily_df)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pd.DataFrame({"ts_code": [tickers[0]]}).to_parquet(
+                tmp_path / "active_stocks.parquet", index=False)
+            pd.DataFrame({"ts_code": [tickers[1]]}).to_parquet(
+                tmp_path / "delisted_stocks.parquet", index=False)
+            # Both 2020 files exist (2020 is NOT the final year of this run).
+            d = tmp_path / "daily" / "2020"
+            d.mkdir(parents=True)
+            for tk in tickers:
+                pd.DataFrame({"ts_code": [tk]}).to_parquet(
+                    d / f"{tk}.parquet", index=False)
+            cfg = TushareFetcherConfig(
+                output_dir=tmp_path, endpoints=("daily",),
+                start_date="20200101", end_date="20211231",
+                rate_limit_sleep_ms=0,
+                force_retry_units=frozenset(
+                    {("daily", "ts_code=600000.SH year=2020")},
+                ),
+            )
+            results = TushareFetcher(client, cfg).fetch()
+            called_units = {
+                (c.kwargs["ts_code"], c.kwargs["start_date"][:4])
+                for c in client.call.call_args_list
+            }
+            # The holed 2020 unit was re-attempted; its 2020 sibling was not.
+            self.assertIn(("600000.SH", "2020"), called_units)
+            self.assertNotIn(("600001.SH", "2020"), called_units)
+            # 2021 (no files yet) fetched normally for both.
+            self.assertEqual(results[0].skipped, 1)
+
     def test_index_weight_is_not_refreshed(self) -> None:
         client = _make_client(lambda api, **p: pd.DataFrame())
         with tempfile.TemporaryDirectory() as tmp:

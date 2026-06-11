@@ -105,6 +105,12 @@ class HappyPathTests(unittest.TestCase):
             plan = build_plan(cfg)
             self.assertIn("--refresh-current", plan.fetch)
             self.assertIn("20260610", plan.fetch)  # end_date defaulted to now
+            # codex P2: the ONE frozen run date is stamped into the fetch, so
+            # a run crossing midnight stamps the planned date.
+            self.assertIn("--snapshot-date", plan.fetch)
+            self.assertEqual(
+                plan.fetch[plan.fetch.index("--snapshot-date") + 1], "20260610",
+            )
             self.assertIn("--allow-holey-fetch", plan.bins)
             staging = str(new_dir(cfg.provider_dir))
             self.assertIn(staging, plan.bins)

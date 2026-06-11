@@ -19,6 +19,14 @@
       prints plan + bundle state, zero side effects.
 - [x] Snapshot stage: embedded snapshot_date (P3-5) must equal the run date;
       stale/missing → exit 13 unless --allow-holey-fetch (warn + continue).
+- [x] codex P1: prior-manifest holes are wired into the fetcher as
+      force_retry_units (01 reads the manifest at run start; corrupt →
+      invalidate + exit 1) so a holed unit whose stale file exists — incl.
+      across a year boundary — is re-attempted instead of being shadowed by
+      the exists-skip and wrongly merge-dropped as self-healed.
+- [x] codex P2: the orchestrator freezes ONE run date and uses it for the
+      fetch stamp (01 --snapshot-date), the default end_date, and the snapshot
+      verification — a fetch spanning midnight cannot fail its own check.
 
 ## 2. Tests (all fake runners / synthetic dirs in temp dirs; no real fetch,
 ##    no real qlib build, never touches real data paths)

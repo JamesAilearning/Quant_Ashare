@@ -30,3 +30,18 @@ the manifest — the build gate then refuses by default.
 #### Scenario: index_weight is not refreshed
 - **WHEN** a refresh-current fetch covers index_weight with its files present
 - **THEN** they remain resume-skipped with zero API calls
+
+#### Scenario: a prior-manifest hole forces its unit past the exists-skip
+- **WHEN** the prior manifest records a hole for a unit whose (stale) file
+  exists on disk — e.g. a refresh failure left yesterday's file, and after a
+  year boundary the unit is no longer the final year
+- **THEN** the fetch re-attempts EXACTLY that unit (the 01 CLI wires the prior
+  manifest's holes into the fetcher as force-retry units) while untouched
+  siblings stay resume-skipped — so the hole either heals for real or recurs,
+  and the merge never wrongly drops a never-re-attempted hole as self-healed
+
+#### Scenario: the snapshot stamp date is injectable per run
+- **WHEN** the orchestrator passes `--snapshot-date` (its ONE frozen run date)
+- **THEN** stock_basic's embedded snapshot_date carries that date rather than
+  the wall-clock date at write time, so a fetch spanning midnight stamps the
+  planned date

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -158,6 +159,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "for daily / adj_factor / daily_basic (P3-6a). Past years stay "
              "resume-skipped; index_weight is not refreshed.",
     )
+    p.add_argument(
+        "--snapshot-date", default=None,
+        help="YYYYMMDD to stamp stock_basic's embedded snapshot_date with, "
+             "instead of the system date at write time. The daily-update "
+             "orchestrator freezes ONE run date and passes it here so a fetch "
+             "spanning midnight stamps the planned date, not the rollover "
+             "date (P3-6a).",
+    )
     return p
 
 
@@ -167,6 +176,44 @@ def main(argv: list[str] | None = None) -> int:
 
     endpoints = tuple(e.strip() for e in args.endpoints.split(",") if e.strip())
     indices = tuple(i.strip() for i in args.indices.split(",") if i.strip())
+
+    snapshot_now: date | None = None
+    if args.snapshot_date is not None:
+        try:
+            snapshot_now = datetime.strptime(args.snapshot_date, "%Y%m%d").date()
+        except ValueError:
+            _logger.error(
+                "--snapshot-date must be YYYYMMDD, got %r", args.snapshot_date,
+            )
+            return 2
+
+    # Prior-manifest holes force their units past the exists-skip this run
+    # (codex P1): a refresh failure leaves yesterday's file on disk, and after
+    # a year boundary the unit would otherwise be shadowed forever while the
+    # merge wrongly drops its never-re-attempted hole as self-healed. A
+    # corrupt manifest here is the same fail-loud case as on the success path:
+    # invalidate it (it cannot be trusted) and stop.
+    manifest_path = args.output_dir / MANIFEST_FILENAME
+    try:
+        prev_manifest = read_manifest(manifest_path)
+    except FetchManifestError as exc:
+        _logger.error("Fetch manifest unreadable at run start: %s", exc)
+        _invalidate_manifest(manifest_path, "manifest unreadable at run start")
+        return 1
+    force_retry_units = (
+        frozenset(
+            (h.endpoint, h.unit)
+            for ep in prev_manifest.endpoints.values()
+            for h in ep.holes
+        )
+        if prev_manifest is not None
+        else frozenset()
+    )
+    if force_retry_units:
+        _logger.info(
+            "Prior manifest records %d hole(s); forcing those units past the "
+            "exists-skip this run.", len(force_retry_units),
+        )
 
     try:
         config = TushareFetcherConfig(
@@ -178,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
             rate_limit_sleep_ms=args.rate_limit_sleep_ms,
             dry_run=args.dry_run,
             refresh_current=args.refresh_current,
+            now=snapshot_now,
+            force_retry_units=force_retry_units,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)

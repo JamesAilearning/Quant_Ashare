@@ -185,6 +185,14 @@ class TushareFetcherConfig:
     # index over the full range; re-pulling all of them every day is hundreds
     # of calls — refresh membership deliberately / on its own cadence).
     refresh_current: bool = False
+    # (endpoint, unit) pairs that MUST bypass the exists-skip this run — the
+    # prior manifest's recorded holes, wired in by the 01 CLI. A refresh-current
+    # failure leaves YESTERDAY's file on disk plus a manifest hole; once the
+    # year rolls over, that unit is no longer the final year, so exists-skip
+    # would shadow it forever AND the next manifest merge would drop the
+    # never-re-attempted hole as "self-healed" (codex P1). Forcing known-holed
+    # units past the skip re-attempts them every run until they heal.
+    force_retry_units: frozenset[tuple[str, str]] = frozenset()
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -296,6 +304,13 @@ class TushareFetcher:
     # Per-endpoint methods (also callable directly for testing)
     # ------------------------------------------------------------------
 
+    def _must_retry(self, endpoint: str, unit: str) -> bool:
+        """True when a prior-manifest hole forces this unit past the
+        exists-skip (codex P1: a refresh failure leaves yesterday's file on
+        disk, and after a year boundary the unit would otherwise be shadowed
+        forever while the merge drops its never-re-attempted hole)."""
+        return (endpoint, unit) in self._config.force_retry_units
+
     def _fetch_stock_basic(self) -> TushareFetchResult:
         """Pull both 'L' (active) and 'D' (delisted) buckets as separate files."""
         written = 0
@@ -303,7 +318,9 @@ class TushareFetcher:
         skipped = 0
         for label, status in [("active_stocks", "L"), ("delisted_stocks", "D")]:
             path = self._config.output_dir / f"{label}.parquet"
-            if path.exists() and not self._config.refresh_current:
+            unit = f"list_status={status} ({label})"
+            if (path.exists() and not self._config.refresh_current
+                    and not self._must_retry("stock_basic", unit)):
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
                 continue
@@ -336,7 +353,8 @@ class TushareFetcher:
     def _fetch_namechange(self) -> TushareFetchResult:
         """Pull all name changes in [start_date, end_date]. One call."""
         path = self._config.output_dir / "all_namechanges.parquet"
-        if path.exists() and not self._config.refresh_current:
+        if (path.exists() and not self._config.refresh_current
+                and not self._must_retry("namechange", "file")):
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult("namechange", 0, 0, skipped=1)
         if self._config.dry_run:
@@ -365,7 +383,8 @@ class TushareFetcher:
     def _fetch_suspend_d(self) -> TushareFetchResult:
         """Pull suspend / resume history in [start_date, end_date]."""
         path = self._config.output_dir / "suspend_d.parquet"
-        if path.exists() and not self._config.refresh_current:
+        if (path.exists() and not self._config.refresh_current
+                and not self._must_retry("suspend_d", "file")):
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult("suspend_d", 0, 0, skipped=1)
         if self._config.dry_run:
@@ -406,7 +425,9 @@ class TushareFetcher:
         end_year = int(self._config.end_date[:4])
         for idx in self._config.indices:
             path = out_root / f"{idx}.parquet"
-            if path.exists():
+            # index_weight is exempt from refresh_current, but a prior-manifest
+            # hole still forces a re-attempt (its file may be yesterday's).
+            if path.exists() and not self._must_retry("index_weight", f"index={idx}"):
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
                 continue
@@ -547,11 +568,17 @@ class TushareFetcher:
             # P3-6a: refresh_current re-pulls the FINAL year of the requested
             # range (for a daily update, end_date = today, so this is the
             # current year). Past years stay resume-skipped — their files are
-            # closed history.
+            # closed history — EXCEPT units the prior manifest recorded a hole
+            # for (codex P1: a refresh failure leaves yesterday's file; after a
+            # year boundary the unit is no longer the final year, so without
+            # the force-retry it would be shadowed forever and its hole
+            # wrongly dropped as self-healed by the next merge).
             refresh_year = self._config.refresh_current and year == end_year
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
-                if path.exists() and not refresh_year:
+                unit = f"ts_code={ticker} year={year}"
+                if (path.exists() and not refresh_year
+                        and not self._must_retry(endpoint, unit)):
                     skipped += 1
                     continue
                 if self._config.dry_run:
