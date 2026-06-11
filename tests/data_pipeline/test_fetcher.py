@@ -361,7 +361,11 @@ class RefreshCurrentTests(unittest.TestCase):
             "vol": [0.0], "amount": [0.0],
         })
 
-    def test_repulls_final_year_only_for_per_ticker_endpoints(self) -> None:
+    def test_stale_final_year_repulled_complete_past_year_skipped(self) -> None:
+        # P3-7b: the freshness rule replaces the blind final-year re-pull. A
+        # past year COMPLETE through its last weekday is skipped; the final
+        # year whose file stops short of the requested end is re-pulled — no
+        # refresh_current flag involved for per-ticker endpoints.
         tickers = ["600000.SH", "600001.SH"]
         client = _make_client(self._daily_df)
         with tempfile.TemporaryDirectory() as tmp:
@@ -370,20 +374,23 @@ class RefreshCurrentTests(unittest.TestCase):
                 tmp_path / "active_stocks.parquet", index=False)
             pd.DataFrame({"ts_code": [tickers[1]]}).to_parquet(
                 tmp_path / "delisted_stocks.parquet", index=False)
-            # Pre-create ALL daily files for both years (yesterday's run).
-            for year in (2020, 2021):
+            # 2020 complete through 2020-12-31 (a Thursday — the year's last
+            # weekday); 2021 stale at June (yesterday's boundary file).
+            for year, max_td in ((2020, "20201231"), (2021, "20210610")):
                 d = tmp_path / "daily" / str(year)
                 d.mkdir(parents=True)
                 for tk in tickers:
-                    pd.DataFrame({"ts_code": [tk]}).to_parquet(
-                        d / f"{tk}.parquet", index=False)
+                    pd.DataFrame(
+                        {"ts_code": [tk], "trade_date": [max_td]}
+                    ).to_parquet(d / f"{tk}.parquet", index=False)
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path, endpoints=("daily",),
                 start_date="20200101", end_date="20211231",
-                rate_limit_sleep_ms=0, refresh_current=True,
+                rate_limit_sleep_ms=0,
             )
             results = TushareFetcher(client, cfg).fetch()
-            # Final year (2021) re-pulled for both tickers; 2020 stays skipped.
+            # Stale final year (2021) re-pulled for both tickers; complete
+            # 2020 stays skipped.
             self.assertEqual(results[0].files_written, 2)
             self.assertEqual(results[0].skipped, 2)
             called_years = {p["start_date"][:4] for _, p in
@@ -437,12 +444,15 @@ class RefreshCurrentTests(unittest.TestCase):
                 tmp_path / "active_stocks.parquet", index=False)
             pd.DataFrame({"ts_code": [tickers[1]]}).to_parquet(
                 tmp_path / "delisted_stocks.parquet", index=False)
-            # Both 2020 files exist (2020 is NOT the final year of this run).
+            # Both 2020 files exist and are COMPLETE through the year's last
+            # weekday (so the freshness rule alone would skip them — only the
+            # force-retry must pierce). 2020 is NOT the final year of this run.
             d = tmp_path / "daily" / "2020"
             d.mkdir(parents=True)
             for tk in tickers:
-                pd.DataFrame({"ts_code": [tk]}).to_parquet(
-                    d / f"{tk}.parquet", index=False)
+                pd.DataFrame(
+                    {"ts_code": [tk], "trade_date": ["20201231"]}
+                ).to_parquet(d / f"{tk}.parquet", index=False)
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path, endpoints=("daily",),
                 start_date="20200101", end_date="20211231",
@@ -547,10 +557,15 @@ class DailyAndAdjFactorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             self._prep_stock_basic(tmp_path, tickers)
-            # Pre-create one ticker's 2020 file so it gets skipped
+            # Pre-create one ticker's 2020 file, COMPLETE through the year's
+            # last weekday, so the freshness rule skips it (P3-7b: a bare
+            # placeholder byte-blob would now be treated as unreadable-stale
+            # and re-pulled — by design).
             year_dir = tmp_path / "daily" / "2020"
             year_dir.mkdir(parents=True)
-            (year_dir / "600000.SH.parquet").write_bytes(b"placeholder")
+            pd.DataFrame(
+                {"ts_code": ["600000.SH"], "trade_date": ["20201231"]}
+            ).to_parquet(year_dir / "600000.SH.parquet", index=False)
 
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path, endpoints=("daily",),
@@ -1328,6 +1343,199 @@ class FastAbortOnNonRetryableTests(unittest.TestCase):
         self.assertEqual(len(aborting.holes), 0)
         self.assertGreater(quota_client.call.call_count, 1)  # retried
         self.assertEqual(len(holing.holes), 1)
+
+
+class BoundaryYearFreshnessTests(unittest.TestCase):
+    """P3-7b max(trade_date) freshness rule for per-(ticker, year) files:
+    an existing year file is skipped only when its content reaches everything
+    this run's range can expect of it; stale/suspicious files are re-pulled
+    (one whole-year API call), and a failed re-pull leaves the old file +
+    a hole so the next run re-attempts automatically."""
+
+    TICKER = "600000.SH"
+
+    @staticmethod
+    def _seed_universe(tmp_path: Path, *, list_date: str | None = "20000101",
+                       delist_date: str | None = None) -> None:
+        pd.DataFrame({
+            "ts_code": [BoundaryYearFreshnessTests.TICKER],
+            "list_date": [list_date],
+            "delist_date": [delist_date],
+        }).to_parquet(tmp_path / "active_stocks.parquet", index=False)
+        pd.DataFrame(
+            {"ts_code": [], "list_date": [], "delist_date": []}
+        ).to_parquet(tmp_path / "delisted_stocks.parquet", index=False)
+
+    @staticmethod
+    def _prefill(tmp_path: Path, year: int, dates: list[str]) -> Path:
+        d = tmp_path / "daily" / str(year)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{BoundaryYearFreshnessTests.TICKER}.parquet"
+        pd.DataFrame({
+            "ts_code": [BoundaryYearFreshnessTests.TICKER] * len(dates),
+            "trade_date": dates,
+        }).to_parquet(path, index=False)
+        return path
+
+    @staticmethod
+    def _client_returning(dates: list[str]):
+        def side_effect(api, **p):
+            return pd.DataFrame({
+                "ts_code": [p["ts_code"]] * len(dates),
+                "trade_date": list(dates),
+            })
+        return _make_client(side_effect)
+
+    @staticmethod
+    def _cfg(tmp_path: Path, start: str, end: str, **kw) -> TushareFetcherConfig:
+        return TushareFetcherConfig(
+            output_dir=tmp_path, endpoints=("daily",),
+            start_date=start, end_date=end, rate_limit_sleep_ms=0, **kw,
+        )
+
+    def test_partial_year_file_backfilled_when_range_extends(self) -> None:
+        # 半截年文件 + 扩 end_date → 补全 (the original freeze bug).
+        client = self._client_returning(["20250630", "20251231"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            path = self._prefill(tmp_path, 2025, ["20250102", "20250630"])
+            TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
+            self.assertEqual(client.call.call_count, 1)  # whole year, one call
+            df = pd.read_parquet(path)
+            self.assertEqual(str(df["trade_date"].max()), "20251231")
+
+    def test_complete_boundary_file_skipped(self) -> None:
+        # 已完整边界文件 → 跳过 (crash 重跑的 resume 价值).
+        client = self._client_returning(["20251231"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            self._prefill(tmp_path, 2025, ["20250102", "20251231"])
+            results = TushareFetcher(
+                client, self._cfg(tmp_path, "20250101", "20251231"),
+            ).fetch()
+            self.assertEqual(client.call.call_count, 0)
+            self.assertEqual(results[0].skipped, 1)
+
+    def test_refetch_failure_keeps_old_file_and_hole_then_retries(self) -> None:
+        # 刷新失败 → 旧文件保留 + 记洞；max(trade_date) 规则保证下轮自动重试.
+        client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                TushareClientError("returned None — rate limit exceeded")
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            path = self._prefill(tmp_path, 2025, ["20250102", "20250630"])
+            before = path.read_bytes()
+            with patch("src.data.tushare.fetcher.time.sleep"):
+                fetcher = TushareFetcher(
+                    client, self._cfg(tmp_path, "20250101", "20251231"),
+                )
+                fetcher.fetch()  # exhausts retries → hole, no raise
+            self.assertEqual(len(fetcher.holes), 1)
+            self.assertEqual(path.read_bytes(), before)  # old file untouched
+            first_run_calls = client.call.call_count
+            self.assertGreater(first_run_calls, 0)
+            # Next run: the file is STILL stale → re-attempted automatically,
+            # no force-retry bookkeeping needed.
+            with patch("src.data.tushare.fetcher.time.sleep"):
+                TushareFetcher(
+                    client, self._cfg(tmp_path, "20250101", "20251231"),
+                ).fetch()
+            self.assertGreater(client.call.call_count, first_run_calls)
+
+    def test_next_day_run_fetches_new_day(self) -> None:
+        # “明天再跑”：今天建 2026 文件，明天 end_date+1 → 必须抓到新一天.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            day1 = self._client_returning(["20260610"])
+            TushareFetcher(day1, self._cfg(tmp_path, "20260101", "20260610")).fetch()
+            self.assertEqual(day1.call.call_count, 1)
+            path = tmp_path / "daily" / "2026" / f"{self.TICKER}.parquet"
+            self.assertEqual(str(pd.read_parquet(path)["trade_date"].max()), "20260610")
+            # Tomorrow (2026-06-11, a Thursday): the file stops one day short.
+            day2 = self._client_returning(["20260610", "20260611"])
+            TushareFetcher(day2, self._cfg(tmp_path, "20260101", "20260611")).fetch()
+            self.assertEqual(day2.call.call_count, 1)
+            self.assertEqual(str(pd.read_parquet(path)["trade_date"].max()), "20260611")
+            # Same-day re-run after success: now current → skipped.
+            day3 = self._client_returning(["20260611"])
+            TushareFetcher(day3, self._cfg(tmp_path, "20260101", "20260611")).fetch()
+            self.assertEqual(day3.call.call_count, 0)
+
+    def test_weekend_end_does_not_repull_friday_complete_file(self) -> None:
+        # end on Sunday 2026-06-14 floors to Friday 2026-06-12.
+        client = self._client_returning(["20260612"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            self._prefill(tmp_path, 2026, ["20260612"])
+            TushareFetcher(client, self._cfg(tmp_path, "20260101", "20260614")).fetch()
+            self.assertEqual(client.call.call_count, 0)
+
+    def test_listing_window_bounds_expectation(self) -> None:
+        # Delisted mid-year: a file ending at the delist date is complete —
+        # not re-pulled against the year end. (2025-03-10 is a Monday.)
+        client = self._client_returning(["20250310"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path, delist_date="20250310")
+            self._prefill(tmp_path, 2025, ["20250102", "20250310"])
+            TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
+            self.assertEqual(client.call.call_count, 0)
+
+    def test_pre_listing_year_empty_placeholder_skipped(self) -> None:
+        # Listed 2024: the 2020 empty placeholder is the truthful content.
+        client = self._client_returning([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path, list_date="20240115")
+            self._prefill(tmp_path, 2020, [])
+            TushareFetcher(client, self._cfg(tmp_path, "20200101", "20201231")).fetch()
+            self.assertEqual(client.call.call_count, 0)
+
+    def test_empty_final_year_placeholder_repulled_when_listing_intersects(self) -> None:
+        # Empty placeholder written before a mid-year listing started trading:
+        # data is now possible → re-pull.
+        client = self._client_returning(["20250701"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path, list_date="20250601")
+            path = self._prefill(tmp_path, 2025, [])
+            TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
+            self.assertEqual(client.call.call_count, 1)
+            self.assertEqual(len(pd.read_parquet(path)), 1)
+
+    def test_watermark_skips_past_year_scan_unless_verify_all(self) -> None:
+        # A past year attested by the prior manifest's coverage watermark is
+        # not re-scanned (its stale content is deliberately trusted);
+        # --verify-all-years forces the sweep and finds it.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            self._prefill(tmp_path, 2024, ["20240102", "20240630"])  # stale!
+            self._prefill(tmp_path, 2025, ["20250102", "20251231"])  # complete
+            watermarked = self._cfg(
+                tmp_path, "20240101", "20251231",
+                assume_verified_through={"daily": "20251231"},
+            )
+            client = self._client_returning(["20241231"])
+            TushareFetcher(client, watermarked).fetch()
+            self.assertEqual(client.call.call_count, 0)  # 2024 not scanned
+            sweeping = self._cfg(
+                tmp_path, "20240101", "20251231",
+                assume_verified_through={"daily": "20251231"},
+                verify_all_years=True,
+            )
+            client2 = self._client_returning(["20240102", "20241231"])
+            TushareFetcher(client2, sweeping).fetch()
+            self.assertEqual(client2.call.call_count, 1)  # 2024 re-pulled
+            called = client2.call.call_args_list[0]
+            self.assertEqual(called.kwargs["start_date"][:4], "2024")
 
 
 if __name__ == "__main__":

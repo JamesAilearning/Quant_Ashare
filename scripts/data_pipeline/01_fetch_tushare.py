@@ -22,11 +22,20 @@ Usage::
 
 Resume
 ------
-The script uses per-file existence as its checkpoint. Re-running with
-the same ``--output-dir`` skips any file already on disk. No separate
-``.checkpoint`` file is maintained — if you need to force a re-pull of
-a specific endpoint, delete the corresponding output file(s) before
-re-running.
+Aggregate endpoints (stock_basic / namechange / suspend_d / index_weight)
+use per-file existence as their checkpoint, pierced by ``--refresh-current``
+(aggregates only) and by prior-manifest holes. Per-``(ticker, year)``
+endpoints (daily / adj_factor / daily_basic) use the P3-7b FRESHNESS rule
+instead of bare existence: an existing year file is skipped only when its
+``max(trade_date)`` reaches everything this run's range can expect of it
+(bounded by the year, the requested end date, and the ticker's listing
+window); a stale or suspicious-empty file is re-pulled for the whole year
+(one API call). Past years already attested by the previous manifest's
+coverage are not re-scanned — ``--verify-all-years`` forces a full sweep.
+
+Manifest red line (P3-7b): the fetch NEVER deletes ``fetch_manifest.json``
+on its own. Every failure path exits non-zero and leaves the manifest
+exactly as it was; a deliberate fresh start is ``--reset-manifest``.
 """
 
 from __future__ import annotations
@@ -97,22 +106,23 @@ def _log_hole_report(holes: tuple[FetchHole, ...]) -> None:
     )
 
 
-def _invalidate_manifest(manifest_path: Path, reason: str) -> None:
-    """Remove a now-stale manifest so it cannot cover a partial output dir, after
-    the fetch has already mutated the dir but the completed-run manifest update
-    did not land (a hard abort, or a manifest read/merge/write failure). The
-    removal is itself fail-loud but non-fatal — if the file cannot be deleted
-    (read-only dir / permission / lock) we warn rather than escape a traceback."""
+def _reset_manifest(manifest_path: Path) -> int:
+    """Explicit fresh start (``--reset-manifest``): the ONLY path that deletes
+    the manifest (P3-7b red line — no failure path auto-clears it). Loud, and
+    fail-loud if the file cannot be removed."""
     try:
         clear_manifest(manifest_path)
-        _logger.error(
-            "Invalidated %s (%s). Re-run to rebuild it.", manifest_path, reason,
-        )
     except OSError as exc:
         _logger.error(
-            "Could not invalidate %s (%s): %s — a stale manifest may remain; "
-            "remove it before trusting the dir.", manifest_path, reason, exc,
+            "--reset-manifest could not remove %s: %s", manifest_path, exc,
         )
+        return 1
+    _logger.warning(
+        "--reset-manifest: removed %s. Coverage and hole records start from "
+        "scratch this run; the freshness rule will re-verify every year file "
+        "it scans.", manifest_path,
+    )
+    return 0
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -153,11 +163,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--refresh-current", action="store_true",
-        help="Ignore resume's exists-skip for the units a daily update must "
-             "bring current: stock_basic (both buckets), the namechange / "
-             "suspend_d aggregates, and the FINAL year of the requested range "
-             "for daily / adj_factor / daily_basic (P3-6a). Past years stay "
-             "resume-skipped; index_weight is not refreshed.",
+        help="Ignore resume's exists-skip for the AGGREGATE units a daily "
+             "update must bring current: stock_basic (both buckets) and the "
+             "namechange / suspend_d aggregates (P3-6a). The per-ticker "
+             "endpoints (daily / adj_factor / daily_basic) no longer need "
+             "this: their year files are re-pulled exactly when stale, by the "
+             "P3-7b max(trade_date) freshness rule. index_weight is not "
+             "refreshed.",
+    )
+    p.add_argument(
+        "--verify-all-years", action="store_true",
+        help="Scan EVERY year file of the requested range for freshness, "
+             "ignoring the previous manifest's coverage watermark (P3-7b). "
+             "Use after suspected external mutation of the dump, or once "
+             "over a dump whose manifest predates the freshness rule.",
+    )
+    p.add_argument(
+        "--reset-manifest", action="store_true",
+        help="Deliberate fresh start: delete fetch_manifest.json before the "
+             "run (P3-7b). This is the ONLY way the manifest is ever removed "
+             "— no failure path auto-clears it.",
     )
     p.add_argument(
         "--snapshot-date", default=None,
@@ -187,18 +212,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
-    # Prior-manifest holes force their units past the exists-skip this run
-    # (codex P1): a refresh failure leaves yesterday's file on disk, and after
-    # a year boundary the unit would otherwise be shadowed forever while the
-    # merge wrongly drops its never-re-attempted hole as self-healed. A
-    # corrupt manifest here is the same fail-loud case as on the success path:
-    # invalidate it (it cannot be trusted) and stop.
     manifest_path = args.output_dir / MANIFEST_FILENAME
+    if args.reset_manifest:
+        rc = _reset_manifest(manifest_path)
+        if rc != 0:
+            return rc
+
+    # Prior-manifest holes force their units past the exists-skip this run
+    # (codex P1): a refresh failure leaves yesterday's file on disk plus a
+    # hole; the freshness rule re-attempts stale files wherever it scans, but
+    # a holed unit must be re-attempted even in years the scan scope skips. A
+    # corrupt manifest stops the run — and per the P3-7b red line it is LEFT
+    # IN PLACE for inspection: only an explicit --reset-manifest removes it.
     try:
         prev_manifest = read_manifest(manifest_path)
     except FetchManifestError as exc:
-        _logger.error("Fetch manifest unreadable at run start: %s", exc)
-        _invalidate_manifest(manifest_path, "manifest unreadable at run start")
+        _logger.error(
+            "Fetch manifest unreadable at run start: %s — refusing to run "
+            "against unreadable provenance. The file was left untouched for "
+            "inspection; pass --reset-manifest for a deliberate fresh start.",
+            exc,
+        )
         return 1
     force_retry_units = (
         frozenset(
@@ -214,6 +248,18 @@ def main(argv: list[str] | None = None) -> int:
             "Prior manifest records %d hole(s); forcing those units past the "
             "exists-skip this run.", len(force_retry_units),
         )
+    # P3-7b scan scope: years the prior manifest already attests (coverage
+    # watermark) are not re-scanned for freshness; the final requested year
+    # always is. --verify-all-years overrides the watermark entirely.
+    assume_verified_through = (
+        {
+            ep_name: ep.coverage_end_date
+            for ep_name, ep in prev_manifest.endpoints.items()
+            if ep.coverage_end_date
+        }
+        if prev_manifest is not None
+        else {}
+    )
 
     try:
         config = TushareFetcherConfig(
@@ -227,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
             refresh_current=args.refresh_current,
             now=snapshot_now,
             force_retry_units=force_retry_units,
+            assume_verified_through=assume_verified_through,
+            verify_all_years=args.verify_all_years,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)
@@ -247,16 +295,19 @@ def main(argv: list[str] | None = None) -> int:
         # recorded hole is never silently lost (the abort dominates the exit
         # code — this stays the hard-abort path, return 1).
         _log_hole_report(fetcher.holes)
-        # codex P1/P2: the completed-run manifest update below never runs on a
-        # hard abort, but a mid-run abort can leave PARTIAL output — files written
-        # before the abort, with or without a recorded hole (e.g. stock_basic
-        # writes active_stocks then aborts on the delisted call). INVALIDATE the
-        # manifest on ANY hard abort so a stale "complete" manifest never covers a
-        # possibly-partial dir; a re-run rebuilds it (resume fills the gaps).
+        # P3-7b red line: the manifest is LEFT EXACTLY AS IT WAS. A mid-run
+        # abort can leave partial output the manifest does not describe yet —
+        # but the prior manifest still truthfully describes the units IT
+        # recorded, this run's exit 1 stops any orchestrated build (EXIT 11),
+        # and the freshness rule + force-retry re-attempt whatever this run
+        # touched or holed on the next run. Deleting it (the old behavior)
+        # destroyed the hole ledger the guards exist to keep.
         if not config.dry_run:
-            _invalidate_manifest(
-                config.output_dir / MANIFEST_FILENAME,
-                "hard abort; the run may have left partial output",
+            _logger.error(
+                "fetch_manifest.json was left untouched (it describes the dir "
+                "as of the LAST completed run; this aborted run's partial "
+                "progress is not yet recorded). Re-run to complete and "
+                "re-record; --reset-manifest only for a deliberate fresh start."
             )
         return 1
 
@@ -296,12 +347,19 @@ def main(argv: list[str] | None = None) -> int:
             write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
         except (FetchManifestError, OSError) as exc:
             _logger.error("Fetch manifest update failed: %s", exc)
-            # codex P2: the fetch already mutated the output dir, but this update
-            # did not land — leaving the PRIOR manifest in place would let a gate
-            # read stale "complete" coverage for a now-partial dir. Invalidate it
-            # (same reason as the hard-abort path); a re-run rebuilds it.
-            _invalidate_manifest(
-                manifest_path, "manifest update failed after the fetch mutated the dir",
+            # P3-7b red line: a refused merge (narrower / disjoint scope) or a
+            # failed write exits 1 with the manifest LEFT BYTE-FOR-BYTE as it
+            # was. The prior manifest still truthfully describes the units it
+            # recorded — a refused merge means THIS run's scope could not
+            # extend it, not that it became wrong; this run's writes only made
+            # recorded units fresher (over-recorded holes are re-attempted by
+            # force-retry and self-heal on the next full-range run). The old
+            # auto-clear turned a refusal whose purpose is to PRESERVE hole
+            # records into the deletion of those records (fail-forget).
+            _logger.error(
+                "fetch_manifest.json was left untouched. Re-run the full "
+                "range to extend it, or pass --reset-manifest for a "
+                "deliberate fresh start."
             )
             return 1
         _logger.info("Wrote fetch manifest: %s", manifest_path)

@@ -154,16 +154,34 @@ def merge_manifest(
     merged: dict[str, EndpointCoverage] = dict(prev.endpoints)
     for ep, cur in current.endpoints.items():
         prev_ep = prev.endpoints.get(ep)
+        # P3-7b: an endpoint that ran but ESTABLISHED nothing (wrote no file,
+        # holed no unit — everything satisfied the freshness rule / resume) is
+        # a no-op for the manifest: preserve the prior record verbatim. The
+        # general loop below would otherwise treat cur's empty hole list as
+        # "every prior hole self-healed" although nothing was re-attempted —
+        # unreachable via the CLI (force_retry re-attempts every prior hole)
+        # but a real trap for library callers.
+        if (
+            prev_ep is not None
+            and cur.units_written == 0
+            and not cur.holes
+            and not cur.coverage_end_date
+        ):
+            merged[ep] = prev_ep
+            continue
         # codex P1: a self-heal drops a prev hole that is absent from this run's
         # holes — valid ONLY if this run RE-ATTEMPTED that hole. For a date-scoped
         # endpoint that HAS prior holes, a NARROWER range does not re-attempt the
         # out-of-range holed units, so a narrower-scope merge would silently drop
         # their holes (a silent partial). Refuse it (a hole-free narrower run is
-        # harmless; narrower incremental fetches are P3-6).
+        # harmless; narrower incremental fetches are P3-6). The comparison only
+        # applies when this run ESTABLISHED coverage — an empty-string sentinel
+        # ("" sorts before every date) must not fake a narrower range (P3-7b).
         if (
             prev_ep is not None
             and prev_ep.holes
             and ep in _DATE_SCOPED_ENDPOINTS
+            and cur.coverage_end_date
             and (cur.coverage_start_date > prev_ep.coverage_start_date
                  or cur.coverage_end_date < prev_ep.coverage_end_date)
         ):
@@ -173,8 +191,30 @@ def merge_manifest(
                 f"the manifest already covers [{prev_ep.coverage_start_date}, "
                 f"{prev_ep.coverage_end_date}] with unresolved holes. A narrower "
                 f"range does not re-attempt every prior hole, so self-healing would "
-                f"silently drop out-of-range holes. Re-run the full range, or clear "
-                f"the manifest (narrower incremental fetches are P3-6)."
+                f"silently drop out-of-range holes. Re-run the full range, or pass "
+                f"--reset-manifest for a deliberate fresh start."
+            )
+        # P3-7b truthfulness: refuse to UNION two coverage ranges separated by
+        # a never-fetched gap. min/max below would otherwise fabricate
+        # "complete [prev_start, cur_end]" over years no run ever requested —
+        # coverage+holes must together reflect the real state of every unit.
+        # Adjacent (gap <= 1 calendar day) or overlapping ranges merge fine.
+        if (
+            prev_ep is not None
+            and cur.units_written > 0
+            and cur.coverage_start_date
+            and prev_ep.coverage_end_date
+            and (_days_between(prev_ep.coverage_end_date, cur.coverage_start_date) > 1
+                 or _days_between(cur.coverage_end_date, prev_ep.coverage_start_date) > 1)
+        ):
+            raise FetchManifestError(
+                f"refusing disjoint coverage merge for endpoint {ep!r}: this run "
+                f"covered [{cur.coverage_start_date}, {cur.coverage_end_date}] but "
+                f"the manifest covers [{prev_ep.coverage_start_date}, "
+                f"{prev_ep.coverage_end_date}] — the gap between them was never "
+                f"fetched, and unioning the ranges would claim it as covered. "
+                f"Re-run with a range that overlaps or extends the existing "
+                f"coverage, or pass --reset-manifest for a deliberate fresh start."
             )
         prev_holes = {h.unit: h for h in (prev_ep.holes if prev_ep else ())}
         carried: list[FetchHole] = []
@@ -284,17 +324,29 @@ def covered_endpoints(manifest: FetchManifest) -> frozenset[str]:
 
 
 def _max_yyyymmdd(a: str | None, b: str) -> str:
-    """Later of two ``YYYYMMDD`` strings (lexicographic == chronological here)."""
-    if a is None:
+    """Later of two ``YYYYMMDD`` strings (lexicographic == chronological here).
+    ``None`` AND the empty-string "coverage not established" sentinel both mean
+    "no prior value" — "" must never win a comparison (P3-7b)."""
+    if not a:
         return b
     return a if a >= b else b
 
 
 def _min_yyyymmdd(a: str | None, b: str) -> str:
-    """Earlier of two ``YYYYMMDD`` strings (lexicographic == chronological here)."""
-    if a is None:
+    """Earlier of two ``YYYYMMDD`` strings (lexicographic == chronological here).
+    ``None`` AND the empty-string "coverage not established" sentinel both mean
+    "no prior value" — "" sorts before every date and would otherwise stick
+    forever (P3-7b)."""
+    if not a:
         return b
     return a if a <= b else b
+
+
+def _days_between(a_yyyymmdd: str, b_yyyymmdd: str) -> int:
+    """Calendar days from ``a`` to ``b`` (positive when ``b`` is later)."""
+    a = datetime.strptime(a_yyyymmdd, "%Y%m%d").date()
+    b = datetime.strptime(b_yyyymmdd, "%Y%m%d").date()
+    return (b - a).days
 
 
 def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
