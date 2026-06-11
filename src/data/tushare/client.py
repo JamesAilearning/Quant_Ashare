@@ -120,6 +120,14 @@ def classify_tushare_failure(error_text: str) -> str:
     if any(t in msg for t in (
         "502", "503", "504", "bad gateway", "gateway time-out",
         "service unavailable", "服务异常", "服务繁忙",
+        # Plain 500s (codex P2 on PR #239). Matched via the realistic phrase
+        # shapes (requests renders "500 Server Error: Internal Server Error
+        # for url: …"), NOT a bare "500" token — Tushare's real quota body
+        # contains "…该接口500次…", and although the rate-limit class is
+        # checked first, a bare "500" would also fire on any number/ticker
+        # that merely contains the digits.
+        "internal server error", "500 server error", "http 500",
+        "status code 500",
     )):
         return KIND_SERVER_ERROR
     return KIND_UNKNOWN

@@ -83,6 +83,10 @@ class ClassifyTushareFailureTests(unittest.TestCase):
         ("Exception: 502 Bad Gateway", KIND_SERVER_ERROR),
         ("Exception: 服务繁忙，请稍后重试", KIND_SERVER_ERROR),
         ("Exception: 服务异常", KIND_SERVER_ERROR),
+        # Plain 500s (codex P2): requests' canonical rendering + variants.
+        ("HTTPError: 500 Server Error: Internal Server Error for url: "
+         "https://api.waditu.com/dataapi", KIND_SERVER_ERROR),
+        ("Exception: HTTP 500 returned by upstream", KIND_SERVER_ERROR),
         # --- unknown: matched nothing → downstream treats as non-retryable.
         ("SomeVendorError: quux frobnicated", KIND_UNKNOWN),
     )
