@@ -158,6 +158,9 @@ _navigation: dict[str, list[Any]] = {
     "分析": [
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
         st.Page(str(_PAGES_DIR / "walk_forward.py"), title="滚动验证"),
+        # P3-6b: read-only inspector of the PRODUCTION bundle (integrity stamp
+        # + health + on-demand 06 validation). The UI never builds bundles.
+        st.Page(str(_PAGES_DIR / "data_inspect.py"), title="数据检视"),
     ],
 }
 

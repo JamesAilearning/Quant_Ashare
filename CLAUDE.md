@@ -126,6 +126,8 @@ Worktrees are heavily used (see `git worktree list`). New work goes in
 Presets live under `config/presets/`. The `default.yaml` is the
 canonical starting point; `config_walk*.yaml` variants drive
 walk-forward runs. **Don't hardcode local paths** in tracked configs —
-use env-var substitution (`${QLIB_PROVIDER_URI}`) so the same config
-works across machines. Personal preset overrides should be named
+use env-var substitution (`${QUANT_PROVIDER_URI}`, optionally with a
+default: `${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}`) so the
+same config works across machines. The five operational env vars are
+documented centrally in `docs/operations-env-vars.md`. Personal preset overrides should be named
 `my_*.yaml` or `*.local.yaml` (gitignored).
