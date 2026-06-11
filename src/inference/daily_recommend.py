@@ -45,6 +45,7 @@ from src.core.qlib_runtime import (
     _normalize_provider_uri,
     init_qlib_canonical,
 )
+from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
 from src.data.pit._common import qlib_to_ts_code
 from src.data.pit.bundle_integrity import (
     INTEGRITY_FILENAME,
@@ -328,6 +329,34 @@ def _assert_bundle_fresh(
         )
 
 
+def _assert_st_snapshot_consistent_with_bundle(
+    snapshot_date: date, bundle_last_day: date, max_age_days: int,
+) -> None:
+    """Fail-loud guard (P3-5): the ST snapshot and the price bundle must come
+    from the same update cycle.
+
+    The embedded ``snapshot_date`` says when active_stocks was fetched; the
+    bundle's calendar tail says how far its prices run. A snapshot that lags the
+    bundle tail by more than ``bundle_max_age_days`` means the two artifacts
+    were NOT refreshed together (e.g. the bundle was rebuilt but stock_basic
+    was not re-fetched) — its ST/name view predates the prices being ranked, so
+    a recent ST designation could leak in. A snapshot NEWER than the bundle
+    tail is fine (snapshots refresh more often than bundles). Pure ->
+    unit-testable.
+    """
+    lag = (bundle_last_day - snapshot_date).days
+    if lag > max_age_days:
+        raise DailyRecommendationError(
+            f"ST snapshot is INCONSISTENT with the price bundle: embedded "
+            f"snapshot_date {snapshot_date} lags the bundle's last trading day "
+            f"{bundle_last_day} by {lag} calendar day(s) (> {max_age_days}). "
+            "The snapshot and the bundle were not refreshed together, so the "
+            "ST/name view predates the prices being ranked. Re-fetch tushare "
+            "stock_basic (refreshing active_stocks.parquet) before "
+            "recommending, or raise bundle_max_age_days for an intentional run."
+        )
+
+
 def _assert_bundle_fetch_complete(
     provider_uri: str, *, allow_holey_recommend: bool,
 ) -> None:
@@ -382,7 +411,7 @@ def _assert_bundle_fetch_complete(
         )
 
 
-def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path:
+def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> date:
     """Fail-loud guard: the current-ST source must exist, be fresh, and carry
     the required schema.
 
@@ -390,14 +419,14 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path
     malformed snapshot would silently leak ST names into the list, so we refuse
     to emit one.
 
-    Staleness uses the file mtime as the snapshot date because active_stocks
-    carries NO embedded snapshot/as-of column (only per-stock list_date) —
-    verified against the real file. mtime is a WEAK proxy: a sync / copy tool
-    that rewrites mtime to "now" makes a stale file look fresh and lets this
-    guard pass silently — the opposite of fail-loud. The proper fix is an
-    embedded snapshot_date column written at fetch time (see the proposal's
-    near-term backlog); until then mtime catches only the untouched-file case.
-    Returns the validated path.
+    Staleness reads the EMBEDDED ``snapshot_date`` column the fetcher stamps at
+    fetch time (P3-5). The previous source — file mtime — was a WEAK proxy: a
+    sync / copy tool that rewrites mtime to "now" makes a stale file look fresh
+    and lets the guard pass silently, the opposite of fail-loud. The embedded
+    date survives copies and pandas round-trips. A pre-P3-5 file (no column)
+    fails loud with a re-fetch instruction rather than silently falling back to
+    mtime. Returns the validated snapshot date (recommend() then checks it for
+    consistency against the bundle calendar tail).
     """
     raw = config.name_source_parquet
     if not raw:
@@ -411,17 +440,6 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path
         raise DailyRecommendationError(
             f"ST filtering requires the active-stocks snapshot at {path}; file "
             "not found. Refusing to emit a possibly-unfiltered list."
-        )
-    snapshot_date = date.fromtimestamp(path.stat().st_mtime)
-    if _st_snapshot_is_stale(
-        snapshot_date, as_of_date, config.st_snapshot_max_age_days,
-    ):
-        raise DailyRecommendationError(
-            f"ST snapshot {path.name} is stale: file dated {snapshot_date} lags "
-            f"as-of {as_of_date} by more than {config.st_snapshot_max_age_days} "
-            "day(s). A stale snapshot can miss a recent ST designation and leak "
-            "it into the list. Refresh active_stocks.parquet (re-fetch tushare "
-            "stock_basic) or raise st_snapshot_max_age_days."
         )
     # Schema: the required ST filter reads ts_code + name. A present, fresh, but
     # malformed snapshot (columns dropped by an upstream schema change, or an
@@ -447,7 +465,25 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> Path
             f"ST snapshot {path.name} has zero rows; cannot build the "
             "current-ST set. Refusing to emit a possibly-unfiltered list."
         )
-    return path
+    try:
+        snapshot_date = embedded_snapshot_date(df, source=f"ST snapshot {path.name}")
+    except SnapshotDateError as exc:
+        raise DailyRecommendationError(
+            f"{exc} Refusing to emit a list whose ST-snapshot age cannot be "
+            "established."
+        ) from exc
+    if _st_snapshot_is_stale(
+        snapshot_date, as_of_date, config.st_snapshot_max_age_days,
+    ):
+        raise DailyRecommendationError(
+            f"ST snapshot {path.name} is stale: embedded snapshot_date "
+            f"{snapshot_date} lags as-of {as_of_date} by more than "
+            f"{config.st_snapshot_max_age_days} day(s). A stale snapshot can "
+            "miss a recent ST designation and leak it into the list. Refresh "
+            "active_stocks.parquet (re-fetch tushare stock_basic) or raise "
+            "st_snapshot_max_age_days."
+        )
+    return snapshot_date
 
 
 def _load_model(model_path: Path) -> Any:
@@ -573,8 +609,13 @@ def recommend(
     # 4. Names + current-ST exclusion set. The name source is REQUIRED here
     # (fail-loud if missing/stale): it supplies both display names AND the
     # ST/*ST set we must exclude. _validate_st_snapshot refuses to emit a
-    # list that could silently include ST names.
-    _validate_st_snapshot(config, as_of_date)
+    # list that could silently include ST names. Its embedded snapshot_date is
+    # then checked against the bundle calendar tail (P3-5): the two artifacts
+    # must come from the same update cycle.
+    st_snapshot_date = _validate_st_snapshot(config, as_of_date)
+    _assert_st_snapshot_consistent_with_bundle(
+        st_snapshot_date, bundle_last_day, config.bundle_max_age_days,
+    )
     name_map = _load_name_map(config.name_source_parquet)
 
     def _name(inst: str) -> str:

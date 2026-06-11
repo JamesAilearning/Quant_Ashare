@@ -35,6 +35,7 @@ from src.inference.daily_recommend import (
     RecommendationConfig,
     _assert_bundle_fetch_complete,
     _assert_bundle_fresh,
+    _assert_st_snapshot_consistent_with_bundle,
     _bundle_is_stale,
     _load_model,
     _scores_to_inst_map,
@@ -382,23 +383,51 @@ class ValidateStSnapshotTests(unittest.TestCase):
             )
 
     def test_stale_file_raises(self) -> None:
+        # P3-5: staleness reads the EMBEDDED snapshot_date (30d before as-of),
+        # not the file mtime — the fresh "now" mtime here must not matter.
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "active.parquet"
-            p.write_bytes(b"x")
-            old = datetime(2025, 6, 30).timestamp() - 30 * 86400  # 30d stale
-            os.utime(p, (old, old))
+            pd.DataFrame({
+                "ts_code": ["000001.SZ"], "name": ["平安银行"],
+                "snapshot_date": ["20250531"],
+            }).to_parquet(p)
             with self.assertRaisesRegex(DailyRecommendationError, "stale"):
                 _validate_st_snapshot(self._config(str(p)), "2025-06-30")
 
     def test_fresh_valid_file_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "active.parquet"
-            pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["平安银行"]}).to_parquet(p)
-            recent = datetime(2025, 6, 29).timestamp()  # 1d before as-of
-            os.utime(p, (recent, recent))
+            pd.DataFrame({
+                "ts_code": ["000001.SZ"], "name": ["平安银行"],
+                "snapshot_date": ["20250629"],  # 1d before as-of
+            }).to_parquet(p)
             self.assertEqual(
-                _validate_st_snapshot(self._config(str(p)), "2025-06-30"), p,
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30"),
+                date(2025, 6, 29),
             )
+
+    def test_old_format_without_snapshot_date_raises(self) -> None:
+        # P3-5 red line: a pre-P3-5 file (no embedded snapshot_date) fails LOUD
+        # with a re-fetch instruction — never silently passes via mtime, however
+        # fresh the file looks on disk.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["平安银行"]}).to_parquet(p)
+            with self.assertRaisesRegex(
+                DailyRecommendationError, "no embedded 'snapshot_date'",
+            ):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+    def test_conflicting_snapshot_dates_raise(self) -> None:
+        # Two distinct embedded values = corrupt / hand-merged file -> loud.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "active.parquet"
+            pd.DataFrame({
+                "ts_code": ["000001.SZ", "000002.SZ"], "name": ["平安银行", "万科A"],
+                "snapshot_date": ["20250629", "20250630"],
+            }).to_parquet(p)
+            with self.assertRaisesRegex(DailyRecommendationError, "distinct"):
+                _validate_st_snapshot(self._config(str(p)), "2025-06-30")
 
     def test_malformed_schema_raises(self) -> None:
         # Present + fresh but the 'name' column dropped (upstream schema change)
@@ -424,6 +453,32 @@ class ValidateStSnapshotTests(unittest.TestCase):
             os.utime(p, (recent, recent))
             with self.assertRaisesRegex(DailyRecommendationError, "zero rows"):
                 _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+
+class StSnapshotBundleConsistencyTests(unittest.TestCase):
+    """P3-5 guard: the ST snapshot and the price bundle must come from the same
+    update cycle — an embedded snapshot_date lagging the bundle calendar tail by
+    more than bundle_max_age_days refuses; within tolerance (or newer) passes."""
+
+    def test_snapshot_lagging_bundle_tail_raises(self) -> None:
+        with self.assertRaisesRegex(DailyRecommendationError, "INCONSISTENT"):
+            _assert_st_snapshot_consistent_with_bundle(
+                date(2026, 5, 1), date(2026, 6, 10), 14,  # lag 40d > 14
+            )
+
+    def test_snapshot_within_tolerance_passes(self) -> None:
+        _assert_st_snapshot_consistent_with_bundle(
+            date(2026, 6, 1), date(2026, 6, 10), 14,  # lag 9d <= 14 -> no raise
+        )
+        _assert_st_snapshot_consistent_with_bundle(
+            date(2026, 5, 27), date(2026, 6, 10), 14,  # lag 14d == tol (inclusive)
+        )
+
+    def test_snapshot_newer_than_bundle_tail_passes(self) -> None:
+        # Snapshots refresh more often than bundles; newer is never inconsistent.
+        _assert_st_snapshot_consistent_with_bundle(
+            date(2026, 6, 15), date(2026, 6, 10), 14,  # no raise
+        )
 
 
 class BundleFreshnessTests(unittest.TestCase):

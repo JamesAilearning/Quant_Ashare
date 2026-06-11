@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -171,6 +172,10 @@ class TushareFetcherConfig:
     # daily / adj_factor rows in a year so resume can skip them on rerun.
     # When False, skip those tickers entirely (re-pulled on every run).
     write_empty_placeholders: bool = True
+    # Injectable "today" for the stock_basic snapshot_date stamp (P3-5) —
+    # value-injection as elsewhere (Phase 2 staleness guard): tests pass a fixed
+    # date; production leaves None -> the system date at fetch time.
+    now: date | None = None
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -306,6 +311,13 @@ class TushareFetcher:
             except FetchHoleError as hole:
                 self._record_hole("stock_basic", f"list_status={status} ({label})", hole)
                 continue
+            # P3-5: embed the snapshot date IN the file (YYYYMMDD, one value for
+            # every row). Downstream staleness guards previously had only the file
+            # mtime — a weak proxy a sync/copy tool can silently refresh; an
+            # embedded column survives copies and pandas round-trips. Injectable
+            # via config.now (value-injection); production = system date.
+            snapshot = self._config.now if self._config.now is not None else date.today()
+            df = df.assign(snapshot_date=snapshot.strftime("%Y%m%d"))
             self._atomic_write_parquet(df, path)
             _logger.info("  wrote %d rows to %s", len(df), path)
             written += 1
