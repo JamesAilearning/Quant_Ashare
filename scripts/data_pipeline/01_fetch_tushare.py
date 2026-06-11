@@ -150,6 +150,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Do not write any files; log what would happen.",
     )
+    p.add_argument(
+        "--refresh-current", action="store_true",
+        help="Ignore resume's exists-skip for the units a daily update must "
+             "bring current: stock_basic (both buckets), the namechange / "
+             "suspend_d aggregates, and the FINAL year of the requested range "
+             "for daily / adj_factor / daily_basic (P3-6a). Past years stay "
+             "resume-skipped; index_weight is not refreshed.",
+    )
     return p
 
 
@@ -169,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             indices=indices,
             rate_limit_sleep_ms=args.rate_limit_sleep_ms,
             dry_run=args.dry_run,
+            refresh_current=args.refresh_current,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)

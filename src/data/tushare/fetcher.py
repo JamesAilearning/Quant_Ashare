@@ -176,6 +176,15 @@ class TushareFetcherConfig:
     # value-injection as elsewhere (Phase 2 staleness guard): tests pass a fixed
     # date; production leaves None -> the system date at fetch time.
     now: date | None = None
+    # P3-6a: ignore resume's exists-skip for the units a daily update must
+    # bring current — stock_basic (both buckets), the namechange / suspend_d
+    # aggregates, and the FINAL year of the requested range for the per-ticker
+    # endpoints (daily / adj_factor / daily_basic). Without this a daily re-run
+    # over an existing dump skips the current-year files written yesterday and
+    # never fetches today's bars. index_weight is NOT refreshed (one file per
+    # index over the full range; re-pulling all of them every day is hundreds
+    # of calls — refresh membership deliberately / on its own cadence).
+    refresh_current: bool = False
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -294,7 +303,7 @@ class TushareFetcher:
         skipped = 0
         for label, status in [("active_stocks", "L"), ("delisted_stocks", "D")]:
             path = self._config.output_dir / f"{label}.parquet"
-            if path.exists():
+            if path.exists() and not self._config.refresh_current:
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
                 continue
@@ -327,7 +336,7 @@ class TushareFetcher:
     def _fetch_namechange(self) -> TushareFetchResult:
         """Pull all name changes in [start_date, end_date]. One call."""
         path = self._config.output_dir / "all_namechanges.parquet"
-        if path.exists():
+        if path.exists() and not self._config.refresh_current:
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult("namechange", 0, 0, skipped=1)
         if self._config.dry_run:
@@ -356,7 +365,7 @@ class TushareFetcher:
     def _fetch_suspend_d(self) -> TushareFetchResult:
         """Pull suspend / resume history in [start_date, end_date]."""
         path = self._config.output_dir / "suspend_d.parquet"
-        if path.exists():
+        if path.exists() and not self._config.refresh_current:
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult("suspend_d", 0, 0, skipped=1)
         if self._config.dry_run:
@@ -535,9 +544,14 @@ class TushareFetcher:
                 year_start = self._config.start_date
             if year_end > self._config.end_date:
                 year_end = self._config.end_date
+            # P3-6a: refresh_current re-pulls the FINAL year of the requested
+            # range (for a daily update, end_date = today, so this is the
+            # current year). Past years stay resume-skipped — their files are
+            # closed history.
+            refresh_year = self._config.refresh_current and year == end_year
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
-                if path.exists():
+                if path.exists() and not refresh_year:
                     skipped += 1
                     continue
                 if self._config.dry_run:

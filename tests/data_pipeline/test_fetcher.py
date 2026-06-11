@@ -338,6 +338,98 @@ class IndexWeightFetchTests(unittest.TestCase):
             self.assertEqual(len(df), 0)
 
 
+class RefreshCurrentTests(unittest.TestCase):
+    """P3-6a: refresh_current bypasses resume's exists-skip for exactly the
+    units a daily update must bring current — and nothing else."""
+
+    @staticmethod
+    def _daily_df(api, **p):
+        return pd.DataFrame({
+            "ts_code": [p["ts_code"]],
+            "trade_date": [p["start_date"]],
+            "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
+            "vol": [0.0], "amount": [0.0],
+        })
+
+    def test_repulls_final_year_only_for_per_ticker_endpoints(self) -> None:
+        tickers = ["600000.SH", "600001.SH"]
+        client = _make_client(self._daily_df)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pd.DataFrame({"ts_code": [tickers[0]]}).to_parquet(
+                tmp_path / "active_stocks.parquet", index=False)
+            pd.DataFrame({"ts_code": [tickers[1]]}).to_parquet(
+                tmp_path / "delisted_stocks.parquet", index=False)
+            # Pre-create ALL daily files for both years (yesterday's run).
+            for year in (2020, 2021):
+                d = tmp_path / "daily" / str(year)
+                d.mkdir(parents=True)
+                for tk in tickers:
+                    pd.DataFrame({"ts_code": [tk]}).to_parquet(
+                        d / f"{tk}.parquet", index=False)
+            cfg = TushareFetcherConfig(
+                output_dir=tmp_path, endpoints=("daily",),
+                start_date="20200101", end_date="20211231",
+                rate_limit_sleep_ms=0, refresh_current=True,
+            )
+            results = TushareFetcher(client, cfg).fetch()
+            # Final year (2021) re-pulled for both tickers; 2020 stays skipped.
+            self.assertEqual(results[0].files_written, 2)
+            self.assertEqual(results[0].skipped, 2)
+            called_years = {p["start_date"][:4] for _, p in
+                            [(c.args, c.kwargs) for c in client.call.call_args_list]}
+            self.assertEqual(called_years, {"2021"})
+
+    def test_repulls_stock_basic_and_aggregates(self) -> None:
+        calls: list[str] = []
+
+        def side_effect(api, **p):
+            calls.append(api)
+            if api == "stock_basic":
+                return _stock_basic_df(p["list_status"])
+            return pd.DataFrame({"ts_code": ["600000.SH"]})
+
+        client = _make_client(side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # Yesterday's files all present.
+            for fname in ("active_stocks.parquet", "delisted_stocks.parquet",
+                          "all_namechanges.parquet", "suspend_d.parquet"):
+                pd.DataFrame({"ts_code": ["x"]}).to_parquet(
+                    tmp_path / fname, index=False)
+            cfg = TushareFetcherConfig(
+                output_dir=tmp_path,
+                endpoints=("stock_basic", "namechange", "suspend_d"),
+                rate_limit_sleep_ms=0, refresh_current=True,
+                now=date(2026, 6, 10),
+            )
+            results = TushareFetcher(client, cfg).fetch()
+            self.assertEqual(calls.count("stock_basic"), 2)  # both buckets
+            self.assertEqual(calls.count("namechange"), 1)
+            self.assertEqual(calls.count("suspend_d"), 1)
+            self.assertEqual({r.skipped for r in results}, {0})
+            # The refreshed snapshot carries TODAY's embedded stamp (P3-5).
+            df = pd.read_parquet(tmp_path / "active_stocks.parquet")
+            self.assertEqual(set(df["snapshot_date"]), {"20260610"})
+
+    def test_index_weight_is_not_refreshed(self) -> None:
+        client = _make_client(lambda api, **p: pd.DataFrame())
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            iw = tmp_path / "index_weight"
+            iw.mkdir(parents=True)
+            pd.DataFrame({"ts_code": ["x"]}).to_parquet(
+                iw / "000300.SH.parquet", index=False)
+            cfg = TushareFetcherConfig(
+                output_dir=tmp_path, endpoints=("index_weight",),
+                indices=("000300.SH",),
+                rate_limit_sleep_ms=0, refresh_current=True,
+            )
+            results = TushareFetcher(client, cfg).fetch()
+            self.assertEqual(results[0].skipped, 1)  # still resume-skipped
+            self.assertEqual(client.call.call_count, 0)
+
+
 class DailyAndAdjFactorTests(unittest.TestCase):
 
     def _prep_stock_basic(self, tmp: Path, tickers: list[str]) -> None:
