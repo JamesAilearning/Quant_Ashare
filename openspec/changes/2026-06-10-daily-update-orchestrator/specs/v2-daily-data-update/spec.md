@@ -55,7 +55,12 @@ orchestrator SHALL detect and resolve every reachable crash state: a swap
 interrupted between the two renames (backup + staged present, live missing —
 stage 1 having run proves validation passed) SHALL be COMPLETED; a
 backup-only state SHALL be RESTORED; a stale staged bundle (which cannot be
-proven validated) SHALL be REMOVED loudly and never auto-promoted.
+proven validated) SHALL be REMOVED loudly and never auto-promoted. The swap's
+atomicity bound is CRASH-atomicity (no observer ever sees a half-written
+bundle; every interrupted state is repaired), NOT reader-concurrency: between
+the two renames the live path briefly does not exist, so a concurrent reader
+errs fail-loud rather than reading torn data — the daily update is meant to
+run when nothing reads the bundle (scheduling, Phase 4).
 
 #### Scenario: crash after build, before swap
 - **WHEN** a prior run died leaving the live bundle plus a stale `.new`

@@ -105,6 +105,16 @@ def swap(provider_dir: Path) -> None:
     Two atomic renames; the backup of the previous live bundle is KEPT for
     manual rollback (cleared at the start of the next swap). Refuses (raises)
     if the staging dir is missing — the caller must have built + validated it.
+
+    Concurrency bound (explicit): the swap is CRASH-atomic — no observer ever
+    sees a half-written bundle, and every interrupted state is repaired at the
+    next startup — but it is not READER-concurrent: between the two renames the
+    live path briefly does not exist, so a qlib reader opening the provider in
+    exactly that window errors rather than reading torn data (fail-loud, never
+    wrong). The daily update is meant to run when no recommend/training reads
+    the bundle (Phase 4 scheduling serializes them). A reader-concurrent swap
+    needs an indirection layer (versioned dirs + junction/symlink flip), which
+    changes the operational layout — deliberately out of P3-6a's scope.
     """
     new_p, bak_p = new_dir(provider_dir), bak_dir(provider_dir)
     if not new_p.exists():

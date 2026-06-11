@@ -53,3 +53,6 @@ fail-loud, crash-safe entry point.
 - No true manifest-driven incremental fetch (refresh-current re-pulls the final
   year wholesale; coverage-based incremental is future work).
 - No index_weight refresh cadence.
+- No reader-concurrent swap (versioned dirs + junction/symlink indirection):
+  the two-rename swap is crash-atomic, and Phase 4 scheduling serializes the
+  update against readers; a concurrent reader in the rename window fails loud.
