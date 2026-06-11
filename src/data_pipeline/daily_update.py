@@ -293,8 +293,18 @@ def run_daily_update(
             return EXIT_REBUILD
 
     # Stage 4: validate the STAGED bundle. Only a pass reaches the swap.
+    # 06's exit convention: 0 = clean, 1 = WARNINGS ONLY (every check passed —
+    # routine when reference cases are present, e.g. the index-membership
+    # check), >= 2 = a check FAILED. Warnings-only is a pass here (codex P1):
+    # refusing to swap a valid bundle over a routine warning would wedge the
+    # daily update permanently.
     rc = active["validate"](plan.validate)
-    if rc != 0:
+    if rc == 1:
+        _logger.warning(
+            "Validation passed WITH WARNINGS (exit 1) on %s — swapping; "
+            "review the validator output.", new_dir(config.provider_dir),
+        )
+    elif rc != 0:
         _logger.error(
             "Validation FAILED (exit %d) on %s; NOT swapping — the live "
             "bundle stays as it was.", rc, new_dir(config.provider_dir),

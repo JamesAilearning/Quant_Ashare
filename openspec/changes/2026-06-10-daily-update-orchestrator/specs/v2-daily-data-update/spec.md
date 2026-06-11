@@ -74,6 +74,13 @@ proven validated) SHALL be REMOVED loudly and never auto-promoted.
   nothing
 
 #### Scenario: validation failure never swaps
-- **WHEN** validation of the staged bundle fails
+- **WHEN** validation of the staged bundle FAILS (validator exit >= 2 — a check
+  did not pass)
 - **THEN** the swap never runs, the live bundle is untouched, and the staged
   bundle is left in place for inspection
+
+#### Scenario: warnings-only validation is a pass
+- **WHEN** the validator returns its warnings-only code (exit 1 — every check
+  passed; routine when reference cases are present)
+- **THEN** the swap proceeds, with the warnings surfaced loudly in the log —
+  a valid bundle is never wedged behind a benign warning

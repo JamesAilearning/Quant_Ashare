@@ -191,12 +191,28 @@ class ValidateGateTests(unittest.TestCase):
             cfg = _config(tmp)
             _write_snapshot(cfg.tushare_dir)
             _mk_bundle(cfg.provider_dir, "OLD")
-            rec = _Recorder({"validate": 1}, staging=new_dir(cfg.provider_dir))
+            # 06 exit >= 2 = a check FAILED (1 is warnings-only = pass).
+            rec = _Recorder({"validate": 2}, staging=new_dir(cfg.provider_dir))
             rc = run_daily_update(cfg, rec.all())
             self.assertEqual(rc, EXIT_VALIDATE)
             self.assertEqual(_marker(cfg.provider_dir), "OLD")     # untouched
             self.assertFalse(bak_dir(cfg.provider_dir).exists())   # stage 1 never ran
             self.assertTrue(new_dir(cfg.provider_dir).exists())    # staging left for autopsy
+
+    def test_validate_warnings_only_is_a_pass_and_swaps(self) -> None:
+        # codex P1: 06 returns 1 when every check PASSED but warnings exist —
+        # routine with reference cases present. The orchestrator must swap, or
+        # a valid daily update would wedge permanently on a benign warning.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg = _config(tmp)
+            _write_snapshot(cfg.tushare_dir)
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rec = _Recorder({"validate": 1}, staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # swapped
+            self.assertEqual(_marker(bak_dir(cfg.provider_dir)), "OLD")
 
 
 class DryRunTests(unittest.TestCase):

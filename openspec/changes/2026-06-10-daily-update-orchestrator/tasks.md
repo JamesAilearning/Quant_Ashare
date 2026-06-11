@@ -27,8 +27,10 @@
       Path.rename — next startup COMPLETES the swap); after rename 2 (healthy,
       nothing touched). Plus backup-only restore + orphan `.new` removal +
       repair dry-run no-mutate.
-- [x] VALIDATE-FAIL (red line): validate exit ≠ 0 → swap never runs, live
-      bundle byte-identical, no `.bak` created, `.new` left for autopsy.
+- [x] VALIDATE-FAIL (red line): validate exit ≥ 2 (a check failed) → swap never
+      runs, live bundle byte-identical, no `.bak` created, `.new` left for
+      autopsy. Exit 1 (warnings-only = every check passed; codex P1) → swap
+      proceeds with the warnings logged loudly.
 - [x] HOLES (red line): fetch exit 3 without override → stop (exit 12),
       nothing after fetch runs; with --allow-holey-fetch → continues.
 - [x] SHORT-CIRCUIT (red line): fetch hard-fail → only fetch ran; rebuild
