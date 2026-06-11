@@ -77,6 +77,15 @@ import pandas as pd
 from src.core.logger import get_logger
 from src.data.tushare.client import TushareClient, TushareClientError
 
+# Moved to the dependency-free fetch_types module (P3-6b) so that reading a
+# manifest / integrity stamp never imports this network stack; re-exported
+# here unchanged (the `as` form marks an explicit re-export for mypy) for
+# every existing importer.
+from src.data.tushare.fetch_types import FetchHole as FetchHole  # noqa: F401
+from src.data.tushare.fetch_types import (  # noqa: F401
+    TushareFetchResult as TushareFetchResult,
+)
+
 _logger = get_logger(__name__)
 
 
@@ -176,6 +185,23 @@ class TushareFetcherConfig:
     # value-injection as elsewhere (Phase 2 staleness guard): tests pass a fixed
     # date; production leaves None -> the system date at fetch time.
     now: date | None = None
+    # P3-6a: ignore resume's exists-skip for the units a daily update must
+    # bring current — stock_basic (both buckets), the namechange / suspend_d
+    # aggregates, and the FINAL year of the requested range for the per-ticker
+    # endpoints (daily / adj_factor / daily_basic). Without this a daily re-run
+    # over an existing dump skips the current-year files written yesterday and
+    # never fetches today's bars. index_weight is NOT refreshed (one file per
+    # index over the full range; re-pulling all of them every day is hundreds
+    # of calls — refresh membership deliberately / on its own cadence).
+    refresh_current: bool = False
+    # (endpoint, unit) pairs that MUST bypass the exists-skip this run — the
+    # prior manifest's recorded holes, wired in by the 01 CLI. A refresh-current
+    # failure leaves YESTERDAY's file on disk plus a manifest hole; once the
+    # year rolls over, that unit is no longer the final year, so exists-skip
+    # would shadow it forever AND the next manifest merge would drop the
+    # never-re-attempted hole as "self-healed" (codex P1). Forcing known-holed
+    # units past the skip re-attempts them every run until they heal.
+    force_retry_units: frozenset[tuple[str, str]] = frozenset()
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -199,34 +225,6 @@ class TushareFetcherConfig:
             raise TushareFetcherError(
                 f"rate_limit_sleep_ms must be >= 0, got {self.rate_limit_sleep_ms}"
             )
-
-
-@dataclass(frozen=True)
-class TushareFetchResult:
-    """Per-endpoint summary returned by :meth:`TushareFetcher.fetch`."""
-
-    endpoint: str
-    files_written: int
-    rows_total: int
-    skipped: int = 0
-
-
-@dataclass(frozen=True)
-class FetchHole:
-    """A unit that could not be fetched after exhausting retryable retries.
-
-    Recorded by the per-endpoint loops under continue-on-error (P3-4a) and
-    surfaced via :attr:`TushareFetcher.holes`. ``last_error`` is the client's
-    already-sanitised error string (the token never appears in
-    ``TushareClientError`` messages — ``client.py`` is the secrets boundary);
-    ``unit`` is a stable human/JSON label so P3-4b can persist it verbatim.
-    """
-
-    endpoint: str
-    unit: str
-    reason_class: str
-    attempts: int
-    last_error: str
 
 
 class TushareFetcher:
@@ -287,6 +285,13 @@ class TushareFetcher:
     # Per-endpoint methods (also callable directly for testing)
     # ------------------------------------------------------------------
 
+    def _must_retry(self, endpoint: str, unit: str) -> bool:
+        """True when a prior-manifest hole forces this unit past the
+        exists-skip (codex P1: a refresh failure leaves yesterday's file on
+        disk, and after a year boundary the unit would otherwise be shadowed
+        forever while the merge drops its never-re-attempted hole)."""
+        return (endpoint, unit) in self._config.force_retry_units
+
     def _fetch_stock_basic(self) -> TushareFetchResult:
         """Pull both 'L' (active) and 'D' (delisted) buckets as separate files."""
         written = 0
@@ -294,7 +299,9 @@ class TushareFetcher:
         skipped = 0
         for label, status in [("active_stocks", "L"), ("delisted_stocks", "D")]:
             path = self._config.output_dir / f"{label}.parquet"
-            if path.exists():
+            unit = f"list_status={status} ({label})"
+            if (path.exists() and not self._config.refresh_current
+                    and not self._must_retry("stock_basic", unit)):
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
                 continue
@@ -327,7 +334,8 @@ class TushareFetcher:
     def _fetch_namechange(self) -> TushareFetchResult:
         """Pull all name changes in [start_date, end_date]. One call."""
         path = self._config.output_dir / "all_namechanges.parquet"
-        if path.exists():
+        if (path.exists() and not self._config.refresh_current
+                and not self._must_retry("namechange", "file")):
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult("namechange", 0, 0, skipped=1)
         if self._config.dry_run:
@@ -356,7 +364,8 @@ class TushareFetcher:
     def _fetch_suspend_d(self) -> TushareFetchResult:
         """Pull suspend / resume history in [start_date, end_date]."""
         path = self._config.output_dir / "suspend_d.parquet"
-        if path.exists():
+        if (path.exists() and not self._config.refresh_current
+                and not self._must_retry("suspend_d", "file")):
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult("suspend_d", 0, 0, skipped=1)
         if self._config.dry_run:
@@ -397,7 +406,9 @@ class TushareFetcher:
         end_year = int(self._config.end_date[:4])
         for idx in self._config.indices:
             path = out_root / f"{idx}.parquet"
-            if path.exists():
+            # index_weight is exempt from refresh_current, but a prior-manifest
+            # hole still forces a re-attempt (its file may be yesterday's).
+            if path.exists() and not self._must_retry("index_weight", f"index={idx}"):
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
                 continue
@@ -535,9 +546,20 @@ class TushareFetcher:
                 year_start = self._config.start_date
             if year_end > self._config.end_date:
                 year_end = self._config.end_date
+            # P3-6a: refresh_current re-pulls the FINAL year of the requested
+            # range (for a daily update, end_date = today, so this is the
+            # current year). Past years stay resume-skipped — their files are
+            # closed history — EXCEPT units the prior manifest recorded a hole
+            # for (codex P1: a refresh failure leaves yesterday's file; after a
+            # year boundary the unit is no longer the final year, so without
+            # the force-retry it would be shadowed forever and its hole
+            # wrongly dropped as self-healed by the next merge).
+            refresh_year = self._config.refresh_current and year == end_year
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
-                if path.exists():
+                unit = f"ts_code={ticker} year={year}"
+                if (path.exists() and not refresh_year
+                        and not self._must_retry(endpoint, unit)):
                     skipped += 1
                     continue
                 if self._config.dry_run:

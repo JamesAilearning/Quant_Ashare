@@ -1,0 +1,46 @@
+"""Neutral fetch-outcome DTOs shared across layer boundaries (P3-6b).
+
+These dataclasses are the CONTRACT between the fetcher and everything
+downstream of it — the fetch manifest (P3-4b), the bundle integrity stamp
+(P3-4c), and read-only consumers like the operator UI's 数据检视 page. They
+live in their own dependency-free module so that READING a manifest or a
+stamp never imports the fetcher/client network stack: the UI inspector must
+stay import-clean of fetch machinery (its read-only governance contract),
+and ``src.data.tushare.fetcher`` re-exports these names unchanged for every
+existing importer.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class TushareFetchResult:
+    """Per-endpoint summary returned by ``TushareFetcher.fetch``."""
+
+    endpoint: str
+    files_written: int
+    rows_total: int
+    skipped: int = 0
+
+
+@dataclass(frozen=True)
+class FetchHole:
+    """A unit that could not be fetched after exhausting retryable retries.
+
+    Recorded by the per-endpoint loops under continue-on-error (P3-4a) and
+    surfaced via ``TushareFetcher.holes``. ``last_error`` is the client's
+    already-sanitised error string (the token never appears in
+    ``TushareClientError`` messages — ``client.py`` is the secrets boundary);
+    ``unit`` is a stable human/JSON label so P3-4b can persist it verbatim.
+    """
+
+    endpoint: str
+    unit: str
+    reason_class: str
+    attempts: int
+    last_error: str
+
+
+__all__ = ["FetchHole", "TushareFetchResult"]

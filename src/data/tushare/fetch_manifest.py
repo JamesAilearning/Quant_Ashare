@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.data.tushare.fetcher import FetchHole, TushareFetchResult
+from src.data.tushare.fetch_types import FetchHole, TushareFetchResult
 
 SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "fetch_manifest.json"
