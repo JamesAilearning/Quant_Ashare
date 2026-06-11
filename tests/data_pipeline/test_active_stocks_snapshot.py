@@ -47,9 +47,26 @@ class EmbeddedSnapshotDateTests(unittest.TestCase):
         with self.assertRaisesRegex(SnapshotDateError, "distinct"):
             embedded_snapshot_date(df)
 
+    def test_partially_null_column_loud(self) -> None:
+        # codex P2: a hand-merged old+new file (some rows stamped, some null)
+        # must fail loud — dropna() must not bless the surviving date.
+        df = pd.DataFrame({
+            "ts_code": ["000001.SZ", "000002.SZ"],
+            SNAPSHOT_DATE_COLUMN: ["20260610", None],
+        })
+        with self.assertRaisesRegex(SnapshotDateError, "null on 1 of 2"):
+            embedded_snapshot_date(df)
+
     def test_non_yyyymmdd_loud(self) -> None:
         df = pd.DataFrame({SNAPSHOT_DATE_COLUMN: ["2026-06-10"]})
         with self.assertRaisesRegex(SnapshotDateError, "not YYYYMMDD"):
+            embedded_snapshot_date(df)
+
+    def test_seven_digit_value_loud_not_reinterpreted(self) -> None:
+        # codex P2: %Y%m%d would leniently parse '2026061' as 2026-06-01 — the
+        # exact-8-digit shape check must fire first, not reinterpret the stamp.
+        df = pd.DataFrame({SNAPSHOT_DATE_COLUMN: ["2026061"]})
+        with self.assertRaisesRegex(SnapshotDateError, "exactly 8 digits"):
             embedded_snapshot_date(df)
 
 

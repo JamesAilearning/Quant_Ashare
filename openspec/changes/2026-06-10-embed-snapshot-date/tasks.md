@@ -19,7 +19,10 @@
 - [x] EMBED ROUND-TRIP: fetch with injected date → both buckets stamped, single
       distinct value, reader round-trips.
 - [x] ACCESSOR: missing column → loud (old-format); all-null/empty → loud;
-      multiple distinct → loud; non-YYYYMMDD → loud.
+      multiple distinct → loud; non-YYYYMMDD → loud; PARTIALLY-null (hand-merged
+      old+new) → loud, dropna must not bless the survivor (codex P2); 7-digit
+      value → loud via exact-8-digit shape check, strptime's lenient %Y%m%d must
+      not reinterpret it (codex P2).
 - [x] GUARD: embedded date stale vs as-of → refuses (mtime fresh — must not
       matter); fresh embedded → passes + returns date; old-format → loud;
       conflicting dates → loud.

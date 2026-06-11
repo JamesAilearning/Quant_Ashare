@@ -42,7 +42,18 @@ def embedded_snapshot_date(df: pd.DataFrame, *, source: str = "snapshot") -> dat
             "before the snapshot-date stamp existed (P3-5). Re-fetch stock_basic "
             "to regenerate it; refusing to guess from file mtime."
         )
-    values = df[SNAPSHOT_DATE_COLUMN].dropna().unique()
+    column = df[SNAPSHOT_DATE_COLUMN]
+    # EVERY row must carry the stamp: a partially-null column is a hand-merged
+    # old+new file — dropping the nulls and returning the surviving date would
+    # bless exactly the corrupt shape this contract exists to refuse (codex P2).
+    null_count = int(column.isna().sum())
+    if null_count > 0 and null_count < len(column):
+        raise SnapshotDateError(
+            f"{source} '{SNAPSHOT_DATE_COLUMN}' is null on {null_count} of "
+            f"{len(column)} row(s); every row must carry the stamp. The file "
+            "looks hand-merged from old and new snapshots — re-fetch stock_basic."
+        )
+    values = column.dropna().unique()
     if len(values) == 0:
         raise SnapshotDateError(
             f"{source} '{SNAPSHOT_DATE_COLUMN}' column carries no value "
@@ -55,6 +66,14 @@ def embedded_snapshot_date(df: pd.DataFrame, *, source: str = "snapshot") -> dat
             "one. Refusing to pick — the file looks corrupt or hand-merged."
         )
     raw = str(values[0])
+    # Exact shape BEFORE strptime: %Y%m%d is lenient (a 7-digit '2026061'
+    # parses as 2026-06-01) and this date drives the staleness + consistency
+    # guards — a malformed stamp must fail loud, not be reinterpreted (codex P2).
+    if len(raw) != 8 or not raw.isdigit():
+        raise SnapshotDateError(
+            f"{source} '{SNAPSHOT_DATE_COLUMN}' value {raw!r} is not YYYYMMDD "
+            "(exactly 8 digits)."
+        )
     try:
         return datetime.strptime(raw, "%Y%m%d").date()
     except ValueError as exc:
