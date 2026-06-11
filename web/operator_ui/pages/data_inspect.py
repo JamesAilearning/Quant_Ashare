@@ -17,6 +17,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from src.core.qlib_runtime import QlibRuntimeInitError
 from src.data.pit.bundle_integrity import (
     BundleIntegrityError,
     read_bundle_integrity,
@@ -122,6 +123,15 @@ if st.button("运行校验(只读,可能需要数十秒)"):
                 report = PITValidator(provider_dir, reg).validate()
             except PITValidatorError as exc:
                 st.error(f"校验无法运行:{exc}")
+            except QlibRuntimeInitError as exc:
+                # codex P2: qlib is a per-process singleton — once this UI
+                # process initialized it for one provider, validating a
+                # DIFFERENT provider_uri cannot re-init. Render a controlled
+                # error instead of crashing the read-only page.
+                st.error(
+                    f"qlib 已在本 UI 进程中用另一 provider 初始化,无法切换:{exc} "
+                    "重启 UI 后再校验这个 bundle。"
+                )
             else:
                 badge = "🟢 全部通过" if report.exit_code == 0 else (
                     "🟡 有警告" if report.exit_code == 1 else "🔴 有失败"

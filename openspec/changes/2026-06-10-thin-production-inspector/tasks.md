@@ -15,6 +15,10 @@
 - [x] 01–06 path residue audit: P3-6a Step 0 verified all six scripts are
       pure-argparse with explicit paths — nothing to change.
 
+- [x] codex P2: a qlib singleton re-init for a DIFFERENT provider_uri in the
+      same UI process (QlibRuntimeInitError) renders a controlled error with a
+      restart instruction instead of crashing the read-only page.
+
 ## 2. Tests
 - [x] GOVERNANCE (red line): page source contains NO write-side filesystem API;
       NO import of builder / fetcher / orchestrator machinery (import-line
