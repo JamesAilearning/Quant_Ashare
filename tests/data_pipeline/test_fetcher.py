@@ -27,7 +27,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.tushare.client import TushareClientError  # noqa: E402
+from src.data.tushare.client import (  # noqa: E402
+    KIND_AUTH,
+    KIND_ENVIRONMENT,
+    KIND_NETWORK,
+    KIND_PARAM,
+    KIND_RATE_LIMIT,
+    KIND_SERVER_ERROR,
+    KIND_UNKNOWN,
+    TushareClientError,
+    classify_tushare_failure,
+)
 from src.data.tushare.fetcher import (  # noqa: E402
     ENDPOINTS,
     FetchHoleError,
@@ -1144,6 +1154,180 @@ class CliExitCodeTests(unittest.TestCase):
                     "--rate-limit-sleep-ms", "0",
                 ])
         self.assertEqual(rc, 3)
+
+
+class KindFirstClassificationTests(unittest.TestCase):
+    """P3-7: the structured ``kind`` stamped by the client is the PRIMARY
+    retryability signal; message substrings are consulted ONLY for errors
+    constructed without a kind (legacy / direct constructions).
+
+    The regression these tests pin: ``client.call`` used to append
+    "Common causes: rate limit (account tier too low), missing parameter,
+    or transient network error." to EVERY wrapped failure, so the
+    substring check classified every error — including invalid token /
+    missing permission — as retryable, and the P3-4a fast-abort path was
+    unreachable in production (the existing tests below construct BARE
+    messages, which is exactly the blind spot)."""
+
+    def test_kind_beats_retryable_looking_message(self) -> None:
+        # The pre-P3-7 bug shape: an auth failure whose WRAPPED message
+        # contains rate-limit / network prose. With a kind present, the
+        # message must be ignored entirely.
+        exc = TushareClientError(
+            "Tushare API 'daily' raised Exception: token无效. Common causes: "
+            "rate limit (account tier too low), missing parameter, or "
+            "transient network error.",
+            kind=KIND_AUTH,
+        )
+        self.assertFalse(TushareFetcher._is_retryable_error(exc))
+
+    def test_retryable_kinds_retry_regardless_of_message(self) -> None:
+        for kind in (KIND_RATE_LIMIT, KIND_NETWORK, KIND_SERVER_ERROR):
+            with self.subTest(kind=kind):
+                self.assertTrue(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError("opaque vendor text", kind=kind)
+                    )
+                )
+
+    def test_non_retryable_kinds_do_not_retry(self) -> None:
+        for kind in (KIND_AUTH, KIND_PARAM, KIND_ENVIRONMENT, KIND_UNKNOWN):
+            with self.subTest(kind=kind):
+                self.assertFalse(
+                    TushareFetcher._is_retryable_error(
+                        TushareClientError("opaque vendor text", kind=kind)
+                    )
+                )
+
+    def test_no_kind_falls_back_to_substrings(self) -> None:
+        # Legacy direct constructions (kind=None) keep the original
+        # substring semantics on both sides.
+        self.assertTrue(
+            TushareFetcher._is_retryable_error(
+                TushareClientError("returned None — rate limit exceeded")
+            )
+        )
+        self.assertFalse(
+            TushareFetcher._is_retryable_error(
+                TushareClientError("token无效，请确认设置的token是否正确")
+            )
+        )
+
+    def test_real_quota_message_with_quanxian_word_is_retryable(self) -> None:
+        # Tushare's REAL rate-limit body also contains "权限" — the
+        # classifier must rank the specific quota phrase above the auth
+        # tokens, or routine quota exhaustion would abort multi-hour runs.
+        raw = (
+            "Exception: 抱歉，您每分钟最多访问该接口500次，"
+            "权限的具体详情访问：https://tushare.pro/document/1?doc_id=108"
+        )
+        exc = TushareClientError(
+            f"Tushare API 'daily' raised {raw}",
+            kind=classify_tushare_failure(raw),
+        )
+        self.assertEqual(exc.kind, KIND_RATE_LIMIT)
+        self.assertTrue(TushareFetcher._is_retryable_error(exc))
+
+    def test_real_permission_message_is_not_retryable(self) -> None:
+        raw = "Exception: 抱歉，您没有访问该接口的权限"
+        exc = TushareClientError(
+            f"Tushare API 'index_weight' raised {raw}",
+            kind=classify_tushare_failure(raw),
+        )
+        self.assertEqual(exc.kind, KIND_AUTH)
+        self.assertFalse(TushareFetcher._is_retryable_error(exc))
+
+
+class FastAbortOnNonRetryableTests(unittest.TestCase):
+    """P3-7 acceptance: an invalid-token / permission failure aborts the
+    WHOLE run on the FIRST call — no retry loop, no backoff sleep, no hole
+    recorded (a hard abort is not a hole; 4a original design)."""
+
+    @staticmethod
+    def _classified(raw: str) -> TushareClientError:
+        # Shape errors exactly as the post-P3-7 client wraps them.
+        return TushareClientError(
+            f"Tushare API 'namechange' raised {raw}",
+            kind=classify_tushare_failure(raw),
+        )
+
+    def test_token_error_aborts_run_on_first_call(self) -> None:
+        client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                self._classified("Exception: token无效，请确认设置的token是否正确")
+            )
+        )
+        with patch("src.data.tushare.fetcher.time.sleep") as mock_sleep:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp),
+                    endpoints=("namechange", "suspend_d"),
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                with self.assertRaises(TushareClientError):
+                    fetcher.fetch()
+        # First call aborts the run: later endpoints never execute, the
+        # retry/backoff machinery never engages ("seconds, not minutes").
+        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(len(fetcher.holes), 0)
+        mock_sleep.assert_not_called()
+
+    def test_permission_error_aborts_run_on_first_call(self) -> None:
+        client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                self._classified("Exception: 抱歉，您没有访问该接口的权限")
+            )
+        )
+        with patch("src.data.tushare.fetcher.time.sleep") as mock_sleep:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp),
+                    endpoints=("namechange", "suspend_d"),
+                    rate_limit_sleep_ms=0,
+                )
+                fetcher = TushareFetcher(client, cfg)
+                with self.assertRaises(TushareClientError):
+                    fetcher.fetch()
+        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(len(fetcher.holes), 0)
+        mock_sleep.assert_not_called()
+
+    def test_param_error_aborts_while_rate_limit_still_holes(self) -> None:
+        # Contrast pair on the SAME run shape: a param error aborts, a
+        # quota error retries to exhaustion and becomes a hole.
+        param_client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                self._classified("Exception: 抱歉，参数错误，缺少必要的参数")
+            )
+        )
+        quota_client = _make_client(
+            lambda api, **p: (_ for _ in ()).throw(
+                self._classified(
+                    "Exception: 抱歉，您每分钟最多访问该接口500次，权限的具体详情"
+                )
+            )
+        )
+        with patch("src.data.tushare.fetcher.time.sleep"):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("namechange",),
+                    rate_limit_sleep_ms=0,
+                )
+                aborting = TushareFetcher(param_client, cfg)
+                with self.assertRaises(TushareClientError):
+                    aborting.fetch()
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("namechange",),
+                    rate_limit_sleep_ms=0,
+                )
+                holing = TushareFetcher(quota_client, cfg)
+                holing.fetch()  # does NOT raise
+        self.assertEqual(param_client.call.call_count, 1)
+        self.assertEqual(len(aborting.holes), 0)
+        self.assertGreater(quota_client.call.call_count, 1)  # retried
+        self.assertEqual(len(holing.holes), 1)
 
 
 if __name__ == "__main__":
