@@ -77,6 +77,15 @@ import pandas as pd
 from src.core.logger import get_logger
 from src.data.tushare.client import TushareClient, TushareClientError
 
+# Moved to the dependency-free fetch_types module (P3-6b) so that reading a
+# manifest / integrity stamp never imports this network stack; re-exported
+# here unchanged (the `as` form marks an explicit re-export for mypy) for
+# every existing importer.
+from src.data.tushare.fetch_types import FetchHole as FetchHole  # noqa: F401
+from src.data.tushare.fetch_types import (  # noqa: F401
+    TushareFetchResult as TushareFetchResult,
+)
+
 _logger = get_logger(__name__)
 
 
@@ -216,34 +225,6 @@ class TushareFetcherConfig:
             raise TushareFetcherError(
                 f"rate_limit_sleep_ms must be >= 0, got {self.rate_limit_sleep_ms}"
             )
-
-
-@dataclass(frozen=True)
-class TushareFetchResult:
-    """Per-endpoint summary returned by :meth:`TushareFetcher.fetch`."""
-
-    endpoint: str
-    files_written: int
-    rows_total: int
-    skipped: int = 0
-
-
-@dataclass(frozen=True)
-class FetchHole:
-    """A unit that could not be fetched after exhausting retryable retries.
-
-    Recorded by the per-endpoint loops under continue-on-error (P3-4a) and
-    surfaced via :attr:`TushareFetcher.holes`. ``last_error`` is the client's
-    already-sanitised error string (the token never appears in
-    ``TushareClientError`` messages — ``client.py`` is the secrets boundary);
-    ``unit`` is a stable human/JSON label so P3-4b can persist it verbatim.
-    """
-
-    endpoint: str
-    unit: str
-    reason_class: str
-    attempts: int
-    last_error: str
 
 
 class TushareFetcher:

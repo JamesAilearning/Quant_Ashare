@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.data.tushare.fetcher import FetchHole
+from src.data.tushare.fetch_types import FetchHole
 
 SCHEMA_VERSION = 1
 INTEGRITY_FILENAME = "_fetch_integrity.json"

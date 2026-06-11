@@ -13,6 +13,7 @@ must not contain any write-side filesystem API.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -24,6 +25,7 @@ from src.data.pit.bundle_integrity import (
 )
 from src.data.pit.pit_validator import PITValidator, PITValidatorError
 from web.operator_ui.bundle_health import (
+    _expand_env,
     resolve_default_provider_uri,
     summarise_bundle_health,
 )
@@ -49,7 +51,11 @@ if not provider_uri.strip():
     st.info("配置 provider_uri 后即可检视。")
     st.stop()
 
-provider_dir = Path(provider_uri.strip())
+# codex P2: accept the same path forms supported elsewhere — expand
+# `${VAR:-default}` references (config-loader style, via the bundle_health
+# expander) and a `~` prefix — before the literal existence check, so a valid
+# production URI typed in a supported form is not rejected as missing.
+provider_dir = Path(os.path.expanduser(_expand_env(provider_uri.strip())))
 if not provider_dir.exists():
     st.error(f"目录不存在:{provider_dir}")
     st.stop()

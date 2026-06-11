@@ -19,10 +19,21 @@
       same UI process (QlibRuntimeInitError) renders a controlled error with a
       restart instruction instead of crashing the read-only page.
 
+- [x] codex P2: FetchHole / TushareFetchResult moved to the dependency-free
+      `src/data/tushare/fetch_types.py` (fetcher re-exports unchanged), so
+      reading a manifest / integrity stamp — and opening the inspector page —
+      never imports the fetcher/client network stack (was a TRANSITIVE pull
+      via bundle_integrity).
+- [x] codex P2: the typed provider_uri is expanded (`${VAR:-default}` + `~`)
+      before the existence check, matching the path forms supported elsewhere.
+
 ## 2. Tests
 - [x] GOVERNANCE (red line): page source contains NO write-side filesystem API;
       NO import of builder / fetcher / orchestrator machinery (import-line
-      scan); 检视生产 + 只读 copy present; page registered in navigation.
+      scan); 检视生产 + 只读 copy present; page registered in navigation;
+      PLUS a clean-interpreter subprocess check that importing the stamp
+      reader loads neither `src.data.tushare.fetcher` nor `client` (codex P2:
+      the direct-line scan missed transitive pulls).
 
 ## 3. Verification
 - [x] Governance test green; full fast suite + pit green; CI-scope ruff +

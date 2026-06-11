@@ -8,6 +8,8 @@ contract violation, regardless of whether it is currently reachable.
 """
 
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -70,6 +72,28 @@ class DataInspectReadOnlyTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIn("data_inspect.py", app)
+
+    def test_stamp_reader_import_chain_is_fetcher_free(self) -> None:
+        # codex P2: the DIRECT import-line scan above misses TRANSITIVE pulls —
+        # bundle_integrity once imported FetchHole from the fetcher, so merely
+        # opening the page loaded the tushare fetcher/client network stack.
+        # Machine-check the chain in a clean interpreter: importing the page's
+        # stamp reader must not load fetcher or client modules.
+        code = (
+            "import sys; sys.path.insert(0, r'" + str(PROJECT_ROOT) + "'); "
+            "import src.data.pit.bundle_integrity; "
+            "leaked = [m for m in ('src.data.tushare.fetcher', "
+            "'src.data.tushare.client') if m in sys.modules]; "
+            "assert not leaked, f'fetch machinery leaked: {leaked}'"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            f"transitive import check failed:\n{proc.stdout}\n{proc.stderr}",
+        )
 
 
 if __name__ == "__main__":
