@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -145,6 +146,26 @@ class StockBasicFetchTests(unittest.TestCase):
         self.assertEqual(r.rows_total, 10)
         self.assertEqual(r.skipped, 0)
         self.assertEqual({c[1] for c in calls}, {"L", "D"})
+
+    def test_embeds_snapshot_date_in_both_buckets(self) -> None:
+        # P3-5: both buckets carry an embedded snapshot_date column stamped with
+        # the (injected) fetch date — the staleness guards read THIS, not mtime.
+        from src.data.active_stocks_snapshot import embedded_snapshot_date
+
+        client = _make_client(lambda api, **p: _stock_basic_df(p["list_status"]))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("stock_basic",),
+                rate_limit_sleep_ms=0, now=date(2026, 6, 10),
+            )
+            TushareFetcher(client, cfg).fetch()
+            for fname in ("active_stocks.parquet", "delisted_stocks.parquet"):
+                df = pd.read_parquet(Path(tmp) / fname)
+                self.assertIn("snapshot_date", df.columns)
+                self.assertEqual(set(df["snapshot_date"]), {"20260610"})
+                self.assertEqual(
+                    embedded_snapshot_date(df, source=fname), date(2026, 6, 10),
+                )
 
     def test_resume_skips_existing(self) -> None:
         client = _make_client(lambda api, **p: _stock_basic_df(p["list_status"]))
