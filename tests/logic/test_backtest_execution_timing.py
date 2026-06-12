@@ -259,7 +259,7 @@ class ExecutionTimingContractTests(unittest.TestCase):
                 raise AssertionError(
                     "execution-timing probe subprocess failed "
                     f"(rc={proc.returncode}). stderr tail:\n"
-                    + "\n".join(proc.stderr.splitlines()[-15:])
+                    + "\n".join(proc.stderr.splitlines()[-40:])
                 )
             cls._verdict = json.loads(result_path.read_text(encoding="utf-8"))
 
