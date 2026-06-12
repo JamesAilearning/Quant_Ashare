@@ -34,10 +34,13 @@ the (now-fixed) T+1 fill.
 - **Lag remap** (`src/core/backtest_runner.py`): `signal_to_execution_lag`
   is the TOTAL signal→fill delay. The external restamp becomes `lag - 1`
   rows: lag=1 → no restamp (qlib's built-in shift IS the T+1); lag=N →
-  restamp N-1; lag=0 → restamp -1, making "explicit same-day execution"
-  REAL for the first time (loud WARNING; research-only look-ahead opt-in).
-  `_apply_lag` keeps its row-shift mechanics (now accepting -1) — only the
-  call-site mapping changes.
+  restamp N-1. lag=0 is REJECTED at the contract, pipeline and
+  walk-forward layers (codex P1 round 2): same-day execution would require
+  a backward restamp — look-ahead — while the canonical runner stamps every
+  output `metric_status=official`; the old "0 = explicit same-day
+  execution" wording was unimplementable anyway (it actually ran T+1).
+  `_apply_lag` keeps its row-shift mechanics and refuses negative rows as
+  defence in depth — only the call-site mapping changes.
 - **Execution-day mask keying**: both the microstructure mask and the ST
   mask now filter by the TRUE execution day (stamp + 1 trading day, per the
   qlib calendar). Masked (execution_day, instrument) pairs are translated

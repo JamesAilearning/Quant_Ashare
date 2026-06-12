@@ -336,11 +336,13 @@ class PipelineConfig:
                 f"{type(self.signal_to_execution_lag).__name__}; got "
                 f"{self.signal_to_execution_lag!r}."
             )
-        if self.signal_to_execution_lag < 0:
+        if self.signal_to_execution_lag < 1:
             raise PipelineError(
-                "PipelineConfig.signal_to_execution_lag must be >= 0; got "
-                f"{self.signal_to_execution_lag!r}. Use 0 only for explicit "
-                "same-day execution/no shift, and 1 for T+1 delayed execution."
+                "PipelineConfig.signal_to_execution_lag must be >= 1 (the "
+                "TOTAL signal→fill delay; 1 = T+1 execution); got "
+                f"{self.signal_to_execution_lag!r}. 0 (same-day) is rejected "
+                "on the canonical path — it would publish look-ahead results "
+                "as official metrics."
             )
         # Model hyperparameter sanity: reject definitely-wrong values
         # (zero/negative) at config construction so the operator does not

@@ -18,6 +18,12 @@ requires-python = ">=3.10,<3.13"
 #   spec-approved change.
 dependencies = [
   "numpy>=1.24,<2.0",
+  # scipy window that genuinely supports numpy<2: scipy>=1.16 wheels are
+  # numpy-2-era and import numpy.lib.array_utils (numpy>=2 only), which
+  # breaks qlib.backtest's import chain under the numpy pin above. Keep
+  # the two bounds in lockstep (also inlined in .github/workflows/test.yml
+  # for the qlib install step).
+  "scipy>=1.10,<1.14",
   "pandas>=2.0,<2.3",
   "pyarrow>=14",
   "ruamel.yaml>=0.17",

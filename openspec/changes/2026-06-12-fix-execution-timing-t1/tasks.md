@@ -53,6 +53,27 @@
 - [x] E2E regression fixtures intentionally NOT regenerated (REGEN batch
       owns it; the ±5% drift gate is RUN_E2E-only so CI stays green).
 
+## 3b. Codex rounds (PR #241)
+- [x] Round 1 P2: mask-remap calendar padded 20 calendar days before
+      evaluation_start — a prediction stamped on the trading day before the
+      window is consumed on the FIRST evaluation day, and that day's mask
+      entries must translate back to the pre-window stamp (regression:
+      `test_pre_window_stamp_masked_on_first_evaluation_day`).
+- [x] Round 2 P1: lag=0 REJECTED at contract + pipeline + walk-forward
+      layers (and UI min_value=1) — same-day fills require a backward
+      restamp (look-ahead) while the runner stamps every output official;
+      `_apply_lag` refuses negative rows as defence in depth; the four
+      zero-accept pins rewritten to rejection tests; spec delta scenario
+      flipped accordingly.
+- [x] CI root cause (exposed by the probe — the first fast test to
+      genuinely import qlib.backtest in CI): the unconstrained qlib install
+      resolved numpy-2-era wheels, then the project's numpy<2 pin downgraded
+      numpy and left scipy>=1.16 importing numpy.lib.array_utils →
+      ModuleNotFoundError on 3.11/3.12. Fixed by inlining the numpy/scipy
+      bounds into the workflow's qlib install and declaring the
+      scipy>=1.10,<1.14 window in pyproject (kept in lockstep with the
+      numpy pin).
+
 ## 4. Docs
 - [x] docs/audit_rebase_20260611.md A1/A3 rows marked fixed by this change.
 - [x] Correction record for the archived

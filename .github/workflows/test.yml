@@ -32,10 +32,19 @@ jobs:
       # workflow reported success. If the install becomes flaky in
       # practice, add a retry around the pip command rather than
       # bringing back the swallow. Audit P1-13.
+      # The qlib install MUST carry the same numpy/scipy bounds as
+      # pyproject: an unconstrained first resolve pulls numpy-2-era wheels
+      # (scipy>=1.16 etc.), then the second install downgrades numpy to <2
+      # per the project pin while leaving scipy compiled/written against
+      # numpy 2 — qlib.backtest's import chain then dies with
+      # "No module named 'numpy.lib.array_utils'" on 3.11/3.12 (3.10 dodges
+      # it only because new scipy wheels skip 3.10). Exposed by PR-C's
+      # execution-timing probe, the first fast test to genuinely import
+      # qlib.backtest in CI.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install git+https://github.com/microsoft/qlib.git@8fd6d5ca7eab59a69bf5c62f84e8b4e2a4e8910b
+          pip install "numpy>=1.24,<2.0" "scipy>=1.10,<1.14" git+https://github.com/microsoft/qlib.git@8fd6d5ca7eab59a69bf5c62f84e8b4e2a4e8910b
           pip install -e ".[dev]"
 
       - name: Lint (ruff)

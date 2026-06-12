@@ -364,9 +364,11 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "commission_rate"):
             PipelineConfig(provider_uri="/tmp/fake", commission_rate=True)
 
-    def test_accepts_zero_lag_as_explicit_same_day_execution(self) -> None:
-        cfg = PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
-        self.assertEqual(cfg.signal_to_execution_lag, 0)
+    def test_rejects_zero_lag_as_look_ahead(self) -> None:
+        # codex P1 on PR #241: lag=0 = same-day fill = backward restamp =
+        # look-ahead; rejected at the config layer like the canonical contract.
+        with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag"):
+            PipelineConfig(provider_uri="/tmp/fake", signal_to_execution_lag=0)
 
     def test_rejects_negative_lag(self) -> None:
         with self.assertRaisesRegex(PipelineError, "signal_to_execution_lag"):

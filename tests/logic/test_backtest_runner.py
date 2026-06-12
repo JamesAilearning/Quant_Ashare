@@ -104,8 +104,13 @@ class BacktestRunnerStructuralTests(unittest.TestCase):
                 predictions="dummy",
             )
 
-    def test_zero_lag_reaches_canonical_init_guard(self) -> None:
-        with self.assertRaisesRegex(BacktestRunnerError, "Canonical qlib runtime"):
+    def test_zero_lag_rejected_by_contract(self) -> None:
+        # codex P1 on PR #241: lag=0 (same-day fill) would need a backward
+        # restamp — look-ahead — while the canonical runner stamps every
+        # output official. The contract rejects it before anything runs.
+        with self.assertRaisesRegex(
+            CanonicalBacktestContractError, "signal_to_execution_lag",
+        ):
             BacktestRunner.run(
                 request=_make_request(signal_to_execution_lag=0),
                 predictions="dummy",
@@ -221,32 +226,15 @@ class SignalLagTests(unittest.TestCase):
         with self.assertRaisesRegex(BacktestRunnerError, "names must be"):
             BacktestRunner._apply_lag(swapped, 1)
 
-    def test_minus_one_row_restamps_backward_for_same_day_execution(self) -> None:
-        """``rows=-1`` (the lag=0 mapping) moves stamps one row EARLIER so
-        qlib's built-in shift consumes the day-T signal on T — the explicit
-        same-day-execution look-ahead opt-in (PR-C)."""
-        import pandas as pd
-
-        predictions = self._predictions()
-        shifted = BacktestRunner._apply_lag(predictions, -1)
-        # The day-2025-01-03 signal now sits on 2025-01-02.
-        self.assertEqual(
-            float(shifted.loc[(pd.Timestamp("2025-01-02"), "SH600000")]),
-            3.0,
-        )
-        # The last source date has nothing after it to pull back; its
-        # values drop.
-        self.assertNotIn(
-            pd.Timestamp("2025-01-06"),
-            set(shifted.index.get_level_values("datetime")),
-        )
-
-    def test_rows_below_minus_one_rejected(self) -> None:
-        """No valid signal_to_execution_lag maps below rows=-1."""
+    def test_negative_rows_rejected_as_look_ahead(self) -> None:
+        """A backward restamp would be look-ahead; the canonical contract
+        rejects lag<1 upstream, and ``_apply_lag`` refuses negative rows as
+        defence in depth (codex P1 on PR #241)."""
         from src.core.backtest_runner import BacktestRunnerError
 
-        with self.assertRaisesRegex(BacktestRunnerError, "not a valid"):
-            BacktestRunner._apply_lag(self._predictions(), -2)
+        for rows in (-1, -2):
+            with self.assertRaisesRegex(BacktestRunnerError, "look-ahead"):
+                BacktestRunner._apply_lag(self._predictions(), rows)
 
     def test_rejects_duplicate_prediction_index_before_unstack(self) -> None:
         import pandas as pd

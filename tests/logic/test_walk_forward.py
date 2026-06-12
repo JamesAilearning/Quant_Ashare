@@ -183,9 +183,11 @@ class WalkForwardConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(WalkForwardError, "n_drop"):
             WalkForwardConfig(n_drop=-1)
 
-    def test_accepts_zero_signal_to_execution_lag_as_explicit_same_day(self):
-        cfg = WalkForwardConfig(signal_to_execution_lag=0)
-        self.assertEqual(cfg.signal_to_execution_lag, 0)
+    def test_rejects_zero_signal_to_execution_lag_as_look_ahead(self):
+        # codex P1 on PR #241: lag=0 = same-day fill = backward restamp =
+        # look-ahead; rejected at the config layer like the canonical contract.
+        with self.assertRaisesRegex(WalkForwardError, "signal_to_execution_lag"):
+            WalkForwardConfig(signal_to_execution_lag=0)
 
     def test_rejects_negative_signal_to_execution_lag(self):
         with self.assertRaisesRegex(WalkForwardError, "signal_to_execution_lag"):

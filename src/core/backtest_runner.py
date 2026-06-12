@@ -291,12 +291,12 @@ class BacktestRunner:
         # one-trading-day delay. ``signal_to_execution_lag`` is the TOTAL
         # signal→fill delay, so the external restamp applied here is
         # ``lag - 1`` rows: lag=1 (T+1 execution, the default) needs NO
-        # external restamp; lag=2 restamps one row; lag=0 — the explicit
-        # same-day-execution opt-in — restamps MINUS one row so qlib consumes
-        # the day-T signal on T itself (deliberate look-ahead, research
-        # only). Before PR-C the full lag was restamped ON TOP of qlib's
-        # built-in shift, so every official backtest filled on T+2 and traded
-        # a one-day-stale signal.
+        # external restamp; lag=2 restamps one row. lag=0 is REJECTED by the
+        # canonical contract — same-day fills require a backward restamp
+        # (look-ahead) and this runner stamps every output official (codex
+        # P1 on PR #241). Before PR-C the full lag was restamped ON TOP of
+        # qlib's built-in shift, so every official backtest filled on T+2
+        # and traded a one-day-stale signal.
         shifted_predictions = cls._apply_lag(
             predictions, request.signal_to_execution_lag - 1,
         )
@@ -850,9 +850,13 @@ class BacktestRunner:
 
             # lag=1 (T+1 fill, default):  rows=0   → stamps unchanged
             # lag=2 (T+2 fill):           rows=1   → stamps move to T+1
-            # lag=0 (same-day fill):      rows=-1  → stamps move to T-1,
-            #   so qlib consumes the day-T signal ON day T — an explicit
-            #   look-ahead opt-in for research, never for official runs.
+
+        ``lag=0`` (same-day fill) is REJECTED upstream by the canonical
+        contract: it would require restamping signals BACKWARD —
+        look-ahead — while this runner stamps every output
+        ``metric_status=official`` (codex P1 on PR #241). Negative
+        ``rows`` therefore cannot arise from a valid config and are
+        refused here as defence in depth.
 
         The pre-PR-C implementation restamped the FULL lag on top of
         qlib's built-in shift, so the default lag=1 filled on T+2 and
@@ -861,15 +865,14 @@ class BacktestRunner:
         Shifting is row-wise within the prediction's own date set
         (``unstack`` by date then ``shift``), which equals trading-day
         shifting when the index is a trading-day calendar. ``rows=0``
-        returns the input unchanged after shape validation; ``rows``
-        below ``-1`` cannot arise from a valid config
-        (``signal_to_execution_lag >= 0`` upstream) and is rejected.
+        returns the input unchanged after shape validation.
         """
-        if rows < -1:
+        if rows < 0:
             raise BacktestRunnerError(
-                f"BacktestRunner._apply_lag: restamp of {rows} rows is not a "
-                "valid signal_to_execution_lag mapping (lag >= 0 ⇒ rows >= "
-                "-1). Refusing."
+                f"BacktestRunner._apply_lag: restamp of {rows} rows would "
+                "move signals backward (look-ahead). The canonical contract "
+                "rejects signal_to_execution_lag < 1, so this cannot arise "
+                "from a valid config. Refusing."
             )
         # Validate predictions shape *before* the lag=0 short-circuit so
         # the same-day-execution path cannot bypass the structural
@@ -916,13 +919,6 @@ class BacktestRunner:
         if rows == 0:
             # lag=1: qlib's built-in shift IS the entire T+1 delay.
             return predictions
-        if rows == -1:
-            _logger.warning(
-                "BacktestRunner: signal_to_execution_lag=0 -> restamping "
-                "signals one row BACKWARD so qlib fills them same-day. This "
-                "is an explicit look-ahead opt-in for research; official "
-                "metrics must use lag>=1."
-            )
         # MultiIndex (datetime, instrument): shift the datetime level.
         # ``unstack()`` pivots instrument to columns so ``shift(rows)``
         # moves every instrument's date stamps by the same number of

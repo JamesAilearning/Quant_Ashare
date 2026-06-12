@@ -250,12 +250,14 @@ class WalkForwardConfig:
         if (
             not isinstance(self.signal_to_execution_lag, int)
             or isinstance(self.signal_to_execution_lag, bool)
-            or self.signal_to_execution_lag < 0
+            or self.signal_to_execution_lag < 1
         ):
             raise WalkForwardError(
-                "signal_to_execution_lag must be an int >= 0; got "
-                f"{self.signal_to_execution_lag!r}. Use 0 only for explicit "
-                "same-day execution/no shift, and 1 for T+1 delayed execution."
+                "signal_to_execution_lag must be an int >= 1 (the TOTAL "
+                "signal→fill delay; 1 = T+1 execution); got "
+                f"{self.signal_to_execution_lag!r}. 0 (same-day) is rejected "
+                "on the canonical path — it would publish look-ahead results "
+                "as official metrics."
             )
         if self.adjust_mode not in SUPPORTED_ADJUST_MODES:
             raise WalkForwardError(

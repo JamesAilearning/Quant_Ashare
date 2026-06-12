@@ -10,10 +10,11 @@ INCLUSIVE of qlib's built-in one-day consumption shift
 (`TopkDropoutStrategy` consumes, on trade day D, the signal stamped D-1).
 The external restamp applied by the runner SHALL therefore be `lag - 1`
 trading rows: `1` (the default) SHALL apply no external restamp and fill on
-T+1; values above `1` SHALL restamp by exactly `lag - 1` rows; `0` SHALL
-restamp backward by one row, producing REAL same-day execution — an
-explicit look-ahead opt-in for research, never for official runs, and
-loudly logged. Negative values and booleans SHALL be rejected.
+T+1; values above `1` SHALL restamp by exactly `lag - 1` rows. `0` SHALL be
+REJECTED on the canonical path: same-day execution requires restamping
+signals backward — look-ahead — and the canonical runner stamps every
+output `metric_status=official`, so a look-ahead run could masquerade as
+official. Negative values and booleans SHALL likewise be rejected.
 
 #### Scenario: default lag fills on the next trading day
 - **WHEN** a caller supplies `signal_to_execution_lag=1` and a signal
@@ -21,11 +22,11 @@ loudly logged. Negative values and booleans SHALL be rejected.
 - **THEN** `BacktestRunner` applies no external restamp
 - **AND** the position first exists on T+1 through the real qlib path
 
-#### Scenario: zero lag is real same-day execution
+#### Scenario: zero lag is rejected as look-ahead
 - **WHEN** a caller supplies `signal_to_execution_lag=0`
-- **THEN** `CanonicalBacktestContract.validate_input` accepts the request
-- **AND** `BacktestRunner` restamps signals one row backward with a WARNING
-  naming the look-ahead
+- **THEN** `CanonicalBacktestContract.validate_input` raises
+  `CanonicalBacktestContractError`
+- **AND** the pipeline and walk-forward config layers reject it identically
 
 #### Scenario: lag two restamps one row
 - **WHEN** a caller supplies `signal_to_execution_lag=2`
