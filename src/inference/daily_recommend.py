@@ -585,26 +585,39 @@ def recommend(
         )
 
     # Normalise score index to a flat instrument -> score map for T. Fail-loud
-    # on a multi-date index or duplicate instruments rather than letting
-    # dict(zip) silently drop a key (see _scores_to_inst_map).
-    score_by_inst = _scores_to_inst_map(scores)
+    # on a multi-date index, a date other than T, or duplicate instruments
+    # rather than letting dict(zip) silently drop a key (see
+    # _scores_to_inst_map). Pinning the stamp == as_of_date (PR-C) makes the
+    # live timing contract explicit: this is a day-T signal for entry on the
+    # next trading session — the SAME semantics as the canonical backtest's
+    # lag=1 (signal stamped T, filled T+1 via qlib's built-in shift), so
+    # backtested and live behavior coincide by construction.
+    score_by_inst = _scores_to_inst_map(scores, expected_date=as_of_date)
 
-    # 3. Tradability mask (suspension / one-price-lock) on T.
+    # 3. Tradability mask (suspension / one-price-lock) on the ENTRY day —
+    # the day the recommendation would actually fill (codex P1 round 4 on
+    # PR #241, matching the backtest's execution-day masking). This is NOT
+    # look-ahead: ``resolve_dates`` requires the entry session to exist in
+    # the bundle calendar (the default as-of is the second-to-last day), so
+    # the entry day's bars are already on disk at decision time. A name
+    # tradable on T but suspended/one-price-locked on T+1 must not be
+    # emitted — the lag=1 backtest drops the same T-stamped signal by
+    # execution day.
     pit = _build_pit_provider(config)
     try:
         mask_result = compute_unavailable_mask(
-            list(score_by_inst.keys()), as_of_date, as_of_date, pit_provider=pit,
+            list(score_by_inst.keys()), entry_date, entry_date, pit_provider=pit,
         )
     except MicrostructureMaskError as exc:
         raise DailyRecommendationError(
-            f"tradability mask failed for {as_of_date}: {exc}"
+            f"tradability mask failed for entry day {entry_date}: {exc}"
         ) from exc
     # compute_unavailable_mask is the AUTHORITATIVE untradable set (the
     # reused canonical filter). It returns aggregate per-regime counts but
     # not per-name regime membership, so _per_regime_sets supplies the
     # precise reason label for the audit column.
-    masked_pairs = {inst for (d, inst) in mask_result.masked if d == as_of_date}
-    suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), as_of_date)
+    masked_pairs = {inst for (d, inst) in mask_result.masked if d == entry_date}
+    suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), entry_date)
 
     # 4. Names + current-ST exclusion set. The name source is REQUIRED here
     # (fail-loud if missing/stale): it supplies both display names AND the
@@ -672,7 +685,9 @@ def assert_no_lookahead(feature_frame: pd.DataFrame, as_of_date: str) -> pd.Time
     return max_dt
 
 
-def _scores_to_inst_map(scores: pd.Series) -> dict[str, float]:
+def _scores_to_inst_map(
+    scores: pd.Series, *, expected_date: str | None = None,
+) -> dict[str, float]:
     """Collapse a single-as-of-date prediction Series to ``{instrument: score}``.
 
     ``scores`` is the qlib ``model.predict`` output for the ``[T, T]`` infer
@@ -711,6 +726,23 @@ def _scores_to_inst_map(scores: pd.Series) -> dict[str, float]:
                 "date. The instrument->score map would alias the same "
                 "instrument across days. Refusing to emit a list."
             )
+        # PR-C timing pin: the single stamp must BE the as-of date. The
+        # earlier guards only enforced "single date" and "<= T" (no
+        # look-ahead); a stale `< T` stamp — e.g. an infer segment that
+        # silently resolved to an older session — would have passed and
+        # emitted yesterday's list labelled as today's.
+        if expected_date is not None and datetimes:
+            actual = next(iter(datetimes))
+            actual_iso = (
+                actual.date().isoformat() if hasattr(actual, "date")
+                else str(actual)[:10]
+            )
+            if actual_iso != expected_date:
+                raise DailyRecommendationError(
+                    f"prediction is stamped {actual_iso} but the requested "
+                    f"as-of date is {expected_date}. A stale stamp would emit "
+                    "an older session's list labelled as today's. Refusing."
+                )
         instruments = list(idx.get_level_values(-1))
     else:
         instruments = list(idx)

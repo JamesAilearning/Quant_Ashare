@@ -1029,7 +1029,11 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
     agg = wf_report.get("aggregate_metrics", {}) if isinstance(wf_report.get("aggregate_metrics"), Mapping) else {}
     st.subheader("聚合指标")
     cols = st.columns(4)
-    cols[0].metric("平均 IC (1d)", fmt_metric(agg.get("mean_ic_1d")))
+    cols[0].metric(
+        "平均 IC (1d, T+1对齐)",
+        fmt_metric(agg.get("mean_ic_1d")),
+        help="标签对齐口径：score_T 对 T+1→T+2 收益（与训练标签、回测 T+1 成交一致，PR-C）",
+    )
     cols[1].metric("平均 IR", fmt_metric(agg.get("mean_information_ratio")))
     cols[2].metric("平均收益", fmt_metric(agg.get("mean_annualized_return")))
     cols[3].metric("最差回撤", fmt_metric(agg.get("worst_drawdown")))

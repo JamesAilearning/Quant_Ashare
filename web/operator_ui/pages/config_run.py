@@ -471,7 +471,13 @@ with form_col:
             topk = st.number_input("持仓数 (topk)", value=_cr("topk", 50), min_value=1, key="cr_topk")
             n_drop = st.number_input("调仓换出数 (n_drop)", value=_cr("n_drop", 5), min_value=0, key="cr_n_drop")
         with sc2:
-            signal_to_execution_lag = st.number_input("信号到执行延迟 (signal_to_execution_lag)", value=_cr("signal_to_execution_lag", 1), min_value=0, key="cr_signal_to_execution_lag")
+            signal_to_execution_lag = st.number_input(
+                "信号到执行延迟 (signal_to_execution_lag)",
+                value=_cr("signal_to_execution_lag", 1),
+                min_value=1,
+                key="cr_signal_to_execution_lag",
+                help="总延迟（含 qlib 内建一日位移）：1 = T+1 执行。0（当日执行=前视）在正典路径被拒绝。",
+            )
             benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300"), key="cr_benchmark_code")
 
     # --- Compute section ---

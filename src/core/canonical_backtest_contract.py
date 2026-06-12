@@ -812,11 +812,15 @@ class CanonicalBacktestContract:
             raise CanonicalBacktestContractError(
                 f"signal_to_execution_lag must be an int, got {type(request.signal_to_execution_lag).__name__}."
             )
-        if request.signal_to_execution_lag < 0:
+        if request.signal_to_execution_lag < 1:
             raise CanonicalBacktestContractError(
-                "signal_to_execution_lag must be >= 0; use 0 only for explicit "
-                "same-day execution/no shift, and 1 for T+1 delayed execution. "
-                f"got {request.signal_to_execution_lag}."
+                "signal_to_execution_lag must be >= 1 (the TOTAL signal→fill "
+                "delay; 1 = T+1 execution via qlib's built-in shift). 0 is "
+                "REJECTED on the canonical path: same-day execution requires "
+                "restamping signals backward — look-ahead — and the canonical "
+                "runner stamps every output metric_status=official, so a "
+                "look-ahead run could masquerade as official (codex P1 on "
+                f"PR #241). got {request.signal_to_execution_lag}."
             )
 
         if not str(request.benchmark_code or "").strip():

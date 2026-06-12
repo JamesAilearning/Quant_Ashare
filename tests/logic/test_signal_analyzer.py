@@ -205,6 +205,65 @@ class NaNPropagationTests(unittest.TestCase):
         self.assertEqual(result.ic_summary[1]["num_days"], 0)
 
 
+class IcConventionTests(unittest.TestCase):
+    """Pin the PR-C IC convention sharply: prices are crafted so the
+    label-aligned window (T+1 → T+2) is PERFECTLY rank-aligned with the
+    scores while the legacy stamp-day window (T → T+1) is perfectly
+    anti-aligned. The headline must read +1 and the demoted secondary
+    -1 — any regression to the old convention flips the sign."""
+
+    @staticmethod
+    def _panel():
+        n = 12  # >= MIN_IC_OBSERVATIONS_PER_LAG joint observations
+        dates = pd.to_datetime(["2025-01-06", "2025-01-07", "2025-01-08"])
+        insts = [f"SH60{i:04d}" for i in range(n)]
+        rows = []
+        for i, inst in enumerate(insts, start=1):
+            d0 = 100.0
+            d1 = d0 * (1 + (n + 1 - i) * 0.01)  # stamp-day ret falls with score
+            d2 = d1 * (1 + i * 0.01)            # label ret rises with score
+            for dt, px in zip(dates, (d0, d1, d2), strict=True):
+                rows.append((dt, inst, px))
+        frame = pd.DataFrame(rows, columns=["datetime", "instrument", "close"])
+        returns_data = frame.set_index(["datetime", "instrument"]).sort_index()
+        predictions = pd.Series(
+            [float(i) for i in range(1, n + 1)],
+            index=pd.MultiIndex.from_tuples(
+                [(dates[0], inst) for inst in insts],
+                names=["datetime", "instrument"],
+            ),
+        )
+        return predictions, returns_data
+
+    def test_headline_is_label_aligned_and_secondary_is_stamp_day(self) -> None:
+        predictions, returns_data = self._panel()
+        with patch(
+            "src.core.signal_analyzer.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            SignalAnalyzer, "_fetch_returns", return_value=returns_data,
+        ):
+            result = SignalAnalyzer.analyze(
+                predictions,
+                SignalAnalysisConfig(forward_periods=(1,), compute_turnover=False),
+            )
+        summary = result.ic_summary[1]
+        self.assertAlmostEqual(summary["mean_ic"], 1.0, places=6)
+        self.assertAlmostEqual(summary["mean_ic_stamp_day"], -1.0, places=6)
+        self.assertEqual(summary["convention"], "label_aligned_t1_entry")
+
+    def test_compute_daily_ic_entry_offset_arithmetic(self) -> None:
+        predictions, returns_data = self._panel()
+        label_ic = SignalAnalyzer._compute_daily_ic(
+            predictions, returns_data, 1, "rank", entry_offset=1,
+        )
+        stamp_ic = SignalAnalyzer._compute_daily_ic(
+            predictions, returns_data, 1, "rank", entry_offset=0,
+        )
+        self.assertAlmostEqual(float(label_ic.dropna().iloc[0]), 1.0, places=6)
+        self.assertAlmostEqual(float(stamp_ic.dropna().iloc[0]), -1.0, places=6)
+
+
 class CalendarWarningTests(unittest.TestCase):
     """_extend_end_trading_days must log WARNING (not silently fallback).
 
