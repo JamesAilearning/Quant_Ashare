@@ -37,6 +37,15 @@
       the strict any-NaN condition mirroring qlib's own trade_unit
       degradation rule.
 
+## 2c. Codex round 2 (PR #242)
+- [x] P2: the exchange's quote universe is bounded to the candidate set +
+      benchmark (`exchange_kwargs["codes"]`) — without it qlib loads the
+      ENTIRE provider and a missing $factor anywhere disables round lots
+      for the whole run, making any candidate-scoped preflight untruthful.
+      With codes bounded, qlib's degradation scope and the preflight scope
+      are provably identical (and the quote load shrinks). Runtime pin
+      extended to assert `codes`.
+
 ## 3. Verification
 - [x] Step-0 ritual: with the runner fix stashed, both limit probes FAIL
       (fills happen); with the fix, the full probe file + runner suite is

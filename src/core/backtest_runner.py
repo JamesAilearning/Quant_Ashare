@@ -345,21 +345,33 @@ class BacktestRunner:
             for inst in shifted_predictions.index.get_level_values("instrument").unique()
         })
 
+        # Bound the exchange's quote universe to what this run can actually
+        # trade (codex P2 round 2 on PR #242): without ``codes``, qlib loads
+        # the provider's ENTIRE universe and a missing ``$factor`` anywhere
+        # in it disables trade_unit for the whole run — so any preflight
+        # would have to mirror that global scan to be truthful. Restricting
+        # ``codes`` to the candidate set makes qlib's degradation scope and
+        # the preflight scope below provably IDENTICAL, and trims the quote
+        # load. The benchmark is included defensively (never traded;
+        # harmless). The strategy only ever trades names from the signal,
+        # and positions originate from prior signal days, so nothing
+        # tradeable lives outside this set.
+        exchange_codes = sorted({*instruments_in_predictions, request.benchmark_code})
+        exchange_kwargs["codes"] = exchange_codes
+
         # Round-lot capability preflight (PR-D): qlib's Exchange switches to
         # adjusted-price mode and DISABLES trade_unit — fractional fills
         # instead of 100-share A-share round lots — as soon as ANY quoted
         # row lacks a usable ``$factor``, and says so only in its own
-        # low-visibility log. Probe the ACTUAL candidate universe plus the
-        # benchmark (codex P2 on PR #242: a factor-bearing benchmark must
-        # not suppress the warning when traded names lack factor), with the
-        # strict any-NaN condition mirroring qlib's own degradation rule.
-        # Diagnostic only (warning, never a block): an unprobeable provider
-        # is reported the same way rather than failing the official path
-        # over a diagnostic.
+        # low-visibility log. Probe EXACTLY the universe the exchange will
+        # load (``exchange_codes`` above), with the strict any-NaN condition
+        # mirroring qlib's own degradation rule. Diagnostic only (warning,
+        # never a block): an unprobeable provider is reported the same way
+        # rather than failing the official path over a diagnostic.
         try:
             from qlib.data import D as _factor_D
             _factor_probe = _factor_D.features(
-                sorted({*instruments_in_predictions, request.benchmark_code}),
+                exchange_codes,
                 ["$factor"],
                 start_time=request.evaluation_start,
                 end_time=request.evaluation_end,
@@ -375,7 +387,7 @@ class BacktestRunner:
         if not factor_usable:
             _logger.warning(
                 "BacktestRunner: $factor is missing or incomplete across the "
-                "candidate universe — qlib trades in adjusted-price mode "
+                "exchange universe — qlib trades in adjusted-price mode "
                 "with trade_unit (100-share round lots) DISABLED, so fills "
                 "may be fractional. Metrics remain valid but ignore "
                 "round-lot frictions. Ship factor bins in the bundle to "
