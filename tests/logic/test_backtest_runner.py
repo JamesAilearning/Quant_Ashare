@@ -1417,17 +1417,19 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         # The request fixture uses the default magnitude 0.095.
         self.assertEqual(buy_expr, "$close/Ref($close,1)-1 > 0.095")
         self.assertEqual(sell_expr, "$close/Ref($close,1)-1 < -0.095")
-        # codex P2 round 2: the exchange's quote universe must be bounded to
-        # the candidate set + benchmark — without `codes`, qlib loads the
-        # ENTIRE provider and a missing $factor anywhere in it silently
-        # disables round lots for the whole run (and the preflight could
-        # not truthfully mirror that global scope).
+        # codex P2 rounds 2+4: the exchange's quote universe must be bounded
+        # to the FINAL tradable signal universe, benchmark EXCLUDED — without
+        # `codes`, qlib loads the ENTIRE provider and a missing $factor
+        # anywhere disables round lots; and an untraded benchmark index
+        # (close, no factor) inside codes would itself trigger that global
+        # degradation.
         codes = exchange_kwargs.get("codes")
         self.assertIsNotNone(codes, "exchange_kwargs must bound `codes`.")
         self.assertEqual(
             sorted(codes),
-            sorted({"SH600000", "SZ300001", "SH600519", "SH000300"}),
+            sorted({"SH600000", "SZ300001", "SH600519"}),
         )
+        self.assertNotIn("SH000300", codes)
 
     def test_mask_drops_suspended_and_one_price_rows(self) -> None:
         """A mask containing (2024-03-15, SH600000) as suspended and

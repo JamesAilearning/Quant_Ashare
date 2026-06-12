@@ -52,6 +52,15 @@
       suspended/delisted rows (close also NaN) no longer false-fires the
       round-lot warning.
 
+## 2e. Codex round 4 (PR #242)
+- [x] P2: ``codes`` is built from the FINAL tradable signal universe
+      (post-mask) with the benchmark EXCLUDED — an untraded index (close,
+      no factor) or a fully-masked name inside the exchange universe would
+      itself disable round lots globally. The benchmark reaches qlib via
+      its own ``benchmark`` argument. Empty post-mask universe leaves
+      ``codes`` unset (nothing can trade; an empty exchange universe errors
+      inside qlib). Runtime pin updated (benchmark absent from codes).
+
 ## 3. Verification
 - [x] Step-0 ritual: with the runner fix stashed, both limit probes FAIL
       (fills happen); with the fix, the full probe file + runner suite is

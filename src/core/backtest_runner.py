@@ -345,62 +345,6 @@ class BacktestRunner:
             for inst in shifted_predictions.index.get_level_values("instrument").unique()
         })
 
-        # Bound the exchange's quote universe to what this run can actually
-        # trade (codex P2 round 2 on PR #242): without ``codes``, qlib loads
-        # the provider's ENTIRE universe and a missing ``$factor`` anywhere
-        # in it disables trade_unit for the whole run — so any preflight
-        # would have to mirror that global scan to be truthful. Restricting
-        # ``codes`` to the candidate set makes qlib's degradation scope and
-        # the preflight scope below provably IDENTICAL, and trims the quote
-        # load. The benchmark is included defensively (never traded;
-        # harmless). The strategy only ever trades names from the signal,
-        # and positions originate from prior signal days, so nothing
-        # tradeable lives outside this set.
-        exchange_codes = sorted({*instruments_in_predictions, request.benchmark_code})
-        exchange_kwargs["codes"] = exchange_codes
-
-        # Round-lot capability preflight (PR-D): qlib's Exchange switches to
-        # adjusted-price mode and DISABLES trade_unit — fractional fills
-        # instead of 100-share A-share round lots — as soon as ANY quoted
-        # row lacks a usable ``$factor``, and says so only in its own
-        # low-visibility log. Probe EXACTLY the universe the exchange will
-        # load (``exchange_codes`` above), with the strict any-NaN condition
-        # mirroring qlib's own degradation rule. Diagnostic only (warning,
-        # never a block): an unprobeable provider is reported the same way
-        # rather than failing the official path over a diagnostic.
-        try:
-            from qlib.data import D as _factor_D
-            _factor_probe = _factor_D.features(
-                exchange_codes,
-                ["$factor", "$close"],
-                start_time=request.evaluation_start,
-                end_time=request.evaluation_end,
-                freq="day",
-            )
-            # Mirror qlib's exact degradation condition (codex P3 round 3):
-            # adjusted-price mode triggers when $factor is NaN on a row whose
-            # $close is PRESENT. A NaN factor on suspended/delisted rows
-            # (close also NaN) does not degrade round lots and must not
-            # false-fire this warning.
-            _factor_col = _factor_probe.iloc[:, 0]
-            _close_col = _factor_probe.iloc[:, 1]
-            factor_usable = (
-                len(_factor_probe) > 0
-                and not bool((_factor_col.isna() & _close_col.notna()).any())
-            )
-        except Exception:  # diagnostic probe only — never block on it
-            factor_usable = False
-        if not factor_usable:
-            _logger.warning(
-                "BacktestRunner: $factor is missing or incomplete across the "
-                "exchange universe — qlib trades in adjusted-price mode "
-                "with trade_unit (100-share round lots) DISABLED, so fills "
-                "may be fractional. Metrics remain valid but ignore "
-                "round-lot frictions. Ship factor bins in the bundle to "
-                "restore round-lot simulation (PR-D preflight; audit A2 "
-                "sibling)."
-            )
-
         try:
             mask_result = compute_unavailable_mask(
                 instruments=instruments_in_predictions,
@@ -562,6 +506,66 @@ class BacktestRunner:
                 "namechange_sha256": namechange_sha,
                 "n_st_masked": n_st_dropped,
             }
+
+        # Bound the exchange's quote universe to the FINAL tradable signal
+        # universe — post-mask, benchmark EXCLUDED (codex P2 rounds 2+4 on
+        # PR #242). Without ``codes``, qlib loads the provider's ENTIRE
+        # universe and a missing ``$factor`` anywhere in it disables
+        # trade_unit for the whole run; and an untraded symbol inside codes
+        # (the benchmark index has close but no factor; a name the masks
+        # fully removed) would itself trigger that global degradation. The
+        # benchmark reaches qlib separately via the ``benchmark`` argument
+        # and is never traded; the strategy only trades signal names and
+        # positions originate from prior signal days, so nothing tradeable
+        # lives outside this set. Empty post-mask universe (everything
+        # masked) leaves ``codes`` unset — nothing can trade anyway, and an
+        # empty exchange universe would error inside qlib.
+        exchange_codes = sorted({
+            str(inst)
+            for inst in shifted_predictions.index.get_level_values("instrument").unique()
+        })
+        if exchange_codes:
+            exchange_kwargs["codes"] = exchange_codes
+
+        # Round-lot capability preflight (PR-D): qlib's Exchange switches to
+        # adjusted-price mode and DISABLES trade_unit — fractional fills
+        # instead of 100-share A-share round lots — as soon as ANY quoted
+        # row lacks a usable ``$factor``, and says so only in its own
+        # low-visibility log. Probe EXACTLY the universe the exchange will
+        # load (``exchange_codes`` above), mirroring qlib's degradation
+        # condition: ``$factor`` NaN on a row whose ``$close`` is PRESENT
+        # (codex P3 round 3 — a NaN factor on suspended rows, where close is
+        # also NaN, keeps round lots and must not false-fire). Diagnostic
+        # only (warning, never a block): an unprobeable provider is reported
+        # the same way rather than failing the official path.
+        if exchange_codes:
+            try:
+                from qlib.data import D as _factor_D
+                _factor_probe = _factor_D.features(
+                    exchange_codes,
+                    ["$factor", "$close"],
+                    start_time=request.evaluation_start,
+                    end_time=request.evaluation_end,
+                    freq="day",
+                )
+                _factor_col = _factor_probe.iloc[:, 0]
+                _close_col = _factor_probe.iloc[:, 1]
+                factor_usable = (
+                    len(_factor_probe) > 0
+                    and not bool((_factor_col.isna() & _close_col.notna()).any())
+                )
+            except Exception:  # diagnostic probe only — never block on it
+                factor_usable = False
+            if not factor_usable:
+                _logger.warning(
+                    "BacktestRunner: $factor is missing or incomplete across "
+                    "the exchange universe — qlib trades in adjusted-price "
+                    "mode with trade_unit (100-share round lots) DISABLED, "
+                    "so fills may be fractional. Metrics remain valid but "
+                    "ignore round-lot frictions. Ship factor bins in the "
+                    "bundle to restore round-lot simulation (PR-D preflight; "
+                    "audit A2 sibling)."
+                )
 
         strategy = TopkDropoutStrategy(
             signal=shifted_predictions,
