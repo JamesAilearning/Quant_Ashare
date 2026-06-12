@@ -46,6 +46,12 @@
       are provably identical (and the quote load shrinks). Runtime pin
       extended to assert `codes`.
 
+## 2d. Codex round 3 (PR #242)
+- [x] P3: the preflight mirrors qlib's EXACT degradation condition —
+      ``$factor`` NaN on a row whose ``$close`` is present. A NaN factor on
+      suspended/delisted rows (close also NaN) no longer false-fires the
+      round-lot warning.
+
 ## 3. Verification
 - [x] Step-0 ritual: with the runner fix stashed, both limit probes FAIL
       (fills happen); with the fix, the full probe file + runner suite is

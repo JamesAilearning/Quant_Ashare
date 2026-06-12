@@ -372,15 +372,21 @@ class BacktestRunner:
             from qlib.data import D as _factor_D
             _factor_probe = _factor_D.features(
                 exchange_codes,
-                ["$factor"],
+                ["$factor", "$close"],
                 start_time=request.evaluation_start,
                 end_time=request.evaluation_end,
                 freq="day",
             )
+            # Mirror qlib's exact degradation condition (codex P3 round 3):
+            # adjusted-price mode triggers when $factor is NaN on a row whose
+            # $close is PRESENT. A NaN factor on suspended/delisted rows
+            # (close also NaN) does not degrade round lots and must not
+            # false-fire this warning.
+            _factor_col = _factor_probe.iloc[:, 0]
+            _close_col = _factor_probe.iloc[:, 1]
             factor_usable = (
-                _factor_probe is not None
-                and len(_factor_probe) > 0
-                and bool(_factor_probe.iloc[:, 0].notna().all())
+                len(_factor_probe) > 0
+                and not bool((_factor_col.isna() & _close_col.notna()).any())
             )
         except Exception:  # diagnostic probe only — never block on it
             factor_usable = False
