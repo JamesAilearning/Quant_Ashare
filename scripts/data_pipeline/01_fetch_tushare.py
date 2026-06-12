@@ -248,14 +248,16 @@ def main(argv: list[str] | None = None) -> int:
             "Prior manifest records %d hole(s); forcing those units past the "
             "exists-skip this run.", len(force_retry_units),
         )
-    # P3-7b scan scope: years the prior manifest already attests (coverage
-    # watermark) are not re-scanned for freshness; the final requested year
-    # always is. --verify-all-years overrides the watermark entirely.
-    assume_verified_through = (
+    # P3-7b scan scope: years whose whole expected slice lies inside the prior
+    # manifest's attested (start, end) range are not re-scanned for freshness;
+    # the final requested year always is. Both ends matter (codex P1 on #240:
+    # an end-only watermark would trust never-attested years BEFORE the prior
+    # coverage start on a backward backfill). --verify-all-years overrides.
+    assume_verified_ranges = (
         {
-            ep_name: ep.coverage_end_date
+            ep_name: (ep.coverage_start_date, ep.coverage_end_date)
             for ep_name, ep in prev_manifest.endpoints.items()
-            if ep.coverage_end_date
+            if ep.coverage_start_date and ep.coverage_end_date
         }
         if prev_manifest is not None
         else {}
@@ -273,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
             refresh_current=args.refresh_current,
             now=snapshot_now,
             force_retry_units=force_retry_units,
-            assume_verified_through=assume_verified_through,
+            assume_verified_ranges=assume_verified_ranges,
             verify_all_years=args.verify_all_years,
         )
     except TushareFetcherError as exc:

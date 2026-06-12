@@ -21,6 +21,7 @@ Schema
           "status": "complete" | "holes",
           "coverage_end_date": "20251231",
           "units_written": 12345,
+          "units_verified": 678,
           "holes": [
             {"unit": "ts_code=600001.SH year=2020",
              "reason_class": "transient", "attempts": 5, "last_error": "..."}
@@ -80,13 +81,20 @@ class FetchManifestError(RuntimeError):
 
 @dataclass(frozen=True)
 class EndpointCoverage:
-    """Per-endpoint coverage + hole state recorded in the manifest."""
+    """Per-endpoint coverage + hole state recorded in the manifest.
+
+    ``units_verified`` (P3-7b): files the freshness rule positively confirmed
+    complete this run — established coverage on par with written units (codex
+    P2 on PR #240: a first sweep over an already-complete dump writes nothing
+    yet must not record empty coverage). Absent in pre-P3-7b manifests; read
+    tolerantly as 0."""
 
     status: str  # "complete" | "holes"
     coverage_start_date: str  # YYYYMMDD
     coverage_end_date: str  # YYYYMMDD
     units_written: int
     holes: tuple[FetchHole, ...]
+    units_verified: int = 0
 
 
 @dataclass(frozen=True)
@@ -121,21 +129,27 @@ def build_manifest(
     endpoints: dict[str, EndpointCoverage] = {}
     for r in results:
         ep_holes = tuple(holes_by_ep.get(r.endpoint, ()))
-        # Coverage reflects FETCHED data: an endpoint that wrote nothing and
-        # holed nothing was entirely SKIPPED by resume (its files already
-        # existed), so THIS run established no coverage for it — record it empty
-        # rather than claim the requested range. Otherwise a first manifest built
-        # over a pre-existing narrow dump (no prior manifest to fall back to)
-        # would over-claim the requested wide range (codex P2). A written or
-        # holed endpoint records the requested range. The merge keeps the prior
-        # actually-fetched coverage when a later run skips (units_written == 0).
-        established = r.files_written > 0 or bool(ep_holes)
+        # Coverage reflects FETCHED-or-VERIFIED data: an endpoint that wrote
+        # nothing, holed nothing, AND verified nothing was entirely BLIND-
+        # skipped by resume (files merely existed), so THIS run established no
+        # coverage for it — record it empty rather than claim the requested
+        # range; otherwise a first manifest built over a pre-existing narrow
+        # dump would over-claim the requested wide range (codex P2 on #234).
+        # A unit the freshness rule POSITIVELY confirmed complete counts the
+        # same as a written one (codex P2 on #240: the first P3-7b sweep over
+        # an already-complete dump writes nothing, yet its full-range
+        # verification is exactly what coverage means). The merge keeps the
+        # prior coverage when a later run establishes nothing.
+        established = (
+            r.files_written > 0 or bool(ep_holes) or r.units_verified > 0
+        )
         endpoints[r.endpoint] = EndpointCoverage(
             status="holes" if ep_holes else "complete",
             coverage_start_date=coverage_start_date if established else "",
             coverage_end_date=coverage_end_date if established else "",
             units_written=r.files_written,
             holes=ep_holes,
+            units_verified=r.units_verified,
         )
     return FetchManifest(SCHEMA_VERSION, stamp, endpoints)
 
@@ -199,9 +213,14 @@ def merge_manifest(
         # "complete [prev_start, cur_end]" over years no run ever requested —
         # coverage+holes must together reflect the real state of every unit.
         # Adjacent (gap <= 1 calendar day) or overlapping ranges merge fine.
+        # DATE-SCOPED endpoints only, same as the narrower-scope guard (codex
+        # P2 on #240): stock_basic re-fetches the whole universe regardless of
+        # the requested dates, so disjoint request ranges are meaningless for
+        # it and must not fail a run that genuinely refreshed the snapshots.
         if (
             prev_ep is not None
-            and cur.units_written > 0
+            and ep in _DATE_SCOPED_ENDPOINTS
+            and (cur.units_written > 0 or cur.units_verified > 0)
             and cur.coverage_start_date
             and prev_ep.coverage_end_date
             and (_days_between(prev_ep.coverage_end_date, cur.coverage_start_date) > 1
@@ -223,15 +242,17 @@ def merge_manifest(
             prior = prev_holes.get(h.unit)
             attempts = prior.attempts + h.attempts if prior else h.attempts
             carried.append(replace(h, attempts=attempts))
-        # codex P1-B: coverage reflects what was ACTUALLY fetched, not what was
-        # requested. A run that wrote NOTHING for this endpoint (every file
-        # skipped by resume — e.g. a wider run that skips a prior narrow aggregate
-        # file like namechange / suspend_d / index_weight) did NOT establish its
-        # requested range, so coverage must NOT advance to it; keep the prior
-        # actually-fetched coverage. A run that wrote data spans the widest range.
+        # codex P1-B: coverage reflects what was ACTUALLY fetched (or, P3-7b,
+        # freshness-VERIFIED), not what was requested. A run that established
+        # NOTHING for this endpoint (every file blind-skipped by resume — e.g.
+        # a wider run that skips a prior narrow aggregate file like namechange
+        # / suspend_d / index_weight) must NOT advance coverage; keep the
+        # prior coverage. A run that wrote or verified data spans the widest
+        # range — verified-fresh files were positively confirmed against this
+        # run's range, so extending over them is truthful (codex P2 on #240).
         if prev_ep is None:
             cov_start, cov_end = cur.coverage_start_date, cur.coverage_end_date
-        elif cur.units_written > 0:
+        elif cur.units_written > 0 or cur.units_verified > 0:
             cov_start = _min_yyyymmdd(prev_ep.coverage_start_date, cur.coverage_start_date)
             cov_end = _max_yyyymmdd(prev_ep.coverage_end_date, cur.coverage_end_date)
         else:
@@ -242,6 +263,7 @@ def merge_manifest(
             coverage_end_date=cov_end,
             units_written=cur.units_written,
             holes=tuple(carried),
+            units_verified=cur.units_verified,
         )
     return FetchManifest(SCHEMA_VERSION, current.fetched_at, merged)
 
@@ -359,6 +381,7 @@ def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
                 "coverage_start_date": cov.coverage_start_date,
                 "coverage_end_date": cov.coverage_end_date,
                 "units_written": cov.units_written,
+                "units_verified": cov.units_verified,
                 "holes": [
                     {
                         "unit": h.unit,
@@ -398,6 +421,10 @@ def _manifest_from_dict(raw: dict[str, Any]) -> FetchManifest:
                 coverage_end_date=cov["coverage_end_date"],
                 units_written=cov["units_written"],
                 holes=holes,
+                # Additive P3-7b field — absent in manifests written before
+                # the freshness rule; default 0 (nothing verified) keeps them
+                # readable without a schema bump.
+                units_verified=cov.get("units_verified", 0),
             )
         return FetchManifest(
             schema_version=raw["schema_version"],

@@ -42,12 +42,23 @@ layer can claim more than the dump actually holds:
   resume-skips already-current files instead of re-pulling ~17.5k units).
 - **Scan scope.** The FINAL requested year is always freshness-scanned
   (~5.8k × 3 single-column parquet reads ≈ seconds). A PAST year is
-  re-scanned only when this run could expect more than the previous
-  manifest's per-endpoint coverage watermark attests, when there is no
-  watermark (no manifest — e.g. the current production dump), or under the
-  new `--verify-all-years` sweep (for suspected external mutation, or a
-  pre-rule manifest whose coverage may over-claim). Prior-manifest holes
-  pierce the scan scope via the existing force-retry wiring.
+  re-scanned unless its whole expected slice lies INSIDE the previous
+  manifest's per-endpoint attested (start, end) range — both ends checked
+  (codex P1: an end-only watermark would silently trust never-attested
+  years before the coverage start on a backward backfill) — with no
+  watermark (no manifest — e.g. the current production dump) every year is
+  scanned, and the new `--verify-all-years` forces the sweep (suspected
+  external mutation, or a pre-rule manifest whose coverage may over-claim).
+  Prior-manifest holes pierce the scan scope via the existing force-retry
+  wiring.
+- **Verified coverage (codex P2).** A file the freshness rule POSITIVELY
+  confirms complete counts as `units_verified` — established coverage on
+  par with written units, in `TushareFetchResult`, the manifest schema
+  (additive field, tolerant read), `build_manifest`, and the merge's
+  extension rule. Without this, the first sweep over an already-complete
+  dump would write empty coverage and the build gate would reject a
+  genuinely complete dump. Blind watermark/resume skips still establish
+  nothing.
 - **Manifest red line (01 CLI).** No failure path deletes the manifest,
   ever: merge refusal / write failure / hard abort / corrupt-at-start all
   exit 1 with the manifest left byte-for-byte intact (each with an
@@ -59,10 +70,13 @@ layer can claim more than the dump actually holds:
 - **Merge truthfulness (fetch_manifest).** (a) Disjoint coverage merge is
   refused — unioning ranges separated by a never-fetched gap (> 1 calendar
   day) fabricates coverage; adjacent/overlapping ranges merge as before.
-  (b) "" is treated as "no value" in the min/max helpers and skips the
-  narrower-scope comparison. (c) An endpoint that ran but established
-  nothing (wrote 0, holed 0, "" coverage) preserves the prior record
-  verbatim instead of "self-healing" holes nothing re-attempted.
+  DATE-SCOPED endpoints only, like the narrower-scope guard (codex P2:
+  stock_basic re-fetches the whole universe regardless of dates, so a
+  non-overlapping refresh must not fail its merge). (b) "" is treated as
+  "no value" in the min/max helpers and skips the narrower-scope
+  comparison. (c) An endpoint that ran but established nothing (wrote 0,
+  holed 0, verified 0) preserves the prior record verbatim instead of
+  "self-healing" holes nothing re-attempted.
 
 ## Invariant (the acceptance bar)
 

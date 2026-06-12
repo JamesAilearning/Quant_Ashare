@@ -17,12 +17,20 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class TushareFetchResult:
-    """Per-endpoint summary returned by ``TushareFetcher.fetch``."""
+    """Per-endpoint summary returned by ``TushareFetcher.fetch``.
+
+    ``units_verified`` (P3-7b, codex P2 on PR #240) counts existing files the
+    freshness rule POSITIVELY confirmed complete this run (content reached the
+    expected end, or the listing window proves no data can exist). It is
+    POSITIVE evidence that establishes manifest coverage — unlike a blind
+    watermark/resume skip, which proves nothing and is counted in ``skipped``
+    only. Both kinds of skip also count in ``skipped`` (total not-fetched)."""
 
     endpoint: str
     files_written: int
     rows_total: int
     skipped: int = 0
+    units_verified: int = 0
 
 
 @dataclass(frozen=True)

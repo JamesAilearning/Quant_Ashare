@@ -29,6 +29,7 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
     FetchManifestError,
     build_manifest,
     clear_manifest,
+    covered_endpoints,
     merge_manifest,
     read_manifest,
     write_manifest,
@@ -45,8 +46,10 @@ def _hole(endpoint, unit, *, reason_class="transient", attempts=5, last_error="e
     )
 
 
-def _result(endpoint, files_written=0):
-    return TushareFetchResult(endpoint, files_written, 0, 0)
+def _result(endpoint, files_written=0, *, verified=0):
+    return TushareFetchResult(
+        endpoint, files_written, 0, 0, units_verified=verified,
+    )
 
 
 def _bm(results, holes, end="20251231", *, start="20180101", now=None):
@@ -484,6 +487,50 @@ class CoverageTruthfulnessTests(unittest.TestCase):
             (cov.coverage_start_date, cov.coverage_end_date),
             ("20180101", "20251231"),
         )
+
+    def test_verified_only_run_establishes_coverage(self) -> None:
+        # codex P2 on #240: the first P3-7b sweep over an already-complete
+        # dump writes NOTHING — every file verifies fresh — yet its manifest
+        # must record the verified range, or covered_endpoints() makes the
+        # build gate reject a genuinely complete dump (and every later run
+        # re-sweeps for lack of a watermark).
+        m = _bm(
+            [_result("daily", 0, verified=120)], (),
+            start="20000101", end="20251231",
+        )
+        cov = m.endpoints["daily"]
+        self.assertEqual(
+            (cov.coverage_start_date, cov.coverage_end_date),
+            ("20000101", "20251231"),
+        )
+        self.assertEqual(cov.status, "complete")
+        self.assertIn("daily", covered_endpoints(m))
+
+    def test_verified_only_run_extends_prev_coverage(self) -> None:
+        # A backward backfill that only VERIFIES pre-coverage years (writes
+        # nothing) still extends coverage over them — verification against
+        # this run's range is exactly what coverage means.
+        prev = _bm([_result("daily", 3)], (), start="20200101", end="20251231")
+        cur = _bm(
+            [_result("daily", 0, verified=16)], (),
+            start="20180101", end="20251231",
+        )
+        merged = merge_manifest(prev, cur)
+        cov = merged.endpoints["daily"]
+        self.assertEqual(
+            (cov.coverage_start_date, cov.coverage_end_date),
+            ("20180101", "20251231"),
+        )
+
+    def test_stock_basic_disjoint_ranges_merge_without_refusal(self) -> None:
+        # codex P2 on #240: stock_basic is date-agnostic (every refresh pulls
+        # the whole universe), so disjoint REQUEST ranges are meaningless for
+        # it — the disjoint guard is date-scoped-only, like the narrower-scope
+        # guard. A non-overlapping refresh must not fail the merge.
+        prev = _bm([_result("stock_basic", 2)], (), start="20200101", end="20251231")
+        cur = _bm([_result("stock_basic", 2)], (), start="20000101", end="20101231")
+        merged = merge_manifest(prev, cur)  # must not raise
+        self.assertEqual(merged.endpoints["stock_basic"].status, "complete")
 
     def test_noop_run_preserves_prev_endpoint_verbatim(self) -> None:
         # An endpoint that ran but wrote nothing, holed nothing, and

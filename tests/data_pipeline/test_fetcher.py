@@ -1406,7 +1406,10 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self.assertEqual(str(df["trade_date"].max()), "20251231")
 
     def test_complete_boundary_file_skipped(self) -> None:
-        # 已完整边界文件 → 跳过 (crash 重跑的 resume 价值).
+        # 已完整边界文件 → 跳过 (crash 重跑的 resume 价值). The skip is a
+        # VERIFIED one (codex P2 on #240): it must establish coverage, so the
+        # first sweep over an already-complete dump does not record an empty
+        # manifest that downstream gates reject.
         client = self._client_returning(["20251231"])
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1417,6 +1420,39 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             ).fetch()
             self.assertEqual(client.call.call_count, 0)
             self.assertEqual(results[0].skipped, 1)
+            self.assertEqual(results[0].units_verified, 1)
+
+    def test_backfill_scans_years_before_prior_coverage_start(self) -> None:
+        # codex P1 on #240: with a prior manifest attesting [2020, 2025], a
+        # backward backfill to 2018 must SCAN 2018/2019 (outside the attested
+        # range) — an end-only watermark would blind-skip them and the merge
+        # would then over-claim stale pre-coverage files.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            self._prefill(tmp_path, 2018, ["20180102", "20180630"])  # stale!
+            complete = {
+                2019: "20191231", 2020: "20201231", 2021: "20211231",
+                2022: "20221230", 2023: "20231229", 2024: "20241231",
+                2025: "20251231",
+            }
+            for year, floor in complete.items():
+                self._prefill(tmp_path, year, [f"{year}0102", floor])
+            cfg = self._cfg(
+                tmp_path, "20180101", "20251231",
+                assume_verified_ranges={"daily": ("20200101", "20251231")},
+            )
+            client = self._client_returning(["20180102", "20181231"])
+            results = TushareFetcher(client, cfg).fetch()
+            # Only stale 2018 re-pulled; 2019 (pre-coverage) and 2025 (final
+            # year) scanned-and-verified; 2020-2024 blind-skipped on the
+            # watermark.
+            called_years = {c.kwargs["start_date"][:4]
+                            for c in client.call.call_args_list}
+            self.assertEqual(called_years, {"2018"})
+            self.assertEqual(results[0].files_written, 1)
+            self.assertEqual(results[0].units_verified, 2)  # 2019 + 2025
+            self.assertEqual(results[0].skipped, 7)  # all non-2018 years
 
     def test_refetch_failure_keeps_old_file_and_hole_then_retries(self) -> None:
         # 刷新失败 → 旧文件保留 + 记洞；max(trade_date) 规则保证下轮自动重试.
@@ -1521,14 +1557,14 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._prefill(tmp_path, 2025, ["20250102", "20251231"])  # complete
             watermarked = self._cfg(
                 tmp_path, "20240101", "20251231",
-                assume_verified_through={"daily": "20251231"},
+                assume_verified_ranges={"daily": ("20240101", "20251231")},
             )
             client = self._client_returning(["20241231"])
             TushareFetcher(client, watermarked).fetch()
             self.assertEqual(client.call.call_count, 0)  # 2024 not scanned
             sweeping = self._cfg(
                 tmp_path, "20240101", "20251231",
-                assume_verified_through={"daily": "20251231"},
+                assume_verified_ranges={"daily": ("20240101", "20251231")},
                 verify_all_years=True,
             )
             client2 = self._client_returning(["20240102", "20241231"])

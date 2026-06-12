@@ -210,14 +210,16 @@ class TushareFetcherConfig:
     # Forcing known-holed units past the skip re-attempts them every run until
     # they heal.
     force_retry_units: frozenset[tuple[str, str]] = frozenset()
-    # P3-7b scan scope: per-endpoint YYYYMMDD watermarks ("the prior manifest
-    # already attests this endpoint's coverage through this date"), wired in by
-    # the 01 CLI from the previous manifest's coverage_end_date. A PAST year
-    # whose expected file end is <= the watermark is not re-scanned (its files
-    # were verified or written by the run that advanced the watermark); the
-    # FINAL requested year is always scanned. Empty mapping -> every year of
-    # the requested range is scanned (first run / no manifest / fresh start).
-    assume_verified_through: Mapping[str, str] = field(default_factory=dict)
+    # P3-7b scan scope: per-endpoint (start, end) YYYYMMDD coverage ranges the
+    # prior manifest already attests, wired in by the 01 CLI. A PAST year is
+    # not re-scanned only when its whole expected slice lies INSIDE the
+    # attested range — both `floor(year) <= end` AND `slice_start >= start`
+    # (codex P1 on PR #240: an end-only watermark would silently trust
+    # never-attested years BEFORE the prior coverage start on a backward
+    # backfill). The FINAL requested year is always scanned. Empty mapping ->
+    # every year of the requested range is scanned (first run / no manifest /
+    # fresh start).
+    assume_verified_ranges: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     # P3-7b escape hatch: scan EVERY year of the requested range regardless of
     # the watermark — for suspected external mutation of the dump, or a
     # pre-P3-7b manifest whose coverage_end_date may over-claim (written by a
@@ -616,10 +618,11 @@ class TushareFetcher:
         out_root = self._config.output_dir / subdir
         start_year = int(self._config.start_date[:4])
         end_year = int(self._config.end_date[:4])
-        watermark = self._config.assume_verified_through.get(endpoint, "")
+        watermark = self._config.assume_verified_ranges.get(endpoint)
         written = 0
         rows = 0
         skipped = 0
+        verified = 0
         stale_refetched = 0
         for year in range(start_year, end_year + 1):
             year_dir = out_root / str(year)
@@ -636,16 +639,19 @@ class TushareFetcher:
             # freshness (a daily re-run must notice yesterday's file lacks
             # today's bar — and a post-close re-run must notice a pre-close
             # run's file lacks today's bar even though coverage already says
-            # "today"). A PAST year is re-scanned only when this run could
-            # expect MORE than the prior manifest attests (watermark), or when
-            # the operator forces a full sweep (--verify-all-years), or when
-            # there is no watermark at all (no / pre-P3-7b manifest).
+            # "today"). A PAST year is re-scanned unless its WHOLE expected
+            # slice lies inside the prior manifest's attested range — both
+            # ends checked (codex P1 on PR #240: end-only would trust
+            # never-attested years before the coverage start on a backward
+            # backfill). --verify-all-years forces the sweep; no watermark
+            # (no / pre-P3-7b manifest) scans everything.
             year_floor = _last_weekday_str(min(self._config.end_date, f"{year}1231"))
             scan_year = (
                 year == end_year
                 or self._config.verify_all_years
-                or not watermark
-                or year_floor > watermark
+                or watermark is None
+                or year_floor > watermark[1]
+                or year_start < watermark[0]
             )
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
@@ -653,7 +659,8 @@ class TushareFetcher:
                 if path.exists() and not self._must_retry(endpoint, unit):
                     if not scan_year:
                         # Attested by the prior manifest's watermark — closed
-                        # history this run cannot expect more from.
+                        # history this run cannot expect more from. A BLIND
+                        # skip: proves nothing, establishes nothing.
                         skipped += 1
                         continue
                     expected = _expected_year_file_end(
@@ -664,11 +671,18 @@ class TushareFetcher:
                     if expected is None:
                         # The ticker's listing window misses this year slice —
                         # no data can exist; an (empty) placeholder is truth.
+                        # POSITIVE knowledge → counts as verified (codex P2 on
+                        # PR #240: verified-fresh must establish coverage,
+                        # unlike a blind resume skip).
                         skipped += 1
+                        verified += 1
                         continue
                     file_max = self._read_file_max_trade_date(path)
                     if file_max is not None and file_max >= expected:
+                        # Content POSITIVELY confirmed complete for this run's
+                        # range — verified, establishes coverage (codex P2).
                         skipped += 1
+                        verified += 1
                         continue
                     # Stale (max < expected), empty-but-data-possible, or
                     # unreadable: re-pull the WHOLE year (one API call — same
@@ -705,13 +719,15 @@ class TushareFetcher:
                         "  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)",
                         endpoint, year, i, len(tickers), written, skipped,
                     )
-        if stale_refetched:
+        if stale_refetched or verified:
             _logger.info(
-                "  %s: %d existing year file(s) were stale/incomplete for this "
-                "run's range and were re-pulled (P3-7b freshness rule).",
-                endpoint, stale_refetched,
+                "  %s: freshness rule verified %d existing year file(s) "
+                "complete and re-pulled %d stale/incomplete one(s) (P3-7b).",
+                endpoint, verified, stale_refetched,
             )
-        return TushareFetchResult(endpoint, written, rows, skipped)
+        return TushareFetchResult(
+            endpoint, written, rows, skipped, units_verified=verified,
+        )
 
     def _read_file_max_trade_date(self, path: Path) -> str | None:
         """Latest ``trade_date`` (YYYYMMDD string) inside an existing year

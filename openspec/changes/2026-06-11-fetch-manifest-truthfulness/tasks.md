@@ -50,6 +50,18 @@
 - [x] 既有测试按新语义校准（夹具补 `trade_date`：complete 文件跳过、
       force-retry 穿透、resume 测试改用有效完整 parquet）。
 
+## 4b. Codex round 1 (PR #240)
+- [x] P1: watermark is the full (start, end) attested range — a backward
+      backfill scans years BEFORE the prior coverage start (regression:
+      `test_backfill_scans_years_before_prior_coverage_start`).
+- [x] P2: verified-fresh skips establish coverage (`units_verified` through
+      `TushareFetchResult` → manifest schema additive field → `build_manifest`
+      established-rule → merge extension rule; regressions:
+      `test_verified_only_run_establishes_coverage`,
+      `test_verified_only_run_extends_prev_coverage`).
+- [x] P2: disjoint guard scoped to date-scoped endpoints (regression:
+      `test_stock_basic_disjoint_ranges_merge_without_refusal`).
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.
