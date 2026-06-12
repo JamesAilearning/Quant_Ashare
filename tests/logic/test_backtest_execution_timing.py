@@ -69,8 +69,25 @@ _BENCH = "SH000300"
 
 _SUSPENDED_TICKER = "SH600001"
 # 600001.SH is suspended (vol=0) on T+1 — its execution day — baked into the
-# shared provider so both probe scenarios run under ONE qlib init.
+# shared provider so all probe scenarios run under ONE qlib init.
 _DEFAULT_ZERO_VOLUME = frozenset({("600001.SH", "20250109")})
+
+# PR-D price-limit probes. Both limit days are deliberately NOT one-price
+# (high != low), so the microstructure mask does not fire and the qlib
+# price-limit check is the ONLY protection:
+# - 600002.SH closes +10% on T+1 (its would-be fill day)  → buy must block.
+# - 600003.SH closes -10% on T+1 (its would-be sell day)  → sell must block.
+_LIMIT_UP_TICKER = "SH600002"
+_LIMIT_DOWN_TICKER = "SH600003"
+_FLAT = [10.0] * len(_CAL)
+_CLOSES: dict[str, list[float]] = {
+    "600000.SH": _FLAT,
+    "600001.SH": [20.0] * len(_CAL),
+    "000300.SH": [4000.0] * len(_CAL),
+    # index 5 == 2025-01-09 (T+1).
+    "600002.SH": [10.0] * 5 + [11.0] * 5,
+    "600003.SH": [10.0] * 5 + [9.0] * 5,
+}
 
 
 def _seed_tushare(
@@ -79,11 +96,13 @@ def _seed_tushare(
 ) -> None:
     """Synthetic tushare dump. ``zero_volume_days`` marks (ts_code,
     trade_date) pairs as suspended (vol=0) so the microstructure mask
-    flags them."""
+    flags them. OHLC derives from the per-ticker close series with
+    high != low on EVERY day, so one-price-lock masking never fires and
+    limit-day behavior is qlib's to enforce."""
     pd.DataFrame({
-        "ts_code": ["600000.SH", "600001.SH", "000300.SH"],
-        "list_date": ["20100101"] * 3,
-        "list_status": ["L"] * 3,
+        "ts_code": sorted(_CLOSES),
+        "list_date": ["20100101"] * len(_CLOSES),
+        "list_status": ["L"] * len(_CLOSES),
     }).to_parquet(tushare_dir / "active_stocks.parquet", index=False)
     write_manifest(
         tushare_dir / MANIFEST_FILENAME,
@@ -93,15 +112,14 @@ def _seed_tushare(
             (), "20250101", "20251231",
         ),
     )
-    for ts_code, base in (("600000.SH", 10.0), ("600001.SH", 20.0),
-                          ("000300.SH", 4000.0)):
+    for ts_code, closes in _CLOSES.items():
         pd.DataFrame({
             "ts_code": [ts_code] * len(_CAL),
             "trade_date": _CAL,
-            "open": [base] * len(_CAL),
-            "high": [base * 1.02] * len(_CAL),
-            "low": [base * 0.98] * len(_CAL),
-            "close": [base] * len(_CAL),
+            "open": [c * 0.99 for c in closes],
+            "high": [c * 1.005 for c in closes],
+            "low": [c * 0.97 for c in closes],
+            "close": closes,
             "vol": [
                 0.0 if (ts_code, td) in zero_volume_days else 10_000.0
                 for td in _CAL
@@ -185,9 +203,37 @@ def _single_signal_run(ticker: str):
     )
 
 
+def _rotation_run():
+    """Two-signal rotation for the limit-down SELL probe: 600003 enters the
+    book off the 01-06 signal (fills 01-07); the 01-08 signal drops it
+    (600004 absent — replaced by 600000-ranked names), so the strategy
+    tries to SELL it on 01-09 — its -10% limit-down day."""
+    from src.core.backtest_runner import BacktestRunner
+
+    predictions = pd.Series(
+        [9.0, 8.0, 9.0, 8.0],
+        index=pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2025-01-06"), _LIMIT_DOWN_TICKER),
+                (pd.Timestamp("2025-01-06"), _TICKER),
+                (pd.Timestamp("2025-01-08"), _SUSPENDED_TICKER),
+                (pd.Timestamp("2025-01-08"), _TICKER),
+            ],
+            names=["datetime", "instrument"],
+        ),
+    )
+    return BacktestRunner.run(
+        request=_request(),
+        predictions=predictions,
+        topk=2,
+        n_drop=1,
+        compute_baselines=False,
+    )
+
+
 def _run_probes() -> dict:
     """Build the provider, init qlib (PROCESS-GLOBAL — child process only),
-    run both probe backtests, return the verdicts."""
+    run the probe backtests, return the verdicts."""
     from src.core.canonical_backtest_contract import ADJUST_MODE_PRE
     from src.core.qlib_runtime import (
         QlibRuntimeConfig,
@@ -227,10 +273,27 @@ def _run_probes() -> dict:
             if inst == _SUSPENDED_TICKER and w > 0.0
         )
 
+        # PR-D limit probes (audit A2). Buy side: top score, but T+1 closes
+        # +10% — the buy must be blocked at the limit, never filled.
+        limit_up_out = _single_signal_run(_LIMIT_UP_TICKER)
+        limit_up_held = sorted(
+            day[:10] for day, pos in limit_up_out.positions.items()
+            if pos.get(_LIMIT_UP_TICKER, 0.0) > 0.0
+        )
+        # Sell side: held name rotated out on its -10% day — the sell must
+        # be blocked, so it is STILL held on (and after) the limit-down day.
+        rotation_out = _rotation_run()
+        limit_down_held = sorted(
+            day[:10] for day, pos in rotation_out.positions.items()
+            if pos.get(_LIMIT_DOWN_TICKER, 0.0) > 0.0
+        )
+
     return {
         "held_days": [d[:10] for d in held_days],
         "first_fill": held_days[0][:10] if held_days else None,
         "suspended_held": suspended_held,
+        "limit_up_held": limit_up_held,
+        "limit_down_held": limit_down_held,
     }
 
 
@@ -293,6 +356,36 @@ class ExecutionTimingContractTests(unittest.TestCase):
             f"(T+1 = {_T_PLUS_1}) is suspended — the microstructure mask "
             "must drop it by execution day, not stamp day: "
             f"{self._verdict['suspended_held']}",
+        )
+
+    def test_limit_up_buy_is_blocked(self) -> None:
+        """PR-D (audit A2): a +10% close on the fill day blocks the BUY at
+        the price limit. The limit day is deliberately NOT one-price, so the
+        microstructure mask does not fire — qlib's expression-mode
+        limit_threshold is the only protection. Under the old float mode the
+        PIT bundle's missing $change field disabled the check entirely and
+        this signal filled AT the limit-up close."""
+        self.assertEqual(
+            self._verdict["limit_up_held"], [],
+            "the top-scored signal filled on its +10% limit-up day "
+            f"({_T_PLUS_1}) — price-limit enforcement is not active: "
+            f"{self._verdict['limit_up_held']}",
+        )
+
+    def test_limit_down_sell_is_blocked(self) -> None:
+        """PR-D (audit A2): a held name rotated out on its -10% day cannot
+        be sold at the limit — it must STILL be in the book on the limit-down
+        day (and after, since no later rebalance signal exists)."""
+        held = self._verdict["limit_down_held"]
+        self.assertIn(
+            _T_PLUS_1, held,
+            "the limit-down name was sold ON its -10% day — sell-side "
+            f"price-limit enforcement is not active. held_days={held}",
+        )
+        self.assertTrue(
+            held and held[-1] > _T_PLUS_1,
+            "the blocked sell should leave the name held beyond the "
+            f"limit-down day (no later rebalance exists). held_days={held}",
         )
 
 

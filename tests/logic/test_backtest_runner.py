@@ -1308,6 +1308,9 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         from src.core.microstructure_mask import MicrostructureMaskResult
 
         captured: dict = {}
+        # Exposed for tests that assert on what reached qlib's backtest
+        # call (e.g. exchange_kwargs shape) in addition to the strategy.
+        self._last_captured = captured
 
         class _CapturingStrategy:
             def __init__(self, signal, topk, n_drop):
@@ -1339,6 +1342,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
             handler = None
             logger = None
 
+        bt_mock = MagicMock(side_effect=RuntimeError("test-stop after strategy"))
         try:
             with patch(
                 "src.core.backtest_runner.is_canonical_qlib_initialized",
@@ -1352,9 +1356,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
                 "sys.modules",
                 {
                     "qlib.data": fake_qlib_data,
-                    "qlib.backtest": MagicMock(backtest=MagicMock(
-                        side_effect=RuntimeError("test-stop after strategy"),
-                    )),
+                    "qlib.backtest": MagicMock(backtest=bt_mock),
                     "qlib.backtest.executor": MagicMock(),
                     "qlib.contrib.strategy.signal_strategy": MagicMock(
                         TopkDropoutStrategy=_CapturingStrategy,
@@ -1385,7 +1387,36 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
             if handler is not None and logger is not None:
                 logger.removeHandler(handler)
 
+        if bt_mock.call_args is not None:
+            captured["exchange_kwargs"] = bt_mock.call_args.kwargs.get(
+                "exchange_kwargs",
+            )
         return captured.get("signal")
+
+    def test_limit_threshold_reaches_qlib_as_expression_tuple(self) -> None:
+        """PR-D (audit A2): the contract's float magnitude must reach qlib
+        as the EXPRESSION-mode tuple computed from $close history — never as
+        a float. Float mode keys on the stored $change field, which the PIT
+        bundle does not produce; qlib then evaluates NaN comparisons as
+        False and the limit checks silently disable (buys at limit-up,
+        sells at limit-down)."""
+        self._drive_until_strategy_construction(frozenset())
+        exchange_kwargs = self._last_captured.get("exchange_kwargs")
+        self.assertIsNotNone(
+            exchange_kwargs,
+            "qlib.backtest was never invoked — cannot inspect exchange_kwargs.",
+        )
+        lt = exchange_kwargs["limit_threshold"]
+        self.assertIsInstance(
+            lt, tuple,
+            f"limit_threshold must be qlib's expression tuple, got {lt!r} "
+            f"({type(lt).__name__}) — float mode is forbidden (audit A2).",
+        )
+        self.assertEqual(len(lt), 2)
+        buy_expr, sell_expr = lt
+        # The request fixture uses the default magnitude 0.095.
+        self.assertEqual(buy_expr, "$close/Ref($close,1)-1 > 0.095")
+        self.assertEqual(sell_expr, "$close/Ref($close,1)-1 < -0.095")
 
     def test_mask_drops_suspended_and_one_price_rows(self) -> None:
         """A mask containing (2024-03-15, SH600000) as suspended and
