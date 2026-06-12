@@ -30,6 +30,13 @@
       asserts the kwargs that reach `qlib.backtest` carry the expression
       tuple (captured off the mocked backtest call).
 
+## 2b. Codex round 1 (PR #242)
+- [x] P2: the $factor preflight probes the ACTUAL candidate universe plus
+      the benchmark (not the benchmark alone — a factor-bearing benchmark
+      must not suppress the warning when traded names lack factor), with
+      the strict any-NaN condition mirroring qlib's own trade_unit
+      degradation rule.
+
 ## 3. Verification
 - [x] Step-0 ritual: with the runner fix stashed, both limit probes FAIL
       (fills happen); with the fix, the full probe file + runner suite is

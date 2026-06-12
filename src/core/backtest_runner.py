@@ -299,41 +299,6 @@ class BacktestRunner:
             "limit_threshold": limit_expressions,
         }
 
-        # Round-lot capability preflight (PR-D): when the provider has no
-        # usable ``$factor`` field, qlib's Exchange switches to
-        # adjusted-price mode and DISABLES trade_unit — fills become
-        # fractional shares instead of 100-share A-share round lots — and
-        # says so only in its own low-visibility log. The PIT bundle
-        # currently ships no factor bins, so surface the degradation loudly
-        # with the magnitude named. Diagnostic only (warning, never a block):
-        # an unprobeable provider is reported the same way rather than
-        # failing the official path over a diagnostic.
-        try:
-            from qlib.data import D as _factor_D
-            _factor_probe = _factor_D.features(
-                [request.benchmark_code],
-                ["$factor"],
-                start_time=request.evaluation_start,
-                end_time=request.evaluation_end,
-                freq="day",
-            )
-            factor_usable = (
-                _factor_probe is not None
-                and len(_factor_probe) > 0
-                and bool(_factor_probe.iloc[:, 0].notna().any())
-            )
-        except Exception:  # diagnostic probe only — never block on it
-            factor_usable = False
-        if not factor_usable:
-            _logger.warning(
-                "BacktestRunner: provider has no usable $factor field — qlib "
-                "trades in adjusted-price mode with trade_unit (100-share "
-                "round lots) DISABLED, so fills may be fractional. Metrics "
-                "remain valid but ignore round-lot frictions. Ship factor "
-                "bins in the bundle to restore round-lot simulation (PR-D "
-                "preflight; audit A2 sibling)."
-            )
-
         # Map signal_to_execution_lag onto the TWO shifts in the chain (PR-C,
         # audit A1). qlib's ``TopkDropoutStrategy`` already consumes, on trade
         # day D, the signal stamped D-1 (``get_step_time(trade_step,
@@ -379,6 +344,45 @@ class BacktestRunner:
             str(inst)
             for inst in shifted_predictions.index.get_level_values("instrument").unique()
         })
+
+        # Round-lot capability preflight (PR-D): qlib's Exchange switches to
+        # adjusted-price mode and DISABLES trade_unit — fractional fills
+        # instead of 100-share A-share round lots — as soon as ANY quoted
+        # row lacks a usable ``$factor``, and says so only in its own
+        # low-visibility log. Probe the ACTUAL candidate universe plus the
+        # benchmark (codex P2 on PR #242: a factor-bearing benchmark must
+        # not suppress the warning when traded names lack factor), with the
+        # strict any-NaN condition mirroring qlib's own degradation rule.
+        # Diagnostic only (warning, never a block): an unprobeable provider
+        # is reported the same way rather than failing the official path
+        # over a diagnostic.
+        try:
+            from qlib.data import D as _factor_D
+            _factor_probe = _factor_D.features(
+                sorted({*instruments_in_predictions, request.benchmark_code}),
+                ["$factor"],
+                start_time=request.evaluation_start,
+                end_time=request.evaluation_end,
+                freq="day",
+            )
+            factor_usable = (
+                _factor_probe is not None
+                and len(_factor_probe) > 0
+                and bool(_factor_probe.iloc[:, 0].notna().all())
+            )
+        except Exception:  # diagnostic probe only — never block on it
+            factor_usable = False
+        if not factor_usable:
+            _logger.warning(
+                "BacktestRunner: $factor is missing or incomplete across the "
+                "candidate universe — qlib trades in adjusted-price mode "
+                "with trade_unit (100-share round lots) DISABLED, so fills "
+                "may be fractional. Metrics remain valid but ignore "
+                "round-lot frictions. Ship factor bins in the bundle to "
+                "restore round-lot simulation (PR-D preflight; audit A2 "
+                "sibling)."
+            )
+
         try:
             mask_result = compute_unavailable_mask(
                 instruments=instruments_in_predictions,
