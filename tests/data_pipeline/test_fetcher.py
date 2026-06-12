@@ -1534,6 +1534,37 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             TushareFetcher(client, self._cfg(tmp_path, "20200101", "20201231")).fetch()
             self.assertEqual(client.call.call_count, 0)
 
+    def test_dirty_no_data_placeholder_repulled_not_verified(self) -> None:
+        # codex P2 round 2 on #240: an expected-no-data placeholder is only
+        # "verified" when it is a READABLE parquet with ZERO rows. A corrupt
+        # blob — or a file holding rows the listing window says cannot exist —
+        # is re-pulled and rewritten as a clean empty placeholder.
+        client = self._client_returning([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path, list_date="20240115")  # listed 2024
+            year_dir = tmp_path / "daily" / "2020"
+            year_dir.mkdir(parents=True)
+            path = year_dir / f"{self.TICKER}.parquet"
+            path.write_bytes(b"corrupt blob")  # pre-listing year, dirty file
+            results = TushareFetcher(
+                client, self._cfg(tmp_path, "20200101", "20201231"),
+            ).fetch()
+            self.assertEqual(client.call.call_count, 1)  # re-pulled
+            self.assertEqual(len(pd.read_parquet(path)), 0)  # clean now
+            self.assertEqual(results[0].units_verified, 0)
+        # Rows where the window says none can exist → same treatment.
+        client2 = self._client_returning([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path, list_date="20240115")
+            path = self._prefill(tmp_path, 2020, ["20200315"])
+            TushareFetcher(
+                client2, self._cfg(tmp_path, "20200101", "20201231"),
+            ).fetch()
+            self.assertEqual(client2.call.call_count, 1)
+            self.assertEqual(len(pd.read_parquet(path)), 0)
+
     def test_empty_final_year_placeholder_repulled_when_listing_intersects(self) -> None:
         # Empty placeholder written before a mid-year listing started trading:
         # data is now possible → re-pull.

@@ -670,27 +670,38 @@ class TushareFetcher:
                     )
                     if expected is None:
                         # The ticker's listing window misses this year slice —
-                        # no data can exist; an (empty) placeholder is truth.
-                        # POSITIVE knowledge → counts as verified (codex P2 on
-                        # PR #240: verified-fresh must establish coverage,
-                        # unlike a blind resume skip).
-                        skipped += 1
-                        verified += 1
-                        continue
-                    file_max = self._read_file_max_trade_date(path)
-                    if file_max is not None and file_max >= expected:
-                        # Content POSITIVELY confirmed complete for this run's
-                        # range — verified, establishes coverage (codex P2).
-                        skipped += 1
-                        verified += 1
-                        continue
-                    # Stale (max < expected), empty-but-data-possible, or
-                    # unreadable: re-pull the WHOLE year (one API call — same
-                    # cost as fetching a single day) and overwrite. A failure
-                    # below leaves the old file in place and records a hole;
-                    # the file stays stale, so the next run re-attempts it
-                    # (self-healing without any extra bookkeeping).
-                    stale_refetched += 1
+                        # no data can exist, so a readable EMPTY placeholder is
+                        # the truthful content: POSITIVE knowledge → verified
+                        # (codex P2: must establish coverage, unlike a blind
+                        # resume skip). But VERIFY the placeholder before
+                        # claiming it (codex P2 round 2): a corrupt blob or a
+                        # file holding unexpected rows (external mutation /
+                        # interrupted write) falls through to the re-pull,
+                        # which overwrites it with a clean empty placeholder.
+                        if self._placeholder_is_clean(path):
+                            skipped += 1
+                            verified += 1
+                            continue
+                        # Dirty placeholder → re-pull (no freshness compare:
+                        # there is no expected date to compare against).
+                        stale_refetched += 1
+                    else:
+                        file_max = self._read_file_max_trade_date(path)
+                        if file_max is not None and file_max >= expected:
+                            # Content POSITIVELY confirmed complete for this
+                            # run's range — verified, establishes coverage
+                            # (codex P2).
+                            skipped += 1
+                            verified += 1
+                            continue
+                        # Stale (max < expected), empty-but-data-possible, or
+                        # unreadable: re-pull the WHOLE year (one API call —
+                        # same cost as fetching a single day) and overwrite. A
+                        # failure below leaves the old file in place and
+                        # records a hole; the file stays stale, so the next
+                        # run re-attempts it (self-healing without any extra
+                        # bookkeeping).
+                        stale_refetched += 1
                 if self._config.dry_run:
                     if i == 1:
                         _logger.info(
@@ -749,6 +760,31 @@ class TushareFetcher:
         if pd.isna(value):
             return None
         return str(value)
+
+    def _placeholder_is_clean(self, path: Path) -> bool:
+        """True iff an expected-no-data placeholder is a READABLE parquet with
+        ZERO rows. A corrupt blob or a file holding unexpected rows (external
+        mutation / interrupted write) is dirty — the caller re-pulls the year,
+        which overwrites it with a clean empty placeholder (codex P2 round 2
+        on PR #240: claiming such a file "verified" would advance coverage
+        over an unreadable/wrong file and bypass the unreadable-file re-pull
+        path)."""
+        try:
+            frame = pd.read_parquet(path)
+        except Exception as exc:  # noqa: BLE001 — any unreadable shape → refetch
+            _logger.warning(
+                "  Unreadable no-data placeholder %s (%s) — re-pulling the "
+                "year to rewrite it.", path, exc,
+            )
+            return False
+        if len(frame) > 0:
+            _logger.warning(
+                "  No-data placeholder %s unexpectedly holds %d row(s) "
+                "(listing window says none can exist) — re-pulling the year "
+                "to rewrite it.", path, len(frame),
+            )
+            return False
+        return True
 
     def _load_ticker_windows(self) -> dict[str, tuple[str | None, str | None]]:
         """Per-ticker ``(list_date, delist_date)`` (YYYYMMDD strings or None)

@@ -217,10 +217,15 @@ def merge_manifest(
         # P2 on #240): stock_basic re-fetches the whole universe regardless of
         # the requested dates, so disjoint request ranges are meaningless for
         # it and must not fail a run that genuinely refreshed the snapshots.
+        # The trigger is ESTABLISHED current coverage (non-empty dates) — that
+        # includes a hole-ONLY run (codex P1 round 2: written == verified == 0
+        # with holes still records a disjoint range; letting it through would
+        # park holes OUTSIDE the retained prior coverage, where a later
+        # prior-range rerun silently drops them as "healed" without ever
+        # re-attempting them).
         if (
             prev_ep is not None
             and ep in _DATE_SCOPED_ENDPOINTS
-            and (cur.units_written > 0 or cur.units_verified > 0)
             and cur.coverage_start_date
             and prev_ep.coverage_end_date
             and (_days_between(prev_ep.coverage_end_date, cur.coverage_start_date) > 1

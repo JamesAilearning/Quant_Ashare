@@ -522,6 +522,21 @@ class CoverageTruthfulnessTests(unittest.TestCase):
             ("20180101", "20251231"),
         )
 
+    def test_disjoint_hole_only_run_also_refused(self) -> None:
+        # codex P1 round 2 on #240: a disjoint run that establishes coverage
+        # via HOLES alone (written == verified == 0) must also be refused —
+        # letting it through parks holes outside the retained prior coverage,
+        # where a later prior-range rerun drops them as "healed" without ever
+        # re-attempting them.
+        prev = _bm([_result("daily", 3)], (), start="20000101", end="20101231")
+        cur = _bm(
+            [_result("daily", 0)],
+            (_hole("daily", "ts_code=600000.SH year=2020"),),
+            start="20200101", end="20251231",
+        )
+        with self.assertRaisesRegex(FetchManifestError, "disjoint"):
+            merge_manifest(prev, cur)
+
     def test_stock_basic_disjoint_ranges_merge_without_refusal(self) -> None:
         # codex P2 on #240: stock_basic is date-agnostic (every refresh pulls
         # the whole universe), so disjoint REQUEST ranges are meaningless for

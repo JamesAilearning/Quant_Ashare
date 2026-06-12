@@ -62,6 +62,21 @@
 - [x] P2: disjoint guard scoped to date-scoped endpoints (regression:
       `test_stock_basic_disjoint_ranges_merge_without_refusal`).
 
+## 4c. Codex round 2 (PR #240) + CI
+- [x] P1: disjoint guard triggers on ESTABLISHED coverage (incl. hole-only
+      runs — written == verified == 0 with holes would otherwise park holes
+      outside the retained prior coverage and lose them to a later
+      prior-range "self-heal"; regression:
+      `test_disjoint_hole_only_run_also_refused`).
+- [x] P2: expected-no-data placeholders are verified (readable parquet,
+      zero rows) before counting as covered; corrupt blobs / unexpected rows
+      re-pull and rewrite a clean placeholder (regression:
+      `test_dirty_no_data_placeholder_repulled_not_verified`).
+- [x] CI: calibrated the remaining pre-P3-7b fixture
+      (`tests/logic/data_pipeline/test_fetcher_daily_basic.py` resume test
+      used a bare byte-blob placeholder — now a complete year file, matching
+      the tests/data_pipeline calibration).
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.
