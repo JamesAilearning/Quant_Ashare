@@ -29,6 +29,7 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
     FetchManifestError,
     build_manifest,
     clear_manifest,
+    covered_endpoints,
     merge_manifest,
     read_manifest,
     write_manifest,
@@ -45,8 +46,10 @@ def _hole(endpoint, unit, *, reason_class="transient", attempts=5, last_error="e
     )
 
 
-def _result(endpoint, files_written=0):
-    return TushareFetchResult(endpoint, files_written, 0, 0)
+def _result(endpoint, files_written=0, *, verified=0):
+    return TushareFetchResult(
+        endpoint, files_written, 0, 0, units_verified=verified,
+    )
 
 
 def _bm(results, holes, end="20251231", *, start="20180101", now=None):
@@ -444,6 +447,122 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(kept[0].attempts, 10)  # accumulated, not reset
 
 
+class CoverageTruthfulnessTests(unittest.TestCase):
+    """P3-7b: coverage + holes must together reflect the REAL state of every
+    unit — no fabricated range union, no empty-string sentinel poisoning the
+    date arithmetic, no hole loss from a run that established nothing."""
+
+    def test_disjoint_coverage_merge_refused_forward_gap(self) -> None:
+        prev = _bm([_result("daily", 3)], (), start="20000101", end="20101231")
+        cur = _bm([_result("daily", 3)], (), start="20200101", end="20251231")
+        with self.assertRaisesRegex(FetchManifestError, "disjoint"):
+            merge_manifest(prev, cur)
+
+    def test_disjoint_coverage_merge_refused_backward_gap(self) -> None:
+        prev = _bm([_result("daily", 3)], (), start="20200101", end="20251231")
+        cur = _bm([_result("daily", 3)], (), start="20000101", end="20101231")
+        with self.assertRaisesRegex(FetchManifestError, "disjoint"):
+            merge_manifest(prev, cur)
+
+    def test_adjacent_coverage_merges(self) -> None:
+        # Gap of exactly one calendar day (Dec 31 → Jan 1) is contiguous.
+        prev = _bm([_result("daily", 3)], (), start="20000101", end="20251231")
+        cur = _bm([_result("daily", 3)], (), start="20260101", end="20260611")
+        merged = merge_manifest(prev, cur)
+        cov = merged.endpoints["daily"]
+        self.assertEqual(
+            (cov.coverage_start_date, cov.coverage_end_date),
+            ("20000101", "20260611"),
+        )
+
+    def test_empty_prev_sentinel_does_not_poison_minmax(self) -> None:
+        # A first manifest over a pre-existing dump records "" (coverage not
+        # established). A later run that writes must take ITS dates — "" sorts
+        # before every date and would otherwise stick forever.
+        prev = _bm([_result("daily", 0)], ())  # skipped → "" coverage
+        cur = _bm([_result("daily", 2)], (), start="20180101", end="20251231")
+        merged = merge_manifest(prev, cur)
+        cov = merged.endpoints["daily"]
+        self.assertEqual(
+            (cov.coverage_start_date, cov.coverage_end_date),
+            ("20180101", "20251231"),
+        )
+
+    def test_verified_only_run_establishes_coverage(self) -> None:
+        # codex P2 on #240: the first P3-7b sweep over an already-complete
+        # dump writes NOTHING — every file verifies fresh — yet its manifest
+        # must record the verified range, or covered_endpoints() makes the
+        # build gate reject a genuinely complete dump (and every later run
+        # re-sweeps for lack of a watermark).
+        m = _bm(
+            [_result("daily", 0, verified=120)], (),
+            start="20000101", end="20251231",
+        )
+        cov = m.endpoints["daily"]
+        self.assertEqual(
+            (cov.coverage_start_date, cov.coverage_end_date),
+            ("20000101", "20251231"),
+        )
+        self.assertEqual(cov.status, "complete")
+        self.assertIn("daily", covered_endpoints(m))
+
+    def test_verified_only_run_extends_prev_coverage(self) -> None:
+        # A backward backfill that only VERIFIES pre-coverage years (writes
+        # nothing) still extends coverage over them — verification against
+        # this run's range is exactly what coverage means.
+        prev = _bm([_result("daily", 3)], (), start="20200101", end="20251231")
+        cur = _bm(
+            [_result("daily", 0, verified=16)], (),
+            start="20180101", end="20251231",
+        )
+        merged = merge_manifest(prev, cur)
+        cov = merged.endpoints["daily"]
+        self.assertEqual(
+            (cov.coverage_start_date, cov.coverage_end_date),
+            ("20180101", "20251231"),
+        )
+
+    def test_disjoint_hole_only_run_also_refused(self) -> None:
+        # codex P1 round 2 on #240: a disjoint run that establishes coverage
+        # via HOLES alone (written == verified == 0) must also be refused —
+        # letting it through parks holes outside the retained prior coverage,
+        # where a later prior-range rerun drops them as "healed" without ever
+        # re-attempting them.
+        prev = _bm([_result("daily", 3)], (), start="20000101", end="20101231")
+        cur = _bm(
+            [_result("daily", 0)],
+            (_hole("daily", "ts_code=600000.SH year=2020"),),
+            start="20200101", end="20251231",
+        )
+        with self.assertRaisesRegex(FetchManifestError, "disjoint"):
+            merge_manifest(prev, cur)
+
+    def test_stock_basic_disjoint_ranges_merge_without_refusal(self) -> None:
+        # codex P2 on #240: stock_basic is date-agnostic (every refresh pulls
+        # the whole universe), so disjoint REQUEST ranges are meaningless for
+        # it — the disjoint guard is date-scoped-only, like the narrower-scope
+        # guard. A non-overlapping refresh must not fail the merge.
+        prev = _bm([_result("stock_basic", 2)], (), start="20200101", end="20251231")
+        cur = _bm([_result("stock_basic", 2)], (), start="20000101", end="20101231")
+        merged = merge_manifest(prev, cur)  # must not raise
+        self.assertEqual(merged.endpoints["stock_basic"].status, "complete")
+
+    def test_noop_run_preserves_prev_endpoint_verbatim(self) -> None:
+        # An endpoint that ran but wrote nothing, holed nothing, and
+        # established no coverage is a manifest no-op: the prior record —
+        # including its HOLES — is preserved, not "self-healed" away. (Also
+        # pins that an unestablished current does not trip the narrower-scope
+        # refusal via the "" sentinel.)
+        prev = _bm(
+            [_result("daily", 5)],
+            (_hole("daily", "ts_code=600000.SH year=2020"),),
+            start="20180101", end="20251231",
+        )
+        cur = _bm([_result("daily", 0)], ())  # nothing established
+        merged = merge_manifest(prev, cur)
+        self.assertEqual(merged.endpoints["daily"], prev.endpoints["daily"])
+
+
 class ClearTests(unittest.TestCase):
 
     def test_clear_removes_manifest(self) -> None:
@@ -489,8 +608,10 @@ class CliManifestIntegrationTests(unittest.TestCase):
 
     @staticmethod
     def _daily_row(ticker: str) -> pd.DataFrame:
+        # trade_date is the year's LAST WEEKDAY so a written file counts as
+        # complete under the P3-7b freshness rule (re-runs resume-skip it).
         return pd.DataFrame({
-            "ts_code": [ticker], "trade_date": ["20250102"],
+            "ts_code": [ticker], "trade_date": ["20251231"],
             "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
             "vol": [0.0], "amount": [0.0],
         })
@@ -555,6 +676,65 @@ class CliManifestIntegrationTests(unittest.TestCase):
             self.assertEqual(m2.endpoints["daily"].holes, ())  # self-healed
             self.assertEqual(m2.endpoints["daily"].status, "complete")
 
+    def test_holey_endpoint_gets_no_watermark_until_rechecked(self) -> None:
+        # codex P1 round 6: a prior manifest hole — possibly the synthetic
+        # `systemic-shortfall` unit, which force-retry cannot match to any
+        # concrete file — must DROP the endpoint's scan watermark, so its
+        # past years are actually re-checked; only then may the merge heal
+        # the hole. Otherwise a vendor-truncated past year could blind-skip
+        # behind the watermark and become canonical on the next clean run.
+        mod = self._load_cli()
+        t1, t2 = "600000.SH", "600001.SH"
+        daily_calls: list[str] = []
+
+        def side_effect(api, **p):
+            year = p["start_date"][:4]
+            daily_calls.append(year)
+            return pd.DataFrame({
+                "ts_code": [p["ts_code"]] * 2,
+                "trade_date": [f"{year}0102", f"{year}1231"],
+            })
+
+        client = MagicMock()
+        client.call = MagicMock(side_effect=side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed_universe(out, [t1, t2])
+            manifest_path = out / MANIFEST_FILENAME
+            # Prior manifest: coverage [2024, 2025] with a SYNTHETIC hole.
+            write_manifest(manifest_path, _bm(
+                [_result("daily", 10)],
+                (_hole("daily", "systemic-shortfall",
+                       reason_class="systemic_shortfall", attempts=1),),
+                start="20240101", end="20251231",
+            ))
+            # 2024 files are STALE (the truncated year); 2025 complete.
+            for year, max_td in (("2024", "20240630"), ("2025", "20251231")):
+                d = out / "daily" / year
+                d.mkdir(parents=True)
+                for tk in (t1, t2):
+                    pd.DataFrame({
+                        "ts_code": [tk] * 2,
+                        "trade_date": [f"{year}0102", max_td],
+                    }).to_parquet(d / f"{tk}.parquet", index=False)
+            args = [
+                "--output-dir", str(out), "--endpoints", "daily",
+                "--start-date", "20240101", "--end-date", "20251231",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(args)
+            self.assertEqual(rc, 0)
+            # The watermark would have blind-skipped 2024; the hole dropped it,
+            # so the stale 2024 files were re-pulled (2025 verified fresh).
+            self.assertEqual(set(daily_calls), {"2024"})
+            self.assertEqual(len(daily_calls), 2)
+            healed = read_manifest(manifest_path)
+            assert healed is not None
+            self.assertEqual(healed.endpoints["daily"].holes, ())  # legit heal
+            self.assertEqual(healed.endpoints["daily"].status, "complete")
+
     def test_main_returns_1_on_narrower_scope_refusal(self) -> None:
         # codex P2: a narrower-scope rerun makes merge_manifest raise; main() must
         # catch it and return 1 cleanly, NOT escape as a traceback.
@@ -583,17 +763,23 @@ class CliManifestIntegrationTests(unittest.TestCase):
                 rc1 = mod.main(common + ["--start-date", "20240101", "--end-date", "20251231"])
                 self.assertEqual(rc1, 3)
                 # run 2: NARROWER range → merge_manifest refuses → main returns 1
-                # cleanly (no traceback escaping).
+                # cleanly (no traceback escaping) AND — the P3-7b red line —
+                # the manifest is left BYTE-FOR-BYTE as run 1 wrote it: the
+                # refusal exists to PRESERVE the hole ledger, so it must never
+                # be answered by deleting that ledger.
+                manifest_path = out / MANIFEST_FILENAME
+                bytes_before = manifest_path.read_bytes()
                 rc2 = mod.main(common + ["--start-date", "20250101", "--end-date", "20251231"])
             self.assertEqual(rc2, 1)
+            self.assertEqual(manifest_path.read_bytes(), bytes_before)
 
-    def test_main_returns_1_and_invalidates_on_manifest_write_oserror(self) -> None:
-        # codex P2: a manifest WRITE OSError (disk full / permissions / rename
-        # failure) after a completed fetch must surface as a clean exit 1, not a
-        # traceback. AND because the fetch already mutated the dir, the now-stale
-        # PRIOR manifest must be invalidated (else a gate reads stale-complete for
-        # a possibly-partial dir). We patch the CLI's write_manifest so only the
-        # manifest write fails (the fetch's parquet writes are unaffected).
+    def test_main_returns_1_and_keeps_manifest_on_write_oserror(self) -> None:
+        # codex P2 + P3-7b red line: a manifest WRITE OSError (disk full /
+        # permissions / rename failure) after a completed fetch must surface as
+        # a clean exit 1, not a traceback — and the PRIOR manifest is left
+        # byte-for-byte intact (it still truthfully describes the units it
+        # recorded; the non-zero exit stops any orchestrated build, and the
+        # freshness rule re-attempts whatever this run changed next time).
         mod = self._load_cli()
         client = MagicMock()
         client.call = MagicMock(
@@ -603,9 +789,8 @@ class CliManifestIntegrationTests(unittest.TestCase):
             out = Path(tmp)
             self._seed_universe(out, ["600000.SH", "600001.SH"])
             manifest_path = out / MANIFEST_FILENAME
-            # a pre-existing (stale-once-the-run-mutates-the-dir) manifest
             write_manifest(manifest_path, _bm([_result("daily", 1)], ()))
-            self.assertTrue(manifest_path.exists())
+            bytes_before = manifest_path.read_bytes()
             args = [
                 "--output-dir", str(out), "--endpoints", "daily",
                 "--start-date", "20250101", "--end-date", "20251231",
@@ -616,12 +801,14 @@ class CliManifestIntegrationTests(unittest.TestCase):
                     patch.object(mod, "write_manifest", side_effect=OSError("disk full")):
                 rc = mod.main(args)
             self.assertEqual(rc, 1)
-            self.assertFalse(manifest_path.exists())  # stale prior manifest invalidated
+            self.assertEqual(manifest_path.read_bytes(), bytes_before)
 
-    def test_main_invalidates_manifest_on_hard_abort_with_holes(self) -> None:
-        # codex P2: a run that records a hole and then hits a hard (non-retryable)
-        # abort never reaches the manifest update; the CLI INVALIDATES the prior
-        # (stale) manifest so a later gate does not trust the now-partial dir.
+    def test_main_keeps_manifest_on_hard_abort_with_holes(self) -> None:
+        # P3-7b red line: a run that records a hole and then hits a hard
+        # (non-retryable) abort never reaches the manifest update — and the
+        # prior manifest is left byte-for-byte intact. Deleting it (the old
+        # behavior) destroyed the hole ledger the guards exist to keep; the
+        # exit 1 already stops any orchestrated build (EXIT_FETCH_HARD).
         mod = self._load_cli()
 
         def side_effect(api, **p):
@@ -636,9 +823,8 @@ class CliManifestIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             manifest_path = out / MANIFEST_FILENAME
-            # a pre-existing manifest that would otherwise falsely survive the abort
             write_manifest(manifest_path, _bm([_result("daily", 1)], ()))
-            self.assertTrue(manifest_path.exists())
+            bytes_before = manifest_path.read_bytes()
             args = [
                 "--output-dir", str(out), "--endpoints", "namechange,suspend_d",
                 "--rate-limit-sleep-ms", "0",
@@ -647,13 +833,14 @@ class CliManifestIntegrationTests(unittest.TestCase):
                     patch.object(mod.TushareClient, "from_environment", return_value=client):
                 rc = mod.main(args)
             self.assertEqual(rc, 1)  # hard abort
-            self.assertFalse(manifest_path.exists())  # invalidated (re-run rebuilds)
+            self.assertEqual(manifest_path.read_bytes(), bytes_before)
 
-    def test_main_invalidates_manifest_on_hard_abort_without_holes(self) -> None:
-        # codex P1: a hard abort that wrote PARTIAL output but recorded NO hole
-        # (e.g. stock_basic writes active_stocks then aborts on the delisted call)
-        # must still invalidate the stale manifest — invalidation is on ANY hard
-        # abort, not only when holes were recorded.
+    def test_main_keeps_manifest_on_hard_abort_without_holes(self) -> None:
+        # A hard abort that wrote PARTIAL output (stock_basic writes
+        # active_stocks then aborts on the delisted call) also leaves the
+        # manifest untouched: it describes the dir as of the LAST completed
+        # run; the aborted run's partial progress is re-recorded by the next
+        # completed run (refresh/freshness re-attempt what it touched).
         mod = self._load_cli()
 
         def side_effect(api, **p):
@@ -669,7 +856,7 @@ class CliManifestIntegrationTests(unittest.TestCase):
             out = Path(tmp)
             manifest_path = out / MANIFEST_FILENAME
             write_manifest(manifest_path, _bm([_result("daily", 1)], ()))
-            self.assertTrue(manifest_path.exists())
+            bytes_before = manifest_path.read_bytes()
             args = [
                 "--output-dir", str(out), "--endpoints", "stock_basic",
                 "--rate-limit-sleep-ms", "0",
@@ -680,30 +867,70 @@ class CliManifestIntegrationTests(unittest.TestCase):
             self.assertEqual(rc, 1)  # hard abort
             self.assertTrue((out / "active_stocks.parquet").exists())  # partial output
             self.assertEqual(len(client.call.call_args_list), 2)  # active ok, delisted aborted
-            self.assertFalse(manifest_path.exists())  # invalidated despite NO hole
+            self.assertEqual(manifest_path.read_bytes(), bytes_before)
 
-    def test_main_returns_1_when_manifest_invalidation_fails(self) -> None:
-        # codex P2: if clear_manifest raises OSError (read-only dir / permission /
-        # locked file) on the hard-abort path, main must still return 1 cleanly,
-        # not escape as a traceback.
+    def test_main_unreadable_manifest_kept_and_returns_1(self) -> None:
+        # P3-7b red line: a corrupt manifest at run start stops the run (exit
+        # 1) and is LEFT IN PLACE for inspection — only --reset-manifest
+        # removes it.
         mod = self._load_cli()
-
-        def side_effect(api, **p):
-            raise TushareClientError("namechange invalid token / 权限不足")  # hard abort
-
         client = MagicMock()
-        client.call = MagicMock(side_effect=side_effect)
+        client.call = MagicMock(side_effect=lambda api, **p: pd.DataFrame())
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
+            manifest_path = out / MANIFEST_FILENAME
+            manifest_path.write_text("{ not json", encoding="utf-8")
+            bytes_before = manifest_path.read_bytes()
             args = [
                 "--output-dir", str(out), "--endpoints", "namechange",
                 "--rate-limit-sleep-ms", "0",
             ]
-            with patch("src.data.tushare.fetcher.time.sleep"), \
-                    patch.object(mod.TushareClient, "from_environment", return_value=client), \
-                    patch.object(mod, "clear_manifest", side_effect=OSError("read-only dir")):
+            with patch.object(mod.TushareClient, "from_environment", return_value=client):
                 rc = mod.main(args)
-            self.assertEqual(rc, 1)  # clean exit despite the invalidation failure
+            self.assertEqual(rc, 1)
+            self.assertEqual(manifest_path.read_bytes(), bytes_before)
+            client.call.assert_not_called()  # refused BEFORE any fetching
+
+    def test_main_reset_manifest_clears_and_rebuilds_fresh(self) -> None:
+        # --reset-manifest is the ONLY clear path: a corrupt (or any) prior
+        # manifest is removed up front and the run records a fresh one.
+        mod = self._load_cli()
+        client = MagicMock()
+        client.call = MagicMock(
+            side_effect=lambda api, **p: self._daily_row(p.get("ts_code", "X")),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed_universe(out, ["600000.SH", "600001.SH"])
+            manifest_path = out / MANIFEST_FILENAME
+            manifest_path.write_text("{ not json", encoding="utf-8")
+            args = [
+                "--output-dir", str(out), "--endpoints", "daily",
+                "--start-date", "20250101", "--end-date", "20251231",
+                "--rate-limit-sleep-ms", "0", "--reset-manifest",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(args)
+            self.assertEqual(rc, 0)
+            fresh = read_manifest(manifest_path)
+            assert fresh is not None
+            self.assertEqual(fresh.endpoints["daily"].status, "complete")
+            self.assertEqual(fresh.endpoints["daily"].coverage_end_date, "20251231")
+
+    def test_main_reset_manifest_oserror_returns_1(self) -> None:
+        # If the explicit clear itself fails (read-only dir / lock), main
+        # returns 1 cleanly without fetching anything.
+        mod = self._load_cli()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            write_manifest(out / MANIFEST_FILENAME, _bm([_result("daily", 1)], ()))
+            with patch.object(mod, "clear_manifest", side_effect=OSError("read-only dir")):
+                rc = mod.main([
+                    "--output-dir", str(out), "--endpoints", "namechange",
+                    "--rate-limit-sleep-ms", "0", "--reset-manifest",
+                ])
+            self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":

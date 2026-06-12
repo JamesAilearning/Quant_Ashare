@@ -199,10 +199,15 @@ class DailyBasicFetchTests(unittest.TestCase):
             tmp_path = Path(tmp)
             _seed_stock_basic(tmp_path, tickers)
 
-            # Pre-create one ticker's 2020 file so it gets skipped.
+            # Pre-create one ticker's 2020 file, COMPLETE through the year's
+            # last weekday, so the P3-7b freshness rule skips it (a bare
+            # byte-blob would now be treated as unreadable-stale and
+            # re-pulled — by design).
             year_dir = tmp_path / "daily_basic" / "2020"
             year_dir.mkdir(parents=True)
-            (year_dir / "600000.SH.parquet").write_bytes(b"placeholder")
+            pd.DataFrame(
+                {"ts_code": ["600000.SH"], "trade_date": ["20201231"]}
+            ).to_parquet(year_dir / "600000.SH.parquet", index=False)
 
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path,

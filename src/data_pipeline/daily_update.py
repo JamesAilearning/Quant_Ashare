@@ -25,9 +25,12 @@ importlib because their filenames start with digits); tests inject fake
 runners.
 
 Stage notes:
-- fetch runs ``01_fetch_tushare --refresh-current`` so the units a daily update
-  must bring current (stock_basic, namechange / suspend_d, the final year of
-  the per-ticker endpoints) ignore resume's exists-skip.
+- fetch runs ``01_fetch_tushare --refresh-current`` so the AGGREGATE units a
+  daily update must bring current (stock_basic, namechange / suspend_d) ignore
+  resume's exists-skip. The per-ticker endpoints (daily / adj_factor /
+  daily_basic) are brought current by the P3-7b freshness rule instead: a year
+  file is re-pulled exactly when its max(trade_date) stops short of what the
+  run's range expects, so a same-day crash re-run skips already-current files.
 - the snapshot stage verifies the refresh LANDED: the embedded snapshot_date of
   active_stocks.parquet (P3-5) must equal the run date. With
   ``--allow-holey-fetch`` a stale snapshot only warns (the operator already

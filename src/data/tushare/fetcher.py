@@ -67,8 +67,9 @@ secrets-in-config violation).
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from datetime import date
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,20 @@ DEFAULT_RATE_LIMIT_SLEEP_MS = 200
 # Backoff on rate-limit failures: first retry waits 60s, second 120s, etc.
 RATE_LIMIT_BACKOFF_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 5
+
+# P3-7b systemic-shortfall gate (PR #240 round 5, 拍死选项1): when MORE than
+# this share of an endpoint's re-checked re-pulls still end short of their
+# expected boundary, the shortfall is SYSTEMIC — a pre-close run fetching
+# before today's bars are published, or vendor-side truncation — and becomes
+# an ENDPOINT hole (run exits 3; the P3-4c build gate refuses the dump).
+# Routine idiosyncratic shorts (a handful of tickers suspended through the
+# slice end, or delisted with the last bar before the delist date) sit far
+# below it (~0.5% of the universe on a typical day) and stay a loud warning.
+SYSTEMIC_SHORTFALL_RATIO = 0.20
+# A ratio is meaningless on tiny samples (one suspended ticker in a 3-unit
+# targeted run is 33%): below this many re-checked units the shortfall is
+# always treated as idiosyncratic (warning only).
+SYSTEMIC_SHORTFALL_MIN_CHECKED = 50
 
 # Stock_basic field list for both 'L' and 'D' buckets. ts_code, list_date,
 # delist_date are the load-bearing fields for Phase A.2; the rest are
@@ -191,23 +206,39 @@ class TushareFetcherConfig:
     # value-injection as elsewhere (Phase 2 staleness guard): tests pass a fixed
     # date; production leaves None -> the system date at fetch time.
     now: date | None = None
-    # P3-6a: ignore resume's exists-skip for the units a daily update must
-    # bring current — stock_basic (both buckets), the namechange / suspend_d
-    # aggregates, and the FINAL year of the requested range for the per-ticker
-    # endpoints (daily / adj_factor / daily_basic). Without this a daily re-run
-    # over an existing dump skips the current-year files written yesterday and
-    # never fetches today's bars. index_weight is NOT refreshed (one file per
-    # index over the full range; re-pulling all of them every day is hundreds
-    # of calls — refresh membership deliberately / on its own cadence).
+    # P3-6a: ignore resume's exists-skip for the AGGREGATE units a daily update
+    # must bring current — stock_basic (both buckets) and the namechange /
+    # suspend_d aggregates. The per-ticker endpoints (daily / adj_factor /
+    # daily_basic) no longer need this flag: their currency is decided per
+    # (ticker, year) file by the max(trade_date) freshness rule (P3-7b), which
+    # re-pulls exactly the year files whose content stops short of what this
+    # run's range expects. index_weight is NOT refreshed (one file per index
+    # over the full range; re-pulling all of them every day is hundreds of
+    # calls — refresh membership deliberately / on its own cadence).
     refresh_current: bool = False
     # (endpoint, unit) pairs that MUST bypass the exists-skip this run — the
-    # prior manifest's recorded holes, wired in by the 01 CLI. A refresh-current
-    # failure leaves YESTERDAY's file on disk plus a manifest hole; once the
-    # year rolls over, that unit is no longer the final year, so exists-skip
-    # would shadow it forever AND the next manifest merge would drop the
-    # never-re-attempted hole as "self-healed" (codex P1). Forcing known-holed
-    # units past the skip re-attempts them every run until they heal.
+    # prior manifest's recorded holes, wired in by the 01 CLI. A refresh
+    # failure leaves YESTERDAY's file on disk plus a manifest hole; the
+    # freshness rule re-attempts stale files wherever it scans, but a holed
+    # unit must be re-attempted even in years the scan scope skips (codex P1).
+    # Forcing known-holed units past the skip re-attempts them every run until
+    # they heal.
     force_retry_units: frozenset[tuple[str, str]] = frozenset()
+    # P3-7b scan scope: per-endpoint (start, end) YYYYMMDD coverage ranges the
+    # prior manifest already attests, wired in by the 01 CLI. A PAST year is
+    # not re-scanned only when its whole expected slice lies INSIDE the
+    # attested range — both `floor(year) <= end` AND `slice_start >= start`
+    # (codex P1 on PR #240: an end-only watermark would silently trust
+    # never-attested years BEFORE the prior coverage start on a backward
+    # backfill). The FINAL requested year is always scanned. Empty mapping ->
+    # every year of the requested range is scanned (first run / no manifest /
+    # fresh start).
+    assume_verified_ranges: Mapping[str, tuple[str, str]] = field(default_factory=dict)
+    # P3-7b escape hatch: scan EVERY year of the requested range regardless of
+    # the watermark — for suspected external mutation of the dump, or a
+    # pre-P3-7b manifest whose coverage_end_date may over-claim (written by a
+    # run that advanced coverage without verifying per-file content).
+    verify_all_years: bool = False
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -231,6 +262,68 @@ class TushareFetcherConfig:
             raise TushareFetcherError(
                 f"rate_limit_sleep_ms must be >= 0, got {self.rate_limit_sleep_ms}"
             )
+
+
+def _clean_yyyymmdd(value: Any) -> str | None:
+    """Normalize a stock_basic date cell to a YYYYMMDD string, else None."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip()
+    if len(text) == 8 and text.isdigit():
+        return text
+    return None
+
+
+def _last_weekday_str(yyyymmdd: str) -> str:
+    """Latest weekday (Mon-Fri) on or before ``yyyymmdd``, as YYYYMMDD.
+
+    The freshness rule's calendar floor: China A-share year ends trade on the
+    last December weekday (no CN holiday occupies it), so a year file ending
+    there is complete. Mid-year, a requested end falling on a weekend floors
+    to Friday so a Friday-complete file is not pointlessly re-pulled all
+    weekend. Intra-week CN holidays are NOT modelled — a run during one
+    re-pulls final-year files and gets the same data back (bounded churn that
+    converges as soon as the next bar lands), which errs on the side of
+    re-fetching rather than skipping real data.
+    """
+    d = datetime.strptime(yyyymmdd, "%Y%m%d").date()
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y%m%d")
+
+
+def _expected_year_file_end(
+    *,
+    year_start: str,
+    year_end: str,
+    window: tuple[str | None, str | None],
+) -> str | None:
+    """Latest ``trade_date`` this run can expect inside a (ticker, year) file,
+    or ``None`` when no data can exist for the slice.
+
+    ``year_start`` / ``year_end`` are the run's CLIPPED slice for the year
+    (already bounded by the config range). The ticker's listing ``window``
+    further bounds it: listed-after-slice or delisted-before-slice ⇒ ``None``
+    (an empty placeholder is the truthful content); delisted mid-slice caps
+    the expectation at the delist date. The result is floored to the last
+    weekday. Note the cap errs toward re-fetching: a ticker suspended through
+    its slice end (or whose final bar precedes its delist date) yields a file
+    that genuinely ends early and is re-pulled on every scan of that year —
+    bounded waste, never a silent skip of real data.
+    """
+    list_date, delist_date = window
+    lo = year_start
+    hi = year_end
+    if list_date is not None and list_date > lo:
+        lo = list_date
+    if delist_date is not None and delist_date < hi:
+        hi = delist_date
+    if lo > hi:
+        return None
+    floored = _last_weekday_str(hi)
+    if floored < lo:
+        return None
+    return floored
 
 
 class TushareFetcher:
@@ -535,12 +628,18 @@ class TushareFetcher:
                 )
                 return TushareFetchResult(endpoint, 0, 0, skipped=0)
             raise
+        windows = self._load_ticker_windows()
         out_root = self._config.output_dir / subdir
         start_year = int(self._config.start_date[:4])
         end_year = int(self._config.end_date[:4])
+        watermark = self._config.assume_verified_ranges.get(endpoint)
         written = 0
         rows = 0
         skipped = 0
+        verified = 0
+        stale_refetched = 0
+        still_short: list[str] = []  # re-pulled units still short of expected
+        rechecked = 0  # re-pulls whose post-write re-check actually ran
         for year in range(start_year, end_year + 1):
             year_dir = out_root / str(year)
             if not self._config.dry_run:
@@ -552,22 +651,97 @@ class TushareFetcher:
                 year_start = self._config.start_date
             if year_end > self._config.end_date:
                 year_end = self._config.end_date
-            # P3-6a: refresh_current re-pulls the FINAL year of the requested
-            # range (for a daily update, end_date = today, so this is the
-            # current year). Past years stay resume-skipped — their files are
-            # closed history — EXCEPT units the prior manifest recorded a hole
-            # for (codex P1: a refresh failure leaves yesterday's file; after a
-            # year boundary the unit is no longer the final year, so without
-            # the force-retry it would be shadowed forever and its hole
-            # wrongly dropped as self-healed by the next merge).
-            refresh_year = self._config.refresh_current and year == end_year
+            # P3-7b scan scope: the FINAL requested year is ALWAYS scanned for
+            # freshness (a daily re-run must notice yesterday's file lacks
+            # today's bar — and a post-close re-run must notice a pre-close
+            # run's file lacks today's bar even though coverage already says
+            # "today"). A PAST year is re-scanned unless its WHOLE expected
+            # slice lies inside the prior manifest's attested range — both
+            # ends checked (codex P1 on PR #240: end-only would trust
+            # never-attested years before the coverage start on a backward
+            # backfill). --verify-all-years forces the sweep; no watermark
+            # (no / pre-P3-7b manifest) scans everything.
+            year_floor = _last_weekday_str(min(self._config.end_date, f"{year}1231"))
+            scan_year = (
+                year == end_year
+                or self._config.verify_all_years
+                or watermark is None
+                or year_floor > watermark[1]
+                or year_start < watermark[0]
+            )
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
                 unit = f"ts_code={ticker} year={year}"
-                if (path.exists() and not refresh_year
-                        and not self._must_retry(endpoint, unit)):
-                    skipped += 1
-                    continue
+                # The expected-content boundary for ANY unit this run fetches
+                # (a stale re-pull, a force-retried existing file, or a
+                # missing file fetched fresh): the written frame is re-checked
+                # against it after the write (codex P1 rounds 3/4/7). None ⇒
+                # no boundary exists (the listing window misses the slice) ⇒
+                # no re-check, an empty response is the truth.
+                recheck_boundary: str | None = None
+                force_retry = self._must_retry(endpoint, unit)
+                if path.exists() and not force_retry:
+                    if not scan_year:
+                        # Attested by the prior manifest's watermark — closed
+                        # history this run cannot expect more from. A BLIND
+                        # skip: proves nothing, establishes nothing.
+                        skipped += 1
+                        continue
+                    expected = _expected_year_file_end(
+                        year_start=year_start,
+                        year_end=year_end,
+                        window=windows.get(ticker, (None, None)),
+                    )
+                    if expected is None:
+                        # The ticker's listing window misses this year slice —
+                        # no data can exist, so a readable EMPTY placeholder is
+                        # the truthful content: POSITIVE knowledge → verified
+                        # (codex P2: must establish coverage, unlike a blind
+                        # resume skip). But VERIFY the placeholder before
+                        # claiming it (codex P2 round 2): a corrupt blob or a
+                        # file holding unexpected rows (external mutation /
+                        # interrupted write) falls through to the re-pull,
+                        # which overwrites it with a clean empty placeholder.
+                        if self._placeholder_is_clean(path):
+                            skipped += 1
+                            verified += 1
+                            continue
+                        # Dirty placeholder → re-pull (no freshness compare:
+                        # there is no expected date to compare against).
+                        stale_refetched += 1
+                    else:
+                        file_max = self._read_file_max_trade_date(path)
+                        if file_max is not None and file_max >= expected:
+                            # Content POSITIVELY confirmed complete for this
+                            # run's range — verified, establishes coverage
+                            # (codex P2).
+                            skipped += 1
+                            verified += 1
+                            continue
+                        # Stale (max < expected), empty-but-data-possible, or
+                        # unreadable: re-pull the WHOLE year (one API call —
+                        # same cost as fetching a single day) and overwrite. A
+                        # failure below leaves the old file in place and
+                        # records a hole; the file stays stale, so the next
+                        # run re-attempts it (self-healing without any extra
+                        # bookkeeping).
+                        stale_refetched += 1
+                        recheck_boundary = expected
+                else:
+                    # MISSING file (first run / new ticker / new year) OR a
+                    # force-retried existing file: both fetch below and both
+                    # get the same post-write re-check (codex P1 rounds 4+7).
+                    # Without this, a PRE-CLOSE FIRST run would write short
+                    # current-year files with no re-check at all and record a
+                    # complete manifest through today — the fresh-fetch
+                    # entrance to the exact hole the systemic-shortfall gate
+                    # closes for re-pulls. Window-misses-slice units keep the
+                    # boundary None (an empty response is their truth).
+                    recheck_boundary = _expected_year_file_end(
+                        year_start=year_start,
+                        year_end=year_end,
+                        window=windows.get(ticker, (None, None)),
+                    )
                 if self._config.dry_run:
                     if i == 1:
                         _logger.info(
@@ -591,12 +765,149 @@ class TushareFetcher:
                 self._atomic_write_parquet(df, path)
                 written += 1
                 rows += len(df)
+                # codex P1 round 3: re-check a freshness-rule re-pull against
+                # the boundary that made the old file stale. The verdict is
+                # decided in AGGREGATE after the loop (round 5, 拍死 option 1):
+                # an IDIOSYNCRATIC shortfall (a few tickers suspended through
+                # the slice end, or delisted with the last bar before the
+                # delist date — no more data exists for them) stays a loud
+                # warning, while a SYSTEMIC one (a large share of re-checked
+                # re-pulls short — a pre-close run before today's bars are
+                # published, or vendor-side truncation) becomes an endpoint
+                # hole that fails the run and the downstream build gate.
+                if recheck_boundary is not None and "trade_date" in df.columns:
+                    rechecked += 1
+                    new_max = str(df["trade_date"].max()) if len(df) else None
+                    if new_max is None or new_max < recheck_boundary:
+                        still_short.append(unit)
                 if i % 200 == 0:
                     _logger.info(
                         "  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)",
                         endpoint, year, i, len(tickers), written, skipped,
                     )
-        return TushareFetchResult(endpoint, written, rows, skipped)
+        if stale_refetched or verified:
+            _logger.info(
+                "  %s: freshness rule verified %d existing year file(s) "
+                "complete and re-pulled %d stale/incomplete one(s) (P3-7b).",
+                endpoint, verified, stale_refetched,
+            )
+        if still_short:
+            ratio = len(still_short) / rechecked
+            if (
+                rechecked >= SYSTEMIC_SHORTFALL_MIN_CHECKED
+                and ratio > SYSTEMIC_SHORTFALL_RATIO
+            ):
+                # SYSTEMIC: this is not a handful of suspended tickers — a
+                # large share of fresh full-year re-pulls came back short of
+                # the boundary that made their old files stale. The two real
+                # shapes are a PRE-CLOSE run (today's bars not yet published —
+                # the run must not pass as canonical) and vendor-side
+                # truncation. Record an ENDPOINT hole so the run exits 3 and
+                # the P3-4c build gate refuses the dump (round 5, 拍死选项1).
+                self._add_hole(
+                    endpoint,
+                    "systemic-shortfall",
+                    reason_class="systemic_shortfall",
+                    attempts=1,
+                    last_error=(
+                        f"{len(still_short)}/{rechecked} re-checked re-pulls "
+                        f"still end before their expected boundary "
+                        f"(pre-close run before today's bars are published, "
+                        f"or vendor-side truncation?). First: "
+                        + "; ".join(still_short[:3])
+                    )[:300],
+                )
+            else:
+                _logger.warning(
+                    "  %s: %d of %d re-checked re-pull(s) STILL end before "
+                    "their expected boundary after a fresh full-year pull "
+                    "(first: %s). Below the systemic threshold, this is the "
+                    "vendor's complete answer — normal for tickers suspended "
+                    "through a slice end or delisted before their delist "
+                    "date; if neither applies, suspect silent vendor "
+                    "truncation and re-run with --verify-all-years after "
+                    "checking the source.",
+                    endpoint, len(still_short), rechecked,
+                    "; ".join(still_short[:3]),
+                )
+        return TushareFetchResult(
+            endpoint, written, rows, skipped, units_verified=verified,
+        )
+
+    def _read_file_max_trade_date(self, path: Path) -> str | None:
+        """Latest ``trade_date`` (YYYYMMDD string) inside an existing year
+        file, or ``None`` when the file is an empty placeholder, lacks the
+        column, or cannot be read (all three mean "cannot confirm complete" —
+        the freshness rule then re-pulls the year, which also self-heals a
+        corrupt file by overwriting it)."""
+        try:
+            frame = pd.read_parquet(path, columns=["trade_date"])
+        except Exception as exc:  # noqa: BLE001 — any unreadable shape → refetch
+            _logger.warning(
+                "  Could not read trade_date from %s (%s) — treating as stale "
+                "and re-pulling the year.", path, exc,
+            )
+            return None
+        if frame.empty:
+            return None
+        value = frame["trade_date"].max()
+        if pd.isna(value):
+            return None
+        return str(value)
+
+    def _placeholder_is_clean(self, path: Path) -> bool:
+        """True iff an expected-no-data placeholder is a READABLE parquet with
+        ZERO rows. A corrupt blob or a file holding unexpected rows (external
+        mutation / interrupted write) is dirty — the caller re-pulls the year,
+        which overwrites it with a clean empty placeholder (codex P2 round 2
+        on PR #240: claiming such a file "verified" would advance coverage
+        over an unreadable/wrong file and bypass the unreadable-file re-pull
+        path)."""
+        try:
+            frame = pd.read_parquet(path)
+        except Exception as exc:  # noqa: BLE001 — any unreadable shape → refetch
+            _logger.warning(
+                "  Unreadable no-data placeholder %s (%s) — re-pulling the "
+                "year to rewrite it.", path, exc,
+            )
+            return False
+        if len(frame) > 0:
+            _logger.warning(
+                "  No-data placeholder %s unexpectedly holds %d row(s) "
+                "(listing window says none can exist) — re-pulling the year "
+                "to rewrite it.", path, len(frame),
+            )
+            return False
+        return True
+
+    def _load_ticker_windows(self) -> dict[str, tuple[str | None, str | None]]:
+        """Per-ticker ``(list_date, delist_date)`` (YYYYMMDD strings or None)
+        from the already-pulled stock_basic parquets.
+
+        Used by the freshness rule to bound what a year file can be expected
+        to contain: a ticker listed after (or delisted before) the year slice
+        legitimately has an empty placeholder, and a ticker delisted mid-year
+        cannot have bars past its delist date. Missing/malformed columns
+        degrade to ``(None, None)`` — the rule then expects the full slice,
+        which only costs extra re-pulls, never skips real data."""
+        windows: dict[str, tuple[str | None, str | None]] = {}
+        for name in ("active_stocks.parquet", "delisted_stocks.parquet"):
+            path = self._config.output_dir / name
+            try:
+                frame = pd.read_parquet(path)
+            except Exception:  # noqa: BLE001 — universe loader already failed loud
+                continue
+            if "ts_code" not in frame.columns:
+                continue
+            for row in frame.itertuples(index=False):
+                code = str(getattr(row, "ts_code", "") or "")
+                if not code:
+                    continue
+                windows[code] = (
+                    _clean_yyyymmdd(getattr(row, "list_date", None)),
+                    _clean_yyyymmdd(getattr(row, "delist_date", None)),
+                )
+        return windows
 
     def _load_ticker_universe(self) -> tuple[str, ...]:
         """Return the union of active + delisted tickers from already-pulled
