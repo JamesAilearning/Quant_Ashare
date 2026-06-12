@@ -1560,6 +1560,84 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             f"expected the still-short warning in {logs.output}",
         )
 
+    @staticmethod
+    def _seed_many(tmp_path: Path, tickers: list[str]) -> None:
+        pd.DataFrame({
+            "ts_code": tickers,
+            "list_date": ["20000101"] * len(tickers),
+            "delist_date": [None] * len(tickers),
+        }).to_parquet(tmp_path / "active_stocks.parquet", index=False)
+        pd.DataFrame(
+            {"ts_code": [], "list_date": [], "delist_date": []}
+        ).to_parquet(tmp_path / "delisted_stocks.parquet", index=False)
+
+    def test_systemic_shortfall_records_endpoint_hole(self) -> None:
+        # Round 5 (拍死选项1): a LARGE share of re-checked re-pulls still
+        # short (pre-close run / vendor truncation) is an ENDPOINT hole — the
+        # run exits 3 and the build gate refuses — not a warning.
+        from src.data.tushare.fetcher import SYSTEMIC_SHORTFALL_MIN_CHECKED
+        n = SYSTEMIC_SHORTFALL_MIN_CHECKED + 10
+        tickers = [f"{600000 + k}.SH" for k in range(n)]
+        client = self._client_returning(["20250102", "20250630"])  # all short
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_many(tmp_path, tickers)
+            year_dir = tmp_path / "daily" / "2025"
+            year_dir.mkdir(parents=True)
+            for tk in tickers:  # every file stale → every unit re-pulled
+                pd.DataFrame(
+                    {"ts_code": [tk], "trade_date": ["20250630"]}
+                ).to_parquet(year_dir / f"{tk}.parquet", index=False)
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20250101", "20251231"),
+            )
+            results = fetcher.fetch()
+        self.assertEqual(results[0].files_written, n)  # data still written
+        self.assertEqual(len(fetcher.holes), 1)  # ONE endpoint-level hole
+        hole = fetcher.holes[0]
+        self.assertEqual(hole.reason_class, "systemic_shortfall")
+        self.assertEqual(hole.unit, "systemic-shortfall")
+        self.assertIn(f"{n}/{n}", hole.last_error)
+
+    def test_idiosyncratic_shortfall_stays_warning_below_ratio(self) -> None:
+        # A handful of suspended-through-year-end tickers among many healthy
+        # re-pulls stays BELOW the systemic ratio: loud warning, zero holes,
+        # the daily pipeline keeps flowing (阶段1 red line).
+        from src.data.tushare.fetcher import SYSTEMIC_SHORTFALL_MIN_CHECKED
+        n = SYSTEMIC_SHORTFALL_MIN_CHECKED + 10
+        tickers = [f"{600000 + k}.SH" for k in range(n)]
+        suspended = set(tickers[:5])  # ~8% < 20%
+
+        def side_effect(api, **p):
+            dates = (
+                ["20250102", "20250630"] if p["ts_code"] in suspended
+                else ["20250102", "20251231"]
+            )
+            return pd.DataFrame({
+                "ts_code": [p["ts_code"]] * len(dates), "trade_date": dates,
+            })
+
+        client = _make_client(side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_many(tmp_path, tickers)
+            year_dir = tmp_path / "daily" / "2025"
+            year_dir.mkdir(parents=True)
+            for tk in tickers:
+                pd.DataFrame(
+                    {"ts_code": [tk], "trade_date": ["20250630"]}
+                ).to_parquet(year_dir / f"{tk}.parquet", index=False)
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20250101", "20251231"),
+            )
+            with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
+                fetcher.fetch()
+        self.assertEqual(len(fetcher.holes), 0)  # NOT systemic → no hole
+        self.assertTrue(
+            any("STILL end before" in line for line in logs.output),
+            f"expected the idiosyncratic warning in {logs.output}",
+        )
+
     def test_force_retried_still_short_file_also_warns(self) -> None:
         # codex P1 round 4 on #240: a force-retried EXISTING file (prior-
         # manifest hole) bypasses the freshness branch, but its successful

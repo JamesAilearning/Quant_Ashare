@@ -123,6 +123,20 @@ DEFAULT_RATE_LIMIT_SLEEP_MS = 200
 RATE_LIMIT_BACKOFF_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 5
 
+# P3-7b systemic-shortfall gate (PR #240 round 5, 拍死选项1): when MORE than
+# this share of an endpoint's re-checked re-pulls still end short of their
+# expected boundary, the shortfall is SYSTEMIC — a pre-close run fetching
+# before today's bars are published, or vendor-side truncation — and becomes
+# an ENDPOINT hole (run exits 3; the P3-4c build gate refuses the dump).
+# Routine idiosyncratic shorts (a handful of tickers suspended through the
+# slice end, or delisted with the last bar before the delist date) sit far
+# below it (~0.5% of the universe on a typical day) and stay a loud warning.
+SYSTEMIC_SHORTFALL_RATIO = 0.20
+# A ratio is meaningless on tiny samples (one suspended ticker in a 3-unit
+# targeted run is 33%): below this many re-checked units the shortfall is
+# always treated as idiosyncratic (warning only).
+SYSTEMIC_SHORTFALL_MIN_CHECKED = 50
+
 # Stock_basic field list for both 'L' and 'D' buckets. ts_code, list_date,
 # delist_date are the load-bearing fields for Phase A.2; the rest are
 # kept for diagnostics.
@@ -625,6 +639,7 @@ class TushareFetcher:
         verified = 0
         stale_refetched = 0
         still_short: list[str] = []  # re-pulled units still short of expected
+        rechecked = 0  # re-pulls whose post-write re-check actually ran
         for year in range(start_year, end_year + 1):
             year_dir = out_root / str(year)
             if not self._config.dry_run:
@@ -745,16 +760,17 @@ class TushareFetcher:
                 written += 1
                 rows += len(df)
                 # codex P1 round 3: re-check a freshness-rule re-pull against
-                # the boundary that made the old file stale. A frame that is
-                # STILL short is the vendor's freshest full-year answer — for
-                # a ticker suspended through the slice end, or delisted with
-                # its last bar before its delist date, no more data EXISTS, so
-                # holing it would permanently false-positive the build gate
-                # and a pre-close daily run would hole every ticker. We make
-                # the shortfall LOUD instead (aggregate warning below): the
-                # genuinely dangerous case — a silent vendor truncation — is
-                # then visible, while legitimate short years stay buildable.
+                # the boundary that made the old file stale. The verdict is
+                # decided in AGGREGATE after the loop (round 5, 拍死 option 1):
+                # an IDIOSYNCRATIC shortfall (a few tickers suspended through
+                # the slice end, or delisted with the last bar before the
+                # delist date — no more data exists for them) stays a loud
+                # warning, while a SYSTEMIC one (a large share of re-checked
+                # re-pulls short — a pre-close run before today's bars are
+                # published, or vendor-side truncation) becomes an endpoint
+                # hole that fails the run and the downstream build gate.
                 if recheck_boundary is not None and "trade_date" in df.columns:
+                    rechecked += 1
                     new_max = str(df["trade_date"].max()) if len(df) else None
                     if new_max is None or new_max < recheck_boundary:
                         still_short.append(unit)
@@ -770,16 +786,44 @@ class TushareFetcher:
                 endpoint, verified, stale_refetched,
             )
         if still_short:
-            _logger.warning(
-                "  %s: %d re-pulled year file(s) STILL end before their "
-                "expected boundary after a fresh full-year pull (first: %s). "
-                "This is the vendor's complete answer — normal for tickers "
-                "suspended through a slice end, delisted before their delist "
-                "date, or a run before today's bar is published; if none of "
-                "those apply, suspect silent vendor truncation and re-run "
-                "with --verify-all-years after checking the source.",
-                endpoint, len(still_short), "; ".join(still_short[:3]),
-            )
+            ratio = len(still_short) / rechecked
+            if (
+                rechecked >= SYSTEMIC_SHORTFALL_MIN_CHECKED
+                and ratio > SYSTEMIC_SHORTFALL_RATIO
+            ):
+                # SYSTEMIC: this is not a handful of suspended tickers — a
+                # large share of fresh full-year re-pulls came back short of
+                # the boundary that made their old files stale. The two real
+                # shapes are a PRE-CLOSE run (today's bars not yet published —
+                # the run must not pass as canonical) and vendor-side
+                # truncation. Record an ENDPOINT hole so the run exits 3 and
+                # the P3-4c build gate refuses the dump (round 5, 拍死选项1).
+                self._add_hole(
+                    endpoint,
+                    "systemic-shortfall",
+                    reason_class="systemic_shortfall",
+                    attempts=1,
+                    last_error=(
+                        f"{len(still_short)}/{rechecked} re-checked re-pulls "
+                        f"still end before their expected boundary "
+                        f"(pre-close run before today's bars are published, "
+                        f"or vendor-side truncation?). First: "
+                        + "; ".join(still_short[:3])
+                    )[:300],
+                )
+            else:
+                _logger.warning(
+                    "  %s: %d of %d re-checked re-pull(s) STILL end before "
+                    "their expected boundary after a fresh full-year pull "
+                    "(first: %s). Below the systemic threshold, this is the "
+                    "vendor's complete answer — normal for tickers suspended "
+                    "through a slice end or delisted before their delist "
+                    "date; if neither applies, suspect silent vendor "
+                    "truncation and re-run with --verify-all-years after "
+                    "checking the source.",
+                    endpoint, len(still_short), rechecked,
+                    "; ".join(still_short[:3]),
+                )
         return TushareFetchResult(
             endpoint, written, rows, skipped, units_verified=verified,
         )

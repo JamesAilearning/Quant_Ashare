@@ -97,6 +97,17 @@
       the remaining trace) instead of vanishing silently (regression:
       `test_force_retried_still_short_file_also_warns`).
 
+## 4f. Codex round 5 (PR #240) — systemic-shortfall gate (拍死选项1)
+- [x] Still-short re-pulls split in AGGREGATE: > SYSTEMIC_SHORTFALL_RATIO
+      (20%) of re-checked re-pulls short, with >= SYSTEMIC_SHORTFALL_MIN_CHECKED
+      (50) re-checked → ENDPOINT hole `systemic_shortfall` (run exits 3, the
+      P3-4c build gate refuses — covers pre-close runs and vendor-side
+      truncation, the two shapes that could poison a canonical build at
+      scale); below threshold → loud idiosyncratic warning (suspensions /
+      delist gaps — the daily pipeline keeps flowing per the 阶段1 red line).
+      Regressions: `test_systemic_shortfall_records_endpoint_hole`,
+      `test_idiosyncratic_shortfall_stays_warning_below_ratio`.
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.
