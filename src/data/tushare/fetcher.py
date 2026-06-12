@@ -75,7 +75,13 @@ from typing import Any
 import pandas as pd
 
 from src.core.logger import get_logger
-from src.data.tushare.client import TushareClient, TushareClientError
+from src.data.tushare.client import (
+    KIND_NETWORK,
+    KIND_RATE_LIMIT,
+    KIND_SERVER_ERROR,
+    TushareClient,
+    TushareClientError,
+)
 
 # Moved to the dependency-free fetch_types module (P3-6b) so that reading a
 # manifest / integrity stamp never imports this network stack; re-exported
@@ -720,39 +726,48 @@ class TushareFetcher:
             attempts=err.attempts, last_error=err.last_error,
         )
 
+    # Retry POLICY over the client's structured ``kind`` (P3-7). The client
+    # states the classified FACT; this is the only place that decides which
+    # kinds are worth retrying. ``auth`` / ``param`` / ``environment`` need
+    # operator action, and ``unknown`` aborts fast by the P3-4a stance — an
+    # unrecognized failure must not burn 5 × 60-300s of backoff per unit
+    # across thousands of units before anyone notices.
+    _RETRYABLE_KINDS = frozenset({KIND_RATE_LIMIT, KIND_NETWORK, KIND_SERVER_ERROR})
+
     @staticmethod
     def _is_retryable_error(exc: TushareClientError) -> bool:
         """True iff ``exc`` is a transient error worth retrying.
 
-        Covered classes:
+        PRIMARY: the structured ``kind`` the client stamped at wrap time
+        (P3-7), classified from the RAW vendor failure before any wrapper
+        prose existed. The previous message-substring approach was broken
+        in production: ``client.call`` appended "Common causes: rate limit
+        (account tier too low), missing parameter, or transient network
+        error." to EVERY failure, so every error — including invalid
+        token / missing permission / bad params — substring-matched as
+        retryable and the fast-abort path below was unreachable; a wrong
+        token ground through 5 × 60-300s of backoff per unit instead of
+        aborting the run on the first call.
 
-        * **Rate limit**: ``"rate"`` / ``"limit"`` substrings;
-          Tushare's quota exhaustion sometimes surfaces as
-          ``returned None`` (no body in the SDK).
-        * **Transient network**: ``ConnectionError`` /
-          ``ConnectionResetError`` (catches the user-reported
-          ``HTTPConnectionPool(host='api.waditu.com')`` blip),
-          ``Timeout`` / ``timed out``, ``max retries exceeded``
-          (raised by the requests adapter when its OWN retry
-          budget is exhausted on transport-level failures).
-        * **5xx gateway**: ``502``, ``503``, ``504``, ``bad gateway``,
-          ``gateway time-out``, ``service unavailable``.
-        * **Tushare Chinese error messages**: ``网络`` (network),
-          ``服务异常`` (service abnormal), ``服务繁忙`` (server busy).
-          Tushare's pro API sometimes returns Chinese error bodies
-          on transient failures; matching the substrings here means
-          a misconfigured operator locale doesn't accidentally lose
-          the retry. Static method so it can be unit-tested without
-          a fetcher instance.
+        FALLBACK (``kind is None`` only — a ``TushareClientError``
+        constructed directly without classification, e.g. legacy call
+        sites or tests): the original substring sets, unchanged:
 
-        NOT retried:
+        * **Rate limit**: ``"rate"`` / ``"limit"`` / ``returned none``.
+        * **Transient network**: ``connection`` / ``timeout`` /
+          ``max retries exceeded`` / ``http(s)connectionpool``.
+        * **5xx gateway**: ``502`` / ``503`` / ``504`` / ``bad gateway`` /
+          ``gateway time-out`` / ``service unavailable``.
+        * **Tushare Chinese transients**: ``网络`` / ``服务异常`` /
+          ``服务繁忙``.
+        * Anything else (token / permission / param / unrecognized) is
+          NOT retried — recovery requires operator action, not time.
 
-        * Token / authentication errors (``"token"``, ``"权限"``,
-          ``"invalid"``) — recovery requires operator action, not
-          time.
-        * Param errors (``"missing"``, ``"required"``) — same.
-        * Anything not in the substring set above.
+        Static method so it can be unit-tested without a fetcher instance.
         """
+        kind = getattr(exc, "kind", None)
+        if kind is not None:
+            return kind in TushareFetcher._RETRYABLE_KINDS
         msg = str(exc).lower()
         return any(
             token in msg
