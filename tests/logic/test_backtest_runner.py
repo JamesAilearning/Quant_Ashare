@@ -1292,6 +1292,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         n_one_price_days: int = 0,
         logger_records: list | None = None,
         predictions=None,
+        raise_runner_errors: bool = False,
     ) -> object:
         """Run BacktestRunner.run with a patched mask helper and
         a patched ``TopkDropoutStrategy`` that records the
@@ -1379,10 +1380,16 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
                         ),
                         topk=2, n_drop=1,
                     )
-                except Exception:
+                except Exception as exc:
                     # Run is intentionally stopped at qlib.backtest;
-                    # we only need what reached the strategy.
-                    pass
+                    # we only need what reached the strategy. Tests
+                    # asserting the runner's OWN guards opt in to
+                    # re-raising BacktestRunnerError.
+                    from src.core.backtest_runner import BacktestRunnerError
+                    if raise_runner_errors and isinstance(
+                        exc, BacktestRunnerError,
+                    ):
+                        raise
         finally:
             if handler is not None and logger is not None:
                 logger.removeHandler(handler)
@@ -1414,9 +1421,12 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(len(lt), 2)
         buy_expr, sell_expr = lt
-        # The request fixture uses the default magnitude 0.095.
-        self.assertEqual(buy_expr, "$close/Ref($close,1)-1 > 0.095")
-        self.assertEqual(sell_expr, "$close/Ref($close,1)-1 < -0.095")
+        # The request fixture uses the default magnitude 0.095. Not-form:
+        # an UNVERIFIABLE move (NaN previous close — resumption day / first
+        # bundle day) must block conservatively; the bare `>` form would
+        # silently permit it (numpy NaN comparisons are False).
+        self.assertEqual(buy_expr, "Not($close/Ref($close,1)-1 <= 0.095)")
+        self.assertEqual(sell_expr, "Not($close/Ref($close,1)-1 >= -0.095)")
         # codex P2 rounds 2+4: the exchange's quote universe must be bounded
         # to the FINAL tradable signal universe, benchmark EXCLUDED — without
         # `codes`, qlib loads the ENTIRE provider and a missing $factor
@@ -1465,6 +1475,25 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         # masked — and must survive, as must the untouched ticker.
         self.assertIn(("2024-03-15", "SH600000"), observed)
         self.assertIn(("2024-03-14", "SH600519"), observed)
+
+    def test_fully_masked_universe_fails_loud(self) -> None:
+        """PR-D self-review: an all-masked signal must NOT silently fall
+        through to qlib — empty `codes` would make qlib substitute the FULL
+        provider universe and emit zero-position metrics stamped official.
+        The runner refuses instead."""
+
+        from src.core.backtest_runner import BacktestRunnerError
+
+        # Every stamped row's execution day (stamp + 1) is masked.
+        mask = frozenset({
+            (day, inst)
+            for day in ("2024-03-15", "2024-03-16", "2024-03-17")
+            for inst in ("SH600000", "SZ300001", "SH600519")
+        })
+        with self.assertRaisesRegex(BacktestRunnerError, "universe is empty"):
+            self._drive_until_strategy_construction(
+                mask, n_suspended=9, raise_runner_errors=True,
+            )
 
     def test_pre_window_stamp_masked_on_first_evaluation_day(self) -> None:
         """codex P2 on PR #241: a prediction stamped on the trading day

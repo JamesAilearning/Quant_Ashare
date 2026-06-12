@@ -78,12 +78,16 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # index that does not delist.
     "src/data/benchmark_artifact_publisher.py": 1,
 
-    # Has ``pit_provider`` opt-in. The ``D.features`` call only fires
-    # when the caller did NOT pass a provider; a WARN log
+    # Call 1: has ``pit_provider`` opt-in — the ``D.features`` call only
+    # fires when the caller did NOT pass a provider; a WARN log
     # ("Audit P0-6") makes the bypass observable. TODO listed in the
     # source: thread ``pit_provider`` through ``Pipeline`` /
     # ``WalkForwardEngine`` and retire this legacy branch.
-    "src/core/backtest_runner.py": 1,
+    # Call 2 (PR-D): the round-lot preflight probes ``$factor``/``$close``
+    # availability across the run's own candidate universe — a pure
+    # diagnostic (warning only, never feeds metrics) where the post-delist
+    # mask is irrelevant; WARN log ("Audit P0-6") at the call site.
+    "src/core/backtest_runner.py": 2,
 
     # Same pattern as ``backtest_runner``: ``pit_provider`` opt-in
     # plus WARN-on-fallback. Same TODO follow-up.

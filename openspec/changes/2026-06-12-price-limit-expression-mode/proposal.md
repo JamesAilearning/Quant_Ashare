@@ -42,12 +42,35 @@ one-price (high==low) days; a limit day that opened off the limit slips it.
   exchange_kwargs that reach `qlib.backtest` carry the expression tuple —
   a refactor reverting to float mode fails loudly.
 
+## Adjusted-close exactness (closes the round-5 Codex P1)
+
+The expressions run on stored ADJUSTED closes — and that is the
+exchange-correct test, not an approximation. tushare's adj_factor derives
+from the exchange-published previous close (the rounded 除权除息参考价),
+so on ex-dividend/ex-rights days the adjusted ratio equals the exchange's
+own move against its limit reference. Verified against exchange pre_close
+on ALL 34,597 adj-factor-jump days 2021-2025: zero missed main-board limit
+closes (243/243 up, 52/52 down); 99.9% of divergences < 0.1pp against the
+0.5pp buffer in 0.095; the 配股 marquee case (600030.SH, 2022-01-27)
+diverges by -7.4e-5. Raw-price ratios would instead diverge by the FULL
+event magnitude on every ex-date — strictly worse, and raw closes are not
+in the bundle anyway. Residuals are conservative for the canonical
+csi800 non-ST path: ST 重整除权 factor disagreements (3 in 5y; ST is
+masked from signals) and rare factor restatements (≤9 in 5y, over-block
+direction only).
+
 ## Non-Goals
 
-- Per-board / per-instrument thresholds (688/300 ±20%, ST ±5%): the uniform
-  magnitude is a documented CONSERVATIVE bias (blocks slightly more than
-  reality for 20%-band boards) — refinement is backlogged as audit A4.
-- No change bins in the builder (the expression mode removes the need).
+- Per-board / per-instrument thresholds (688/300 ±20%, BJ ±30%, ST ±5%):
+  the uniform magnitude is a documented CONSERVATIVE bias (blocks slightly
+  more than reality for wider-band boards) — refinement is backlogged as
+  audit A4.
+- No change bins in the builder (the expression mode removes the need; a
+  true `$change` bin built from exchange pre_close would be the only
+  superior alternative and requires a new fetch field).
 - No volume-limit (`volume_threshold`) modelling.
 - No open-price limit semantics (deal_price stays close; limit checked on
   the close-to-close move of the fill day).
+- The equal-weight diagnostic baseline remains limit-blind (it assumes
+  fills the official strategy now blocks) — informational metric only;
+  aligning it is out of scope and documented here.

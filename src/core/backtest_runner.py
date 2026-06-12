@@ -65,6 +65,18 @@ _logger = get_logger(__name__)
 # semantics change.
 EXECUTION_TIMING_SEMANTICS = "lag_total_v2"
 
+# PR-D (audit A2): version tag for the price-limit enforcement semantics,
+# folded into backtest provenance fingerprints and the walk-forward resume
+# fingerprint alongside EXECUTION_TIMING_SEMANTICS. "close_expr_v1" =
+# limit_threshold reaches qlib as the Not-form close-ratio expression tuple
+# (limits actually block fills; unverifiable moves block conservatively;
+# the exchange universe is bounded to the tradable signal set). The
+# untagged pre-PR-D behavior passed a float that qlib silently ignored on
+# change-less bundles — the same config byte-for-byte now yields different
+# official metrics, so the tag keeps provenance distinguishable and
+# invalidates cross-semantics walk-forward resume.
+PRICE_LIMIT_SEMANTICS = "close_expr_v1"
+
 
 class BacktestRunnerError(RuntimeError):
     """Raised on backtest execution failures."""
@@ -275,20 +287,42 @@ class BacktestRunner:
         slippage_fraction = cost.slippage_bps / 10000.0
         # Price-limit enforcement (PR-D, audit A2): the contract's
         # ``limit_threshold`` float is translated into qlib's EXPRESSION-mode
-        # tuple ``(limit_buy_expr, limit_sell_expr)`` computed from closes —
-        # NEVER passed through as a float. qlib's float mode keys on the
-        # STORED ``$change`` field, which the PIT bundle deliberately does
-        # not produce; qlib then evaluates ``NaN >= threshold`` == False for
-        # every row and the limit checks silently disable — backtests could
-        # buy at limit-up and sell at limit-down, inflating returns. The
-        # expression mode derives the day's move from ``$close`` history
-        # (always present) on the EXECUTION day's quote row. Uniform
-        # threshold across boards is a documented conservative bias
-        # (688/300 ±20% and ST ±5% refinement is backlogged — audit A4).
+        # tuple ``(limit_buy_expr, limit_sell_expr)`` — NEVER passed through
+        # as a float. qlib's float mode keys on the STORED ``$change`` field,
+        # which the PIT bundle deliberately does not produce; qlib then
+        # evaluates ``NaN >= threshold`` == False for every row and the limit
+        # checks silently disable — backtests could buy at limit-up and sell
+        # at limit-down, inflating returns.
+        #
+        # The expressions run on stored ADJUSTED closes (the bundle ships no
+        # raw prices) and that is the exchange-correct test, not an
+        # approximation: tushare's adj_factor is built from the exchange-
+        # published previous close (the rounded 除权除息参考价), so on
+        # ex-dividend/ex-rights days — 配股 included — the adjusted ratio
+        # equals the exchange's own move vs its limit reference. Verified
+        # against exchange pre_close on all 34,597 adj-factor-jump days
+        # 2021-2025: zero missed main-board limit closes (243/243 up, 52/52
+        # down); 99.9% of divergences < 0.1pp vs the 0.5pp buffer in 0.095;
+        # raw-price ratios would instead diverge by the full event magnitude
+        # on every ex-date. Residuals (all conservative for the csi800
+        # non-ST path): ST 重整除权 factor disagreements (3 in 5y, ST is
+        # masked anyway) and rare factor restatements (≤9 in 5y, over-block
+        # direction only).
+        #
+        # ``Not(move <= thr)`` rather than ``move > thr``: when the previous
+        # close is NaN (resumption day after a suspension, or a ticker's
+        # first bundle day) the move is UNVERIFIABLE — numpy comparisons on
+        # NaN are False, so the ``>`` form would silently PERMIT the fill
+        # (the same liberal failure class as the dead float mode), while the
+        # Not-form blocks it. Unverifiable ⇒ untradeable, matching the
+        # microstructure mask's philosophy; cost is a one-day fill delay on
+        # resumptions. Uniform magnitude across boards is a documented
+        # conservative bias (688/300 ±20%, BJ ±30%, ST ±5% refinement is
+        # backlogged — audit A4).
         limit_magnitude = float(request.exchange_config.limit_threshold)
         limit_expressions = (
-            f"$close/Ref($close,1)-1 > {limit_magnitude}",
-            f"$close/Ref($close,1)-1 < -{limit_magnitude}",
+            f"Not($close/Ref($close,1)-1 <= {limit_magnitude})",
+            f"Not($close/Ref($close,1)-1 >= -{limit_magnitude})",
         )
         exchange_kwargs = {
             "freq": request.exchange_config.freq,
@@ -517,15 +551,25 @@ class BacktestRunner:
         # benchmark reaches qlib separately via the ``benchmark`` argument
         # and is never traded; the strategy only trades signal names and
         # positions originate from prior signal days, so nothing tradeable
-        # lives outside this set. Empty post-mask universe (everything
-        # masked) leaves ``codes`` unset — nothing can trade anyway, and an
-        # empty exchange universe would error inside qlib.
+        # lives outside this set. An EMPTY post-mask universe fails loud:
+        # qlib would silently substitute the FULL provider universe for
+        # empty codes (exchange.py replaces falsy codes with
+        # ``D.instruments()``), load every quote to trade nothing, and the
+        # run would emit zero-position metrics stamped official — the
+        # degenerate outcome the no-silent-fallback rule exists to prevent.
         exchange_codes = sorted({
             str(inst)
             for inst in shifted_predictions.index.get_level_values("instrument").unique()
         })
-        if exchange_codes:
-            exchange_kwargs["codes"] = exchange_codes
+        if not exchange_codes:
+            raise BacktestRunnerError(
+                "BacktestRunner.run: every prediction row was removed by the "
+                "microstructure/ST masks — the tradable universe is empty. "
+                "Refusing to produce official zero-position metrics from a "
+                "fully-masked signal; inspect the masks and the prediction "
+                "window."
+            )
+        exchange_kwargs["codes"] = exchange_codes
 
         # Round-lot capability preflight (PR-D): qlib's Exchange switches to
         # adjusted-price mode and DISABLES trade_unit — fractional fills
@@ -538,34 +582,39 @@ class BacktestRunner:
         # also NaN, keeps round lots and must not false-fire). Diagnostic
         # only (warning, never a block): an unprobeable provider is reported
         # the same way rather than failing the official path.
-        if exchange_codes:
-            try:
-                from qlib.data import D as _factor_D
-                _factor_probe = _factor_D.features(
-                    exchange_codes,
-                    ["$factor", "$close"],
-                    start_time=request.evaluation_start,
-                    end_time=request.evaluation_end,
-                    freq="day",
-                )
-                _factor_col = _factor_probe.iloc[:, 0]
-                _close_col = _factor_probe.iloc[:, 1]
-                factor_usable = (
-                    len(_factor_probe) > 0
-                    and not bool((_factor_col.isna() & _close_col.notna()).any())
-                )
-            except Exception:  # diagnostic probe only — never block on it
-                factor_usable = False
-            if not factor_usable:
-                _logger.warning(
-                    "BacktestRunner: $factor is missing or incomplete across "
-                    "the exchange universe — qlib trades in adjusted-price "
-                    "mode with trade_unit (100-share round lots) DISABLED, "
-                    "so fills may be fractional. Metrics remain valid but "
-                    "ignore round-lot frictions. Ship factor bins in the "
-                    "bundle to restore round-lot simulation (PR-D preflight; "
-                    "audit A2 sibling)."
-                )
+        try:
+            from qlib.data import D
+            _logger.warning(
+                "BacktestRunner: round-lot preflight probes $factor/$close "
+                "directly via qlib D.features (allow-listed diagnostic — "
+                "the post-delist mask is irrelevant to a factor-availability "
+                "check on the run's own candidate set). Audit P0-6."
+            )
+            _factor_probe = D.features(
+                exchange_codes,
+                ["$factor", "$close"],
+                start_time=request.evaluation_start,
+                end_time=request.evaluation_end,
+                freq="day",
+            )
+            _factor_col = _factor_probe.iloc[:, 0]
+            _close_col = _factor_probe.iloc[:, 1]
+            factor_usable = (
+                len(_factor_probe) > 0
+                and not bool((_factor_col.isna() & _close_col.notna()).any())
+            )
+        except Exception:  # diagnostic probe only — never block on it
+            factor_usable = False
+        if not factor_usable:
+            _logger.warning(
+                "BacktestRunner: $factor is missing or incomplete across "
+                "the exchange universe — qlib trades in adjusted-price "
+                "mode with trade_unit (100-share round lots) DISABLED, "
+                "so fills may be fractional. Metrics remain valid but "
+                "ignore round-lot frictions. Ship factor bins in the "
+                "bundle to restore round-lot simulation (PR-D preflight; "
+                "audit A2 sibling)."
+            )
 
         strategy = TopkDropoutStrategy(
             signal=shifted_predictions,
@@ -1067,6 +1116,9 @@ class BacktestRunner:
             # never be confused with — or resume from — a pre-PR-C run of
             # the byte-identical config.
             "execution_timing_semantics": EXECUTION_TIMING_SEMANTICS,
+            # PR-D: same rationale for the price-limit semantics — the same
+            # float magnitude now actually blocks limit fills.
+            "price_limit_semantics": PRICE_LIMIT_SEMANTICS,
         }
         config_json = json.dumps(config_dict, sort_keys=True, default=str)
         fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:16]

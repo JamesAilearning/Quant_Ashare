@@ -61,6 +61,36 @@
       ``codes`` unset (nothing can trade; an empty exchange universe errors
       inside qlib). Runtime pin updated (benchmark absent from codes).
 
+## 2f. Pre-push adversarial self-review (3-skeptic workflow) + pending Codex P1
+- [x] Codex P1 (adjusted closes) EMPIRICALLY REFUTED and closed by
+      documentation: exchange pre_close ground truth across all 34,597
+      adj-factor-jump days 2021-2025 — tushare's factor derives from the
+      exchange reference (rounding included), zero missed main-board limit
+      closes (243/243 up, 52/52 down), 99.9% divergence < 0.1pp vs the
+      0.5pp buffer; 配股 marquee case (600030 2022-01-27) δ=-7.4e-5. Raw
+      ratios would diverge by the full event magnitude on every ex-date.
+      Residuals documented (ST 重整除权 ×3 — ST is masked; factor
+      restatements ≤9, over-block direction only).
+- [x] [P1] PRICE_LIMIT_SEMANTICS="close_expr_v1" folded into provenance
+      AND the walk-forward resume fingerprint (same config bytes now yield
+      different official metrics; cross-semantics resume must invalidate).
+- [x] [P1] Governance bypass closed: the preflight imports D unaliased so
+      the P0-6 scanner counts it; allowlist bumped to 2 with justification
+      + the prescribed "Audit P0-6" WARN at the call site.
+- [x] [P2] Resumption-gap hole closed by Not-form expressions
+      (`Not(move <= thr)`): NaN previous close ⇒ blocked, where the bare
+      `>` form would permit the fill (numpy NaN comparisons are False) —
+      probe ticker with a real bar gap pins it.
+- [x] [P2] Probe vacuity closed: same-ticker 0%-move control fill asserts
+      the limit block is attributable to the limit; stale rotation
+      docstring corrected.
+- [x] [P2] Empty post-mask universe now fails loud (qlib silently
+      substitutes the FULL provider for empty codes — comment corrected,
+      raise added, test pinned). Equal-weight baseline's limit-blindness
+      documented in Non-Goals.
+- [x] [P2] BJ ±30% added to the bias enumerations (contract docstring,
+      error text, spec delta).
+
 ## 3. Verification
 - [x] Step-0 ritual: with the runner fix stashed, both limit probes FAIL
       (fills happen); with the fix, the full probe file + runner suite is
