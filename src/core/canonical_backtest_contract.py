@@ -610,12 +610,19 @@ class CanonicalExchangeCostModel:
 class CanonicalExchangeConfig:
     """Frozen exchange configuration for the canonical backtest path.
 
-    ``limit_threshold`` is the daily price-move bound within which trades are
-    simulated as executed. 0.095 matches A-share main-board ±10% (set slightly
-    under the regulatory cap to avoid hitting the hard limit). ChiNext / STAR
-    boards use ±20% and ST names use ±5% — callers must pass the correct value
-    for the dominant universe; a per-instrument threshold is out of scope for
-    the canonical boundary.
+    ``limit_threshold`` is the daily price-move MAGNITUDE beyond which fills
+    are blocked (buy at limit-up, sell at limit-down). 0.095 matches A-share
+    main-board ±10% (set slightly under the regulatory cap so float32 close
+    round-trips cannot dodge it). ChiNext / STAR boards use ±20%, BJ uses
+    ±30%, and ST names use ±5% — callers must pass the value for the
+    dominant universe; a per-instrument threshold is out of scope for the
+    canonical boundary (documented conservative bias; audit A4 backlog).
+
+    Enforcement note (PR-D, audit A2): ``BacktestRunner`` translates this
+    magnitude into qlib's EXPRESSION-mode tuple computed from ``$close``
+    history. It is never passed to qlib as a float — float mode keys on the
+    stored ``$change`` field, which the PIT bundle does not produce, and
+    qlib silently disables the limit checks when the field is empty.
     """
 
     freq: str
@@ -650,7 +657,8 @@ class CanonicalExchangeConfig:
             raise CanonicalBacktestContractError(
                 "CanonicalExchangeConfig.limit_threshold must be in (0, 0.25]; "
                 f"got {self.limit_threshold}. Use 0.095 for A-share main board, "
-                "0.195 for ChiNext/STAR, 0.045 for ST."
+                "0.195 for ChiNext/STAR, 0.045 for ST (BJ ±30% exceeds this "
+                "bound — exclude BJ names or extend the contract first)."
             )
 
 

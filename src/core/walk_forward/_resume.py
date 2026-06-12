@@ -149,13 +149,18 @@ def compute_config_fingerprint(config: Any) -> str:
             if nc_file.is_file()
             else "MISSING"
         )
-    # PR-C: fold the execution-timing semantics version into the resume
-    # fingerprint. The same config value (signal_to_execution_lag=1) means
-    # T+2 fills before PR-C and T+1 fills after — resuming a pre-PR-C run
-    # would silently mix the two semantics in one aggregate report. Import
-    # is local to keep this helper's module surface minimal.
-    from src.core.backtest_runner import EXECUTION_TIMING_SEMANTICS
+    # PR-C / PR-D: fold the backtest semantics versions into the resume
+    # fingerprint. The same config bytes mean T+2 fills before PR-C and T+1
+    # after, and dead price limits before PR-D vs enforced ones after —
+    # resuming across either boundary would silently mix semantics in one
+    # aggregate report. Import is local to keep this helper's module
+    # surface minimal.
+    from src.core.backtest_runner import (
+        EXECUTION_TIMING_SEMANTICS,
+        PRICE_LIMIT_SEMANTICS,
+    )
     raw["execution_timing_semantics"] = EXECUTION_TIMING_SEMANTICS
+    raw["price_limit_semantics"] = PRICE_LIMIT_SEMANTICS
     payload = json.dumps(raw, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 

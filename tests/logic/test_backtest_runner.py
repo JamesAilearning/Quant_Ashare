@@ -1292,6 +1292,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         n_one_price_days: int = 0,
         logger_records: list | None = None,
         predictions=None,
+        raise_runner_errors: bool = False,
     ) -> object:
         """Run BacktestRunner.run with a patched mask helper and
         a patched ``TopkDropoutStrategy`` that records the
@@ -1308,6 +1309,9 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         from src.core.microstructure_mask import MicrostructureMaskResult
 
         captured: dict = {}
+        # Exposed for tests that assert on what reached qlib's backtest
+        # call (e.g. exchange_kwargs shape) in addition to the strategy.
+        self._last_captured = captured
 
         class _CapturingStrategy:
             def __init__(self, signal, topk, n_drop):
@@ -1339,6 +1343,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
             handler = None
             logger = None
 
+        bt_mock = MagicMock(side_effect=RuntimeError("test-stop after strategy"))
         try:
             with patch(
                 "src.core.backtest_runner.is_canonical_qlib_initialized",
@@ -1352,9 +1357,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
                 "sys.modules",
                 {
                     "qlib.data": fake_qlib_data,
-                    "qlib.backtest": MagicMock(backtest=MagicMock(
-                        side_effect=RuntimeError("test-stop after strategy"),
-                    )),
+                    "qlib.backtest": MagicMock(backtest=bt_mock),
                     "qlib.backtest.executor": MagicMock(),
                     "qlib.contrib.strategy.signal_strategy": MagicMock(
                         TopkDropoutStrategy=_CapturingStrategy,
@@ -1377,15 +1380,66 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
                         ),
                         topk=2, n_drop=1,
                     )
-                except Exception:
+                except Exception as exc:
                     # Run is intentionally stopped at qlib.backtest;
-                    # we only need what reached the strategy.
-                    pass
+                    # we only need what reached the strategy. Tests
+                    # asserting the runner's OWN guards opt in to
+                    # re-raising BacktestRunnerError.
+                    from src.core.backtest_runner import BacktestRunnerError
+                    if raise_runner_errors and isinstance(
+                        exc, BacktestRunnerError,
+                    ):
+                        raise
         finally:
             if handler is not None and logger is not None:
                 logger.removeHandler(handler)
 
+        if bt_mock.call_args is not None:
+            captured["exchange_kwargs"] = bt_mock.call_args.kwargs.get(
+                "exchange_kwargs",
+            )
         return captured.get("signal")
+
+    def test_limit_threshold_reaches_qlib_as_expression_tuple(self) -> None:
+        """PR-D (audit A2): the contract's float magnitude must reach qlib
+        as the EXPRESSION-mode tuple computed from $close history — never as
+        a float. Float mode keys on the stored $change field, which the PIT
+        bundle does not produce; qlib then evaluates NaN comparisons as
+        False and the limit checks silently disable (buys at limit-up,
+        sells at limit-down)."""
+        self._drive_until_strategy_construction(frozenset())
+        exchange_kwargs = self._last_captured.get("exchange_kwargs")
+        self.assertIsNotNone(
+            exchange_kwargs,
+            "qlib.backtest was never invoked — cannot inspect exchange_kwargs.",
+        )
+        lt = exchange_kwargs["limit_threshold"]
+        self.assertIsInstance(
+            lt, tuple,
+            f"limit_threshold must be qlib's expression tuple, got {lt!r} "
+            f"({type(lt).__name__}) — float mode is forbidden (audit A2).",
+        )
+        self.assertEqual(len(lt), 2)
+        buy_expr, sell_expr = lt
+        # The request fixture uses the default magnitude 0.095. Not-form:
+        # an UNVERIFIABLE move (NaN previous close — resumption day / first
+        # bundle day) must block conservatively; the bare `>` form would
+        # silently permit it (numpy NaN comparisons are False).
+        self.assertEqual(buy_expr, "Not($close/Ref($close,1)-1 <= 0.095)")
+        self.assertEqual(sell_expr, "Not($close/Ref($close,1)-1 >= -0.095)")
+        # codex P2 rounds 2+4: the exchange's quote universe must be bounded
+        # to the FINAL tradable signal universe, benchmark EXCLUDED — without
+        # `codes`, qlib loads the ENTIRE provider and a missing $factor
+        # anywhere disables round lots; and an untraded benchmark index
+        # (close, no factor) inside codes would itself trigger that global
+        # degradation.
+        codes = exchange_kwargs.get("codes")
+        self.assertIsNotNone(codes, "exchange_kwargs must bound `codes`.")
+        self.assertEqual(
+            sorted(codes),
+            sorted({"SH600000", "SZ300001", "SH600519"}),
+        )
+        self.assertNotIn("SH000300", codes)
 
     def test_mask_drops_suspended_and_one_price_rows(self) -> None:
         """A mask containing (2024-03-15, SH600000) as suspended and
@@ -1421,6 +1475,25 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         # masked — and must survive, as must the untouched ticker.
         self.assertIn(("2024-03-15", "SH600000"), observed)
         self.assertIn(("2024-03-14", "SH600519"), observed)
+
+    def test_fully_masked_universe_fails_loud(self) -> None:
+        """PR-D self-review: an all-masked signal must NOT silently fall
+        through to qlib — empty `codes` would make qlib substitute the FULL
+        provider universe and emit zero-position metrics stamped official.
+        The runner refuses instead."""
+
+        from src.core.backtest_runner import BacktestRunnerError
+
+        # Every stamped row's execution day (stamp + 1) is masked.
+        mask = frozenset({
+            (day, inst)
+            for day in ("2024-03-15", "2024-03-16", "2024-03-17")
+            for inst in ("SH600000", "SZ300001", "SH600519")
+        })
+        with self.assertRaisesRegex(BacktestRunnerError, "universe is empty"):
+            self._drive_until_strategy_construction(
+                mask, n_suspended=9, raise_runner_errors=True,
+            )
 
     def test_pre_window_stamp_masked_on_first_evaluation_day(self) -> None:
         """codex P2 on PR #241: a prediction stamped on the trading day
