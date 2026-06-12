@@ -594,22 +594,30 @@ def recommend(
     # backtested and live behavior coincide by construction.
     score_by_inst = _scores_to_inst_map(scores, expected_date=as_of_date)
 
-    # 3. Tradability mask (suspension / one-price-lock) on T.
+    # 3. Tradability mask (suspension / one-price-lock) on the ENTRY day —
+    # the day the recommendation would actually fill (codex P1 round 4 on
+    # PR #241, matching the backtest's execution-day masking). This is NOT
+    # look-ahead: ``resolve_dates`` requires the entry session to exist in
+    # the bundle calendar (the default as-of is the second-to-last day), so
+    # the entry day's bars are already on disk at decision time. A name
+    # tradable on T but suspended/one-price-locked on T+1 must not be
+    # emitted — the lag=1 backtest drops the same T-stamped signal by
+    # execution day.
     pit = _build_pit_provider(config)
     try:
         mask_result = compute_unavailable_mask(
-            list(score_by_inst.keys()), as_of_date, as_of_date, pit_provider=pit,
+            list(score_by_inst.keys()), entry_date, entry_date, pit_provider=pit,
         )
     except MicrostructureMaskError as exc:
         raise DailyRecommendationError(
-            f"tradability mask failed for {as_of_date}: {exc}"
+            f"tradability mask failed for entry day {entry_date}: {exc}"
         ) from exc
     # compute_unavailable_mask is the AUTHORITATIVE untradable set (the
     # reused canonical filter). It returns aggregate per-regime counts but
     # not per-name regime membership, so _per_regime_sets supplies the
     # precise reason label for the audit column.
-    masked_pairs = {inst for (d, inst) in mask_result.masked if d == as_of_date}
-    suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), as_of_date)
+    masked_pairs = {inst for (d, inst) in mask_result.masked if d == entry_date}
+    suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), entry_date)
 
     # 4. Names + current-ST exclusion set. The name source is REQUIRED here
     # (fail-loud if missing/stale): it supplies both display names AND the

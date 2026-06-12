@@ -62,11 +62,15 @@ the (now-fixed) T+1 fill.
   into backtest provenance fingerprints AND the walk-forward resume
   fingerprint — a post-fix run can never be confused with, or resume from,
   a pre-fix run of the byte-identical config.
-- **Live-path pin** (`src/inference/daily_recommend.py`): the score stamp
-  must equal the as-of date (a stale `< T` stamp previously passed the
-  no-look-ahead guard and would emit an older session's list as today's).
-  Live semantics (day-T list, T+1 entry) now coincide with the backtest's
-  lag=1 by construction.
+- **Live-path pin + entry-day mask** (`src/inference/daily_recommend.py`):
+  the score stamp must equal the as-of date (a stale `< T` stamp previously
+  passed the no-look-ahead guard and would emit an older session's list as
+  today's), and the tradability mask is keyed on the ENTRY day (codex P1
+  round 4) — `resolve_dates` requires the entry session to exist in the
+  bundle, so its bars are on disk at decision time, and a name tradable on
+  T but suspended/locked on T+1 must not be emitted (the lag=1 backtest
+  drops the same signal by execution day). Live semantics now coincide with
+  the backtest's lag=1 by construction, including the mask day.
 - **Permanent full-path probes**
   (`tests/logic/test_backtest_execution_timing.py`, child-process isolated):
   lag=1 fills exactly on T+1 through the real
@@ -90,5 +94,3 @@ docs/research records remain labelled with the old convention.
 - No per-board price-limit work (PR-D) and no ST-config unification (PR-F).
 - No regeneration of E2E regression fixtures (REGEN batch).
 - No re-anchoring of the IC decay curve.
-- The live recommend's tradability mask stays computed on T (the T+1 data
-  does not exist at decision time — inherent, documented asymmetry).

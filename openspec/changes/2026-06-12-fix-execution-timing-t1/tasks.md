@@ -76,6 +76,17 @@
       scipy>=1.10,<1.14 window in pyproject (kept in lockstep with the
       numpy pin).
 
+- [x] Round 4 P1: the live tradability mask is keyed on ENTRY day
+      (`compute_unavailable_mask(..., entry_date, entry_date)` +
+      `_per_regime_sets` on entry day) — not look-ahead because
+      `resolve_dates` requires the entry session to exist in the bundle;
+      live and lag=1 backtest no longer diverge on names tradable on T but
+      suspended/locked on T+1. Governance AST pin:
+      `tests/governance/test_daily_recommend_masks_entry_day.py`
+      (supersedes the earlier "live mask stays on T" Non-Goal, which was
+      written under the wrong assumption that entry-day bars are absent at
+      decision time).
+
 ## 4. Docs
 - [x] docs/audit_rebase_20260611.md A1/A3 rows marked fixed by this change.
 - [x] Correction record for the archived
