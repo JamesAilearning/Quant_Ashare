@@ -12,9 +12,11 @@
 
 ## 1. Implementation
 - [x] Call-site remap: external restamp = `signal_to_execution_lag - 1`
-      (lag=1 → none; lag=0 → -1 with loud look-ahead WARNING; `rows < -1`
-      rejected). `_apply_lag` docstring rewritten around qlib's built-in
-      shift; mechanics unchanged.
+      (lag=1 → none; lag=N → N-1). lag=0 is REJECTED at the contract /
+      pipeline / walk-forward / UI layers (codex P1 round 2 — superseded the
+      round-0 "lag=0 → -1 look-ahead opt-in" design; see §3b), and
+      `_apply_lag` refuses negative rows as defence in depth. Docstring
+      rewritten around qlib's built-in shift; mechanics unchanged.
 - [x] Execution-day mask keying: masked (execution_day, inst) pairs
       translated back to stamps via the qlib trading calendar for BOTH the
       microstructure and ST masks; ST pairs built on execution days
