@@ -18,7 +18,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import asdict
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from src.core.canonical_backtest_contract import (
@@ -165,8 +165,13 @@ class BacktestRunner:
             from qlib.contrib.strategy.signal_strategy import TopkDropoutStrategy
             from qlib.utils.time import Freq
         except ImportError as exc:
+            # Name the actual failing import: qlib's core can be installed
+            # and initialized while qlib.backtest's own import chain breaks
+            # on a missing/incompatible transitive dep — "qlib is not
+            # importable" alone sent that diagnosis in the wrong direction.
             raise BacktestRunnerError(
-                "qlib is not importable; cannot run backtest."
+                "qlib backtest stack is not importable; cannot run backtest. "
+                f"Underlying import failure: {exc!r}"
             ) from exc
 
         # Official risk metrics must go through the governance-anchored helper,
@@ -339,7 +344,33 @@ class BacktestRunner:
                 "construction — refuse to fall back to unmasked "
                 "predictions. Audit P0-3."
             ) from exc
-        iso_calendar = [d.isoformat() for d in trading_calendar]
+        # The remap calendar is padded 20 calendar days BEFORE
+        # evaluation_start (codex P2 on PR #241): a prediction stamped on the
+        # trading day immediately before the window is consumed by qlib on
+        # the FIRST evaluation day, so that day's mask entries must translate
+        # back to the pre-window stamp — an unpadded calendar would let a
+        # first-day suspension/ST fill slip through unmasked. 20 days covers
+        # the longest CN holiday gap. The stamp-tax calendar above stays
+        # window-exact (its weighting depends on it).
+        try:
+            from qlib.data import D as _remap_D
+            remap_start = (
+                date.fromisoformat(request.evaluation_start)
+                - timedelta(days=20)
+            ).isoformat()
+            remap_calendar_ts = _remap_D.calendar(
+                start_time=remap_start, end_time=request.evaluation_end,
+            )
+        except Exception as exc:
+            raise BacktestRunnerError(
+                f"BacktestRunner.run: trading-calendar fetch for the "
+                f"execution-day mask remap failed ({exc}). Refusing to fall "
+                "back to stamp-day masking. Audit A1 / PR-C."
+            ) from exc
+        iso_calendar = [
+            (ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10])
+            for ts in remap_calendar_ts
+        ]
         stamp_of_execution_day = {
             iso_calendar[i]: iso_calendar[i - 1]
             for i in range(1, len(iso_calendar))

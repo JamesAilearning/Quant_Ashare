@@ -1303,6 +1303,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         n_suspended: int = 0,
         n_one_price_days: int = 0,
         logger_records: list | None = None,
+        predictions=None,
     ) -> object:
         """Run BacktestRunner.run with a patched mask helper and
         a patched ``TopkDropoutStrategy`` that records the
@@ -1382,7 +1383,10 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
                 try:
                     BacktestRunner.run(
                         request=self._make_request(),
-                        predictions=self._make_predictions_panel(),
+                        predictions=(
+                            predictions if predictions is not None
+                            else self._make_predictions_panel()
+                        ),
                         topk=2, n_drop=1,
                     )
                 except Exception:
@@ -1429,6 +1433,42 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         # masked — and must survive, as must the untouched ticker.
         self.assertIn(("2024-03-15", "SH600000"), observed)
         self.assertIn(("2024-03-14", "SH600519"), observed)
+
+    def test_pre_window_stamp_masked_on_first_evaluation_day(self) -> None:
+        """codex P2 on PR #241: a prediction stamped on the trading day
+        immediately BEFORE evaluation_start (2024-03-13, window starts
+        03-14) is consumed by qlib on the FIRST evaluation day. A mask on
+        that first day must translate back to the pre-window stamp — an
+        unpadded remap calendar silently let the first-day fill through."""
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2024-03-13"), "SH600000"),
+                (pd.Timestamp("2024-03-13"), "SH600519"),
+                (pd.Timestamp("2024-03-14"), "SH600000"),
+            ],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([9.0, 8.0, 7.0], index=idx)
+        mask = frozenset({("2024-03-14", "SH600000")})
+        signal = self._drive_until_strategy_construction(
+            mask, n_suspended=1, predictions=predictions,
+        )
+        observed = {
+            (ts.date().isoformat(), str(inst))
+            for ts, inst in zip(
+                signal.index.get_level_values("datetime"),
+                signal.index.get_level_values("instrument"),
+                strict=False,
+            )
+        }
+        # The pre-window stamp whose execution day (03-14) is masked is gone;
+        # its sibling (different ticker) and the same ticker's next stamp
+        # (executes 03-15, unmasked) survive.
+        self.assertNotIn(("2024-03-13", "SH600000"), observed)
+        self.assertIn(("2024-03-13", "SH600519"), observed)
+        self.assertIn(("2024-03-14", "SH600000"), observed)
 
     def test_empty_mask_leaves_predictions_intact(self) -> None:
         """No suspended / one-price days → predictions reach
