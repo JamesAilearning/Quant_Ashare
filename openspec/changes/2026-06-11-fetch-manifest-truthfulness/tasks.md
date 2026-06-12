@@ -108,6 +108,15 @@
       Regressions: `test_systemic_shortfall_records_endpoint_hole`,
       `test_idiosyncratic_shortfall_stays_warning_below_ratio`.
 
+## 4g. Codex round 6 (PR #240)
+- [x] P1: a HOLEY endpoint gets NO scan watermark — its hole may be the
+      synthetic `systemic-shortfall` unit that force-retry cannot match to a
+      concrete file, and blind-skipping its years would let the next clean
+      run "heal" the hole without the short files ever being re-checked.
+      Dropping the watermark re-scans the endpoint until a run comes back
+      clean, which is what makes the merge's heal legitimate (regression:
+      `test_holey_endpoint_gets_no_watermark_until_rechecked`).
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.

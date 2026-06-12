@@ -252,12 +252,19 @@ def main(argv: list[str] | None = None) -> int:
     # manifest's attested (start, end) range are not re-scanned for freshness;
     # the final requested year always is. Both ends matter (codex P1 on #240:
     # an end-only watermark would trust never-attested years BEFORE the prior
-    # coverage start on a backward backfill). --verify-all-years overrides.
+    # coverage start on a backward backfill). A HOLEY endpoint gets NO
+    # watermark at all (codex P1 round 6): its hole may be the synthetic
+    # `systemic-shortfall` unit, which names no concrete (ticker, year) for
+    # the force-retry to pierce — blind-skipping its years would let the next
+    # clean run "self-heal" the hole without the short files ever being
+    # re-checked. Dropping the watermark re-scans every year of that endpoint
+    # until a run comes back clean, which is exactly what makes the merge's
+    # heal legitimate. --verify-all-years overrides everything.
     assume_verified_ranges = (
         {
             ep_name: (ep.coverage_start_date, ep.coverage_end_date)
             for ep_name, ep in prev_manifest.endpoints.items()
-            if ep.coverage_start_date and ep.coverage_end_date
+            if ep.coverage_start_date and ep.coverage_end_date and not ep.holes
         }
         if prev_manifest is not None
         else {}

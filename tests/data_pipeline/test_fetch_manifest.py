@@ -676,6 +676,65 @@ class CliManifestIntegrationTests(unittest.TestCase):
             self.assertEqual(m2.endpoints["daily"].holes, ())  # self-healed
             self.assertEqual(m2.endpoints["daily"].status, "complete")
 
+    def test_holey_endpoint_gets_no_watermark_until_rechecked(self) -> None:
+        # codex P1 round 6: a prior manifest hole — possibly the synthetic
+        # `systemic-shortfall` unit, which force-retry cannot match to any
+        # concrete file — must DROP the endpoint's scan watermark, so its
+        # past years are actually re-checked; only then may the merge heal
+        # the hole. Otherwise a vendor-truncated past year could blind-skip
+        # behind the watermark and become canonical on the next clean run.
+        mod = self._load_cli()
+        t1, t2 = "600000.SH", "600001.SH"
+        daily_calls: list[str] = []
+
+        def side_effect(api, **p):
+            year = p["start_date"][:4]
+            daily_calls.append(year)
+            return pd.DataFrame({
+                "ts_code": [p["ts_code"]] * 2,
+                "trade_date": [f"{year}0102", f"{year}1231"],
+            })
+
+        client = MagicMock()
+        client.call = MagicMock(side_effect=side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self._seed_universe(out, [t1, t2])
+            manifest_path = out / MANIFEST_FILENAME
+            # Prior manifest: coverage [2024, 2025] with a SYNTHETIC hole.
+            write_manifest(manifest_path, _bm(
+                [_result("daily", 10)],
+                (_hole("daily", "systemic-shortfall",
+                       reason_class="systemic_shortfall", attempts=1),),
+                start="20240101", end="20251231",
+            ))
+            # 2024 files are STALE (the truncated year); 2025 complete.
+            for year, max_td in (("2024", "20240630"), ("2025", "20251231")):
+                d = out / "daily" / year
+                d.mkdir(parents=True)
+                for tk in (t1, t2):
+                    pd.DataFrame({
+                        "ts_code": [tk] * 2,
+                        "trade_date": [f"{year}0102", max_td],
+                    }).to_parquet(d / f"{tk}.parquet", index=False)
+            args = [
+                "--output-dir", str(out), "--endpoints", "daily",
+                "--start-date", "20240101", "--end-date", "20251231",
+                "--rate-limit-sleep-ms", "0",
+            ]
+            with patch("src.data.tushare.fetcher.time.sleep"), \
+                    patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(args)
+            self.assertEqual(rc, 0)
+            # The watermark would have blind-skipped 2024; the hole dropped it,
+            # so the stale 2024 files were re-pulled (2025 verified fresh).
+            self.assertEqual(set(daily_calls), {"2024"})
+            self.assertEqual(len(daily_calls), 2)
+            healed = read_manifest(manifest_path)
+            assert healed is not None
+            self.assertEqual(healed.endpoints["daily"].holes, ())  # legit heal
+            self.assertEqual(healed.endpoints["daily"].status, "complete")
+
     def test_main_returns_1_on_narrower_scope_refusal(self) -> None:
         # codex P2: a narrower-scope rerun makes merge_manifest raise; main() must
         # catch it and return 1 cleanly, NOT escape as a traceback.
