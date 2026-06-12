@@ -221,6 +221,33 @@ class SignalLagTests(unittest.TestCase):
         with self.assertRaisesRegex(BacktestRunnerError, "names must be"):
             BacktestRunner._apply_lag(swapped, 1)
 
+    def test_minus_one_row_restamps_backward_for_same_day_execution(self) -> None:
+        """``rows=-1`` (the lag=0 mapping) moves stamps one row EARLIER so
+        qlib's built-in shift consumes the day-T signal on T — the explicit
+        same-day-execution look-ahead opt-in (PR-C)."""
+        import pandas as pd
+
+        predictions = self._predictions()
+        shifted = BacktestRunner._apply_lag(predictions, -1)
+        # The day-2025-01-03 signal now sits on 2025-01-02.
+        self.assertEqual(
+            float(shifted.loc[(pd.Timestamp("2025-01-02"), "SH600000")]),
+            3.0,
+        )
+        # The last source date has nothing after it to pull back; its
+        # values drop.
+        self.assertNotIn(
+            pd.Timestamp("2025-01-06"),
+            set(shifted.index.get_level_values("datetime")),
+        )
+
+    def test_rows_below_minus_one_rejected(self) -> None:
+        """No valid signal_to_execution_lag maps below rows=-1."""
+        from src.core.backtest_runner import BacktestRunnerError
+
+        with self.assertRaisesRegex(BacktestRunnerError, "not a valid"):
+            BacktestRunner._apply_lag(self._predictions(), -2)
+
     def test_rejects_duplicate_prediction_index_before_unstack(self) -> None:
         import pandas as pd
 
@@ -1369,14 +1396,13 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         return captured.get("signal")
 
     def test_mask_drops_suspended_and_one_price_rows(self) -> None:
-        """A mask containing (2024-03-15, SH600000) as suspended
-        and (2024-03-15, SZ300001) as one-price-locked. After
-        ``_apply_lag(lag=1)`` shifts predictions, the rows the
-        strategy sees on those dates MUST exclude those tickers."""
-        # Note: ``_apply_lag(lag=1)`` advances the DATE stamps
-        # forward, so predictions originally indexed at
-        # 2024-03-14/15/16 land at 2024-03-15/16/17 inside the
-        # strategy. We mask the EXECUTION dates 2024-03-15.
+        """A mask containing (2024-03-15, SH600000) as suspended and
+        (2024-03-15, SZ300001) as one-price-locked. The mask names
+        EXECUTION days; a signal stamped S fills on S+1 (qlib's
+        built-in shift — lag=1 applies no external restamp, PR-C), so
+        masking execution day 2024-03-15 must drop the rows STAMPED
+        2024-03-14 for those tickers — even though their day-14
+        scores are the highest in the panel."""
         mask = frozenset({
             ("2024-03-15", "SH600000"),
             ("2024-03-15", "SZ300001"),
@@ -1395,12 +1421,14 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
             (ts.date().isoformat(), str(inst))
             for ts, inst in zip(date_level, inst_level, strict=False)
         }
-        # The two masked rows MUST NOT appear in the signal.
-        self.assertNotIn(("2024-03-15", "SH600000"), observed)
-        self.assertNotIn(("2024-03-15", "SZ300001"), observed)
-        # Other (date, instrument) combos that were NOT masked
-        # MUST still be present.
-        self.assertIn(("2024-03-15", "SH600519"), observed)
+        # The rows whose EXECUTION day (stamp + 1) is masked MUST NOT
+        # appear in the signal.
+        self.assertNotIn(("2024-03-14", "SH600000"), observed)
+        self.assertNotIn(("2024-03-14", "SZ300001"), observed)
+        # Same tickers stamped 2024-03-15 execute on 03-16 — NOT
+        # masked — and must survive, as must the untouched ticker.
+        self.assertIn(("2024-03-15", "SH600000"), observed)
+        self.assertIn(("2024-03-14", "SH600519"), observed)
 
     def test_empty_mask_leaves_predictions_intact(self) -> None:
         """No suspended / one-price days → predictions reach
@@ -1410,11 +1438,10 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
             frozenset(), n_suspended=0, n_one_price_days=0,
             logger_records=records,
         )
-        # _apply_lag(lag=1) drops the first row when there is no
-        # source — 3 source dates × 3 tickers shifts to 2 shifted
-        # dates × 3 tickers after stack().dropna(). So 6 rows
-        # reach the strategy.
-        self.assertEqual(len(signal), 6)
+        # lag=1 applies NO external restamp (PR-C): all 3 source
+        # dates × 3 tickers = 9 rows reach the strategy unchanged
+        # (qlib's built-in shift supplies the T+1 delay).
+        self.assertEqual(len(signal), 9)
         # No microstructure-mask WARN should fire.
         msgs = [r.getMessage() for r in records if r.levelno >= 30]
         mask_warns = [m for m in msgs if "microstructure mask" in m]

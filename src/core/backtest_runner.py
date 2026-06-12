@@ -55,6 +55,16 @@ from src.data.st_history import (
 
 _logger = get_logger(__name__)
 
+# PR-C (audit A1): version tag for the signal→execution timing semantics,
+# folded into backtest provenance fingerprints and the walk-forward resume
+# fingerprint. "lag_total_v2" = signal_to_execution_lag is the TOTAL
+# signal→fill delay (qlib's built-in one-day shift included; lag=1 ⇒ no
+# external restamp ⇒ T+1 fill). The unversioned pre-PR-C behavior restamped
+# the full lag ON TOP of qlib's shift (lag=1 ⇒ T+2 fill); bumping this
+# constant invalidates resume state and distinguishes provenance across the
+# semantics change.
+EXECUTION_TIMING_SEMANTICS = "lag_total_v2"
+
 
 class BacktestRunnerError(RuntimeError):
     """Raised on backtest execution failures."""
@@ -269,22 +279,47 @@ class BacktestRunner:
             "limit_threshold": float(request.exchange_config.limit_threshold),
         }
 
-        # Apply signal_to_execution_lag by shifting predictions
-        shifted_predictions = cls._apply_lag(predictions, request.signal_to_execution_lag)
+        # Map signal_to_execution_lag onto the TWO shifts in the chain (PR-C,
+        # audit A1). qlib's ``TopkDropoutStrategy`` already consumes, on trade
+        # day D, the signal stamped D-1 (``get_step_time(trade_step,
+        # shift=1)`` in qlib/contrib/strategy/signal_strategy.py) — a built-in
+        # one-trading-day delay. ``signal_to_execution_lag`` is the TOTAL
+        # signal→fill delay, so the external restamp applied here is
+        # ``lag - 1`` rows: lag=1 (T+1 execution, the default) needs NO
+        # external restamp; lag=2 restamps one row; lag=0 — the explicit
+        # same-day-execution opt-in — restamps MINUS one row so qlib consumes
+        # the day-T signal on T itself (deliberate look-ahead, research
+        # only). Before PR-C the full lag was restamped ON TOP of qlib's
+        # built-in shift, so every official backtest filled on T+2 and traded
+        # a one-day-stale signal.
+        shifted_predictions = cls._apply_lag(
+            predictions, request.signal_to_execution_lag - 1,
+        )
 
         # A-share microstructure mask (audit P0-3 /
         # openspec/changes/add-microstructure-mask). Drop every
-        # (date, instrument) row in the predictions Series that
-        # corresponds to a suspended day (volume <= 0 or close NaN)
-        # or a one-price-lock day (high == low). qlib's
+        # (date, instrument) row in the predictions Series whose
+        # TRUE EXECUTION DAY is a suspended day (volume <= 0 or
+        # close NaN) or a one-price-lock day (high == low). qlib's
         # ``TopkDropoutStrategy`` would otherwise pick those rows
         # by score and the executor would report phantom fills at
         # the carried-forward close (suspended) or the locked
-        # limit price (one-price). The mask runs on the SHIFTED
-        # predictions so it filters by EXECUTION date, not signal
-        # date. Routes OHLCV fetch through PIT when supplied
-        # (audit P0-6 compliance — when no provider, the helper's
-        # direct ``D.features`` call is allow-listed).
+        # limit price (one-price). Routes OHLCV fetch through PIT
+        # when supplied (audit P0-6 compliance — when no provider,
+        # the helper's direct ``D.features`` call is allow-listed).
+        #
+        # Execution-day keying (PR-C): a signal stamped S fills on
+        # the NEXT trading day after S (qlib's built-in shift — see
+        # the lag mapping above), so the mask must be matched at
+        # S+1, not S. ``apply_mask_to_predictions`` matches by the
+        # series' STAMPED date, so each masked (execution_day,
+        # instrument) pair is translated BACK to the stamp that
+        # would fill on it (the preceding trading day). A masked
+        # first-calendar-day has no in-window stamp; a signal
+        # stamped on evaluation_end has no in-window execution day
+        # and is both unmaskable and untradeable by construction.
+        # This holds for every lag value: the restamp above already
+        # moved stamps so that fill day == stamp + 1 trading day.
         instruments_in_predictions = sorted({
             str(inst)
             for inst in shifted_predictions.index.get_level_values("instrument").unique()
@@ -304,8 +339,22 @@ class BacktestRunner:
                 "construction — refuse to fall back to unmasked "
                 "predictions. Audit P0-3."
             ) from exc
+        iso_calendar = [d.isoformat() for d in trading_calendar]
+        stamp_of_execution_day = {
+            iso_calendar[i]: iso_calendar[i - 1]
+            for i in range(1, len(iso_calendar))
+        }
+        execution_day_of_stamp = {
+            iso_calendar[i - 1]: iso_calendar[i]
+            for i in range(1, len(iso_calendar))
+        }
+        micro_mask_on_stamps = frozenset(
+            (stamp_of_execution_day[day], inst)
+            for day, inst in mask_result.masked
+            if day in stamp_of_execution_day
+        )
         shifted_predictions, n_masked_dropped = apply_mask_to_predictions(
-            shifted_predictions, mask_result,
+            shifted_predictions, micro_mask_on_stamps,
         )
         if mask_result.masked:
             _logger.warning(
@@ -322,12 +371,12 @@ class BacktestRunner:
             )
 
         # A-share ST/*ST mask (C2-d PR2) — parallel to the microstructure mask.
-        # Drops (execution-date, instrument) rows whose instrument was ST/*ST on
-        # that historical day, reconstructed point-in-time from the tushare
-        # namechange table (as-of start_date; see src/data/st_history.py). ST is
-        # a SELECTION-time exclusion only — the model was trained on the full
-        # panel (ST included) upstream. Runs on the SHIFTED predictions, so it
-        # filters by EXECUTION date, exactly like the microstructure mask.
+        # Drops rows whose instrument was ST/*ST on the TRUE EXECUTION DAY
+        # (stamp + 1 trading day — see the execution-day keying note above),
+        # reconstructed point-in-time from the tushare namechange table
+        # (as-of start_date; see src/data/st_history.py). ST is a
+        # SELECTION-time exclusion only — the model was trained on the full
+        # panel (ST included) upstream.
         # ST mask provenance — recorded in the fingerprint below so two runs of
         # the same request with different ST inputs (off vs on, or a different
         # namechange snapshot) get DIFFERENT fingerprints despite different
@@ -351,18 +400,33 @@ class BacktestRunner:
                 ) from exc
             with open(namechange_path, "rb") as nc_file:
                 namechange_sha = hashlib.sha256(nc_file.read()).hexdigest()[:16]
-            st_pairs = [
-                (
-                    ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10],
-                    str(inst),
+            # Build the lookup pairs on EXECUTION days (stamp + 1 trading
+            # day): the ST question is "is this name ST on the day the fill
+            # would happen", not on the signal's stamp. The attribution
+            # records therefore carry execution dates. Stamps without an
+            # in-window execution day (stamped on evaluation_end) never fill
+            # and are skipped. The masked execution-day pairs are translated
+            # back to stamps for ``apply_mask_to_predictions``, which matches
+            # by the series' stamped date.
+            st_pairs = []
+            for ts, inst in zip(
+                shifted_predictions.index.get_level_values("datetime"),
+                shifted_predictions.index.get_level_values("instrument"),
+                strict=True,
+            ):
+                stamp_iso = (
+                    ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
                 )
-                for ts, inst in zip(
-                    shifted_predictions.index.get_level_values("datetime"),
-                    shifted_predictions.index.get_level_values("instrument"),
-                    strict=True,
-                )
-            ]
-            st_mask, st_attribution = compute_st_mask(st_pairs, st_lookup)
+                exec_iso = execution_day_of_stamp.get(stamp_iso)
+                if exec_iso is None:
+                    continue
+                st_pairs.append((exec_iso, str(inst)))
+            st_mask_exec, st_attribution = compute_st_mask(st_pairs, st_lookup)
+            st_mask = frozenset(
+                (stamp_of_execution_day[day], inst)
+                for day, inst in st_mask_exec
+                if day in stamp_of_execution_day
+            )
             shifted_predictions, n_st_dropped = apply_mask_to_predictions(
                 shifted_predictions, st_mask,
             )
@@ -672,15 +736,18 @@ class BacktestRunner:
                 "qlib returned no close prices for equal-weight baseline."
             )
 
-        # Compute daily return per instrument, shifted forward by one
-        # day so that a position taken at dt close earns the dt→dt+1
-        # return (ret_matrix[dt+1]), not the dt-1→dt return that was
-        # already priced in before rebalancing.
+        # Align the baseline to the strategy's TRUE execution timing
+        # (PR-C): a signal stamped dt fills at dt+1 close (qlib's
+        # built-in shift) and its first holding return is dt+1→dt+2.
+        # ``pct_change().shift(-2)`` keyed at dt is exactly that
+        # window. (The pre-PR-C ``shift(-1)`` — dt→dt+1 — was offset
+        # one day earlier than the strategy's actual fills under
+        # either timing regime.)
         close_unstacked = close.unstack(level="instrument")["$close"]
         close_unstacked = close_unstacked.sort_index()
-        ret_matrix = close_unstacked.pct_change().shift(-1)
-        # The last row has no next-day return; drop it.
-        ret_matrix = ret_matrix.iloc[:-1].dropna(how="all")
+        ret_matrix = close_unstacked.pct_change().shift(-2)
+        # The last two rows have no fill-day→next-day return; drop them.
+        ret_matrix = ret_matrix.iloc[:-2].dropna(how="all")
 
         result: dict[str, float] = {}
         for dt, instruments in daily_topk.items():
@@ -736,34 +803,43 @@ class BacktestRunner:
             )
 
     @staticmethod
-    def _apply_lag(predictions: Any, lag: int) -> Any:
-        """Shift predictions so qlib's ``TopkDropoutStrategy`` consumes
-        them on the appropriate trading day.
+    def _apply_lag(predictions: Any, rows: int) -> Any:
+        """Restamp prediction dates by ``rows`` trading rows — the EXTERNAL
+        component of the signal→execution delay.
 
-        Semantics
-        ---------
+        Semantics (PR-C, audit A1)
+        --------------------------
         Predictions arrive indexed by *signal date* — the day the model
-        was given to score the universe. qlib's ``TopkDropoutStrategy``
-        rebalances on whatever date it sees a signal for, so to encode
-        a "signal at T → trade at T+lag" delay we shift the prediction
-        *date stamps* forward by ``lag`` rows::
+        scored the universe. qlib's ``TopkDropoutStrategy`` does NOT
+        rebalance on the stamped date: on trade day D it consumes the
+        signal stamped D-1 (``get_step_time(trade_step, shift=1)`` in
+        qlib/contrib/strategy/signal_strategy.py), a built-in
+        one-trading-day delay. The caller therefore passes
+        ``signal_to_execution_lag - 1`` here::
 
-            # before shift:  index date = T  (signal date)
-            # after shift:   index date = T+lag  (date strategy sees it)
+            # lag=1 (T+1 fill, default):  rows=0   → stamps unchanged
+            # lag=2 (T+2 fill):           rows=1   → stamps move to T+1
+            # lag=0 (same-day fill):      rows=-1  → stamps move to T-1,
+            #   so qlib consumes the day-T signal ON day T — an explicit
+            #   look-ahead opt-in for research, never for official runs.
 
-        That makes ``TopkDropoutStrategy`` consume the T-day signal on
-        T+lag and rebalance accordingly. Returning ``df.shift(lag)`` is
-        therefore correct under the standard qlib framing — the comment
-        is the precise version of "T+1 execution".
+        The pre-PR-C implementation restamped the FULL lag on top of
+        qlib's built-in shift, so the default lag=1 filled on T+2 and
+        every official backtest traded a one-day-stale signal.
 
-        ``lag=0`` is the explicit same-day-execution opt-in: the
-        prediction's date stamp is unchanged, the strategy rebalances
-        the same day. Positive ``lag`` values delay each prediction by
-        exactly that many index rows (which equal trading rows when
-        the index is a trading-day calendar — qlib unstacks by date so
-        ``shift(lag)`` is row-wise on those dates). Negative ``lag`` is
-        rejected upstream by ``PipelineConfig.__post_init__``.
+        Shifting is row-wise within the prediction's own date set
+        (``unstack`` by date then ``shift``), which equals trading-day
+        shifting when the index is a trading-day calendar. ``rows=0``
+        returns the input unchanged after shape validation; ``rows``
+        below ``-1`` cannot arise from a valid config
+        (``signal_to_execution_lag >= 0`` upstream) and is rejected.
         """
+        if rows < -1:
+            raise BacktestRunnerError(
+                f"BacktestRunner._apply_lag: restamp of {rows} rows is not a "
+                "valid signal_to_execution_lag mapping (lag >= 0 ⇒ rows >= "
+                "-1). Refusing."
+            )
         # Validate predictions shape *before* the lag=0 short-circuit so
         # the same-day-execution path cannot bypass the structural
         # contract. The previous implementation skipped validation
@@ -806,19 +882,23 @@ class BacktestRunner:
                 "the official backtest boundary ambiguous."
             )
 
-        if lag == 0:
-            _logger.info(
-                "BacktestRunner: signal_to_execution_lag=0 -> no shift applied; "
-                "same-day execution was requested explicitly."
-            )
+        if rows == 0:
+            # lag=1: qlib's built-in shift IS the entire T+1 delay.
             return predictions
+        if rows == -1:
+            _logger.warning(
+                "BacktestRunner: signal_to_execution_lag=0 -> restamping "
+                "signals one row BACKWARD so qlib fills them same-day. This "
+                "is an explicit look-ahead opt-in for research; official "
+                "metrics must use lag>=1."
+            )
         # MultiIndex (datetime, instrument): shift the datetime level.
-        # ``unstack()`` pivots instrument to columns so ``shift(lag)``
-        # advances every instrument's date stamps by the same number
-        # of rows; ``stack().dropna()`` drops the leading rows that
-        # now have no source.
+        # ``unstack()`` pivots instrument to columns so ``shift(rows)``
+        # moves every instrument's date stamps by the same number of
+        # rows; ``stack().dropna()`` drops the boundary rows that now
+        # have no source.
         df = predictions.unstack()
-        df = df.shift(lag)
+        df = df.shift(rows)
         return df.stack().dropna()
 
     @staticmethod
@@ -877,6 +957,13 @@ class BacktestRunner:
             "request": request_dict,
             "strategy": strategy_dict,
             "runtime": runtime_dict,
+            # PR-C: the MEANING of signal_to_execution_lag changed (lag is
+            # now the TOTAL delay including qlib's built-in shift; the same
+            # lag=1 config used to fill on T+2 and now fills on T+1). The
+            # semantics version moves the fingerprint so a post-PR-C run can
+            # never be confused with — or resume from — a pre-PR-C run of
+            # the byte-identical config.
+            "execution_timing_semantics": EXECUTION_TIMING_SEMANTICS,
         }
         config_json = json.dumps(config_dict, sort_keys=True, default=str)
         fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:16]

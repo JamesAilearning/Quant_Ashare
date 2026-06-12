@@ -164,6 +164,31 @@ class ScoresToInstMapTests(unittest.TestCase):
         ):
             _scores_to_inst_map(s)
 
+    def test_stale_stamp_rejected_when_expected_date_given(self) -> None:
+        # PR-C timing pin: the single stamp must BE the as-of date. A stale
+        # `< T` stamp (an infer segment silently resolved to an older
+        # session) previously passed the single-date + no-look-ahead guards
+        # and would emit yesterday's list labelled as today's.
+        s = self._series([
+            ("2025-06-27", "SH600000", 0.9),
+            ("2025-06-27", "SZ000001", 0.8),
+        ])
+        with self.assertRaisesRegex(DailyRecommendationError, "stamped 2025-06-27"):
+            _scores_to_inst_map(s, expected_date="2025-06-30")
+
+    def test_matching_stamp_passes_with_expected_date(self) -> None:
+        # The live timing contract: a day-T list for next-session entry —
+        # the same semantics as the canonical backtest's lag=1 (signal
+        # stamped T, filled T+1 via qlib's built-in shift).
+        s = self._series([
+            ("2025-06-30", "SH600000", 0.9),
+            ("2025-06-30", "SZ000001", 0.8),
+        ])
+        self.assertEqual(
+            _scores_to_inst_map(s, expected_date="2025-06-30"),
+            {"SH600000": 0.9, "SZ000001": 0.8},
+        )
+
     def test_multi_date_raises(self) -> None:
         # Two distinct dates -> idx[-1] would alias an instrument across days.
         s = self._series([

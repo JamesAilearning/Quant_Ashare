@@ -57,9 +57,9 @@
 
 | # | 发现 | 位置（acf70e0） | 严重度 |
 |---|---|---|---|
-| A1 | 执行时点双重位移：`_apply_lag(lag=1)` 与 qlib `TopkDropoutStrategy` 内部 shift=1 叠加 → 实际 T+2 成交；掩码按 T+1 过滤错位一天 | `src/core/backtest_runner.py:273`、`:738-822`；qlib `signal_strategy.py:142`（本机源码核实） | P0 |
+| A1 | ~~执行时点双重位移：`_apply_lag(lag=1)` 与 qlib `TopkDropoutStrategy` 内部 shift=1 叠加 → 实际 T+2 成交；掩码按 T+1 过滤错位一天~~ **已修（PR-C / openspec 2026-06-12-fix-execution-timing-t1）**：lag 重映射为总延迟（lag=1 → 无外部 restamp），掩码按真实成交日键控，语义版本号进 provenance/resume 指纹；Step-0 复现还揭示旧 restamp 令每折最后一天信号整体蒸发 | `src/core/backtest_runner.py`（lag 映射 + 掩码键控）；探针 `tests/logic/test_backtest_execution_timing.py` | ~~P0~~ 关闭 |
 | A2 | 涨跌停约束对生产 bundle 失效：float 模式依赖 `$change` bin，builder 明确不产（"Out of scope" `qlib_bin_builder.py:67-74`），qlib 缺字段返回空列 → NaN.ge=False → 仅剩停牌拦截 | `src/core/canonical_backtest_contract.py:624`；`src/core/backtest_runner.py:269`；qlib `exchange.py:287-292` | P0 |
-| A3 | `mean_ic_1d` 口径 T→T+1，与标签（T+1→T+2）和执行口径双双不齐 | `src/core/signal_analyzer.py:285-291` | P1（并入 A1 修） |
+| A3 | ~~`mean_ic_1d` 口径 T→T+1，与标签（T+1→T+2）和执行口径双双不齐~~ **已修（PR-C）**：头条 IC 标签对齐（entry_offset=1），旧口径降级为标注的 `mean_ic_stamp_day` | `src/core/signal_analyzer.py`（`_compute_daily_ic` entry_offset） | ~~P1~~ 关闭 |
 | A4 | 单一全局 limit_threshold 无法表达多板制度（修 A2 时用表达式元组顺带解决） | `src/core/canonical_backtest_contract.py:609-654` | P2 |
 
 ### B. PR-A（本批，错误分类）

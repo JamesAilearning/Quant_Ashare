@@ -31,7 +31,12 @@ class SignalAnalyzerError(RuntimeError):
 class SignalAnalysisConfig:
     """Configuration for signal analysis."""
 
-    # How many days forward to compute returns (default: 1-day forward)
+    # Return-window lengths in trading days. Each period's HEADLINE IC is
+    # label-aligned (PR-C): the window starts at the NEXT session after the
+    # signal stamp (T+1 → T+1+period), matching the Alpha158 label and the
+    # canonical backtest's T+1 fill. The legacy stamp-day window
+    # (T → T+period) survives only as the labelled secondary
+    # ``mean_ic_stamp_day``.
     forward_periods: tuple[int, ...] = (1, 5, 10, 20)
     # IC method: "rank" (Spearman) or "normal" (Pearson)
     ic_method: str = "rank"
@@ -45,8 +50,12 @@ class SignalAnalysisConfig:
 class SignalAnalysisResult:
     """Result of signal quality analysis."""
 
-    # Per-period IC stats: {period: {mean_ic, std_ic, ir, ic_positive_ratio, num_days}}
-    ic_summary: Mapping[int, Mapping[str, float]]
+    # Per-period IC stats: {period: {mean_ic, std_ic, ir, ic_positive_ratio,
+    # num_days, convention, mean_ic_stamp_day}} — mean_ic/std_ic/ir are the
+    # label-aligned (T+1-entry) convention; mean_ic_stamp_day is the legacy
+    # stamp-day secondary; convention is the str tag naming the headline
+    # window (hence Any values).
+    ic_summary: Mapping[int, Mapping[str, Any]]
     # Daily IC series: {period: pd.Series indexed by date}
     ic_series: Mapping[int, Any]
     # IC decay curve: list of IC values at lag 0..max(forward_periods)
@@ -139,18 +148,37 @@ class SignalAnalyzer:
         if predictions.empty:
             raise SignalAnalyzerError("predictions Series is empty")
 
-        # Fetch actual returns from qlib
-        returns_data = cls._fetch_returns(predictions, max(config.forward_periods))
+        # Fetch actual returns from qlib. ``+1`` covers the label-aligned
+        # entry offset: the headline IC's return window starts at T+1, so
+        # the longest horizon needs closes through T + max_period + 1.
+        returns_data = cls._fetch_returns(predictions, max(config.forward_periods) + 1)
 
-        # Compute IC for each forward period
+        # Compute IC for each forward period. HEADLINE convention (PR-C,
+        # audit A3): label-aligned — corr(score_T, return over
+        # T+1 → T+1+period), matching both the Alpha158 training label
+        # (``Ref($close,-2)/Ref($close,-1)-1`` for period=1) and the
+        # T+1-close fill of the canonical backtest. The pre-PR-C
+        # stamp-day convention (corr(score_T, T → T+period)) measured a
+        # window no strategy can earn — it is kept per period as the
+        # explicitly-labelled secondary ``mean_ic_stamp_day``.
         ic_series_dict = {}
         ic_summary_dict = {}
 
         for period in config.forward_periods:
             daily_ic = cls._compute_daily_ic(
-                predictions, returns_data, period, config.ic_method
+                predictions, returns_data, period, config.ic_method,
+                entry_offset=1,
             )
             ic_series_dict[period] = daily_ic
+            stamp_day_ic = cls._compute_daily_ic(
+                predictions, returns_data, period, config.ic_method,
+                entry_offset=0,
+            )
+            stamp_day_valid = stamp_day_ic.dropna()
+            mean_ic_stamp_day = (
+                float(stamp_day_valid.mean()) if len(stamp_day_valid) > 0
+                else float("nan")
+            )
 
             valid_ic = daily_ic.dropna()
             if len(valid_ic) > 0:
@@ -167,6 +195,8 @@ class SignalAnalyzer:
                     "ir": (mean_ic / std_ic) if std_ic > 0 else float("nan"),
                     "ic_positive_ratio": float((valid_ic > 0).mean()),
                     "num_days": int(len(valid_ic)),
+                    "convention": "label_aligned_t1_entry",
+                    "mean_ic_stamp_day": mean_ic_stamp_day,
                 }
             else:
                 # No valid IC observations (data too short, all NaN, etc.).
@@ -179,6 +209,8 @@ class SignalAnalyzer:
                     "ir": float("nan"),
                     "ic_positive_ratio": float("nan"),
                     "num_days": 0,
+                    "convention": "label_aligned_t1_entry",
+                    "mean_ic_stamp_day": mean_ic_stamp_day,
                 }
 
         # Compute IC decay
@@ -275,15 +307,27 @@ class SignalAnalyzer:
 
     @classmethod
     def _compute_daily_ic(
-        cls, predictions: Any, returns_data: Any, period: int, method: str
+        cls, predictions: Any, returns_data: Any, period: int, method: str,
+        *, entry_offset: int = 1,
     ) -> Any:
-        """Compute daily cross-sectional IC for a given forward period."""
+        """Compute daily cross-sectional IC for a given forward period.
+
+        ``entry_offset`` anchors the return window: with the default ``1``
+        the IC at stamp T correlates scores against the
+        ``T+1 → T+1+period`` close return — the label-aligned convention
+        (entry at the next session's close, matching the Alpha158 label and
+        the canonical backtest's T+1 fill). ``entry_offset=0`` reproduces
+        the legacy stamp-day window ``T → T+period`` (un-earnable by any
+        lag>=1 strategy; kept only for the explicitly-labelled secondary
+        metric).
+        """
         import pandas as pd
 
         # returns_data has (datetime, instrument) MultiIndex, 'close' column
         # Unstack instrument to get date x instrument matrix
         close = returns_data["close"].unstack(level="instrument")
-        forward_ret = close.shift(-period) / close - 1
+        entry = close.shift(-entry_offset) if entry_offset else close
+        forward_ret = close.shift(-(period + entry_offset)) / entry - 1
         # Stack back to (datetime, instrument)
         # pandas 2.1+: stack(dropna=...) is deprecated; future_stack=True
         # preserves NaN and is the forward-compatible API.
@@ -324,6 +368,14 @@ class SignalAnalyzer:
 
         Pre-computes the close price matrix once and derives all forward
         returns from it, avoiding redundant unstack/shift per lag.
+
+        Convention note (PR-C): the decay curve stays anchored at the
+        signal STAMP (cumulative T → T+lag return per point) — it is a
+        research diagnostic of how fast predictive power dies, not an
+        earnable-return metric, and re-anchoring every point at T+1 would
+        only relabel the x-axis. The headline ``ic_summary`` is the
+        label-aligned (T+1-entry) convention; do not compare the two
+        numerically at lag 1.
         """
 
         close = returns_data["close"].unstack(level="instrument")
