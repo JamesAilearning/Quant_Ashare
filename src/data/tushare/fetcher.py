@@ -657,11 +657,24 @@ class TushareFetcher:
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
                 unit = f"ts_code={ticker} year={year}"
-                # Set when this unit is a freshness-rule RE-PULL of an
-                # existing stale file: the re-pulled frame is re-checked
-                # against the same boundary after the write (codex P1 round 3).
+                # Set when this unit is a RE-PULL of an existing file (stale
+                # by the freshness rule, OR force-retried off a prior-manifest
+                # hole): the re-pulled frame is re-checked against the same
+                # boundary after the write (codex P1 rounds 3+4).
                 recheck_boundary: str | None = None
-                if path.exists() and not self._must_retry(endpoint, unit):
+                force_retry = self._must_retry(endpoint, unit)
+                if path.exists() and force_retry:
+                    # codex P1 round 4: a force-retried EXISTING file bypasses
+                    # the freshness branch below, but a successful retry that
+                    # writes a still-short frame must surface in the aggregate
+                    # warning too — its hole self-heals in the merge, and the
+                    # warning is the remaining trace.
+                    recheck_boundary = _expected_year_file_end(
+                        year_start=year_start,
+                        year_end=year_end,
+                        window=windows.get(ticker, (None, None)),
+                    )
+                if path.exists() and not force_retry:
                     if not scan_year:
                         # Attested by the prior manifest's watermark — closed
                         # history this run cannot expect more from. A BLIND

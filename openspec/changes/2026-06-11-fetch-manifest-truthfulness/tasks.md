@@ -90,6 +90,13 @@
       it is an epistemic limit of every fetch path (the original backfill
       included), not introduceable here.
 
+## 4e. Codex round 4 (PR #240)
+- [x] P1: force-retried EXISTING files get the same post-write re-check —
+      a successful retry that writes a still-short frame surfaces in the
+      aggregate warning (its hole self-heals in the merge; the warning is
+      the remaining trace) instead of vanishing silently (regression:
+      `test_force_retried_still_short_file_also_warns`).
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.

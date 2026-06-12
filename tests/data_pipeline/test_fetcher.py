@@ -1560,6 +1560,34 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             f"expected the still-short warning in {logs.output}",
         )
 
+    def test_force_retried_still_short_file_also_warns(self) -> None:
+        # codex P1 round 4 on #240: a force-retried EXISTING file (prior-
+        # manifest hole) bypasses the freshness branch, but its successful
+        # retry gets the SAME post-write re-check — a still-short frame
+        # surfaces in the aggregate warning instead of silently clearing its
+        # hole with no trace.
+        client = self._client_returning(["20250102", "20250630"])  # still short
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            self._prefill(tmp_path, 2025, ["20250102", "20250630"])
+            cfg = self._cfg(
+                tmp_path, "20250101", "20251231",
+                force_retry_units=frozenset(
+                    {("daily", f"ts_code={self.TICKER} year=2025")},
+                ),
+            )
+            fetcher = TushareFetcher(client, cfg)
+            with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
+                results = fetcher.fetch()
+        self.assertEqual(client.call.call_count, 1)  # force-retried once
+        self.assertEqual(results[0].files_written, 1)
+        self.assertEqual(len(fetcher.holes), 0)  # retry succeeded — no hole
+        self.assertTrue(
+            any("STILL end before" in line for line in logs.output),
+            f"expected the still-short warning in {logs.output}",
+        )
+
     def test_dirty_no_data_placeholder_repulled_not_verified(self) -> None:
         # codex P2 round 2 on #240: an expected-no-data placeholder is only
         # "verified" when it is a READABLE parquet with ZERO rows. A corrupt
