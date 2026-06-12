@@ -77,6 +77,19 @@
       used a bare byte-blob placeholder — now a complete year file, matching
       the tests/data_pipeline calibration).
 
+## 4d. Codex round 3 (PR #240)
+- [x] P1: re-pulled year files are RE-CHECKED against the boundary that made
+      the old file stale; a still-short fresh pull (suspension through the
+      slice end / pre-close daily / delist gap — the vendor's complete
+      answer) is written and surfaced via an aggregate WARNING naming the
+      units, but deliberately NOT holed and NOT counted verified — holing
+      would permanently false-positive the build gate for data that does not
+      exist, and a pre-close daily run would hole every ticker (regression:
+      `test_still_short_refetch_warns_loud_but_does_not_hole`). Silent vendor
+      truncation — the one genuinely dangerous shape — is thereby visible;
+      it is an epistemic limit of every fetch path (the original backfill
+      included), not introduceable here.
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.

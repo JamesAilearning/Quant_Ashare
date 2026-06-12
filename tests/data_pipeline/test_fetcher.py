@@ -1534,6 +1534,32 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             TushareFetcher(client, self._cfg(tmp_path, "20200101", "20201231")).fetch()
             self.assertEqual(client.call.call_count, 0)
 
+    def test_still_short_refetch_warns_loud_but_does_not_hole(self) -> None:
+        # codex P1 round 3 on #240: a re-pulled year whose fresh full-year
+        # frame STILL ends before the expected boundary (ticker suspended
+        # through the slice end / pre-close daily run / delist gap) is the
+        # vendor's complete answer: it is written and made LOUD, but never
+        # holed — holing would permanently false-positive the build gate for
+        # data that does not exist.
+        client = self._client_returning(["20250102", "20250630"])  # still short
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            self._prefill(tmp_path, 2025, ["20250102", "20250630"])  # stale
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20250101", "20251231"),
+            )
+            with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
+                results = fetcher.fetch()
+        self.assertEqual(client.call.call_count, 1)  # re-pulled once
+        self.assertEqual(results[0].files_written, 1)  # freshest vendor truth
+        self.assertEqual(len(fetcher.holes), 0)  # NOT a hole
+        self.assertEqual(results[0].units_verified, 0)  # and NOT "verified"
+        self.assertTrue(
+            any("STILL end before" in line for line in logs.output),
+            f"expected the still-short warning in {logs.output}",
+        )
+
     def test_dirty_no_data_placeholder_repulled_not_verified(self) -> None:
         # codex P2 round 2 on #240: an expected-no-data placeholder is only
         # "verified" when it is a READABLE parquet with ZERO rows. A corrupt

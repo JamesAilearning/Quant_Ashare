@@ -624,6 +624,7 @@ class TushareFetcher:
         skipped = 0
         verified = 0
         stale_refetched = 0
+        still_short: list[str] = []  # re-pulled units still short of expected
         for year in range(start_year, end_year + 1):
             year_dir = out_root / str(year)
             if not self._config.dry_run:
@@ -656,6 +657,10 @@ class TushareFetcher:
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
                 unit = f"ts_code={ticker} year={year}"
+                # Set when this unit is a freshness-rule RE-PULL of an
+                # existing stale file: the re-pulled frame is re-checked
+                # against the same boundary after the write (codex P1 round 3).
+                recheck_boundary: str | None = None
                 if path.exists() and not self._must_retry(endpoint, unit):
                     if not scan_year:
                         # Attested by the prior manifest's watermark — closed
@@ -702,6 +707,7 @@ class TushareFetcher:
                         # run re-attempts it (self-healing without any extra
                         # bookkeeping).
                         stale_refetched += 1
+                        recheck_boundary = expected
                 if self._config.dry_run:
                     if i == 1:
                         _logger.info(
@@ -725,6 +731,20 @@ class TushareFetcher:
                 self._atomic_write_parquet(df, path)
                 written += 1
                 rows += len(df)
+                # codex P1 round 3: re-check a freshness-rule re-pull against
+                # the boundary that made the old file stale. A frame that is
+                # STILL short is the vendor's freshest full-year answer — for
+                # a ticker suspended through the slice end, or delisted with
+                # its last bar before its delist date, no more data EXISTS, so
+                # holing it would permanently false-positive the build gate
+                # and a pre-close daily run would hole every ticker. We make
+                # the shortfall LOUD instead (aggregate warning below): the
+                # genuinely dangerous case — a silent vendor truncation — is
+                # then visible, while legitimate short years stay buildable.
+                if recheck_boundary is not None and "trade_date" in df.columns:
+                    new_max = str(df["trade_date"].max()) if len(df) else None
+                    if new_max is None or new_max < recheck_boundary:
+                        still_short.append(unit)
                 if i % 200 == 0:
                     _logger.info(
                         "  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)",
@@ -735,6 +755,17 @@ class TushareFetcher:
                 "  %s: freshness rule verified %d existing year file(s) "
                 "complete and re-pulled %d stale/incomplete one(s) (P3-7b).",
                 endpoint, verified, stale_refetched,
+            )
+        if still_short:
+            _logger.warning(
+                "  %s: %d re-pulled year file(s) STILL end before their "
+                "expected boundary after a fresh full-year pull (first: %s). "
+                "This is the vendor's complete answer — normal for tickers "
+                "suspended through a slice end, delisted before their delist "
+                "date, or a run before today's bar is published; if none of "
+                "those apply, suspect silent vendor truncation and re-run "
+                "with --verify-all-years after checking the source.",
+                endpoint, len(still_short), "; ".join(still_short[:3]),
             )
         return TushareFetchResult(
             endpoint, written, rows, skipped, units_verified=verified,
