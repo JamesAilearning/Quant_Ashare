@@ -117,6 +117,14 @@
       clean, which is what makes the merge's heal legitimate (regression:
       `test_holey_endpoint_gets_no_watermark_until_rechecked`).
 
+## 4h. Codex round 7 (PR #240)
+- [x] P1: the post-write re-check applies to ALL fetched units with a
+      computable boundary — missing files fetched fresh (first run / new
+      ticker / new year) included, not only re-pulls of existing files. A
+      pre-close FIRST run now trips the systemic gate exactly like a
+      pre-close re-pull, closing the fresh-fetch entrance to the manifest
+      over-claim (regression: `test_preclose_first_run_trips_systemic_gate`).
+
 ## 5. Verification
 - [x] `python -m unittest tests.data_pipeline.{test_fetcher, test_fetch_manifest,
       test_client, test_daily_update, test_qlib_bin_builder}` — 158 tests green.

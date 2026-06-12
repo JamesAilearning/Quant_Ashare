@@ -1599,6 +1599,28 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
         self.assertEqual(hole.unit, "systemic-shortfall")
         self.assertIn(f"{n}/{n}", hole.last_error)
 
+    def test_preclose_first_run_trips_systemic_gate(self) -> None:
+        # codex P1 round 7: MISSING files fetched fresh get the same
+        # post-write re-check — a pre-close FIRST run (no files on disk yet,
+        # vendor returns bars only through yesterday) records the systemic
+        # endpoint hole instead of a complete manifest through today.
+        from src.data.tushare.fetcher import SYSTEMIC_SHORTFALL_MIN_CHECKED
+        n = SYSTEMIC_SHORTFALL_MIN_CHECKED + 10
+        tickers = [f"{600000 + k}.SH" for k in range(n)]
+        # end = "today" 2025-06-11 (a Wednesday); frames stop at yesterday.
+        client = self._client_returning(["20250102", "20250610"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_many(tmp_path, tickers)
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20250101", "20250611"),
+            )
+            results = fetcher.fetch()
+        self.assertEqual(results[0].files_written, n)
+        self.assertEqual(len(fetcher.holes), 1)
+        self.assertEqual(fetcher.holes[0].reason_class, "systemic_shortfall")
+        self.assertEqual(fetcher.holes[0].unit, "systemic-shortfall")
+
     def test_idiosyncratic_shortfall_stays_warning_below_ratio(self) -> None:
         # A handful of suspended-through-year-end tickers among many healthy
         # re-pulls stays BELOW the systemic ratio: loud warning, zero holes,

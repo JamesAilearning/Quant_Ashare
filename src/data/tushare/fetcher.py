@@ -672,23 +672,14 @@ class TushareFetcher:
             for i, ticker in enumerate(tickers, 1):
                 path = year_dir / f"{ticker}.parquet"
                 unit = f"ts_code={ticker} year={year}"
-                # Set when this unit is a RE-PULL of an existing file (stale
-                # by the freshness rule, OR force-retried off a prior-manifest
-                # hole): the re-pulled frame is re-checked against the same
-                # boundary after the write (codex P1 rounds 3+4).
+                # The expected-content boundary for ANY unit this run fetches
+                # (a stale re-pull, a force-retried existing file, or a
+                # missing file fetched fresh): the written frame is re-checked
+                # against it after the write (codex P1 rounds 3/4/7). None ⇒
+                # no boundary exists (the listing window misses the slice) ⇒
+                # no re-check, an empty response is the truth.
                 recheck_boundary: str | None = None
                 force_retry = self._must_retry(endpoint, unit)
-                if path.exists() and force_retry:
-                    # codex P1 round 4: a force-retried EXISTING file bypasses
-                    # the freshness branch below, but a successful retry that
-                    # writes a still-short frame must surface in the aggregate
-                    # warning too — its hole self-heals in the merge, and the
-                    # warning is the remaining trace.
-                    recheck_boundary = _expected_year_file_end(
-                        year_start=year_start,
-                        year_end=year_end,
-                        window=windows.get(ticker, (None, None)),
-                    )
                 if path.exists() and not force_retry:
                     if not scan_year:
                         # Attested by the prior manifest's watermark — closed
@@ -736,6 +727,21 @@ class TushareFetcher:
                         # bookkeeping).
                         stale_refetched += 1
                         recheck_boundary = expected
+                else:
+                    # MISSING file (first run / new ticker / new year) OR a
+                    # force-retried existing file: both fetch below and both
+                    # get the same post-write re-check (codex P1 rounds 4+7).
+                    # Without this, a PRE-CLOSE FIRST run would write short
+                    # current-year files with no re-check at all and record a
+                    # complete manifest through today — the fresh-fetch
+                    # entrance to the exact hole the systemic-shortfall gate
+                    # closes for re-pulls. Window-misses-slice units keep the
+                    # boundary None (an empty response is their truth).
+                    recheck_boundary = _expected_year_file_end(
+                        year_start=year_start,
+                        year_end=year_end,
+                        window=windows.get(ticker, (None, None)),
+                    )
                 if self._config.dry_run:
                     if i == 1:
                         _logger.info(
