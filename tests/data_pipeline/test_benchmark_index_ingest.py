@@ -90,8 +90,13 @@ class FullOhlcIngestTests(unittest.TestCase):
                 (prov / "features" / "sh000300" / "factor.day.bin").exists(),
             )
 
+            # Benchmark goes to benchmark.txt, NOT all.txt (training universe
+            # must stay clean — codex P1 on #243).
+            bench_txt = (prov / "instruments" / "benchmark.txt").read_text().splitlines()
+            self.assertIn("SH000300\t2025-01-03\t2025-01-09", bench_txt)
             all_txt = (prov / "instruments" / "all.txt").read_text().splitlines()
-            self.assertIn("SH000300\t2025-01-03\t2025-01-09", all_txt)
+            self.assertNotIn("SH000300\t2025-01-03\t2025-01-09", all_txt)
+            self.assertEqual(all_txt, ["SH600000\t2018-01-02\t2025-12-31"])
 
 
 class CloseOnlyIngestTests(unittest.TestCase):
@@ -181,8 +186,8 @@ class TrailingLagTests(unittest.TestCase):
             _, close = _read_bin(prov, "SH000300", "close")
             self.assertEqual(len(close), 4)
             np.testing.assert_allclose(close, [10.0, 11.0, 12.0, 13.0], rtol=1e-5)
-            # Registry span ends at the real last published date.
-            lines = (prov / "instruments" / "all.txt").read_text().splitlines()
+            # Registry span (in benchmark.txt) ends at the real last published date.
+            lines = (prov / "instruments" / "benchmark.txt").read_text().splitlines()
             self.assertIn("SH000300\t2025-01-02\t2025-01-07", lines)
 
 
@@ -204,12 +209,13 @@ class RegistryIdempotencyTests(unittest.TestCase):
             ingest_benchmark_index(
                 wide, instrument_code="SH000300", provider_dir=prov,
             )
-            lines = (prov / "instruments" / "all.txt").read_text().splitlines()
+            lines = (prov / "instruments" / "benchmark.txt").read_text().splitlines()
             bench = [ln for ln in lines if ln.startswith("SH000300\t")]
             self.assertEqual(len(bench), 1, f"duplicated registry rows: {bench}")
             self.assertEqual(bench[0], "SH000300\t2025-01-02\t2025-01-09")
-            # The pre-existing equity row is preserved.
-            self.assertIn("SH600000\t2018-01-02\t2025-12-31", lines)
+            # The equity all.txt is never touched by benchmark ingest.
+            all_txt = (prov / "instruments" / "all.txt").read_text().splitlines()
+            self.assertEqual(all_txt, ["SH600000\t2018-01-02\t2025-12-31"])
 
 
 class ErrorPathTests(unittest.TestCase):

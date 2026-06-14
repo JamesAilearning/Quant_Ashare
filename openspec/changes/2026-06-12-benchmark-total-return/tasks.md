@@ -69,6 +69,14 @@
       source ≠ calendar gap); only dates ABSENT from the source ffill
       (regression: `test_published_row_with_null_close_fails_loud`).
 
+## 2e. Codex round 3 (PR #243)
+- [x] [P1] benchmarks registered in `instruments/benchmark.txt`, NOT
+      `all.txt` — keeps them out of the `instruments: all` training universe
+      (else FeatureDatasetBuilder trains Alpha158 on the index / it re-enters
+      exchange codes). Verified through real qlib: `D.features([SH000300])`
+      resolves the bins while `D.instruments("all")` excludes it. all.txt is
+      never touched by benchmark ingest (regressions updated).
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.

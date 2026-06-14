@@ -8,9 +8,13 @@ The benchmark index series SHALL be ingested into the bundle as a build
 step that writes into the SAME staging dir the rebuild promotes (after the
 bin builder, before validation), so the atomic swap preserves them. Writing
 benchmark bins POST HOC into the live bundle is prohibited — the daily
-update's swap erases them. The ingest SHALL register each index in
-`instruments/all.txt` idempotently (re-ingest replaces the row, updating its
-date span, never duplicates).
+update's swap erases them. Each index SHALL be registered idempotently in a
+SEPARATE `instruments/benchmark.txt` file, NOT in `instruments/all.txt`:
+`all.txt` is the stock TRAINING universe, and a benchmark index there would
+make the feature builder train on a non-tradable index and could re-enter
+the exchange `codes` set the backtest excludes. The benchmark is read by
+explicit `benchmark_code` via `D.features`, which resolves its bins
+regardless of universe membership.
 
 The canonical benchmark SHALL be the CSI 300 TOTAL-RETURN index
 (`H00300.CSI`, dividends reinvested), because strategy returns include
@@ -33,6 +37,12 @@ a benchmark instrument (equity-symmetric; the benchmark read path uses
 - **WHEN** the daily update rebuilds into staging and atomically swaps
 - **THEN** the benchmark index instruments are present in the live bundle
   afterward
+
+#### Scenario: the benchmark stays out of the training universe
+- **WHEN** a benchmark index is ingested
+- **THEN** it is registered in `instruments/benchmark.txt`, NOT
+  `instruments/all.txt`, and `D.instruments("all")` does not contain it,
+  while `D.features([benchmark_code], …)` still resolves its bins
 
 #### Scenario: a total-return close-only series ingests
 - **WHEN** the source frame carries close but no intraday OHLC

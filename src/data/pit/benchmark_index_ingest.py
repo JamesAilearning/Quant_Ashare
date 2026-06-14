@@ -13,10 +13,12 @@ so benchmarking against it overstates excess return by roughly the index
 dividend yield (audit E2; ~2-2.5pp annualized on CSI 300).
 
 This module is the builder-adjacent fix: it writes benchmark-index bins +
-the instruments registry entry INTO A CALLER-PROVIDED bundle dir, so a
-rebuild writes them into STAGING (like steps 03/04) and the swap preserves
-them. The total-return index (``H00300.CSI``) is the canonical benchmark;
-the price index (``000300.SH``) is kept for reference.
+a registry entry in ``instruments/benchmark.txt`` (a SEPARATE universe
+file, NOT ``all.txt`` — the benchmark must stay out of the stock training
+universe; codex P1 on #243) INTO A CALLER-PROVIDED bundle dir, so a rebuild
+writes them into STAGING (like steps 03/04) and the swap preserves them.
+The total-return index (``H00300.CSI``) is the canonical benchmark; the
+price index (``000300.SH``) is kept for reference.
 
 qlib day-frequency binary format
 --------------------------------
@@ -196,21 +198,34 @@ def _write_bin(field_path: Path, start_index: int, values: np.ndarray[Any, Any])
     payload.tofile(field_path)
 
 
-def _append_all_txt(
+BENCHMARK_INSTRUMENTS_FILE = "benchmark.txt"
+
+
+def _register_benchmark(
     provider_dir: Path, instrument_code: str, first_date: str, last_date: str,
 ) -> None:
-    """Idempotently register the instrument in ``instruments/all.txt``.
+    """Idempotently register the instrument in ``instruments/benchmark.txt``
+    — a SEPARATE universe file, NOT ``all.txt`` (codex P1 on #243).
+
+    ``all.txt`` is the stock TRAINING universe (``instruments: all``);
+    appending a benchmark index there would make ``FeatureDatasetBuilder``
+    train Alpha158 on a non-tradable index (no factor bin) and could put it
+    back into the exchange ``codes`` set the backtest excludes. A benchmark
+    is read by EXPLICIT ``benchmark_code`` via ``D.features`` (verified:
+    qlib reads its bins by name regardless of universe membership), so it
+    never needs to be in ``all``; storing it under ``benchmark.txt`` keeps
+    the training universe clean while leaving the benchmark queryable as
+    ``D.instruments(\"benchmark\")``.
 
     Replaces any existing line for this code (a re-ingest with a wider date
-    range must update the registry's span, not duplicate the row), preserving
-    every other line and the file's newline discipline."""
-    path = provider_dir / "instruments" / "all.txt"
-    if not path.exists():
-        raise BenchmarkIngestError(
-            f"instruments/all.txt not found at {path}; the builder must have "
-            "written the registry before benchmark ingest."
-        )
-    lines = path.read_text(encoding="utf-8").splitlines()
+    range updates the span, not duplicates), preserving every other line and
+    the newline discipline. Created if absent (the builder writes ``all.txt``
+    only)."""
+    path = provider_dir / "instruments" / BENCHMARK_INSTRUMENTS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = (
+        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    )
     kept = [ln for ln in lines if not ln.startswith(f"{instrument_code}\t")]
     kept.append(f"{instrument_code}\t{first_date}\t{last_date}")
     path.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
@@ -261,7 +276,7 @@ def ingest_benchmark_index(
 
     first_date = aligned["date"].iloc[0]
     last_date = aligned["date"].iloc[-1]
-    _append_all_txt(provider_dir, instrument_code, first_date, last_date)
+    _register_benchmark(provider_dir, instrument_code, first_date, last_date)
 
     return BenchmarkIngestResult(
         instrument_code=instrument_code,

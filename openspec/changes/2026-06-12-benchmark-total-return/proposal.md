@@ -24,8 +24,10 @@ Two mechanism defects compound it:
 - **`src/data/pit/benchmark_index_ingest.py`** (new): pure transform +
   writer. A tushare `index_daily` frame → qlib bins (`close` load-bearing;
   OHLC fall back to close for total-return indices that publish close only)
-  + an idempotent `instruments/all.txt` entry, calendar-aligned with NaN on
-  index gaps, written into a CALLER-PROVIDED bundle dir.
+  + an idempotent entry in a SEPARATE `instruments/benchmark.txt` (NOT
+  `all.txt` — the benchmark must stay out of the stock training universe),
+  calendar-aligned (intra-span gaps forward-filled, series ends at the last
+  published date), written into a CALLER-PROVIDED bundle dir.
 - **`scripts/data_pipeline/07_ingest_benchmark.py`** (new, operator-run):
   fetch the CSI 300 price (`000300.SH` → `SH000300`) and total-return
   (`H00300.CSI` → `SH000300TR`) series via tushare and ingest them into

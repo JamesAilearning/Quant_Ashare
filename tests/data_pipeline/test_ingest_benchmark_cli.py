@@ -91,9 +91,12 @@ class IngestBenchmarkCliTests(unittest.TestCase):
                 rc = mod.main(["--provider-dir", str(prov),
                                "--start-date", "20250101", "--end-date", "20251231"])
             self.assertEqual(rc, 0)
-            all_txt = (prov / "instruments" / "all.txt").read_text().splitlines()
-            self.assertTrue(any(ln.startswith("SH000300\t") for ln in all_txt))
-            self.assertTrue(any(ln.startswith("SH000300TR\t") for ln in all_txt))
+            # Benchmarks land in benchmark.txt, never the training all.txt.
+            bench_txt = (prov / "instruments" / "benchmark.txt").read_text().splitlines()
+            self.assertTrue(any(ln.startswith("SH000300\t") for ln in bench_txt))
+            self.assertTrue(any(ln.startswith("SH000300TR\t") for ln in bench_txt))
+            all_txt = (prov / "instruments" / "all.txt").read_text()
+            self.assertNotIn("SH000300", all_txt)
             tr_close = np.fromfile(
                 prov / "features" / "sh000300tr" / "close.day.bin", dtype="<f4",
             )[1:]
@@ -130,9 +133,9 @@ class IngestBenchmarkCliTests(unittest.TestCase):
             with patch.object(mod.TushareClient, "from_environment", return_value=client):
                 rc = mod.main(["--provider-dir", str(prov)])  # default best-effort H00300
             self.assertEqual(rc, 0)
-            all_txt = (prov / "instruments" / "all.txt").read_text()
-            self.assertIn("SH000300\t", all_txt)        # price ingested
-            self.assertNotIn("SH000300TR\t", all_txt)   # TR skipped, not fatal
+            bench_txt = (prov / "instruments" / "benchmark.txt").read_text()
+            self.assertIn("SH000300\t", bench_txt)        # price ingested
+            self.assertNotIn("SH000300TR\t", bench_txt)   # TR skipped, not fatal
 
     def test_transform_failure_is_fatal_even_for_best_effort_index(self) -> None:
         # codex P2 on #243: best-effort downgrades FETCH failures only. A
