@@ -77,6 +77,12 @@
       resolves the bins while `D.instruments("all")` excludes it. all.txt is
       never touched by benchmark ingest (regressions updated).
 
+## 2f. Codex round 4 (PR #243)
+- [x] [P2] `--index-map` rejects an empty TUSHARE_CODE or QLIB_NAME side
+      (e.g. `000300.SH:`) before any provider file is touched — an empty
+      qlib name would write bins under `features/` and a blank-code row to
+      `benchmark.txt`.
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.

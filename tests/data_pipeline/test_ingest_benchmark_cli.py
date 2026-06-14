@@ -181,6 +181,11 @@ class IngestBenchmarkCliTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             mod._parse_index_map("no-colon-here")
+        # codex P2 on #243: an empty side is a config error, not a blank
+        # instrument written under features/ + benchmark.txt.
+        for bad in ("000300.SH:", ":SH000300", " : "):
+            with self.assertRaisesRegex(ValueError, "empty|required|TUSHARE_CODE:QLIB_NAME"):
+                mod._parse_index_map(bad)
 
 
 if __name__ == "__main__":

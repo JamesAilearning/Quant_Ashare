@@ -92,8 +92,17 @@ def _parse_index_map(raw: str | None) -> tuple[tuple[str, str], ...]:
             raise ValueError(
                 f"--index-map item {item!r} must be 'TUSHARE_CODE:QLIB_NAME'."
             )
-        ts_code, qlib_name = item.split(":", 1)
-        pairs.append((ts_code.strip(), qlib_name.strip()))
+        ts_code, qlib_name = (s.strip() for s in item.split(":", 1))
+        # Reject an empty side BEFORE any provider file is touched (codex P2
+        # on #243): an empty qlib name would write bins straight under
+        # features/ and a blank-code row into benchmark.txt; an empty
+        # tushare code would fetch nothing.
+        if not ts_code or not qlib_name:
+            raise ValueError(
+                f"--index-map item {item!r} has an empty TUSHARE_CODE or "
+                "QLIB_NAME; both sides are required."
+            )
+        pairs.append((ts_code, qlib_name))
     if not pairs:
         raise ValueError("--index-map resolved to no pairs.")
     return tuple(pairs)
