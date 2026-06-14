@@ -1,0 +1,53 @@
+# Tasks: benchmark-total-return
+
+## 0. Step 0 — confirmation (real tushare)
+- [x] bundle `sh000300` 2025-12-31 close 4629.939453 == tushare `000300.SH`
+      4629.9395 (exact) → benchmark IS the price index (audit E2 CONFIRMED).
+- [x] `H00300.CSI` total-return reachable, 6826.62 same day; index_daily
+      schema captured (close-only for the total-return last day).
+
+## 1. Implementation
+- [x] `benchmark_index_ingest.py`: index_daily frame → bins + idempotent
+      all.txt, close-only fallback, calendar-aligned, fail-loud paths.
+- [x] `07_ingest_benchmark.py`: fetch price + total-return via tushare,
+      ingest into `--provider-dir`, fail loud on empty frame; default
+      index map `000300.SH:SH000300, H00300.CSI:SH000300TR`.
+- [x] daily_update orchestrator: new `benchmark` stage after 05 into staging
+      (survives swap); dry-run + rebuild loop + docstring updated.
+- [x] Retire `scripts/ingest_sh000300_benchmark.py` + its test.
+- [x] Config comments: `SH000300TR` is canonical, switched at REGEN;
+      default kept `SH000300` (no live breakage).
+
+## 2. Tests
+- [x] `test_benchmark_index_ingest.py` (9): full-OHLC, close-only fallback,
+      gap→NaN alignment, registry idempotent-replace, 5 fail-loud paths.
+- [x] `test_ingest_benchmark_cli.py` (3): default-map price+total-return
+      ingest, empty-frame exit 1, index-map parse.
+- [x] `test_daily_update.py`: STAGES includes `benchmark`; plan wires the
+      staging `--provider-dir`.
+
+## 2b. Pre-push adversarial self-review (3-skeptic workflow)
+- [x] [P1] Intra-span gaps FORWARD-FILLED (was NaN): a NaN benchmark close
+      makes qlib fabricate 0% on the gap day and drop the cross-gap move on
+      recovery (`.fillna(0)` + Ref-pulls-NaN) — reproduced 2.96% vs true
+      3.96%. ffill fixes both; regression asserts gap-day 0% + recovery move.
+- [x] [P1] Full-series provenance: live `sh000300` vs tushare `000300.SH`
+      diffed over all 1942 days — max rel delta 5.9e-8 (float32 ULP); the
+      xlsx→tushare source flip is numerically inert. Documented.
+- [x] [P1] Benchmark stage tolerance: `07 --best-effort H00300.CSI` —
+      the total-return index (often a separate entitlement) skips+warns
+      instead of blocking every daily swap; price index mandatory; zero
+      ingested still fails.
+- [x] [P2] `close_only` → `ohlc_degenerate`, derived from the SOURCE
+      before fallback (real H00300 has OHLC except its last day).
+- [x] [P2] No `$factor` bin for the benchmark (equity-symmetric; keeps the
+      backtest_runner "benchmark has no factor" invariant true).
+- [x] [P2] Annotated the missed defaults: `walk_forward/config.py`,
+      `smoke.yaml`, `config_walk.yaml`, `config_smoke.yaml`; REGEN-switch
+      checklist enumerated in the proposal.
+
+## 3. Verification
+- [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
+      close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.
+- [x] Full fast suite + mypy --strict + ruff.
+- [x] docs/audit_rebase_20260611.md E2 closed (mechanism; REGEN activates).

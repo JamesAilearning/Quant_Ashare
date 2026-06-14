@@ -71,7 +71,13 @@ class WalkForwardConfig:
     bagging_fraction: float = 0.8
     bagging_freq: int = 5
 
-    # Backtest config
+    # Backtest config.
+    # SH000300 is the CSI 300 PRICE index. The CANONICAL benchmark is the
+    # TOTAL-RETURN index SH000300TR (audit E2 — a price-index benchmark
+    # overstates excess return by ~the dividend yield). This in-code default
+    # is consumed when a walk-forward config omits benchmark_code, so it must
+    # be flipped to "SH000300TR" alongside the YAML presets at REGEN, once the
+    # rebuilt bundle carries that instrument (see PR-E / 07_ingest_benchmark).
     benchmark_code: str = "SH000300"
     init_cash: float = 100_000_000
     topk: int = 50

@@ -28,6 +28,7 @@ max_depth: 6
 num_leaves: 32
 
 # backtest
+# Price index; canonical benchmark is total-return SH000300TR (audit E2 — switch at REGEN).
 benchmark_code: "SH000300"
 init_cash: 100000000
 commission_rate: 0.0005
