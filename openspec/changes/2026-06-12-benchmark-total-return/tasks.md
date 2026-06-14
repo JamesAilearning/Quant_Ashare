@@ -89,6 +89,13 @@
       stop the benchmark short of a bundle whose calendar extends past it
       (regression: `test_default_end_date_is_today`).
 
+## 2h. Codex round 6 (PR #243)
+- [x] [P2] migration scrub: ingest removes any legacy benchmark row from
+      `all.txt` (the retired xlsx script wrote it there) so a standalone run
+      against an existing bundle de-contaminates the training universe — a
+      benchmark code is never an equity, so the scrub only undoes the legacy
+      row (regression: `LegacyAllTxtScrubTests`).
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.

@@ -218,6 +218,35 @@ class RegistryIdempotencyTests(unittest.TestCase):
             self.assertEqual(all_txt, ["SH600000\t2018-01-02\t2025-12-31"])
 
 
+class LegacyAllTxtScrubTests(unittest.TestCase):
+    def test_legacy_benchmark_row_scrubbed_from_all_txt(self) -> None:
+        # codex P2 on #243: a bundle whose all.txt still has the retired
+        # xlsx script's SH000300 row must have it REMOVED on ingest (the
+        # benchmark belongs only in benchmark.txt). A benchmark code is never
+        # a real equity, so the scrub only undoes legacy contamination.
+        with tempfile.TemporaryDirectory() as t:
+            prov = Path(t)
+            (prov / "calendars").mkdir(parents=True)
+            (prov / "calendars" / "day.txt").write_text(
+                "\n".join(_CAL) + "\n", encoding="utf-8",
+            )
+            (prov / "instruments").mkdir(parents=True)
+            # Legacy all.txt with the benchmark contaminating the universe.
+            (prov / "instruments" / "all.txt").write_text(
+                "SH600000\t2018-01-02\t2025-12-31\n"
+                "SH000300\t2005-04-08\t2026-03-10\n",
+                encoding="utf-8",
+            )
+            df = pd.DataFrame({
+                "trade_date": _to_yyyymmdd(_CAL), "close": [1.0, 2, 3, 4, 5, 6],
+            })
+            ingest_benchmark_index(df, instrument_code="SH000300", provider_dir=prov)
+            all_txt = (prov / "instruments" / "all.txt").read_text().splitlines()
+            self.assertEqual(all_txt, ["SH600000\t2018-01-02\t2025-12-31"])
+            bench_txt = (prov / "instruments" / "benchmark.txt").read_text()
+            self.assertIn("SH000300\t", bench_txt)
+
+
 class ErrorPathTests(unittest.TestCase):
     def test_missing_close_column_fails_loud(self) -> None:
         with tempfile.TemporaryDirectory() as t:

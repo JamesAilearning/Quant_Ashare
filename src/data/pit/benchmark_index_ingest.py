@@ -221,14 +221,31 @@ def _register_benchmark(
     range updates the span, not duplicates), preserving every other line and
     the newline discipline. Created if absent (the builder writes ``all.txt``
     only)."""
-    path = provider_dir / "instruments" / BENCHMARK_INSTRUMENTS_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
+    instr_dir = provider_dir / "instruments"
+    instr_dir.mkdir(parents=True, exist_ok=True)
+    path = instr_dir / BENCHMARK_INSTRUMENTS_FILE
     lines = (
         path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     )
     kept = [ln for ln in lines if not ln.startswith(f"{instrument_code}\t")]
     kept.append(f"{instrument_code}\t{first_date}\t{last_date}")
     path.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
+
+    # Migration scrub (codex P2 on #243): the retired xlsx ingest wrote the
+    # benchmark into all.txt. A standalone run against such a bundle would
+    # leave the index in the training universe even after this ingest moves
+    # it to benchmark.txt. Remove any matching row from all.txt — a
+    # benchmark code is never a real equity, so this only undoes the legacy
+    # contamination. (The orchestrator path is already clean: 05 rewrites a
+    # fresh equities-only all.txt before 07 runs.)
+    all_path = instr_dir / "all.txt"
+    if all_path.exists():
+        all_lines = all_path.read_text(encoding="utf-8").splitlines()
+        scrubbed = [ln for ln in all_lines if not ln.startswith(f"{instrument_code}\t")]
+        if len(scrubbed) != len(all_lines):
+            all_path.write_text(
+                "\n".join(scrubbed) + "\n", encoding="utf-8", newline="\n",
+            )
 
 
 def ingest_benchmark_index(
