@@ -224,7 +224,22 @@ class ErrorPathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             prov = _bundle(Path(t))
             df = pd.DataFrame({"trade_date": _to_yyyymmdd(_CAL), "close": [None] * 6})
-            with self.assertRaisesRegex(BenchmarkIngestError, "all-NaN|NaN"):
+            # All-NaN is a superset of the published-null-close check.
+            with self.assertRaisesRegex(BenchmarkIngestError, "null / non-numeric close"):
+                ingest_benchmark_index(df, instrument_code="SH000300", provider_dir=prov)
+
+    def test_published_row_with_null_close_fails_loud(self) -> None:
+        # codex P2 on #243: a PUBLISHED row with null/non-numeric close is a
+        # corrupt source, not a calendar gap — fail loud, don't ffill a
+        # fabricated 0% benchmark return. (A calendar gap = a date ABSENT
+        # from the source, which legitimately ffills; see GapAlignmentTests.)
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            df = pd.DataFrame({
+                "trade_date": _to_yyyymmdd(_CAL),
+                "close": [100.0, 101.0, None, 103.0, 104.0, 105.0],  # row present, close null
+            })
+            with self.assertRaisesRegex(BenchmarkIngestError, "null / non-numeric close"):
                 ingest_benchmark_index(df, instrument_code="SH000300", provider_dir=prov)
 
     def test_dates_outside_calendar_fail_loud(self) -> None:

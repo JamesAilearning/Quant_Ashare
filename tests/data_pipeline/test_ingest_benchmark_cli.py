@@ -134,6 +134,30 @@ class IngestBenchmarkCliTests(unittest.TestCase):
             self.assertIn("SH000300\t", all_txt)        # price ingested
             self.assertNotIn("SH000300TR\t", all_txt)   # TR skipped, not fatal
 
+    def test_transform_failure_is_fatal_even_for_best_effort_index(self) -> None:
+        # codex P2 on #243: best-effort downgrades FETCH failures only. A
+        # successful fetch whose TRANSFORM fails (here: a duplicate date in
+        # the best-effort total-return index) must FAIL the run, not skip —
+        # a malformed source must not silently ship a price-only benchmark.
+        mod = _load_cli()
+        price = pd.DataFrame({
+            "trade_date": _yyyymmdd(), "close": [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+            "open": [1.0] * 6, "high": [1.1] * 6, "low": [0.9] * 6, "vol": [1.0] * 6,
+        })
+        bad_tr = pd.DataFrame({  # duplicate trade_date -> transform error
+            "trade_date": ["20250102", "20250102"], "close": [2.0, 2.1],
+        })
+
+        def call(api, **params):
+            return bad_tr if params["ts_code"] == "H00300.CSI" else price
+        client = MagicMock()
+        client.call = MagicMock(side_effect=call)
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            with patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(["--provider-dir", str(prov)])  # H00300 is default best-effort
+            self.assertEqual(rc, 1)  # transform failure is fatal despite best-effort
+
     def test_all_indices_failing_returns_1(self) -> None:
         # Even all-best-effort: zero ingested is a loud failure, not a no-op.
         mod = _load_cli()

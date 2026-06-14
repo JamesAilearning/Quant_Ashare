@@ -149,22 +149,38 @@ def main(argv: list[str] | None = None) -> int:
     n_ingested = 0
     for ts_code, qlib_name in index_map:
         _logger.info("=== benchmark index: %s -> %s ===", ts_code, qlib_name)
+        # Best-effort downgrades only FETCH-class failures (permission /
+        # network / empty frame) — a separate index entitlement that the
+        # daily swap must tolerate. A TRANSFORM/contract failure AFTER a
+        # successful fetch (duplicate dates, null close, calendar mismatch,
+        # a write bug) is NEVER best-effort: it means the source or the
+        # builder is broken and must fail loud, not ship a price-only
+        # benchmark (codex P2 on #243).
         try:
             frame = _fetch_index_daily(
                 client, ts_code, args.start_date, args.end_date,
             )
-            result = ingest_benchmark_index(
-                frame, instrument_code=qlib_name, provider_dir=args.provider_dir,
-            )
         except (TushareClientError, BenchmarkIngestError) as exc:
             if ts_code in best_effort:
                 _logger.warning(
-                    "Benchmark ingest SKIPPED for best-effort index %s "
+                    "Benchmark FETCH skipped for best-effort index %s "
                     "(%s); continuing. The canonical benchmark (price index) "
                     "is mandatory and must still succeed.", ts_code, exc,
                 )
                 continue
-            _logger.error("Benchmark ingest FAILED for %s: %s", ts_code, exc)
+            _logger.error("Benchmark fetch FAILED for %s: %s", ts_code, exc)
+            return 1
+        try:
+            result = ingest_benchmark_index(
+                frame, instrument_code=qlib_name, provider_dir=args.provider_dir,
+            )
+        except BenchmarkIngestError as exc:
+            _logger.error(
+                "Benchmark TRANSFORM/write FAILED for %s (NOT downgraded to "
+                "best-effort — a fetched-but-malformed source or a write bug "
+                "must not silently ship a price-only benchmark): %s",
+                ts_code, exc,
+            )
             return 1
         n_ingested += 1
         _logger.info(

@@ -113,10 +113,19 @@ def _normalize_index_daily(
     ).dt.strftime("%Y-%m-%d")
     out = pd.DataFrame({"date": iso})
     close = pd.to_numeric(df["close"], errors="coerce")
-    if not bool(close.notna().any()):
+    # Every row in ``df`` is a PUBLISHED day, so any NaN here is a corrupt
+    # source close (null / non-numeric), NOT an absent calendar day. The
+    # intra-span ffill exists only for dates the source did not publish at
+    # all (they appear as NaN only after the calendar merge); a published
+    # row with an invalid close must fail loud, never be silently
+    # forward-filled into a fabricated 0% benchmark return (codex P2 on #243).
+    if bool(close.isna().any()):
+        bad = df.loc[close.isna().to_numpy(), "trade_date"].astype(str).head(5).tolist()
         raise BenchmarkIngestError(
-            f"{instrument_code}: every close is NaN — refusing to write an "
-            "all-NaN benchmark instrument."
+            f"{instrument_code}: {int(close.isna().sum())} published row(s) "
+            f"have a null / non-numeric close (e.g. {bad}); refusing to "
+            "fabricate a benchmark return for a corrupt source row. Fix the "
+            "index_daily source."
         )
     out["close"] = close.to_numpy()
     # ohlc_degenerate is computed from the SOURCE: do any of open/high/low

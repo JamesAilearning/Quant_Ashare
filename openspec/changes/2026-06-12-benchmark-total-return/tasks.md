@@ -59,6 +59,16 @@
       (`test_aggregate_logging_tolerates_nested_dict_with_emitting_handler`);
       neutralized the CLI test's `setup_logging` leak.
 
+## 2d. Codex round 2 (PR #243)
+- [x] [P2] best-effort downgrades FETCH-class failures ONLY; a
+      transform/contract failure after a successful fetch (duplicate dates,
+      null close, calendar mismatch, write bug) is always fatal — never
+      ships a price-only benchmark (regression: CLI test with a duplicate-
+      date best-effort total-return frame → exit 1).
+- [x] [P2] a PUBLISHED row with null/non-numeric close fails loud (corrupt
+      source ≠ calendar gap); only dates ABSENT from the source ffill
+      (regression: `test_published_row_with_null_close_fails_loud`).
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.
