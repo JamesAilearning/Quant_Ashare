@@ -102,6 +102,25 @@ class IngestBenchmarkCliTests(unittest.TestCase):
             )[1:]
             np.testing.assert_allclose(tr_close, [2.0, 2.1, 2.2, 2.3, 2.4, 2.5], rtol=1e-5)
 
+    def test_default_end_date_is_today(self) -> None:
+        # codex P2 on #243: omitting --end-date defaults to today (matches
+        # the orchestrator), not a stale literal that would stop the
+        # benchmark short of a calendar extending past it.
+        from datetime import date
+
+        mod = _load_cli()
+        price = pd.DataFrame({
+            "trade_date": _yyyymmdd(), "close": [1.0] * 6,
+            "open": [1.0] * 6, "high": [1.1] * 6, "low": [0.9] * 6, "vol": [1.0] * 6,
+        })
+        client = self._fake_client({"000300.SH": price})
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            with patch.object(mod.TushareClient, "from_environment", return_value=client):
+                mod.main(["--provider-dir", str(prov), "--index-map", "000300.SH:SH000300"])
+            end_dates = {c.kwargs["end_date"] for c in client.call.call_args_list}
+            self.assertEqual(end_dates, {date.today().strftime("%Y%m%d")})
+
     def test_empty_frame_fails_loud(self) -> None:
         mod = _load_cli()
         client = self._fake_client({"000300.SH": pd.DataFrame()})

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -119,7 +120,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "rebuild so the atomic swap preserves the benchmark).",
     )
     p.add_argument("--start-date", default="20180101", help="YYYYMMDD inclusive.")
-    p.add_argument("--end-date", default="20251231", help="YYYYMMDD inclusive.")
+    p.add_argument(
+        "--end-date", default=None,
+        help="YYYYMMDD inclusive. Default: today's date (matches the "
+             "daily-update orchestrator, which passes the run date). A "
+             "hardcoded end would stop the benchmark short of a bundle whose "
+             "calendar extends past it, leaving 2026+ backtests with missing "
+             "benchmark rows.",
+    )
     p.add_argument(
         "--index-map", default=None,
         help="Comma-separated TUSHARE_CODE:QLIB_NAME pairs; default "
@@ -147,6 +155,10 @@ def main(argv: list[str] | None = None) -> int:
         _logger.error("Config invalid: %s", exc)
         return 2
 
+    # Default the end date to today (matches the daily-update orchestrator,
+    # which passes the run date) so a standalone run never stops the
+    # benchmark short of a bundle whose calendar extends past a stale literal.
+    end_date = args.end_date or date.today().strftime("%Y%m%d")
     best_effort = {c.strip() for c in args.best_effort.split(",") if c.strip()}
 
     try:
@@ -167,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         # benchmark (codex P2 on #243).
         try:
             frame = _fetch_index_daily(
-                client, ts_code, args.start_date, args.end_date,
+                client, ts_code, args.start_date, end_date,
             )
         except (TushareClientError, BenchmarkIngestError) as exc:
             if ts_code in best_effort:

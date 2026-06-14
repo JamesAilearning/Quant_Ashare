@@ -83,6 +83,12 @@
       qlib name would write bins under `features/` and a blank-code row to
       `benchmark.txt`.
 
+## 2g. Codex round 5 (PR #243)
+- [x] [P2] standalone `--end-date` defaults to today (matches the
+      orchestrator's run-date), not a stale `20251231` literal that would
+      stop the benchmark short of a bundle whose calendar extends past it
+      (regression: `test_default_end_date_is_today`).
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.
