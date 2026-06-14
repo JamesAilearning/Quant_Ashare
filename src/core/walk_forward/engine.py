@@ -270,7 +270,16 @@ class WalkForwardEngine:
         _logger.info("AGGREGATE RESULTS")
         _logger.info("=" * 60)
         for key, val in aggregate.items():
-            _logger.info("  %s: %.4f", key, val)
+            # ``aggregate`` mixes scalar metrics with nested blocks (e.g.
+            # ``timing`` is a sub-dict — Codex P1 on #163). ``%.4f`` on a
+            # non-float raises TypeError, but only when a handler actually
+            # EMITS this record (lazy arg formatting), so it stayed latent
+            # until a test attached an INFO handler (PR-E exposed it under a
+            # pytest-randomly order). Format floats precisely, else ``%s``.
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                _logger.info("  %s: %.4f", key, val)
+            else:
+                _logger.info("  %s: %s", key, val)
         _logger.info("=" * 60)
 
         aggregate_path = output_dir / "walk_forward_report.json"

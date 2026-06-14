@@ -1798,6 +1798,74 @@ class FoldFailureContinuationTests(unittest.TestCase):
         )
         self.assertEqual(int(agg["num_folds"]), len(result.folds))
 
+    def test_aggregate_logging_tolerates_nested_dict_with_emitting_handler(self) -> None:
+        """Regression (PR-E self-review): the aggregate summary log loop must
+        not crash on a non-float value. ``compute_aggregate`` returns a
+        nested ``timing`` SUB-DICT, and ``engine.run`` logged every entry
+        with ``%.4f`` — a TypeError that stayed LATENT because lazy arg
+        formatting only runs when a handler EMITS the record. With an INFO
+        handler attached (as a CLI test's ``setup_logging`` leaves in a
+        shared process), the deferred format fired and crashed unrelated
+        walk-forward tests. Pin it with a handler that RE-RAISES on a format
+        error — a plain StreamHandler's ``handleError`` only prints to
+        stderr (so it would NOT fail the test); pytest's own capture handler
+        re-raises, which is why CI failed. Run the full aggregate-logging
+        path: a regression propagates a TypeError out of ``run``."""
+        import logging
+        import math
+        import tempfile
+
+        from src.core.walk_forward import WalkForwardFold
+
+        class _RaisingHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                record.getMessage()  # forces ``msg % args``; raises on mismatch
+
+            def handleError(self, record: logging.LogRecord) -> None:
+                raise  # re-raise the active exception rather than swallow it
+
+        def fake_single_fold(*, fold_index, train_start, train_end,
+                             valid_start, valid_end, test_start, test_end,
+                             prior_model_paths, **_):
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period=f"{train_start} ~ {train_end}",
+                valid_period=f"{valid_start} ~ {valid_end}",
+                test_period=f"{test_start} ~ {test_end}",
+                ic_1d=0.02, ic_5d=0.04, annualized_return=0.10,
+                max_drawdown=-0.05, information_ratio=1.5,
+                prediction_shape=(100,),
+            )
+
+        eng_logger = logging.getLogger("src.core.walk_forward.engine")
+        handler = _RaisingHandler()
+        handler.setLevel(logging.INFO)
+        eng_logger.addHandler(handler)
+        prev_level = eng_logger.level
+        eng_logger.setLevel(logging.INFO)
+        self.addCleanup(eng_logger.setLevel, prev_level)
+        self.addCleanup(eng_logger.removeHandler, handler)
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            WalkForwardEngine, "_run_single_fold", side_effect=fake_single_fold,
+        ), patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
+        ):
+            config = WalkForwardConfig(
+                overall_start="2022-01-01", overall_end="2025-06-30",
+                train_months=24, valid_months=3, test_months=3,
+                step_months=3, output_dir=tmp,
+            )
+            result = WalkForwardEngine.run(config)  # must not raise on the timing dict
+
+        self.assertIsNotNone(result.report_path)
+        # The aggregate genuinely contains the nested dict this test guards.
+        self.assertIsInstance(result.aggregate_metrics.get("timing"), dict)
+        self.assertFalse(math.isnan(result.aggregate_metrics["mean_ic_1d"]))
+
     def test_failed_fold_does_not_pollute_subsequent_ensemble(self) -> None:
         """When ``ensemble_window > 1``, the failed fold's pickle path
         must NOT be appended to ``prior_model_paths`` (the model

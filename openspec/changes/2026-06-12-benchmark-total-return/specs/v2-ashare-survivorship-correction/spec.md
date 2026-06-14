@@ -21,7 +21,11 @@ have its OHLC fields filled from close. Intra-span calendar days the index
 does not publish SHALL be FORWARD-FILLED from the last published level, not
 left NaN — qlib turns a NaN benchmark close into a fabricated 0% return and
 drops the true cross-gap move, so ffill preserves a true 0% on the gap day
-and the real move on the recovery day. No `$factor` bin SHALL be written for
+and the real move on the recovery day. The written series SHALL END at the
+last published date and SHALL NOT extend (forward-fill) to the calendar
+tail: when the index lags the calendar (its latest row not yet printed),
+fabricating trailing closes would silently turn an incomplete fetch into 0%
+benchmark returns over days it never published. No `$factor` bin SHALL be written for
 a benchmark instrument (equity-symmetric; the benchmark read path uses
 `$close` only).
 
@@ -40,6 +44,12 @@ a benchmark instrument (equity-symmetric; the benchmark read path uses
   active window
 - **THEN** that day's bin carries the prior published level (a true 0%
   benchmark return), and the recovery day carries the real cross-gap move
+
+#### Scenario: an index lagging the calendar tail ends at its last published day
+- **WHEN** `index_daily` returns rows but its latest date is before the
+  bundle calendar tail
+- **THEN** the benchmark instrument ends at the last published date with no
+  fabricated trailing closes, and its registry span reflects that date
 
 #### Scenario: a missing best-effort total-return index does not block the swap
 - **WHEN** the total-return index fetch fails (e.g. separate index

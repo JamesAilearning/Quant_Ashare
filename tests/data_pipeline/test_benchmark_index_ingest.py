@@ -158,6 +158,34 @@ class GapAlignmentTests(unittest.TestCase):
             )
 
 
+class TrailingLagTests(unittest.TestCase):
+    def test_index_lagging_calendar_tail_ends_at_last_published_not_filled(self) -> None:
+        # codex P1 on #243: when index_daily lags the calendar tail (hasn't
+        # printed the last days), the series must END at the last published
+        # date — NOT ffill fabricated closes through calendar[-1] and
+        # register the instrument over days it never published.
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            # Calendar has 6 days; index publishes only through 2025-01-07
+            # (calendar index 3) — the last 2 days (01-08, 01-09) are absent.
+            pub = _CAL[:4]
+            df = pd.DataFrame({
+                "trade_date": _to_yyyymmdd(pub), "close": [10.0, 11.0, 12.0, 13.0],
+            })
+            res = ingest_benchmark_index(
+                df, instrument_code="SH000300", provider_dir=prov,
+            )
+            self.assertEqual(res.last_date, "2025-01-07")
+            self.assertEqual(res.n_trading_days, 4)  # NOT 6 — no trailing fab
+            self.assertEqual(res.n_gap_days, 0)
+            _, close = _read_bin(prov, "SH000300", "close")
+            self.assertEqual(len(close), 4)
+            np.testing.assert_allclose(close, [10.0, 11.0, 12.0, 13.0], rtol=1e-5)
+            # Registry span ends at the real last published date.
+            lines = (prov / "instruments" / "all.txt").read_text().splitlines()
+            self.assertIn("SH000300\t2025-01-02\t2025-01-07", lines)
+
+
 class RegistryIdempotencyTests(unittest.TestCase):
     def test_reingest_replaces_not_duplicates_and_updates_span(self) -> None:
         with tempfile.TemporaryDirectory() as t:

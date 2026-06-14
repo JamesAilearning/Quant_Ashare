@@ -151,20 +151,31 @@ def _normalize_index_daily(
 def _align_to_calendar(
     data: pd.DataFrame, calendar: list[str], instrument_code: str,
 ) -> tuple[int, pd.DataFrame]:
-    """``(start_index, aligned)``: aligned to ``calendar[start_index:]`` with
-    NaN on calendar days the index did not publish."""
-    cal_set = set(calendar)
-    in_cal = data[data["date"].isin(cal_set)].reset_index(drop=True)
+    """``(start_index, aligned)``: aligned to the calendar slice from the
+    first published date THROUGH THE LAST PUBLISHED DATE (inclusive), with
+    NaN on intra-span calendar days the index skipped.
+
+    The slice STOPS at the last published date — it does NOT extend to the
+    calendar tail (codex P1 on PR #243). If the index lags the calendar (a
+    daily update whose `index_daily` has not printed today's row yet), a
+    forward-fill to `calendar[-1]` would FABRICATE trailing benchmark closes
+    and register the instrument through a date it never published, silently
+    turning an incomplete fetch into 0% benchmark returns. Ending at the
+    last published date leaves the trailing days with no benchmark data at
+    all — honest, and the backtest window normally ends at/before the data
+    tail anyway."""
+    cal_index = {d: i for i, d in enumerate(calendar)}
+    in_cal = data[data["date"].isin(cal_index)].reset_index(drop=True)
     if in_cal.empty:
         raise BenchmarkIngestError(
             f"{instrument_code}: no index date falls inside the bundle "
             f"calendar ({calendar[0]}..{calendar[-1]}). Wrong calendar or "
             "wrong index?"
         )
-    first_date = in_cal["date"].iloc[0]
-    start_index = calendar.index(first_date)
-    tail = calendar[start_index:]
-    aligned = pd.DataFrame({"date": tail}).merge(in_cal, on="date", how="left")
+    start_index = cal_index[in_cal["date"].iloc[0]]
+    end_index = cal_index[in_cal["date"].iloc[-1]]
+    span = calendar[start_index:end_index + 1]
+    aligned = pd.DataFrame({"date": span}).merge(in_cal, on="date", how="left")
     return start_index, aligned
 
 

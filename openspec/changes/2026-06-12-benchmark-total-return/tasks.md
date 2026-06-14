@@ -46,6 +46,19 @@
       `smoke.yaml`, `config_walk.yaml`, `config_smoke.yaml`; REGEN-switch
       checklist enumerated in the proposal.
 
+## 2c. Codex round 1 (PR #243) + CI
+- [x] [P1] Codex: ffill no longer extends past the last published date —
+      the series ends there (no fabricated trailing closes when the index
+      lags the calendar tail); intra-span gaps still ffilled. Regression
+      `test_index_lagging_calendar_tail_ends_at_last_published_not_filled`.
+- [x] CI (TypeError: must be real number, not dict): a latent
+      `engine.py` aggregate-log bug (`%.4f` over the nested `timing` dict)
+      surfaced when this PR's CLI test left an INFO handler attached under
+      a pytest-randomly order. Fixed the log loop to format non-floats with
+      `%s`; pinned with a re-raising-handler regression
+      (`test_aggregate_logging_tolerates_nested_dict_with_emitting_handler`);
+      neutralized the CLI test's `setup_logging` leak.
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.

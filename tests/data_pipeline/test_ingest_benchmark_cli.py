@@ -51,6 +51,18 @@ def _yyyymmdd() -> list[str]:
 
 
 class IngestBenchmarkCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # ``main()`` calls ``setup_logging`` which attaches a root INFO
+        # handler that would persist into the shared test process and make
+        # other modules' lazy log-format errors surface out of order. The
+        # CLI is re-imported fresh per ``_load_cli()`` and binds
+        # ``setup_logging`` by name at import, so patch it at the SOURCE
+        # before the test body loads the CLI — the fresh import then binds
+        # the no-op.
+        patcher = patch("src.core.logger.setup_logging", lambda *a, **k: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _fake_client(self, frames: dict[str, pd.DataFrame]):
         def call(api, **params):
             assert api == "index_daily", api
