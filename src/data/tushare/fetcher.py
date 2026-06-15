@@ -392,6 +392,59 @@ class TushareFetcher:
         forever while the merge drops its never-re-attempted hole)."""
         return (endpoint, unit) in self._config.force_retry_units
 
+    def _aggregate_can_skip(
+        self,
+        path: Path,
+        endpoint: str,
+        unit: str,
+        *,
+        honor_refresh_current: bool = True,
+    ) -> bool:
+        """Whether an existing single-file aggregate may be resume-skipped.
+
+        Skip iff the file exists, no prior-manifest hole forces a re-attempt of
+        this ``unit``, and — for endpoints that honour it — ``--refresh-current``
+        was not requested. ``index_weight`` passes ``honor_refresh_current=False``
+        because it is exempt from refresh-current (one full-range file per index;
+        re-pulling all of them every day is hundreds of calls).
+        """
+        if not path.exists():
+            return False
+        if honor_refresh_current and self._config.refresh_current:
+            return False
+        return not self._must_retry(endpoint, unit)
+
+    def _fetch_single_file_aggregate(
+        self, *, endpoint: str, filename: str, fields: str,
+    ) -> TushareFetchResult:
+        """Fetch a single-file aggregate endpoint (``namechange`` / ``suspend_d``).
+
+        One call covers ``[start_date, end_date]`` and writes one parquet. The
+        hole unit is the stable ``"file"``: the whole file IS the unit, so a
+        re-failure matches the prior hole (the run's range varies and lives in
+        the manifest coverage fields, not the unit — codex P2).
+        """
+        path = self._config.output_dir / filename
+        if self._aggregate_can_skip(path, endpoint, "file"):
+            _logger.info("  skip (exists): %s", path)
+            return TushareFetchResult(endpoint, 0, 0, skipped=1)
+        if self._config.dry_run:
+            _logger.info("  [dry-run] would write %s", path)
+            return TushareFetchResult(endpoint, 0, 0, skipped=0)
+        try:
+            df = self._safe_call(
+                endpoint,
+                start_date=self._config.start_date,
+                end_date=self._config.end_date,
+                fields=fields,
+            )
+        except FetchHoleError as hole:
+            self._record_hole(endpoint, "file", hole)
+            return TushareFetchResult(endpoint, 0, 0, skipped=0)
+        atomic_write_parquet(df, path)
+        _logger.info("  wrote %d rows to %s", len(df), path)
+        return TushareFetchResult(endpoint, 1, len(df))
+
     def _fetch_stock_basic(self) -> TushareFetchResult:
         """Pull both 'L' (active) and 'D' (delisted) buckets as separate files."""
         written = 0
@@ -433,59 +486,19 @@ class TushareFetcher:
 
     def _fetch_namechange(self) -> TushareFetchResult:
         """Pull all name changes in [start_date, end_date]. One call."""
-        path = self._config.output_dir / "all_namechanges.parquet"
-        if (path.exists() and not self._config.refresh_current
-                and not self._must_retry("namechange", "file")):
-            _logger.info("  skip (exists): %s", path)
-            return TushareFetchResult("namechange", 0, 0, skipped=1)
-        if self._config.dry_run:
-            _logger.info("  [dry-run] would write %s", path)
-            return TushareFetchResult("namechange", 0, 0, skipped=0)
-        try:
-            df = self._safe_call(
-                "namechange",
-                start_date=self._config.start_date,
-                end_date=self._config.end_date,
-                fields="ts_code,name,start_date,end_date,ann_date,change_reason",
-            )
-        except FetchHoleError as hole:
-            # codex P2: namechange is a SINGLE file covering the run's range, so
-            # the hole IS the whole file — the unit is a stable "file", NOT the
-            # range (which varies run-to-run and would make a wider/narrower
-            # re-failure look like a different unit, so the merge could not match
-            # the prior hole and would reset attempts / drop it). The range lives
-            # in the manifest's coverage fields, not the hole unit.
-            self._record_hole("namechange", "file", hole)
-            return TushareFetchResult("namechange", 0, 0, skipped=0)
-        atomic_write_parquet(df, path)
-        _logger.info("  wrote %d rows to %s", len(df), path)
-        return TushareFetchResult("namechange", 1, len(df))
+        return self._fetch_single_file_aggregate(
+            endpoint="namechange",
+            filename="all_namechanges.parquet",
+            fields="ts_code,name,start_date,end_date,ann_date,change_reason",
+        )
 
     def _fetch_suspend_d(self) -> TushareFetchResult:
         """Pull suspend / resume history in [start_date, end_date]."""
-        path = self._config.output_dir / "suspend_d.parquet"
-        if (path.exists() and not self._config.refresh_current
-                and not self._must_retry("suspend_d", "file")):
-            _logger.info("  skip (exists): %s", path)
-            return TushareFetchResult("suspend_d", 0, 0, skipped=1)
-        if self._config.dry_run:
-            _logger.info("  [dry-run] would write %s", path)
-            return TushareFetchResult("suspend_d", 0, 0, skipped=0)
-        try:
-            df = self._safe_call(
-                "suspend_d",
-                start_date=self._config.start_date,
-                end_date=self._config.end_date,
-                fields="ts_code,trade_date,suspend_timing,suspend_type",
-            )
-        except FetchHoleError as hole:
-            # codex P2: like namechange, suspend_d is a single file — stable
-            # "file" unit, not the run's range (see _fetch_namechange).
-            self._record_hole("suspend_d", "file", hole)
-            return TushareFetchResult("suspend_d", 0, 0, skipped=0)
-        atomic_write_parquet(df, path)
-        _logger.info("  wrote %d rows to %s", len(df), path)
-        return TushareFetchResult("suspend_d", 1, len(df))
+        return self._fetch_single_file_aggregate(
+            endpoint="suspend_d",
+            filename="suspend_d.parquet",
+            fields="ts_code,trade_date,suspend_timing,suspend_type",
+        )
 
     def _fetch_index_weight(self) -> TushareFetchResult:
         """Pull index_weight per configured index across the date range.
@@ -506,9 +519,12 @@ class TushareFetcher:
         end_year = int(self._config.end_date[:4])
         for idx in self._config.indices:
             path = out_root / f"{idx}.parquet"
-            # index_weight is exempt from refresh_current, but a prior-manifest
-            # hole still forces a re-attempt (its file may be yesterday's).
-            if path.exists() and not self._must_retry("index_weight", f"index={idx}"):
+            # index_weight is exempt from refresh_current (honor_refresh_current
+            # =False), but a prior-manifest hole still forces a re-attempt (its
+            # file may be yesterday's).
+            if self._aggregate_can_skip(
+                path, "index_weight", f"index={idx}", honor_refresh_current=False,
+            ):
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
                 continue
