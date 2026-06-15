@@ -36,6 +36,7 @@ from src.core.microstructure_mask import (
     MicrostructureMaskError,
     apply_mask_to_predictions,
     compute_unavailable_mask,
+    ts_to_iso_date,
 )
 from src.core.qlib_runtime import (
     get_canonical_qlib_config,
@@ -417,10 +418,7 @@ class BacktestRunner:
                 f"execution-day mask remap failed ({exc}). Refusing to fall "
                 "back to stamp-day masking. Audit A1 / PR-C."
             ) from exc
-        iso_calendar = [
-            (ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10])
-            for ts in remap_calendar_ts
-        ]
+        iso_calendar = [ts_to_iso_date(ts) for ts in remap_calendar_ts]
         stamp_of_execution_day = {
             iso_calendar[i]: iso_calendar[i - 1]
             for i in range(1, len(iso_calendar))
@@ -495,9 +493,7 @@ class BacktestRunner:
                 shifted_predictions.index.get_level_values("instrument"),
                 strict=True,
             ):
-                stamp_iso = (
-                    ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
-                )
+                stamp_iso = ts_to_iso_date(ts)
                 exec_iso = execution_day_of_stamp.get(stamp_iso)
                 if exec_iso is None:
                     continue
