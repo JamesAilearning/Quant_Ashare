@@ -7,14 +7,14 @@ All steps are wired through V2's contract and governance system.
 
 from __future__ import annotations
 
-import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
+from src.core._hashing import sha256_canonical
 from src.core._json_utils import _sanitize_for_json
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
@@ -753,13 +753,7 @@ class Pipeline:
     ) -> None:
         """Append a run-catalog record for a completed pipeline run."""
         try:
-            import hashlib
-            import json
-            from dataclasses import asdict
-            config_dict = asdict(config)
-            fingerprint = hashlib.sha256(
-                json.dumps(config_dict, sort_keys=True, default=str).encode()
-            ).hexdigest()[:16]
+            fingerprint = sha256_canonical(asdict(config), length=16)
 
             record = build_catalog_record(
                 engine="pipeline",
@@ -802,7 +796,6 @@ class Pipeline:
         overwriting a prior run's artifacts.
         """
         import uuid
-        from dataclasses import asdict
 
         # The previous tail used ``perf_counter_ns() % 1_000_000`` as a
         # "6-digit ns jitter" — but ``perf_counter_ns`` is a monotonic CPU
@@ -816,8 +809,7 @@ class Pipeline:
         # the semantics are unambiguous (a tag, not a time).
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         uniq = uuid.uuid4().hex[:8]
-        config_json = json.dumps(asdict(config), sort_keys=True, default=str)
-        fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:12]
+        fingerprint = sha256_canonical(asdict(config), length=12)
         return root_dir / "runs" / f"{timestamp}_{uniq}_{fingerprint}"
 
     @staticmethod
