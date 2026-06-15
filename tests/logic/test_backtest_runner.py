@@ -976,7 +976,7 @@ class RiskAnalysisNormalizerTests(unittest.TestCase):
 
     The old catch-all turned any future qlib shape change into a
     missing-metrics scenario that downstream consumers
-    (``WalkForwardEngine._extract_cost_metrics``) coerced to 0.0 — a
+    (``walk_forward.aggregate.extract_cost_metrics``) coerced to 0.0 — a
     silent zero-return run. The normalizer now propagates the failure
     as a ``BacktestRunnerError`` so the breakage surfaces at the
     boundary instead of rippling downstream.

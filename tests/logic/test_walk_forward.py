@@ -12,6 +12,16 @@ from src.core.walk_forward import (
     WalkForwardEngine,
     WalkForwardError,
 )
+from src.core.walk_forward.aggregate import (
+    attribution_section_for_fold,
+    build_aggregate_report,
+    build_fold_report,
+    compute_aggregate,
+    extract_cost_metrics,
+    write_aggregate_report,
+    write_fold_report,
+)
+from src.core.walk_forward.ensemble import apply_ensemble
 from src.data._segment_embargo import (
     LABEL_LOOKAHEAD_DAYS,
     trading_days_between,
@@ -449,7 +459,7 @@ class WalkForwardBacktestPassthroughTests(unittest.TestCase):
 
 
 class ComputeAggregateNaNSafetyTests(unittest.TestCase):
-    """Regression guards for P1c: ``_compute_aggregate`` must tolerate
+    """Regression guards for P1c: ``compute_aggregate`` must tolerate
     folds whose metrics are NaN (e.g. a fold whose validation period was
     too short for SignalAnalyzer to produce a valid IC — surfaced as
     NaN after P2c in batch 6 rather than a silent 0.0).
@@ -481,7 +491,7 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(1, math.nan, math.nan, 0.09, -0.10, 0.9),
             self._fold(2, 0.02, 0.03, 0.07, -0.05, 0.6),
         ]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         # Means must be finite — NaN fold excluded.
         self.assertFalse(math.isnan(agg["mean_ic_1d"]))
         self.assertFalse(math.isnan(agg["mean_ic_5d"]))
@@ -498,7 +508,7 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(1, math.nan, 0.03, 0.09, -0.10, 0.9),
             self._fold(2, 0.02, math.nan, 0.07, -0.05, math.nan),
         ]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         self.assertEqual(agg["valid_folds_ic_1d"], 2.0)
         self.assertEqual(agg["valid_folds_ic_5d"], 2.0)
         self.assertEqual(agg["valid_folds_annualized_return"], 3.0)
@@ -513,7 +523,7 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(0, math.nan, 0.05, 0.12, -0.08, 1.1),
             self._fold(1, math.nan, 0.03, 0.09, -0.10, 0.9),
         ]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         self.assertTrue(math.isnan(agg["mean_ic_1d"]))
         self.assertEqual(agg["valid_folds_ic_1d"], 0.0)
         # Other metrics still fine.
@@ -526,7 +536,7 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(1, 0.02, 0.03, 0.09, math.nan, 0.9),
             self._fold(2, 0.01, 0.02, 0.07, -0.20, 0.6),
         ]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         # Worst (most negative) valid drawdown is -0.20.
         self.assertAlmostEqual(agg["worst_drawdown"], -0.20, places=6)
         self.assertEqual(agg["valid_folds_max_drawdown"], 2.0)
@@ -538,7 +548,7 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1),
             self._fold(1, 0.02, 0.03, 0.09, -0.10, 0.9),
         ]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         self.assertIn("mean_ic_1d_ci_low", agg)
         self.assertIn("mean_ic_1d_ci_high", agg)
         self.assertIn("mean_information_ratio_ci_low", agg)
@@ -550,7 +560,7 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
     def test_bootstrap_ci_nan_with_single_fold(self) -> None:
         import math
         folds = [self._fold(0, 0.04, 0.05, 0.12, -0.08, 1.1)]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         self.assertTrue(math.isnan(agg["mean_ic_1d_ci_low"]))
         self.assertTrue(math.isnan(agg["mean_ic_1d_ci_high"]))
 
@@ -559,8 +569,8 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(i, 0.01 * i, 0.01 * i, 0.05 * i, -0.05 * i, 0.5 * i)
             for i in range(1, 9)
         ]
-        agg1 = WalkForwardEngine._compute_aggregate(folds)
-        agg2 = WalkForwardEngine._compute_aggregate(folds)
+        agg1 = compute_aggregate(folds)
+        agg2 = compute_aggregate(folds)
         self.assertEqual(agg1["mean_ic_1d_ci_low"], agg2["mean_ic_1d_ci_low"])
         self.assertEqual(agg1["mean_ic_1d_ci_high"], agg2["mean_ic_1d_ci_high"])
 
@@ -570,12 +580,12 @@ class ComputeAggregateNaNSafetyTests(unittest.TestCase):
             self._fold(0, math.nan, math.nan, math.nan, math.nan, math.nan),
             self._fold(1, math.nan, math.nan, math.nan, math.nan, math.nan),
         ]
-        agg = WalkForwardEngine._compute_aggregate(folds)
+        agg = compute_aggregate(folds)
         self.assertTrue(math.isnan(agg["mean_ic_1d_ci_low"]))
 
 
 class ExtractCostMetricsTests(unittest.TestCase):
-    """Regression guards for P2f: ``_extract_cost_metrics`` must not
+    """Regression guards for P2f: ``extract_cost_metrics`` must not
     silently coerce missing risk metrics to 0.0.
 
     Old code used ``cost_metrics.get("annualized_return", 0.0)`` in-line
@@ -594,7 +604,7 @@ class ExtractCostMetricsTests(unittest.TestCase):
                 "mean": 0.0004,
             }
         }
-        ann, dd, ir = WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
+        ann, dd, ir = extract_cost_metrics(risk, fold_index=0)
         self.assertAlmostEqual(ann, 0.12)
         self.assertAlmostEqual(dd, -0.08)
         self.assertAlmostEqual(ir, 1.1)
@@ -606,7 +616,7 @@ class ExtractCostMetricsTests(unittest.TestCase):
         with self.assertRaisesRegex(
             WalkForwardError, "excess_return_with_cost"
         ):
-            WalkForwardEngine._extract_cost_metrics(risk, fold_index=7)
+            extract_cost_metrics(risk, fold_index=7)
 
     def test_raises_when_normalizer_fell_back_to_raw(self) -> None:
         """If the risk_analysis normalizer ever regressed and produced
@@ -615,7 +625,7 @@ class ExtractCostMetricsTests(unittest.TestCase):
         with self.assertRaisesRegex(
             WalkForwardError, "excess_return_with_cost"
         ):
-            WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
+            extract_cost_metrics(risk, fold_index=0)
 
     def test_raises_when_cost_metrics_not_dict(self) -> None:
         """qlib returning a scalar or a DataFrame-as-string must raise,
@@ -624,7 +634,7 @@ class ExtractCostMetricsTests(unittest.TestCase):
         with self.assertRaisesRegex(
             WalkForwardError, "expected dict"
         ):
-            WalkForwardEngine._extract_cost_metrics(risk, fold_index=3)
+            extract_cost_metrics(risk, fold_index=3)
 
     def test_raises_when_required_metric_missing(self) -> None:
         """A present-but-incomplete ``excess_return_with_cost`` must
@@ -636,7 +646,7 @@ class ExtractCostMetricsTests(unittest.TestCase):
             }
         }
         with self.assertRaisesRegex(WalkForwardError, "missing"):
-            WalkForwardEngine._extract_cost_metrics(risk, fold_index=0)
+            extract_cost_metrics(risk, fold_index=0)
 
 
 _QLIB_DATA_DIR = Path("D:/qlib_data/my_cn_data")
@@ -736,7 +746,7 @@ class FoldReportSerialisationTests(unittest.TestCase):
         )
 
     def test_top_level_fields_present(self) -> None:
-        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        d = build_fold_report(**self._build_args())
         for key in (
             "fold_index", "windows", "model", "signal_analysis",
             "backtest", "metrics", "positions_path", "generated_at",
@@ -744,14 +754,14 @@ class FoldReportSerialisationTests(unittest.TestCase):
             self.assertIn(key, d, f"missing top-level field: {key}")
 
     def test_windows_shape(self) -> None:
-        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        d = build_fold_report(**self._build_args())
         self.assertEqual(d["windows"]["train"]["start"], "2024-01-01")
         self.assertEqual(d["windows"]["train"]["end"], "2024-06-30")
         self.assertEqual(d["windows"]["valid"]["start"], "2024-07-01")
         self.assertEqual(d["windows"]["test"]["end"], "2024-12-31")
 
     def test_model_block_carries_diagnostics(self) -> None:
-        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        d = build_fold_report(**self._build_args())
         self.assertEqual(d["model"]["best_iteration"], 3)
         self.assertEqual(d["model"]["final_valid_loss"], 0.95)
         self.assertEqual(d["model"]["prediction_shape"], [123])
@@ -762,7 +772,7 @@ class FoldReportSerialisationTests(unittest.TestCase):
         be strings, so the report builder must coerce them — otherwise
         ``json.dumps`` would either raise (strict mode) or silently
         emit non-string keys some parsers reject."""
-        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        d = build_fold_report(**self._build_args())
         keys = list(d["signal_analysis"]["ic_summary"].keys())
         self.assertTrue(
             all(isinstance(k, str) for k in keys),
@@ -772,7 +782,7 @@ class FoldReportSerialisationTests(unittest.TestCase):
         self.assertIn("5", keys)
 
     def test_metrics_block_mirrors_walk_forward_fold(self) -> None:
-        d = WalkForwardEngine._build_fold_report(**self._build_args())
+        d = build_fold_report(**self._build_args())
         self.assertAlmostEqual(d["metrics"]["ic_1d"], 0.02)
         self.assertAlmostEqual(d["metrics"]["ic_5d"], 0.04)
         self.assertAlmostEqual(d["metrics"]["annualized_return"], 0.11)
@@ -782,7 +792,7 @@ class FoldReportSerialisationTests(unittest.TestCase):
     def test_positions_path_optional(self) -> None:
         args = self._build_args()
         args["positions_path"] = None
-        d = WalkForwardEngine._build_fold_report(**args)
+        d = build_fold_report(**args)
         self.assertIsNone(d["positions_path"])
 
     def test_write_fold_report_round_trips_through_strict_json(self) -> None:
@@ -799,7 +809,7 @@ class FoldReportSerialisationTests(unittest.TestCase):
         args["information_ratio"] = float("inf")
         with tempfile.TemporaryDirectory() as tmp:
             report_path = Path(tmp) / "fold_report.json"
-            WalkForwardEngine._write_fold_report(report_path=report_path, **args)
+            write_fold_report(report_path=report_path, **args)
             with open(report_path) as f:
                 loaded = json.load(f)
         self.assertIsNone(loaded["metrics"]["ic_1d"])
@@ -863,7 +873,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
         )
 
     def test_top_level_fields_present(self) -> None:
-        d = WalkForwardEngine._build_aggregate_report(
+        d = build_aggregate_report(
             config=WalkForwardConfig(),
             folds=self._build_folds(),
             aggregate_metrics={"mean_ic_1d": 0.01, "num_folds": 2.0},
@@ -879,7 +889,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
             self.assertIn(key, d)
 
     def test_test_window_coverage_reports_continuous_periods(self) -> None:
-        d = WalkForwardEngine._build_aggregate_report(
+        d = build_aggregate_report(
             config=WalkForwardConfig(),
             folds=self._build_folds(),
             aggregate_metrics={},
@@ -891,7 +901,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
         self.assertEqual(coverage["max_overlap_depth"], 1)
 
     def test_test_window_coverage_reports_gaps(self) -> None:
-        d = WalkForwardEngine._build_aggregate_report(
+        d = build_aggregate_report(
             config=WalkForwardConfig(),
             folds=[
                 self._fold_with_test_period(0, "2024-01-01 ~ 2024-01-31"),
@@ -905,7 +915,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
         self.assertEqual(coverage["max_gap_days"], 2)
 
     def test_test_window_coverage_reports_overlaps(self) -> None:
-        d = WalkForwardEngine._build_aggregate_report(
+        d = build_aggregate_report(
             config=WalkForwardConfig(),
             folds=[
                 self._fold_with_test_period(0, "2024-01-01 ~ 2024-01-31"),
@@ -922,7 +932,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
     def test_per_fold_summaries_carry_report_path(self) -> None:
         """Each entry in ``folds`` must point at the per-fold JSON so a
         consumer can drill in without re-globbing the directory."""
-        d = WalkForwardEngine._build_aggregate_report(
+        d = build_aggregate_report(
             config=WalkForwardConfig(),
             folds=self._build_folds(),
             aggregate_metrics={},
@@ -935,7 +945,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
         """``config`` must capture every field of ``WalkForwardConfig``
         so the run is reproducible from the report alone."""
         cfg = WalkForwardConfig(num_boost_round=42, topk=33)
-        d = WalkForwardEngine._build_aggregate_report(
+        d = build_aggregate_report(
             config=cfg, folds=[], aggregate_metrics={},
         )
         self.assertEqual(d["config"]["num_boost_round"], 42)
@@ -951,7 +961,7 @@ class AggregateReportSerialisationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "walk_forward_report.json"
-            WalkForwardEngine._write_aggregate_report(
+            write_aggregate_report(
                 path=path,
                 config=WalkForwardConfig(),
                 folds=self._build_folds(),
@@ -1201,7 +1211,7 @@ class _AttributionSectionForFoldTests(unittest.TestCase):
     consumer reads both."""
 
     def test_skipped_section_carries_status_and_reason(self) -> None:
-        block = WalkForwardEngine._attribution_section_for_fold(
+        block = attribution_section_for_fold(
             None, "no_positions_from_backtest",
         )
         self.assertEqual(block["status"], "skipped")
@@ -1215,7 +1225,7 @@ class _AttributionSectionForFoldTests(unittest.TestCase):
     def test_skipped_with_no_reason_falls_back_to_unknown(self) -> None:
         """Defensive: a future bug that calls this with both ``None``
         must still produce a parseable status field, not ``null``."""
-        block = WalkForwardEngine._attribution_section_for_fold(None, None)
+        block = attribution_section_for_fold(None, None)
         self.assertEqual(block["status"], "skipped")
         self.assertEqual(block["skipped_reason"], "unknown_reason")
 
@@ -1249,7 +1259,7 @@ class _AttributionSectionForFoldTests(unittest.TestCase):
             sector_taxonomy="tushare_sw_l2",
             bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
         )
-        block = WalkForwardEngine._attribution_section_for_fold(result, None)
+        block = attribution_section_for_fold(result, None)
 
         self.assertEqual(block["status"], "ok")
         self.assertIsNone(block["skipped_reason"])
@@ -1266,7 +1276,7 @@ class FoldReportContainsAttributionBlockTests(unittest.TestCase):
     """End-to-end: the persisted ``fold_NN_report.json`` carries the
     ``attribution`` block produced by the section helper. Without this
     test, a future refactor could drop the wiring in
-    :meth:`_build_fold_report` and per-fold attribution would silently
+    :func:`build_fold_report` and per-fold attribution would silently
     vanish from the on-disk report.
     """
 
@@ -1370,7 +1380,7 @@ def _pandas_available() -> bool:
 
 @unittest.skipUnless(_pandas_available(), "requires pandas")
 class MaybeApplyEnsembleTests(unittest.TestCase):
-    """Direct-call coverage of :meth:`WalkForwardEngine._maybe_apply_ensemble`.
+    """Direct-call coverage of :func:`ensemble.apply_ensemble`.
 
     Each branch (window=1 no-op, no priors, fold 0 graceful, all priors
     fail, success) is exercised in isolation so a future refactor does
@@ -1398,7 +1408,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
 
     def test_window_one_returns_current_unchanged(self) -> None:
         current = self._build_predictions(0.5)
-        result, meta = WalkForwardEngine._maybe_apply_ensemble(
+        result, meta = apply_ensemble(
             current_predictions=current,
             current_dataset=object(),
             prior_model_paths=("/tmp/m0.pkl", "/tmp/m1.pkl"),
@@ -1416,7 +1426,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
         """Fold 0 of a multi-fold run has no priors yet — the natural
         degradation path."""
         current = self._build_predictions(0.5)
-        result, meta = WalkForwardEngine._maybe_apply_ensemble(
+        result, meta = apply_ensemble(
             current_predictions=current,
             current_dataset=object(),
             prior_model_paths=(),
@@ -1452,7 +1462,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
             "pickle.load",
             side_effect=load_seq,
         ):
-            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            result, meta = apply_ensemble(
                 current_predictions=current,
                 current_dataset=object(),
                 prior_model_paths=("/tmp/m1.pkl", "/tmp/m2.pkl"),
@@ -1488,7 +1498,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
         with patch("builtins.open", new=MagicMock()), patch(
             "pickle.load", return_value=prior,
         ):
-            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            result, meta = apply_ensemble(
                 current_predictions=current,
                 current_dataset=object(),
                 prior_model_paths=(
@@ -1519,7 +1529,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
         with patch("builtins.open", new=MagicMock()), patch(
             "pickle.load", side_effect=load_seq,
         ):
-            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            result, meta = apply_ensemble(
                 current_predictions=current,
                 current_dataset=object(),
                 prior_model_paths=("/tmp/bad.pkl", "/tmp/good.pkl"),
@@ -1543,7 +1553,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
             "pickle.load",
             side_effect=[RuntimeError("bad"), RuntimeError("bad")],
         ):
-            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            result, meta = apply_ensemble(
                 current_predictions=current,
                 current_dataset=object(),
                 prior_model_paths=("/tmp/m0.pkl", "/tmp/m1.pkl"),
@@ -1572,7 +1582,7 @@ class MaybeApplyEnsembleTests(unittest.TestCase):
         with patch("builtins.open", new=MagicMock()), patch(
             "pickle.load", return_value=prior,
         ):
-            result, meta = WalkForwardEngine._maybe_apply_ensemble(
+            result, meta = apply_ensemble(
                 current_predictions=current,
                 current_dataset=object(),
                 prior_model_paths=((1, "/tmp/m1.pkl"),),
@@ -1642,7 +1652,7 @@ class EnsembleEndToEndFlowTests(unittest.TestCase):
                 WalkForwardEngine, "_run_single_fold",
                 side_effect=fake_single_fold,
             ), patch(
-                "src.core.walk_forward.engine.WalkForwardEngine._write_aggregate_report"
+                "src.core.walk_forward.engine.write_aggregate_report"
             ), patch.object(
                 WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
             ):
