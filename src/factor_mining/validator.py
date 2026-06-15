@@ -21,9 +21,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .evaluator import evaluate_factor
+from .evaluator import evaluate_factor, max_abs_corr
 from .expression import Expression
-from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
+from .factor_pool import LEGACY_METHOD_TAG, FactorPool
 
 _log = logging.getLogger(__name__)
 
@@ -157,8 +157,7 @@ def _evaluate_segment(
         result = evaluate_factor(expr, seg_panel, seg_fwd, method="rank")
     except Exception:  # noqa: BLE001 — segment may legitimately fail; we just flag
         return float("nan"), float("nan"), 0
-    n_obs = int(result.n_obs_per_day_min) * 0  # use cell count below
-    # Approximate n_obs as the count of joint non-NaN cells.
+    # n_obs = the count of joint non-NaN cells.
     factor_mask = result.factor_values.notna()
     fwd_mask = seg_fwd.reindex_like(result.factor_values).notna()
     n_obs = int((factor_mask & fwd_mask).sum().sum())
@@ -300,14 +299,10 @@ def filter_correlated(
             new_results_by_hash[res.expr_hash] = res
             continue
         stacked = factor_values.stack(future_stack=True)
-        max_corr = 0.0
-        for _kept_res, kept_stack in kept_values:
-            joined = pd.concat({"new": stacked, "old": kept_stack}, axis=1).dropna()
-            if len(joined) < 3:
-                continue
-            corr = joined["new"].corr(joined["old"])
-            if pd.notna(corr):
-                max_corr = max(max_corr, abs(float(corr)))
+        # Shared inner pairwise loop (np.isfinite guard — was pd.notna here).
+        max_corr = max_abs_corr(
+            stacked, (kept_stack for _kept_res, kept_stack in kept_values),
+        )
         if max_corr > criteria.max_pool_correlation:
             new_results_by_hash[res.expr_hash] = FactorValidationResult(
                 expr_hash=res.expr_hash,
@@ -338,8 +333,3 @@ __all__ = [
     "validate_pool",
     "validate_run",
 ]
-
-
-def _unused_entry_marker(entry: PoolEntry) -> None:
-    """Kept to silence import-time linting of PoolEntry usage."""
-    _ = entry

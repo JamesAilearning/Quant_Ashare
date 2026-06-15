@@ -23,7 +23,7 @@ from random import Random
 import numpy as np
 import pandas as pd
 
-from .evaluator import EvaluationResult, evaluate_factor
+from .evaluator import EvaluationResult, evaluate_factor, max_abs_corr
 from .expression import Expression, OperatorCall, Terminal
 from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
 from .fitness import FitnessConfig, compute_fitness, expression_size
@@ -310,18 +310,15 @@ class GPEngine:
         new_stack = factor_values.stack(future_stack=True)
         if new_stack.empty:
             return 0.0
-        max_abs = 0.0
-        for _h, other in self._per_generation_values.items():
-            if other.empty:
-                continue
-            other_stack = other.stack(future_stack=True)
-            joined = pd.concat({"new": new_stack, "old": other_stack}, axis=1).dropna()
-            if len(joined) < 3:
-                continue
-            corr = joined["new"].corr(joined["old"])
-            if pd.notna(corr):
-                max_abs = max(max_abs, abs(float(corr)))
-        return max_abs
+        # Inner pairwise loop shared via evaluator.max_abs_corr; the w_corr / OOM
+        # short-circuits above stay here (GP-specific). np.isfinite guard (was
+        # pd.notna) now consistent across all three call sites.
+        other_stacks = (
+            other.stack(future_stack=True)
+            for other in self._per_generation_values.values()
+            if not other.empty
+        )
+        return max_abs_corr(new_stack, other_stacks)
 
     # ------------------------------------------------------------------
     # Genetic operators

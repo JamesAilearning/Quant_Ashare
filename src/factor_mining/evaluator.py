@@ -11,7 +11,7 @@ from ``src.core._ic_utils.compute_ic_for_group`` per
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -28,10 +28,41 @@ __all__ = [
     "WalkResult",
     "evaluate_expression",
     "evaluate_factor",
+    "max_abs_corr",
 ]
 
 PanelLike = Mapping[str, pd.DataFrame]
 WalkResult = pd.DataFrame | int
+
+
+def max_abs_corr(
+    new_stack: pd.Series,
+    other_stacks: Iterable[pd.Series],
+    *,
+    min_overlap: int = 3,
+) -> float:
+    """Maximum |Pearson correlation| of ``new_stack`` against each series in
+    ``other_stacks`` (both already ``.stack()``-ed to a flat ``(date,
+    instrument)`` index). Shared by the GP novelty penalty, the validator's
+    pool-correlation gate, and ``FactorPool.correlation_with`` — each keeps its
+    own outer guards (the GP w_corr / OOM short-circuit, the spec contract on
+    ``correlation_with``); only this inner pairwise loop is shared.
+
+    A pair with fewer than ``min_overlap`` jointly-non-NaN cells is skipped. The
+    correlation is admitted only when ``np.isfinite`` — NOT ``pd.notna``: the two
+    diverge on ±inf (``pd.notna(inf)`` is True), and a degenerate value must
+    never poison the maximum, so this NEVER returns a non-finite float. Returns
+    0.0 when no eligible pair correlates. Pure pandas/numpy — no qlib / PIT (D5).
+    """
+    max_abs = 0.0
+    for other_stack in other_stacks:
+        joined = pd.concat({"new": new_stack, "old": other_stack}, axis=1).dropna()
+        if len(joined) < min_overlap:
+            continue
+        corr = joined["new"].corr(joined["old"])
+        if np.isfinite(corr):
+            max_abs = max(max_abs, abs(float(corr)))
+    return max_abs
 
 
 def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:

@@ -11,6 +11,7 @@ from src.factor_mining.evaluator import (
     EvaluationResult,
     evaluate_expression,
     evaluate_factor,
+    max_abs_corr,
 )
 from src.factor_mining.expression import OperatorCall, Terminal, parse_expression
 
@@ -361,6 +362,53 @@ def test_evaluate_factor_handles_empty_panel_gracefully():
     assert result.coverage == 0.0
     assert result.turnover_daily == 0.0
     assert np.isnan(result.ic_mean) or result.ic_mean == 0.0
+
+
+# ---------------------------------------------------------------------------
+# max_abs_corr — shared pairwise correlation (T2-3)
+# ---------------------------------------------------------------------------
+
+
+def _stack(series_by_idx: dict) -> pd.Series:
+    return pd.Series(series_by_idx, dtype=float)
+
+
+def test_max_abs_corr_perfect_and_anti_correlation():
+    base = _stack({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+    # perfect positive (affine) and perfect negative both → |corr| == 1.
+    assert max_abs_corr(base, [base * 2 + 1]) == 1.0
+    assert max_abs_corr(base, [-base]) == 1.0
+
+
+def test_max_abs_corr_takes_the_maximum_across_others():
+    base = _stack({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+    weak = _stack({"a": 1.0, "b": 1.0, "c": 2.0, "d": 1.5})  # weaker corr
+    out = max_abs_corr(base, [weak, -base])  # -base is the strongest (|1.0|)
+    assert out == 1.0
+
+
+def test_max_abs_corr_empty_and_below_min_overlap():
+    base = _stack({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+    assert max_abs_corr(base, []) == 0.0  # no others
+    # only 2 jointly-non-NaN cells (< min_overlap=3) → skipped → 0.0
+    short = _stack({"a": 1.0, "b": 2.0})
+    assert max_abs_corr(base, [short]) == 0.0
+
+
+def test_max_abs_corr_zero_variance_corr_is_nan_skipped():
+    base = _stack({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+    const = _stack({"a": 5.0, "b": 5.0, "c": 5.0, "d": 5.0})  # corr → NaN
+    assert max_abs_corr(base, [const]) == 0.0
+
+
+def test_max_abs_corr_never_returns_non_finite_with_inf_input():
+    # T2-3 guard fix: np.isfinite (not pd.notna) admits the correlation, so a
+    # degenerate / non-finite pairing can never poison the maximum. Even with an
+    # inf-valued partner the result is a finite 0.0, never inf/NaN.
+    base = _stack({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
+    inf_partner = _stack({"a": 1.0, "b": 2.0, "c": np.inf, "d": 4.0})
+    out = max_abs_corr(base, [inf_partner])
+    assert np.isfinite(out) and out == 0.0
 
 
 # ---------------------------------------------------------------------------

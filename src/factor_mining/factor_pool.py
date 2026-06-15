@@ -21,10 +21,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from .evaluator import EvaluationResult
+from .evaluator import EvaluationResult, max_abs_corr
 from .expression import Expression
 
 _log = logging.getLogger(__name__)
@@ -141,7 +140,11 @@ class FactorPool:
         """Top-``k`` entries by the named scalar attribute (default
         ``"fitness"``). Larger is better."""
         entries = list(self._entries.values())
-        if not hasattr(PoolEntry, by) and by not in PoolEntry.__dataclass_fields__:
+        # Only a real DATA field is a valid sort key. The old guard also accepted
+        # any class attribute via hasattr(), which let a method name (e.g. a bound
+        # method) through to getattr + sort and misbehave; require a dataclass
+        # field outright.
+        if by not in PoolEntry.__dataclass_fields__:
             raise ValueError(f"Unknown sort key: {by!r}")
         entries.sort(key=lambda e: getattr(e, by), reverse=True)
         return entries[: max(0, int(k))]
@@ -162,22 +165,17 @@ class FactorPool:
         """
         if not existing_values or factor_values.empty:
             return 0.0
-        max_abs = 0.0
         new_stack = factor_values.stack(future_stack=True)
         if new_stack.empty:
             return 0.0
-        for _hash, other in existing_values.items():
-            if other is None or other.empty:
-                continue
-            other_stack = other.stack(future_stack=True)
-            joined = pd.concat({"new": new_stack, "old": other_stack}, axis=1).dropna()
-            if len(joined) < 3:
-                continue
-            corr = joined["new"].corr(joined["old"])
-            if not np.isfinite(corr):
-                continue
-            max_abs = max(max_abs, abs(float(corr)))
-        return max_abs
+        # Inner pairwise loop shared via evaluator.max_abs_corr (already used the
+        # np.isfinite guard — now the single source for all three call sites).
+        other_stacks = (
+            other.stack(future_stack=True)
+            for other in existing_values.values()
+            if other is not None and not other.empty
+        )
+        return max_abs_corr(new_stack, other_stacks)
 
     # ------------------------------------------------------------------
     # Persistence (v1 §6.2 format)
