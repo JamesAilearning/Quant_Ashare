@@ -688,5 +688,51 @@ class AdjFactorGuardTests(unittest.TestCase):
             self.assertTrue(np.allclose(close[:2], [200.0, 200.0]))
 
 
+class PerYearLoaderPolicyTests(unittest.TestCase):
+    """PR-2: the extracted _load_per_year_parquet preserves each loader's
+    missing-root policy — daily is MANDATORY (raise), adj_factor/daily_basic
+    OPTIONAL (None) — and the concat/dedup/sort tail."""
+
+    def _builder(self, tmp_path: Path) -> QlibBinBuilder:
+        return QlibBinBuilder(
+            tushare_dir=tmp_path,
+            delisted_registry_path=tmp_path / "registry.parquet",
+            output_dir=tmp_path / "provider",
+        )
+
+    def test_missing_daily_root_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(QlibBinBuilderError, "--endpoints daily"):
+                self._builder(Path(tmp))._load_ticker_history("600519.SH")
+
+    def test_missing_adj_factor_root_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self._builder(Path(tmp))._load_adj_factor("600519.SH"))
+
+    def test_missing_daily_basic_root_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self._builder(Path(tmp))._load_daily_basic("600519.SH"))
+
+    def test_no_parquet_for_ticker_returns_none(self) -> None:
+        # root exists but holds no file for this ticker -> None (not a raise).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "daily" / "2020").mkdir(parents=True)
+            self.assertIsNone(self._builder(tmp_path)._load_ticker_history("600519.SH"))
+
+    def test_concat_dedup_sort_across_years(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for year, dates in ((2021, ["20211231"]), (2020, ["20200102", "20200102"])):
+                d = tmp_path / "daily" / str(year)
+                d.mkdir(parents=True)
+                pd.DataFrame(
+                    {"trade_date": dates, "close": [1.0] * len(dates)},
+                ).to_parquet(d / "600519.SH.parquet", index=False)
+            df = self._builder(tmp_path)._load_ticker_history("600519.SH")
+            assert df is not None
+            self.assertEqual(list(df["trade_date"]), ["20200102", "20211231"])
+
+
 if __name__ == "__main__":
     unittest.main()
