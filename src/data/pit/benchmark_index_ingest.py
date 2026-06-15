@@ -110,9 +110,19 @@ def _normalize_index_daily(
     if df.empty:
         raise BenchmarkIngestError(f"{instrument_code}: index_daily frame is empty.")
 
-    iso = pd.to_datetime(
-        df["trade_date"].astype(str), format="%Y%m%d",
-    ).dt.strftime("%Y-%m-%d")
+    try:
+        iso = pd.to_datetime(
+            df["trade_date"].astype(str), format="%Y%m%d",
+        ).dt.strftime("%Y-%m-%d")
+    except (ValueError, TypeError) as exc:
+        # A malformed trade_date is a source-contract violation, not an
+        # internal error — raise the typed error so the CLI maps it to a
+        # stage exit code instead of escaping into the orchestrator (codex
+        # P2 on #243).
+        raise BenchmarkIngestError(
+            f"{instrument_code}: unparseable trade_date in index_daily "
+            f"(expected YYYYMMDD): {exc}"
+        ) from exc
     out = pd.DataFrame({"date": iso})
     close = pd.to_numeric(df["close"], errors="coerce")
     # Every row in ``df`` is a PUBLISHED day, so any NaN here is a corrupt

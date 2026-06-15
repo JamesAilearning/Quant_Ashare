@@ -96,6 +96,15 @@
       benchmark code is never an equity, so the scrub only undoes the legacy
       row (regression: `LegacyAllTxtScrubTests`).
 
+## 2i. Codex round 7 (PR #243)
+- [x] [P2] transform/write failures map to a stage exit, never escape
+      main(): a malformed trade_date now raises BenchmarkIngestError (typed),
+      and the CLI catches `(BenchmarkIngestError, OSError)` → return 1, so an
+      unparseable source or a disk/permission write failure maps to
+      EXIT_REBUILD with the live bundle untouched instead of crashing the
+      in-process orchestrator (regressions: malformed-date module + CLI
+      tests).
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.

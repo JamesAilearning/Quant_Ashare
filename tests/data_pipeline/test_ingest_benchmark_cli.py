@@ -180,6 +180,20 @@ class IngestBenchmarkCliTests(unittest.TestCase):
                 rc = mod.main(["--provider-dir", str(prov)])  # H00300 is default best-effort
             self.assertEqual(rc, 1)  # transform failure is fatal despite best-effort
 
+    def test_malformed_source_returns_stage_code_not_exception(self) -> None:
+        # codex P2 on #243: a malformed fetched frame must map to a numeric
+        # stage exit (the orchestrator runs this in-process), not let an
+        # exception escape main().
+        mod = _load_cli()
+        bad = pd.DataFrame({"trade_date": ["garbage"], "close": [1.0]})
+        client = self._fake_client({"000300.SH": bad})
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            with patch.object(mod.TushareClient, "from_environment", return_value=client):
+                rc = mod.main(["--provider-dir", str(prov),
+                               "--index-map", "000300.SH:SH000300"])
+            self.assertEqual(rc, 1)  # numeric, not a raised ValueError
+
     def test_all_indices_failing_returns_1(self) -> None:
         # Even all-best-effort: zero ingested is a loud failure, not a no-op.
         mod = _load_cli()

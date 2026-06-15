@@ -195,11 +195,17 @@ def main(argv: list[str] | None = None) -> int:
             result = ingest_benchmark_index(
                 frame, instrument_code=qlib_name, provider_dir=args.provider_dir,
             )
-        except BenchmarkIngestError as exc:
+        except (BenchmarkIngestError, OSError) as exc:
+            # Transform/write failures map to a stage exit, never best-effort:
+            # the orchestrator runs this in-process and expects a numeric
+            # return code, so an OSError (disk full / permission) or a
+            # contract error must not escape main() and crash run_daily_update
+            # (codex P2 on #243). A malformed source surfaces as a
+            # BenchmarkIngestError from the transform.
             _logger.error(
                 "Benchmark TRANSFORM/write FAILED for %s (NOT downgraded to "
-                "best-effort — a fetched-but-malformed source or a write bug "
-                "must not silently ship a price-only benchmark): %s",
+                "best-effort — a fetched-but-malformed source or a write "
+                "failure must not silently ship a price-only benchmark): %s",
                 ts_code, exc,
             )
             return 1

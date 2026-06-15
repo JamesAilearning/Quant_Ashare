@@ -293,6 +293,17 @@ class ErrorPathTests(unittest.TestCase):
             with self.assertRaisesRegex(BenchmarkIngestError, "calendar"):
                 ingest_benchmark_index(df, instrument_code="SH000300", provider_dir=prov)
 
+    def test_malformed_trade_date_raises_typed_error(self) -> None:
+        # codex P2 on #243: a malformed trade_date is a source-contract
+        # violation that must surface as BenchmarkIngestError (so the CLI
+        # maps it to a stage exit), not a bare ValueError escaping main().
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            df = pd.DataFrame({"trade_date": ["not-a-date", "2025XX02"],
+                               "close": [1.0, 2.0]})
+            with self.assertRaisesRegex(BenchmarkIngestError, "unparseable trade_date"):
+                ingest_benchmark_index(df, instrument_code="SH000300", provider_dir=prov)
+
     def test_duplicate_dates_fail_loud(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             prov = _bundle(Path(t))
