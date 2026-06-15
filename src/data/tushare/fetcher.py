@@ -75,6 +75,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.core._atomic_io import atomic_write_parquet
 from src.core.logger import get_logger
 from src.data.tushare.client import (
     KIND_NETWORK,
@@ -424,7 +425,7 @@ class TushareFetcher:
             # via config.now (value-injection); production = system date.
             snapshot = self._config.now if self._config.now is not None else date.today()
             df = df.assign(snapshot_date=snapshot.strftime("%Y%m%d"))
-            self._atomic_write_parquet(df, path)
+            atomic_write_parquet(df, path)
             _logger.info("  wrote %d rows to %s", len(df), path)
             written += 1
             rows += len(df)
@@ -456,7 +457,7 @@ class TushareFetcher:
             # in the manifest's coverage fields, not the hole unit.
             self._record_hole("namechange", "file", hole)
             return TushareFetchResult("namechange", 0, 0, skipped=0)
-        self._atomic_write_parquet(df, path)
+        atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult("namechange", 1, len(df))
 
@@ -482,7 +483,7 @@ class TushareFetcher:
             # "file" unit, not the run's range (see _fetch_namechange).
             self._record_hole("suspend_d", "file", hole)
             return TushareFetchResult("suspend_d", 0, 0, skipped=0)
-        self._atomic_write_parquet(df, path)
+        atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult("suspend_d", 1, len(df))
 
@@ -556,7 +557,7 @@ class TushareFetcher:
                 )
             else:
                 df = pd.concat(chunks, ignore_index=True)
-            self._atomic_write_parquet(df, path)
+            atomic_write_parquet(df, path)
             _logger.info(
                 "  wrote %d rows to %s (across %d yearly chunks)",
                 len(df), path, len(chunks),
@@ -762,7 +763,7 @@ class TushareFetcher:
                     continue
                 if df.empty and not self._config.write_empty_placeholders:
                     continue
-                self._atomic_write_parquet(df, path)
+                atomic_write_parquet(df, path)
                 written += 1
                 rows += len(df)
                 # codex P1 round 3: re-check a freshness-rule re-pull against
@@ -1099,12 +1100,3 @@ class TushareFetcher:
             )
         )
 
-    @staticmethod
-    def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
-        """Write parquet via temp file + rename so a killed process cannot
-        leave a half-written file that would later be mis-skipped by
-        existence-check resume."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        df.to_parquet(tmp_path, index=False)
-        tmp_path.replace(path)
