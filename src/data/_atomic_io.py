@@ -2,10 +2,11 @@
 
 Several writers (the tushare fetcher, the delisted-registry builder) need the
 same temp-file + rename dance so a killed process never leaves a half-written
-file that an existence-check resume would later mis-skip. Centralised here — in
-``src.core`` so both ``src.data.tushare`` and ``src.data.pit`` may import it via
-the sanctioned data → core direction — instead of being re-implemented per
-writer.
+file that an existence-check resume would later mis-skip. Centralised here at the
+``src.data`` top level — the data layer's home (AGENTS.md reserves ``src/core/``
+for canonical runtime contracts, not data-ingestion I/O) — so both the
+``src.data.tushare`` and ``src.data.pit`` sub-packages import it instead of
+re-implementing it per writer.
 
 This module owns the GENERIC atomic-write mechanics only. Format-specific
 writers that carry their own cleanup policy (the pickle / JSON / text variants

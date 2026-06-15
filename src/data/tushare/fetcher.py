@@ -75,8 +75,8 @@ from typing import Any
 
 import pandas as pd
 
-from src.core._atomic_io import atomic_write_parquet
 from src.core.logger import get_logger
+from src.data._atomic_io import atomic_write_parquet
 from src.data.tushare.client import (
     KIND_NETWORK,
     KIND_RATE_LIMIT,

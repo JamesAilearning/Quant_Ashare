@@ -78,8 +78,8 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from src.core._atomic_io import atomic_write_parquet
 from src.core.logger import get_logger
+from src.data._atomic_io import atomic_write_parquet
 
 _logger = get_logger(__name__)
 
