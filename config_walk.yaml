@@ -90,6 +90,7 @@ bagging_freq: 5
 ensemble_window: 3
 
 # Backtest
+# Price index; canonical benchmark is total-return SH000300TR (audit E2 — switch at REGEN).
 benchmark_code: "SH000300"
 init_cash: 100000000
 topk: 50

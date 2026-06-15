@@ -95,7 +95,7 @@
 | # | 发现 | 位置 | 严重度 |
 |---|---|---|---|
 | E1 | ST 过滤三路不一致：canonical（config.yaml 无 namechange_path，WARN 即过）/walk-forward（开）/实盘（硬性）→ 单折指标含 ST、两种回测不可比 | `src/core/backtest_runner.py:336-341`；`config.yaml` | P1 |
-| E2 | 基准疑似价格指数 vs 含分红策略收益 → 超额年化虚高 ~2-2.5%（待核 xlsx；全收益应取 H00300） | `scripts/ingest_sh000300_benchmark.py` | P1-SUSPECTED |
+| E2 | ~~基准疑似价格指数 vs 含分红策略收益 → 超额年化虚高 ~2-2.5%~~ **已坐实并修机制（PR-E / openspec 2026-06-12-benchmark-total-return）**：tushare `000300.SH` 2025-12-31 收 4629.9395 与 bundle `sh000300` **逐位吻合**→确为价格指数；全收益 `H00300.CSI` 同期 6826.62（比值 1.474，累计股息拖累 ~47%）。新 `benchmark_index_ingest` + `07_ingest_benchmark` 把价格+全收益指数作为**构建期 staging 产物**摄入（被原子交换保住，修 xlsx-写-live-被抹病灶）；退役 `ingest_sh000300_benchmark`。默认 benchmark_code 暂留 SH000300，翻转 `SH000300TR`+重抓+重基线归 REGEN（预期超额年化下修 ~2-2.5pp）。真数据端到端验证通过 | `src/data/pit/benchmark_index_ingest.py`；`scripts/data_pipeline/07_ingest_benchmark.py` | ~~P1~~ 机制就位（REGEN 激活）|
 | E3 | 行业分类今日快照套历史（归因层） | `src/data/tushare/industry_publisher.py:38-47` | P2 |
 
 ### F. 因子挖掘协议批（GP 重启前置）

@@ -37,7 +37,10 @@ Stage notes:
   sanctioned partial data, the manifest carries the stock_basic hole, and the
   bundle is stamped built-from-holey-fetch — the recommend gate still refuses
   it by default).
-- rebuild order is 02 → 05 → 03 → 04: 05 atomically REPLACES its output dir
+- benchmark ingest (07) runs after 05 against the SAME staging dir, so the CSI
+  300 price + total-return index instruments it appends survive the swap (the
+  retired xlsx ingest wrote into LIVE and the swap erased them — audit E2).
+- rebuild order is 02 → 05 → 03 → 04 → 07: 05 atomically REPLACES its output dir
   when promoting its staging, so the instruments written by 03 / 04 must land
   AFTER it.
 - 06 validates ``<provider>.new`` — never the live bundle — and only a passing
@@ -131,6 +134,7 @@ def _default_runners() -> dict[str, Runner]:
         "bins": lambda argv: _load_script_main("05_build_qlib_bins.py")(argv),
         "membership": lambda argv: _load_script_main("03_resolve_index_membership.py")(argv),
         "universe": lambda argv: _load_script_main("04_build_universe_files.py")(argv),
+        "benchmark": lambda argv: _load_script_main("07_ingest_benchmark.py")(argv),
         "validate": lambda argv: _load_script_main("06_validate_pit_data.py")(argv),
     }
 
@@ -144,6 +148,7 @@ class DailyUpdatePlan:
     bins: list[str] = field(default_factory=list)
     membership: list[str] = field(default_factory=list)
     universe: list[str] = field(default_factory=list)
+    benchmark: list[str] = field(default_factory=list)
     validate: list[str] = field(default_factory=list)
 
 
@@ -195,6 +200,11 @@ def build_plan(
             "--tushare-dir", str(config.tushare_dir),
             "--delisted-registry", str(config.delisted_registry),
             "--output-dir", str(staging),
+        ],
+        benchmark=[
+            "--provider-dir", str(staging),
+            "--start-date", config.start_date,
+            "--end-date", end_date,
         ],
         validate=[
             "--provider-dir", str(staging),
@@ -267,7 +277,8 @@ def run_daily_update(
 
     if config.dry_run:
         _logger.info("[dry-run] daily update plan — nothing will be executed:")
-        for stage in ("fetch", "registry", "bins", "membership", "universe", "validate"):
+        for stage in ("fetch", "registry", "bins", "membership", "universe",
+                      "benchmark", "validate"):
             _logger.info("  [dry-run] %s: %s", stage, " ".join(getattr(plan, stage)))
         state = check_and_repair(config.provider_dir, dry_run=True)
         _logger.info("  [dry-run] startup bundle state: %s", state)
@@ -303,9 +314,12 @@ def run_daily_update(
     if rc != EXIT_OK:
         return rc
 
-    # Stage 3: full rebuild into <provider>.new (02 -> 05 -> 03 -> 04; 05 must
-    # precede 03/04 because its staging-promote REPLACES the output dir).
-    for stage in ("registry", "bins", "membership", "universe"):
+    # Stage 3: full rebuild into <provider>.new (02 -> 05 -> 03 -> 04 -> 07;
+    # 05 must precede 03/04/07 because its staging-promote REPLACES the output
+    # dir, and 07 (benchmark ingest) appends to the all.txt + features that 05
+    # writes, so the atomic swap preserves the benchmark instruments (the
+    # retired xlsx ingest wrote into LIVE and the swap erased them — audit E2).
+    for stage in ("registry", "bins", "membership", "universe", "benchmark"):
         rc = active[stage](getattr(plan, stage))
         if rc != 0:
             _logger.error("Rebuild stage %r FAILED (exit %d); the live bundle "

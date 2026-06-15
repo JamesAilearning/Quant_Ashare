@@ -27,7 +27,7 @@ from src.data_pipeline.daily_update import (  # noqa: E402
 )
 
 TODAY = date(2026, 6, 10)
-STAGES = ("fetch", "registry", "bins", "membership", "universe", "validate")
+STAGES = ("fetch", "registry", "bins", "membership", "universe", "benchmark", "validate")
 
 
 def _mk_bundle(path: Path, marker: str) -> None:
@@ -116,6 +116,11 @@ class HappyPathTests(unittest.TestCase):
             self.assertIn(staging, plan.bins)
             self.assertIn(staging, plan.membership)
             self.assertIn(staging, plan.universe)
+            # 07 benchmark ingest writes into the SAME staging dir (survives swap).
+            self.assertIn("--provider-dir", plan.benchmark)
+            self.assertEqual(
+                plan.benchmark[plan.benchmark.index("--provider-dir") + 1], staging,
+            )
             self.assertIn(staging, plan.validate)  # 06 validates the STAGED dir
 
     def test_fetch_holes_with_override_continues(self) -> None:
