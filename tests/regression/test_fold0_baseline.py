@@ -67,6 +67,18 @@ class Fold0RegressionBaselineTests(unittest.TestCase):
         benchmark = expected.get("config", {}).get("benchmark_code", "SH000300")
         evaluation_start = expected["config"]["test_start"]
         evaluation_end = expected["config"]["test_end"]
+        # PR-F (audit E1): the official single-fold/walk-forward paths
+        # exclude ST/*ST (require_st_mask=True). The expected-metrics
+        # fixture is generated from that ST-EXCLUDED official run, so this
+        # replay MUST apply the same selection-time mask or it would
+        # silently compare an ST-included Top-K against ST-excluded
+        # baselines. The known-good run records its namechange_path in the
+        # fixture config; fall back to QUANT_NAMECHANGE_PATH (the env var
+        # config.yaml / config_walk.yaml expand). require_st_mask=True so a
+        # missing source fails LOUD rather than reverting to ST-included.
+        namechange_path = expected.get("config", {}).get(
+            "namechange_path"
+        ) or os.environ.get("QUANT_NAMECHANGE_PATH")
 
         from src.core.backtest_runner import BacktestRunner
         from src.core.canonical_backtest_contract import (
@@ -116,6 +128,8 @@ class Fold0RegressionBaselineTests(unittest.TestCase):
             topk=topk,
             n_drop=n_drop,
             compute_baselines=False,
+            namechange_path=namechange_path,
+            require_st_mask=True,
         )
 
         tolerance = expected.get("tolerance", {})

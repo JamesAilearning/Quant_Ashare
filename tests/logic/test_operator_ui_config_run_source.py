@@ -101,6 +101,31 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertNotIn("validate_config_keys(preview_config", source)
         self.assertNotIn("JobManager.start(preview_config", source)
 
+    def test_config_dict_injects_namechange_path_for_both_modes(self) -> None:
+        """PR-F (audit E1): the official single-fold AND walk-forward
+        backtest paths now hard-require a non-empty ``namechange_path``
+        (``require_st_mask=True``). The UI emits a STANDALONE job config
+        (no ``extends`` / no loader env-expansion), so the page MUST
+        inject the env-defaulted path into ``config_dict`` BEFORE the
+        mode split's preview/validation — covering pipeline and
+        walk_forward alike — or a UI-launched run RAISES after a full
+        train."""
+
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        self.assertIn("resolve_namechange_path", source)
+        self.assertIn(
+            'config_dict.setdefault("namechange_path", resolve_namechange_path())',
+            source,
+        )
+        # The injection must sit AFTER both mode branches set known_keys
+        # (so both modes are covered) and BEFORE the preview is built.
+        inject_at = source.index('config_dict.setdefault("namechange_path"')
+        wf_branch_at = source.index("known_keys = WALK_FORWARD_KEYS")
+        preview_at = source.index('preview_config = {"mode": mode, **config_dict}')
+        self.assertLess(wf_branch_at, inject_at, "inject must follow the mode split")
+        self.assertLess(inject_at, preview_at, "inject must precede the preview")
+
     def test_preset_yaml_files_exist(self) -> None:
         presets_dir = Path("config/presets")
         for name in ("smoke", "default", "production"):

@@ -641,6 +641,10 @@ class WalkForwardEngine:
             topk=config.topk,
             n_drop=config.n_drop,
             namechange_path=config.namechange_path,
+            # Official walk-forward path: ST exclusion is mandatory (audit
+            # E1 / PR-F) — config_walk.yaml sets namechange_path; a missing
+            # one fails loud instead of silently including ST per fold.
+            require_st_mask=True,
             st_audit_path=str(output_dir / f"fold_{fold_index:02d}_st_mask_audit.csv"),
         )
 
