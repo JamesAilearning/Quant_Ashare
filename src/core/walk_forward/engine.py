@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import bisect
+import hashlib
 import json
+import math
+import os
+import time
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from dateutil.relativedelta import relativedelta
 
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
@@ -77,8 +85,6 @@ class WalkForwardEngine:
             raise WalkForwardError(
                 "Canonical qlib runtime must be initialized before walk-forward."
             )
-
-        from pathlib import Path
 
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +174,6 @@ class WalkForwardEngine:
             # manifests. We capture before the try so a failing fold
             # still gets attributed time (knowing "fold 5 took 8 min
             # before OOMing" is useful diagnostic info).
-            import time  # noqa: PLC0415
             fold_started_at = datetime.now(tz=timezone.utc).isoformat()
             fold_perf_start = time.perf_counter()
             try:
@@ -206,7 +211,6 @@ class WalkForwardEngine:
             # NaN-placeholder branches so failing folds still get
             # attributed wall-clock time. Use ``dataclasses.replace``
             # because ``WalkForwardFold`` is frozen.
-            from dataclasses import replace  # noqa: PLC0415
             fold_duration = time.perf_counter() - fold_perf_start
             fold_finished_at = datetime.now(tz=timezone.utc).isoformat()
             fold = replace(
@@ -294,20 +298,55 @@ class WalkForwardEngine:
         # Best-effort run catalog: append one JSONL line so operators
         # can query historical runs without find + jq. Non-fatal on
         # failure — the per-run report is the authoritative artifact.
-        try:
-            import math
-            from dataclasses import asdict
+        cls._append_walk_forward_catalog_entry(
+            config=config,
+            folds=folds,
+            aggregate=aggregate,
+            aggregate_path=aggregate_path,
+            output_dir=output_dir,
+            started_at=started_at,
+        )
 
-            from src.core.run_catalog import append_run_record
-            from src.core.run_catalog import build_record as build_catalog_record
+        return WalkForwardResult(
+            folds=folds,
+            aggregate_metrics=aggregate,
+            num_folds=len(folds),
+            report_path=str(aggregate_path),
+        )
+
+    # ── real methods ──────────────────────────────────────────────
+
+    @staticmethod
+    def _append_walk_forward_catalog_entry(
+        *,
+        config: WalkForwardConfig,
+        folds: Sequence[WalkForwardFold],
+        aggregate: Mapping[str, Any],
+        aggregate_path: Path,
+        output_dir: Path,
+        started_at: str,
+    ) -> None:
+        """Append one best-effort JSONL line to the run catalog.
+
+        Extracted verbatim from :meth:`run` (T2-2a). Non-fatal by
+        contract: a catalog-append failure must never sink a completed
+        walk-forward run, whose per-run report is the authoritative
+        artifact — hence the broad ``except`` + debug-level log.
+        """
+        try:
+            # Imported here (NOT hoisted to module level) so the catalog stays
+            # FULLY best-effort: an optional catalog-path failure — including an
+            # import error in run_catalog or its deps — must never prevent
+            # importing or running the engine. (codex P2 on #255.)
+            from src.core.run_catalog import append_run_record, build_record
+
             has_any_nan = any(
                 math.isnan(f.ic_1d) or math.isnan(f.ic_5d)
                 for f in folds
             )
-            import hashlib
             config_json = json.dumps(asdict(config), sort_keys=True, default=str)
             fingerprint = hashlib.sha256(config_json.encode()).hexdigest()[:12]
-            record = build_catalog_record(
+            record = build_record(
                 engine="walk_forward",
                 status="partial" if has_any_nan else "ok",
                 started_at=started_at,
@@ -334,15 +373,6 @@ class WalkForwardEngine:
             append_run_record(record)
         except Exception:  # noqa: BLE001
             _logger.debug("Run catalog append skipped.", exc_info=True)
-
-        return WalkForwardResult(
-            folds=folds,
-            aggregate_metrics=aggregate,
-            num_folds=len(folds),
-            report_path=str(aggregate_path),
-        )
-
-    # ── real methods ──────────────────────────────────────────────
 
     @classmethod
     def _generate_windows(
@@ -371,10 +401,10 @@ class WalkForwardEngine:
         (a future handler with no label lookahead) reduces to adjacent
         boundaries.
         """
-        import bisect
-
-        from dateutil.relativedelta import relativedelta
-
+        # Imported at call time (NOT hoisted): test_walk_forward_embargo_gap
+        # patches ``_segment_embargo.LABEL_LOOKAHEAD_DAYS`` and relies on this
+        # read picking up the patched value — a module-level binding would
+        # capture a private copy at import time and silently defeat the patch.
         from src.data._segment_embargo import LABEL_LOOKAHEAD_DAYS
 
         if calendar is None:
@@ -529,8 +559,6 @@ class WalkForwardEngine:
         #   * non-empty  → use this path.
         # The cache itself is opt-in and exception-safe; see
         # ``src/data/_feature_dataset_cache.py``.
-        import os
-
         ds_cache_dir: Path | None = None
         configured = config.dataset_cache_dir
         if configured is None:
