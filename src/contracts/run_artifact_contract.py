@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from src.contracts import _shared_validators as _sv
+
 RUN_ARTIFACT_CONTRACT_NAME = "v2-run-artifact-contract"
 RUN_ARTIFACT_SOURCE_OF_TRUTH = "explicit_run_artifact_with_manifest"
 RUN_ARTIFACT_ALLOWED_SOURCES = (RUN_ARTIFACT_SOURCE_OF_TRUTH,)
@@ -134,15 +136,10 @@ class RunArtifactContract:
 
     @staticmethod
     def _as_date(value: str | None) -> date | None:
-        if value is None:
-            return None
-        text = str(value or "").strip()
-        if not text:
-            return None
-        try:
-            return date.fromisoformat(text)
-        except ValueError as exc:
-            raise RunArtifactContractError(f"Invalid ISO date value: '{text}'.") from exc
+        # Thin wrapper over the shared parser (kept so validate_input_boundary's
+        # call sites and the sibling-contract idiom are unchanged); identical
+        # behaviour — None/empty -> None, malformed -> RunArtifactContractError.
+        return _sv.parse_iso_date(value, error_cls=RunArtifactContractError)
 
     @classmethod
     def validate_input_boundary(cls, request: RunArtifactContractInput) -> None:
@@ -173,20 +170,23 @@ class RunArtifactContract:
         cls.validate_input_boundary(request)
         profile = request.profile
 
-        errors: list[str] = []
-
-        if not profile.artifact_present:
-            errors.append(ISSUE_MISSING_ARTIFACT)
-        if not profile.manifest_present:
-            errors.append(ISSUE_MISSING_MANIFEST)
-
         metadata = profile.metadata or {}
-        present_fields = tuple(
-            key for key in RUN_ARTIFACT_REQUIRED_METADATA_FIELDS if str(metadata.get(key, "")).strip()
+
+        errors: list[str] = []
+        errors.extend(
+            _sv.check_presence(
+                profile,
+                missing_artifact_code=ISSUE_MISSING_ARTIFACT,
+                missing_manifest_code=ISSUE_MISSING_MANIFEST,
+            )
         )
-        missing_fields = tuple(key for key in RUN_ARTIFACT_REQUIRED_METADATA_FIELDS if key not in present_fields)
-        if missing_fields:
-            errors.append(ISSUE_MISSING_REPRO_METADATA)
+
+        present_fields, missing_fields, metadata_errors = _sv.check_metadata_fields(
+            profile,
+            RUN_ARTIFACT_REQUIRED_METADATA_FIELDS,
+            schema_mismatch_code=ISSUE_MISSING_REPRO_METADATA,
+        )
+        errors.extend(metadata_errors)
 
         if profile.has_schema_mismatch:
             errors.append(ISSUE_SCHEMA_MISMATCH)
@@ -209,8 +209,8 @@ class RunArtifactContract:
         elif reference is not None and produced_date is not None and produced_date > reference:
             errors.append(ISSUE_TEMPORAL_PROVENANCE_ANOMALY)
 
-        unique_errors = tuple(dict.fromkeys(errors))
-        health = "error" if unique_errors else "ok"
+        unique_errors = _sv.dedupe(errors)
+        health = _sv.aggregate_health(unique_errors, ())
 
         return RunArtifactContractStatus(
             contract_name=RUN_ARTIFACT_CONTRACT_NAME,
