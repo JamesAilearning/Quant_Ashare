@@ -37,6 +37,22 @@ from src.core.logger import get_logger
 _logger = get_logger(__name__)
 
 
+def ts_to_iso_date(ts: Any) -> str:
+    """A qlib datetime-level value as an ISO ``YYYY-MM-DD`` string.
+
+    The PARITY CONTRACT used everywhere a ``(date, instrument)`` key must match
+    ``MicrostructureMaskResult.masked``: a ``pd.Timestamp`` / ``datetime`` yields
+    ``.date().isoformat()``; anything else (a ``date``, a ``numpy.datetime64``)
+    falls back to its ``str(...)[:10]`` prefix. Defined ONCE so a tweak can never
+    drift between the mask builder, the predictions filter, the T+1 execution
+    remap, and the recommend freshness check — a silent mismatch there would
+    break frozenset membership. NOTE: returns a STRING; the separate
+    list-of-``date`` calendar idiom (``ts.date() if … else
+    date.fromisoformat(…)``) is intentionally NOT this helper.
+    """
+    return ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
+
+
 class MicrostructureMaskError(RuntimeError):
     """Raised when the mask cannot be computed (bad qlib fetch,
     malformed OHLCV, etc.). Callers in the canonical path catch
@@ -225,16 +241,12 @@ def compute_unavailable_mask(
     for i in range(len(df)):
         if sus_values[i]:
             ts = date_level[i]
-            date_iso = (
-                ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
-            )
+            date_iso = ts_to_iso_date(ts)
             masked_pairs.append((date_iso, str(inst_level[i])))
             n_suspended += 1
         elif one_values[i]:
             ts = date_level[i]
-            date_iso = (
-                ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
-            )
+            date_iso = ts_to_iso_date(ts)
             masked_pairs.append((date_iso, str(inst_level[i])))
             n_one_price += 1
 
@@ -293,9 +305,7 @@ def apply_mask_to_predictions(
     n_dropped = 0
     for i in range(len(predictions)):
         ts = date_level[i]
-        date_iso = (
-            ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
-        )
+        date_iso = ts_to_iso_date(ts)
         if (date_iso, str(inst_level[i])) in pair_set:
             keep.append(False)
             n_dropped += 1

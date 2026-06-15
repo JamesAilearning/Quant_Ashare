@@ -21,6 +21,7 @@ from src.core.microstructure_mask import (  # noqa: E402
     MicrostructureMaskResult,
     apply_mask_to_predictions,
     compute_unavailable_mask,
+    ts_to_iso_date,
 )
 
 
@@ -358,6 +359,42 @@ class ApplyMaskToPredictionsTests(unittest.TestCase):
             MicrostructureMaskError, "MultiIndex"
         ):
             apply_mask_to_predictions(preds, mask)
+
+
+class TsToIsoDateTests(unittest.TestCase):
+    """The shared parity helper must yield the SAME YYYY-MM-DD string for every
+    qlib datetime-level shape, so mask keys and prediction-index dates match."""
+
+    def test_pandas_timestamp(self) -> None:
+        self.assertEqual(
+            ts_to_iso_date(pd.Timestamp("2026-06-10 09:30:00")), "2026-06-10",
+        )
+
+    def test_python_datetime(self) -> None:
+        from datetime import datetime
+        self.assertEqual(ts_to_iso_date(datetime(2026, 6, 10, 15, 0)), "2026-06-10")
+
+    def test_python_date(self) -> None:
+        from datetime import date as _date
+        # date has no .date() method -> str()[:10] fallback, still YYYY-MM-DD.
+        self.assertEqual(ts_to_iso_date(_date(2026, 6, 10)), "2026-06-10")
+
+    def test_numpy_datetime64(self) -> None:
+        import numpy as np
+        self.assertEqual(
+            ts_to_iso_date(np.datetime64("2026-06-10T09:30")), "2026-06-10",
+        )
+
+    def test_all_shapes_agree(self) -> None:
+        from datetime import datetime
+
+        import numpy as np
+        outs = {
+            ts_to_iso_date(pd.Timestamp("2026-06-10")),
+            ts_to_iso_date(datetime(2026, 6, 10)),
+            ts_to_iso_date(np.datetime64("2026-06-10")),
+        }
+        self.assertEqual(outs, {"2026-06-10"})  # parity across shapes
 
 
 if __name__ == "__main__":

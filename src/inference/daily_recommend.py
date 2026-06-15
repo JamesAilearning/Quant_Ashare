@@ -39,6 +39,7 @@ from src.core.logger import get_logger
 from src.core.microstructure_mask import (
     MicrostructureMaskError,
     compute_unavailable_mask,
+    ts_to_iso_date,
 )
 from src.core.qlib_runtime import (
     QlibRuntimeConfig,
@@ -733,10 +734,7 @@ def _scores_to_inst_map(
         # emitted yesterday's list labelled as today's.
         if expected_date is not None and datetimes:
             actual = next(iter(datetimes))
-            actual_iso = (
-                actual.date().isoformat() if hasattr(actual, "date")
-                else str(actual)[:10]
-            )
+            actual_iso = ts_to_iso_date(actual)
             if actual_iso != expected_date:
                 raise DailyRecommendationError(
                     f"prediction is stamped {actual_iso} but the requested "
