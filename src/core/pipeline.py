@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
-from src.core._hashing import sha256_canonical
-from src.core._json_utils import _sanitize_for_json
+from src.core._json_utils import _sanitize_for_json, sha256_canonical
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,

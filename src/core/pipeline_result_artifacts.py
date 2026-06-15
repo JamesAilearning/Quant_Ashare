@@ -24,8 +24,7 @@ import yaml
 if TYPE_CHECKING:
     import pandas as pd
 
-from src.core._hashing import sha256_canonical
-from src.core._json_utils import _sanitize_for_json
+from src.core._json_utils import _sanitize_for_json, sha256_canonical
 from src.core.canonical_backtest_contract import CanonicalBacktestOutput
 
 PIPELINE_RESULT_ARTIFACT_SCHEMA_VERSION = 1
