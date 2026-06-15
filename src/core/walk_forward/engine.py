@@ -52,9 +52,6 @@ from src.core.walk_forward._resume import (
 )
 from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.aggregate import (
-    attribution_section_for_fold,
-    build_aggregate_report,
-    build_fold_report,
     compute_aggregate,
     extract_cost_metrics,
     write_aggregate_report,
@@ -855,98 +852,3 @@ class WalkForwardEngine:
             return None, f"unexpected_error: {type(exc).__name__}: {exc}"
 
         return result, None
-
-    # ── thin wrappers ─────────────────────────────────────────────
-
-    @classmethod
-    def _build_aggregate_report(
-        cls,
-        *,
-        config: WalkForwardConfig,
-        folds: list[WalkForwardFold],
-        aggregate_metrics: Mapping[str, float],
-    ) -> dict[str, Any]:
-        """Backward-compat facade — see :func:`aggregate.build_aggregate_report`."""
-        return build_aggregate_report(
-            config=config, folds=folds,
-            aggregate_metrics=aggregate_metrics,
-        )
-
-    @classmethod
-    def _write_aggregate_report(
-        cls,
-        *,
-        path: Path,
-        config: WalkForwardConfig,
-        folds: list[WalkForwardFold],
-        aggregate_metrics: Mapping[str, float],
-    ) -> None:
-        """Backward-compat facade — see :func:`aggregate.write_aggregate_report`."""
-        return write_aggregate_report(
-            path=path, config=config, folds=folds,
-            aggregate_metrics=aggregate_metrics,
-        )
-
-    @classmethod
-    def _compute_aggregate(
-        cls, folds: list[WalkForwardFold], *, seed: int = 42,
-    ) -> dict[str, Any]:
-        """Backward-compat facade — see :func:`aggregate.compute_aggregate`."""
-        return compute_aggregate(folds, seed=seed)
-
-    @classmethod
-    def _maybe_apply_ensemble(
-        cls,
-        *,
-        current_predictions: Any,
-        current_dataset: Any,
-        prior_model_paths: Sequence[Any],
-        ensemble_window: int,
-        current_fold_index: int,
-    ) -> tuple[Any, dict[str, Any]]:
-        """Backward-compat facade — see :func:`ensemble.apply_ensemble`."""
-        return apply_ensemble(
-            current_predictions=current_predictions,
-            current_dataset=current_dataset,
-            prior_model_paths=prior_model_paths,
-            ensemble_window=ensemble_window,
-            current_fold_index=current_fold_index,
-        )
-
-    @staticmethod
-    def _write_prediction_artifact(path: Path, predictions: Any) -> str:
-        """Backward-compat facade — see :func:`ensemble.write_prediction_artifact`."""
-        return write_prediction_artifact(path, predictions)
-
-    @classmethod
-    def _write_positions(
-        cls, path: Path, positions: Mapping[str, Mapping[str, float]],
-    ) -> None:
-        """Backward-compat facade — see :func:`aggregate.write_positions`."""
-        write_positions(path, positions)
-
-    @classmethod
-    def _build_fold_report(cls, **kwargs: Any) -> dict[str, Any]:
-        """Backward-compat facade — see :func:`aggregate.build_fold_report`."""
-        return build_fold_report(**kwargs)
-
-    @classmethod
-    def _attribution_section_for_fold(
-        cls,
-        attribution_result: AttributionResult | None,
-        skipped_reason: str | None,
-    ) -> dict[str, Any]:
-        """Backward-compat facade — see :func:`aggregate.attribution_section_for_fold`."""
-        return attribution_section_for_fold(attribution_result, skipped_reason)
-
-    @classmethod
-    def _write_fold_report(cls, **kwargs: Any) -> None:
-        """Backward-compat facade — see :func:`aggregate.write_fold_report`."""
-        write_fold_report(**kwargs)
-
-    @staticmethod
-    def _extract_cost_metrics(
-        risk_analysis: Mapping[str, Any], fold_index: int,
-    ) -> tuple[float, float, float]:
-        """Backward-compat facade — see :func:`aggregate.extract_cost_metrics`."""
-        return extract_cost_metrics(risk_analysis, fold_index)
