@@ -486,6 +486,10 @@ class Pipeline:
             topk=config.topk,
             n_drop=config.n_drop,
             namechange_path=config.namechange_path,
+            # Official single-fold path: ST exclusion is mandatory, aligned
+            # with walk-forward + live recommend — a missing namechange_path
+            # fails loud rather than silently including ST (audit E1 / PR-F).
+            require_st_mask=True,
             # Per-run dir (output/runs/{ts}_{uniq}_{fp}), NOT config.output_dir —
             # so the audit lands with the run's other artifacts and a re-run
             # cannot overwrite it (Codex P2 on #223).

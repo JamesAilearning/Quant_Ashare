@@ -94,7 +94,7 @@
 
 | # | 发现 | 位置 | 严重度 |
 |---|---|---|---|
-| E1 | ST 过滤三路不一致：canonical（config.yaml 无 namechange_path，WARN 即过）/walk-forward（开）/实盘（硬性）→ 单折指标含 ST、两种回测不可比 | `src/core/backtest_runner.py:336-341`；`config.yaml` | P1 |
+| E1 | ~~ST 过滤三路不一致：canonical（config.yaml 无 namechange_path，WARN 即过）/walk-forward（开）/实盘（硬性）→ 单折指标含 ST、两种回测不可比~~ **已修（PR-F / openspec 2026-06-15-st-single-fold-consistency）**：config.yaml 加 `namechange_path: ${QUANT_NAMECHANGE_PATH:-…}`（与 config_walk 对等）启用单折 ST 掩码；`BacktestRunner.run` 加 `require_st_mask`，pipeline + WF engine 两个官方路径传 True → 缺失/空即硬拒绝（WARN-pass 仅保留给 raw/research 调用者）；加 config.yaml 治理钉（与 config_walk 对等）。单折 fold0 基线随之变（ST 排除），归 REGEN 重生 | `src/core/backtest_runner.py`（require_st_mask）；`config.yaml`；`src/core/pipeline.py`/`walk_forward/engine.py`；`tests/governance/test_config_st_mask_enabled.py` | ~~P1~~ 关闭（REGEN 重基线）|
 | E2 | ~~基准疑似价格指数 vs 含分红策略收益 → 超额年化虚高 ~2-2.5%~~ **已坐实并修机制（PR-E / openspec 2026-06-12-benchmark-total-return）**：tushare `000300.SH` 2025-12-31 收 4629.9395 与 bundle `sh000300` **逐位吻合**→确为价格指数；全收益 `H00300.CSI` 同期 6826.62（比值 1.474，累计股息拖累 ~47%）。新 `benchmark_index_ingest` + `07_ingest_benchmark` 把价格+全收益指数作为**构建期 staging 产物**摄入（被原子交换保住，修 xlsx-写-live-被抹病灶）；退役 `ingest_sh000300_benchmark`。默认 benchmark_code 暂留 SH000300，翻转 `SH000300TR`+重抓+重基线归 REGEN（预期超额年化下修 ~2-2.5pp）。真数据端到端验证通过 | `src/data/pit/benchmark_index_ingest.py`；`scripts/data_pipeline/07_ingest_benchmark.py` | ~~P1~~ 机制就位（REGEN 激活）|
 | E3 | 行业分类今日快照套历史（归因层） | `src/data/tushare/industry_publisher.py:38-47` | P2 |
 

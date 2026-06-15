@@ -54,6 +54,62 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(WALK_FORWARD_KEYS, expected)
 
 
+class NamechangePathResolutionTests(unittest.TestCase):
+    """PR-F: the UI must inject a concrete ``namechange_path`` so the
+    official backtest paths (``require_st_mask=True``) don't RAISE after
+    a full train on a UI-launched job (audit E1)."""
+
+    def test_falls_back_to_default_when_env_unset(self) -> None:
+        import os
+        from unittest import mock
+
+        from web.operator_ui.config_forms import (
+            DEFAULT_NAMECHANGE_PATH,
+            resolve_namechange_path,
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QUANT_NAMECHANGE_PATH", None)
+            self.assertEqual(resolve_namechange_path(), DEFAULT_NAMECHANGE_PATH)
+
+    def test_env_override_wins(self) -> None:
+        import os
+        from unittest import mock
+
+        from web.operator_ui.config_forms import resolve_namechange_path
+
+        with mock.patch.dict(
+            os.environ, {"QUANT_NAMECHANGE_PATH": "/custom/nc.parquet"}
+        ):
+            self.assertEqual(resolve_namechange_path(), "/custom/nc.parquet")
+
+    def test_blank_env_falls_back_to_default(self) -> None:
+        import os
+        from unittest import mock
+
+        from web.operator_ui.config_forms import (
+            DEFAULT_NAMECHANGE_PATH,
+            resolve_namechange_path,
+        )
+
+        with mock.patch.dict(os.environ, {"QUANT_NAMECHANGE_PATH": "   "}):
+            self.assertEqual(resolve_namechange_path(), DEFAULT_NAMECHANGE_PATH)
+
+    def test_resolved_path_is_non_empty_and_a_known_pipeline_key(self) -> None:
+        """The injected key must validate against PIPELINE_KEYS /
+        WALK_FORWARD_KEYS or ``validate_config_keys`` would reject the
+        UI job config."""
+        from web.operator_ui.config_forms import (
+            PIPELINE_KEYS,
+            WALK_FORWARD_KEYS,
+            resolve_namechange_path,
+        )
+
+        self.assertTrue(resolve_namechange_path().strip())
+        self.assertIn("namechange_path", PIPELINE_KEYS)
+        self.assertIn("namechange_path", WALK_FORWARD_KEYS)
+
+
 class LazyImportTests(unittest.TestCase):
     """Regression for bug.md P2-2: ``config_forms`` previously
     triggered ``src.core.pipeline`` / ``src.core.walk_forward`` imports

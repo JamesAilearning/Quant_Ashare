@@ -14,8 +14,31 @@ field-name sets, not the config classes themselves;
 
 from __future__ import annotations
 
+import os
 from dataclasses import fields
 from typing import Any
+
+# Parity with config.yaml / config_walk.yaml's
+# ``${QUANT_NAMECHANGE_PATH:-…}`` default. The official single-fold AND
+# walk-forward backtest paths now hard-require a non-empty
+# ``namechange_path`` (``require_st_mask=True`` in ``src/core/pipeline.py``
+# and ``src/core/walk_forward/engine.py``), so a UI job that omits it would
+# RAISE after full training. The UI writes a STANDALONE job config (no
+# ``extends`` / no loader env-expansion), so the path must be resolved to a
+# concrete literal here at build time. (PR-F, audit E1.)
+DEFAULT_NAMECHANGE_PATH = "D:/qlib_data/tushare_raw/all_namechanges.parquet"
+
+
+def resolve_namechange_path() -> str:
+    """Return the operator's ``namechange_path``, env-overridable.
+
+    Reads ``QUANT_NAMECHANGE_PATH`` (the same env var config.yaml /
+    config_walk.yaml expand), falling back to :data:`DEFAULT_NAMECHANGE_PATH`.
+    Returns a concrete literal because the UI emits a standalone job config
+    the runner does not run through the ``${VAR:-default}`` YAML loader.
+    """
+    value = os.environ.get("QUANT_NAMECHANGE_PATH", "").strip()
+    return value or DEFAULT_NAMECHANGE_PATH
 
 
 def validate_provider_uri(uri: str) -> None:

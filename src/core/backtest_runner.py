@@ -108,6 +108,7 @@ class BacktestRunner:
         risk_constraints: MinimalRiskConstraints | None = None,
         namechange_path: str | None = None,
         st_audit_path: str | None = None,
+        require_st_mask: bool = False,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -461,11 +462,31 @@ class BacktestRunner:
         # namechange snapshot) get DIFFERENT fingerprints despite different
         # official metrics (Codex P2 on #223).
         st_mask_provenance: dict[str, Any] = {"namechange_path": None}
-        if namechange_path is None:
+        if namechange_path is None or not str(namechange_path).strip():
+            # OFFICIAL paths (the single-fold pipeline and the walk-forward
+            # engine) pass require_st_mask=True so a missing namechange_path
+            # is a HARD error, aligning the single-fold backtest with the
+            # walk-forward and live recommend paths, which exclude ST (audit
+            # E1 / PR-F). The WARN-pass survives ONLY for raw research/unit
+            # callers that deliberately run an ST-included universe — the
+            # backward-compatible default the governance tests rely on.
+            if require_st_mask:
+                raise BacktestRunnerError(
+                    "BacktestRunner.run: ST mask is REQUIRED on the official "
+                    "backtest path but no namechange_path was supplied. The "
+                    "single-fold backtest must exclude ST/*ST names exactly "
+                    "like the walk-forward and live recommend paths — set "
+                    "namechange_path (config.yaml: "
+                    "${QUANT_NAMECHANGE_PATH:-…/all_namechanges.parquet}). "
+                    "Refusing to emit official metrics over an ST-included "
+                    "universe (audit E1 / PR-F)."
+                )
             _logger.warning(
                 "BacktestRunner: ST mask DISABLED (no namechange_path) — this "
                 "backtest's universe still includes ST/*ST names. Set "
-                "namechange_path to exclude them (C2-d PR2)."
+                "namechange_path to exclude them (C2-d PR2). This WARN-pass is "
+                "for research/raw callers only; official runs pass "
+                "require_st_mask=True and would fail here."
             )
         else:
             try:

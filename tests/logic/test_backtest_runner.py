@@ -1293,6 +1293,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         logger_records: list | None = None,
         predictions=None,
         raise_runner_errors: bool = False,
+        run_kwargs: dict | None = None,
     ) -> object:
         """Run BacktestRunner.run with a patched mask helper and
         a patched ``TopkDropoutStrategy`` that records the
@@ -1379,6 +1380,7 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
                             else self._make_predictions_panel()
                         ),
                         topk=2, n_drop=1,
+                        **(run_kwargs or {}),
                     )
                 except Exception as exc:
                     # Run is intentionally stopped at qlib.backtest;
@@ -1549,6 +1551,37 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         self.assertEqual(
             mask_warns, [],
             f"Empty mask should not produce a WARN; got {mask_warns}",
+        )
+
+    def test_require_st_mask_true_rejects_missing_namechange(self) -> None:
+        """PR-F (audit E1): the official paths pass require_st_mask=True, so a
+        missing namechange_path is a HARD error — the single-fold backtest
+        must exclude ST exactly like walk-forward + live, never silently run
+        an ST-included universe."""
+        from src.core.backtest_runner import BacktestRunnerError
+
+        with self.assertRaisesRegex(BacktestRunnerError, "ST mask is REQUIRED"):
+            self._drive_until_strategy_construction(
+                frozenset(),
+                raise_runner_errors=True,
+                run_kwargs={"require_st_mask": True, "namechange_path": None},
+            )
+
+    def test_require_st_mask_false_keeps_warn_pass(self) -> None:
+        """The WARN-pass survives for raw research/unit callers (the
+        backward-compatible default the governance tests rely on): a missing
+        namechange_path with require_st_mask=False does NOT raise and emits
+        the ST-disabled WARN."""
+        records: list = []
+        signal = self._drive_until_strategy_construction(
+            frozenset(), logger_records=records,
+            run_kwargs={"require_st_mask": False, "namechange_path": None},
+        )
+        self.assertIsNotNone(signal)  # reached strategy construction (no raise)
+        msgs = [r.getMessage() for r in records if r.levelno >= 30]
+        self.assertTrue(
+            any("ST mask DISABLED" in m for m in msgs),
+            f"expected the ST-disabled WARN; got {msgs}",
         )
 
     def test_warn_summarises_per_regime_counts(self) -> None:

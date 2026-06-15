@@ -65,6 +65,18 @@ bagging_freq: 5
 benchmark_code: "SH000300"
 init_cash: 100000000
 commission_rate: 0.0005
+
+# PIT historical ST/*ST exclusion (C2-d PR2), enabled on the SINGLE-FOLD
+# path to match walk-forward + live recommend (audit E1 / PR-F). The
+# backtest drops names that were ST/*ST on each execution day
+# (reconstructed point-in-time from the tushare namechange table; see
+# src/data/st_history.py). Env-overridable via QUANT_NAMECHANGE_PATH
+# (default below = current path), matching config_walk.yaml. The official
+# single-fold path passes require_st_mask=True, so a missing/blank value
+# fails loud rather than silently including ST. Enabling this changes the
+# single-fold (fold0) baseline vs the includes-ST one — regenerate it at
+# REGEN via RUN_E2E (tests/regression/fixtures/README.md).
+namechange_path: "${QUANT_NAMECHANGE_PATH:-D:/qlib_data/tushare_raw/all_namechanges.parquet}"
 # CN stamp tax: omit ``stamp_tax_schedule`` to inherit
 # CN_STAMP_TAX_SCHEDULE_DEFAULT, which models the 2023-08-28 reform
 # (0.1% → 0.05% sell-only). This window (2018-2025) crosses the

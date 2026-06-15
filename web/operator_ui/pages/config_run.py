@@ -14,6 +14,7 @@ import yaml
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
     WALK_FORWARD_KEYS,
+    resolve_namechange_path,
     validate_config_keys,
     validate_provider_uri,
 )
@@ -566,6 +567,14 @@ with form_col:
             "ensemble_window": ensemble_window,
         })
         known_keys = WALK_FORWARD_KEYS
+
+    # ST/*ST exclusion parity (PR-F, audit E1): both official backtest paths
+    # now hard-require a non-empty namechange_path (require_st_mask=True), and
+    # this UI emits a STANDALONE job config the runner does not env-expand — so
+    # without this the UI run would RAISE after a full train. Operator overrides
+    # via QUANT_NAMECHANGE_PATH. setdefault so an explicit value (future widget)
+    # still wins.
+    config_dict.setdefault("namechange_path", resolve_namechange_path())
 
     preview_config = {"mode": mode, **config_dict}
     yaml_text = yaml.dump({k: v for k, v in preview_config.items() if v != ""}, default_flow_style=False, allow_unicode=True)
