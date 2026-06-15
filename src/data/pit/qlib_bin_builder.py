@@ -130,6 +130,7 @@ BUNDLE_REQUIRED_ENDPOINTS: tuple[str, ...] = ("stock_basic", "daily", "adj_facto
 
 
 # Consolidated into ``src.data.pit._common`` (bug.md P2-4).
+from src.data.pit._common import QLIB_OPEN_END_DATE  # noqa: E402
 from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
 from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 
@@ -635,7 +636,7 @@ class QlibBinBuilder:
             ticker = _to_qlib_ticker(str(r["ts_code"]))
             ld = str(r.get("list_date", "")) if "list_date" in r else ""
             if len(ld) == 8 and ld.isdigit():
-                rows.append((ticker, f"{ld[:4]}-{ld[4:6]}-{ld[6:8]}", "2099-12-31"))
+                rows.append((ticker, f"{ld[:4]}-{ld[4:6]}-{ld[6:8]}", QLIB_OPEN_END_DATE))
             # Active rows with malformed list_date silently fall through —
             # the universe builder Phase B.1 (when run separately) would
             # surface this loudly; here we are defensive.
