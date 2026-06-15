@@ -8,7 +8,6 @@ analyzers, or metric helpers: official metric values are copied from
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import platform
@@ -25,7 +24,7 @@ import yaml
 if TYPE_CHECKING:
     import pandas as pd
 
-from src.core._json_utils import _sanitize_for_json
+from src.core._json_utils import _sanitize_for_json, sha256_canonical
 from src.core.canonical_backtest_contract import CanonicalBacktestOutput
 
 PIPELINE_RESULT_ARTIFACT_SCHEMA_VERSION = 1
@@ -156,8 +155,7 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return sha256_canonical(payload)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
