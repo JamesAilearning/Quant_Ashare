@@ -1866,6 +1866,62 @@ class FoldFailureContinuationTests(unittest.TestCase):
         self.assertTrue(captured_priors[3][0][1].endswith("model_fold0.pkl"))
         self.assertTrue(captured_priors[3][1][1].endswith("model_fold2.pkl"))
 
+    def test_aggregate_results_log_survives_nested_timing_dict(self) -> None:
+        """Regression (refactor-audit PR-0): the AGGREGATE RESULTS log formatted
+        EVERY aggregate value with %.4f, but ``aggregate['timing']`` is a dict —
+        ``'%.4f' % {...}`` raises ``TypeError: must be real number, not dict``.
+        Normally swallowed by ``logging.Handler.handleError`` (stderr noise), it
+        became a hard CI failure under any handler that surfaces format errors
+        (and under certain collection orders). Pin that a run completes with such
+        a strict handler attached to the engine logger.
+        """
+        import logging
+        import tempfile
+
+        from src.core.walk_forward import WalkForwardFold
+
+        class _StrictHandler(logging.Handler):
+            # emit() formats the record (getMessage -> msg % args) WITHOUT the
+            # usual try/except, so a malformed record propagates instead of being
+            # swallowed — exactly what surfaced the bug on CI.
+            def emit(self, record: logging.LogRecord) -> None:
+                self.format(record)
+
+        def ok_fold(*, fold_index, train_start, train_end, valid_start,
+                    valid_end, test_start, test_end, prior_model_paths, **_):
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period=f"{train_start} ~ {train_end}",
+                valid_period=f"{valid_start} ~ {valid_end}",
+                test_period=f"{test_start} ~ {test_end}",
+                ic_1d=0.01, ic_5d=0.02, annualized_return=0.05,
+                max_drawdown=-0.05, information_ratio=0.5,
+                prediction_shape=(100,),
+            )
+
+        engine_logger = logging.getLogger("src.core.walk_forward.engine")
+        handler = _StrictHandler()
+        engine_logger.addHandler(handler)
+        try:
+            with tempfile.TemporaryDirectory() as tmp, patch(
+                "src.core.walk_forward.engine.is_canonical_qlib_initialized",
+                return_value=True,
+            ), patch.object(
+                WalkForwardEngine, "_run_single_fold", side_effect=ok_fold,
+            ), patch.object(
+                WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
+            ):
+                config = WalkForwardConfig(
+                    overall_start="2022-01-01", overall_end="2025-06-30",
+                    train_months=24, valid_months=3, test_months=3,
+                    step_months=3, ensemble_window=1, output_dir=tmp,
+                )
+                # Must NOT raise: the AGGREGATE RESULTS log reaches the nested
+                # ``timing`` dict, which %.4f cannot format.
+                WalkForwardEngine.run(config)
+        finally:
+            engine_logger.removeHandler(handler)
+
 
 class CLIUnknownConfigKeyTests(unittest.TestCase):
     """``scripts/run_walk_forward.py`` must hard-fail on unknown YAML

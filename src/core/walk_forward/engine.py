@@ -270,7 +270,16 @@ class WalkForwardEngine:
         _logger.info("AGGREGATE RESULTS")
         _logger.info("=" * 60)
         for key, val in aggregate.items():
-            _logger.info("  %s: %.4f", key, val)
+            # ``aggregate`` mixes scalar metrics with a nested ``timing`` dict
+            # (see compute_aggregate). %.4f only applies to real numbers — a dict
+            # there raises "must be real number, not dict" inside the log record's
+            # getMessage(), normally swallowed to stderr but surfaced as a hard
+            # failure under any strict log handler. Format scalars as before; log
+            # anything else (the timing sub-dict) with %s.
+            if isinstance(val, (int, float)):
+                _logger.info("  %s: %.4f", key, val)
+            else:
+                _logger.info("  %s: %s", key, val)
         _logger.info("=" * 60)
 
         aggregate_path = output_dir / "walk_forward_report.json"
