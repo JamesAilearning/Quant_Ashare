@@ -258,22 +258,37 @@ def _register_benchmark(
             )
 
 
-def ingest_benchmark_index(
+@dataclass(frozen=True)
+class PreparedBenchmark:
+    """A fully VALIDATED, ready-to-write benchmark — no provider mutation yet.
+
+    ``prepare_benchmark_index`` runs every fail-loud check (parseable dates,
+    no duplicates, no null published close, calendar alignment) and computes
+    the final bin arrays in memory. Only ``commit_prepared`` touches the
+    provider. Splitting the two lets a caller validate ALL indices before
+    writing ANY, so a later index's failure cannot leave the live bundle in
+    a mixed benchmark state (codex P2 on #243)."""
+
+    instrument_code: str
+    start_index: int
+    fields: dict[str, np.ndarray[Any, Any]]  # field -> ffilled value array
+    first_date: str
+    last_date: str
+    n_gap_days: int
+    ohlc_degenerate: bool
+
+
+def prepare_benchmark_index(
     index_daily: pd.DataFrame,
     *,
     instrument_code: str,
     provider_dir: Path,
-) -> BenchmarkIngestResult:
-    """Write one benchmark index into ``provider_dir`` as a qlib instrument.
+) -> PreparedBenchmark:
+    """Validate + compute one benchmark's bins IN MEMORY (no provider write).
 
-    ``index_daily`` is a tushare ``index_daily`` frame (``trade_date`` +
-    ``close`` required; OHLC/``vol`` optional). ``instrument_code`` is the
-    qlib instrument name (e.g. ``SH000300``); bins land in
-    ``features/<lower>/``. ``provider_dir`` is the bundle to write into —
-    pass the STAGING dir during a rebuild so the atomic swap preserves the
-    benchmark (the legacy xlsx path wrote into LIVE and the swap erased it).
-    Calendar + registry are read from ``provider_dir`` (built by step 05).
-    """
+    Reads the calendar from ``provider_dir`` and runs every fail-loud check;
+    raises :class:`BenchmarkIngestError` on any contract violation. Does NOT
+    write features or registry — call :func:`commit_prepared` for that."""
     calendar = _load_calendar(provider_dir)
     data, ohlc_degenerate = _normalize_index_daily(index_daily, instrument_code)
     start_index, aligned = _align_to_calendar(data, calendar, instrument_code)
@@ -287,29 +302,68 @@ def ingest_benchmark_index(
     for field in (*_PRICE_FIELDS, "volume"):
         aligned[field] = aligned[field].ffill()
 
-    features_dir = provider_dir / "features" / instrument_code.lower()
-    features_dir.mkdir(parents=True, exist_ok=True)
-    for field in _PRICE_FIELDS:
-        _write_bin(
-            features_dir / f"{field}.day.bin", start_index,
-            aligned[field].to_numpy(dtype="float64"),
-        )
-    _write_bin(
-        features_dir / "volume.day.bin", start_index,
-        aligned["volume"].to_numpy(dtype="float64"),
-    )
-    # No factor bin: equities in this bundle carry none, and the benchmark
-    # read path (report.py: $close/Ref($close,1)-1) never adjusts by factor.
-
-    first_date = aligned["date"].iloc[0]
-    last_date = aligned["date"].iloc[-1]
-    _register_benchmark(provider_dir, instrument_code, first_date, last_date)
-
-    return BenchmarkIngestResult(
+    fields = {
+        field: aligned[field].to_numpy(dtype="float64")
+        for field in (*_PRICE_FIELDS, "volume")
+    }
+    return PreparedBenchmark(
         instrument_code=instrument_code,
-        first_date=first_date,
-        last_date=last_date,
-        n_trading_days=len(aligned),
+        start_index=start_index,
+        fields=fields,
+        first_date=aligned["date"].iloc[0],
+        last_date=aligned["date"].iloc[-1],
         n_gap_days=n_gap,
         ohlc_degenerate=ohlc_degenerate,
     )
+
+
+def commit_prepared(
+    prepared: PreparedBenchmark, *, provider_dir: Path,
+) -> BenchmarkIngestResult:
+    """Write a PREPARED benchmark's bins + registry into ``provider_dir``."""
+    features_dir = provider_dir / "features" / prepared.instrument_code.lower()
+    features_dir.mkdir(parents=True, exist_ok=True)
+    for field in _PRICE_FIELDS:
+        _write_bin(
+            features_dir / f"{field}.day.bin",
+            prepared.start_index, prepared.fields[field],
+        )
+    _write_bin(
+        features_dir / "volume.day.bin",
+        prepared.start_index, prepared.fields["volume"],
+    )
+    # No factor bin: equities in this bundle carry none, and the benchmark
+    # read path (report.py: $close/Ref($close,1)-1) never adjusts by factor.
+    _register_benchmark(
+        provider_dir, prepared.instrument_code,
+        prepared.first_date, prepared.last_date,
+    )
+    return BenchmarkIngestResult(
+        instrument_code=prepared.instrument_code,
+        first_date=prepared.first_date,
+        last_date=prepared.last_date,
+        n_trading_days=len(prepared.fields["close"]),
+        n_gap_days=prepared.n_gap_days,
+        ohlc_degenerate=prepared.ohlc_degenerate,
+    )
+
+
+def ingest_benchmark_index(
+    index_daily: pd.DataFrame,
+    *,
+    instrument_code: str,
+    provider_dir: Path,
+) -> BenchmarkIngestResult:
+    """Prepare + commit one benchmark index (single-index convenience).
+
+    ``index_daily`` is a tushare ``index_daily`` frame (``trade_date`` +
+    ``close`` required; OHLC/``vol`` optional). ``instrument_code`` is the
+    qlib instrument name (e.g. ``SH000300``); bins land in
+    ``features/<lower>/``. ``provider_dir`` is the bundle to write into —
+    pass the STAGING dir during a rebuild so the atomic swap preserves the
+    benchmark. For MULTI-index runs that must not leave a mixed live state on
+    a later failure, prepare ALL indices first, then commit_prepared each."""
+    prepared = prepare_benchmark_index(
+        index_daily, instrument_code=instrument_code, provider_dir=provider_dir,
+    )
+    return commit_prepared(prepared, provider_dir=provider_dir)

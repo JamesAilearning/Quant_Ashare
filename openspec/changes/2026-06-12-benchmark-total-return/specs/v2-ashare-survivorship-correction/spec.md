@@ -61,6 +61,12 @@ a benchmark instrument (equity-symmetric; the benchmark read path uses
 - **THEN** the benchmark instrument ends at the last published date with no
   fabricated trailing closes, and its registry span reflects that date
 
+#### Scenario: a later index failure leaves no partial benchmark write
+- **WHEN** a multi-index ingest fetches the price index successfully but a
+  subsequent index's fetch or transform fails fatally
+- **THEN** no benchmark bins or registry rows are written for any index
+  (validation of all indices precedes the write of any)
+
 #### Scenario: a missing best-effort total-return index does not block the swap
 - **WHEN** the total-return index fetch fails (e.g. separate index
   entitlement) while the price index succeeds

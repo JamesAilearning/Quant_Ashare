@@ -194,6 +194,35 @@ class IngestBenchmarkCliTests(unittest.TestCase):
                                "--index-map", "000300.SH:SH000300"])
             self.assertEqual(rc, 1)  # numeric, not a raised ValueError
 
+    def test_later_transform_failure_leaves_no_partial_write(self) -> None:
+        # codex P2 on #243: prepare ALL before committing ANY. If the
+        # second (total-return) index fetches but its transform fails, the
+        # run aborts BEFORE writing the first (price) index — no mixed live
+        # benchmark state.
+        mod = _load_cli()
+        price = pd.DataFrame({
+            "trade_date": _yyyymmdd(), "close": [1.0] * 6,
+            "open": [1.0] * 6, "high": [1.1] * 6, "low": [0.9] * 6, "vol": [1.0] * 6,
+        })
+        bad_tr = pd.DataFrame({  # duplicate trade_date -> transform error
+            "trade_date": ["20250102", "20250102"], "close": [2.0, 2.1],
+        })
+
+        def call(api, **params):
+            return bad_tr if params["ts_code"] == "H00300.CSI" else price
+        client = MagicMock()
+        client.call = MagicMock(side_effect=call)
+        with tempfile.TemporaryDirectory() as t:
+            prov = _bundle(Path(t))
+            with patch.object(mod.TushareClient, "from_environment", return_value=client):
+                # Make H00300 mandatory so its transform failure is fatal.
+                rc = mod.main(["--provider-dir", str(prov), "--best-effort", ""])
+            self.assertEqual(rc, 1)
+            # The price index must NOT have been written (prepare-all aborts
+            # before any commit).
+            self.assertFalse((prov / "features" / "sh000300").exists())
+            self.assertFalse((prov / "instruments" / "benchmark.txt").exists())
+
     def test_all_indices_failing_returns_1(self) -> None:
         # Even all-best-effort: zero ingested is a loud failure, not a no-op.
         mod = _load_cli()

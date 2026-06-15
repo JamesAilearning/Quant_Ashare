@@ -105,6 +105,15 @@
       in-process orchestrator (regressions: malformed-date module + CLI
       tests).
 
+## 2j. Codex round 8 (PR #243)
+- [x] [P2] two-phase prepare/commit: the CLI now PREPARES (fetch + validate
+      + compute bins in memory) every index before COMMITTING any, so a
+      later index's fetch/transform failure aborts BEFORE the provider is
+      touched — no mixed live benchmark state (price written, total-return
+      failed). Module split into `prepare_benchmark_index` +
+      `commit_prepared`; `ingest_benchmark_index` = prepare+commit
+      (regression: later-transform-failure leaves no partial write).
+
 ## 3. Verification
 - [x] Real fetch+ingest into a throwaway bundle copy: 000300.SH 1942d/0gap
       close 4629.939 exact; H00300.CSI 1942d/2gap close 6826.62 exact.

@@ -43,7 +43,9 @@ import pandas as pd  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.pit.benchmark_index_ingest import (  # noqa: E402
     BenchmarkIngestError,
-    ingest_benchmark_index,
+    PreparedBenchmark,
+    commit_prepared,
+    prepare_benchmark_index,
 )
 from src.data.tushare.client import TushareClient, TushareClientError  # noqa: E402
 
@@ -167,16 +169,16 @@ def main(argv: list[str] | None = None) -> int:
         _logger.error("Cannot construct Tushare client: %s", exc)
         return 1
 
-    n_ingested = 0
+    # Two phases (codex P2 on #243): PREPARE every index (fetch + validate +
+    # compute bins IN MEMORY) before COMMITTING any. A later index's fetch
+    # or transform failure then aborts the run BEFORE the provider is touched
+    # — no mixed live benchmark state where the price index updated but the
+    # total-return one did not. Best-effort downgrades only FETCH-class
+    # failures (a separate index entitlement the daily swap must tolerate);
+    # a transform/contract failure after a successful fetch is always fatal.
+    prepared: list[PreparedBenchmark] = []
     for ts_code, qlib_name in index_map:
         _logger.info("=== benchmark index: %s -> %s ===", ts_code, qlib_name)
-        # Best-effort downgrades only FETCH-class failures (permission /
-        # network / empty frame) — a separate index entitlement that the
-        # daily swap must tolerate. A TRANSFORM/contract failure AFTER a
-        # successful fetch (duplicate dates, null close, calendar mismatch,
-        # a write bug) is NEVER best-effort: it means the source or the
-        # builder is broken and must fail loud, not ship a price-only
-        # benchmark (codex P2 on #243).
         try:
             frame = _fetch_index_daily(
                 client, ts_code, args.start_date, end_date,
@@ -192,40 +194,48 @@ def main(argv: list[str] | None = None) -> int:
             _logger.error("Benchmark fetch FAILED for %s: %s", ts_code, exc)
             return 1
         try:
-            result = ingest_benchmark_index(
+            prepared.append(prepare_benchmark_index(
                 frame, instrument_code=qlib_name, provider_dir=args.provider_dir,
-            )
+            ))
         except (BenchmarkIngestError, OSError) as exc:
-            # Transform/write failures map to a stage exit, never best-effort:
-            # the orchestrator runs this in-process and expects a numeric
-            # return code, so an OSError (disk full / permission) or a
-            # contract error must not escape main() and crash run_daily_update
-            # (codex P2 on #243). A malformed source surfaces as a
-            # BenchmarkIngestError from the transform.
+            # A fetched-but-malformed source (or a calendar read failure) is
+            # always fatal, never best-effort — and it aborts BEFORE any
+            # provider write, so nothing is half-written.
             _logger.error(
-                "Benchmark TRANSFORM/write FAILED for %s (NOT downgraded to "
-                "best-effort — a fetched-but-malformed source or a write "
-                "failure must not silently ship a price-only benchmark): %s",
-                ts_code, exc,
+                "Benchmark PREPARE FAILED for %s (NOT downgraded to "
+                "best-effort — a malformed source must not silently ship a "
+                "price-only benchmark; nothing written): %s", ts_code, exc,
             )
             return 1
-        n_ingested += 1
+
+    if not prepared:
+        _logger.error(
+            "No benchmark index prepared — every configured index failed "
+            "(all were best-effort?). Refusing a silent no-op.",
+        )
+        return 1
+
+    # All required indices validated; commit them. A write failure here
+    # (disk full / permission) is rare and maps to a stage exit; the ingest
+    # is idempotent, so a re-run rewrites cleanly.
+    for item in prepared:
+        try:
+            result = commit_prepared(item, provider_dir=args.provider_dir)
+        except OSError as exc:
+            _logger.error(
+                "Benchmark WRITE FAILED for %s after validation: %s",
+                item.instrument_code, exc,
+            )
+            return 1
         _logger.info(
             "  ingested %s: %s..%s (%d trading days, %d gap day(s) "
             "forward-filled, ohlc_degenerate=%s)",
-            qlib_name, result.first_date, result.last_date,
+            result.instrument_code, result.first_date, result.last_date,
             result.n_trading_days, result.n_gap_days, result.ohlc_degenerate,
         )
-    if n_ingested == 0:
-        _logger.error(
-            "No benchmark index ingested — every configured index failed "
-            "(all were best-effort?). The bundle has no benchmark instrument; "
-            "refusing a silent no-op.",
-        )
-        return 1
     _logger.info(
         "Benchmark ingest complete (%d of %d index/indices).",
-        n_ingested, len(index_map),
+        len(prepared), len(index_map),
     )
     return 0
 
