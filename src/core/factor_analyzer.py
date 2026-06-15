@@ -426,6 +426,28 @@ class FactorAnalyzer:
             cache[lag] = fwd_stacked.reindex(factor_index)
         return cache
 
+    @staticmethod
+    def _flatten_col_name(col: Any) -> str:
+        """Human-readable factor name for a DataFrame column. Alpha158 columns
+        may be tuples like ``('KLEN',)`` — take the last element; everything
+        else stringifies as-is."""
+        return str(col) if not isinstance(col, tuple) else str(col[-1])
+
+    @classmethod
+    def _build_col_map(
+        cls, columns: Any, factor_names: list[str],
+    ) -> dict[str, Any]:
+        """Map each requested human-readable ``factor_name`` to its (possibly
+        tuple) DataFrame column. Columns whose flattened name isn't requested
+        are skipped; a requested name absent from ``columns`` simply won't
+        appear (callers decide whether that is fatal)."""
+        col_map: dict[str, Any] = {}
+        for col in columns:
+            name = cls._flatten_col_name(col)
+            if name in factor_names:
+                col_map[name] = col
+        return col_map
+
     @classmethod
     def _compute_all_factor_ic(
         cls, factor_df: Any, forward_ret: Any, config: FactorAnalysisConfig
@@ -469,7 +491,7 @@ class FactorAnalyzer:
                 ir = mean_ic / std_ic
 
             results.append(FactorICStats(
-                factor_name=str(col) if not isinstance(col, tuple) else str(col[-1]),
+                factor_name=cls._flatten_col_name(col),
                 mean_ic=mean_ic,
                 std_ic=std_ic,
                 ir=ir,
@@ -486,11 +508,7 @@ class FactorAnalyzer:
         """Compute pairwise rank correlation between top factors."""
 
         # Alpha158 columns may be tuples like ('KLEN',) — match by last element
-        col_map = {}
-        for col in factor_df.columns:
-            name = str(col) if not isinstance(col, tuple) else str(col[-1])
-            if name in factor_names:
-                col_map[name] = col
+        col_map = cls._build_col_map(factor_df.columns, factor_names)
 
         subset = factor_df[[col_map[n] for n in factor_names if n in col_map]]
         subset.columns = [n for n in factor_names if n in col_map]
@@ -520,11 +538,7 @@ class FactorAnalyzer:
 
         # Build column map once (factor_names are the human-readable last
         # elements of possibly-tuple Alpha158 columns).
-        col_map: dict[str, Any] = {}
-        for col in factor_df.columns:
-            name = str(col) if not isinstance(col, tuple) else str(col[-1])
-            if name in factor_names:
-                col_map[name] = col
+        col_map = cls._build_col_map(factor_df.columns, factor_names)
 
         # Any factor we were asked to analyze that isn't in the DataFrame
         # is a bug (names came from factor_df itself upstream) or a config

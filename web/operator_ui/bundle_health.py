@@ -111,6 +111,16 @@ def _expand_env(value: str) -> str:
     return _ENV_PATTERN.sub(_replace, value)
 
 
+def normalize_provider_uri(raw: str) -> str:
+    """Expand ``${VAR}`` references and a leading ``~`` in a provider URI, so a
+    config / operator value like ``${QUANT_PROVIDER_URI:-...}`` or ``~/qlib_data``
+    resolves the same way the qlib runtime (``init_qlib_canonical``) does before
+    it checks the bundle exists. Public so callers (e.g. the 数据检视 page) need
+    not reach for the private ``_expand_env``.
+    """
+    return str(Path(_expand_env(raw)).expanduser())
+
+
 # ---------------------------------------------------------------------------
 # resolve default provider_uri
 # ---------------------------------------------------------------------------
@@ -196,14 +206,11 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
             instrument_count=None,
         )
 
-    # Same normalisation that ``resolve_default_provider_uri`` does
-    # (Codex P2 on PR #169): expand env vars + ``~``. This matters
-    # when the caller passes a run-specific ``provider_uri`` from a
-    # config that has ``~/qlib_data``-style paths — without the
-    # expanduser the banner would render a red "error" for a
-    # perfectly valid bundle.
-    raw = _expand_env(raw)
-    raw = str(Path(raw).expanduser())
+    # Same normalisation the runtime does (Codex P2 on PR #169): expand env
+    # vars + ``~``. Matters when the caller passes a run-specific provider_uri
+    # from a config with ``~/qlib_data``-style paths — without the expanduser
+    # the banner would render a red "error" for a perfectly valid bundle.
+    raw = normalize_provider_uri(raw)
 
     metadata = inspect_provider_metadata(raw)
 
@@ -313,6 +320,7 @@ def render_bundle_health_banner(
 __all__ = [
     "BundleHealthSummary",
     "_expand_env",
+    "normalize_provider_uri",
     "render_bundle_health_banner",
     "resolve_default_provider_uri",
     "summarise_bundle_health",
