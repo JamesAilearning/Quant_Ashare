@@ -40,7 +40,6 @@ from src.core.performance_attribution import (
     PerformanceAttributionError,
 )
 from src.core.qlib_runtime import is_canonical_qlib_initialized
-from src.core.run_catalog import append_run_record, build_record
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
     SignalAnalyzer,
@@ -335,6 +334,12 @@ class WalkForwardEngine:
         artifact — hence the broad ``except`` + debug-level log.
         """
         try:
+            # Imported here (NOT hoisted to module level) so the catalog stays
+            # FULLY best-effort: an optional catalog-path failure — including an
+            # import error in run_catalog or its deps — must never prevent
+            # importing or running the engine. (codex P2 on #255.)
+            from src.core.run_catalog import append_run_record, build_record
+
             has_any_nan = any(
                 math.isnan(f.ic_1d) or math.isnan(f.ic_5d)
                 for f in folds
