@@ -114,11 +114,19 @@ def _expand_env(value: str) -> str:
 def normalize_provider_uri(raw: str) -> str:
     """Expand ``${VAR}`` references and a leading ``~`` in a provider URI, so a
     config / operator value like ``${QUANT_PROVIDER_URI:-...}`` or ``~/qlib_data``
-    resolves the same way the qlib runtime (``init_qlib_canonical``) does before
-    it checks the bundle exists. Public so callers (e.g. the 数据检视 page) need
-    not reach for the private ``_expand_env``.
+    resolves the same way the qlib runtime (``init_qlib_canonical`` →
+    ``_normalize_provider_uri``) does before it checks the bundle exists. Public
+    so callers (e.g. the 数据检视 page) need not reach for the private
+    ``_expand_env``.
+
+    Uses ``os.path.expanduser`` (NOT ``Path.expanduser``) — codex P2 on PR #254:
+    ``Path.expanduser`` raises ``RuntimeError`` on a ``~baduser`` whose home does
+    not resolve, which would crash a caller before its own ``exists()`` check;
+    ``os.path.expanduser`` returns such a value unchanged (it then simply
+    "doesn't exist"), matching both the previous behaviour and the runtime
+    normaliser.
     """
-    return str(Path(_expand_env(raw)).expanduser())
+    return os.path.expanduser(_expand_env(raw))
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from web.operator_ui.bundle_health import (  # noqa: E402
     BundleHealthSummary,
     _expand_env,
+    normalize_provider_uri,
     render_bundle_health_banner,
     resolve_default_provider_uri,
     summarise_bundle_health,
@@ -134,6 +135,37 @@ class SummariseBundleHealthTests(unittest.TestCase):
             empty.mkdir()
             s = summarise_bundle_health(str(empty))
             self.assertEqual(s.status, "warning")
+
+
+# ---------------------------------------------------------------------------
+# normalize_provider_uri (T2-4)
+# ---------------------------------------------------------------------------
+
+
+class NormalizeProviderUriTests(unittest.TestCase):
+    def test_expands_env_and_tilde(self):
+        with patch.dict(os.environ, {"BUNDLE_T2_4": "/data/bundle"}, clear=False):
+            self.assertEqual(normalize_provider_uri("${BUNDLE_T2_4}"), "/data/bundle")
+        home = normalize_provider_uri("~/qlib_data")
+        self.assertNotIn("~", home)  # ~ expanded
+
+    def test_literal_absolute_passthrough(self):
+        self.assertEqual(
+            normalize_provider_uri("D:/qlib_data/my_cn_data"),
+            "D:/qlib_data/my_cn_data",
+        )
+
+    def test_bad_tilde_user_does_not_raise(self):
+        # codex P2 on PR #254: use os.path.expanduser, NOT Path.expanduser —
+        # on POSIX the latter raises RuntimeError for a ~baduser whose home
+        # cannot resolve, which would crash the caller (e.g. the inspector
+        # page) before its own exists() check. os.path.expanduser never raises;
+        # the value simply "doesn't exist" downstream. (On POSIX it's returned
+        # unchanged; on Windows ~user expands to C:\\Users\\user — both fine.)
+        bad = "~nonexistent_user_t2_4/qlib_data"
+        out = normalize_provider_uri(bad)  # must NOT raise (the regression)
+        self.assertIsInstance(out, str)
+        self.assertTrue(out.endswith("qlib_data"))
 
 
 # ---------------------------------------------------------------------------
