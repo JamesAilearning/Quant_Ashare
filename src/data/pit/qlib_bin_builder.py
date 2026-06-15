@@ -385,53 +385,60 @@ class QlibBinBuilder:
             return f"{qlib_ticker[2:]}.{qlib_ticker[:2]}"
         return qlib_ticker  # already Tushare-style or unknown
 
+    def _load_per_year_parquet(
+        self,
+        subdir: str,
+        tushare_code: str,
+        *,
+        missing_root_msg: str | None = None,
+    ) -> pd.DataFrame | None:
+        """Load + concatenate every ``<subdir>/<year>/<code>.parquet`` for one
+        ticker, deduped on ``trade_date`` and sorted ascending.
+
+        Returns None when no parquet exists for the ticker. If the ``<subdir>/``
+        root itself is absent: raise ``QlibBinBuilderError(missing_root_msg)``
+        when a message is given (the ``daily`` dump is mandatory), else return
+        None (``adj_factor`` / ``daily_basic`` are optional inputs).
+        """
+        root = self._tushare_dir / subdir
+        if not root.exists():
+            if missing_root_msg is not None:
+                raise QlibBinBuilderError(missing_root_msg)
+            return None
+        chunks: list[pd.DataFrame] = []
+        for year_dir in sorted(root.iterdir()):
+            if not year_dir.is_dir():
+                continue
+            ticker_path = year_dir / f"{tushare_code}.parquet"
+            if not ticker_path.exists():
+                continue
+            chunk = pd.read_parquet(ticker_path)
+            if not chunk.empty:
+                chunks.append(chunk)
+        if not chunks:
+            return None
+        df = pd.concat(chunks, ignore_index=True)
+        df["trade_date"] = df["trade_date"].astype(str)
+        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+
     def _load_ticker_history(self, tushare_code: str) -> pd.DataFrame | None:
         """Load and concatenate all per-year daily parquets for one ticker.
 
         Returns None if no parquets exist (ticker may have been added to
         the universe but never pulled — common for short Phase A.1 runs).
         """
-        daily_root = self._tushare_dir / "daily"
-        if not daily_root.exists():
-            raise QlibBinBuilderError(
-                f"Missing {daily_root}; run Phase A.1 with --endpoints daily."
-            )
-        chunks: list[pd.DataFrame] = []
-        for year_dir in sorted(daily_root.iterdir()):
-            if not year_dir.is_dir():
-                continue
-            ticker_path = year_dir / f"{tushare_code}.parquet"
-            if not ticker_path.exists():
-                continue
-            chunk = pd.read_parquet(ticker_path)
-            if not chunk.empty:
-                chunks.append(chunk)
-        if not chunks:
-            return None
-        df = pd.concat(chunks, ignore_index=True)
-        df["trade_date"] = df["trade_date"].astype(str)
-        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+        return self._load_per_year_parquet(
+            "daily",
+            tushare_code,
+            missing_root_msg=(
+                f"Missing {self._tushare_dir / 'daily'}; run Phase A.1 with "
+                "--endpoints daily."
+            ),
+        )
 
     def _load_adj_factor(self, tushare_code: str) -> pd.DataFrame | None:
         """Same shape as _load_ticker_history but for the adj_factor dump."""
-        adj_root = self._tushare_dir / "adj_factor"
-        if not adj_root.exists():
-            return None
-        chunks: list[pd.DataFrame] = []
-        for year_dir in sorted(adj_root.iterdir()):
-            if not year_dir.is_dir():
-                continue
-            ticker_path = year_dir / f"{tushare_code}.parquet"
-            if not ticker_path.exists():
-                continue
-            chunk = pd.read_parquet(ticker_path)
-            if not chunk.empty:
-                chunks.append(chunk)
-        if not chunks:
-            return None
-        df = pd.concat(chunks, ignore_index=True)
-        df["trade_date"] = df["trade_date"].astype(str)
-        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+        return self._load_per_year_parquet("adj_factor", tushare_code)
 
     def _load_daily_basic(self, tushare_code: str) -> pd.DataFrame | None:
         """Same shape as _load_ticker_history but for the daily_basic dump.
@@ -443,24 +450,7 @@ class QlibBinBuilder:
         daily_basic bins for that ticker. The OHLCV bins are still
         produced as before.
         """
-        basic_root = self._tushare_dir / "daily_basic"
-        if not basic_root.exists():
-            return None
-        chunks: list[pd.DataFrame] = []
-        for year_dir in sorted(basic_root.iterdir()):
-            if not year_dir.is_dir():
-                continue
-            ticker_path = year_dir / f"{tushare_code}.parquet"
-            if not ticker_path.exists():
-                continue
-            chunk = pd.read_parquet(ticker_path)
-            if not chunk.empty:
-                chunks.append(chunk)
-        if not chunks:
-            return None
-        df = pd.concat(chunks, ignore_index=True)
-        df["trade_date"] = df["trade_date"].astype(str)
-        return df.drop_duplicates("trade_date").sort_values("trade_date").reset_index(drop=True)
+        return self._load_per_year_parquet("daily_basic", tushare_code)
 
     # ------------------------------------------------------------------
     # Per-ticker transforms
