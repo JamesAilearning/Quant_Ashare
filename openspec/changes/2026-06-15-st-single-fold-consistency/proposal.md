@@ -14,9 +14,12 @@ revert either path to includes-ST.
 
 ## What Changes
 
-- **`config.yaml`**: add `namechange_path:
+- **`config.yaml`** + **`config_smoke.yaml`**: add `namechange_path:
   "${QUANT_NAMECHANGE_PATH:-…/all_namechanges.parquet}"` — parity with
-  `config_walk.yaml`, enabling the single-fold ST mask.
+  `config_walk.yaml`, enabling the single-fold ST mask. Both are standalone
+  single-fold configs run via `main.py <config>` (no `extends`); the
+  `config_walk_n*` / `config_walk_mined` variants inherit the key from
+  `config_walk.yaml` via `extends`.
 - **`BacktestRunner.run`**: new `require_st_mask: bool = False`. When True
   and `namechange_path` is missing/blank, the run RAISES instead of taking
   the WARN-pass — the single-fold backtest must exclude ST exactly like
@@ -28,9 +31,11 @@ revert either path to includes-ST.
   official config paths now fail loud on a missing namechange_path; the raw
   `BacktestRunner.run` entry stays permissive for research.
 - **Governance pin** `tests/governance/test_config_st_mask_enabled.py`:
-  mirrors `test_config_walk_st_mask_enabled.py`, pinning config.yaml's
-  `namechange_path` so YAML drift fails at PR review (the RUN_E2E baseline
-  drift test is invisible to CI).
+  mirrors `test_config_walk_st_mask_enabled.py` for config.yaml, AND sweeps
+  every shipped root `config*.yaml` backtest config (single-fold + walk-forward,
+  resolving `extends` + `${VAR:-default}`) so a future standalone config can't
+  ship without the key — Codex caught `config_smoke.yaml` slipping past the
+  single-file pin. The RUN_E2E baseline drift test is invisible to CI.
 - **Operator UI** (`web/operator_ui/pages/config_run.py` +
   `config_forms.py`): the UI emits a STANDALONE job config (no `extends`, and
   the runner does not run it through the `${VAR:-default}` YAML loader), so it

@@ -13,8 +13,12 @@ produce official metrics over an ST-included universe. The raw
 `BacktestRunner.run` entry MAY still run an ST-included universe with a
 warning for research/unit callers that explicitly opt out of the requirement.
 
-`config.yaml` SHALL set `namechange_path` (parity with `config_walk.yaml`),
-pinned by a governance test so YAML drift fails at review time.
+Every shipped backtest config (single-fold or walk-forward) SHALL resolve a
+non-empty `namechange_path` — directly (`config.yaml`, `config_smoke.yaml`) or
+via `extends` inheritance (`config_walk_n*.yaml` → `config_walk.yaml`). A
+governance test sweeps all root `config*.yaml` backtest configs (skipping
+ingest configs that never reach `BacktestRunner.run`) so YAML drift fails at
+review time.
 
 Any tool that GENERATES an official backtest config SHALL populate a non-empty
 `namechange_path`. In particular the Operator UI, which emits a STANDALONE job
