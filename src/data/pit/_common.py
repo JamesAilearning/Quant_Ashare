@@ -13,6 +13,14 @@ layer.
 
 from __future__ import annotations
 
+# The qlib instruments "open run" end-date sentinel: an active (or
+# still-listed-at-bundle-end) ticker's run is written with this far-future end
+# so qlib treats the run as open. Defined ONCE here — the PIT layer's
+# shared-constant home — so the literal ``"2099-12-31"`` lives in one place;
+# ``universe_files`` / ``index_membership`` re-export it and ``qlib_bin_builder``
+# imports it.
+QLIB_OPEN_END_DATE = "2099-12-31"
+
 
 def to_qlib_ticker(ts_code: str) -> str:
     """Normalise a Tushare ``ts_code`` to qlib's instrument format.
@@ -76,4 +84,9 @@ def to_iso_date(yyyymmdd: str) -> str:
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
 
 
-__all__ = ["qlib_to_ts_code", "to_iso_date", "to_qlib_ticker"]
+__all__ = [
+    "QLIB_OPEN_END_DATE",
+    "qlib_to_ts_code",
+    "to_iso_date",
+    "to_qlib_ticker",
+]

@@ -43,10 +43,10 @@ from src.core.logger import get_logger
 _logger = get_logger(__name__)
 
 
-QLIB_OPEN_END_DATE = "2099-12-31"
-
-
-# Consolidated into ``src.data.pit._common`` (bug.md P2-4).
+# Consolidated into ``src.data.pit._common`` (bug.md P2-4). QLIB_OPEN_END_DATE
+# is re-exported (kept in this module's namespace) so existing importers and
+# tests that read it from here keep working.
+from src.data.pit._common import QLIB_OPEN_END_DATE  # noqa: E402
 from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
 from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 

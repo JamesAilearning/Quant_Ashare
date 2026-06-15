@@ -71,12 +71,12 @@ DEFAULT_INDEX_FILE_MAP: dict[str, str] = {
 
 MEMBERSHIP_DATE_TOLERANCE_DAYS = 35
 
-QLIB_OPEN_END_DATE = "2099-12-31"
-
 
 # Consolidated into ``src.data.pit._common`` (bug.md P2-4). The
 # leading-underscore re-exports preserve the existing call-site
-# names so nothing else in this module needs to change.
+# names so nothing else in this module needs to change; QLIB_OPEN_END_DATE
+# is re-exported under its public name (tests read it from here).
+from src.data.pit._common import QLIB_OPEN_END_DATE  # noqa: E402
 from src.data.pit._common import to_iso_date as _to_iso_date  # noqa: E402
 from src.data.pit._common import to_qlib_ticker as _to_qlib_ticker  # noqa: E402
 
