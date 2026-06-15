@@ -79,6 +79,7 @@ import pandas as pd
 import yaml
 
 from src.core.logger import get_logger
+from src.data._atomic_io import atomic_write_parquet
 
 _logger = get_logger(__name__)
 
@@ -162,7 +163,7 @@ class DelistedRegistryBuilder:
         )
         self._validate_invariants(registry)
 
-        self._atomic_write_parquet(registry, self._output_path)
+        atomic_write_parquet(registry, self._output_path)
         _logger.info(
             "Wrote %d delisted rows to %s (reference rows matched: %d, "
             "active controls checked: %d)",
@@ -548,9 +549,3 @@ class DelistedRegistryBuilder:
     # I/O
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        df.to_parquet(tmp_path, index=False)
-        tmp_path.replace(path)
