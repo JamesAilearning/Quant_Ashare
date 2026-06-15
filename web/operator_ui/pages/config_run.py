@@ -67,6 +67,11 @@ _PRESETS_DIR = Path(__file__).resolve().parents[3] / "config" / "presets"
 # current machine without over-weighting one outlier (UI review P2-6).
 _ESTIMATE_CALIBRATION_WINDOW = 5
 
+# GPU is only wired for LGBModel. Single source for the guard message so the
+# pre-submit validation and the final-guard re-check (intentionally duplicated
+# predicate) can never drift on wording.
+_GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
+
 
 def _duration_seconds(started_at: Any, ended_at: Any) -> float | None:
     """Parse two ISO timestamps into an elapsed-seconds float, or None."""
@@ -527,7 +532,6 @@ with form_col:
         if _wf_non_production_msg:
             guard_errors.append(_wf_non_production_msg)
 
-    _GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
     if compute_device == "gpu" and model_type != "LGBModel":
         guard_errors.append(_GPU_ONLY_LGB_MSG)
 
@@ -635,7 +639,7 @@ with form_col:
             st.error(str(e))
             st.stop()
         if compute_device == "gpu" and model_type != "LGBModel":
-            st.error("目前仅 LGBModel 支持 GPU 训练。")
+            st.error(_GPU_ONLY_LGB_MSG)
             st.stop()
         # Belt-and-braces: re-run the same guard logic that disables the
         # Run button. Streamlit's rerun cycle can lose a race between
