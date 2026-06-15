@@ -125,6 +125,19 @@ def test_top_k_unknown_key_raises():
         pool.top_k(1, by="not_a_key")
 
 
+def test_top_k_rejects_non_field_attribute():
+    # T2-3: the guard tightened from hasattr() (which accepted ANY class
+    # attribute, incl. methods/dunders) to dataclass-field membership only.
+    # A method name like "from_result" is a PoolEntry attribute but not a data
+    # field — previously allowed (then sorted on a bound method, misbehaving),
+    # now rejected.
+    pool = FactorPool()
+    pool.add(_make_entry(_expr_cs_rank_volume()))
+    for bad in ("from_result", "__class__"):
+        with pytest.raises(ValueError, match="Unknown sort key"):
+            pool.top_k(1, by=bad)
+
+
 # ---------------------------------------------------------------------------
 # correlation_with
 # ---------------------------------------------------------------------------
