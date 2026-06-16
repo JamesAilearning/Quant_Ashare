@@ -38,14 +38,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # machine precision; 1e-6 only absorbs float-repr round-trips.
 REPLAY_ABS_TOL = 1e-6
 
-_HEADLINE_METRICS = (
-    "mean_information_ratio",
-    "mean_ic_1d",
-    "mean_ic_5d",
-    "mean_annualized_return",
-    "worst_drawdown",
-)
-
 _DEFAULT_PROVIDER = "D:/qlib_data/my_cn_data_pit"
 _DEFAULT_NAMECHANGE = "D:/qlib_data/tushare_raw/all_namechanges.parquet"
 
@@ -79,11 +71,18 @@ class WalkForwardReplayBaselineTests(unittest.TestCase):
         if not Path(_namechange_path()).is_file():
             self.skipTest(f"namechange parquet not found at {_namechange_path()}.")
 
+    # The replay (22 backtests) is expensive; cache it at class level so the two
+    # test methods share ONE replay instead of running it twice.
+    _replay_cache: dict | None = None
+
     def _replay(self) -> dict:
-        from scripts.regen.replay_frozen_baseline import replay_frozen_baseline
-        return replay_frozen_baseline(
-            FROZEN_FIXTURE, _provider_uri(), _namechange_path(),
-        )
+        cls = type(self)
+        if cls._replay_cache is None:
+            from scripts.regen.replay_frozen_baseline import replay_frozen_baseline
+            cls._replay_cache = replay_frozen_baseline(
+                FROZEN_FIXTURE, _provider_uri(), _namechange_path(),
+            )
+        return cls._replay_cache
 
     # Per-fold metrics compared by the replay test. The OpenSpec delta requires
     # the replay to reproduce EVERY committed per-fold metric, not just IR — so a
@@ -108,14 +107,19 @@ class WalkForwardReplayBaselineTests(unittest.TestCase):
         committed = json.loads(BASELINE_FIXTURE.read_text(encoding="utf-8"))
         committed_agg = committed["aggregate_metrics"]
         result_agg = self._replay()["aggregate_metrics"]
-        drifts = [
-            f"{k}: replay={result_agg.get(k)!r} vs committed={committed_agg.get(k)!r}"
-            for k in _HEADLINE_METRICS
-            if not self._close(result_agg.get(k), committed_agg.get(k))
-        ]
+        # Reproduce EVERY committed scalar aggregate metric (means, std_*, the
+        # bootstrap CIs, valid-fold counts, seed/n), not just the headlines — a
+        # deterministic replay must match all of them. The nested ``timing``
+        # block is wall-clock data (non-metric, non-deterministic) and is skipped.
+        drifts = []
+        for key, ref in committed_agg.items():
+            if isinstance(ref, dict):  # ``timing`` block
+                continue
+            if not self._close(result_agg.get(key), ref):
+                drifts.append(f"{key}: replay={result_agg.get(key)!r} vs committed={ref!r}")
         if drifts:
             self.fail(
-                "REGEN-A replay did NOT reproduce the committed baseline within "
+                "REGEN-A replay did NOT reproduce the committed aggregate within "
                 f"{REPLAY_ABS_TOL} (deterministic replay should be exact):\n  - "
                 + "\n  - ".join(drifts)
                 + "\n\nIf a backtest-semantics change is intentional, regenerate via "
