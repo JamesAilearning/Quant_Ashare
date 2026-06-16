@@ -622,25 +622,27 @@ def _resolve_bundle_freshness(provider_uri: str | Path) -> _BundleFreshness | No
     ``bundle_manifest.json`` (which has no production writer). Returns ``None``
     when neither source carries identity.
 
-    Lazy import keeps ``bundle_manifest`` ↔ ``pit.bundle_integrity`` acyclic. A
-    malformed integrity stamp falls back to the manifest rather than raising — the
-    daily_recommend gate is the loud reader of that stamp; the freshness check
-    degrades to the legacy source."""
+    Fails CLOSED on a CORRUPT canonical stamp: a present-but-unreadable /
+    unknown-schema / malformed ``_fetch_integrity.json`` propagates
+    :class:`BundleIntegrityError` (and a non-ISO identity ``tail_date`` raises
+    :class:`BundleManifestError`) rather than silently degrading to the legacy
+    manifest and skipping the freshness preflight on a bad provider (Codex P1).
+    Only an ABSENT stamp, or a valid stamp WITHOUT an identity block (legacy v1),
+    falls back to the manifest."""
     base = Path(str(provider_uri))
-    try:
-        from src.data.pit.bundle_integrity import read_bundle_integrity
-        integrity = read_bundle_integrity(base)
-        if integrity is not None and integrity.identity is not None:
-            ident = integrity.identity
-            # date.fromisoformat is INSIDE the try so a malformed (non-ISO)
-            # tail_date degrades to the legacy manifest rather than raising —
-            # the daily_recommend gate is the loud reader of a bad stamp.
-            return _BundleFreshness(
-                tail_date=date.fromisoformat(ident.tail_date),
-                content_hash=ident.content_hash,
-            )
-    except Exception:  # noqa: BLE001 — malformed stamp → fall back to manifest
-        pass
+    from src.data.pit.bundle_integrity import read_bundle_integrity
+    integrity = read_bundle_integrity(base)  # propagates BundleIntegrityError → fail closed
+    if integrity is not None and integrity.identity is not None:
+        ident = integrity.identity
+        try:
+            tail_date = date.fromisoformat(ident.tail_date)
+        except ValueError as exc:
+            raise BundleManifestError(
+                f"_fetch_integrity.json identity at {base} has a non-ISO "
+                f"tail_date ({ident.tail_date!r}); refusing to skip the freshness "
+                "check on a corrupt canonical stamp."
+            ) from exc
+        return _BundleFreshness(tail_date=tail_date, content_hash=ident.content_hash)
     manifest = load_manifest(provider_uri)
     if manifest is not None:
         return _BundleFreshness(

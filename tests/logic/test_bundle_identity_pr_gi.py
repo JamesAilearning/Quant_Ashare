@@ -17,6 +17,7 @@ from src.core.walk_forward import WalkForwardConfig
 from src.core.walk_forward._resume import compute_config_fingerprint
 from src.data._feature_dataset_cache import _LEGACY_BUNDLE_TAG, read_bundle_tag
 from src.data.bundle_manifest import (
+    BundleManifestError,
     BundleStaleError,
     _resolve_bundle_freshness,
     compute_bundle_content_hash,
@@ -175,10 +176,12 @@ class ResolveBundleFreshnessTests(unittest.TestCase):
             self.assertEqual(fresh.tail_date.isoformat(), "2024-03-31")
             self.assertEqual(fresh.content_hash, valid_hash)
 
-    def test_malformed_identity_degrades_to_manifest(self) -> None:
+    def test_non_iso_identity_tail_fails_closed(self) -> None:
+        # A present-but-corrupt canonical stamp must NOT silently degrade to the
+        # manifest and skip the freshness check (Codex P1) — fail closed even
+        # though a manifest is present.
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            # integrity stamp present but identity tail_date is non-ISO garbage
             write_bundle_integrity(d, built_from_holey_fetch=False)
             p = d / "_fetch_integrity.json"
             raw = json.loads(p.read_text(encoding="utf-8"))
@@ -187,10 +190,29 @@ class ResolveBundleFreshnessTests(unittest.TestCase):
                 "instrument_count": 1, "calendar_start": "x", "calendar_end": "x",
             }
             p.write_text(json.dumps(raw), encoding="utf-8")
+            self._write_manifest(d, "2024-03-31", None)  # present — must NOT degrade
+            with self.assertRaises(BundleManifestError):
+                _resolve_bundle_freshness(str(d))
+
+    def test_corrupt_stamp_fails_closed(self) -> None:
+        # An unreadable / unknown-schema integrity stamp propagates loud.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "_fetch_integrity.json").write_text(
+                '{"schema_version": 999}', encoding="utf-8")
+            with self.assertRaises(BundleIntegrityError):
+                _resolve_bundle_freshness(str(d))
+
+    def test_v1_stamp_without_identity_degrades_to_manifest(self) -> None:
+        # A VALID v1 stamp with no identity block (legacy, not corrupt) IS the
+        # legitimate degrade case → fall back to the manifest.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            write_bundle_integrity(d, built_from_holey_fetch=False)  # no identity
             self._write_manifest(d, "2024-03-31", None)
-            fresh = _resolve_bundle_freshness(str(d))  # must NOT raise
+            fresh = _resolve_bundle_freshness(str(d))
             assert fresh is not None
-            self.assertEqual(fresh.tail_date.isoformat(), "2024-03-31")  # fell back
+            self.assertEqual(fresh.tail_date.isoformat(), "2024-03-31")
 
     def test_no_source_returns_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
