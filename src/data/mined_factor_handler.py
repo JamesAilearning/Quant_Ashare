@@ -287,11 +287,16 @@ def _make_factory(bundle: MinedFactorBundle) -> Callable[[FeatureDatasetConfig],
     """Closure-style factory that captures ``bundle``."""
 
     def _factory(config: FeatureDatasetConfig) -> Any:
-        features = make_mined_factor_features(bundle, config)
-        # The forward_return is reconstructed inline because the factory
-        # path is PIT-mode-only; tests supply the panel via the kwarg
-        # and don't go through the registered factory.
-        _, fwd = _resolve_panel(bundle, config)
+        # Resolve the PIT panel + forward-return ONCE, then feed the panel
+        # into make_mined_factor_features (which would otherwise PIT-load
+        # it a second time). The OHLCV panel load is the expensive
+        # per-fold step. This path is PIT-mode-only — tests supply the
+        # panel via the kwarg and don't go through the registered
+        # factory. (T2-6)
+        panel, fwd = _resolve_panel(bundle, config)
+        features = make_mined_factor_features(
+            bundle, config, panel=panel, forward_return=fwd,
+        )
         label = _build_label_dataframe(fwd)
         return _make_qlib_handler(features, label, config)
 

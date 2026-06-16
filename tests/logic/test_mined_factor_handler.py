@@ -251,6 +251,41 @@ def test_register_handler_replace_rebinds(tmp_path):
     register_mined_factor_handler(b, replace=True)
 
 
+def test_factory_loads_pit_panel_only_once(tmp_path, monkeypatch):
+    """T2-6: the registered PIT-mode factory must load the OHLCV panel
+    ONCE. It previously resolved the panel for the features and AGAIN for
+    the label, doubling the (expensive) per-fold PIT load. We count the
+    PIT-load branch of ``_resolve_panel`` (the no-panel call); the panel
+    must then be reused for the label, not re-loaded."""
+    from src.data import mined_factor_handler as mfh
+
+    _seed_pool(tmp_path)
+    bundle = MinedFactorBundle(
+        pool_dir=tmp_path,
+        pit_provider_uri="pit://stub",
+        delisted_registry_path="registry://stub",
+    )
+
+    pit_loads = 0
+
+    def _fake_resolve(b, c, *, panel=None, forward_return=None):
+        nonlocal pit_loads
+        if panel is None:
+            # The expensive PIT-load branch — count it.
+            pit_loads += 1
+            return _synthetic_panel(), None
+        # Caller already holds the panel: cheap pass-through, no load.
+        return panel, forward_return
+
+    monkeypatch.setattr(mfh, "_resolve_panel", _fake_resolve)
+    monkeypatch.setattr(mfh, "_make_qlib_handler", lambda *a, **k: "handler")
+
+    factory = mfh._make_factory(bundle)
+    factory(_config())
+
+    assert pit_loads == 1
+
+
 # ---------------------------------------------------------------------------
 # Lazy qlib import (D5 + qlib-availability decoupling)
 # ---------------------------------------------------------------------------
