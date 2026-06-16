@@ -86,14 +86,14 @@ last calendar day, no T+1 bar):**
 | `mean_information_ratio` | +0.3672 | **+0.4815** |
 | `mean_ic_1d` | +0.0223 | **+0.0176** |
 | `mean_ic_5d` | +0.0346 | **+0.0293** |
-| `mean_annualized_return` | +3.47% | **+5.27%** |
+| `mean_annualized_return` | +4.38% | **+5.27%** |
 | `worst_drawdown` | −12.05% | **−12.93%** |
 
 > ⚠ **The IR rise is a METRIC correction, not a strategy improvement.** Old T+2
 > underestimated the strategy (live `daily_recommend` has always filled T+1); the
 > limit fix removes inflated limit-up fills; PR-C also re-aligned IC to the label
 > horizon (so `mean_ic` moved too). The shift is **outlier-driven and within
-> cross-fold noise**: mean-fold-IR SE ≈ 0.41, IR 90% bootstrap CI ≈ [−0.36,
+> cross-fold noise**: mean-fold-IR SE ≈ 0.41, IR 95% bootstrap CI ≈ [−0.36,
 > 1.24], 11/22 folds up / 11 down, dropping the top-3 positive folds reverses it.
 > It does NOT predict better live performance.
 

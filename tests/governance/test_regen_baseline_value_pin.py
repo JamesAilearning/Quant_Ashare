@@ -54,8 +54,13 @@ class RegenBaselineValuePinTests(unittest.TestCase):
     def test_corrected_semantics_provenance_present(self) -> None:
         prov = self.data.get("_provenance", {})
         sem = str(prov.get("semantics", ""))
-        self.assertIn("T+1", sem, "provenance must record the T+1 execution correction.")
-        self.assertIn("ST", sem, "provenance must record the PIT ST exclusion.")
+        self.assertIn("T+1", sem, "provenance must record the T+1 execution correction (PR-C).")
+        self.assertIn(
+            "limit", sem.lower(),
+            "provenance must record the PR-D close-derived price-limit correction "
+            "(so the higher IR keeps its 'blocked limit-up phantom fills' explanation).",
+        )
+        self.assertIn("ST", sem, "provenance must record the PIT ST exclusion (PR-F).")
         self.assertIn(
             "REGEN-A", str(prov.get("regen", "")),
             "provenance must mark this as a REGEN-A frozen-score replay.",

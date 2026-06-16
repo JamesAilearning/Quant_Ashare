@@ -139,18 +139,29 @@ def replay_frozen_baseline(
         QlibRuntimeConfig(provider_uri=provider_uri, region="cn", data_adjust_mode=ADJUST_MODE_PRE)
     )
     frozen = load_frozen(frozen_path)
+    # The REGEN-A anchor is defined as exactly the 22 valid C1 folds (0..21) plus
+    # fold 22 as the excluded tail. Require the frozen keys to be EXACTLY that
+    # valid set before padding — otherwise a truncated/extended fixture (e.g.
+    # folds 0..20) would be silently expanded with NaN placeholders, dropping a
+    # real valid fold from the anchor while still self-reproducing (Codex P2).
+    expected_valid = set(range(TOTAL_FOLDS - 1))  # 0..21
+    if set(frozen) != expected_valid:
+        raise ValueError(
+            f"Frozen fold set {sorted(frozen)} != the expected {len(expected_valid)} "
+            f"valid folds {sorted(expected_valid)}. Refusing to replay: padding the "
+            "difference as the NaN tail would silently drop/fabricate folds."
+        )
     folds: list[WalkForwardFold] = []
     for fold_index in sorted(frozen):
         folds.append(_replay_fold(fold_index, frozen[fold_index], namechange_path))
-    # Preserve the C1 run's 23-fold shape: fold 22 failed on the bundle-tail T+1
-    # overrun and is carried as an excluded NaN fold so num_folds/valid match.
+    # fold 22 failed on the bundle-tail T+1 overrun in the C1 run; carry it as the
+    # single excluded NaN fold so num_folds (23) / valid (22) match that run.
     nan = float("nan")
-    for missing in range(len(frozen), TOTAL_FOLDS):
-        folds.append(WalkForwardFold(
-            fold_index=missing, train_period="", valid_period="", test_period="",
-            ic_1d=nan, ic_5d=nan, annualized_return=nan, max_drawdown=nan,
-            information_ratio=nan, prediction_shape=(0,),
-        ))
+    folds.append(WalkForwardFold(
+        fold_index=TOTAL_FOLDS - 1, train_period="", valid_period="", test_period="",
+        ic_1d=nan, ic_5d=nan, annualized_return=nan, max_drawdown=nan,
+        information_ratio=nan, prediction_shape=(0,),
+    ))
     aggregate = compute_aggregate(folds, seed=42)
     return {"folds": folds, "aggregate_metrics": aggregate}
 
