@@ -1,8 +1,8 @@
 """Numeric-tolerance comparison helper for regression baseline tests.
 
-Both ``tests/regression/test_fold0_baseline`` (fold-level backtest
-re-run) and ``tests/regression/test_walk_forward_aggregate_baseline``
-(full walk-forward aggregate re-run) need the same primitive: "given
+Both ``tests/regression/test_walk_forward_replay_baseline`` (frozen-score
+deterministic replay) and ``tests/regression/test_walk_forward_aggregate_baseline``
+(full walk-forward retrain re-run) need the same primitive: "given
 ``actual`` and ``baseline`` metric dicts, which keys drifted outside
 tolerance?". Extracting it here keeps the tolerance semantics
 consistent across regression tests + lets the comparison logic be

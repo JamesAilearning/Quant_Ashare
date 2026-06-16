@@ -1,189 +1,102 @@
 # Regression baselines
 
-Two regression tests live in this directory; both are E2E-gated
-(`RUN_E2E=1`) and both skip silently when their fixture files are
-absent.
+Three regression artifacts live here; all are about the walk-forward headline.
 
-## 1. Fold-0 backtest baseline — `test_fold0_baseline`
+## 1. Deterministic frozen-score replay — `test_walk_forward_replay_baseline` (PRIMARY anchor)
 
-Re-runs `BacktestRunner.run` against a frozen fold-0 prediction
-fixture and asserts headline backtest metrics haven't drifted.
+The primary walk-forward regression anchor. It replays the C1 round's **22
+frozen per-fold prediction Series** (`regen_a/frozen_fold_scores.pkl.gz`, the
+exact post-ensemble signals the backtest consumes) through the CURRENT canonical
+`BacktestRunner` (T+1 execution, close-derived price limits, PIT ST exclusion)
+and asserts the aggregate AND every per-fold IR reproduce
+`walk_forward_baseline_metrics.json` within a **tight** tolerance
+(`REPLAY_ABS_TOL = 1e-6`, held in the test source — a tampered fixture cannot
+widen its own gate).
 
-Generate the two fixtures:
+**No model is retrained and the bundle is only read** — model scores are frozen,
+so the test isolates backtest-semantics drift. Reproduction is exact because the
+scores are fixed and the backtest + aggregation are deterministic (bootstrap
+seed 42).
 
-1. Run a known-good walk-forward pipeline (e.g. `config_walk.yaml`
-   with `ensemble_window=1`):
-   ```
-   python scripts/run_walk_forward.py config_walk.yaml
-   ```
-
-2. Copy the fold-0 predictions artifact:
-   ```
-   cp output/walk_forward/fold_00_predictions.pkl \
-      tests/regression/fixtures/fold0_predictions.pkl
-   ```
-
-3. Extract the expected metrics from
-   `output/walk_forward/fold_00_report.json` into
-   `tests/regression/fixtures/fold0_expected_metrics.json`
-   (see the test for the expected schema).
-
-## 2. Walk-forward aggregate baseline — `test_walk_forward_aggregate_baseline` (FU-5)
-
-Re-runs the FULL walk-forward (all folds, ensemble, aggregate) and
-asserts headline aggregate metrics (mean IR / IC / annualized
-return / worst drawdown) stay within **±5%** of the stored baseline.
-
-Generate the baseline:
+Regenerate (after an intentional canonical-semantics change):
 
 ```
-RUN_E2E=1 python scripts/generate_regression_baseline.py [config.yaml]
+RUN_E2E=1 python scripts/regen/replay_frozen_baseline.py \
+  --provider-uri D:/qlib_data/my_cn_data_pit \
+  --namechange-path D:/qlib_data/tushare_raw/all_namechanges.parquet
 ```
 
-The script writes `walk_forward_baseline_metrics.json` here. Per
-the project's reference-data workflow:
+Skipped unless `RUN_E2E=1` **and** the PIT bundle + namechange parquet are
+present (it runs a real backtest — not CI-runnable). The frozen-scores fixture
+IS committed (~3.1 MB) so the test is not skipped for fixture absence.
 
-> I pull, you eyeball, you sign off, I commit.
+> We dropped the old single-`fold0` anchor: fold 0 is the worst, sign-flipping
+> (+0.33 → −0.27), within-noise fold — a fragile single-fold gate. The 22-fold
+> deterministic replay covers every fold instead. See `docs/baseline_20260616.md`.
 
-So the script **does NOT auto-commit** the baseline. Operators must
-open the JSON, sanity-check the headline numbers against expected
-ranges, then `git add` + `git commit`.
+## 2. Value + framing pin — `test_regen_baseline_value_pin` (CI-runnable)
 
-Optionally drop a copy of the config used to generate the baseline
-at `walk_forward_baseline_config.yaml` next to the metrics fixture
-— the test prefers it over `config_walk.yaml` at the project root,
-which means a baseline and its config can't drift apart.
+Runs in the fast suite (reads the JSON only, no bundle). Pins that the committed
+headline is the corrected value (clearly above the old 0.3672) and that the
+mandated framing is committed with the number — corrected semantics, the
+statistical caveat (within noise / metric correction), and the total-return
+deferral. So the higher IR can never be read without its context.
 
-## Why fixtures are git-ignored by default
+## 3. Walk-forward retrain baseline — `test_walk_forward_aggregate_baseline` (FU-5)
 
-`fold0_predictions.pkl` contains real predictions from production
-runs; `walk_forward_baseline_metrics.json` carries metrics tied to a
-specific bundle vintage. Both are useful regression anchors but
-neither is appropriate for unconditional inclusion in the repo —
-they grow stale on every bundle refresh. The reference-data
-workflow keeps them under operator control.
+Re-runs the FULL walk-forward (retrain, all folds, ensemble) and asserts headline
+aggregates stay within **±5%** of `walk_forward_baseline_metrics.json`. Unlike
+the deterministic replay (1), this one retrains, so its band stays loose to
+absorb GPU/retrain noise (tightening is deferred to REGEN-2). RUN_E2E-gated.
+
+## Why some fixtures are git-ignored, some committed
+
+`walk_forward_baseline_metrics.json` (metrics + per_fold) and
+`regen_a/frozen_fold_scores.pkl.gz` (frozen scores) ARE committed — they are the
+deterministic anchor. They change only on a deliberate, signed-off re-baseline,
+per the reference-data workflow ("I pull, you eyeball, you sign off, I commit").
 
 ## When to refresh
 
-Refresh whenever:
+Refresh (regenerate via `scripts/regen/replay_frozen_baseline.py`, eyeball,
+re-sign, commit in the SAME PR) whenever a merged PR intentionally changes the
+canonical backtest semantics. Do NOT refresh because the baseline is "slightly
+off" — that's the regression these tests exist to surface.
 
-- A merged PR intentionally changes the headline metric (e.g. PR1
-  fixed the rank-IC double-counting; pre-PR1 baselines are
-  no longer comparable).
-- The qlib bundle is re-ingested with a new coverage window.
-- Tushare publishes corrected historical data (rare).
+## Current baseline (committed) — REGEN-A corrected
 
-Do NOT refresh because the baseline is "slightly off" — that's
-exactly the regression these tests exist to surface.
+Produced by **frozen-score replay** (NO retrain, NO bundle rebuild) of the C1
+round through the corrected canonical semantics. See
+`docs/baseline_20260616.md` for the full old→new analysis, per-fold distribution,
+and framing.
 
-## Current baseline (committed)
+**Semantics:** T+1 execution (PR-C) + close-derived price limits (PR-D) + PIT ST
+exclusion (PR-F). **Benchmark:** price index `SH000300` — total-return
+`SH000300TR` deferred to REGEN-2 (excess will revise down ~2-2.5pp).
 
-`walk_forward_baseline_metrics.json` + `walk_forward_baseline_config.yaml`
-landed for the first time as the post-embargo-gap-fix clean reference.
+**Frozen-score provenance:** C1 run 2026-06-01, `config_fingerprint 22e0682…`,
+csi300 / Alpha158 / 24-3-3 / ensemble_window=3, bundle
+`D:/qlib_data/my_cn_data_pit` (2018-01-02 → 2025-12-31), GPU-trained scores.
 
-**Provenance**
+**Headline (22 valid folds; fold 22 excluded — 2025Q4 test ends on the bundle's
+last calendar day, no T+1 bar):**
 
-- Phase: **C1 — clean walk-forward baseline after embargo-gap fix.**
-  See `docs/phase_c1_result.md` for the full investigation, per-fold
-  table, and known-issue list.
-- Reproducing main commit: **`bf4672b` (#212 — `fix: walk-forward
-  embargo gap`)** or any newer main. Earlier commits cannot reproduce
-  these numbers — the embargo-gap fix changed how WF generates fold
-  windows.
-- Bundle vintage: **PIT bundle (`D:/qlib_data/my_cn_data_pit`),
-  calendar 2018-01-02 → 2025-12-31.** Refreshing the bundle past
-  2025-12-31 is a refresh trigger (see "When to refresh" above).
-- Run date: 2026-06-01.
-- Config (resolved key params, for human read — full extends file in
-  `walk_forward_baseline_config.yaml`):
-  - `provider_uri: D:/qlib_data/my_cn_data_pit`
-  - `instruments: csi300`, `feature_handler: Alpha158`
-  - `overall_start: 2018-01-01`, `overall_end: 2025-12-31`
-  - `train_months: 24`, `valid_months: 3`, `test_months: 3`, `step_months: 3`
-  - `ensemble_window: 3`
-  - `model_type: LGBModel`, `num_boost_round: 1000`,
-    `early_stopping_rounds: 50`, `learning_rate: 0.005`
-  - `topk: 50`, `n_drop: 5`, `signal_to_execution_lag: 1`
-  - `benchmark_code: SH000300`
-  - `compute_device: gpu` (the c1 run was GPU; CPU rerun should land
-    within ±5% on the same bundle — LGB GPU vs CPU isn't bitwise
-    identical but headline IC/IR drift well under tolerance)
+| metric | OLD (T+2, limit-permissive) | **NEW (corrected)** |
+|---|---:|---:|
+| `mean_information_ratio` | +0.3672 | **+0.4815** |
+| `mean_ic_1d` | +0.0223 | **+0.0176** |
+| `mean_ic_5d` | +0.0346 | **+0.0293** |
+| `mean_annualized_return` | +3.47% | **+5.27%** |
+| `worst_drawdown` | −12.05% | **−12.93%** |
 
-**Headline numbers (over 22 valid folds — fold 22 excluded; see below)**
+> ⚠ **The IR rise is a METRIC correction, not a strategy improvement.** Old T+2
+> underestimated the strategy (live `daily_recommend` has always filled T+1); the
+> limit fix removes inflated limit-up fills; PR-C also re-aligned IC to the label
+> horizon (so `mean_ic` moved too). The shift is **outlier-driven and within
+> cross-fold noise**: mean-fold-IR SE ≈ 0.41, IR 90% bootstrap CI ≈ [−0.36,
+> 1.24], 11/22 folds up / 11 down, dropping the top-3 positive folds reverses it.
+> It does NOT predict better live performance.
 
-| metric | value |
-|---|---:|
-| `mean_information_ratio` | **+0.301** |
-| `mean_ic_1d` | **+0.0224** |
-| `mean_ic_5d` | **+0.0346** |
-| `mean_annualized_return` | **+3.47%** |
-| `worst_drawdown` | **-12.05%** |
-
-**⚠ 22-of-23 folds — fold 22 deliberately excluded**
-
-The 23rd fold (2025Q4 test window, 2025-10-01 → 2025-12-31) fails
-during backtest with `IndexError: index 1942 is out of bounds for
-axis 0 with size 1942` — its test window ends on the bundle's last
-calendar day, and the backtest needs a T+1 execution bar that
-doesn't exist. The aggregate metrics above are computed over the
-**22 valid folds**; fold 22 is excluded. This is recorded in
-`docs/phase_c1_result.md §7` and tracked as a separate fix outside
-the scope of this fixture.
-
-**When the fold-22 fix lands, this baseline WILL drift.** Most likely
-outcomes once the backtest tolerates / pads the bundle tail:
-
-- `num_folds` stays 23 but `valid_folds_*` becomes 23 (the
-  previously-excluded fold contributes).
-- `mean_information_ratio` / `mean_ic_1d` / `mean_annualized_return`
-  / `worst_drawdown` shift by whatever 2025Q4 happens to add — the
-  per-fold table in `docs/phase_c1_result.md` shows the surrounding
-  folds vary widely, so adding one more is a real perturbation, not
-  a rounding-noise drift.
-
-That follow-up PR must:
-
-1. Land its backtest tail-tolerance fix.
-2. Regenerate this baseline via
-   `RUN_E2E=1 python scripts/generate_regression_baseline.py
-   tests/regression/fixtures/walk_forward_baseline_config.yaml`.
-3. Eyeball the new headline numbers against the C1 22-fold reference
-   above + the 2025Q4-fold-now-included expectation.
-4. Commit the regenerated fixture **in the same PR** so the drift
-   test stays green at merge time. Do NOT defer to a follow-up — a
-   stale baseline + new code = false-positive regression for everyone
-   downstream.
-
-**Known follow-up issues recorded against this baseline** (NOT fixed
-by this fixture commit; each gets its own PR):
-
-- Fold-22 T+1 overrun (above).
-- `engine.py:272` `_logger.info("  %s: %.4f", key, val)` raises
-  `TypeError` for the `"timing"` aggregate key (dict). Logger swallows
-  so the aggregate JSON itself is correct, but the AGGREGATE RESULTS
-  log block prints half-truncated.
-  See `docs/phase_c1_result.md §7`.
-
-**What this fixture's `aggregate_metrics` dict drives**
-
-`tests/regression/test_walk_forward_aggregate_baseline.py` calls
-`compare_metrics(..., keys=_HEADLINE_METRICS)`, which restricts the
-±5% drift check to exactly:
-
-- `mean_information_ratio`
-- `mean_ic_1d`
-- `mean_ic_5d`
-- `mean_annualized_return`
-- `worst_drawdown`
-
-Every other key in `aggregate_metrics` (`std_*`, `*_ci_low` /
-`*_ci_high`, `valid_folds_*`, `bootstrap_seed`, `bootstrap_n`,
-`num_folds`) is **recorded for human inspection only — NOT compared
-by the drift test**. The fixture mirrors the full dict that
-`scripts/generate_regression_baseline.py` writes so future
-regenerations (e.g. after the fold-22 fix lands) diff cleanly. If a
-later PR extends `_HEADLINE_METRICS`, the noise / "is this even a
-metric" question — especially for `bootstrap_seed` (whose
-`compare_metrics` docstring lines 71-75 already document as the
-canonical NaN-silence example) and the noisier `std_*` / `*_ci_*`
-moments — lands on that PR's review, not on this fixture's shape.
+**Known residual:** the close-derived limit over-blocks a handful of resumption
+days (Ref($close,1)=NaN across a suspension gap) — max 4 per fold, 37 total over
+22 folds; negligible, tracked as a PR-D backlog. See `docs/baseline_20260616.md`.

@@ -22,9 +22,6 @@ models/
 mlruns/
 logs/
 
-# Regression test fixtures (binary artifacts from production runs)
-tests/regression/fixtures/fold0_predictions.pkl
-tests/regression/fixtures/fold0_expected_metrics.json
 
 # IDE
 .idea/
