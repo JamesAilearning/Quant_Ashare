@@ -15,7 +15,7 @@ from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core._json_utils import _sanitize_for_json, sha256_canonical
-from src.core._shared_validators import validate_n_drop
+from src.core._shared_validators import validate_n_drop, validate_topk
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -240,10 +240,7 @@ class PipelineConfig:
             raise PipelineError(
                 f"PipelineConfig.init_cash must be positive; got {self.init_cash!r}."
             )
-        if self.topk < 1:
-            raise PipelineError(
-                f"PipelineConfig.topk must be >= 1; got {self.topk!r}."
-            )
+        validate_topk(self.topk, error_class=PipelineError, prefix="PipelineConfig.")
         # Cost / fee parameters must be non-negative. Negative
         # commission / stamp tax / slippage / min_cost would silently
         # *add* return rather than subtract it — backtest looks better

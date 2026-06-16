@@ -18,6 +18,27 @@ distinct exception types, and collapsing them would erase that layering
 from __future__ import annotations
 
 
+def validate_topk(
+    topk: int,
+    *,
+    error_class: type[Exception],
+    prefix: str = "",
+) -> None:
+    """Validate ``topk`` is a positive int.
+
+    Shared by ``PipelineConfig`` and ``WalkForwardConfig``. The
+    ``isinstance`` guards reject ``bool`` (a copy-pasted ``topk=True``
+    would otherwise satisfy ``topk >= 1``) and non-int values (which
+    would raise a cryptic ``TypeError`` deep in a later comparison such
+    as ``n_drop >= topk``). ``error_class`` is the caller's exception
+    type; ``prefix`` is prepended to the field name.
+    """
+    if not isinstance(topk, int) or isinstance(topk, bool) or topk < 1:
+        raise error_class(
+            f"{prefix}topk must be a positive int; got {topk!r}."
+        )
+
+
 def validate_n_drop(
     n_drop: int,
     topk: int,

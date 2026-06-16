@@ -299,6 +299,25 @@ class PipelineConfigPostInitTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "topk"):
             PipelineConfig(provider_uri="/tmp/fake", topk=0)
 
+    def test_rejects_bool_topk(self) -> None:
+        """``topk=True`` would satisfy ``topk >= 1`` and silently behave as a
+        1-name portfolio; reject it (and ``False``) at the type layer.
+        WalkForwardConfig already guarded this — the two now share
+        ``src.core._shared_validators.validate_topk`` so they can't drift."""
+        with self.assertRaisesRegex(PipelineError, "topk"):
+            PipelineConfig(provider_uri="/tmp/fake", topk=True)
+        with self.assertRaisesRegex(PipelineError, "topk"):
+            PipelineConfig(provider_uri="/tmp/fake", topk=False)
+
+    def test_rejects_non_int_topk(self) -> None:
+        """A non-int ``topk`` (YAML typo) previously slipped through: ``"50"``
+        raised a cryptic TypeError at the ``topk < 1`` comparison and ``2.5``
+        passed entirely. Both are now rejected with a clean PipelineError."""
+        with self.assertRaisesRegex(PipelineError, "topk"):
+            PipelineConfig(provider_uri="/tmp/fake", topk="50")
+        with self.assertRaisesRegex(PipelineError, "topk"):
+            PipelineConfig(provider_uri="/tmp/fake", topk=2.5)
+
     def test_rejects_n_drop_gte_topk(self) -> None:
         """``n_drop >= topk`` would empty the portfolio after the first
         rebalance under TopkDropoutStrategy. ``WalkForwardConfig`` already
