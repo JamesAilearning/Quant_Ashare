@@ -131,11 +131,20 @@ class WalkForwardReplayBaselineTests(unittest.TestCase):
         committed_pf = {f["fold_index"]: f for f in committed.get("per_fold", [])}
         self.assertTrue(committed_pf, "committed baseline carries no per_fold block.")
         result = self._replay()["folds"]
+        # The committed fold-index set MUST match the replay's exactly — otherwise
+        # a stale/incomplete per_fold block (a dropped or mis-indexed fold) would
+        # silently skip the fold-level anchor while the aggregate still passes.
+        replay_indices = {fold.fold_index for fold in result}
+        committed_indices = set(committed_pf)
+        self.assertEqual(
+            committed_indices, replay_indices,
+            f"committed per_fold fold set {sorted(committed_indices)} != replay "
+            f"fold set {sorted(replay_indices)} — the per_fold block is "
+            "stale/incomplete; regenerate via scripts/regen/replay_frozen_baseline.py.",
+        )
         drifts = []
         for fold in result:
-            ref = committed_pf.get(fold.fold_index)
-            if ref is None:
-                continue
+            ref = committed_pf[fold.fold_index]  # guaranteed present by the set check above
             for metric in self._PER_FOLD_METRICS:
                 if not self._close(getattr(fold, metric), ref.get(metric)):
                     drifts.append(
