@@ -35,6 +35,34 @@ class BundleIntegrityError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class BundleIdentity:
+    """A bundle's content identity (PR-G+I). Folded into the SAME stamp as the
+    holey-fetch provenance so there is ONE bundle sidecar written on the build
+    path, replacing the never-written ``bundle_manifest.json`` as the identity
+    source for the feature-cache key, the walk-forward freshness check, the
+    resume fingerprint, and the UI bundle-health banner.
+
+    ``content_hash`` is a sha256 over ``calendars/day.txt`` ONLY (the same scope
+    as :func:`src.data.bundle_manifest.compute_bundle_content_hash`); it is a
+    cheap, deterministic bundle-version key, NOT a full-bin integrity guarantee
+    — an out-of-band edit to a single ticker bin that leaves the calendar
+    unchanged does not change it.
+    """
+
+    tail_date: str  # last calendar trading day (ISO date)
+    content_hash: str  # sha256 of calendars/day.txt
+    instrument_count: int
+    calendar_start: str  # first calendar trading day (ISO date)
+    calendar_end: str  # == tail_date; kept explicit for span readability
+
+    @property
+    def tag(self) -> str:
+        """The compact identity string used as the feature-cache key / resume
+        fingerprint input: ``<tail_date>@<content_hash>``."""
+        return f"{self.tail_date}@{self.content_hash}"
+
+
+@dataclass(frozen=True)
 class BundleIntegrity:
     """The bundle's fetch-integrity stamp (one ``_fetch_integrity.json`` per
     qlib provider dir)."""
@@ -43,6 +71,11 @@ class BundleIntegrity:
     built_from_holey_fetch: bool
     built_at: str  # ISO-8601
     holes: tuple[FetchHole, ...]  # the fetch holes (provenance; empty when clean)
+    # PR-G+I: content identity. OPTIONAL within schema_version 1 — bundles built
+    # before PR-G+I have no identity block (``None``); the schema version is NOT
+    # bumped precisely so those v1 stamps (and the daily_recommend gate that reads
+    # them) keep working without a forced rebuild.
+    identity: BundleIdentity | None = None
 
 
 def write_bundle_integrity(
@@ -50,15 +83,20 @@ def write_bundle_integrity(
     *,
     built_from_holey_fetch: bool,
     holes: tuple[FetchHole, ...] = (),
+    identity: BundleIdentity | None = None,
     now: datetime | None = None,
 ) -> None:
     """Atomically write the bundle's fetch-integrity stamp (temp + ``os.replace``)
     so a crash mid-write never leaves a half-written stamp. ``now`` is injectable
     for tests / determinism (value-injection, as elsewhere); production default is
     the system clock. A clean build writes ``built_from_holey_fetch=False`` with no
-    holes; a ``--allow-holey-fetch`` build writes ``True`` plus the holes."""
+    holes; a ``--allow-holey-fetch`` build writes ``True`` plus the holes.
+
+    ``identity`` (PR-G+I) is the bundle's content identity; when omitted the
+    ``identity`` key is left out entirely (byte-stable for pre-PR-G+I callers and
+    tests)."""
     stamp = (now if now is not None else datetime.now(tz=timezone.utc)).isoformat()
-    payload = {
+    payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "built_from_holey_fetch": built_from_holey_fetch,
         "built_at": stamp,
@@ -73,6 +111,14 @@ def write_bundle_integrity(
             for h in holes
         ],
     }
+    if identity is not None:
+        payload["identity"] = {
+            "tail_date": identity.tail_date,
+            "content_hash": identity.content_hash,
+            "instrument_count": identity.instrument_count,
+            "calendar_start": identity.calendar_start,
+            "calendar_end": identity.calendar_end,
+        }
     bundle_dir.mkdir(parents=True, exist_ok=True)
     path = bundle_dir / INTEGRITY_FILENAME
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -134,11 +180,26 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             f"{ctx}: inconsistent — built_from_holey_fetch is false but {len(holes)} "
             "hole(s) are listed; refusing to parse a clean stamp that records holes."
         )
+    # PR-G+I: parse the OPTIONAL identity block only when present. A pre-PR-G+I
+    # v1 stamp has no "identity" key → identity stays None (no fail-loud), so the
+    # daily_recommend gate and any other v1 reader keep working unchanged.
+    identity: BundleIdentity | None = None
+    if "identity" in raw:
+        ident_ctx = f"{ctx} identity"
+        ident_raw = _require(raw, "identity", dict, ctx)
+        identity = BundleIdentity(
+            tail_date=_require(ident_raw, "tail_date", str, ident_ctx),
+            content_hash=_require(ident_raw, "content_hash", str, ident_ctx),
+            instrument_count=_require(ident_raw, "instrument_count", int, ident_ctx),
+            calendar_start=_require(ident_raw, "calendar_start", str, ident_ctx),
+            calendar_end=_require(ident_raw, "calendar_end", str, ident_ctx),
+        )
     return BundleIntegrity(
         schema_version=SCHEMA_VERSION,  # already validated equal above
         built_from_holey_fetch=built_from_holey_fetch,
         built_at=_require(raw, "built_at", str, ctx),
         holes=holes,
+        identity=identity,
     )
 
 

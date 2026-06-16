@@ -83,7 +83,8 @@ import numpy as np
 import pandas as pd
 
 from src.core.logger import get_logger
-from src.data.pit.bundle_integrity import write_bundle_integrity
+from src.data.bundle_manifest import compute_bundle_content_hash
+from src.data.pit.bundle_integrity import BundleIdentity, write_bundle_integrity
 from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
     FetchManifestError,
@@ -301,10 +302,23 @@ class QlibBinBuilder:
             # P3-4c: stamp the bundle with its fetch-integrity provenance (clean,
             # or built-from-holey-fetch + which holes) INSIDE staging, so it is
             # promoted atomically with the bins. The recommend boundary gates on it.
+            # PR-G+I: also fold in the bundle's content IDENTITY (tail_date,
+            # content_hash, instrument_count, calendar span) computed from the
+            # STAGING bytes (calendar written above at _write_calendar), so the
+            # one sidecar on the build path is the single identity source for the
+            # feature-cache key, WF freshness check, resume fingerprint, and UI.
+            bundle_identity = BundleIdentity(
+                tail_date=calendar[-1],
+                content_hash=compute_bundle_content_hash(staging),
+                instrument_count=len(per_ticker),
+                calendar_start=calendar[0],
+                calendar_end=calendar[-1],
+            )
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,
                 holes=fetch_holes,
+                identity=bundle_identity,
             )
             # Promote staging to final location
             if self._output_dir.exists():

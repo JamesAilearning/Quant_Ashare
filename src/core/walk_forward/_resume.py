@@ -113,13 +113,23 @@ ResumeMode.FORCE_RERUN = ResumeMode.force_rerun()
 _FINGERPRINT_EXCLUDE_FIELDS: frozenset[str] = frozenset({"output_dir"})
 
 
-def compute_config_fingerprint(config: Any) -> str:
+def compute_config_fingerprint(config: Any, *, bundle_identity: str | None = None) -> str:
     """Return a short sha256 hex digest identifying the config.
 
     Excludes :data:`_FINGERPRINT_EXCLUDE_FIELDS` so renaming the
     output directory does NOT invalidate a resume. Any other field
     change (train_months, topk, model_type, …) produces a different
     fingerprint and triggers a re-run of all folds.
+
+    ``bundle_identity`` (PR-G+I) is the bundle content tag from
+    :func:`src.data._feature_dataset_cache.read_bundle_tag` — the SAME value the
+    feature-cache key uses, so the cache and resume invalidate in lockstep on a
+    re-ingest. It is resolved by the engine (which holds the canonical
+    provider_uri) and passed in, keeping this module free of qlib/data imports.
+    A ``None`` or ``"unknown"`` tag (the bundle carries no ``_fetch_integrity``
+    identity) is NOT folded in, so the digest stays byte-identical to the
+    pre-PR-G+I fingerprint — adopting this change forces no re-run on
+    identity-less bundles.
     """
     # ``is_dataclass`` is True for both classes AND instances; we
     # only want instances (``asdict`` raises on a class). Explicit
@@ -161,6 +171,14 @@ def compute_config_fingerprint(config: Any) -> str:
     )
     raw["execution_timing_semantics"] = EXECUTION_TIMING_SEMANTICS
     raw["price_limit_semantics"] = PRICE_LIMIT_SEMANTICS
+    # PR-G+I: fold the bundle content identity in so a same-window data re-ingest
+    # (new calendar bytes → new content_hash → new tag) invalidates resume. Only
+    # a REAL identity is injected; "unknown"/None (no _fetch_integrity identity)
+    # leaves the digest unchanged (see docstring) — adoption is free on such
+    # bundles. "unknown" is read_bundle_tag's sentinel (kept as a literal so this
+    # module imports nothing from the data layer).
+    if bundle_identity and bundle_identity != "unknown":
+        raw["bundle_identity"] = bundle_identity
     payload = json.dumps(raw, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -207,6 +225,7 @@ class FoldManifest:
         report_path: str,
         predictions_path: str,
         positions_path: str | None,
+        bundle_identity: str | None = None,
     ) -> FoldManifest:
         # Store basenames only — paths are location-independent so a
         # ``output_dir`` rename between the original run and the resume
@@ -222,7 +241,9 @@ class FoldManifest:
             train_period=fold.train_period,
             valid_period=fold.valid_period,
             test_period=fold.test_period,
-            config_fingerprint=compute_config_fingerprint(config),
+            config_fingerprint=compute_config_fingerprint(
+                config, bundle_identity=bundle_identity,
+            ),
             model_path=Path(model_path).name,
             report_path=Path(report_path).name,
             predictions_path=Path(predictions_path).name,
