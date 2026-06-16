@@ -131,17 +131,36 @@ def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
     manifest = _read_json(manifest_path)
     source = validation or manifest
 
+    # PR-G+I: the build-path-written _fetch_integrity.json identity is the
+    # CANONICAL bundle metadata (validation.json/manifest.json have no production
+    # writer). Prefer it for tail_date + instrument_count. Best-effort: a missing
+    # or malformed stamp leaves the legacy fallbacks in place — the health banner
+    # must never crash on a bad sidecar.
+    identity_tail: date | None = None
+    identity_count: int | None = None
+    try:
+        from src.data.pit.bundle_integrity import read_bundle_integrity
+        _integrity = read_bundle_integrity(provider_path)
+        if _integrity is not None and _integrity.identity is not None:
+            identity_tail = _parse_optional_date(_integrity.identity.tail_date)
+            identity_count = _integrity.identity.instrument_count
+    except Exception:  # noqa: BLE001 — UI banner must not crash on a bad stamp
+        pass
+
     coverage_start = _parse_optional_date(source.get("coverage_start_date"))
-    coverage_end = _parse_optional_date(source.get("coverage_end_date"))
+    # PR-G+I: the _fetch_integrity identity is canonical → prefer it over the
+    # (writer-less) validation.json/manifest.json source.
+    coverage_end = identity_tail or _parse_optional_date(source.get("coverage_end_date"))
     calendar_dates = _read_calendar_dates(provider_path / "calendars" / "day.txt")
     if calendar_dates:
         coverage_start = coverage_start or calendar_dates[0]
         coverage_end = coverage_end or calendar_dates[-1]
 
     instrument_universes = _read_instrument_universes(provider_path)
-    if not validation and not manifest:
+    if not validation and not manifest and identity_tail is None:
         warnings.append(
-            "未找到相邻的 validation.json 或 manifest.json，数据源覆盖预览功能受限。"
+            "未找到 _fetch_integrity.json 身份 / validation.json / manifest.json，"
+            "数据源覆盖预览功能受限。"
         )
     if not calendar_dates:
         warnings.append(
@@ -165,7 +184,10 @@ def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
         instrument_universes=instrument_universes,
         health=health,
         row_count=_optional_int(source.get("row_count")),
-        instrument_count=_optional_int(source.get("instrument_count")),
+        instrument_count=(
+            identity_count if identity_count is not None
+            else _optional_int(source.get("instrument_count"))
+        ),
         calendar_count=_optional_int(source.get("calendar_count")) or len(calendar_dates) or None,
         errors=tuple(errors),
         warnings=tuple(warnings),

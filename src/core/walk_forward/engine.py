@@ -87,10 +87,20 @@ class WalkForwardEngine:
         output_dir.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now(tz=timezone.utc).isoformat()
 
+        # PR-G+I: resolve the bundle content identity ONCE here (the canonical
+        # provider_uri is in scope after init) and thread it through the resume
+        # fingerprint, exactly the value + resolution the feature-cache key uses
+        # so cache and resume invalidate in lockstep on a re-ingest. Best-effort:
+        # "unknown" when the bundle carries no _fetch_integrity identity, which
+        # leaves the fingerprint unchanged (no forced re-run on legacy bundles).
+        bundle_identity = cls._resolve_bundle_identity()
+
         # Resume policy — default AUTO (resume any matching manifest).
         # See src/core/walk_forward/_resume.py for the contract.
         effective_resume_mode = resume_mode if resume_mode is not None else ResumeMode.AUTO
-        config_fingerprint = compute_config_fingerprint(config)
+        config_fingerprint = compute_config_fingerprint(
+            config, bundle_identity=bundle_identity,
+        )
         discovered_manifests = FoldManifest.discover(output_dir)
 
         # Generate fold windows (embargo-gapped; calendar from qlib runtime)
@@ -244,6 +254,7 @@ class WalkForwardEngine:
                             if (output_dir / f"fold_{i:02d}_positions.json").exists()
                             else None
                         ),
+                        bundle_identity=bundle_identity,
                     )
                     manifest.save(output_dir)
                 except Exception:  # noqa: BLE001
@@ -508,6 +519,26 @@ class WalkForwardEngine:
         """
         from qlib.data import D
         return [cls._to_date(d) for d in D.calendar()]
+
+    @staticmethod
+    def _resolve_bundle_identity() -> str:
+        """Resolve the bundle content tag for the resume fingerprint (PR-G+I).
+
+        Mirrors the feature-cache key's resolution EXACTLY (provider_uri from the
+        canonical qlib config, then ``read_bundle_tag``) so the cache key and the
+        resume fingerprint derive identity from the same source and invalidate
+        together. Best-effort: returns ``"unknown"`` when the canonical config or
+        the bundle identity is unavailable. Isolated behind a method so tests can
+        patch it without standing up a bundle.
+        """
+        from src.data._feature_dataset_cache import read_bundle_tag
+        try:
+            from src.core.qlib_runtime import get_canonical_qlib_config
+            canonical = get_canonical_qlib_config()
+            bundle_uri = canonical.provider_uri if canonical else None
+        except Exception:  # noqa: BLE001 — best-effort, mirrors feature builder
+            bundle_uri = None
+        return read_bundle_tag(bundle_uri)
 
     @classmethod
     def _run_single_fold(

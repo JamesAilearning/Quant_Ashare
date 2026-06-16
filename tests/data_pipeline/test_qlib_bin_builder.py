@@ -185,6 +185,17 @@ class FetchGateTests(unittest.TestCase):
             assert integ is not None
             self.assertFalse(integ.built_from_holey_fetch)
             self.assertEqual(integ.holes, ())
+            # PR-G+I: the build path stamps the bundle's content identity into
+            # the same _fetch_integrity.json, computed from the promoted bytes.
+            from src.data.bundle_manifest import compute_bundle_content_hash
+            assert integ.identity is not None
+            self.assertEqual(integ.identity.tail_date, "2020-01-03")
+            self.assertEqual(integ.identity.calendar_start, "2020-01-02")
+            self.assertEqual(integ.identity.calendar_end, "2020-01-03")
+            self.assertEqual(integ.identity.instrument_count, 1)
+            self.assertEqual(
+                integ.identity.content_hash, compute_bundle_content_hash(out),
+            )
 
     def test_holey_build_with_override_stamps_holey(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

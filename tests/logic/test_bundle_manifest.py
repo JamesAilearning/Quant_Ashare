@@ -220,9 +220,10 @@ class ValidateTestEndTests(unittest.TestCase):
         self.assertIn("2026-04-30", warnings[0].getMessage())
         self.assertIn("2026-03-06", warnings[0].getMessage())
 
-    def test_no_manifest_logs_info_and_passes(self) -> None:
+    def test_no_identity_logs_info_and_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            # No manifest file written
+            # No bundle identity source written (neither _fetch_integrity.json
+            # identity nor bundle_manifest.json) → INFO + pass (PR-G+I).
             with self.assertLogs(
                 "src.data.bundle_manifest", level="INFO"
             ) as captured:
@@ -233,8 +234,8 @@ class ValidateTestEndTests(unittest.TestCase):
             if r.levelno == logging.INFO
         ]
         self.assertTrue(
-            any("No bundle manifest" in m for m in infos),
-            f"expected an INFO log about missing manifest; got {infos}",
+            any("skipping bundle freshness validation" in m for m in infos),
+            f"expected an INFO log about skipping the freshness check; got {infos}",
         )
 
     def test_skip_env_var_bypasses_check(self) -> None:

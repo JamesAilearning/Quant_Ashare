@@ -579,20 +579,20 @@ def verify_content_hash(
         # tests that exercise downstream wiring against fixture
         # bundles without a real calendar.
         return
-    manifest = load_manifest(provider_uri)
-    if manifest is None or manifest.content_hash is None:
+    freshness = _resolve_bundle_freshness(provider_uri)
+    if freshness is None or freshness.content_hash is None:
         # Legacy bundle / opt-out caller. No-op without logging — the
-        # date validator already emits an INFO log for the no-manifest
+        # date validator already emits an INFO log for the no-identity
         # path, so a second INFO here would be noisy duplicate.
         return
 
     actual = compute_bundle_content_hash(provider_uri)
-    if actual == manifest.content_hash:
+    if actual == freshness.content_hash:
         return
 
     message = (
-        f"Bundle content_hash mismatch at {provider_uri}. The manifest "
-        f"claims {manifest.content_hash!r} but the calendar bytes on "
+        f"Bundle content_hash mismatch at {provider_uri}. The stamp "
+        f"claims {freshness.content_hash!r} but the calendar bytes on "
         f"disk hash to {actual!r}. This means the bundle was modified "
         "out-of-band, OR the manifest is from a different (older / "
         "parallel) build of the same path. Re-run the ingest script "
@@ -605,6 +605,48 @@ def verify_content_hash(
         _logger.warning(message)
         return
     raise BundleContentHashMismatchError(message)
+
+
+@dataclass(frozen=True)
+class _BundleFreshness:
+    """The minimal (tail_date, content_hash) a freshness check needs, resolved
+    from whichever bundle sidecar is present."""
+
+    tail_date: date
+    content_hash: str | None
+
+
+def _resolve_bundle_freshness(provider_uri: str | Path) -> _BundleFreshness | None:
+    """Resolve the bundle's freshness fields, PREFERRING the build-path-written
+    ``_fetch_integrity.json`` identity (PR-G+I) and falling back to the legacy
+    ``bundle_manifest.json`` (which has no production writer). Returns ``None``
+    when neither source carries identity.
+
+    Lazy import keeps ``bundle_manifest`` ↔ ``pit.bundle_integrity`` acyclic. A
+    malformed integrity stamp falls back to the manifest rather than raising — the
+    daily_recommend gate is the loud reader of that stamp; the freshness check
+    degrades to the legacy source."""
+    base = Path(str(provider_uri))
+    try:
+        from src.data.pit.bundle_integrity import read_bundle_integrity
+        integrity = read_bundle_integrity(base)
+        if integrity is not None and integrity.identity is not None:
+            ident = integrity.identity
+            # date.fromisoformat is INSIDE the try so a malformed (non-ISO)
+            # tail_date degrades to the legacy manifest rather than raising —
+            # the daily_recommend gate is the loud reader of a bad stamp.
+            return _BundleFreshness(
+                tail_date=date.fromisoformat(ident.tail_date),
+                content_hash=ident.content_hash,
+            )
+    except Exception:  # noqa: BLE001 — malformed stamp → fall back to manifest
+        pass
+    manifest = load_manifest(provider_uri)
+    if manifest is not None:
+        return _BundleFreshness(
+            tail_date=manifest.tail_date, content_hash=manifest.content_hash,
+        )
+    return None
 
 
 def validate_test_end_against_bundle(
@@ -674,13 +716,14 @@ def validate_test_end_against_bundle(
         )
         return
 
-    manifest = load_manifest(provider_uri)
-    if manifest is None:
+    freshness = _resolve_bundle_freshness(provider_uri)
+    if freshness is None:
         _logger.info(
-            "No bundle manifest at %s, skipping bundle freshness "
-            "validation. Add a bundle_manifest.json to enable the "
-            "test_end vs tail_date check.",
-            _manifest_path(provider_uri),
+            "No bundle identity at %s (neither _fetch_integrity.json identity "
+            "nor bundle_manifest.json), skipping bundle freshness validation. "
+            "Rebuild the bundle (PR-G+I stamps identity on the build path) to "
+            "enable the test_end vs tail_date check.",
+            provider_uri,
         )
         return
 
@@ -709,17 +752,17 @@ def validate_test_end_against_bundle(
     # through with the same warn-vs-raise semantics as the date check.
     verify_content_hash(provider_uri, soft=soft)
 
-    if test_end_date <= manifest.tail_date:
+    if test_end_date <= freshness.tail_date:
         # Bundle covers the requested window. Stay silent — chatty
         # success logs would just add noise on every walk-forward run.
         return
 
     message = (
         f"Configured test_end ({test_end_date.isoformat()}) is after "
-        f"the bundle's tail_date ({manifest.tail_date.isoformat()}) "
+        f"the bundle's tail_date ({freshness.tail_date.isoformat()}) "
         f"at {provider_uri}. The bundle does not cover the requested "
         f"window; either refresh the bundle (re-ingest) or pull "
-        f"test_end back to {manifest.tail_date.isoformat()} or earlier. "
+        f"test_end back to {freshness.tail_date.isoformat()} or earlier. "
         f"To bypass this check (e.g. for a one-off operator override), "
         f"set {SKIP_ENV_VAR}=1."
     )

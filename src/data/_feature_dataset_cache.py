@@ -60,7 +60,16 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
 
     Reads (in order):
 
-    1. ``bundle_manifest.json`` (PR #149 canonical contract) → returns
+    0. ``_fetch_integrity.json`` identity block (PR-G+I, the CANONICAL source —
+       it is the one sidecar ``QlibBinBuilder`` actually writes on the build
+       path) → returns ``"<tail_date>@<content_hash>"`` with the content_hash
+       RECOMPUTED from the live ``calendars/day.txt`` (not the build-time value
+       stored in the stamp), so an out-of-band calendar edit still invalidates.
+       Sources 1/2 below remain as fallback for legacy bundles; note
+       ``bundle_manifest.json`` (source 1) has no production writer
+       (``save_manifest`` is test-only), so real bundles use source 0 or fall
+       through to "unknown".
+    1. ``bundle_manifest.json`` (PR #149 contract) → returns
        ``"<tail_date>@<content_hash>"`` when both fields are present
        (the ``content_hash`` field was added in PR #175), or just
        ``<tail_date>`` for legacy manifests that pre-date the hash
@@ -93,6 +102,37 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
     if not provider_uri:
         return _LEGACY_BUNDLE_TAG
     base = Path(str(provider_uri))
+
+    # 0. PR-G+I: the build-path-written ``_fetch_integrity.json`` identity block
+    #    is the CANONICAL source — it is the one sidecar QlibBinBuilder actually
+    #    writes on the build path, whereas ``bundle_manifest.json`` (source 1
+    #    below) has no production writer (``save_manifest`` is test-only), so on
+    #    real bundles sources 1/2 fall through to "unknown". The identity tag is
+    #    ``"<tail_date>@<content_hash>"`` (content_hash over calendars/day.txt),
+    #    so a same-tail re-ingest with different calendar bytes still invalidates
+    #    the cache. Lazy import keeps the import graph acyclic; best-effort
+    #    (a malformed/legacy-without-identity stamp falls through to 1/2 → unknown).
+    try:
+        from src.data.pit.bundle_integrity import read_bundle_integrity
+        integrity = read_bundle_integrity(base)
+        if integrity is not None and integrity.identity is not None:
+            tail = integrity.identity.tail_date
+            # RECOMPUTE the content_hash from the live calendar bytes (do NOT
+            # trust the build-time hash stored in the stamp) — same as the
+            # legacy manifest branch below. The recompute is what catches an
+            # out-of-band calendar edit under QLIB_SKIP_BUNDLE_VALIDATION=1 /
+            # soft mode: the stored hash wouldn't move, so the cache would
+            # happily serve a stale dataset for a mutated bundle.
+            try:
+                from src.data.bundle_manifest import compute_bundle_content_hash
+                return f"{tail}@{compute_bundle_content_hash(base)}"
+            except Exception:  # noqa: BLE001 — calendar unreadable
+                # Cannot verify the bytes: emit a per-call unique sentinel so
+                # this call cache-MISSES and no future call shares the tag
+                # (mirrors the manifest branch's unverifiable-state handling).
+                return f"{tail}@_calendar_unreadable_{os.urandom(8).hex()}"
+    except Exception:  # noqa: BLE001 — best-effort; fall through to legacy sources
+        pass
 
     # 1. PR #149's canonical bundle manifest.
     bundle_manifest_path = base / "bundle_manifest.json"
