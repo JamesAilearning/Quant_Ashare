@@ -5,7 +5,7 @@ from datetime import date
 from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
-from src.core._shared_validators import validate_n_drop
+from src.core._shared_validators import validate_n_drop, validate_topk
 from src.core.attribution_industry_loader import assert_industry_config_complete_or_empty
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_POST,
@@ -237,12 +237,10 @@ class WalkForwardConfig:
                 f"overall_start ({self.overall_start})."
             )
 
-        # Topk / drop sanity — ``n_drop > topk`` would leave the portfolio
-        # empty after the first rebalance.
-        if not isinstance(self.topk, int) or isinstance(self.topk, bool) or self.topk < 1:
-            raise WalkForwardError(f"topk must be a positive int; got {self.topk!r}.")
-        # n_drop validity + n_drop < topk lock-step — shared with
-        # PipelineConfig via _shared_validators (keeps the two in step).
+        # Topk / drop sanity — shared with PipelineConfig via
+        # _shared_validators (n_drop >= topk empties the portfolio after
+        # the first rebalance; both validated here so the rules can't drift).
+        validate_topk(self.topk, error_class=WalkForwardError)
         validate_n_drop(self.n_drop, self.topk, error_class=WalkForwardError)
         if (
             not isinstance(self.signal_to_execution_lag, int)
