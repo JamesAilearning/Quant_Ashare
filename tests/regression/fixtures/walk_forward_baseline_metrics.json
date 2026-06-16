@@ -48,10 +48,10 @@
     "bootstrap_seed": 42,
     "bootstrap_n": 10000,
     "timing": {
-      "total_duration_seconds": NaN,
-      "mean_fold_duration_seconds": NaN,
+      "total_duration_seconds": null,
+      "mean_fold_duration_seconds": null,
       "slowest_fold_index": -1,
-      "slowest_fold_duration_seconds": NaN,
+      "slowest_fold_duration_seconds": null,
       "valid_folds_duration": 0
     }
   },
@@ -257,11 +257,11 @@
     {
       "fold_index": 22,
       "test_period": "",
-      "ic_1d": NaN,
-      "ic_5d": NaN,
-      "annualized_return": NaN,
-      "max_drawdown": NaN,
-      "information_ratio": NaN
+      "ic_1d": null,
+      "ic_5d": null,
+      "annualized_return": null,
+      "max_drawdown": null,
+      "information_ratio": null
     }
   ]
 }

@@ -85,13 +85,24 @@ class WalkForwardReplayBaselineTests(unittest.TestCase):
             FROZEN_FIXTURE, _provider_uri(), _namechange_path(),
         )
 
+    # Per-fold metrics compared by the replay test. The OpenSpec delta requires
+    # the replay to reproduce EVERY committed per-fold metric, not just IR — so a
+    # future IC/return/drawdown change can't leave a stale per_fold block green.
+    _PER_FOLD_METRICS = (
+        "ic_1d", "ic_5d", "annualized_return", "max_drawdown", "information_ratio",
+    )
+
     @staticmethod
-    def _close(a: float, b: float) -> bool:
-        if a is None or b is None:
-            return False
+    def _close(a: float | None, b: float | None) -> bool:
+        # null (committed, from the sanitized NaN of the failed fold 22) and NaN
+        # (replay) both mean "missing" and compare equal.
+        a = float("nan") if a is None else float(a)
+        b = float("nan") if b is None else float(b)
         if math.isnan(a) and math.isnan(b):
             return True
-        return abs(float(a) - float(b)) <= REPLAY_ABS_TOL
+        if math.isnan(a) or math.isnan(b):
+            return False
+        return abs(a - b) <= REPLAY_ABS_TOL
 
     def test_aggregate_reproduces_committed_baseline(self) -> None:
         committed = json.loads(BASELINE_FIXTURE.read_text(encoding="utf-8"))
@@ -121,15 +132,17 @@ class WalkForwardReplayBaselineTests(unittest.TestCase):
             ref = committed_pf.get(fold.fold_index)
             if ref is None:
                 continue
-            if not self._close(fold.information_ratio, ref["information_ratio"]):
-                drifts.append(
-                    f"fold {fold.fold_index}: replay IR={fold.information_ratio!r} "
-                    f"vs committed={ref['information_ratio']!r}"
-                )
+            for metric in self._PER_FOLD_METRICS:
+                if not self._close(getattr(fold, metric), ref.get(metric)):
+                    drifts.append(
+                        f"fold {fold.fold_index}.{metric}: replay={getattr(fold, metric)!r} "
+                        f"vs committed={ref.get(metric)!r}"
+                    )
         if drifts:
             self.fail(
-                "Per-fold IR drift in the deterministic replay (all 22 folds must "
-                f"reproduce within {REPLAY_ABS_TOL}):\n  - " + "\n  - ".join(drifts)
+                "Per-fold metric drift in the deterministic replay (every fold's "
+                f"{', '.join(self._PER_FOLD_METRICS)} must reproduce within "
+                f"{REPLAY_ABS_TOL}):\n  - " + "\n  - ".join(drifts)
             )
 
 

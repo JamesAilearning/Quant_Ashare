@@ -35,6 +35,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from src.core._json_utils import _sanitize_for_json  # noqa: E402
 from src.core.backtest_runner import BacktestRunner  # noqa: E402
 from src.core.canonical_backtest_contract import (  # noqa: E402
     ADJUST_MODE_PRE,
@@ -212,8 +213,13 @@ def main(argv: list[str] | None = None) -> int:
         "aggregate_metrics": dict(agg),
         "per_fold": per_fold,
     }
+    # Sanitize NaN/Inf -> null (fold 22 + timing block carry NaN) and refuse to
+    # emit non-standard tokens, matching the repo's shared JSON writers so jq /
+    # browsers / strict parsers can read the committed fixture (Codex P2).
+    sanitised = _sanitize_for_json(payload)
     Path(args.out).write_text(
-        json.dumps(payload, indent=2, sort_keys=False, default=str) + "\n", encoding="utf-8")
+        json.dumps(sanitised, indent=2, sort_keys=False, default=str, allow_nan=False) + "\n",
+        encoding="utf-8")
     print(f"mean_information_ratio = {agg['mean_information_ratio']}")
     print(f"valid_folds_information_ratio = {agg['valid_folds_information_ratio']}")
     print(f"mean_annualized_return = {agg['mean_annualized_return']}")
