@@ -286,6 +286,35 @@ def test_factory_loads_pit_panel_only_once(tmp_path, monkeypatch):
     assert pit_loads == 1
 
 
+def test_factory_validates_pool_before_pit_load(tmp_path, monkeypatch):
+    """codex P2 on #260: an empty/invalid pool must fail fast with its
+    actionable diagnostic BEFORE the (expensive) PIT load — pool
+    validation runs ahead of _resolve_panel, not after it."""
+    from src.data import mined_factor_handler as mfh
+
+    FactorPool().save(tmp_path)  # empty pool
+    bundle = MinedFactorBundle(
+        pool_dir=tmp_path,
+        pit_provider_uri="pit://stub",
+        delisted_registry_path="registry://stub",
+    )
+
+    resolve_called = False
+
+    def _spy_resolve(*a, **k):
+        nonlocal resolve_called
+        resolve_called = True
+        return _synthetic_panel(), None
+
+    monkeypatch.setattr(mfh, "_resolve_panel", _spy_resolve)
+
+    factory = mfh._make_factory(bundle)
+    with pytest.raises(MinedFactorHandlerError, match="empty"):
+        factory(_config())
+    # The PIT load must NOT have happened — the pool error fails fast.
+    assert resolve_called is False
+
+
 # ---------------------------------------------------------------------------
 # Lazy qlib import (D5 + qlib-availability decoupling)
 # ---------------------------------------------------------------------------
