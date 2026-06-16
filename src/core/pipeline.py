@@ -15,6 +15,7 @@ from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
 from src.core._json_utils import _sanitize_for_json, sha256_canonical
+from src.core._shared_validators import validate_n_drop
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -291,28 +292,15 @@ class PipelineConfig:
             raise PipelineError(
                 f"PipelineConfig.stamp_tax_schedule failed validation: {exc}"
             ) from exc
-        # ``n_drop`` is the number of names ``TopkDropoutStrategy``
-        # rotates out of the portfolio each rebalance; if it equals or
-        # exceeds ``topk`` the strategy ends up holding zero names after
-        # the first rebalance. ``WalkForwardConfig`` already enforces
-        # this — keep the two configs in lock-step so a copy-pasted
-        # ``topk=10, n_drop=10`` doesn't slip through here while being
-        # rejected one path over.
-        if (
-            not isinstance(self.n_drop, int)
-            or isinstance(self.n_drop, bool)
-            or self.n_drop < 0
-        ):
-            raise PipelineError(
-                f"PipelineConfig.n_drop must be a non-negative int; got "
-                f"{self.n_drop!r}."
-            )
-        if self.n_drop >= self.topk:
-            raise PipelineError(
-                f"PipelineConfig.n_drop ({self.n_drop}) must be strictly "
-                f"less than topk ({self.topk}); otherwise TopkDropoutStrategy "
-                "would empty the portfolio after the first rebalance."
-            )
+        # n_drop validity + n_drop < topk lock-step — shared with
+        # WalkForwardConfig via _shared_validators so a copy-pasted
+        # ``topk=10, n_drop=10`` can't slip through one path while being
+        # rejected on the other.
+        validate_n_drop(
+            self.n_drop, self.topk,
+            error_class=PipelineError,
+            prefix="PipelineConfig.",
+        )
         if (
             not isinstance(self.limit_threshold, (int, float))
             or isinstance(self.limit_threshold, bool)
