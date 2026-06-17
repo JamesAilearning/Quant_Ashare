@@ -59,8 +59,7 @@ untradeable-by-construction (neither masked nor filled).
 
 ### Requirement: Headline IC SHALL be label-aligned
 
-`SignalAnalyzer`'s per-period headline IC (`mean_ic`, and the derived
-`ic_1d`/`ic_5d`/`mean_ic_1d` consumers) SHALL correlate day-T scores with
+`SignalAnalyzer`'s per-period headline IC (`mean_ic`, and the derived `ic_1d`/`ic_5d`/`mean_ic_1d` consumers) SHALL correlate day-T scores with
 the T+1 → T+1+period return — the window the training label defines and a
 lag=1 strategy actually earns. The legacy stamp-day window (T → T+period)
 SHALL survive only as an explicitly named secondary metric

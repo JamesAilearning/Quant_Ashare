@@ -60,8 +60,7 @@ The class SHALL also expose:
 
 ### Requirement: RAISE mode SHALL surface ALL violations in a single error
 
-In ``RAISE`` mode, when one or more violations are found,
-``apply()`` SHALL collect every violation across every day and
+In ``RAISE`` mode, when one or more violations are found, ``apply()`` SHALL collect every violation across every day and
 raise ``RiskConstraintError`` whose message includes every
 violation. The error SHALL NOT short-circuit on the first
 violation.
