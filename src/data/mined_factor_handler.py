@@ -190,6 +190,21 @@ def make_mined_factor_features(
     resolved_panel, _ = _resolve_panel(
         bundle, config, panel=panel, forward_return=forward_return,
     )
+    return _materialise_features(pool, resolved_panel)
+
+
+def _materialise_features(
+    pool: FactorPool,
+    resolved_panel: Mapping[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """Evaluate every pool entry against ``resolved_panel`` into a
+    ``(datetime, instrument)`` feature frame.
+
+    Split out of :func:`make_mined_factor_features` so the PIT-mode
+    factory can validate the pool (``_load_pool_or_raise``) BEFORE the
+    single PIT load and still share this materialisation step
+    (codex P2 on #260).
+    """
     sorted_entries = sorted(pool.all_entries(), key=_entry_sort_key)
 
     columns: list[pd.Series] = []
@@ -287,16 +302,17 @@ def _make_factory(bundle: MinedFactorBundle) -> Callable[[FeatureDatasetConfig],
     """Closure-style factory that captures ``bundle``."""
 
     def _factory(config: FeatureDatasetConfig) -> Any:
-        # Resolve the PIT panel + forward-return ONCE, then feed the panel
-        # into make_mined_factor_features (which would otherwise PIT-load
-        # it a second time). The OHLCV panel load is the expensive
-        # per-fold step. This path is PIT-mode-only — tests supply the
-        # panel via the kwarg and don't go through the registered
-        # factory. (T2-6)
+        # Validate the pool BEFORE the (single) PIT load so an empty /
+        # invalid pool fails fast with its actionable diagnostic instead
+        # of first paying the full per-fold PIT IO (codex P2 on #260).
+        # The OHLCV panel load is the expensive per-fold step: resolve it
+        # ONCE and reuse the panel for both features and the label
+        # (previously it was loaded twice). This path is PIT-mode-only —
+        # tests supply the panel via the make_mined_factor_features kwarg
+        # and don't go through the registered factory. (T2-6)
+        pool = _load_pool_or_raise(bundle)
         panel, fwd = _resolve_panel(bundle, config)
-        features = make_mined_factor_features(
-            bundle, config, panel=panel, forward_return=fwd,
-        )
+        features = _materialise_features(pool, panel)
         label = _build_label_dataframe(fwd)
         return _make_qlib_handler(features, label, config)
 
