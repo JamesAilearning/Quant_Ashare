@@ -45,7 +45,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "numpy>=1.24,<2.0" "scipy>=1.10,<1.14" git+https://github.com/microsoft/qlib.git@8fd6d5ca7eab59a69bf5c62f84e8b4e2a4e8910b
-          pip install -e ".[dev]"
+          # ``[ui]`` (streamlit/plotly/reportlab) so the operator-UI tests
+          # actually RUN instead of silently @skipUnless(_HAS_STREAMLIT)-ing —
+          # ~15 component/page/source tests + the reportlab PDF-export path had
+          # ZERO CI coverage before. Safe vs the numpy pin above: streamlit
+          # requires numpy<3,>=1.23, so the installed numpy<2.0 already
+          # satisfies it and is NOT upgraded (which would re-break qlib.backtest
+          # per the note above). reportlab/plotly carry no numpy floor.
+          pip install -e ".[dev,ui]"
 
       - name: Lint (ruff)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
