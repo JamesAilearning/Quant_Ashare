@@ -81,7 +81,7 @@ _ICON_MAP = {
 _ICON_SCRIPT = """
 <script>
 (function() {
-  var icons = %s;
+  var icons = __ICON_MAP__;
   var doc = window.parent.document;
   function decorate() {
     var links = doc.querySelectorAll(
@@ -113,7 +113,7 @@ _ICON_SCRIPT = """
   }
 })();
 </script>
-""" % str(_ICON_MAP).replace("'", '"')
+""".replace("__ICON_MAP__", str(_ICON_MAP).replace("'", '"'))
 
 with st.sidebar:
     st.html(

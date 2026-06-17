@@ -40,10 +40,6 @@ from web.operator_ui.formatting import (
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
-from web.operator_ui.result_view_helpers import (
-    LOG_LEVEL_OPTIONS,
-    filter_log_text,
-)
 
 # Pure helpers + constants moved to ``_walk_forward_helpers`` in UI review
 # P1-1. Re-exported here so legacy tests that do
@@ -52,14 +48,6 @@ from web.operator_ui.result_view_helpers import (
 # are exposed for callers, not consumed in this module body — only their
 # values are referenced below.
 from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
-    MISSING,
-    PLOTLY_FOLD_BAND_DARK,
-    PLOTLY_FOLD_BAND_LIGHT,
-    PLOTLY_INFO_COLOR,
-    PLOTLY_NEGATIVE_COLOR,
-    PLOTLY_POSITIVE_COLOR,
-    PLOTLY_STRATEGY_COLOR,
-    STABILITY_SCORE_HEURISTIC_NOTE,
     _LOG_NAMES,
     _STABILITY_LABEL_HIGH,
     _STABILITY_LABEL_LOW,
@@ -69,6 +57,14 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
     _STABILITY_W_IR_CV,
     _STABILITY_W_POSITIVE_FOLDS,
     _STABILITY_W_TREND_STABLE,
+    MISSING,
+    PLOTLY_FOLD_BAND_DARK,
+    PLOTLY_FOLD_BAND_LIGHT,
+    PLOTLY_INFO_COLOR,
+    PLOTLY_NEGATIVE_COLOR,
+    PLOTLY_POSITIVE_COLOR,
+    PLOTLY_STRATEGY_COLOR,
+    STABILITY_SCORE_HEURISTIC_NOTE,
     _compute_stability_score,
     _finite_float,
     _first_metric,
@@ -83,6 +79,10 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
 from web.operator_ui.report_reader import (
     read_fold_reports,
     read_walk_forward_report,
+)
+from web.operator_ui.result_view_helpers import (
+    LOG_LEVEL_OPTIONS,
+    filter_log_text,
 )
 
 

@@ -49,7 +49,7 @@ jobs:
 
       - name: Lint (ruff)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: ruff check src/ tests/ scripts/
+        run: ruff check src/ tests/ scripts/ web/
 
       # Strict mode is the default after `add-mypy-strict-everywhere`
       # batch 4 (this PR) — see [tool.mypy] in pyproject.toml. The
