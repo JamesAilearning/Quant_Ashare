@@ -25,10 +25,14 @@ promotion → qlib handler bridge). See `docs/factor_mining/` and
   - `core/` — orchestration: pipeline, walk-forward engine, model
     trainer, backtest runner, artifact serialization.
   - `data/` — PIT mechanics, feature dataset builder, qlib adapters.
+  - `pit/` — point-in-time query layer (`cache.py`, `query.py`); the
+    canonical PIT access the D5 gate protects as `src.pit.*`.
   - `data_pipeline/` — bundle ingest, universe / benchmark / industry
     publishers.
   - `contracts/` — boundary validators (run artifacts, baseline smoke,
     feature dataset, prediction signal).
+  - `inference/` — production serving: daily stock recommendation
+    (`daily_recommend.py`), run manually each morning.
 - `web/operator_ui/` — Streamlit UI (pages under `pages/`).
 - `tests/` — split by layer: `governance/`, `logic/`, `data_pipeline/`,
   `pit/`, `regression/`.
