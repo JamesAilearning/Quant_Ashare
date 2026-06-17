@@ -601,5 +601,92 @@ class JobsEligibleForCleanupTests(unittest.TestCase):
             jobs_eligible_for_cleanup([], older_than_days=-1, today=self._TODAY)
 
 
+class LoadUiJobsZombieReconcileTests(unittest.TestCase):
+    """The PRIMARY Jobs-page list path (list_all_jobs -> _load_ui_jobs) must
+    detect zombies — not only JobManager.list_jobs() (audit G2)."""
+
+    def test_load_ui_jobs_reconciles_dead_running_job(self) -> None:
+        import json
+        import tempfile
+
+        from web.operator_ui import job_io
+        from web.operator_ui.job_io import write_job_json
+
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "z"
+        job_dir.mkdir(parents=True)
+        write_job_json(job_dir, {"job_id": "z", "status": "running", "pid": 51001})
+
+        with patch.object(job_io, "_JOB_ROOT", job_root):
+            # _reconcile_zombie (lazy-imported by _load_ui_jobs) uses
+            # job_manager._pid_is_alive — confirmed-dead -> reconcile to failed.
+            with patch("web.operator_ui.job_manager._pid_is_alive", return_value=False):
+                rows = job_io._load_ui_jobs()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "failed")
+        # Persisted to disk so the running-count / list agree on next render.
+        on_disk = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["status"], "failed")
+
+    def test_load_ui_jobs_keeps_live_running_job(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+        from web.operator_ui.job_io import write_job_json
+
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "live"
+        job_dir.mkdir(parents=True)
+        write_job_json(job_dir, {"job_id": "live", "status": "running", "pid": 51002})
+
+        with patch.object(job_io, "_JOB_ROOT", job_root):
+            with patch("web.operator_ui.job_manager._pid_is_alive", return_value=True):
+                rows = job_io._load_ui_jobs()
+        self.assertEqual(rows[0]["status"], "running")
+
+
+class WriteJobJsonCompareAndSetTests(unittest.TestCase):
+    """write_job_json(only_if_status=...) is the atomic guard that prevents a
+    UI-side stop/reconcile from clobbering a status job_runner wrote first."""
+
+    def test_writes_when_current_status_matches_guard(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import read_job_json, write_job_json
+
+        job_dir = Path(tempfile.mkdtemp())
+        write_job_json(job_dir, {"status": "running", "pid": 1})
+        wrote = write_job_json(
+            job_dir, {"status": "failed"}, only_if_status=("running",)
+        )
+        self.assertTrue(wrote)
+        self.assertEqual(read_job_json(job_dir)["status"], "failed")
+
+    def test_skips_when_current_status_does_not_match_guard(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import read_job_json, write_job_json
+
+        job_dir = Path(tempfile.mkdtemp())
+        # Runner already finished — status is terminal.
+        write_job_json(job_dir, {"status": "success", "pid": 1})
+        wrote = write_job_json(
+            job_dir, {"status": "stopped"}, only_if_status=("running", "pending")
+        )
+        self.assertFalse(wrote)
+        # success must be intact, and the guarded update must not have leaked.
+        self.assertEqual(read_job_json(job_dir)["status"], "success")
+
+    def test_unguarded_write_still_unconditional(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import read_job_json, write_job_json
+
+        job_dir = Path(tempfile.mkdtemp())
+        write_job_json(job_dir, {"status": "success"})
+        self.assertTrue(write_job_json(job_dir, {"status": "stopped"}))
+        self.assertEqual(read_job_json(job_dir)["status"], "stopped")
+
+
 if __name__ == "__main__":
     unittest.main()
