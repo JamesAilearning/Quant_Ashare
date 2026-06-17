@@ -77,6 +77,9 @@ class JobManagerStartTests(unittest.TestCase):
                     self.assertEqual(data["pid"], 99999)
                     self.assertIn("runner_stdout_path", data)
                     self.assertIn("runner_stderr_path", data)
+                    # created_at is stamped at creation (audit G: jobs page sorts
+                    # / date-filters on it; previously never written).
+                    self.assertTrue(data.get("created_at"))
 
     def test_start_captures_runner_logs_and_sets_pythonpath(self) -> None:
         config = {"provider_uri": "/data"}

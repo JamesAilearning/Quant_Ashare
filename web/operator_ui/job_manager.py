@@ -116,6 +116,12 @@ class JobManager:
             "job_id": job_id,
             "mode": mode,
             "status": "pending",
+            # created_at is stamped ONCE at creation and never overwritten — the
+            # jobs page sorts (default) and date-filters on it, so without it
+            # running jobs sank to the bottom and vanished under any date filter
+            # (audit G; created_at was previously never written). started_at is
+            # kept for back-compat with existing readers.
+            "created_at": now,
             "started_at": now,
             "ended_at": None,
             "config_path": str(config_path),

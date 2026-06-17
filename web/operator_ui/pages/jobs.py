@@ -226,29 +226,34 @@ _today = date.today()
 
 
 def _apply_quick_range(start: date | None, end: date | None) -> None:
+    # Run as an st.button on_click CALLBACK (not inline): a callback fires BEFORE
+    # the script reruns and re-instantiates the date_input widgets, so writing
+    # their widget keys (jobs_date_from_widget / jobs_date_to_widget) is legal.
+    # Writing them inline (after the widgets were instantiated this run) raised
+    # StreamlitAPIException on Streamlit 1.57 (audit G). No st.rerun() needed —
+    # Streamlit reruns automatically after a callback.
     st.session_state["jobs_date_from_widget"] = start
     st.session_state["jobs_date_to_widget"] = end
     st.session_state["jobs_date_from"] = start.isoformat() if start else ""
     st.session_state["jobs_date_to"] = end.isoformat() if end else ""
     st.session_state["jobs_page"] = "1"
-    st.rerun()
 
 
 with qp_col1:
-    if st.button("今天", key="jobs_qp_today", use_container_width=True):
-        _apply_quick_range(_today, _today)
+    st.button("今天", key="jobs_qp_today", use_container_width=True,
+              on_click=_apply_quick_range, args=(_today, _today))
 with qp_col2:
-    if st.button("最近 7 天", key="jobs_qp_7d", use_container_width=True):
-        _apply_quick_range(_today - timedelta(days=6), _today)
+    st.button("最近 7 天", key="jobs_qp_7d", use_container_width=True,
+              on_click=_apply_quick_range, args=(_today - timedelta(days=6), _today))
 with qp_col3:
-    if st.button("最近 30 天", key="jobs_qp_30d", use_container_width=True):
-        _apply_quick_range(_today - timedelta(days=29), _today)
+    st.button("最近 30 天", key="jobs_qp_30d", use_container_width=True,
+              on_click=_apply_quick_range, args=(_today - timedelta(days=29), _today))
 with qp_col4:
-    if st.button("本年至今", key="jobs_qp_year", use_container_width=True):
-        _apply_quick_range(date(_today.year, 1, 1), _today)
+    st.button("本年至今", key="jobs_qp_year", use_container_width=True,
+              on_click=_apply_quick_range, args=(date(_today.year, 1, 1), _today))
 with qp_col5:
-    if st.button("清除日期", key="jobs_qp_clear", use_container_width=True):
-        _apply_quick_range(None, None)
+    st.button("清除日期", key="jobs_qp_clear", use_container_width=True,
+              on_click=_apply_quick_range, args=(None, None))
 
 # Reset to page 1 whenever filters change.
 _filter_signature = (
@@ -297,36 +302,52 @@ if date_from_iso:
 if date_to_iso:
     _active.append((f"{_FILTER_KEY_LABELS['date_to']}: {date_to_iso}", "date_to"))
 
+# Filter-reset handlers run as on_click CALLBACKS: they reset selectbox /
+# text_input / date_input WIDGET keys (jobs_type/status/source, jobs_search,
+# jobs_date_*_widget), which is only legal before the widgets are re-instantiated
+# next run. Writing them inline (after instantiation) raised StreamlitAPIException
+# on Streamlit 1.57 (audit G). No st.rerun() — callbacks auto-rerun.
+def _clear_chip(key: str) -> None:
+    if key in ("type", "status", "source"):
+        st.session_state[f"jobs_{key}"] = "all"
+    elif key == "search":
+        st.session_state["jobs_search"] = ""
+    elif key == "date_from":
+        st.session_state["jobs_date_from"] = ""
+        st.session_state["jobs_date_from_widget"] = None
+    elif key == "date_to":
+        st.session_state["jobs_date_to"] = ""
+        st.session_state["jobs_date_to_widget"] = None
+
+
+def _clear_all_filters() -> None:
+    for k in ("type", "status", "source"):
+        st.session_state[f"jobs_{k}"] = "all"
+    st.session_state["jobs_search"] = ""
+    st.session_state["jobs_date_from"] = ""
+    st.session_state["jobs_date_to"] = ""
+    st.session_state["jobs_date_from_widget"] = None
+    st.session_state["jobs_date_to_widget"] = None
+
+
 if _active:
     chip_cols = st.columns(len(_active) + 1)
     for i, (label, key) in enumerate(_active):
         with chip_cols[i]:
-            if st.button(
+            st.button(
                 f"× {label}",
                 key=f"jobs_chip_clear_{key}",
                 use_container_width=True,
-            ):
-                if key in ("type", "status", "source"):
-                    st.session_state[f"jobs_{key}"] = "all"
-                elif key == "search":
-                    st.session_state["jobs_search"] = ""
-                elif key == "date_from":
-                    st.session_state["jobs_date_from"] = ""
-                    st.session_state["jobs_date_from_widget"] = None
-                elif key == "date_to":
-                    st.session_state["jobs_date_to"] = ""
-                    st.session_state["jobs_date_to_widget"] = None
-                st.rerun()
+                on_click=_clear_chip,
+                args=(key,),
+            )
     with chip_cols[-1]:
-        if st.button("清除全部", key="jobs_chips_clear_all", use_container_width=True):
-            for k in ("type", "status", "source"):
-                st.session_state[f"jobs_{k}"] = "all"
-            st.session_state["jobs_search"] = ""
-            st.session_state["jobs_date_from"] = ""
-            st.session_state["jobs_date_to"] = ""
-            st.session_state["jobs_date_from_widget"] = None
-            st.session_state["jobs_date_to_widget"] = None
-            st.rerun()
+        st.button(
+            "清除全部",
+            key="jobs_chips_clear_all",
+            use_container_width=True,
+            on_click=_clear_all_filters,
+        )
 
 # ---------------------------------------------------------------------------
 # Data load
@@ -629,7 +650,27 @@ if running_count > 0:
 # are never touched. Two-step (preview count → explicit confirm) so a
 # stray click can't wipe history.
 # ---------------------------------------------------------------------------
-with st.expander("🧹 清理旧作业", expanded=False):
+def _run_bulk_cleanup(eligible: list[str]) -> None:
+    # on_click CALLBACK: do the deletes, then reset the confirm CHECKBOX widget
+    # key — legal here (pre-instantiation), whereas the old inline reset crashed
+    # AFTER the deletes ran (deleted-but-no-feedback, audit G). The success/error
+    # summary is stashed and rendered on the next run (callbacks run before render).
+    deleted, failed = 0, []
+    for run_id in eligible:
+        try:
+            JobManager.delete(run_id)
+            deleted += 1
+        except JobManagerError as exc:
+            failed.append(f"{run_id}: {exc}")
+    st.session_state["jobs_cleanup_result"] = {"deleted": deleted, "failed": failed}
+    st.session_state["jobs_cleanup_confirm"] = False
+
+
+# Keep the panel open on the run AFTER a cleanup so its success/error summary
+# (stashed by the callback, rendered below) is actually visible.
+with st.expander(
+    "🧹 清理旧作业", expanded="jobs_cleanup_result" in st.session_state
+):
     # Eligibility is global (not limited to the current page / filters),
     # so re-query all UI jobs. The large page_size pulls everything;
     # the third tuple element (running count) is unused here.
@@ -648,6 +689,14 @@ with st.expander("🧹 清理旧作业", expanded=False):
         older_than_days=int(cleanup_days),
         today=date.today(),
     )
+    # Render the result of a cleanup that ran in the callback on the PREVIOUS run
+    # (shown here regardless of whether anything remains eligible afterwards).
+    _cleanup_result = st.session_state.pop("jobs_cleanup_result", None)
+    if _cleanup_result is not None:
+        if _cleanup_result.get("deleted"):
+            st.success(f"已删除 {_cleanup_result['deleted']} 个旧作业。")
+        if _cleanup_result.get("failed"):
+            st.error("以下作业删除失败：\n- " + "\n- ".join(_cleanup_result["failed"]))
     if not _eligible:
         st.caption(f"没有早于 {int(cleanup_days)} 天的已完成 UI 作业。")
     else:
@@ -658,22 +707,11 @@ with st.expander("🧹 清理旧作业", expanded=False):
         confirm = st.checkbox(
             "我已确认要删除这些作业", key="jobs_cleanup_confirm",
         )
-        if st.button(
+        st.button(
             f"删除 {len(_eligible)} 个旧作业",
             key="jobs_cleanup_delete",
             type="primary",
             disabled=not confirm,
-        ):
-            deleted, failed = 0, []
-            for run_id in _eligible:
-                try:
-                    JobManager.delete(run_id)
-                    deleted += 1
-                except JobManagerError as exc:
-                    failed.append(f"{run_id}: {exc}")
-            if deleted:
-                st.success(f"已删除 {deleted} 个旧作业。")
-            if failed:
-                st.error("以下作业删除失败：\n- " + "\n- ".join(failed))
-            st.session_state["jobs_cleanup_confirm"] = False
-            st.rerun()
+            on_click=_run_bulk_cleanup,
+            args=(_eligible,),
+        )

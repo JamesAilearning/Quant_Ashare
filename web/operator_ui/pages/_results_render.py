@@ -23,7 +23,7 @@ import streamlit as st
 from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import render_error_state
-from web.operator_ui.formatting import fmt_metric
+from web.operator_ui.formatting import fmt_metric, format_date_absolute
 from web.operator_ui.pages._results_helpers import (
     LOG_NAMES,
     MISSING,
@@ -70,6 +70,27 @@ from web.operator_ui.result_view_helpers import (
 )
 
 
+def _run_dir_mtime(run_dir: Path) -> float:
+    """Top-level mtime of the run dir, used as a cache key (best-effort)."""
+    try:
+        return run_dir.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def _cached_bundle_zip(run_dir_str: str, dir_mtime: float) -> bytes:
+    """Cache the run-dir zip across reruns (audit G: the results page re-zipped
+    the run dir — up to ~500 MiB — on EVERY Streamlit rerun, e.g. every keystroke
+    in an unrelated widget). ``dir_mtime`` (NO leading underscore — st.cache_data
+    excludes ``_``-prefixed args from the key) IS part of the key, so the zip
+    rebuilds when the run dir changes. ``max_entries=2`` bounds memory (each entry
+    is up to the 500 MiB cap). ``st.cache_data`` does NOT cache exceptions, so
+    ``BundleTooLargeError`` / ``OSError`` / ``ValueError`` still propagate to the
+    call-site handler on each run."""
+    return bundle_zip_bytes(Path(run_dir_str))
+
+
 def _render_status_header(
     *,
     job: Mapping[str, Any],
@@ -80,15 +101,20 @@ def _render_status_header(
 ) -> None:
     job_id = _fmt_text(job.get("job_id"))
     status = _fmt_text(job.get("status") or metadata.get("status"))
-    started = _fmt_text(job.get("started_at") or metadata.get("started_at"))
-    ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))
+    # CN-local datetime (PR-K) — these bypassed format_date_absolute before and
+    # showed raw UTC (8h off), inconsistent with the jobs page.
+    started = format_date_absolute(
+        job.get("started_at") or metadata.get("started_at"), style="datetime")
+    ended = format_date_absolute(
+        job.get("ended_at") or metadata.get("finished_at"), style="datetime")
     duration_seconds = _finite_float(metadata.get("duration_seconds"))
     duration = (
         f"{int(duration_seconds)}s"
         if duration_seconds is not None and str(job.get("status") or "").lower() in {"success", "completed", "ok"}
         else _fmt_duration(job.get("started_at"), job.get("ended_at"))
     )
-    generated_at = _fmt_text(metadata.get("finished_at") or report.get("generated_at"))
+    generated_at = format_date_absolute(
+        metadata.get("finished_at") or report.get("generated_at"), style="datetime")
     badge_variant = _status_badge_variant(status)
     run_dir_text = _fmt_text(run_dir)
 
@@ -261,7 +287,7 @@ def _render_header_actions(
         bundle_too_large_message = ""
         if run_dir is not None:
             try:
-                bundle_bytes = bundle_zip_bytes(run_dir)
+                bundle_bytes = _cached_bundle_zip(str(run_dir), _run_dir_mtime(run_dir))
             except BundleTooLargeError as exc:
                 # Catch BundleTooLargeError BEFORE the generic ValueError
                 # branch below — the operator needs the size / path hint,

@@ -12,6 +12,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from web.operator_ui.formatting import to_cn_date
+
 # Platform-conditional locking primitives. ``sys.platform`` (not
 # ``os.name``) is the platform check mypy understands as narrowing —
 # without it the cross-platform run would see ``fcntl.flock`` /
@@ -206,7 +208,9 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     if status == "success":
         status = "completed"
 
-    created = str(raw.get("created_at") or "")
+    # Backfill created_at from started_at for jobs written before created_at was
+    # stamped (PR-K) so in-flight legacy jobs still sort/filter correctly.
+    created = str(raw.get("created_at") or raw.get("started_at") or "")
     started = str(raw.get("started_at") or "")
     finished = str(raw.get("ended_at") or "")
     dur = raw.get("duration_seconds") if isinstance(raw.get("duration_seconds"), (int, float)) else None
@@ -360,7 +364,7 @@ def jobs_eligible_for_cleanup(
             continue
         if job.status not in _CLEANUP_TERMINAL_STATUSES:
             continue
-        stamp = (job.created_at or job.finished_at or "")[:10]
+        stamp = to_cn_date(job.created_at or job.finished_at or "")
         if not stamp:
             continue
         try:
@@ -532,7 +536,10 @@ def _apply_filters(
                 # No timestamp at all — drop on any date filter so the
                 # date range is honoured rather than silently widened.
                 continue
-            day = stamp[:10]
+            # CN-local date bucket, consistent with the CN-local display + the
+            # CN date.today() the quick-range presets use (PR-K). A raw UTC[:10]
+            # would skew near-midnight jobs one day off the displayed date.
+            day = to_cn_date(stamp)
             if date_from and day < date_from:
                 continue
             if date_to and day > date_to:

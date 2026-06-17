@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+
+# China Standard Time (UTC+8, no DST). Stored timestamps are UTC; the operator
+# is in CN, so absolute displays are converted to CN local (audit G — UTC was
+# shown raw, 8h off). Naive datetimes are left as-is.
+_CN_TZ = timezone(timedelta(hours=8))
 
 UNAVAILABLE = "—"
 
@@ -169,6 +174,11 @@ def format_date_absolute(
     parsed = _parse_datetime(value)
     if parsed is None:
         return missing
+    # Convert tz-aware (UTC-stored) timestamps to CN local for human display.
+    # ``iso`` style stays canonical (preserves the original offset); naive
+    # datetimes (e.g. date-only inputs) are shown as-is.
+    if style != "iso" and parsed.tzinfo is not None:
+        parsed = parsed.astimezone(_CN_TZ)
     if style == "date":
         return parsed.strftime("%Y-%m-%d")
     if style == "datetime":
@@ -176,6 +186,22 @@ def format_date_absolute(
     if style == "iso":
         return parsed.isoformat()
     raise ValueError(f"Unknown date style: {style!r}")
+
+
+def to_cn_date(value: Any) -> str:
+    """The CN-local (UTC+8) calendar date ``YYYY-MM-DD`` of a timestamp.
+
+    Used for date-bucketing (the jobs date filter + cleanup eligibility) so it
+    stays consistent with the CN-local DISPLAY (``format_date_absolute``): a UTC
+    instant near midnight buckets under the SAME local date the operator sees.
+    A tz-naive value is used as-is; an unparseable value falls back to its first
+    10 chars (``""`` for empty)."""
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return str(value or "")[:10]
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(_CN_TZ)
+    return parsed.strftime("%Y-%m-%d")
 
 
 def _parse_datetime(value: Any) -> datetime | None:
