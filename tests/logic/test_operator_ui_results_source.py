@@ -668,10 +668,14 @@ class ResolveRunDirGuardTests(unittest.TestCase):
                 os.symlink(evil_target, evil_link, target_is_directory=True)
             except (NotImplementedError, OSError) as exc:
                 self.skipTest(f"symlinks unavailable here: {exc}")
-            # Make the symlink newer so a "newest wins" lookup would
-            # pick it. Touching after symlink creation is sufficient.
-            time.sleep(0.01)
-            os.utime(evil_link, None, follow_symlinks=False)
+            # Make the unsafe symlink the NEWEST entry so a "newest wins"
+            # lookup would pick it. Bumping the symlink's OWN mtime via
+            # os.utime(..., follow_symlinks=False) raises NotImplementedError
+            # on Windows (where the CI runner CAN create the symlink, so this
+            # line is reached), so instead age the legitimate real dir into the
+            # past — same ordering, works on every platform.
+            old = time.time() - 3600
+            os.utime(good_run, (old, old))
 
             with patch(
                 "web.operator_ui._path_guard._ALLOWED_ROOTS",
