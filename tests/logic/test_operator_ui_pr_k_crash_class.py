@@ -28,6 +28,13 @@ class JobsCrashClassTests(unittest.TestCase):
         # the old inline form `if st.button("今天", ...):` is gone
         self.assertNotIn('if st.button("今天"', self.src)
 
+    def test_presets_and_cleanup_use_cn_today_not_host_date(self) -> None:
+        # The quick-date presets + cleanup eligibility must use CN today (UTC+8),
+        # consistent with the CN date filter/display, so they agree even on a
+        # non-CN (e.g. UTC container) server (Codex P2).
+        self.assertIn("cn_today()", self.src)
+        self.assertNotIn("date.today()", self.src)
+
     def test_filter_chip_clears_use_on_click_callbacks(self) -> None:
         self.assertIn("on_click=_clear_chip", self.src)
         self.assertIn("on_click=_clear_all_filters", self.src)

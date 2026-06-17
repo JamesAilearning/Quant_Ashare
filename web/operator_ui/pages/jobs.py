@@ -29,6 +29,7 @@ from web.operator_ui.components import (
     render_error_state,
 )
 from web.operator_ui.formatting import (
+    cn_today,
     format_date_absolute,
     format_duration,
     format_relative_time,
@@ -231,10 +232,12 @@ def _apply_quick_range(preset: str) -> None:
     # Writing them inline (after the widgets were instantiated this run) raised
     # StreamlitAPIException on Streamlit 1.57 (audit G). No st.rerun() needed.
     #
-    # date.today() is computed HERE (callback runs on the click's rerun), NOT
+    # cn_today() is computed HERE (callback runs on the click's rerun), NOT
     # captured in args at render time — else a page left open across midnight
-    # would apply yesterday's range when "今天" is clicked (Codex P2).
-    today = date.today()
+    # would apply yesterday's range when "今天" is clicked (Codex P2). CN basis
+    # (not the host-local clock) so presets agree with the CN date filter/display
+    # even on a UTC server (Codex P2 follow-up).
+    today = cn_today()
     ranges: dict[str, tuple[date | None, date | None]] = {
         "today": (today, today),
         "7d": (today - timedelta(days=6), today),
@@ -698,7 +701,7 @@ with st.expander(
     _eligible = jobs_eligible_for_cleanup(
         _all_ui_jobs,
         older_than_days=int(cleanup_days),
-        today=date.today(),
+        today=cn_today(),  # CN basis, consistent with to_cn_date bucketing
     )
     # Render the result of a cleanup that ran in the callback on the PREVIOUS run
     # (shown here regardless of whether anything remains eligible afterwards).

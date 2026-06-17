@@ -188,6 +188,16 @@ def format_date_absolute(
     raise ValueError(f"Unknown date style: {style!r}")
 
 
+def cn_today() -> date:
+    """Today's date in CN local time (UTC+8).
+
+    The basis the jobs quick-date presets and cleanup-eligibility use, so they
+    agree with :func:`to_cn_date`'s CN bucketing + the CN-local display even when
+    the server runs in a non-CN timezone (e.g. a UTC container) — a host-local
+    ``date.today()`` would otherwise be off by a day during the CN/host gap."""
+    return datetime.now(_CN_TZ).date()
+
+
 def to_cn_date(value: Any) -> str:
     """The CN-local (UTC+8) calendar date ``YYYY-MM-DD`` of a timestamp.
 
