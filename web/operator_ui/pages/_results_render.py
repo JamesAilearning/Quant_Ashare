@@ -13,6 +13,7 @@ re-exports for the test surface, and the module-level page dispatch
 
 from __future__ import annotations
 
+import hashlib
 import html
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -23,7 +24,7 @@ import streamlit as st
 from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import render_error_state
-from web.operator_ui.formatting import fmt_metric
+from web.operator_ui.formatting import fmt_metric, format_date_absolute
 from web.operator_ui.pages._results_helpers import (
     LOG_NAMES,
     MISSING,
@@ -70,6 +71,50 @@ from web.operator_ui.result_view_helpers import (
 )
 
 
+def _run_dir_signature(run_dir: Path) -> str:
+    """A RECURSIVE signature over the run dir's (relative path, mtime, size),
+    used as the bundle-cache key. Hashing the per-entry RELATIVE PATH + mtime_ns
+    + size catches every change the zip would reflect — in-place rewrites
+    (mtime), content changes (size), adds/deletes (entry set), AND renames /
+    same-size replacements (path) — which a coarse max-mtime/count/total summary
+    would miss (Codex P2). Stat-only walk (no reads / no compress), far cheaper
+    than re-zipping. Subdirs are included (size -1) so a subdir rename invalidates.
+    ``st_ctime_ns`` is folded in too so a content swap that restores mtime+size
+    (``cp -p`` / ``rsync --times``) still invalidates on Linux (ctime bumps on the
+    replace). ACCEPTED LIMIT: a swap preserving path+size+mtime+ctime is not
+    detected — unhashable without reading every file (as costly as the zip we are
+    avoiding), and run dirs are immutable pipeline outputs in practice."""
+    parts: list[str] = []
+    try:
+        for p in sorted(run_dir.rglob("*")):
+            try:
+                stt = p.stat()
+            except OSError:
+                continue
+            rel = p.relative_to(run_dir).as_posix()
+            size = stt.st_size if p.is_file() else -1
+            parts.append(f"{rel}:{stt.st_mtime_ns}:{stt.st_ctime_ns}:{size}")
+    except OSError:
+        return ""
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+# ``untyped-decorator`` suppresses the error on CI (streamlit absent → st is Any
+# under --ignore-missing-imports); ``unused-ignore`` keeps it clean locally where
+# streamlit IS installed and the decorator is typed (ignore would otherwise be unused).
+@st.cache_data(show_spinner=False, max_entries=2)  # type: ignore[untyped-decorator, unused-ignore]
+def _cached_bundle_zip(run_dir_str: str, dir_signature: str) -> bytes:
+    """Cache the run-dir zip across reruns (audit G: the results page re-zipped
+    the run dir — up to ~500 MiB — on EVERY Streamlit rerun, e.g. every keystroke
+    in an unrelated widget). ``dir_signature`` (NO leading underscore — st.cache_data
+    excludes ``_``-prefixed args from the key) IS part of the key, so the zip
+    rebuilds when the run dir changes (recursively, see _run_dir_signature).
+    ``max_entries=2`` bounds memory (each entry is up to the 500 MiB cap).
+    ``st.cache_data`` does NOT cache exceptions, so ``BundleTooLargeError`` /
+    ``OSError`` / ``ValueError`` still propagate to the call-site handler."""
+    return bundle_zip_bytes(Path(run_dir_str))
+
+
 def _render_status_header(
     *,
     job: Mapping[str, Any],
@@ -80,15 +125,20 @@ def _render_status_header(
 ) -> None:
     job_id = _fmt_text(job.get("job_id"))
     status = _fmt_text(job.get("status") or metadata.get("status"))
-    started = _fmt_text(job.get("started_at") or metadata.get("started_at"))
-    ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))
+    # CN-local datetime (PR-K) — these bypassed format_date_absolute before and
+    # showed raw UTC (8h off), inconsistent with the jobs page.
+    started = format_date_absolute(
+        job.get("started_at") or metadata.get("started_at"), style="datetime")
+    ended = format_date_absolute(
+        job.get("ended_at") or metadata.get("finished_at"), style="datetime")
     duration_seconds = _finite_float(metadata.get("duration_seconds"))
     duration = (
         f"{int(duration_seconds)}s"
         if duration_seconds is not None and str(job.get("status") or "").lower() in {"success", "completed", "ok"}
         else _fmt_duration(job.get("started_at"), job.get("ended_at"))
     )
-    generated_at = _fmt_text(metadata.get("finished_at") or report.get("generated_at"))
+    generated_at = format_date_absolute(
+        metadata.get("finished_at") or report.get("generated_at"), style="datetime")
     badge_variant = _status_badge_variant(status)
     run_dir_text = _fmt_text(run_dir)
 
@@ -261,7 +311,7 @@ def _render_header_actions(
         bundle_too_large_message = ""
         if run_dir is not None:
             try:
-                bundle_bytes = bundle_zip_bytes(run_dir)
+                bundle_bytes = _cached_bundle_zip(str(run_dir), _run_dir_signature(run_dir))
             except BundleTooLargeError as exc:
                 # Catch BundleTooLargeError BEFORE the generic ValueError
                 # branch below — the operator needs the size / path hint,

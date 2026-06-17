@@ -64,9 +64,45 @@ class OperatorUiFormattingTests(unittest.TestCase):
             format_date_absolute("2026-05-21T10:30:00+00:00", style="date"),
             "2026-05-21",
         )
+        # UTC 10:30 → CN local (UTC+8) 18:30 (audit G: stored UTC shown in CN).
         self.assertEqual(
             format_date_absolute("2026-05-21T10:30:00+00:00", style="datetime"),
-            "2026-05-21 10:30",
+            "2026-05-21 18:30",
+        )
+
+    def test_to_cn_date_buckets_utc_near_midnight_into_cn_day(self) -> None:
+        from web.operator_ui.formatting import to_cn_date
+
+        # 22:00Z → CN 06:00 NEXT day → buckets under the CN date the operator
+        # sees, keeping the jobs date-filter consistent with the display.
+        self.assertEqual(to_cn_date("2026-06-16T22:00:00+00:00"), "2026-06-17")
+        self.assertEqual(to_cn_date("2026-06-16T10:00:00+00:00"), "2026-06-16")
+        # naive / empty / unparseable fall back to the leading 10 chars / "".
+        self.assertEqual(to_cn_date("2026-06-16T22:00:00"), "2026-06-16")
+        self.assertEqual(to_cn_date(""), "")
+        self.assertEqual(to_cn_date("garbage"), "garbage"[:10])
+
+    def test_absolute_datetime_converts_utc_to_cn_local(self) -> None:
+        from web.operator_ui.formatting import format_date_absolute
+
+        # A UTC time near midnight rolls to the NEXT CN day (22:00Z + 8h = 06:00).
+        self.assertEqual(
+            format_date_absolute("2026-06-16T22:00:00+00:00", style="datetime"),
+            "2026-06-17 06:00",
+        )
+        self.assertEqual(
+            format_date_absolute("2026-06-16T22:00:00+00:00", style="date"),
+            "2026-06-17",
+        )
+        # iso style stays canonical (preserves the original UTC offset).
+        self.assertEqual(
+            format_date_absolute("2026-06-16T22:00:00+00:00", style="iso"),
+            "2026-06-16T22:00:00+00:00",
+        )
+        # naive datetimes (no tzinfo) are shown as-is, not shifted.
+        self.assertEqual(
+            format_date_absolute("2026-06-16T22:00:00", style="datetime"),
+            "2026-06-16 22:00",
         )
 
     def test_format_percent_arrow_uses_symbols(self) -> None:

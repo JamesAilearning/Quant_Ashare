@@ -612,13 +612,18 @@ with form_col:
                         err_key = hashlib.md5(
                             err.encode("utf-8"), usedforsecurity=False
                         ).hexdigest()[:10]
-                        if st.button(
+                        # on_click CALLBACK: the fix mutates a widget-bound key
+                        # (e.g. _fix_gpu_model sets cr_model_type, the model-type
+                        # selectbox key) — legal in a callback (runs before the
+                        # widget is re-instantiated), whereas the old inline call
+                        # crashed with StreamlitAPIException on Streamlit 1.57
+                        # (audit G). No st.rerun() — callbacks auto-rerun.
+                        st.button(
                             fix_label,
                             key=f"cr_fix_{err_key}",
                             use_container_width=True,
-                        ):
-                            fix_callable()
-                            st.rerun()
+                            on_click=fix_callable,
+                        )
         elif guard_warnings:
             st.warning(f"⚠ 共 {len(guard_warnings)} 个警告")
             for warn in guard_warnings:

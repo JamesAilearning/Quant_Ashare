@@ -70,6 +70,22 @@ class ApplyFiltersDateRangeTests(unittest.TestCase):
         )
         self.assertEqual([i.run_id for i in out], ["a", "b", "c"])
 
+    def test_near_midnight_utc_buckets_under_cn_date(self) -> None:
+        # PR-K: 22:00Z = CN 06:00 the NEXT day. The filter must bucket the job
+        # under the CN date the operator sees (2026-06-17), consistent with the
+        # CN-local display — not the raw UTC date (2026-06-16).
+        items = [_make(run_id="x", created_at="2026-06-16T22:00:00+00:00")]
+        kept = _apply_filters(
+            items, "all", "all", "all", "",
+            date_from="2026-06-17", date_to="2026-06-17",
+        )
+        self.assertEqual([i.run_id for i in kept], ["x"])
+        dropped = _apply_filters(
+            items, "all", "all", "all", "",
+            date_from="2026-06-16", date_to="2026-06-16",
+        )
+        self.assertEqual(dropped, [])
+
     def test_no_date_filter_keeps_undated_items(self) -> None:
         out = _apply_filters(self.items, "all", "all", "all", "")
         self.assertEqual(len(out), 4)

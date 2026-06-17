@@ -115,7 +115,11 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("导出完整压缩包", source)
         self.assertIn("metrics_csv_bytes(metrics)", source)
         self.assertIn("summary_pdf_bytes(", source)
-        self.assertIn("bundle_zip_bytes(run_dir)", source)
+        # PR-K: the bundle zip is now built through the cached helper at the CALL
+        # SITE (it re-zipped the run dir on every rerun before). Assert the call
+        # form, not just the def, so a revert to the inline uncached call fails.
+        self.assertIn("_cached_bundle_zip(str(run_dir)", source)
+        self.assertNotIn("bundle_zip_bytes(run_dir)", source)
 
     def test_results_page_exposes_holdings_and_trades_filters(self) -> None:
         source = _results_combined_source()
@@ -271,8 +275,11 @@ class ResultsPageSourceTests(unittest.TestCase):
 
         self.assertIn('job_status not in {"success", "completed", "ok"}', source)
         self.assertIn('status = _fmt_text(job.get("status") or metadata.get("status"))', source)
-        self.assertIn('started = _fmt_text(job.get("started_at") or metadata.get("started_at"))', source)
-        self.assertIn('ended = _fmt_text(job.get("ended_at") or metadata.get("finished_at"))', source)
+        # PR-K: started/ended now render via format_date_absolute (CN-local),
+        # not raw _fmt_text(UTC). The metadata-fallback wiring is unchanged.
+        self.assertIn('job.get("started_at") or metadata.get("started_at")', source)
+        self.assertIn('job.get("ended_at") or metadata.get("finished_at")', source)
+        self.assertIn('format_date_absolute(', source)
         self.assertIn('if str(job.get("status") or status).lower() == "failed":', source)
 
     def test_raw_json_tab_offers_substring_search(self) -> None:
