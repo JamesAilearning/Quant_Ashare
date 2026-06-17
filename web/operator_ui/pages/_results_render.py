@@ -70,24 +70,44 @@ from web.operator_ui.result_view_helpers import (
 )
 
 
-def _run_dir_mtime(run_dir: Path) -> float:
-    """Top-level mtime of the run dir, used as a cache key (best-effort)."""
+def _run_dir_signature(run_dir: Path) -> str:
+    """A cheap RECURSIVE signature (max mtime / file count / total size) over the
+    run dir, used as the bundle-cache key. A recursive walk catches in-place file
+    rewrites (a still-running / just-finished run updating an existing artifact or
+    log) that the top-level dir mtime misses — dir mtimes bump on create/delete/
+    rename, not on a child's content rewrite (Codex P2). It is a stat-only walk
+    (no reads / no compress), far cheaper than re-zipping."""
+    max_mtime = 0.0
+    count = 0
+    total = 0
     try:
-        return run_dir.stat().st_mtime
+        for p in run_dir.rglob("*"):
+            try:
+                stt = p.stat()
+            except OSError:
+                continue
+            max_mtime = max(max_mtime, stt.st_mtime)
+            if p.is_file():
+                count += 1
+                total += stt.st_size
     except OSError:
-        return 0.0
+        return ""
+    return f"{max_mtime}:{count}:{total}"
 
 
-@st.cache_data(show_spinner=False, max_entries=2)
-def _cached_bundle_zip(run_dir_str: str, dir_mtime: float) -> bytes:
+# ``misc`` suppresses the untyped-decorator error on CI (streamlit absent → st is
+# Any under --ignore-missing-imports); ``unused-ignore`` keeps it clean locally
+# where streamlit IS installed and the decorator is typed.
+@st.cache_data(show_spinner=False, max_entries=2)  # type: ignore[misc, unused-ignore]
+def _cached_bundle_zip(run_dir_str: str, dir_signature: str) -> bytes:
     """Cache the run-dir zip across reruns (audit G: the results page re-zipped
     the run dir — up to ~500 MiB — on EVERY Streamlit rerun, e.g. every keystroke
-    in an unrelated widget). ``dir_mtime`` (NO leading underscore — st.cache_data
+    in an unrelated widget). ``dir_signature`` (NO leading underscore — st.cache_data
     excludes ``_``-prefixed args from the key) IS part of the key, so the zip
-    rebuilds when the run dir changes. ``max_entries=2`` bounds memory (each entry
-    is up to the 500 MiB cap). ``st.cache_data`` does NOT cache exceptions, so
-    ``BundleTooLargeError`` / ``OSError`` / ``ValueError`` still propagate to the
-    call-site handler on each run."""
+    rebuilds when the run dir changes (recursively, see _run_dir_signature).
+    ``max_entries=2`` bounds memory (each entry is up to the 500 MiB cap).
+    ``st.cache_data`` does NOT cache exceptions, so ``BundleTooLargeError`` /
+    ``OSError`` / ``ValueError`` still propagate to the call-site handler."""
     return bundle_zip_bytes(Path(run_dir_str))
 
 
@@ -287,7 +307,7 @@ def _render_header_actions(
         bundle_too_large_message = ""
         if run_dir is not None:
             try:
-                bundle_bytes = _cached_bundle_zip(str(run_dir), _run_dir_mtime(run_dir))
+                bundle_bytes = _cached_bundle_zip(str(run_dir), _run_dir_signature(run_dir))
             except BundleTooLargeError as exc:
                 # Catch BundleTooLargeError BEFORE the generic ValueError
                 # branch below — the operator needs the size / path hint,
