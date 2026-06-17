@@ -29,16 +29,18 @@ JOB_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "jobs"
 RESULT_ROOT = PROJECT_ROOT / "output" / "operator_ui" / "results"
 JobMode = Literal["pipeline", "walk_forward"]
 
-# Statuses from which a job will never transition again. ``stop()`` refuses to
-# signal a pid for a job in any of these states — the OS may have recycled that
-# pid for an unrelated process, and killing it (taskkill /T kills the whole
-# process tree) would be a misfire that takes down something unrelated (audit
-# G2). ``status()`` treats a dead pid in a non-terminal state as a zombie.
-_TERMINAL_STATUSES = frozenset({"success", "failed", "stopped", "stop_failed"})
-# Non-terminal statuses a job can hold while its pid is meaningful. Used as the
-# compare-and-set guard for stop()/reconcile terminal writes so they can never
-# clobber a status that job_runner wrote concurrently.
-_ACTIVE_STATUSES = ("running", "pending")
+# Statuses the JOB RUNNER writes when a run genuinely ends. stop() refuses to
+# signal a pid for a job in one of these (the pid may have been recycled by the
+# OS), and the compare-and-set writes never overwrite them. NB: "stop_failed" is
+# deliberately NOT here — a failed stop attempt does not mean the job ended.
+_RUNNER_TERMINAL_STATUSES = frozenset({"success", "failed", "stopped"})
+
+# Statuses from which stop() may still transition a job, used as the
+# compare-and-set guard for its terminal writes. Includes "stop_failed" so an
+# operator can RETRY after a transient taskkill timeout / access-denied (the
+# process is likely still alive and still the managed job). Excludes the
+# runner-terminal states above so a concurrently-finished run is never clobbered.
+_STOP_WRITABLE_STATUSES = ("running", "pending", "stop_failed")
 
 # Win32 CREATE_NEW_PROCESS_GROUP (0x00000200). Hardcoded rather than referenced
 # as ``subprocess.CREATE_NEW_PROCESS_GROUP`` because that attribute exists only
@@ -292,10 +294,12 @@ class JobManager:
             )
         data = _read_job_json(job_dir)
         status = data.get("status")
-        # Refuse to kill a job that already reached a terminal state: its pid may
-        # have been recycled by the OS for an unrelated process, and taskkill /T
-        # would take down that process tree (audit G2).
-        if status in _TERMINAL_STATUSES:
+        # Refuse to kill a job the runner reported as ENDED: its pid may have been
+        # recycled by the OS for an unrelated process, and taskkill /T would take
+        # down that process tree (audit G2). "stop_failed" is intentionally NOT
+        # refused — a prior stop attempt that timed out / was denied leaves the
+        # job likely still alive, so the operator must be able to retry.
+        if status in _RUNNER_TERMINAL_STATUSES:
             raise JobManagerError(
                 f"Cannot stop job {job_id!r}: already in terminal state {status!r}."
             )
@@ -331,7 +335,7 @@ class JobManager:
                 "status": "failed",
                 "ended_at": datetime.now(timezone.utc).isoformat(),
                 "failure_reason": "process_not_running_at_stop",
-            }, only_if_status=_ACTIVE_STATUSES)
+            }, only_if_status=_STOP_WRITABLE_STATUSES)
             return
 
         if platform.system() == "Windows":
@@ -357,7 +361,7 @@ class JobManager:
                     "status": "stop_failed",
                     "stop_error": message,
                     "stop_failed_at": datetime.now(timezone.utc).isoformat(),
-                }, only_if_status=_ACTIVE_STATUSES)
+                }, only_if_status=_STOP_WRITABLE_STATUSES)
                 raise JobManagerError(message) from exc
             if result.returncode != 0:
                 # taskkill failed. Its exit code is ambiguous (a missing pid AND
@@ -370,7 +374,7 @@ class JobManager:
                         "status": "failed",
                         "ended_at": datetime.now(timezone.utc).isoformat(),
                         "failure_reason": "process_not_running_at_stop",
-                    }, only_if_status=_ACTIVE_STATUSES)
+                    }, only_if_status=_STOP_WRITABLE_STATUSES)
                     return
                 detail = (result.stderr or result.stdout or "").strip()
                 if detail:
@@ -388,7 +392,7 @@ class JobManager:
                     "stop_error": message,
                     "stop_returncode": result.returncode,
                     "stop_failed_at": datetime.now(timezone.utc).isoformat(),
-                }, only_if_status=_ACTIVE_STATUSES)
+                }, only_if_status=_STOP_WRITABLE_STATUSES)
                 raise JobManagerError(message)
         else:
             try:
@@ -414,7 +418,7 @@ class JobManager:
                     "status": "failed",
                     "ended_at": datetime.now(timezone.utc).isoformat(),
                     "failure_reason": "process_not_running_at_stop",
-                }, only_if_status=_ACTIVE_STATUSES)
+                }, only_if_status=_STOP_WRITABLE_STATUSES)
                 return
             except OSError as exc:
                 message = (
@@ -425,7 +429,7 @@ class JobManager:
                     "status": "stop_failed",
                     "stop_error": message,
                     "stop_failed_at": datetime.now(timezone.utc).isoformat(),
-                }, only_if_status=_ACTIVE_STATUSES)
+                }, only_if_status=_STOP_WRITABLE_STATUSES)
                 raise JobManagerError(message) from exc
         _wait_for_pid_exit(pid_int)
 
@@ -435,7 +439,7 @@ class JobManager:
         _write_job_json(job_dir, {
             "status": "stopped",
             "ended_at": datetime.now(timezone.utc).isoformat(),
-        }, only_if_status=_ACTIVE_STATUSES)
+        }, only_if_status=_STOP_WRITABLE_STATUSES)
 
     @staticmethod
     def delete(job_id: str) -> None:

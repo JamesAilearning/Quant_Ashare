@@ -371,6 +371,31 @@ class JobManagerStopTests(unittest.TestCase):
         self.assertEqual(data["failure_reason"], "process_not_running_at_stop")
         self.assertIsNotNone(data["ended_at"])
 
+    def test_stop_retries_after_stop_failed(self) -> None:
+        """A 'stop_failed' job (prior taskkill timed out / was denied) is NOT
+        terminal — the process is likely still alive, so Stop must retry rather
+        than refuse at the terminal-state guard."""
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "retry_job"
+        job_dir.mkdir(parents=True)
+        job_dir.joinpath("job.json").write_text(
+            json.dumps({"job_id": "retry_job", "status": "stop_failed", "pid": 909}),
+            encoding="utf-8",
+        )
+        with patch("web.operator_ui.job_manager.JOB_ROOT", job_root):
+            with patch("web.operator_ui.job_manager.platform.system", return_value="Windows"):
+                with patch("web.operator_ui.job_manager._pid_is_alive", return_value=True):
+                    with patch("web.operator_ui.job_manager._wait_for_pid_exit", return_value=True):
+                        with patch("subprocess.run") as mock_run:
+                            mock_run.return_value = subprocess.CompletedProcess(
+                                args=["taskkill"], returncode=0
+                            )
+                            from web.operator_ui.job_manager import JobManager
+                            JobManager.stop("retry_job")  # must NOT refuse
+        mock_run.assert_called_once()
+        data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "stopped")
+
     def test_stop_unknown_liveness_falls_through_to_kill(self) -> None:
         """When the liveness probe is INCONCLUSIVE (None — e.g. a tasklist
         hiccup), stop() must NOT take the no-kill 'mark failed' branch (that

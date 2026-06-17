@@ -133,6 +133,12 @@ class JobSummary:
 
 def _load_ui_jobs() -> list[dict[str, Any]]:
     """Return raw dicts for every UI-launched job directory."""
+    # Lazy imports (job_manager imports this module) — cycle-break pattern.
+    # _reconcile_zombie must run on THIS primary Jobs-page list path
+    # (list_all_jobs -> here), not only via JobManager.list_jobs(); otherwise a
+    # reboot/OOM-killed run shows as "running" forever in the operator's main
+    # list / running-count (audit G2).
+    from web.operator_ui.job_manager import _reconcile_zombie
     from web.operator_ui.progress import build_job_progress
 
     if not _JOB_ROOT.is_dir():
@@ -144,6 +150,7 @@ def _load_ui_jobs() -> list[dict[str, Any]]:
         data = read_job_json(job_dir)
         if not data:
             continue
+        data = _reconcile_zombie(job_dir, data)
         data["progress"] = build_job_progress(job_dir, data)
         data["_job_dir"] = str(job_dir)
         results.append(data)
