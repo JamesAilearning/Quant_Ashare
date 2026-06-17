@@ -46,8 +46,11 @@ from src.inference.daily_recommend import (
     resolve_dates,
     write_outputs,
 )
+from tests.e2e_guard import run_e2e_enabled
 
-_RUN_E2E = os.environ.get("RUN_E2E") == "1"
+# Single source of truth so every RUN_E2E gate accepts the same spellings
+# (previously this gate only accepted "1" — see tests/e2e_guard.py).
+_RUN_E2E = run_e2e_enabled()
 _PIT_PROVIDER = "D:/qlib_data/my_cn_data_pit"
 _PIT_REGISTRY = "D:/qlib_data/tushare_raw/delisted_registry.parquet"
 _MODEL = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"

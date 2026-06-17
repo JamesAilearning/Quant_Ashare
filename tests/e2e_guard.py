@@ -22,7 +22,34 @@ from __future__ import annotations
 import os
 import unittest
 
-_RUN_E2E = os.environ.get("RUN_E2E", "").strip() in ("1", "true", "yes")
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_flag_enabled(value: str | None) -> bool:
+    """Return True iff ``value`` is a recognised truthy flag.
+
+    Case-INSENSITIVE: a CI / shell that exports ``RUN_E2E=True`` or ``RUN_E2E=YES``
+    must enable E2E just like ``RUN_E2E=1``. The previous case-sensitive check
+    silently treated ``True``/``YES`` as off — a footgun that could either run
+    the machine-freezing E2E suite unexpectedly or, worse, silently skip it when
+    the operator believed it was on.
+    """
+    return (value or "").strip().lower() in _TRUTHY
+
+
+def run_e2e_enabled() -> bool:
+    """Single source of truth for the RUN_E2E gate.
+
+    Every E2E gate in the suite (``skip_unless_e2e`` plus the standalone
+    ``skipif`` checks in the regression / inference tests) must route through
+    this so a given ``RUN_E2E`` spelling enables ALL of them or none — otherwise
+    a value like ``True`` would start the heavy qlib tests while other gates
+    silently skip, giving a misleading partial E2E run.
+    """
+    return _env_flag_enabled(os.environ.get("RUN_E2E"))
+
+
+_RUN_E2E = run_e2e_enabled()
 
 skip_unless_e2e = unittest.skipUnless(
     _RUN_E2E,
