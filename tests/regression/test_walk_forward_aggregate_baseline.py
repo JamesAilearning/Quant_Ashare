@@ -22,7 +22,6 @@ Skipped unless:
 from __future__ import annotations
 
 import json
-import os
 import unittest
 from pathlib import Path
 
@@ -47,7 +46,10 @@ _HEADLINE_METRICS: tuple[str, ...] = (
 
 
 def _e2e_enabled() -> bool:
-    return os.environ.get("RUN_E2E", "").strip() in ("1", "true", "yes")
+    # Single source of truth so every RUN_E2E gate accepts the same spellings.
+    from tests.e2e_guard import run_e2e_enabled
+
+    return run_e2e_enabled()
 
 
 def _config_path() -> Path | None:

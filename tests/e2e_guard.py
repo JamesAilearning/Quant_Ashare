@@ -37,7 +37,19 @@ def _env_flag_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in _TRUTHY
 
 
-_RUN_E2E = _env_flag_enabled(os.environ.get("RUN_E2E"))
+def run_e2e_enabled() -> bool:
+    """Single source of truth for the RUN_E2E gate.
+
+    Every E2E gate in the suite (``skip_unless_e2e`` plus the standalone
+    ``skipif`` checks in the regression / inference tests) must route through
+    this so a given ``RUN_E2E`` spelling enables ALL of them or none — otherwise
+    a value like ``True`` would start the heavy qlib tests while other gates
+    silently skip, giving a misleading partial E2E run.
+    """
+    return _env_flag_enabled(os.environ.get("RUN_E2E"))
+
+
+_RUN_E2E = run_e2e_enabled()
 
 skip_unless_e2e = unittest.skipUnless(
     _RUN_E2E,
