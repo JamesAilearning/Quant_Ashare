@@ -12,6 +12,7 @@ layout. A new module added without a layout entry fails here.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -33,17 +34,46 @@ def _substantive_src_modules() -> list[str]:
     return modules
 
 
+def _documented_src_modules(text: str) -> set[str]:
+    """Module names from the INDENTED bullets under the 'src/' entry only.
+
+    Scoping to the src/ sub-block matters (Codex P2): a bare 'pit/' search over
+    the whole file would also match the 'tests/' layout line, so removing the
+    'src/pit/' bullet wouldn't be caught — the exact drift this guards against.
+    """
+    documented: set[str] = set()
+    in_src = False
+    for line in text.splitlines():
+        if re.match(r"^- `src/`", line):
+            in_src = True
+            continue
+        if in_src:
+            if re.match(r"^- `", line):  # next TOP-level bullet → src block ended
+                break
+            m = re.match(r"^\s+- `([A-Za-z0-9_]+)/`", line)  # indented sub-bullet
+            if m:
+                documented.add(m.group(1))
+    return documented
+
+
 class ClaudeMdSrcLayoutTests(unittest.TestCase):
     def test_every_substantive_src_module_is_documented(self) -> None:
         text = CLAUDE_MD.read_text(encoding="utf-8")
         modules = _substantive_src_modules()
         self.assertTrue(modules, "expected to discover substantive src/ modules")
-        missing = [m for m in modules if f"`{m}/`" not in text]
+        documented = _documented_src_modules(text)
+        self.assertTrue(
+            documented,
+            "could not parse any src/ layout bullets from CLAUDE.md — the "
+            "section format may have changed; update this guard.",
+        )
+        missing = [m for m in modules if m not in documented]
         self.assertEqual(
             missing, [],
-            "CLAUDE.md's 'Repository layout' section omits these substantive "
-            f"src/ modules: {missing}. Add a bullet for each (the layout is "
-            "loaded into the agent context every session — keep it accurate).",
+            "CLAUDE.md's 'Repository layout' src/ section omits these "
+            f"substantive modules: {missing}. Add a bullet for each under the "
+            "``- `src/``` entry (the layout is loaded into the agent context "
+            "every session — keep it accurate).",
         )
 
 
