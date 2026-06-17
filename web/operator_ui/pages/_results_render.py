@@ -13,6 +13,7 @@ re-exports for the test surface, and the module-level page dispatch
 
 from __future__ import annotations
 
+import hashlib
 import html
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -71,28 +72,26 @@ from web.operator_ui.result_view_helpers import (
 
 
 def _run_dir_signature(run_dir: Path) -> str:
-    """A cheap RECURSIVE signature (max mtime / file count / total size) over the
-    run dir, used as the bundle-cache key. A recursive walk catches in-place file
-    rewrites (a still-running / just-finished run updating an existing artifact or
-    log) that the top-level dir mtime misses — dir mtimes bump on create/delete/
-    rename, not on a child's content rewrite (Codex P2). It is a stat-only walk
-    (no reads / no compress), far cheaper than re-zipping."""
-    max_mtime = 0.0
-    count = 0
-    total = 0
+    """A RECURSIVE signature over the run dir's (relative path, mtime, size),
+    used as the bundle-cache key. Hashing the per-entry RELATIVE PATH + mtime_ns
+    + size catches every change the zip would reflect — in-place rewrites
+    (mtime), content changes (size), adds/deletes (entry set), AND renames /
+    same-size replacements (path) — which a coarse max-mtime/count/total summary
+    would miss (Codex P2). Stat-only walk (no reads / no compress), far cheaper
+    than re-zipping. Subdirs are included (size -1) so a subdir rename invalidates."""
+    parts: list[str] = []
     try:
-        for p in run_dir.rglob("*"):
+        for p in sorted(run_dir.rglob("*")):
             try:
                 stt = p.stat()
             except OSError:
                 continue
-            max_mtime = max(max_mtime, stt.st_mtime)
-            if p.is_file():
-                count += 1
-                total += stt.st_size
+            rel = p.relative_to(run_dir).as_posix()
+            size = stt.st_size if p.is_file() else -1
+            parts.append(f"{rel}:{stt.st_mtime_ns}:{size}")
     except OSError:
         return ""
-    return f"{max_mtime}:{count}:{total}"
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 # ``untyped-decorator`` suppresses the error on CI (streamlit absent → st is Any
