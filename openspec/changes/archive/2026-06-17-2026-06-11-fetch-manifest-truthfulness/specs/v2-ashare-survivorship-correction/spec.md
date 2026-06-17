@@ -4,8 +4,7 @@
 
 ### Requirement: Per-(ticker, year) resume SHALL be content-fresh, not existence-based
 
-An existing per-`(ticker, year)` file (daily / adj_factor / daily_basic)
-SHALL be resume-skipped ONLY when its `max(trade_date)` reaches the latest
+An existing per-`(ticker, year)` file (daily / adj_factor / daily_basic) SHALL be resume-skipped ONLY when its `max(trade_date)` reaches the latest
 date this run can expect of it: the last weekday on or before
 `min(requested end_date, Dec 31 of the year)`, further bounded by the
 ticker's listing window — a slice the window misses entirely expects no data
@@ -54,8 +53,7 @@ naming the explicit reset as the deliberate-fresh-start path.
 
 ### Requirement: Coverage merge SHALL NOT fabricate or corrupt ranges
 
-Merging coverage ranges separated by a never-fetched gap of more than one
-calendar day SHALL be refused (unioning them would claim the gap as
+Merging coverage ranges separated by a never-fetched gap of more than one calendar day SHALL be refused (unioning them would claim the gap as
 covered). The empty-string "coverage not established" sentinel SHALL never
 win a min/max comparison nor trigger the narrower-scope refusal. An endpoint
 that ran but established nothing (wrote no unit, holed no unit) SHALL

@@ -195,6 +195,8 @@ The root of every Phase 1 expression SHALL have `output_type.kind == "CSF"` AND 
 
 The random expression generator SHALL accept a `target_type: ExprType` argument and a `min_depth` argument with default 2. For any call with `target_type = ExprType("CSF", "PURE")`, every sample produced SHALL have `output_type == ExprType("CSF", "PURE")` AND a tree depth ≥ `min_depth`. A test SHALL exercise the generator with 1000 samples (fixed RNG seed, `max_depth=6`, `min_depth=2`, `target_type=ExprType("CSF", "PURE")`) and assert 100% type-valid and 100% scale-pure roots. The generator SHALL sample only `group_by=None` for `cs_*` operators in v1 (per `decisions.md` D2).
 
+The generator MAY encounter operator-argument combinations that pass static type-checking but are rejected by additional `OperatorCall.__post_init__` invariants (e.g. the `ts_corr` trivial-form rule). In such cases the generator SHALL retry with freshly-sampled subtrees up to a bounded retry budget (currently 10), and SHALL fall back to a leaf when the retry budget is exhausted and a leaf is available for the requested target type. The retry budget SHALL never be the binding cause of generator failure under normal operation: any output-type that has at least one non-trivial operator candidate in the registry SHALL succeed.
+
 #### Scenario: the 1000-sample generator test is executed
 - **WHEN** `pytest tests/logic/factor_mining/test_grammar.py::test_random_generator_1000_samples` runs
 - **THEN** all 1000 generated expressions have `output_type.kind == "CSF"` AND `output_type.taint == "PURE"`
@@ -205,6 +207,12 @@ The random expression generator SHALL accept a `target_type: ExprType` argument 
 - **WHEN** the recursive generator is called under a `cs_*` parent with `target_type = ExprType("FLOAT", "PURE")`
 - **THEN** every candidate operator and leaf considered for that subtree has output `taint = PURE`
 - **AND** `ADJ_TAINTED` leaves like `$close` are filtered out unless they reach `PURE` via a `div_safe` ratio in the subtree
+
+#### Scenario: the generator samples a trivial ts_corr form internally
+- **WHEN** the recursive generator picks `ts_corr` and the sampled children happen to be `(f(X), X, N)` for `f ∈ {"neg", "log_safe", "sqrt_safe"}`
+- **THEN** the `OperatorCall` constructor raises `GrammarError`
+- **AND** the generator catches the error and retries with new children up to 10 times
+- **AND** in practice no random expression test (`test_random_generator_avoids_trivial_ts_corr`, 500 samples) exhausts the retry budget
 
 ### Requirement: `FactorMiningDataView` SHALL be the sole bridge to PIT data
 
@@ -246,7 +254,9 @@ The random expression generator SHALL accept a `target_type: ExprType` argument 
 
 ### Requirement: Evaluator SHALL produce IC, IR, RankIC, turnover, and coverage from one factor
 
-`src/factor_mining/evaluator.py` SHALL expose `evaluate_factor(expr, panel, forward_return, *, method)` returning an `EvaluationResult` frozen dataclass with at minimum: `factor_values` (date × ticker), `ic_mean`, `ic_std`, `ir`, `rank_ic_mean`, `rank_ic_std`, `rank_ir`, `turnover_daily`, `coverage`, `n_obs_per_day_min`. The IC computation SHALL reuse `src.core._ic_utils.compute_ic_for_group` (per `inventory.md` §B.3 recommendation) and SHALL set IR to NaN when the corresponding IC std is below 1e-9 (per `inventory.md` §B.4).
+`src/factor_mining/evaluator.py` SHALL expose `evaluate_factor(expr, panel, forward_return, *, method, universe_mask=None)` returning an `EvaluationResult` frozen dataclass with at minimum: `factor_values` (date × ticker), `ic_mean`, `ic_std`, `ir`, `rank_ic_mean`, `rank_ic_std`, `rank_ir`, `turnover_daily`, `coverage`, `n_obs_per_day_min`. The IC computation SHALL reuse `src.core._ic_utils.compute_ic_for_group` (per `inventory.md` §B.3 recommendation) and SHALL set IR to NaN when the corresponding IC std is below 1e-9 (per `inventory.md` §B.4).
+
+`coverage` SHALL be computed **relative to universe membership** when a `universe_mask` (boolean date × ticker frame) is supplied: the denominator is the count of (date, ticker) cells where the ticker is a universe member on that day, and the numerator is the count of those member cells that also carry a finite factor value. This is required for survivorship-corrected PIT panels, whose union matrix is ~40 % NaN purely because most union tickers are non-members on any given day; an all-cells denominator makes `coverage_min` unsatisfiable (a perfect factor scores ~0.62 and is rejected, so a full GP run returns an empty pool). When `universe_mask` is None, `coverage` SHALL fall back to the all-cells non-NaN fraction (the legacy behaviour for synthetic / dense panels). The `universe_mask` parameter SHALL be optional and SHALL NOT introduce any `qlib` or `src.pit` import into `evaluator.py` (the mask is produced by `FactorMiningDataView.universe_mask`, the pit_adapter door, and passed in as a DataFrame), preserving the D5 strict gate.
 
 #### Scenario: a factor perfectly correlated with the label
 - **WHEN** `evaluate_factor` is called on a synthetic factor that equals forward_return on every (date, ticker) cell
@@ -262,6 +272,23 @@ The random expression generator SHALL accept a `target_type: ExprType` argument 
 - **WHEN** `evaluate_factor` produces an `ic_std` strictly less than 1e-9
 - **THEN** the returned `ir` is NaN (not 0.0)
 - **AND** this matches `signal_analyzer.py` / `factor_analyzer.py` IR convention from `inventory.md` §B.4
+
+#### Scenario: coverage is members-relative when a universe mask is supplied
+- **WHEN** `evaluate_factor` is called with a `universe_mask` whose non-member cells (mask False) are NaN in the factor and whose member cells (mask True) are all finite
+- **THEN** the returned `coverage` is ~1.0 (non-member NaN cells are excluded from the denominator)
+- **AND** the same call without `universe_mask` returns the lower all-cells fraction
+
+#### Scenario: a NaN on a member cell still reduces members-relative coverage
+- **WHEN** `evaluate_factor` is called with a `universe_mask` and the factor is NaN on a cell where the ticker IS a member that day
+- **THEN** that cell counts against `coverage` (numerator excludes it, denominator includes it), so the validity gate still rejects genuinely-undefined factors
+
+#### Scenario: a member cell absent from the factor counts as uncovered
+- **WHEN** `evaluate_factor` is called with a `universe_mask` that marks a (date, ticker) as a member but that cell is absent from `factor_values` entirely (e.g. the PIT provider omits an all-missing member ticker/row)
+- **THEN** the denominator is computed over the mask's own domain and the factor is aligned onto the mask, so the absent member cell is counted as uncovered (in the denominator, not in the numerator) rather than dropped — coverage is not inflated
+
+#### Scenario: no universe mask reproduces legacy all-cells coverage
+- **WHEN** `evaluate_factor` is called with `universe_mask=None` (the default) on a panel with some NaN factor cells
+- **THEN** `coverage` equals the count of non-NaN cells divided by the total cell count (the pre-change behaviour, preserved for synthetic / dense panels)
 
 ### Requirement: Fitness SHALL implement the v1 §5.1 composite formula with D1 cost rate
 
@@ -281,12 +308,27 @@ The random expression generator SHALL accept a `target_type: ExprType` argument 
 
 ### Requirement: Validity filters SHALL enforce coverage, variance, and sanity constraints
 
-`passes_validity(result, config)` SHALL return False if any of: (a) `result.coverage < config.coverage_min` (default 0.8), (b) the fraction of dates with cross-sectional std above `config.variance_min` (default 1e-6) is below `config.variance_days_frac_min` (default 0.7), or (c) the fraction of cells in `result.factor_values` that are non-finite or have absolute value above a sanity bound exceeds `config.extreme_outlier_frac_max` (default 0.05). Otherwise it returns True. (The data-leakage filter from `factor_mining_design.md` §5.2 item 3 is enforced by the Phase 1 grammar's scale-invariance gate and does not need a runtime check.)
+`passes_validity(result, config)` SHALL return False if any of: (a) `result.coverage < config.coverage_min` (default 0.8), (b) the fraction of dates with cross-sectional std above `config.variance_min` (default 1e-6) is below `config.variance_days_frac_min` (default 0.7), or (c) the fraction of **finite cells** in `result.factor_values` whose absolute value exceeds `config.extreme_outlier_magnitude` (default 1e8) exceeds `config.extreme_outlier_frac_max` (default 0.05). The sanity check's denominator SHALL be the count of finite cells (`np.isfinite(arr).sum()`), NOT the total cell count, and non-finite (NaN / Inf) cells SHALL NOT count as outliers. This separates the sanity check (a magnitude filter on the finite fraction) from the coverage check (a NaN-density filter); an earlier implementation used the total-cell denominator and counted non-finite cells as outliers, which made the effective binding constraint coverage ≥ `1 - extreme_outlier_frac_max` (≥ 0.95 with defaults), strictly tighter than the design doc's `coverage_min = 0.80`. An all-NaN factor SHALL return 0.0 for the sanity check (the metric is undefined; coverage_min is the binding rejection in that case). Otherwise `passes_validity` returns True. (The data-leakage filter from `factor_mining_design.md` §5.2 item 3 is enforced by the Phase 1 grammar's scale-invariance gate and does not need a runtime check.)
 
 #### Scenario: a near-constant factor fails the variance check
 - **WHEN** `passes_validity` is called on a factor whose cross-sectional std is below 1e-6 on 50 % of dates with default config
 - **THEN** the function returns False
 - **AND** `compute_fitness` on the same result returns `-inf`
+
+#### Scenario: 30% NaN with bounded finite values passes the sanity check
+- **WHEN** `passes_validity` is called on a factor with 30 % NaN cells whose finite values are all bounded (e.g. samples from `N(0, 1)`), with `coverage_min = 0.0` and `variance_days_frac_min = 0.0` (so sanity is the only check)
+- **THEN** the function returns True
+- **AND** the sanity check does NOT double-count the 30 % NaN cells as outliers
+
+#### Scenario: extreme outliers in finite cells still fail the sanity check
+- **WHEN** `passes_validity` is called on a factor with 30 % NaN cells AND 10 % of the remaining finite cells set to magnitude `1e10`, with `coverage_min = 0.0`, `variance_days_frac_min = 0.0`, and `extreme_outlier_frac_max = 0.05`
+- **THEN** the function returns False
+- **AND** the rejection is driven by the finite-cell magnitude check (10 % of finite cells > 5 % threshold)
+
+#### Scenario: an all-NaN factor does not crash the sanity check
+- **WHEN** `passes_validity` is called on a factor whose every cell is NaN, with `coverage_min = 0.0` and `variance_days_frac_min = 0.0`
+- **THEN** the function returns True (the sanity metric is undefined; coverage_min is the binding rejection in production configs, and we disabled it here to isolate the sanity outcome)
+- **AND** no exception is raised
 
 ### Requirement: Factor pool SHALL dedup by structural hash and round-trip through parquet+JSON
 
@@ -391,6 +433,8 @@ For an identical `GPConfig` (including `seed`), `FitnessConfig`, panel, and forw
 
 `src/factor_mining/miner.py` SHALL be invokable as `python -m src.factor_mining.miner <config.yaml>` and SHALL produce, under `<output_dir>/runs/{run_id}/`: `factor_pool.parquet` and `factor_expressions.json` (the Phase 2 pool format), `gp_history.json` (the per-generation stats), and `config.yaml` (the parsed config dumped back). The `run_id` SHALL be either taken from the config or autogenerated. The CLI SHALL accept both `data.mode: synthetic` (in-process deterministic panel) and `data.mode: pit` (real PIT bundle via `FactorMiningDataView`); the PIT-mode SHALL raise an explicit error when `pit_provider_uri` or `delisted_registry_path` is an empty string per `config/factor_mining/default.yaml`'s placeholder convention.
 
+The CLI MAY accept an optional top-level `pool_top_k` integer key. When set and `len(pool) > pool_top_k`, the saved pool SHALL be truncated to the top-K entries by `fitness` desc (Phase 1 hash tie-break preserves determinism) BEFORE persistence. When unset (the default), the entire post-GP pool is persisted. The truncation SHALL happen once, after the GP loop completes; the GP search loop itself (selection, novelty, mutation, crossover, elitism) SHALL NOT be modified by `pool_top_k`. The per-run `config.yaml` snapshot SHALL record `pool_top_k`, `full_pool_size_pre_truncation` (the pool size returned by `engine.run`), and `saved_pool_size` (the pool size that was actually written to disk) so operators can audit truncation after the fact. A `pool_top_k` of zero or a negative integer SHALL raise `ValueError` at config load.
+
 #### Scenario: running the smoke config end-to-end
 - **WHEN** a developer runs `python -m src.factor_mining.miner config/factor_mining/smoke.yaml`
 - **THEN** the process exits 0
@@ -401,6 +445,22 @@ For an identical `GPConfig` (including `seed`), `FitnessConfig`, panel, and forw
 - **WHEN** the miner is invoked with `data.mode: pit` and `data.pit_provider_uri: ""`
 - **THEN** an explicit error is raised naming `inventory.md` §F.3 (the "build the PIT bundle" follow-up task)
 - **AND** no factor-pool files are written
+
+#### Scenario: pool_top_k truncates the persisted pool to top-K by fitness
+- **WHEN** the miner is invoked with a YAML that sets `pool_top_k: 50` and the GP run produces > 50 valid factors
+- **THEN** the saved `factor_pool.parquet` has exactly 50 rows
+- **AND** the 50 saved entries are the highest-fitness entries from the untruncated pool (rank-1 .. rank-50 by `fitness` desc)
+- **AND** `config.yaml` records `pool_top_k: 50`, `full_pool_size_pre_truncation: <N>`, `saved_pool_size: 50` (where `N` is the untruncated count)
+
+#### Scenario: pool_top_k larger than the pool is a no-op
+- **WHEN** the miner is invoked with `pool_top_k: 10000` and the GP produces 91 valid factors
+- **THEN** the saved pool has 91 entries (truncation does not pad)
+- **AND** the saved entries are the entire post-GP pool
+
+#### Scenario: pool_top_k of zero or negative is rejected at load
+- **WHEN** the YAML sets `pool_top_k: 0` (or any negative integer)
+- **THEN** `load_config` raises `ValueError` with a message naming "positive integer"
+- **AND** no GP run is started, no files are written
 
 ### Requirement: Smoke config SHALL exist and complete quickly on CPU
 
@@ -480,4 +540,35 @@ For each pool entry the validator SHALL evaluate the factor against the OOS slic
 - **WHEN** `python -m src.factor_mining.promote --run <missing_path> --to v1` is invoked
 - **THEN** the process exits non-zero
 - **AND** prints a clear error message
+
+### Requirement: `ts_corr` SHALL reject trivial `(f(X), X)` forms at construction time
+
+`OperatorCall("ts_corr", (a, b, n))` SHALL raise `GrammarError` at construction time when the two factor-argument expressions `a` and `b` are trivially related. Trivial forms SHALL be:
+
+1. **Structural equality**: `a == b` (same Expression AST, e.g. `ts_corr($close, $close, 20)`). The cross-sectional correlation of a series with itself is mechanically 1.0 (or NaN per the existing v1 §5.2 ±Inf → NaN rule when the per-ticker variance is zero), carrying no signal.
+2. **Bijective univariate transform**: `a` is `op(b)` where `op ∈ {"neg", "log_safe", "sqrt_safe"}` (the bijective monotonic univariate operators in the v1 registry), or symmetrically `b = op(a)`. The correlation between a series and a monotonic function of itself is mechanically near ±1 over a rolling window; residual variation is numerical compression artefact (e.g. `log` near zero), not predictive content.
+
+`abs` and `sign` SHALL NOT be in the bijective-univariate set: `abs` legitimately captures sign-asymmetry between a series and its absolute value (which can be a real factor), and `sign` is piecewise-constant such that `ts_corr` is already degenerate (zero per-ticker variance → NaN per the existing rule). The rule rejection text SHALL cite `docs/factor_mining/empirical_results_b_std.md` §"Top expressions reveal pseudo-signals" so future contributors can see the empirical motivation.
+
+#### Scenario: ts_corr of a feature with itself
+- **WHEN** `OperatorCall("ts_corr", (Terminal("$close"), Terminal("$close"), Terminal("20")))` is constructed
+- **THEN** `GrammarError` is raised with a message containing "trivially related"
+- **AND** the message cites the empirical doc
+
+#### Scenario: ts_corr of a feature with `neg`/`log_safe`/`sqrt_safe` of itself
+- **WHEN** any of `OperatorCall("ts_corr", (OperatorCall(op, ($close,)), $close, 20))` is constructed for `op ∈ {"neg", "log_safe", "sqrt_safe"}`
+- **THEN** `GrammarError` is raised at construction time
+- **AND** the same rejection holds for the symmetric form `ts_corr($close, op($close), 20)`
+
+#### Scenario: ts_corr of two distinct features
+- **WHEN** `OperatorCall("ts_corr", (Terminal("$close"), Terminal("$volume"), Terminal("20")))` is constructed
+- **THEN** no exception is raised (cross-feature correlation is a legitimate factor pattern)
+
+#### Scenario: ts_corr of `abs(X)` with `X`
+- **WHEN** `OperatorCall("ts_corr", (OperatorCall("abs", (Terminal("$close"),)), Terminal("$close"), Terminal("20")))` is constructed
+- **THEN** no exception is raised (`abs` is intentionally not in the bijective-univariate blocklist)
+
+#### Scenario: ts_corr of two unrelated operator subtrees
+- **WHEN** `OperatorCall("ts_corr", (ts_mean($close, 20), ts_std($volume, 20), Terminal("20")))` is constructed
+- **THEN** no exception is raised
 

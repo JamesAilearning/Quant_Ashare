@@ -115,8 +115,7 @@ single scalar suitable for `exchange_kwargs["close_cost"]` by:
 
 ### Requirement: Config layers SHALL accept the schedule or its default
 
-`PipelineConfig.stamp_tax_schedule` and the walk-forward equivalent
-SHALL accept either:
+`PipelineConfig.stamp_tax_schedule` and the walk-forward equivalent SHALL accept either:
 
 * `None` (interpreted as `CN_STAMP_TAX_SCHEDULE_DEFAULT`), OR
 * a `Sequence[Mapping[str, Any]]` whose entries each have

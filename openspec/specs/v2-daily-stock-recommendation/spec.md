@@ -107,3 +107,180 @@ training.
 - **THEN** the model is loaded from that artifact and used to score the
   as-of cross-section without retraining
 
+### Requirement: Daily recommendation SHALL exclude current ST/*ST names from the buy list before the Top-K slice
+
+The path SHALL determine, from the current name snapshot, which candidate
+names carry an A-share ST-family risk-warning marker (`ST`, `*ST`, `SST`,
+`S*ST`, and resumption-day `NST`; NOT bare `S`, `N`/`C`, `XD`/`XR`/`DR`, or
+Latin company names) and SHALL remove those names from the candidate pool
+**before** truncating to `topk`, so the buy list holds `topk` tradable,
+non-ST picks rather than `topk` minus the ST hits. Excluded ST names SHALL
+remain in the full scored audit frame with `unavailable_reason = "st"`, and
+the result SHALL report the count as `n_st_excluded`. When a name is both
+microstructure-masked and ST, the microstructure reason SHALL take
+precedence in the audit label.
+
+#### Scenario: an ST stock is not recommended and is labelled
+- **WHEN** a candidate whose current name is `*ST金亚` scores within the
+  Top-K on the as-of date
+- **THEN** it is absent from the buy list
+- **AND** it appears in the audit frame with `unavailable_reason = "st"`
+- **AND** the result's `n_st_excluded` counts it
+
+#### Scenario: the Top-K is filled from the non-ST pool
+- **WHEN** the scored pool interleaves ST and non-ST names by score and
+  `topk = K`
+- **THEN** the buy list contains the `K` highest-scoring non-ST names
+- **AND** no ST name appears in the buy list
+
+### Requirement: Daily recommendation SHALL fail loud when the current-ST source is missing, stale, or malformed
+
+Because excluding ST requires the current name snapshot, the path SHALL
+treat that snapshot as REQUIRED: if `name_source_parquet` is unset or the
+file is absent, if the snapshot's file date lags the as-of date by more than
+`st_snapshot_max_age_days`, or if the snapshot is unreadable / missing the
+required `ts_code` or `name` columns / empty, the path SHALL raise an explicit
+error and emit no list, rather than silently producing a list that could
+include ST names. A snapshot newer than the as-of date SHALL NOT be treated
+as stale.
+
+#### Scenario: a missing current-ST source is rejected
+- **WHEN** `recommend` is invoked with no `name_source_parquet` (or a path
+  that does not exist)
+- **THEN** an explicit error is raised and no list is produced
+
+#### Scenario: a stale current-ST snapshot is rejected
+- **WHEN** the active-stocks snapshot file's date lags the as-of date by
+  more than `st_snapshot_max_age_days`
+- **THEN** an explicit error is raised and no list is produced
+
+#### Scenario: a malformed current-ST snapshot is rejected
+- **WHEN** the snapshot is present and fresh but is unreadable, is missing
+  the `ts_code` or `name` column, or has zero rows
+- **THEN** an explicit error is raised and no list is produced
+- **AND** the path does NOT fall back to an empty name map that would
+  silently disable ST filtering
+
+### Requirement: The walk-forward backtest SHALL exclude PIT-historical ST/*ST names from the selection set before TopkDropout
+
+When a namechange source is configured, the walk-forward backtest SHALL drop,
+from the (signal-lag-shifted) prediction set passed to `TopkDropoutStrategy`,
+every `(execution_date, instrument)` whose instrument was ST/*ST on that
+execution date. ST status SHALL be reconstructed point-in-time as the name in
+effect on the date — the namechange row with the greatest `start_date <= date`
+(`end_date` SHALL NOT be used) — and a row whose `start_date` is after the date
+SHALL NOT be consulted (no look-ahead). The exclusion SHALL be selection-time
+only: ST names SHALL remain in the model's training panel. When the configured
+namechange source is missing, unreadable, malformed, or does not cover the
+evaluation window, the backtest SHALL fail loud rather than run ST-unmasked. A
+per-run ST mask audit listing the dropped `(date, instrument, ts_code, name)`
+rows SHALL be written for operator review.
+
+#### Scenario: a name ST on the execution date is dropped
+- **WHEN** instrument `X` was ST/*ST (per its as-of namechange name) on
+  execution date `D` and a namechange source is configured
+- **THEN** the `(D, X)` candidate is absent from the set passed to
+  `TopkDropoutStrategy`
+- **AND** it appears in the ST mask audit with its as-of name
+
+#### Scenario: a name that became ST only after D is not dropped for D
+- **WHEN** instrument `X`'s earliest ST namechange has `start_date` after `D`
+- **THEN** `(D, X)` is NOT dropped (the status reflects `D`, not a later
+  relabel)
+
+#### Scenario: training is unaffected by the selection mask
+- **WHEN** the ST mask drops names from the selection set
+- **THEN** the model for that fold was still trained on a panel that included
+  those names (the mask runs on predictions, never on the training data)
+
+#### Scenario: missing or uncovered namechange fails loud
+- **WHEN** the configured namechange source is absent, malformed, or its latest
+  record predates the evaluation window
+- **THEN** the backtest raises and produces no metrics (no ST-unmasked
+  fallback)
+
+### Requirement: Daily recommendation SHALL refuse to emit a list when the price/feature bundle is stale
+
+`recommend` SHALL verify the bundle's freshness against an EXTERNAL reference
+date and refuse to emit a list when the bundle is stale — because it resolves
+the as-of date from the qlib bundle's own calendar, it cannot otherwise detect
+its own staleness. It SHALL compare the bundle's last trading day to a reference
+"today" (the system date in production, injectable for tests and intentional
+historical runs) and, if the lag exceeds the configured `bundle_max_age_days`
+(calendar days), SHALL raise an explicit error and emit no list rather than
+scoring on stale prices. The tolerance SHALL be generous enough that a normal
+pre-holiday gap (no new data during a multi-day market holiday) does not trip
+it. A bundle whose last trading day is on or after the reference today SHALL NOT
+be treated as stale.
+
+#### Scenario: a stale bundle is rejected
+- **WHEN** the bundle's last trading day lags the reference today by more than
+  `bundle_max_age_days`
+- **THEN** an explicit error is raised and no list is produced
+- **AND** the error names the bundle's last day and the remedy (update the
+  bundle before recommending)
+
+#### Scenario: a fresh bundle (including a normal holiday gap) is accepted
+- **WHEN** the bundle's last trading day lags the reference today by no more
+  than `bundle_max_age_days` — including a multi-day market-holiday gap during
+  which no new data is expected
+- **THEN** the freshness guard does not raise and the list is produced
+
+#### Scenario: the reference today is injectable and deterministic
+- **WHEN** a reference today is supplied to `recommend`
+- **THEN** the freshness comparison uses that value rather than the wall-clock
+  date, so the guard is deterministic for tests and lets an operator override
+  it for an intentional historical run
+
+### Requirement: Recommendation SHALL refuse a bundle built from a holey fetch
+
+`recommend` SHALL refuse to emit a buy list from a price/feature bundle that was
+built from a HOLEY tushare fetch, or that lacks a fetch-integrity stamp, unless the
+operator explicitly opts in. Right after the staleness guard, it SHALL read the
+bundle's `_fetch_integrity.json` stamp (written by the qlib bin builder) from the
+SAME normalized `provider_uri` qlib initialized against (so an `~`-prefixed or
+whitespaced URI is not read from a non-existent literal path): a stamp marked
+`built_from_holey_fetch`, OR a MISSING stamp (completeness cannot be confirmed —
+e.g. a bundle built before this contract existed), SHALL raise
+`DailyRecommendationError` rather than rank a list on survivorship-incomplete data,
+unless `allow_holey_recommend` (`--allow-holey-recommend`) is set. This decision
+SHALL be INDEPENDENT of the build-side `--allow-holey-fetch`: the stamp carries the
+FACT that the fetch was holey, never the authorization to trade on it, so building
+a partial bundle SHALL NOT by itself permit recommending from it. A clean stamp
+SHALL pass silently. A CORRUPT stamp — malformed / unknown-schema / wrong-typed,
+or INTERNALLY INCONSISTENT (marked clean yet listing holes) — SHALL fail loud
+REGARDLESS of `allow_holey_recommend`: the override accepts a holey or MISSING
+stamp (known states), not an unreadable or self-contradictory one; the stamp SHALL
+be read (and a corrupt one surfaced) BEFORE the override is honoured.
+
+#### Scenario: a holey-stamped bundle refuses recommendation
+- **WHEN** the bundle's stamp is `built_from_holey_fetch = true` and
+  `allow_holey_recommend` is not set
+- **THEN** `recommend` raises rather than emitting a list
+
+#### Scenario: an unstamped bundle refuses recommendation
+- **WHEN** the bundle has no fetch-integrity stamp and `allow_holey_recommend` is
+  not set
+- **THEN** `recommend` raises (completeness cannot be confirmed)
+
+#### Scenario: a clean bundle recommends normally
+- **WHEN** the bundle's stamp is `built_from_holey_fetch = false`
+- **THEN** the gate passes silently and recommendation proceeds
+
+#### Scenario: the override permits an intentional holey run
+- **WHEN** `allow_holey_recommend` is set
+- **THEN** the gate passes regardless of a holey or missing stamp
+
+#### Scenario: a corrupt stamp fails loud even under the override
+- **WHEN** the bundle's stamp exists but is corrupt / unknown-schema and
+  `allow_holey_recommend` is set
+- **THEN** `recommend` still raises — the override accepts incompleteness (holey /
+  missing), not an unreadable stamp; corruption is surfaced before the override
+
+#### Scenario: red line — the build override does not sanction recommendation
+- **WHEN** a bundle was built under the build-side `--allow-holey-fetch` (so it is
+  stamped `built_from_holey_fetch = true`) and recommendation runs WITHOUT
+  `--allow-holey-recommend`
+- **THEN** `recommend` still refuses — build-allow never cascades into
+  recommend-allow; each boundary opts in on its own
+
