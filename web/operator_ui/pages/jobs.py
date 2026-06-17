@@ -222,16 +222,27 @@ with dcol4:
 
 # Quick date presets
 qp_col1, qp_col2, qp_col3, qp_col4, qp_col5 = st.columns(5)
-_today = date.today()
 
 
-def _apply_quick_range(start: date | None, end: date | None) -> None:
+def _apply_quick_range(preset: str) -> None:
     # Run as an st.button on_click CALLBACK (not inline): a callback fires BEFORE
     # the script reruns and re-instantiates the date_input widgets, so writing
     # their widget keys (jobs_date_from_widget / jobs_date_to_widget) is legal.
     # Writing them inline (after the widgets were instantiated this run) raised
-    # StreamlitAPIException on Streamlit 1.57 (audit G). No st.rerun() needed —
-    # Streamlit reruns automatically after a callback.
+    # StreamlitAPIException on Streamlit 1.57 (audit G). No st.rerun() needed.
+    #
+    # date.today() is computed HERE (callback runs on the click's rerun), NOT
+    # captured in args at render time — else a page left open across midnight
+    # would apply yesterday's range when "今天" is clicked (Codex P2).
+    today = date.today()
+    ranges: dict[str, tuple[date | None, date | None]] = {
+        "today": (today, today),
+        "7d": (today - timedelta(days=6), today),
+        "30d": (today - timedelta(days=29), today),
+        "year": (date(today.year, 1, 1), today),
+        "clear": (None, None),
+    }
+    start, end = ranges[preset]
     st.session_state["jobs_date_from_widget"] = start
     st.session_state["jobs_date_to_widget"] = end
     st.session_state["jobs_date_from"] = start.isoformat() if start else ""
@@ -241,19 +252,19 @@ def _apply_quick_range(start: date | None, end: date | None) -> None:
 
 with qp_col1:
     st.button("今天", key="jobs_qp_today", use_container_width=True,
-              on_click=_apply_quick_range, args=(_today, _today))
+              on_click=_apply_quick_range, args=("today",))
 with qp_col2:
     st.button("最近 7 天", key="jobs_qp_7d", use_container_width=True,
-              on_click=_apply_quick_range, args=(_today - timedelta(days=6), _today))
+              on_click=_apply_quick_range, args=("7d",))
 with qp_col3:
     st.button("最近 30 天", key="jobs_qp_30d", use_container_width=True,
-              on_click=_apply_quick_range, args=(_today - timedelta(days=29), _today))
+              on_click=_apply_quick_range, args=("30d",))
 with qp_col4:
     st.button("本年至今", key="jobs_qp_year", use_container_width=True,
-              on_click=_apply_quick_range, args=(date(_today.year, 1, 1), _today))
+              on_click=_apply_quick_range, args=("year",))
 with qp_col5:
     st.button("清除日期", key="jobs_qp_clear", use_container_width=True,
-              on_click=_apply_quick_range, args=(None, None))
+              on_click=_apply_quick_range, args=("clear",))
 
 # Reset to page 1 whenever filters change.
 _filter_signature = (

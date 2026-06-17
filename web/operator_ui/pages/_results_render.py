@@ -95,10 +95,10 @@ def _run_dir_signature(run_dir: Path) -> str:
     return f"{max_mtime}:{count}:{total}"
 
 
-# ``misc`` suppresses the untyped-decorator error on CI (streamlit absent → st is
-# Any under --ignore-missing-imports); ``unused-ignore`` keeps it clean locally
-# where streamlit IS installed and the decorator is typed.
-@st.cache_data(show_spinner=False, max_entries=2)  # type: ignore[misc, unused-ignore]
+# ``untyped-decorator`` suppresses the error on CI (streamlit absent → st is Any
+# under --ignore-missing-imports); ``unused-ignore`` keeps it clean locally where
+# streamlit IS installed and the decorator is typed (ignore would otherwise be unused).
+@st.cache_data(show_spinner=False, max_entries=2)  # type: ignore[untyped-decorator, unused-ignore]
 def _cached_bundle_zip(run_dir_str: str, dir_signature: str) -> bytes:
     """Cache the run-dir zip across reruns (audit G: the results page re-zipped
     the run dir — up to ~500 MiB — on EVERY Streamlit rerun, e.g. every keystroke
