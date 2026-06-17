@@ -6,7 +6,7 @@ import contextlib
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -33,10 +33,26 @@ def read_job_json(job_dir: Path) -> dict[str, Any]:
     return {}
 
 
-def write_job_json(job_dir: Path, updates: dict[str, Any]) -> None:
+def write_job_json(
+    job_dir: Path,
+    updates: dict[str, Any],
+    *,
+    only_if_status: Collection[str] | None = None,
+) -> bool:
+    """Atomically merge ``updates`` into job.json. Returns True iff written.
+
+    When ``only_if_status`` is given, the merge is an atomic compare-and-set: it
+    happens only if the CURRENT on-disk ``status`` is one of those values, read
+    inside the same cross-process lock as the write. This prevents a UI-side
+    reconcile / stop from clobbering a terminal status that the job_runner
+    process wrote concurrently (it takes the same lock). Returns False, having
+    written nothing, when the guard does not hold.
+    """
     job_dir.mkdir(parents=True, exist_ok=True)
     with _job_lock(job_dir):
         existing = read_job_json(job_dir)
+        if only_if_status is not None and existing.get("status") not in only_if_status:
+            return False
         existing.update(updates)
         tmp = job_dir / "job.json.tmp"
         tmp.write_text(
@@ -44,6 +60,7 @@ def write_job_json(job_dir: Path, updates: dict[str, Any]) -> None:
             encoding="utf-8",
         )
         os.replace(tmp, job_dir / "job.json")
+    return True
 
 
 @contextlib.contextmanager

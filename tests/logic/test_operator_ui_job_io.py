@@ -601,5 +601,48 @@ class JobsEligibleForCleanupTests(unittest.TestCase):
             jobs_eligible_for_cleanup([], older_than_days=-1, today=self._TODAY)
 
 
+class WriteJobJsonCompareAndSetTests(unittest.TestCase):
+    """write_job_json(only_if_status=...) is the atomic guard that prevents a
+    UI-side stop/reconcile from clobbering a status job_runner wrote first."""
+
+    def test_writes_when_current_status_matches_guard(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import read_job_json, write_job_json
+
+        job_dir = Path(tempfile.mkdtemp())
+        write_job_json(job_dir, {"status": "running", "pid": 1})
+        wrote = write_job_json(
+            job_dir, {"status": "failed"}, only_if_status=("running",)
+        )
+        self.assertTrue(wrote)
+        self.assertEqual(read_job_json(job_dir)["status"], "failed")
+
+    def test_skips_when_current_status_does_not_match_guard(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import read_job_json, write_job_json
+
+        job_dir = Path(tempfile.mkdtemp())
+        # Runner already finished — status is terminal.
+        write_job_json(job_dir, {"status": "success", "pid": 1})
+        wrote = write_job_json(
+            job_dir, {"status": "stopped"}, only_if_status=("running", "pending")
+        )
+        self.assertFalse(wrote)
+        # success must be intact, and the guarded update must not have leaked.
+        self.assertEqual(read_job_json(job_dir)["status"], "success")
+
+    def test_unguarded_write_still_unconditional(self) -> None:
+        import tempfile
+
+        from web.operator_ui.job_io import read_job_json, write_job_json
+
+        job_dir = Path(tempfile.mkdtemp())
+        write_job_json(job_dir, {"status": "success"})
+        self.assertTrue(write_job_json(job_dir, {"status": "stopped"}))
+        self.assertEqual(read_job_json(job_dir)["status"], "stopped")
+
+
 if __name__ == "__main__":
     unittest.main()
