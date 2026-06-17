@@ -78,7 +78,12 @@ def _run_dir_signature(run_dir: Path) -> str:
     (mtime), content changes (size), adds/deletes (entry set), AND renames /
     same-size replacements (path) — which a coarse max-mtime/count/total summary
     would miss (Codex P2). Stat-only walk (no reads / no compress), far cheaper
-    than re-zipping. Subdirs are included (size -1) so a subdir rename invalidates."""
+    than re-zipping. Subdirs are included (size -1) so a subdir rename invalidates.
+    ``st_ctime_ns`` is folded in too so a content swap that restores mtime+size
+    (``cp -p`` / ``rsync --times``) still invalidates on Linux (ctime bumps on the
+    replace). ACCEPTED LIMIT: a swap preserving path+size+mtime+ctime is not
+    detected — unhashable without reading every file (as costly as the zip we are
+    avoiding), and run dirs are immutable pipeline outputs in practice."""
     parts: list[str] = []
     try:
         for p in sorted(run_dir.rglob("*")):
@@ -88,7 +93,7 @@ def _run_dir_signature(run_dir: Path) -> str:
                 continue
             rel = p.relative_to(run_dir).as_posix()
             size = stt.st_size if p.is_file() else -1
-            parts.append(f"{rel}:{stt.st_mtime_ns}:{size}")
+            parts.append(f"{rel}:{stt.st_mtime_ns}:{stt.st_ctime_ns}:{size}")
     except OSError:
         return ""
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
