@@ -47,6 +47,7 @@ from src.data.tushare.fetcher import (  # noqa: E402
     _expected_year_file_end,
     _last_trading_day_on_or_before,
     _last_weekday_str,
+    _recent_boundary_floor,
 )
 
 
@@ -1784,6 +1785,152 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             f"expected the idiosyncratic warning in {logs.output}",
         )
 
+    def test_historical_backfill_shortfall_does_not_hole(self) -> None:
+        # PR #271: a multi-year catch-up re-pulls SCATTERED legitimately-short
+        # files (suspended through a year-end / delisted mid-year) — a MINORITY
+        # of any one year's universe, with an EXPECTED boundary months before
+        # end_date. Those must NOT trip the systemic gate — the exact
+        # false-positive that blocked 阶段1 (forensics: 93% of a real backfill's
+        # shorts were historical; only ~1% of each year's universe). Here 60 of
+        # 200 tickers are short in 2018 (0.30 < FULL_YEAR_RATIO, boundary ~1yr
+        # before the 2019-12-31 end_date) while the rest of 2018 and all of 2019
+        # are complete → a loud WARNING, never an endpoint hole. The ORIGINAL
+        # gate counted 60/60 re-pulls = 1.0 and holed; reverting either the
+        # recency scope or the universe-fraction guard re-trips it.
+        from src.data.tushare.fetcher import SYSTEMIC_SHORTFALL_MIN_CHECKED
+        universe = 200
+        n_short = SYSTEMIC_SHORTFALL_MIN_CHECKED + 10  # 60 ≥ MIN → old gate holed
+        tickers = [f"{600000 + k}.SH" for k in range(universe)]
+        short_set = set(tickers[:n_short])
+
+        def side_effect(api: str, **p: object):
+            if api == "trade_cal":
+                return _all_weekday_cal_df(str(p["start_date"]), str(p["end_date"]))
+            yr = str(p["start_date"])[:4]
+            short = yr == "2018" and p["ts_code"] in short_set
+            end = "20180629" if short else str(p["end_date"])
+            return pd.DataFrame(
+                {"ts_code": [p["ts_code"]] * 2, "trade_date": [f"{yr}0102", end]}
+            )
+
+        client = _make_client(side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_many(tmp_path, tickers)
+            ydir = tmp_path / "daily" / "2018"
+            ydir.mkdir(parents=True)
+            for tk in tickers:  # short_set: stale-short 2018; rest: complete 2018
+                end = "20180629" if tk in short_set else "20181231"
+                pd.DataFrame(
+                    {"ts_code": [tk] * 2, "trade_date": ["20180102", end]}
+                ).to_parquet(ydir / f"{tk}.parquet", index=False)
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20180101", "20191231"),
+            )
+            with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
+                fetcher.fetch()
+        self.assertEqual(len(fetcher.holes), 0)  # scattered historical → NO hole
+        self.assertTrue(
+            any("STILL end before" in line for line in logs.output),
+            f"expected the historical-short warning in {logs.output}",
+        )
+        # The 60 shorts are surfaced but reported as NOT recent.
+        self.assertTrue(
+            any("0 of them with a recent boundary" in line for line in logs.output),
+            f"expected '0 recent' in the warning: {logs.output}",
+        )
+
+    def test_full_year_truncation_holes_even_when_boundary_old(self) -> None:
+        # PR #271: a vendor truncating an ENTIRE past year (near-total shortfall
+        # vs that year's universe) must STILL hole — the C-class silent
+        # truncation PR #240's gate guards — even though its boundary is old and
+        # the recency window cannot see it. Here ALL of 2018 comes back short for
+        # every ticker (100% > FULL_YEAR_RATIO) while 2019 is complete; the
+        # 2019-12-31 end_date makes 2018 non-recent, so ONLY the universe-
+        # fraction guard fires. (Contrast test_historical_backfill_...: a
+        # MINORITY short does not hole.)
+        from src.data.tushare.fetcher import SYSTEMIC_SHORTFALL_MIN_CHECKED
+        n = SYSTEMIC_SHORTFALL_MIN_CHECKED + 10
+        tickers = [f"{600000 + k}.SH" for k in range(n)]
+
+        def side_effect(api: str, **p: object):
+            if api == "trade_cal":
+                return _all_weekday_cal_df(str(p["start_date"]), str(p["end_date"]))
+            yr = str(p["start_date"])[:4]
+            end = "20180629" if yr == "2018" else str(p["end_date"])  # all 2018 short
+            return pd.DataFrame(
+                {"ts_code": [p["ts_code"]] * 2, "trade_date": [f"{yr}0102", end]}
+            )
+
+        client = _make_client(side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_many(tmp_path, tickers)
+            ydir = tmp_path / "daily" / "2018"
+            ydir.mkdir(parents=True)
+            for tk in tickers:  # stale-short 2018 file for EVERY ticker
+                pd.DataFrame(
+                    {"ts_code": [tk], "trade_date": ["20180629"]}
+                ).to_parquet(ydir / f"{tk}.parquet", index=False)
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20180101", "20191231"),
+            )
+            fetcher.fetch()
+        self.assertEqual(len(fetcher.holes), 1)  # whole-year truncation → HOLE
+        hole = fetcher.holes[0]
+        self.assertEqual(hole.reason_class, "systemic_shortfall")
+        self.assertEqual(hole.unit, "systemic-shortfall")
+        self.assertIn("whole-year", hole.last_error)  # the full-year branch
+
+    def test_mass_suspension_wave_year_does_not_hole(self) -> None:
+        # PR #271 self-review P1: a market-wide suspension wave (e.g. 2015 H2,
+        # ~50% of A-shares halted) is LEGITIMATE — _expected_year_file_end caps
+        # the boundary only by delist_date, never by suspension, so a
+        # suspended-through-year-end ticker counts as "short". The full-year
+        # guard's threshold (0.90) must sit ABOVE the worst real wave so it does
+        # NOT false-fire: only a near-total wipeout (a true vendor truncation,
+        # ~100%) holes. Here 130 of 200 tickers are short in a past year
+        # (0.65 — a severe but legitimate wave) → WARNING, no hole. A naive 0.5
+        # threshold would wrongly hole this; this test pins the higher bar.
+        from src.data.tushare.fetcher import SYSTEMIC_SHORTFALL_MIN_CHECKED
+        universe = 200
+        n_short = 130  # 0.65 of the universe — above 0.5, below 0.90
+        assert n_short >= SYSTEMIC_SHORTFALL_MIN_CHECKED
+        tickers = [f"{600000 + k}.SH" for k in range(universe)]
+        short_set = set(tickers[:n_short])
+
+        def side_effect(api: str, **p: object):
+            if api == "trade_cal":
+                return _all_weekday_cal_df(str(p["start_date"]), str(p["end_date"]))
+            yr = str(p["start_date"])[:4]
+            short = yr == "2018" and p["ts_code"] in short_set
+            end = "20180629" if short else str(p["end_date"])
+            return pd.DataFrame(
+                {"ts_code": [p["ts_code"]] * 2, "trade_date": [f"{yr}0102", end]}
+            )
+
+        client = _make_client(side_effect)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_many(tmp_path, tickers)
+            ydir = tmp_path / "daily" / "2018"
+            ydir.mkdir(parents=True)
+            for tk in tickers:
+                end = "20180629" if tk in short_set else "20181231"
+                pd.DataFrame(
+                    {"ts_code": [tk] * 2, "trade_date": ["20180102", end]}
+                ).to_parquet(ydir / f"{tk}.parquet", index=False)
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20180101", "20191231"),
+            )
+            with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
+                fetcher.fetch()
+        self.assertEqual(len(fetcher.holes), 0)  # legitimate wave → NO hole
+        self.assertTrue(
+            any("STILL end before" in line for line in logs.output),
+            f"expected the wave warning in {logs.output}",
+        )
+
     def test_force_retried_still_short_file_also_warns(self) -> None:
         # codex P1 round 4 on #240: a force-retried EXISTING file (prior-
         # manifest hole) bypasses the freshness branch, but its successful
@@ -1983,6 +2130,28 @@ class TradingDayFloorTests(unittest.TestCase):
                 start_date="20181231", end_date="20181231", rate_limit_sleep_ms=0,
             )
             self.assertEqual(TushareFetcher(client, cfg)._get_trading_days(), ())
+
+    def test_recent_boundary_floor_with_calendar(self) -> None:
+        """PR #271: the floor is the Nth trading day counting back from the last
+        trading day on/before end_date; boundaries >= it are 'recent'."""
+        cal = [
+            "20251224", "20251225", "20251226", "20251229", "20251230", "20251231",
+        ]
+        # Last 3 trading days on/before year-end → floor = the 3rd-from-last.
+        self.assertEqual(_recent_boundary_floor("20251231", cal, 3), "20251229")
+        # end_date mid-calendar: only days <= end_date count.
+        self.assertEqual(_recent_boundary_floor("20251227", cal, 2), "20251225")
+        # N larger than the calendar → earliest day (window degrades to "all").
+        self.assertEqual(_recent_boundary_floor("20251231", cal, 99), "20251224")
+
+    def test_recent_boundary_floor_without_calendar_is_generous_window(self) -> None:
+        """No calendar (None or empty) → a generous calendar-day fallback that
+        safely spans N trading days; still far tighter than the months-wide gap
+        to historical suspension/delist boundaries."""
+        for cal in (None, ()):
+            floor = _recent_boundary_floor("20251231", cal, 5)
+            self.assertLess(floor, "20251231")   # excludes nothing at the end
+            self.assertGreater(floor, "20251101")  # but is a recent window, not open
 
 
 if __name__ == "__main__":
