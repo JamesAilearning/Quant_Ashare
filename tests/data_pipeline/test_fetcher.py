@@ -1911,6 +1911,27 @@ class TradingDayFloorTests(unittest.TestCase):
                 ("20180102", "20180103"),
             )
 
+    def test_empty_calendar_is_valid_no_boundary(self) -> None:
+        """Codex P2: an EMPTY trade_cal (a no-trading-day slice, e.g. a range
+        that is entirely a holiday) is a VALID empty calendar (()), distinct
+        from unavailable (None). An empty calendar yields NO boundary → nothing
+        expected, no re-pull, no false shortfall — not a weekday fallback that
+        would expect the holiday itself."""
+        # Empty calendar → no last trading day → no expected boundary.
+        self.assertIsNone(_last_trading_day_on_or_before("20181231", ()))
+        self.assertIsNone(_expected_year_file_end(
+            year_start="20181231", year_end="20181231",
+            window=(None, None), trading_days=(),
+        ))
+        # _get_trading_days returns () (NOT None) for an empty trade_cal result.
+        client = _make_client(lambda api, **p: pd.DataFrame(), trade_cal_dates=[])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("daily",),
+                start_date="20181231", end_date="20181231", rate_limit_sleep_ms=0,
+            )
+            self.assertEqual(TushareFetcher(client, cfg)._get_trading_days(), ())
+
 
 if __name__ == "__main__":
     unittest.main()

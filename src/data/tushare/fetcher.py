@@ -685,12 +685,25 @@ class TushareFetcher:
                 end_date=self._config.end_date,
                 is_open="1",
             )
-            if df is None or getattr(df, "empty", True) or "cal_date" not in getattr(df, "columns", []):
+            # UNAVAILABLE / unexpected shape (None, non-frame, no cal_date
+            # column) → degrade to the weekday fallback (None).
+            cols = getattr(df, "columns", None)
+            if df is None or cols is None or "cal_date" not in cols:
                 _logger.warning(
                     "trade_cal returned no usable calendar — weekday-floor fallback."
                 )
                 return None
             raw = [str(d) for d in df["cal_date"]]
+            # A legitimately EMPTY result (e.g. a slice that is entirely a
+            # holiday — trade_cal is_open=1 returns zero rows) means NO trading
+            # days. That is a VALID, EMPTY calendar — distinct from unavailable:
+            # `_expected_year_file_end` with () floors to None (no boundary), so
+            # nothing is expected and no file is re-pulled or flagged short. (A
+            # weekday fallback here would instead expect the holiday and could
+            # trip the systemic-shortfall gate — Codex P2.)
+            if not raw:
+                self._trading_days = ()
+                return self._trading_days
             # A malformed / NaN / dash-formatted cal_date row means we CANNOT
             # trust this calendar as the authoritative exchange calendar. Degrade
             # the WHOLE calendar to the weekday fallback rather than silently
@@ -699,9 +712,9 @@ class TushareFetcher:
             # a genuinely-stale/empty file as verified (silent loss of real
             # data, the dangerous direction). (Codex P1.) Duplicates of
             # well-formed dates are harmless and deduped.
-            if not raw or any(not (s.isdigit() and len(s) == 8) for s in raw):
+            if any(not (s.isdigit() and len(s) == 8) for s in raw):
                 _logger.warning(
-                    "trade_cal contained malformed/empty cal_date value(s) — "
+                    "trade_cal contained malformed cal_date value(s) — "
                     "degrading the whole calendar to the weekday-floor fallback."
                 )
                 return None
