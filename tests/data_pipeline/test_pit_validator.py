@@ -14,6 +14,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -24,7 +27,20 @@ from src.data.pit.pit_validator import (  # noqa: E402
     PITValidationReport,
     PITValidator,
     PITValidatorError,
+    _in_calendar_range,
+    _lookahead_violation,
+    _suspension_signal,
 )
+
+
+def _qlib_frame(ticker: str, dates_closes: list[tuple[str, float]]) -> pd.DataFrame:
+    """A qlib ``D.features``-shaped frame: MultiIndex [instrument, datetime],
+    one ``$close`` column. Use float('nan') for a NaN close."""
+    idx = pd.MultiIndex.from_tuples(
+        [(ticker, pd.Timestamp(d)) for d, _ in dates_closes],
+        names=["instrument", "datetime"],
+    )
+    return pd.DataFrame({"$close": [c for _, c in dates_closes]}, index=idx)
 
 
 class ExitCodeTests(unittest.TestCase):
@@ -123,6 +139,119 @@ class SanityCheckTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(PITValidatorError, r"features/"):
                 validator._sanity_check_provider()
+
+
+class DelistVerdictHelperTests(unittest.TestCase):
+    """PR #272 — pure verdict helpers. Look-ahead (data past delist) is the
+    only hard failure; missing/short near delist is a suspension WARNING."""
+
+    DELIST = pd.Timestamp("2022-06-01")
+
+    def test_in_calendar_range(self) -> None:
+        lo, hi = pd.Timestamp("2018-01-02"), pd.Timestamp("2026-01-16")
+        self.assertTrue(_in_calendar_range(pd.Timestamp("2022-06-01"), lo, hi))
+        self.assertTrue(_in_calendar_range(lo, lo, hi))   # boundary inclusive
+        self.assertTrue(_in_calendar_range(hi, lo, hi))
+        self.assertFalse(_in_calendar_range(pd.Timestamp("2017-12-31"), lo, hi))
+        self.assertFalse(_in_calendar_range(pd.Timestamp("2026-02-01"), lo, hi))
+
+    def test_lookahead_violation_flags_nonnan_after_delist(self) -> None:
+        df = _qlib_frame("X", [("2022-05-30", 9.0), ("2022-06-02", 9.5)])  # 06-02 > delist
+        msg = _lookahead_violation(df, self.DELIST, "X")
+        self.assertIsNotNone(msg)
+        self.assertIn("look-ahead", msg)
+
+    def test_lookahead_ignores_nan_after_and_data_up_to_delist(self) -> None:
+        # NaN after delist → fine; data ending at/ before delist → fine.
+        nan_after = _qlib_frame("X", [("2022-05-30", 9.0), ("2022-06-02", float("nan"))])
+        self.assertIsNone(_lookahead_violation(nan_after, self.DELIST, "X"))
+        upto = _qlib_frame("X", [("2022-05-30", 9.0), ("2022-06-01", 9.1)])
+        self.assertIsNone(_lookahead_violation(upto, self.DELIST, "X"))
+        self.assertIsNone(_lookahead_violation(None, self.DELIST, "X"))
+        self.assertIsNone(_lookahead_violation(pd.DataFrame(), self.DELIST, "X"))
+
+    def test_suspension_signal_missing_and_allnan_and_truncation(self) -> None:
+        ws, we = "2022-05-02", "2022-06-11"
+        # empty / None → "no data"
+        self.assertIn("no data", _suspension_signal(None, self.DELIST, ws, we, "X", 7))
+        self.assertIn("no data", _suspension_signal(pd.DataFrame(), self.DELIST, ws, we, "X", 7))
+        # all-NaN
+        allnan = _qlib_frame("X", [("2022-05-30", float("nan"))])
+        self.assertIn("all-NaN", _suspension_signal(allnan, self.DELIST, ws, we, "X", 7))
+        # last trade 60d before delist → truncation/suspension warning
+        trunc = _qlib_frame("X", [("2022-04-01", 9.0)])
+        msg = _suspension_signal(trunc, self.DELIST, ws, we, "X", 7)
+        self.assertIsNotNone(msg)
+        self.assertIn("suspended before formal delist", msg)
+
+    def test_suspension_signal_none_when_data_reaches_delist(self) -> None:
+        ok = _qlib_frame("X", [("2022-05-30", 9.0), ("2022-06-01", 9.1)])
+        self.assertIsNone(_suspension_signal(ok, self.DELIST, "2022-05-02", "2022-06-11", "X", 7))
+
+
+class CheckBClassificationTests(unittest.TestCase):
+    """PR #272 — the [B] sweep glue: out-of-range delistings are skipped, a
+    pre-delist suspension is a WARNING (build still swaps), and only look-ahead
+    is a hard ERROR (blocks the swap)."""
+
+    def _validator(self, tmp_path: Path) -> PITValidator:
+        (tmp_path / "calendars").mkdir()
+        # clean 2018..2026 calendar (endpoints only — range is what matters)
+        (tmp_path / "calendars" / "day.txt").write_text(
+            "2018-01-02\n2026-01-16\n", encoding="utf-8"
+        )
+        (tmp_path / "instruments").mkdir()
+        (tmp_path / "instruments" / "all.txt").write_text("", encoding="utf-8")
+        (tmp_path / "features").mkdir()
+        return PITValidator(
+            provider_dir=tmp_path,
+            delisted_registry_path=tmp_path / "reg.parquet",
+        )
+
+    def test_classification(self) -> None:
+        import importlib.util
+        if importlib.util.find_spec("qlib") is None:
+            self.skipTest("qlib not installed")
+        registry = pd.DataFrame({
+            "ticker": ["PRE", "POST", "LOOKAHEAD", "SUSPENDED", "FAITHFUL"],
+            "delist_date": [
+                pd.Timestamp("2017-06-01"),   # out of range (before cal_start)
+                pd.Timestamp("2027-01-01"),   # out of range (after cal_end)
+                pd.Timestamp("2022-06-01"),   # look-ahead → ERROR
+                pd.Timestamp("2022-06-01"),   # suspended 60d early → WARNING
+                pd.Timestamp("2022-06-01"),   # faithful → clean
+            ],
+        })
+
+        def fake_features(insts, fields, start, end):  # type: ignore[no-untyped-def]
+            tk = insts[0]
+            if tk == "LOOKAHEAD":
+                return _qlib_frame(tk, [("2022-05-30", 9.0), ("2022-06-02", 9.5)])
+            if tk == "SUSPENDED":
+                return _qlib_frame(tk, [("2022-04-01", 9.0)])  # 61d before delist
+            if tk == "FAITHFUL":
+                return _qlib_frame(tk, [("2022-05-30", 9.0), ("2022-06-01", 9.1)])
+            raise AssertionError(f"out-of-range ticker {tk} should not be queried")
+
+        fake_d = mock.Mock()
+        fake_d.features.side_effect = fake_features
+        with tempfile.TemporaryDirectory() as tmp:
+            validator = self._validator(Path(tmp))
+            # D is a lazy qlib Wrapper (no .features until init); replace the
+            # whole object so the method's `from qlib.data import D` binds ours.
+            with mock.patch("qlib.data.D", fake_d):
+                result = validator._check_b_delist_boundary(registry)
+
+        # PRE/POST never queried (skipped before the D.features call).
+        self.assertEqual(result.details["out_of_range_skipped"], 2)
+        self.assertEqual(result.details["checked"], 3)
+        # LOOKAHEAD is the only hard failure.
+        self.assertFalse(result.passed)
+        self.assertEqual(result.details["violation_count"], 1)
+        self.assertTrue(any("look-ahead" in e for e in result.errors))
+        # SUSPENDED is a warning, not a failure.
+        self.assertEqual(result.details["suspension_warnings"], 1)
+        self.assertTrue(any("suspended before formal delist" in w for w in result.warnings))
 
 
 if __name__ == "__main__":

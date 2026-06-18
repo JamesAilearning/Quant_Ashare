@@ -11,13 +11,17 @@ Pipeline (Phase B.3, per docs/pit/pit_universe_design.md §5 Stage 6)
 
 The 6 validation checks (A-F per design):
 
-A. Survivorship — query each registry ticker's $close at delist_date+1;
-   MUST be NaN. Mirrors and supersedes the legacy
-   ``scripts/data_quality/verify_survivorship.py`` script, which is
-   kept as a standalone diagnostic but now anchored on a corrected
-   reference set.
-B. Delist boundary — for every registry ticker, $close on delist_date
-   MUST be valid AND $close strictly after MUST be NaN.
+A. Survivorship — spot-check the first 5 IN-RANGE registry tickers: a
+   non-NaN $close strictly AFTER delist_date is the look-ahead failure.
+   (PR #272: a missing bar AT delist_date is NOT a failure — a stock
+   suspended before its formal delist legitimately has none.)
+B. Delist boundary — full sweep. The only HARD failure is look-ahead
+   (non-NaN $close past delist_date). Data missing/short near delist_date
+   is a WARNING, not a failure: ~44% of in-range delistings suspend
+   weeks-to-months before their FORMAL delist, so the bin faithfully ends
+   early (vendor has no bars there either). Delistings outside the built
+   bundle's calendar range are skipped (out of scope). Mirrors and
+   supersedes the legacy ``scripts/data_quality/verify_survivorship.py``.
 C. Time-travel — sample 5 historical dates; for every active ticker
    in the universe on that date, list_date <= date and no
    delist_date <= date.
@@ -103,6 +107,82 @@ class PITValidatorError(RuntimeError):
     pass
 
 
+# ----------------------------------------------------------------------
+# Pure delist-boundary verdict helpers (PR #272)
+#
+# Extracted so the survivorship logic is unit-testable with synthetic
+# qlib-shaped frames (MultiIndex [instrument, datetime], "$close" column),
+# without bringing up a real qlib provider. The survivorship gate's only HARD
+# failure is look-ahead — a non-NaN $close strictly AFTER delist_date. "Data
+# missing/short near delist_date" is a WARNING: most A-share delistings suspend
+# weeks-to-months before their FORMAL delist, so the bin faithfully ends early.
+# ----------------------------------------------------------------------
+
+
+def _in_calendar_range(
+    delist: pd.Timestamp, cal_start: pd.Timestamp, cal_end: pd.Timestamp
+) -> bool:
+    """True when a delist_date falls inside the built bundle's calendar. A
+    delisting outside [cal_start, cal_end] is correctly absent from this bundle,
+    so its boundary is out of scope (skipped), not a failure."""
+    return bool(cal_start <= delist <= cal_end)
+
+
+def _lookahead_violation(
+    df: pd.DataFrame | None, delist: pd.Timestamp, ticker: str
+) -> str | None:
+    """The survivorship/look-ahead HARD failure: any non-NaN ``$close`` strictly
+    AFTER ``delist_date``. Returns a message or ``None``."""
+    if df is None or df.empty:
+        return None
+    after_mask = df.index.get_level_values("datetime") > delist
+    after = (
+        df.loc[after_mask, "$close"].dropna()
+        if after_mask.any() else pd.Series([], dtype=float)
+    )
+    if not after.empty:
+        return (
+            f"{ticker}: {len(after)} non-NaN value(s) past "
+            f"delist_date={delist.date()} — survivorship/look-ahead"
+        )
+    return None
+
+
+def _suspension_signal(
+    df: pd.DataFrame | None,
+    delist: pd.Timestamp,
+    window_start: str,
+    window_end: str,
+    ticker: str,
+    tolerance_days: int,
+) -> str | None:
+    """A WARNING (not a failure): the bin has no / only-NaN / early-ending data
+    around ``delist_date``. Faithful to the vendor for a stock suspended before
+    its formal delist; the real bin-truncation bug can't be told apart from this
+    without the vendor's last-trade date, so it is surfaced, not blocked."""
+    if df is None or df.empty:
+        return (
+            f"{ticker}: no data in [{window_start}, {window_end}] — suspended "
+            f"before formal delist_date={delist.date()} (or window outside "
+            f"coverage)"
+        )
+    valid = df["$close"].dropna()
+    if valid.empty:
+        return (
+            f"{ticker}: all-NaN in [{window_start}, {window_end}] — suspended "
+            f"before formal delist_date={delist.date()}"
+        )
+    last_valid = valid.index.get_level_values("datetime").max()
+    days_before = (delist - last_valid).days
+    if days_before > tolerance_days:
+        return (
+            f"{ticker}: last valid trade {last_valid.date()} is {days_before}d "
+            f"before delist_date={delist.date()} — suspended before formal "
+            f"delist (vendor-faithful)"
+        )
+    return None
+
+
 class PITValidator:
     """Run PIT correctness validation against a built provider directory."""
 
@@ -186,6 +266,25 @@ class PITValidator:
             data = yaml.safe_load(fh) or {}
         return data if isinstance(data, dict) else {}
 
+    def _calendar_range(self) -> tuple[pd.Timestamp, pd.Timestamp]:
+        """(first, last) trading day in the built provider's calendar.
+
+        Used to skip delist reference cases whose delist_date falls outside the
+        bundle's coverage (PR #272): a stock delisted before the bundle starts
+        (or after it ends) is legitimately not in the provider, so validating
+        its delist boundary against this bundle is out of scope, not a failure.
+        """
+        days = (
+            (self._provider_dir / "calendars" / "day.txt")
+            .read_text(encoding="utf-8")
+            .split()
+        )
+        if not days:
+            raise PITValidatorError(
+                f"{self._provider_dir}/calendars/day.txt is empty"
+            )
+        return pd.Timestamp(days[0]), pd.Timestamp(days[-1])
+
     def _init_qlib(self) -> None:
         # Route every qlib bootstrap through the canonical runtime entry
         # point so the governance guard at
@@ -217,16 +316,25 @@ class PITValidator:
     # ------------------------------------------------------------------
 
     def _check_a_survivorship(self, registry: pd.DataFrame) -> CheckResult:
-        """Survivorship per legacy ``verify_survivorship.py``: $close on
-        delist_date+1 must be NaN, $close on delist_date must be valid.
+        """Survivorship spot-check (PR #272 — look-ahead is the only failure):
+        ``$close`` must be NaN strictly AFTER ``delist_date`` (the actual
+        survivorship / look-ahead risk).
 
-        Spot-checks the first 5 registry rows (full registry can be 325+
-        rows; full sweep happens in check B).
+        The legacy "valid $close ON delist_date" expectation is dropped: a stock
+        suspended before its FORMAL delist — the majority, ~44% of in-range
+        delistings — legitimately has no bar at/near delist_date, faithful to
+        the vendor, not a violation. Cases whose delist_date falls outside the
+        built bundle's calendar are skipped (out of scope, see B).
+
+        Spot-checks the first 5 IN-RANGE registry rows; the full sweep is B.
         """
         from qlib.data import D
 
         result = CheckResult(name="Survivorship spot-check", code="A", passed=True)
-        sample = registry.head(5)
+        cal_start, cal_end = self._calendar_range()
+        delist_ts = pd.to_datetime(registry["delist_date"])
+        in_range = registry[(delist_ts >= cal_start) & (delist_ts <= cal_end)]
+        sample = in_range.head(5)
         passes = 0
         for _, row in sample.iterrows():
             ticker = str(row["ticker"])
@@ -238,59 +346,55 @@ class PITValidator:
                 result.errors.append(f"{ticker}: query failed: {exc}")
                 result.passed = False
                 continue
-            if df.empty:
-                # No data either on delist_date or day-after; treat as
-                # missing/survivorship
-                result.errors.append(
-                    f"{ticker}: no rows returned for [{delist.date()}, {day_after}]"
-                )
-                result.passed = False
-                continue
-            # Find day-after row (may not be a trading day; just check
-            # there's no valid close past delist_date)
-            after_mask = df.index.get_level_values("datetime") > delist
-            after_vals = df.loc[after_mask, "$close"] if after_mask.any() else pd.Series([], dtype=float)
-            if not after_vals.empty and after_vals.dropna().any():
-                result.errors.append(
-                    f"{ticker}: $close has non-NaN value(s) strictly after "
-                    f"delist_date={delist.date()} — NaN-after-delist violated"
-                )
+            # Only a non-NaN $close STRICTLY AFTER delist is a violation; no
+            # rows at/after delist (suspended before formal delist) is OK.
+            violation = _lookahead_violation(df, delist, ticker)
+            if violation is not None:
+                result.errors.append(violation)
                 result.passed = False
             else:
                 passes += 1
         result.details["sample_size"] = len(sample)
+        result.details["in_range_total"] = int(len(in_range))
+        result.details["out_of_range_skipped"] = int(len(registry) - len(in_range))
         result.details["passes"] = passes
         return result
 
     def _check_b_delist_boundary(self, registry: pd.DataFrame) -> CheckResult:
-        """Full sweep: every registry ticker has data within
-        ``TRUNCATION_TOLERANCE_DAYS`` of delist_date AND NaN strictly
-        after delist_date.
+        """Full sweep (PR #272 — look-ahead is the only hard failure): every
+        IN-RANGE registry ticker must have NaN ``$close`` strictly AFTER its
+        delist_date. That extension direction is the actual survivorship bias
+        the gate exists to catch and stays a hard ERROR.
 
-        The two-sided check catches both bin-pipeline failure modes:
+        The "data present near delist_date" expectation is demoted to a
+        WARNING. ~44% of in-range delistings are suspended weeks-to-months
+        before their FORMAL delist (median 42d, up to 407d), so the bin
+        legitimately ends well before delist_date — faithful to the vendor
+        (Tushare has no bars there either), NOT a bin truncation bug. The
+        bin-pipeline truncation case (Codex P1 on PR #103) can no longer be
+        distinguished from a legitimate pre-delist suspension without the
+        vendor's actual last-trade date, so it is surfaced loudly rather than
+        blocking the build.
 
-        - Extension (data past delist_date) — any non-NaN close past
-          delist = NaN-after-delist violation.
-        - Truncation (data ends well before delist_date) — if the
-          last valid trading day for this ticker is more than
-          ``TRUNCATION_TOLERANCE_DAYS`` before delist, the bin lost
-          the delist tail. Codex P1 on PR #103.
-
-        The 7-day tolerance accommodates the Tushare convention where
-        the official ``delist_date`` can be one trading day after the
-        last actual trade (e.g. SH600087 delist_date=2014-06-05 but
-        last trade 2014-06-04) plus long-weekend gaps.
+        Cases whose delist_date falls outside the built bundle's calendar are
+        skipped entirely (out of scope — the ticker is correctly absent).
         """
         from qlib.data import D
 
         TRUNCATION_TOLERANCE_DAYS = 7
         result = CheckResult(name="Delist boundary sweep", code="B", passed=True)
-        violations: list[str] = []
+        cal_start, cal_end = self._calendar_range()
+        violations: list[str] = []   # look-ahead (post-delist data) — hard fail
+        suspensions: list[str] = []  # missing/short near delist — warning only
         checked = 0
         skipped = 0
+        out_of_range = 0
         for _, row in registry.iterrows():
             ticker = str(row["ticker"])
             delist = pd.Timestamp(row["delist_date"])
+            if not _in_calendar_range(delist, cal_start, cal_end):
+                out_of_range += 1
+                continue
             window_start = (delist - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
             window_end = (delist + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
             try:
@@ -298,41 +402,28 @@ class PITValidator:
             except Exception:
                 skipped += 1
                 continue
-            if df.empty:
-                violations.append(
-                    f"{ticker}: no data in [{window_start}, {window_end}] — "
-                    f"ticker is entirely missing from the provider"
-                )
-                continue
-            valid = df["$close"].dropna()
-            if valid.empty:
-                violations.append(
-                    f"{ticker}: all-NaN in [{window_start}, {window_end}] — "
-                    f"bin is empty around delist_date={delist.date()}"
-                )
-                continue
-            last_valid = valid.index.get_level_values("datetime").max()
-            days_before_delist = (delist - last_valid).days
-            if days_before_delist > TRUNCATION_TOLERANCE_DAYS:
-                violations.append(
-                    f"{ticker}: last valid trade {last_valid.date()} is "
-                    f"{days_before_delist}d BEFORE delist_date={delist.date()} "
-                    f"(tolerance: {TRUNCATION_TOLERANCE_DAYS}d) — truncation"
-                )
-            after_mask = df.index.get_level_values("datetime") > delist
-            non_nan_after = (
-                df.loc[after_mask, "$close"].dropna()
-                if after_mask.any() else pd.Series([], dtype=float)
+            suspension = _suspension_signal(
+                df, delist, window_start, window_end, ticker,
+                TRUNCATION_TOLERANCE_DAYS,
             )
-            if not non_nan_after.empty:
-                violations.append(
-                    f"{ticker}: {len(non_nan_after)} non-NaN value(s) "
-                    f"past delist_date={delist.date()}"
-                )
+            if suspension is not None:
+                suspensions.append(suspension)
+            violation = _lookahead_violation(df, delist, ticker)
+            if violation is not None:
+                violations.append(violation)
             checked += 1
         result.details["checked"] = checked
         result.details["skipped"] = skipped
+        result.details["out_of_range_skipped"] = out_of_range
+        result.details["suspension_warnings"] = len(suspensions)
         result.details["violation_count"] = len(violations)
+        if suspensions:
+            result.warnings.extend(suspensions[:5])
+            if len(suspensions) > 5:
+                result.warnings.append(
+                    f"... and {len(suspensions) - 5} more suspended-before-delist "
+                    f"ticker(s) (vendor-faithful, not a survivorship error)"
+                )
         if violations:
             result.passed = False
             result.errors.extend(violations[:5])
