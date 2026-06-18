@@ -43,6 +43,16 @@ def _qlib_frame(ticker: str, dates_closes: list[tuple[str, float]]) -> pd.DataFr
     return pd.DataFrame({"$close": [c for _, c in dates_closes]}, index=idx)
 
 
+def _mean_frame(ticker: str, dates_vals: list[tuple[str, float]]) -> pd.DataFrame:
+    """A qlib ``D.features(['Mean($close, 20)'])``-shaped frame (what check [D]
+    queries). ``float('nan')`` for a NaN window value."""
+    idx = pd.MultiIndex.from_tuples(
+        [(ticker, pd.Timestamp(d)) for d, _ in dates_vals],
+        names=["instrument", "datetime"],
+    )
+    return pd.DataFrame({"Mean($close, 20)": [v for _, v in dates_vals]}, index=idx)
+
+
 class ExitCodeTests(unittest.TestCase):
     """Per legacy verify_survivorship.py convention: 0=clean, 1=warnings,
     2=any failure. The aggregation rule prefers the WORST status."""
@@ -252,6 +262,75 @@ class CheckBClassificationTests(unittest.TestCase):
         # SUSPENDED is a warning, not a failure.
         self.assertEqual(result.details["suspension_warnings"], 1)
         self.assertTrue(any("suspended before formal delist" in w for w in result.warnings))
+
+
+class CheckDInRangeTests(unittest.TestCase):
+    """PR #272 P3 follow-up — [D]'s min_periods budget (3 tickers) must be
+    sampled from the IN-RANGE registry, mirroring [A]/[B]. With out-of-range
+    delistings listed first, the unfiltered ``head(3)`` spent the whole budget
+    on tickers whose delist+1..+20 window is empty (``df.empty`` → ``continue``)
+    → the load-bearing §4.3.2 assertion silently became a no-op."""
+
+    def _validator(self, tmp_path: Path) -> PITValidator:
+        (tmp_path / "calendars").mkdir()
+        # clean 2018..2026 calendar (endpoints only — range is what matters)
+        (tmp_path / "calendars" / "day.txt").write_text(
+            "2018-01-02\n2026-01-16\n", encoding="utf-8"
+        )
+        (tmp_path / "instruments").mkdir()
+        (tmp_path / "instruments" / "all.txt").write_text("", encoding="utf-8")
+        (tmp_path / "features").mkdir()
+        return PITValidator(
+            provider_dir=tmp_path,
+            delisted_registry_path=tmp_path / "reg.parquet",
+        )
+
+    def test_samples_in_range_and_skips_out_of_range(self) -> None:
+        import importlib.util
+        if importlib.util.find_spec("qlib") is None:
+            self.skipTest("qlib not installed")
+        # Out-of-range delistings listed FIRST — the exact ordering that masked
+        # the no-op (prod registry happened to list in-range rows first). The
+        # 3-ticker budget must skip these and reach the 2 in-range rows.
+        registry = pd.DataFrame({
+            "ticker": ["PRE_A", "PRE_B", "PRE_C", "OK", "VIOLATION"],
+            "delist_date": [
+                pd.Timestamp("2015-06-01"),   # out of range (before cal_start)
+                pd.Timestamp("2016-06-01"),   # out of range
+                pd.Timestamp("2017-06-01"),   # out of range
+                pd.Timestamp("2022-06-01"),   # in range → Mean all-NaN → clean
+                pd.Timestamp("2022-06-01"),   # in range → Mean non-NaN → §4.3.2
+            ],
+        })
+
+        def fake_features(insts, fields, start, end):  # type: ignore[no-untyped-def]
+            tk = insts[0]
+            if tk == "OK":
+                return _mean_frame(tk, [("2022-06-02", float("nan"))])
+            if tk == "VIOLATION":
+                return _mean_frame(tk, [("2022-06-02", 9.5)])
+            raise AssertionError(f"out-of-range ticker {tk} should not be queried")
+
+        fake_d = mock.Mock()
+        fake_d.features.side_effect = fake_features
+        with tempfile.TemporaryDirectory() as tmp:
+            validator = self._validator(Path(tmp))
+            # D is a lazy qlib Wrapper (no .features until init); replace the
+            # whole object so the method's `from qlib.data import D` binds ours.
+            with mock.patch("qlib.data.D", fake_d):
+                result = validator._check_d_qlib_operator_min_periods(registry)
+
+        # The 3 out-of-range rows are skipped before any D.features call; only
+        # the 2 in-range rows are sampled.
+        self.assertEqual(result.details["out_of_range_skipped"], 3)
+        self.assertEqual(result.details["in_range_total"], 2)
+        self.assertEqual(result.details["sample_size"], 2)
+        # The in-range VIOLATION is caught — proof the budget actually ran the
+        # min_periods assertion instead of no-op'ing on empty out-of-range
+        # frames (the pre-fix failure mode).
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("§4.3.2", result.errors[0])
 
 
 if __name__ == "__main__":

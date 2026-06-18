@@ -477,6 +477,12 @@ class PITValidator:
         If this fails, either qlib's operator silently uses
         ``min_periods < 20`` (fix: wrap with explicit min_periods=N) or
         the NaN-after-delist write in Phase B.2 is broken.
+
+        Samples the first 3 IN-RANGE registry rows (same filter as [A]/[B],
+        PR #272). An out-of-range delisting's delist+1..+20 window sits outside
+        the bundle's calendar and returns an empty frame (``df.empty`` →
+        ``continue``), so spending the 3-ticker budget on out-of-range rows
+        would silently turn this assertion into a no-op.
         """
         from qlib.data import D
 
@@ -484,7 +490,10 @@ class PITValidator:
             name="qlib operator min_periods (delist boundary)", code="D",
             passed=True,
         )
-        sample = registry.head(3)  # 3 representative tickers is enough
+        cal_start, cal_end = self._calendar_range()
+        delist_ts = pd.to_datetime(registry["delist_date"])
+        in_range = registry[(delist_ts >= cal_start) & (delist_ts <= cal_end)]
+        sample = in_range.head(3)  # 3 representative in-range tickers is enough
         violations: list[str] = []
         for _, row in sample.iterrows():
             ticker = str(row["ticker"])
@@ -510,6 +519,8 @@ class PITValidator:
             result.passed = False
             result.errors.extend(violations)
         result.details["sample_size"] = len(sample)
+        result.details["in_range_total"] = int(len(in_range))
+        result.details["out_of_range_skipped"] = int(len(registry) - len(in_range))
         return result
 
     def _check_e_index_membership(self, references: dict[str, Any]) -> CheckResult:
