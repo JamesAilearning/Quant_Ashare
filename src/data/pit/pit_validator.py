@@ -478,14 +478,18 @@ class PITValidator:
         ``min_periods < 20`` (fix: wrap with explicit min_periods=N) or
         the NaN-after-delist write in Phase B.2 is broken.
 
-        Samples the first 3 IN-RANGE registry rows (same filter as [A]/[B],
-        PR #272). An out-of-range delisting's delist+1..+20 window sits outside
-        the bundle's calendar and returns an empty frame (``df.empty`` →
-        ``continue``), so spending the 3-ticker budget on out-of-range rows
-        would silently turn this assertion into a no-op.
+        Runs the assertion on the first ``TARGET_CHECKS`` IN-RANGE delistings
+        whose delist+1..+20 window actually has calendar coverage. Two kinds of
+        row would otherwise waste the budget and silently no-op the §4.3.2
+        assertion (``df.empty`` → ``continue``): (a) an out-of-range delisting
+        (filtered out, like [A]/[B], PR #272); (b) an in-range delisting at the
+        calendar TAIL whose delist+1..+20 window falls past cal_end (codex P2 on
+        PR #273). So we keep scanning in-range rows and count only NON-EMPTY
+        checks until ``TARGET_CHECKS`` have actually run.
         """
         from qlib.data import D
 
+        TARGET_CHECKS = 3
         result = CheckResult(
             name="qlib operator min_periods (delist boundary)", code="D",
             passed=True,
@@ -493,13 +497,17 @@ class PITValidator:
         cal_start, cal_end = self._calendar_range()
         delist_ts = pd.to_datetime(registry["delist_date"])
         in_range = registry[(delist_ts >= cal_start) & (delist_ts <= cal_end)]
-        sample = in_range.head(3)  # 3 representative in-range tickers is enough
         violations: list[str] = []
-        for _, row in sample.iterrows():
+        checked = 0   # non-empty post-delist windows the assertion actually ran on
+        examined = 0  # in-range rows queried (incl. tail rows with no coverage)
+        for _, row in in_range.iterrows():
+            if checked >= TARGET_CHECKS:
+                break
             ticker = str(row["ticker"])
             delist = pd.Timestamp(row["delist_date"])
             start = (delist + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             end = (delist + pd.Timedelta(days=20)).strftime("%Y-%m-%d")
+            examined += 1
             try:
                 df = D.features([ticker], ["Mean($close, 20)"], start, end)
             except Exception as exc:
@@ -507,7 +515,11 @@ class PITValidator:
                 result.passed = False
                 continue
             if df.empty:
+                # delist+1..+20 has no calendar coverage (tail delisting) — the
+                # assertion can't run here; keep scanning instead of burning the
+                # budget on it (codex P2 #273).
                 continue
+            checked += 1
             non_nan = df.dropna()
             if not non_nan.empty:
                 violations.append(
@@ -518,7 +530,16 @@ class PITValidator:
         if violations:
             result.passed = False
             result.errors.extend(violations)
-        result.details["sample_size"] = len(sample)
+        if checked == 0 and len(in_range) > 0:
+            # Every in-range delisting was a tail row with no post-delist
+            # coverage — the spot-check could not run. Surface it (warning, not
+            # a hard failure) rather than silently passing.
+            result.warnings.append(
+                "min_periods spot-check ran 0 assertions — no in-range delisting "
+                "has a delist+1..+20 window within the bundle calendar"
+            )
+        result.details["checked"] = checked
+        result.details["examined"] = examined
         result.details["in_range_total"] = int(len(in_range))
         result.details["out_of_range_skipped"] = int(len(registry) - len(in_range))
         return result

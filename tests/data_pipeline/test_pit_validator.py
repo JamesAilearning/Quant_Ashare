@@ -321,13 +321,62 @@ class CheckDInRangeTests(unittest.TestCase):
                 result = validator._check_d_qlib_operator_min_periods(registry)
 
         # The 3 out-of-range rows are skipped before any D.features call; only
-        # the 2 in-range rows are sampled.
+        # the 2 in-range rows are examined and both run a real assertion.
         self.assertEqual(result.details["out_of_range_skipped"], 3)
         self.assertEqual(result.details["in_range_total"], 2)
-        self.assertEqual(result.details["sample_size"], 2)
+        self.assertEqual(result.details["examined"], 2)
+        self.assertEqual(result.details["checked"], 2)
         # The in-range VIOLATION is caught — proof the budget actually ran the
         # min_periods assertion instead of no-op'ing on empty out-of-range
         # frames (the pre-fix failure mode).
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("§4.3.2", result.errors[0])
+
+    def test_tail_delisting_with_empty_window_does_not_consume_budget(self) -> None:
+        # Codex P2 on #273: an IN-RANGE delisting at the calendar TAIL whose
+        # delist+1..+20 window falls past cal_end returns an empty frame. Such
+        # rows must NOT consume the budget — the loop keeps scanning until 3
+        # NON-EMPTY checks run. Here 3 tail rows precede the real OK/VIOLATION
+        # rows; the §4.3.2 violation must still be caught. (With the old
+        # head(3), the 3 tail rows would no-op the whole check.)
+        import importlib.util
+        if importlib.util.find_spec("qlib") is None:
+            self.skipTest("qlib not installed")
+        registry = pd.DataFrame({
+            "ticker": ["TAIL1", "TAIL2", "TAIL3", "OK", "VIOLATION"],
+            "delist_date": [
+                pd.Timestamp("2026-01-12"),  # in range, but +1..+20 past cal_end
+                pd.Timestamp("2026-01-13"),
+                pd.Timestamp("2026-01-14"),
+                pd.Timestamp("2022-06-01"),  # in range → Mean all-NaN → clean
+                pd.Timestamp("2022-06-01"),  # in range → Mean non-NaN → §4.3.2
+            ],
+        })
+
+        def fake_features(insts, fields, start, end):  # type: ignore[no-untyped-def]
+            tk = insts[0]
+            if tk.startswith("TAIL"):
+                return pd.DataFrame()  # no calendar coverage past cal_end
+            if tk == "OK":
+                return _mean_frame(tk, [("2022-06-02", float("nan"))])
+            if tk == "VIOLATION":
+                return _mean_frame(tk, [("2022-06-02", 9.5)])
+            raise AssertionError(f"unexpected ticker {tk}")
+
+        fake_d = mock.Mock()
+        fake_d.features.side_effect = fake_features
+        with tempfile.TemporaryDirectory() as tmp:
+            validator = self._validator(Path(tmp))
+            with mock.patch("qlib.data.D", fake_d):
+                result = validator._check_d_qlib_operator_min_periods(registry)
+
+        # All 5 in-range rows examined; only OK + VIOLATION ran a real assertion.
+        self.assertEqual(result.details["out_of_range_skipped"], 0)
+        self.assertEqual(result.details["in_range_total"], 5)
+        self.assertEqual(result.details["examined"], 5)
+        self.assertEqual(result.details["checked"], 2)
+        # VIOLATION caught despite 3 tail rows first — the budget was not wasted.
         self.assertFalse(result.passed)
         self.assertEqual(len(result.errors), 1)
         self.assertIn("§4.3.2", result.errors[0])
