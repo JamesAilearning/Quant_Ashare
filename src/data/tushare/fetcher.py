@@ -125,51 +125,34 @@ DEFAULT_RATE_LIMIT_SLEEP_MS = 200
 RATE_LIMIT_BACKOFF_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 5
 
-# P3-7b systemic-shortfall gate (PR #240 round 5, 拍死选项1): when MORE than
-# this share of an endpoint's re-checked re-pulls still end short of their
-# expected boundary, the shortfall is SYSTEMIC — a pre-close run fetching
-# before today's bars are published, or vendor-side truncation — and becomes
-# an ENDPOINT hole (run exits 3; the P3-4c build gate refuses the dump).
-# Routine idiosyncratic shorts (a handful of tickers suspended through the
-# slice end, or delisted with the last bar before the delist date) sit far
-# below it (~0.5% of the universe on a typical day) and stay a loud warning.
-SYSTEMIC_SHORTFALL_RATIO = 0.20
+# P3-7b systemic-shortfall gate (PR #240 round 5, 拍死选项1; reworked in PR #271).
+# A SYSTEMIC shortfall — a PRE-CLOSE run (today's bars not yet published) or
+# vendor-side truncation of a whole year — becomes an ENDPOINT hole (run exits 3;
+# the P3-4c build gate refuses the dump). The discriminator is the FRACTION OF A
+# SINGLE YEAR'S in-window UNIVERSE that comes back short:
+#   * a pre-close run leaves EVERY active ticker short of the current year's
+#     latest bar → that year is ~100% short → fires;
+#   * a whole-year vendor truncation (first-fetch / forced / stale re-pull of a
+#     year) leaves ~100% of that year short → fires;
+#   * routine idiosyncratic shorts (tickers suspended through a slice end or
+#     delisted before their delist date) are a ~1% minority of a year and stay a
+#     loud warning — never a hole.
+# Measuring against the year's UNIVERSE (not the re-checked subset) is essential:
+# on a multi-year backfill the re-checked subset is dominated by the accumulated
+# suspensions/delistings themselves, so a ratio over it would false-trip (the
+# 阶段1 bug: 353 legit historical shorts → ratio 1.0). It also makes the gate
+# immune to a market-wide suspension WAVE: in the 2015 H2 A-share crash ~50% of
+# listings halted at the peak, far below the threshold (a true truncation is
+# ~100%). NOTE: _expected_year_file_end caps the expected boundary only by
+# delist_date, never by suspension, so suspended-through-year-end tickers DO
+# count as short — hence the high bar. A year already attested complete by the
+# prior manifest watermark is blind-skipped (not re-pulled), so a truncation of
+# such a year is not seen here — use --verify-all-years to re-scan it.
+SYSTEMIC_SHORTFALL_UNIVERSE_RATIO = 0.90
 # A ratio is meaningless on tiny samples (one suspended ticker in a 3-unit
-# targeted run is 33%): below this many re-checked units the shortfall is
+# targeted run is 33%): below this many short units in a year the shortfall is
 # always treated as idiosyncratic (warning only).
 SYSTEMIC_SHORTFALL_MIN_CHECKED = 50
-# PR #271 — recency scope. The two failures the gate targets (a PRE-CLOSE run,
-# vendor truncation of THIS pull) both leave ACTIVELY-TRADING tickers short of
-# an expected boundary AT the run's end_date. A multi-year catch-up, by
-# contrast, re-pulls years of legitimately-short files (suspended through a
-# year-end, delisted mid-year) whose expected boundary — capped by
-# _expected_year_file_end at the delist date / year-end last trading day — sits
-# MONTHS in the past. Counting those toward the ratio tripped the gate on every
-# full backfill (阶段1 forensics: 93% of shorts ended >20 trading days before
-# run end; only ~10-12 were the real recent signature). So the SYSTEMIC ratio is
-# computed ONLY over re-pulls whose expected boundary lands within the last N
-# trading days of end_date; historical shorts self-exclude (their boundary is
-# old) and stay the loud per-unit warning. A genuine pre-close run still puts
-# every active ticker's boundary AT end_date → all in-window → still fires.
-SYSTEMIC_SHORTFALL_RECENT_TRADING_DAYS = 5
-# PR #271 — full-year-truncation guard. The recency window above cannot see a
-# vendor truncating an entire year THIS RUN RE-PULLS whose boundary is old (a
-# first-fetch, force-retried, or stale past year) — the C-class silent
-# truncation PR #240's gate must still catch. (It does NOT cover a year already
-# attested complete by the prior manifest watermark: those are blind-skipped,
-# not re-pulled — use --verify-all-years to re-scan them.) The discriminator is
-# the FRACTION OF THE YEAR'S UNIVERSE that comes back short. This must clear the
-# largest LEGITIMATE shortfall a single year can have: a market-wide suspension
-# wave. In the 2015 H2 A-share crash ~50% of listings halted at the peak (far
-# fewer remained halted THROUGH year-end), so the threshold sits well above that
-# — only a near-total wipeout (a true whole-year truncation is ~100%, every
-# ticker short) trips it. (Measuring against the universe, NOT the re-checked
-# subset, is essential: on a backfill the re-checked subset is dominated by the
-# suspensions themselves, so a ratio over it would false-trip — the very bug the
-# recency scope fixes. _expected_year_file_end caps the boundary only by
-# delist_date, never by suspension, so suspended-through-year-end tickers DO
-# count as short — hence the high bar.)
-SYSTEMIC_SHORTFALL_FULL_YEAR_RATIO = 0.90
 
 # Stock_basic field list for both 'L' and 'D' buckets. ts_code, list_date,
 # delist_date are the load-bearing fields for Phase A.2; the rest are
@@ -406,40 +389,6 @@ def _expected_year_file_end(
     if floored is None or floored < lo:
         return None
     return floored
-
-
-def _recent_boundary_floor(
-    end_date: str, trading_days: Sequence[str] | None, n_trading_days: int
-) -> str:
-    """Lower bound (YYYYMMDD) for an EXPECTED boundary to count as "recent" for
-    the systemic-shortfall gate: a boundary ``>=`` the returned floor lies within
-    the last ``n_trading_days`` trading days on or before ``end_date``.
-
-    With the exchange calendar this is exact. Without it (calendar unavailable
-    or empty) it falls back to a generous calendar-day window that safely spans
-    ``n_trading_days`` trading days across a holiday week — the gate only needs
-    to separate boundaries AT the run end (a pre-close run / current-pull
-    truncation) from boundaries MONTHS in the past (historical suspensions and
-    delistings), and that gap dwarfs any approximation error.
-    """
-    if trading_days:
-        # Number of calendar trading days on or before end_date.
-        idx = bisect.bisect_right(trading_days, end_date)
-        if idx == 0:
-            # end_date precedes the whole calendar (not a real run) — treat the
-            # earliest day as the floor so the window degrades to "everything".
-            return trading_days[0]
-        return trading_days[max(0, idx - n_trading_days)]
-    # No calendar: a generous calendar-day window. N trading days can span a
-    # long CN closure (Spring Festival / National Day reach ~10 consecutive
-    # closed days) plus weekends — worst case ~18 calendar days for N=5 — so the
-    # margin is deliberately wider than that. Over-inclusion only widens the
-    # gate on this rare degraded path; it never reintroduces the backfill
-    # false-positive (historical boundaries are still months too old to land in
-    # the window).
-    anchor = datetime.strptime(end_date, "%Y%m%d").date()
-    floor = anchor - timedelta(days=n_trading_days * 3 + 14)
-    return floor.strftime("%Y%m%d")
 
 
 class TushareFetcher:
@@ -853,17 +802,13 @@ class TushareFetcher:
         stale_refetched = 0
         still_short: list[str] = []  # re-pulled units still short of expected
         rechecked = 0  # re-pulls whose post-write re-check actually ran
-        # PR #271 — the SYSTEMIC subset: re-checks whose EXPECTED boundary is
-        # recent (within the last N trading days of end_date). Only these can
-        # signal a pre-close run / current-pull truncation; historical
-        # suspensions/delists (old boundary) are excluded so a multi-year
-        # backfill no longer false-trips the gate.
-        still_short_recent: list[str] = []
-        rechecked_recent = 0
-        # PR #271 — per-year tallies for the full-year-truncation guard.
-        # universe = every in-window (ticker, year) that can hold data;
-        # short = those that came back short. A near-total per-year shortfall is
-        # vendor truncation even when its boundary is old (recency can't see it).
+        # PR #271 — per-year tallies for the systemic-shortfall gate. universe =
+        # every in-window (ticker, year) that can hold data; short = those that
+        # came back short of their expected boundary. A near-total per-year
+        # shortfall (pre-close run on the current year, or a whole-year vendor
+        # truncation) is systemic; scattered legitimate shorts are not. Measured
+        # vs the universe (not the re-checked subset) so a backfill of
+        # accumulated suspensions never false-trips.
         universe_by_year: dict[int, int] = {}
         short_by_year: dict[int, int] = {}
         # The exchange trading calendar floors freshness boundaries to the real
@@ -871,9 +816,6 @@ class TushareFetcher:
         # None ⇒ weekday-floor fallback. Shared across all three date-bounded
         # endpoints via the instance cache.
         tdays = self._get_trading_days()
-        recent_boundary_floor = _recent_boundary_floor(
-            self._config.end_date, tdays, SYSTEMIC_SHORTFALL_RECENT_TRADING_DAYS
-        )
         for year in range(start_year, end_year + 1):
             year_dir = out_root / str(year)
             if not self._config.dry_run:
@@ -1060,19 +1002,10 @@ class TushareFetcher:
                 # hole that fails the run and the downstream build gate.
                 if recheck_boundary is not None and "trade_date" in df.columns:
                     rechecked += 1
-                    # Recent ⇒ this boundary is close to end_date, the only
-                    # place a pre-close run / current-pull truncation shows up
-                    # (PR #271). Historical boundaries (suspension/delist-capped)
-                    # are old and excluded from the systemic ratio.
-                    boundary_is_recent = recheck_boundary >= recent_boundary_floor
-                    if boundary_is_recent:
-                        rechecked_recent += 1
                     new_max = str(df["trade_date"].max()) if len(df) else None
                     if new_max is None or new_max < recheck_boundary:
                         still_short.append(unit)
                         short_by_year[year] = short_by_year.get(year, 0) + 1
-                        if boundary_is_recent:
-                            still_short_recent.append(unit)
                 if i % 200 == 0:
                     _logger.info(
                         "  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)",
@@ -1085,78 +1018,55 @@ class TushareFetcher:
                 endpoint, verified, stale_refetched,
             )
         if still_short:
-            # SYSTEMIC decision (PR #271) — two independent shapes trip it:
-            #  (1) RECENT: a large share of re-pulls whose expected boundary sits
-            #      within the last N trading days of end_date came back short —
-            #      a PRE-CLOSE run or current-pull truncation. Historical
-            #      suspensions/delists (old boundary) are excluded here.
-            #  (2) FULL-YEAR: a single year where the shortfall covers more than
-            #      SYSTEMIC_SHORTFALL_FULL_YEAR_RATIO of that year's UNIVERSE —
-            #      vendor truncation of a whole (possibly past) year, which the
-            #      recency window cannot see. Measured vs the universe, not the
-            #      re-checked subset, so scattered legitimate shorts never trip it.
-            # Anything else (years of accumulated suspensions/delists) stays the
-            # loud per-unit warning — never a build-blocking hole.
-            recent_ratio = (
-                len(still_short_recent) / rechecked_recent
-                if rechecked_recent
-                else 0.0
-            )
-            recent_systemic = (
-                rechecked_recent >= SYSTEMIC_SHORTFALL_MIN_CHECKED
-                and recent_ratio > SYSTEMIC_SHORTFALL_RATIO
-            )
-            truncated_years = sorted(
+            # SYSTEMIC decision (PR #271): a single year where the shortfall
+            # covers more than SYSTEMIC_SHORTFALL_UNIVERSE_RATIO of that year's
+            # in-window UNIVERSE — a PRE-CLOSE run (the current year is ~100%
+            # short of its latest bar) or a whole-year vendor truncation.
+            # Measured vs the universe (not the re-checked subset), so years of
+            # accumulated legitimate suspensions/delists on a backfill — and
+            # even a market-wide suspension wave — stay below the bar and remain
+            # the loud per-unit warning rather than a build-blocking hole.
+            systemic_years = sorted(
                 y for y, s in short_by_year.items()
                 if s >= SYSTEMIC_SHORTFALL_MIN_CHECKED
-                and s / universe_by_year[y] > SYSTEMIC_SHORTFALL_FULL_YEAR_RATIO
+                and s / universe_by_year[y] > SYSTEMIC_SHORTFALL_UNIVERSE_RATIO
             )
-            if recent_systemic or truncated_years:
+            if systemic_years:
                 # Record an ENDPOINT hole so the run exits 3 and the P3-4c build
                 # gate refuses the dump.
-                if recent_systemic:
-                    detail = (
-                        f"{len(still_short_recent)}/{rechecked_recent} "
-                        f"re-checked re-pulls with a RECENT expected boundary "
-                        f"(within {SYSTEMIC_SHORTFALL_RECENT_TRADING_DAYS} "
-                        f"trading days of end_date) still end before it "
-                        f"(pre-close run before today's bars are published, or "
-                        f"vendor-side truncation?). First: "
-                        + "; ".join(still_short_recent[:3])
-                    )
-                else:
-                    y0 = truncated_years[0]
-                    detail = (
-                        f"year(s) {truncated_years} came back almost entirely "
-                        f"short ({short_by_year[y0]}/{universe_by_year[y0]} of "
-                        f"year {y0}'s in-window universe) — whole-year "
-                        f"vendor-side truncation."
-                    )
+                y0 = systemic_years[0]
                 self._add_hole(
                     endpoint,
                     "systemic-shortfall",
                     reason_class="systemic_shortfall",
                     attempts=1,
-                    last_error=detail[:300],
+                    last_error=(
+                        f"year(s) {systemic_years} came back almost entirely "
+                        f"short ({short_by_year[y0]}/{universe_by_year[y0]} of "
+                        f"year {y0}'s in-window universe) — a pre-close run "
+                        f"(today's bars not yet published) or whole-year "
+                        f"vendor-side truncation."
+                    )[:300],
                 )
             else:
-                # Idiosyncratic (or historical-only): the vendor's complete
-                # answer for tickers suspended through a slice end or delisted
-                # before their delist date. On a multi-year backfill this is
-                # where the years of accumulated legitimate shorts land. Loud,
-                # never a build-blocking hole (PR #271 keeps this signal so
-                # silent deep-history truncation stays visible).
+                # Idiosyncratic: the vendor's complete answer for tickers
+                # suspended through a slice end or delisted before their delist
+                # date. On a multi-year backfill this is where the years of
+                # accumulated legitimate shorts land. Loud, never a
+                # build-blocking hole (so silent deep-history truncation of an
+                # already-attested year still leaves a visible signal — re-run
+                # with --verify-all-years to convert it into a checked hole).
                 _logger.warning(
                     "  %s: %d of %d re-checked re-pull(s) STILL end before "
                     "their expected boundary after a fresh full-year pull "
-                    "(%d of them with a recent boundary; first: %s). Below the "
-                    "systemic threshold, this is the vendor's complete answer — "
-                    "normal for tickers suspended through a slice end or "
-                    "delisted before their delist date; if neither applies, "
-                    "suspect silent vendor truncation and re-run with "
-                    "--verify-all-years after checking the source.",
+                    "(first: %s). No single year exceeds the systemic universe "
+                    "threshold, so this is the vendor's complete answer — normal "
+                    "for tickers suspended through a slice end or delisted before "
+                    "their delist date; if neither applies, suspect silent vendor "
+                    "truncation and re-run with --verify-all-years after checking "
+                    "the source.",
                     endpoint, len(still_short), rechecked,
-                    len(still_short_recent), "; ".join(still_short[:3]),
+                    "; ".join(still_short[:3]),
                 )
         return TushareFetchResult(
             endpoint, written, rows, skipped, units_verified=verified,

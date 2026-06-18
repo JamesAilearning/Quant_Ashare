@@ -47,7 +47,6 @@ from src.data.tushare.fetcher import (  # noqa: E402
     _expected_year_file_end,
     _last_trading_day_on_or_before,
     _last_weekday_str,
-    _recent_boundary_floor,
 )
 
 
@@ -1834,11 +1833,6 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             any("STILL end before" in line for line in logs.output),
             f"expected the historical-short warning in {logs.output}",
         )
-        # The 60 shorts are surfaced but reported as NOT recent.
-        self.assertTrue(
-            any("0 of them with a recent boundary" in line for line in logs.output),
-            f"expected '0 recent' in the warning: {logs.output}",
-        )
 
     def test_full_year_truncation_holes_even_when_boundary_old(self) -> None:
         # PR #271: a vendor truncating an ENTIRE past year (near-total shortfall
@@ -2130,28 +2124,6 @@ class TradingDayFloorTests(unittest.TestCase):
                 start_date="20181231", end_date="20181231", rate_limit_sleep_ms=0,
             )
             self.assertEqual(TushareFetcher(client, cfg)._get_trading_days(), ())
-
-    def test_recent_boundary_floor_with_calendar(self) -> None:
-        """PR #271: the floor is the Nth trading day counting back from the last
-        trading day on/before end_date; boundaries >= it are 'recent'."""
-        cal = [
-            "20251224", "20251225", "20251226", "20251229", "20251230", "20251231",
-        ]
-        # Last 3 trading days on/before year-end → floor = the 3rd-from-last.
-        self.assertEqual(_recent_boundary_floor("20251231", cal, 3), "20251229")
-        # end_date mid-calendar: only days <= end_date count.
-        self.assertEqual(_recent_boundary_floor("20251227", cal, 2), "20251225")
-        # N larger than the calendar → earliest day (window degrades to "all").
-        self.assertEqual(_recent_boundary_floor("20251231", cal, 99), "20251224")
-
-    def test_recent_boundary_floor_without_calendar_is_generous_window(self) -> None:
-        """No calendar (None or empty) → a generous calendar-day fallback that
-        safely spans N trading days; still far tighter than the months-wide gap
-        to historical suspension/delist boundaries."""
-        for cal in (None, ()):
-            floor = _recent_boundary_floor("20251231", cal, 5)
-            self.assertLess(floor, "20251231")   # excludes nothing at the end
-            self.assertGreater(floor, "20251101")  # but is a recent window, not open
 
 
 if __name__ == "__main__":
