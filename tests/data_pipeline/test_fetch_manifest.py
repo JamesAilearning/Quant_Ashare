@@ -688,6 +688,11 @@ class CliManifestIntegrationTests(unittest.TestCase):
         daily_calls: list[str] = []
 
         def side_effect(api, **p):
+            if api == "trade_cal":
+                # The freshness gate fetches the calendar once; None ⇒ the
+                # weekday-floor fallback (this test's boundaries are unchanged
+                # by it). Excluded from daily_calls so the data-pull count holds.
+                return None
             year = p["start_date"][:4]
             daily_calls.append(year)
             return pd.DataFrame({
