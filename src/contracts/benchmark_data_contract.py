@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+import numpy as np
+import pandas as pd
+
 from src.contracts import _shared_validators as _sv
 
 BENCHMARK_CONTRACT_NAME = "v2-benchmark-data-contract"
@@ -128,6 +131,156 @@ class BenchmarkContractStatus:
     errors: tuple[str, ...]
     governance_note: str = GOVERNANCE_NOTE
     selection_semantics_in_scope: bool = False
+
+
+# ----------------------------------------------------------------------
+# Consume-time VALUE-level validation (PR-J)
+#
+# The dataclasses/validators above check the artifact's METADATA/SHAPE at
+# publish time. They do NOT look at the actual index levels. PR-J adds a
+# fail-loud VALUE-level check on the benchmark / total-return series at the
+# moment it is consumed for excess-return / attribution — every excess number
+# depends on it, so a corrupt or implausible benchmark must stop the run, not
+# silently skew the metrics. Pure functions over pandas Series so the
+# invariants are unit-testable without a qlib provider.
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BenchmarkValueReport:
+    """Outcome of consume-time value-level benchmark validation.
+
+    ``errors`` are fail-loud (a defective benchmark poisons every excess-return
+    number); ``warnings`` are non-blocking observations (e.g. a cross-check that
+    could not run because a series was not loaded)."""
+
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+    checked_codes: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def _benchmark_series_value_errors(code: str, close: pd.Series | None) -> list[str]:
+    """Per-series value invariants: present, finite, strictly positive.
+
+    The ingest forward-fills intra-span gaps, so a NaN/inf here is a genuine
+    defect (not an expected hole); an index level must be > 0."""
+    if close is None or len(close) == 0:
+        return [f"{code}: benchmark series is empty over the requested window"]
+    arr = np.asarray(close.to_numpy(), dtype="float64")
+    errs: list[str] = []
+    nonfinite = ~np.isfinite(arr)
+    if nonfinite.any():
+        errs.append(
+            f"{code}: {int(nonfinite.sum())} non-finite (NaN/inf) close "
+            f"value(s) in the window — the ingest forward-fills intra-span "
+            f"gaps, so this is a benchmark data defect that would poison "
+            f"excess-return"
+        )
+    finite_vals = arr[~nonfinite]
+    if finite_vals.size and (finite_vals <= 0).any():
+        errs.append(
+            f"{code}: {int((finite_vals <= 0).sum())} non-positive close "
+            f"value(s) — an index level must be strictly > 0"
+        )
+    return errs
+
+
+def _tr_ge_price_cumret_warnings(
+    price_code: str,
+    tr_code: str,
+    price: pd.Series,
+    tr: pd.Series,
+    tolerance: float,
+) -> list[str]:
+    """Cross-consistency signal (WARNING, not a hard error): a total-return
+    index reinvests non-negative dividends, so over any window its cumulative
+    return should be >= the price index's. A TR cumulatively below the price
+    index points at a stale / swapped TR series.
+
+    This is a WARNING rather than a fail-loud error because the live TR series
+    carries benign ONE-DAY "stale print" artifacts (a single flat day that
+    recovers the next session) which produce sub-1% transient deficits
+    indistinguishable by magnitude from a short-window swap — keying a
+    run-aborting error on them would break legitimate per-segment backtests.
+    The ``tolerance`` (default 1e-2) sits above the largest observed benign
+    artifact (~0.6% on the 2018-2026 bundle) so transient prints stay quiet
+    while a sustained/large deficit (a genuine swap/stale TR) still surfaces
+    loudly. The TR series is not consumed for the current price-benchmark
+    excess-return, so a warning is the right severity here; REGEN-2 can tighten
+    this when it actually consumes TR."""
+    common = price.index.intersection(tr.index)
+    if len(common) < 2:
+        return []
+    p = np.asarray(price.reindex(common).to_numpy(), dtype="float64")
+    t = np.asarray(tr.reindex(common).to_numpy(), dtype="float64")
+    if not (np.isfinite(p).all() and np.isfinite(t).all()):
+        return []  # per-series check already flagged the non-finite values
+    if not (p[0] > 0 and t[0] > 0):
+        return []  # invalid base; positivity check already flagged it
+    # > 0 ⇒ price index out-returned the total-return index over the window.
+    deficit = (p / p[0]) - (t / t[0])
+    worst = float(deficit.max())
+    if worst > tolerance:
+        idx = int(np.argmax(deficit))
+        return [
+            f"{tr_code} vs {price_code}: total-return cumulative return is BELOW "
+            f"the price-index cumulative return by {worst:.4g} at "
+            f"{common[idx]} (tolerance {tolerance:g}) — a TR index reinvests "
+            f"non-negative dividends, so a SUSTAINED/large deficit signals a "
+            f"stale or swapped total-return series; review the benchmark ingest"
+        ]
+    return []
+
+
+def validate_benchmark_values(
+    series_by_code: Mapping[str, pd.Series],
+    *,
+    tr_price_pairs: Mapping[str, str] | None = None,
+    cumret_tolerance: float = 1e-2,
+) -> BenchmarkValueReport:
+    """Value-level validation of consumed benchmark series.
+
+    ``series_by_code`` maps an instrument code (e.g. ``"SH000300"``) to its
+    ``$close`` series over the consumed window. HARD ERRORS are the per-series
+    integrity checks (finite / positive / no intra-span gaps) on the consumed
+    benchmark — those would directly poison excess-return.
+
+    ``tr_price_pairs`` maps a total-return code to its price-index counterpart
+    (e.g. ``{"SH000300TR": "SH000300"}``) for the cumulative-return
+    cross-consistency check. That check is a WARNING (not an error): the live TR
+    series carries benign one-day stale-print artifacts that recover next
+    session, and the TR is not consumed for the current price-benchmark
+    excess-return — so a transient dip must not abort the run, while a
+    sustained/large deficit still surfaces loudly. A pair whose series were not
+    both loaded also yields a warning.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    for code, close in series_by_code.items():
+        errors.extend(_benchmark_series_value_errors(code, close))
+    for tr_code, price_code in (tr_price_pairs or {}).items():
+        if tr_code in series_by_code and price_code in series_by_code:
+            warnings.extend(
+                _tr_ge_price_cumret_warnings(
+                    price_code, tr_code,
+                    series_by_code[price_code], series_by_code[tr_code],
+                    cumret_tolerance,
+                )
+            )
+        else:
+            warnings.append(
+                f"TR/price cross-check skipped: {tr_code} and/or {price_code} "
+                f"was not loaded"
+            )
+    return BenchmarkValueReport(
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+        checked_codes=tuple(series_by_code),
+    )
 
 
 class BenchmarkDataContract:

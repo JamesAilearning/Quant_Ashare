@@ -35,6 +35,24 @@ from src.core.qlib_runtime import (
 )
 
 
+def _clean_benchmark_frame() -> object:
+    """A valid ``SH000300`` + ``SH000300TR`` qlib ``D.features`` frame for the
+    consume-time benchmark validation PR-J added to ``BacktestRunner.run()``.
+    Both series are strictly positive and increasing; the TR grows faster so
+    its cumulative return stays >= the price index's (dividends >= 0)."""
+    import pandas as pd
+
+    dates = pd.bdate_range("2021-12-01", periods=40)
+    parts = []
+    for code, slope in (("SH000300", 1.0), ("SH000300TR", 1.2)):
+        vals = [100.0 + slope * i for i in range(len(dates))]
+        idx = pd.MultiIndex.from_arrays(
+            [[code] * len(dates), dates], names=["instrument", "datetime"]
+        )
+        parts.append(pd.DataFrame({"$close": vals}, index=idx))
+    return pd.concat(parts)
+
+
 def _make_request(**overrides) -> CanonicalBacktestInput:
     defaults = dict(
         predictions_ref="model_v1",
@@ -568,6 +586,9 @@ class StampTaxScheduleWarnLoggingTests(unittest.TestCase):
         fake_calendar = list(pd.date_range("2020-01-01", "2026-12-31", freq="7D"))
         fake_qlib_data = MagicMock()
         fake_qlib_data.D.calendar.return_value = fake_calendar
+        # PR-J: run() now value-validates the consumed benchmark via
+        # D.features before the backtest — give it a clean series to pass.
+        fake_qlib_data.D.features.return_value = _clean_benchmark_frame()
 
         with patch(
             "src.core.backtest_runner.is_canonical_qlib_initialized",
@@ -1326,6 +1347,9 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         fake_calendar = list(pd.date_range("2024-03-01", "2024-03-31"))
         fake_qlib_data = MagicMock()
         fake_qlib_data.D.calendar.return_value = fake_calendar
+        # PR-J: run() now value-validates the consumed benchmark via
+        # D.features before the backtest — give it a clean series to pass.
+        fake_qlib_data.D.features.return_value = _clean_benchmark_frame()
 
         mask_result = MicrostructureMaskResult(
             masked=mask_pairs,
