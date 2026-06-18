@@ -66,8 +66,9 @@ secrets-in-config violation).
 
 from __future__ import annotations
 
+import bisect
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -278,14 +279,15 @@ def _clean_yyyymmdd(value: Any) -> str | None:
 def _last_weekday_str(yyyymmdd: str) -> str:
     """Latest weekday (Mon-Fri) on or before ``yyyymmdd``, as YYYYMMDD.
 
-    The freshness rule's calendar floor: China A-share year ends trade on the
-    last December weekday (no CN holiday occupies it), so a year file ending
-    there is complete. Mid-year, a requested end falling on a weekend floors
-    to Friday so a Friday-complete file is not pointlessly re-pulled all
-    weekend. Intra-week CN holidays are NOT modelled — a run during one
-    re-pulls final-year files and gets the same data back (bounded churn that
-    converges as soon as the next bar lands), which errs on the side of
-    re-fetching rather than skipping real data.
+    FALLBACK ONLY — used by ``_last_trading_day_on_or_before`` when the real
+    exchange calendar (trade_cal) is unavailable. It is a holiday-UNAWARE
+    approximation of the last trading day: the once-assumed invariant "the last
+    December weekday is always a trading day" is FALSE (2018-12-31 Mon was a
+    market holiday; the real last 2018 bar is 2018-12-28), which is exactly the
+    false systemic-shortfall this module's calendar floor now avoids. When this
+    fallback over-expects a holiday weekday, complete year files re-pull as
+    bounded churn — never a silent skip of real data, and never (on its own) a
+    build-blocking hole once the calendar path is available.
     """
     d = datetime.strptime(yyyymmdd, "%Y%m%d").date()
     while d.weekday() >= 5:
@@ -293,11 +295,35 @@ def _last_weekday_str(yyyymmdd: str) -> str:
     return d.strftime("%Y%m%d")
 
 
+def _last_trading_day_on_or_before(
+    yyyymmdd: str, trading_days: Sequence[str] | None
+) -> str | None:
+    """Latest actual TRADING day (YYYYMMDD) on or before ``yyyymmdd``.
+
+    ``trading_days`` is the sorted exchange calendar. When it is ``None`` (the
+    calendar could not be fetched — e.g. trade_cal access failed) this falls
+    back to :func:`_last_weekday_str`, preserving the prior behaviour.
+
+    The weekday floor over-expects only when a slice's last weekday is a market
+    HOLIDAY: 2018-12-31 (Mon) was closed, so the real last 2018 bar is
+    2018-12-28 — yet the weekday floor expected 2018-12-31 and flagged every
+    complete 2018 file as short, tripping the systemic-shortfall gate for a year
+    that can never produce a later bar. A trading-day floor is exact.
+    """
+    if trading_days is None:
+        return _last_weekday_str(yyyymmdd)
+    idx = bisect.bisect_right(trading_days, yyyymmdd)
+    if idx == 0:
+        return None
+    return trading_days[idx - 1]
+
+
 def _expected_year_file_end(
     *,
     year_start: str,
     year_end: str,
     window: tuple[str | None, str | None],
+    trading_days: Sequence[str] | None = None,
 ) -> str | None:
     """Latest ``trade_date`` this run can expect inside a (ticker, year) file,
     or ``None`` when no data can exist for the slice.
@@ -306,8 +332,9 @@ def _expected_year_file_end(
     (already bounded by the config range). The ticker's listing ``window``
     further bounds it: listed-after-slice or delisted-before-slice ⇒ ``None``
     (an empty placeholder is the truthful content); delisted mid-slice caps
-    the expectation at the delist date. The result is floored to the last
-    weekday. Note the cap errs toward re-fetching: a ticker suspended through
+    the expectation at the delist date. The result is floored to the last actual
+    TRADING day (``trading_days``; the last-weekday heuristic only when no
+    calendar is available). Note the cap errs toward re-fetching: a ticker suspended through
     its slice end (or whose final bar precedes its delist date) yields a file
     that genuinely ends early and is re-pulled on every scan of that year —
     bounded waste, never a silent skip of real data.
@@ -321,8 +348,8 @@ def _expected_year_file_end(
         hi = delist_date
     if lo > hi:
         return None
-    floored = _last_weekday_str(hi)
-    if floored < lo:
+    floored = _last_trading_day_on_or_before(hi, trading_days)
+    if floored is None or floored < lo:
         return None
     return floored
 
@@ -341,6 +368,13 @@ class TushareFetcher:
         # P3-4a). Reset at the start of every fetch(). In-memory only — P3-4b
         # persists these to a fetch manifest.
         self._holes: list[FetchHole] = []
+        # SSE trading calendar (sorted YYYYMMDD), fetched once per run and used
+        # to floor freshness boundaries to the actual last TRADING day rather
+        # than the last weekday (which is wrong when a year's last weekday is a
+        # market holiday, e.g. 2018-12-31 Mon). None = trade_cal unavailable →
+        # weekday-floor fallback. _loaded guards a single fetch attempt.
+        self._trading_days: tuple[str, ...] | None = None
+        self._trading_days_loaded = False
 
     @property
     def holes(self) -> tuple[FetchHole, ...]:
@@ -621,6 +655,64 @@ class TushareFetcher:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _get_trading_days(self) -> tuple[str, ...] | None:
+        """SSE trading calendar (sorted YYYYMMDD) for the run's range, cached.
+
+        Returns None when the calendar can't be fetched (trade_cal access fails,
+        or a dry-run), and the freshness boundary falls back to the weekday
+        floor. SSE and SZSE share the A-share trading calendar, so one fetch
+        covers every ticker. Fetched at most once per run (``_loaded`` guard).
+        """
+        if self._trading_days_loaded:
+            return self._trading_days
+        self._trading_days_loaded = True
+        if self._config.dry_run:
+            return None
+        # trade_cal is a BEST-EFFORT freshness optimisation: ANY failure — fetch
+        # error or a malformed/unexpected response — must degrade to the weekday
+        # floor, never break the fetch. The whole call+parse is therefore inside
+        # one broad try. The call goes through _safe_call so a transient / rate-
+        # limit blip on this single highest-leverage call (typically the FIRST
+        # network action of a multi-hour backfill) is RETRIED rather than
+        # permanently disabling the holiday-aware floor; on retryable exhaustion
+        # _safe_call raises FetchHoleError, which we degrade here (no hole — the
+        # weekday floor is a safe, if churnier, fallback).
+        try:
+            df = self._safe_call(
+                "trade_cal",
+                exchange="SSE",
+                start_date=self._config.start_date,
+                end_date=self._config.end_date,
+                is_open="1",
+            )
+            if df is None or getattr(df, "empty", True) or "cal_date" not in getattr(df, "columns", []):
+                _logger.warning(
+                    "trade_cal returned no usable calendar — weekday-floor fallback."
+                )
+                return None
+            # Keep only well-formed YYYYMMDD dates: defends the sorted/bisect
+            # lexical comparison against NaN / dash-formatted / duplicate vendor
+            # rows (dedup via the set).
+            days = sorted({
+                s for d in df["cal_date"]
+                if (s := str(d)).isdigit() and len(s) == 8
+            })
+            if not days:
+                _logger.warning(
+                    "trade_cal had no valid YYYYMMDD dates — weekday-floor fallback."
+                )
+                return None
+            self._trading_days = tuple(days)
+            return self._trading_days
+        except Exception as exc:
+            _logger.warning(
+                "trade_cal unavailable (%s) — freshness boundaries fall back to "
+                "the weekday floor (a year whose last weekday is a holiday may "
+                "be needlessly re-pulled).",
+                exc,
+            )
+            return None
+
     def _fetch_per_ticker_per_year(
         self, *, endpoint: str, subdir: str, fields: str,
     ) -> TushareFetchResult:
@@ -657,6 +749,11 @@ class TushareFetcher:
         stale_refetched = 0
         still_short: list[str] = []  # re-pulled units still short of expected
         rechecked = 0  # re-pulls whose post-write re-check actually ran
+        # The exchange trading calendar floors freshness boundaries to the real
+        # last TRADING day (not the last weekday). Fetched once per run (cached);
+        # None ⇒ weekday-floor fallback. Shared across all three date-bounded
+        # endpoints via the instance cache.
+        tdays = self._get_trading_days()
         for year in range(start_year, end_year + 1):
             year_dir = out_root / str(year)
             if not self._config.dry_run:
@@ -678,7 +775,8 @@ class TushareFetcher:
             # never-attested years before the coverage start on a backward
             # backfill). --verify-all-years forces the sweep; no watermark
             # (no / pre-P3-7b manifest) scans everything.
-            year_floor = _last_weekday_str(min(self._config.end_date, f"{year}1231"))
+            _year_cap = min(self._config.end_date, f"{year}1231")
+            year_floor = _last_trading_day_on_or_before(_year_cap, tdays) or _last_weekday_str(_year_cap)
             scan_year = (
                 year == end_year
                 or self._config.verify_all_years
@@ -708,6 +806,7 @@ class TushareFetcher:
                         year_start=year_start,
                         year_end=year_end,
                         window=windows.get(ticker, (None, None)),
+                        trading_days=tdays,
                     )
                     if expected is None:
                         # The ticker's listing window misses this year slice —
@@ -758,6 +857,7 @@ class TushareFetcher:
                         year_start=year_start,
                         year_end=year_end,
                         window=windows.get(ticker, (None, None)),
+                        trading_days=tdays,
                     )
                 if self._config.dry_run:
                     if i == 1:

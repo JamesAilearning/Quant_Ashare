@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -53,7 +54,37 @@ class _FakeClient:
 
     def __init__(self, call_side_effect, token: str = "test-token-12345") -> None:
         self.token = token
-        self.call = MagicMock(side_effect=call_side_effect)
+
+        def _with_trade_cal(api, **p):
+            # Serve the trading calendar centrally (the freshness gate fetches it
+            # once per run); all weekdays are trading days here so the
+            # trading-day floor equals the legacy weekday floor (behaviour
+            # unchanged). _data_call_count excludes this call from data-pull
+            # assertions.
+            if api == "trade_cal":
+                return _all_weekday_cal_df(p["start_date"], p["end_date"])
+            return call_side_effect(api, **p)
+
+        self.call = MagicMock(side_effect=_with_trade_cal)
+
+
+def _all_weekday_cal_df(start: str, end: str) -> pd.DataFrame:
+    days = []
+    d = datetime.strptime(start, "%Y%m%d").date()
+    e = datetime.strptime(end, "%Y%m%d").date()
+    while d <= e:
+        if d.weekday() < 5:
+            days.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
+    return pd.DataFrame({"cal_date": days})
+
+
+def _data_call_count(client) -> int:
+    """``client.call`` invocations excluding the one-shot ``trade_cal`` fetch."""
+    return sum(
+        1 for c in client.call.call_args_list
+        if not (c.args and c.args[0] == "trade_cal")
+    )
 
 
 def _make_client(call_side_effect, token: str = "test-token-12345") -> _FakeClient:
@@ -177,7 +208,7 @@ class DailyBasicFetchTests(unittest.TestCase):
                     )
 
         # Every call requests exactly the canonical field list.
-        self.assertEqual(client.call.call_count, 4)
+        self.assertEqual(_data_call_count(client), 4)
         for fields_arg in captured_fields:
             self.assertEqual(
                 tuple(s.strip() for s in fields_arg.split(",")),
@@ -222,7 +253,7 @@ class DailyBasicFetchTests(unittest.TestCase):
         self.assertEqual(results[0].files_written, 1)
         self.assertEqual(results[0].skipped, 1)
         # Only one network call — for the missing (600001.SH, 2020) pair.
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
 
     def test_empty_response_writes_placeholder_by_default(self) -> None:
         """Tushare returns no rows for tickers without daily_basic coverage

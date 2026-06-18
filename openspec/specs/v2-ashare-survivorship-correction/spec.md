@@ -682,8 +682,9 @@ later SHALL cite the Tushare API response (`stock_basic`,
 ### Requirement: Per-(ticker, year) resume SHALL be content-fresh, not existence-based
 
 An existing per-`(ticker, year)` file (daily / adj_factor / daily_basic) SHALL be resume-skipped ONLY when its `max(trade_date)` reaches the latest
-date this run can expect of it: the last weekday on or before
-`min(requested end_date, Dec 31 of the year)`, further bounded by the
+date this run can expect of it: the last actual TRADING day (from the exchange
+calendar — the last-weekday heuristic only when the calendar is unavailable) on
+or before `min(requested end_date, Dec 31 of the year)`, further bounded by the
 ticker's listing window — a slice the window misses entirely expects no data
 (an empty placeholder is truthful), and a mid-slice delisting caps the
 expectation at the delist date. A file that stops short, is

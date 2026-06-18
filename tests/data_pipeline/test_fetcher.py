@@ -17,7 +17,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -44,6 +44,9 @@ from src.data.tushare.fetcher import (  # noqa: E402
     TushareFetcher,
     TushareFetcherConfig,
     TushareFetcherError,
+    _expected_year_file_end,
+    _last_trading_day_on_or_before,
+    _last_weekday_str,
 )
 
 
@@ -59,13 +62,54 @@ class _FakeClient:
     verify the fetcher does not put it into error messages.
     """
 
-    def __init__(self, call_side_effect, token: str = "test-token-12345") -> None:
+    def __init__(self, call_side_effect, token: str = "test-token-12345",
+                 trade_cal_dates: list[str] | None = None) -> None:
         self.token = token
-        self.call = MagicMock(side_effect=call_side_effect)
+
+        def _with_trade_cal(api, **p):
+            # Serve the trading calendar centrally for every test so the
+            # freshness gate's trading-day floor equals the weekday floor here
+            # (default: all weekdays are trading days → boundaries unchanged),
+            # without each per-endpoint side_effect needing to model trade_cal.
+            # ``trade_cal_dates`` overrides with an explicit calendar (e.g. a
+            # year whose last weekday is a HOLIDAY) for the regression tests.
+            # The calendar call is still recorded on the MagicMock; assertions
+            # on the number of DATA pulls use _data_call_count to exclude it.
+            if api == "trade_cal":
+                if trade_cal_dates is not None:
+                    return pd.DataFrame({"cal_date": list(trade_cal_dates)})
+                return _all_weekday_cal_df(p["start_date"], p["end_date"])
+            return call_side_effect(api, **p)
+
+        self.call = MagicMock(side_effect=_with_trade_cal)
 
 
-def _make_client(call_side_effect, token: str = "test-token-12345") -> _FakeClient:
-    return _FakeClient(call_side_effect, token=token)
+def _all_weekday_cal_df(start: str, end: str) -> pd.DataFrame:
+    """A ``trade_cal``-shaped frame: every weekday in ``[start, end]`` as a
+    trading day. Keeps the trading-day floor identical to the weekday floor in
+    tests while still exercising the real calendar code path."""
+    days = []
+    d = datetime.strptime(start, "%Y%m%d").date()
+    e = datetime.strptime(end, "%Y%m%d").date()
+    while d <= e:
+        if d.weekday() < 5:
+            days.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
+    return pd.DataFrame({"cal_date": days})
+
+
+def _data_call_count(client) -> int:
+    """``client.call`` invocations excluding the one-shot ``trade_cal`` calendar
+    fetch — the count of actual data pulls."""
+    return sum(
+        1 for c in client.call.call_args_list
+        if not (c.args and c.args[0] == "trade_cal")
+    )
+
+
+def _make_client(call_side_effect, token: str = "test-token-12345",
+                 trade_cal_dates: list[str] | None = None) -> _FakeClient:
+    return _FakeClient(call_side_effect, token=token, trade_cal_dates=trade_cal_dates)
 
 
 def _stock_basic_df(status: str, rows: int = 3) -> pd.DataFrame:
@@ -195,7 +239,7 @@ class StockBasicFetchTests(unittest.TestCase):
         self.assertEqual(r.files_written, 1)  # only delisted_stocks.parquet
         self.assertEqual(r.skipped, 1)
         # Only one network call was made (for the missing bucket).
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
 
     def test_dry_run_writes_nothing(self) -> None:
         client = _make_client(lambda api, **p: _stock_basic_df(p["list_status"]))
@@ -210,7 +254,7 @@ class StockBasicFetchTests(unittest.TestCase):
             self.assertEqual(list((Path(tmp)).iterdir()), [])
 
         # Dry run does NOT call the client at all (would charge rate-limit budget)
-        self.assertEqual(client.call.call_count, 0)
+        self.assertEqual(_data_call_count(client), 0)
         r = results[0]
         self.assertEqual(r.files_written, 0)
 
@@ -254,7 +298,7 @@ class NamechangeAndSuspendDFetchTests(unittest.TestCase):
             results = TushareFetcher(client, cfg).fetch()
             self.assertTrue((Path(tmp) / "all_namechanges.parquet").exists())
         self.assertEqual(results[0].files_written, 1)
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
 
     def test_suspend_d_single_call(self) -> None:
         client = _make_client(
@@ -393,8 +437,9 @@ class RefreshCurrentTests(unittest.TestCase):
             # 2020 stays skipped.
             self.assertEqual(results[0].files_written, 2)
             self.assertEqual(results[0].skipped, 2)
-            called_years = {p["start_date"][:4] for _, p in
-                            [(c.args, c.kwargs) for c in client.call.call_args_list]}
+            called_years = {p["start_date"][:4] for a, p in
+                            [(c.args, c.kwargs) for c in client.call.call_args_list]
+                            if not (a and a[0] == "trade_cal")}
             self.assertEqual(called_years, {"2021"})
 
     def test_repulls_stock_basic_and_aggregates(self) -> None:
@@ -465,6 +510,7 @@ class RefreshCurrentTests(unittest.TestCase):
             called_units = {
                 (c.kwargs["ts_code"], c.kwargs["start_date"][:4])
                 for c in client.call.call_args_list
+                if not (c.args and c.args[0] == "trade_cal")
             }
             # The holed 2020 unit was re-attempted; its 2020 sibling was not.
             self.assertIn(("600000.SH", "2020"), called_units)
@@ -487,7 +533,7 @@ class RefreshCurrentTests(unittest.TestCase):
             )
             results = TushareFetcher(client, cfg).fetch()
             self.assertEqual(results[0].skipped, 1)  # still resume-skipped
-            self.assertEqual(client.call.call_count, 0)
+            self.assertEqual(_data_call_count(client), 0)
 
 
 class DailyAndAdjFactorTests(unittest.TestCase):
@@ -578,7 +624,7 @@ class DailyAndAdjFactorTests(unittest.TestCase):
         self.assertEqual(results[0].files_written, 1)
         self.assertEqual(results[0].skipped, 1)
         # Only one call: for the missing (600001.SH, 2020) pair
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
 
 
 class RateLimitTests(unittest.TestCase):
@@ -628,7 +674,7 @@ class RateLimitTests(unittest.TestCase):
                     TushareFetcher(client, cfg).fetch()
 
         # No retries — exactly one call, then re-raise
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
 
     def test_rate_limit_exhaustion_records_hole_not_abort(self) -> None:
         # P3-4a continue-on-error: an exhausted retryable call no longer aborts
@@ -684,7 +730,7 @@ class RateLimitTests(unittest.TestCase):
         # sleep so it contributes 0.
         self.assertEqual(mock_sleep.call_count, MAX_RATE_LIMIT_RETRIES - 1)
         # One network call per attempt.
-        self.assertEqual(client.call.call_count, MAX_RATE_LIMIT_RETRIES)
+        self.assertEqual(_data_call_count(client), MAX_RATE_LIMIT_RETRIES)
 
 
 class RetryableErrorClassificationTests(unittest.TestCase):
@@ -841,7 +887,7 @@ class RetryableErrorClassificationTests(unittest.TestCase):
         # MAX_RATE_LIMIT_RETRIES attempts — pre-PR this would have
         # been exactly 1 because ConnectionError didn't match
         # ``_is_rate_limit_error``.
-        self.assertEqual(client.call.call_count, MAX_RATE_LIMIT_RETRIES)
+        self.assertEqual(_data_call_count(client), MAX_RATE_LIMIT_RETRIES)
 
 
 class AtomicWriteTests(unittest.TestCase):
@@ -955,7 +1001,7 @@ class ContinueOnErrorTests(unittest.TestCase):
 
         # Hard error aborts fast — NO holes spammed, NO retries.
         self.assertEqual(len(fetcher.holes), 0)
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
 
     def test_holes_accumulate_across_endpoints(self) -> None:
         # ANTI-RESET red line: ONE fetch() run covers every configured endpoint
@@ -1284,7 +1330,7 @@ class FastAbortOnNonRetryableTests(unittest.TestCase):
                     fetcher.fetch()
         # First call aborts the run: later endpoints never execute, the
         # retry/backoff machinery never engages ("seconds, not minutes").
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
         self.assertEqual(len(fetcher.holes), 0)
         mock_sleep.assert_not_called()
 
@@ -1304,7 +1350,7 @@ class FastAbortOnNonRetryableTests(unittest.TestCase):
                 fetcher = TushareFetcher(client, cfg)
                 with self.assertRaises(TushareClientError):
                     fetcher.fetch()
-        self.assertEqual(client.call.call_count, 1)
+        self.assertEqual(_data_call_count(client), 1)
         self.assertEqual(len(fetcher.holes), 0)
         mock_sleep.assert_not_called()
 
@@ -1339,9 +1385,9 @@ class FastAbortOnNonRetryableTests(unittest.TestCase):
                 )
                 holing = TushareFetcher(quota_client, cfg)
                 holing.fetch()  # does NOT raise
-        self.assertEqual(param_client.call.call_count, 1)
+        self.assertEqual(_data_call_count(param_client), 1)
         self.assertEqual(len(aborting.holes), 0)
-        self.assertGreater(quota_client.call.call_count, 1)  # retried
+        self.assertGreater(_data_call_count(quota_client), 1)  # retried
         self.assertEqual(len(holing.holes), 1)
 
 
@@ -1378,13 +1424,13 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
         return path
 
     @staticmethod
-    def _client_returning(dates: list[str]):
+    def _client_returning(dates: list[str], trade_cal_dates: list[str] | None = None):
         def side_effect(api, **p):
             return pd.DataFrame({
                 "ts_code": [p["ts_code"]] * len(dates),
                 "trade_date": list(dates),
             })
-        return _make_client(side_effect)
+        return _make_client(side_effect, trade_cal_dates=trade_cal_dates)
 
     @staticmethod
     def _cfg(tmp_path: Path, start: str, end: str, **kw) -> TushareFetcherConfig:
@@ -1392,6 +1438,31 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             output_dir=tmp_path, endpoints=("daily",),
             start_date=start, end_date=end, rate_limit_sleep_ms=0, **kw,
         )
+
+    def test_holiday_year_end_complete_file_not_repulled(self) -> None:
+        """阶段1 regression, LOOP-level (guards the calendar→freshness-gate
+        wiring): a complete year whose last weekday is a market HOLIDAY
+        (2018-12-31 Mon closed; the real last bar is 2018-12-28) must NOT trip
+        the gate. With the trading-day floor the prefilled complete file is fresh
+        → 0 re-pulls, no systemic-shortfall hole. Reverting the calendar wiring
+        (or the old weekday floor) expects Dec 31 → re-pulls the complete file
+        → this test fails. This is the exact failure that blocked the supervised
+        run, exercised through fetch() rather than the pure boundary helper."""
+        # 2018 trading days, minus the 2018-12-31 (Mon) holiday.
+        cal = [
+            d for d in _all_weekday_cal_df("20180101", "20181231")["cal_date"].tolist()
+            if d != "20181231"
+        ]
+        client = self._client_returning(["20181228"], trade_cal_dates=cal)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)
+            # Complete 2018 file ending on the real last trading day (Dec 28).
+            self._prefill(tmp_path, 2018, ["20180102", "20181228"])
+            fetcher = TushareFetcher(client, self._cfg(tmp_path, "20180101", "20181231"))
+            fetcher.fetch()
+            self.assertEqual(_data_call_count(client), 0)  # complete → not re-pulled
+            self.assertEqual(fetcher.holes, ())            # no false systemic-shortfall
 
     def test_partial_year_file_backfilled_when_range_extends(self) -> None:
         # 半截年文件 + 扩 end_date → 补全 (the original freeze bug).
@@ -1401,7 +1472,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._seed_universe(tmp_path)
             path = self._prefill(tmp_path, 2025, ["20250102", "20250630"])
             TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
-            self.assertEqual(client.call.call_count, 1)  # whole year, one call
+            self.assertEqual(_data_call_count(client), 1)  # whole year, one call
             df = pd.read_parquet(path)
             self.assertEqual(str(df["trade_date"].max()), "20251231")
 
@@ -1418,7 +1489,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             results = TushareFetcher(
                 client, self._cfg(tmp_path, "20250101", "20251231"),
             ).fetch()
-            self.assertEqual(client.call.call_count, 0)
+            self.assertEqual(_data_call_count(client), 0)
             self.assertEqual(results[0].skipped, 1)
             self.assertEqual(results[0].units_verified, 1)
 
@@ -1448,7 +1519,8 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             # year) scanned-and-verified; 2020-2024 blind-skipped on the
             # watermark.
             called_years = {c.kwargs["start_date"][:4]
-                            for c in client.call.call_args_list}
+                            for c in client.call.call_args_list
+                            if not (c.args and c.args[0] == "trade_cal")}
             self.assertEqual(called_years, {"2018"})
             self.assertEqual(results[0].files_written, 1)
             self.assertEqual(results[0].units_verified, 2)  # 2019 + 2025
@@ -1473,7 +1545,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
                 fetcher.fetch()  # exhausts retries → hole, no raise
             self.assertEqual(len(fetcher.holes), 1)
             self.assertEqual(path.read_bytes(), before)  # old file untouched
-            first_run_calls = client.call.call_count
+            first_run_calls = _data_call_count(client)
             self.assertGreater(first_run_calls, 0)
             # Next run: the file is STILL stale → re-attempted automatically,
             # no force-retry bookkeeping needed.
@@ -1481,7 +1553,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
                 TushareFetcher(
                     client, self._cfg(tmp_path, "20250101", "20251231"),
                 ).fetch()
-            self.assertGreater(client.call.call_count, first_run_calls)
+            self.assertGreater(_data_call_count(client), first_run_calls)
 
     def test_next_day_run_fetches_new_day(self) -> None:
         # “明天再跑”：今天建 2026 文件，明天 end_date+1 → 必须抓到新一天.
@@ -1490,18 +1562,18 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._seed_universe(tmp_path)
             day1 = self._client_returning(["20260610"])
             TushareFetcher(day1, self._cfg(tmp_path, "20260101", "20260610")).fetch()
-            self.assertEqual(day1.call.call_count, 1)
+            self.assertEqual(_data_call_count(day1), 1)
             path = tmp_path / "daily" / "2026" / f"{self.TICKER}.parquet"
             self.assertEqual(str(pd.read_parquet(path)["trade_date"].max()), "20260610")
             # Tomorrow (2026-06-11, a Thursday): the file stops one day short.
             day2 = self._client_returning(["20260610", "20260611"])
             TushareFetcher(day2, self._cfg(tmp_path, "20260101", "20260611")).fetch()
-            self.assertEqual(day2.call.call_count, 1)
+            self.assertEqual(_data_call_count(day2), 1)
             self.assertEqual(str(pd.read_parquet(path)["trade_date"].max()), "20260611")
             # Same-day re-run after success: now current → skipped.
             day3 = self._client_returning(["20260611"])
             TushareFetcher(day3, self._cfg(tmp_path, "20260101", "20260611")).fetch()
-            self.assertEqual(day3.call.call_count, 0)
+            self.assertEqual(_data_call_count(day3), 0)
 
     def test_weekend_end_does_not_repull_friday_complete_file(self) -> None:
         # end on Sunday 2026-06-14 floors to Friday 2026-06-12.
@@ -1511,7 +1583,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._seed_universe(tmp_path)
             self._prefill(tmp_path, 2026, ["20260612"])
             TushareFetcher(client, self._cfg(tmp_path, "20260101", "20260614")).fetch()
-            self.assertEqual(client.call.call_count, 0)
+            self.assertEqual(_data_call_count(client), 0)
 
     def test_listing_window_bounds_expectation(self) -> None:
         # Delisted mid-year: a file ending at the delist date is complete —
@@ -1522,7 +1594,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._seed_universe(tmp_path, delist_date="20250310")
             self._prefill(tmp_path, 2025, ["20250102", "20250310"])
             TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
-            self.assertEqual(client.call.call_count, 0)
+            self.assertEqual(_data_call_count(client), 0)
 
     def test_pre_listing_year_empty_placeholder_skipped(self) -> None:
         # Listed 2024: the 2020 empty placeholder is the truthful content.
@@ -1532,7 +1604,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._seed_universe(tmp_path, list_date="20240115")
             self._prefill(tmp_path, 2020, [])
             TushareFetcher(client, self._cfg(tmp_path, "20200101", "20201231")).fetch()
-            self.assertEqual(client.call.call_count, 0)
+            self.assertEqual(_data_call_count(client), 0)
 
     def test_still_short_refetch_warns_loud_but_does_not_hole(self) -> None:
         # codex P1 round 3 on #240: a re-pulled year whose fresh full-year
@@ -1551,7 +1623,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             )
             with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
                 results = fetcher.fetch()
-        self.assertEqual(client.call.call_count, 1)  # re-pulled once
+        self.assertEqual(_data_call_count(client), 1)  # re-pulled once
         self.assertEqual(results[0].files_written, 1)  # freshest vendor truth
         self.assertEqual(len(fetcher.holes), 0)  # NOT a hole
         self.assertEqual(results[0].units_verified, 0)  # and NOT "verified"
@@ -1680,7 +1752,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             fetcher = TushareFetcher(client, cfg)
             with self.assertLogs("src.data.tushare.fetcher", level="WARNING") as logs:
                 results = fetcher.fetch()
-        self.assertEqual(client.call.call_count, 1)  # force-retried once
+        self.assertEqual(_data_call_count(client), 1)  # force-retried once
         self.assertEqual(results[0].files_written, 1)
         self.assertEqual(len(fetcher.holes), 0)  # retry succeeded — no hole
         self.assertTrue(
@@ -1704,7 +1776,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             results = TushareFetcher(
                 client, self._cfg(tmp_path, "20200101", "20201231"),
             ).fetch()
-            self.assertEqual(client.call.call_count, 1)  # re-pulled
+            self.assertEqual(_data_call_count(client), 1)  # re-pulled
             self.assertEqual(len(pd.read_parquet(path)), 0)  # clean now
             self.assertEqual(results[0].units_verified, 0)
         # Rows where the window says none can exist → same treatment.
@@ -1716,7 +1788,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             TushareFetcher(
                 client2, self._cfg(tmp_path, "20200101", "20201231"),
             ).fetch()
-            self.assertEqual(client2.call.call_count, 1)
+            self.assertEqual(_data_call_count(client2), 1)
             self.assertEqual(len(pd.read_parquet(path)), 0)
 
     def test_empty_final_year_placeholder_repulled_when_listing_intersects(self) -> None:
@@ -1728,7 +1800,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self._seed_universe(tmp_path, list_date="20250601")
             path = self._prefill(tmp_path, 2025, [])
             TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
-            self.assertEqual(client.call.call_count, 1)
+            self.assertEqual(_data_call_count(client), 1)
             self.assertEqual(len(pd.read_parquet(path)), 1)
 
     def test_watermark_skips_past_year_scan_unless_verify_all(self) -> None:
@@ -1746,7 +1818,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             )
             client = self._client_returning(["20241231"])
             TushareFetcher(client, watermarked).fetch()
-            self.assertEqual(client.call.call_count, 0)  # 2024 not scanned
+            self.assertEqual(_data_call_count(client), 0)  # 2024 not scanned
             sweeping = self._cfg(
                 tmp_path, "20240101", "20251231",
                 assume_verified_ranges={"daily": ("20240101", "20251231")},
@@ -1754,9 +1826,66 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             )
             client2 = self._client_returning(["20240102", "20241231"])
             TushareFetcher(client2, sweeping).fetch()
-            self.assertEqual(client2.call.call_count, 1)  # 2024 re-pulled
-            called = client2.call.call_args_list[0]
-            self.assertEqual(called.kwargs["start_date"][:4], "2024")
+            self.assertEqual(_data_call_count(client2), 1)  # 2024 re-pulled
+            data_calls = [c for c in client2.call.call_args_list
+                          if not (c.args and c.args[0] == "trade_cal")]
+            self.assertEqual(data_calls[0].kwargs["start_date"][:4], "2024")
+
+
+class TradingDayFloorTests(unittest.TestCase):
+    """Freshness boundary floors to the actual last TRADING day, not the last
+    weekday — fixes the year-end-holiday false systemic-shortfall surfaced by
+    the supervised 阶段1 run: 2018-12-31 (Mon) was a market holiday, so the real
+    last 2018 bar is 2018-12-28; the weekday floor expected Dec 31 and flagged
+    every complete 2018 file as short, tripping the gate for a year that can
+    never produce a later bar."""
+
+    # 2018 calendar whose last weekday (Dec 31, Mon) is a HOLIDAY: the real last
+    # trading day is Dec 28 (Fri). Sorted (bisect requires it).
+    _CAL_2018 = ("20181226", "20181227", "20181228")
+
+    def test_last_trading_day_uses_calendar(self) -> None:
+        self.assertEqual(
+            _last_trading_day_on_or_before("20181231", self._CAL_2018), "20181228"
+        )
+        self.assertEqual(
+            _last_trading_day_on_or_before("20181228", self._CAL_2018), "20181228"
+        )
+        self.assertIsNone(
+            _last_trading_day_on_or_before("20180101", self._CAL_2018)
+        )
+
+    def test_none_calendar_falls_back_to_weekday(self) -> None:
+        # No calendar → the documented weekday-floor degradation.
+        self.assertEqual(
+            _last_trading_day_on_or_before("20181231", None),
+            _last_weekday_str("20181231"),
+        )
+        self.assertEqual(_last_trading_day_on_or_before("20181231", None), "20181231")
+
+    def test_expected_year_end_holiday_aware(self) -> None:
+        # THE FIX: a full 2018 slice expects the real last trading day (Dec 28),
+        # not the last weekday (Dec 31, a holiday).
+        expected = _expected_year_file_end(
+            year_start="20180101", year_end="20181231",
+            window=(None, None), trading_days=self._CAL_2018,
+        )
+        self.assertEqual(expected, "20181228")
+
+    def test_expected_year_end_without_calendar_is_weekday(self) -> None:
+        # Fallback path documents the legacy (buggy) weekday floor = Dec 31.
+        expected = _expected_year_file_end(
+            year_start="20180101", year_end="20181231",
+            window=(None, None), trading_days=None,
+        )
+        self.assertEqual(expected, "20181231")
+
+    def test_expected_year_end_delist_cap_floored_to_trading_day(self) -> None:
+        expected = _expected_year_file_end(
+            year_start="20180101", year_end="20181231",
+            window=(None, "20181231"), trading_days=self._CAL_2018,
+        )
+        self.assertEqual(expected, "20181228")
 
 
 if __name__ == "__main__":
