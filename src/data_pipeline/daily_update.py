@@ -97,7 +97,13 @@ class DailyUpdateConfig:
     provider_dir: Path
     delisted_registry: Path
     reference_cases: Path
-    start_date: str = "20000101"
+    # 2018-01-01: the bundle is a 2018+ point-in-time bundle by design (see
+    # config_walk.yaml overall_start). The bins build has NO range filter — it
+    # ingests EVERY year present under <tushare-dir>/daily/ — so fetching
+    # pre-2018 years here silently widens the built calendar and reintroduces
+    # the very contamination 阶段1 had to quarantine. Default to the bundle's
+    # start; an operator who genuinely wants full history must opt in explicitly.
+    start_date: str = "20180101"
     end_date: str | None = None  # None -> today (YYYYMMDD) at run time
     allow_holey_fetch: bool = False
     dry_run: bool = False

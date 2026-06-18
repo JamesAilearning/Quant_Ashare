@@ -84,6 +84,32 @@ def _config(tmp: Path, **kw) -> DailyUpdateConfig:
     )
 
 
+class StartDateDefaultTests(unittest.TestCase):
+    """阶段1 footgun fix: the default fetch start must be the 2018+ bundle
+    start (20180101), NOT 20000101. The bins build has no range filter, so a
+    pre-2018 fetch silently widens the built calendar — the exact contamination
+    阶段1 had to quarantine. A naive run must default to the bundle's start."""
+
+    def test_config_default_start_is_bundle_start(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            self.assertEqual(_config(Path(t)).start_date, "20180101")
+
+    def test_default_plan_fetches_from_2018_not_2000(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            plan = build_plan(_config(Path(t)))
+            i = plan.fetch.index("--start-date")
+            self.assertEqual(plan.fetch[i + 1], "20180101")
+            self.assertNotIn("20000101", plan.fetch)
+
+    def test_cli_argparse_default_start_is_2018(self) -> None:
+        from scripts.daily_update import _build_arg_parser
+        args = _build_arg_parser().parse_args([
+            "--tushare-dir", "x", "--provider-dir", "y",
+            "--delisted-registry", "z", "--reference-cases", "w",
+        ])
+        self.assertEqual(args.start_date, "20180101")
+
+
 class HappyPathTests(unittest.TestCase):
 
     def test_full_run_executes_all_stages_in_order_and_swaps(self) -> None:

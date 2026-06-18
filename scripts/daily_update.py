@@ -48,8 +48,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="delisted_registry.parquet path (02 writes, 04/05/06 read).")
     p.add_argument("--reference-cases", required=True, type=Path,
                    help="tests/pit/reference_cases.yaml (02 requires; 03/06 validate).")
-    p.add_argument("--start-date", default="20000101",
-                   help="Fetch range start, YYYYMMDD (default 20000101).")
+    p.add_argument("--start-date", default="20180101",
+                   help="Fetch range start, YYYYMMDD (default 20180101 — the "
+                        "2018+ bundle start; the bins build has no range filter, "
+                        "so fetching pre-2018 years widens the built calendar). "
+                        "Pass an earlier date only for a deliberate full-history "
+                        "build.")
     p.add_argument("--end-date", default=None,
                    help="Fetch range end, YYYYMMDD (default: today).")
     p.add_argument("--rate-limit-sleep-ms", type=int, default=None,
