@@ -1464,6 +1464,32 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             self.assertEqual(_data_call_count(client), 0)  # complete → not re-pulled
             self.assertEqual(fetcher.holes, ())            # no false systemic-shortfall
 
+    def test_holiday_only_slice_preserves_complete_year_file(self) -> None:
+        """Codex P1 (#270): re-running a HOLIDAY-ONLY slice (e.g. --start 20181231
+        --end 20181231, a market holiday) against a dir with a COMPLETE 2018 file
+        must NOT overwrite it with an empty pull. The slice has no trading day so
+        ``_expected_year_file_end`` is None — but the listing window COVERS the
+        slice (≠ a pre-listing window-miss), so no empty-placeholder claim applies
+        and the existing file (real data for the wider year) is preserved.
+        Reverting the window-covers branch routes this through the placeholder
+        path: the non-empty file is judged a dirty placeholder, re-pulled, and
+        clobbered to empty → 20181228 lost → this test fails."""
+        # The single requested day is a holiday → trade_cal(is_open=1) is empty
+        # → _get_trading_days() == () → no trading-day boundary for the slice.
+        client = self._client_returning([], trade_cal_dates=[])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)  # listed 20000101 → window covers 2018
+            path = self._prefill(tmp_path, 2018, ["20180102", "20181228"])
+            fetcher = TushareFetcher(
+                client, self._cfg(tmp_path, "20181231", "20181231")
+            )
+            fetcher.fetch()
+            self.assertEqual(_data_call_count(client), 0)  # NOT re-pulled
+            self.assertEqual(fetcher.holes, ())            # no spurious hole
+            df = pd.read_parquet(path)
+            self.assertIn("20181228", set(df["trade_date"].astype(str)))  # preserved
+
     def test_partial_year_file_backfilled_when_range_extends(self) -> None:
         # 半截年文件 + 扩 end_date → 补全 (the original freeze bug).
         client = self._client_returning(["20250630", "20251231"])

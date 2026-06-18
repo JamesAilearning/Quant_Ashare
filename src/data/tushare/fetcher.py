@@ -318,26 +318,21 @@ def _last_trading_day_on_or_before(
     return trading_days[idx - 1]
 
 
-def _expected_year_file_end(
-    *,
+def _clip_slice_to_window(
     year_start: str,
     year_end: str,
     window: tuple[str | None, str | None],
-    trading_days: Sequence[str] | None = None,
-) -> str | None:
-    """Latest ``trade_date`` this run can expect inside a (ticker, year) file,
-    or ``None`` when no data can exist for the slice.
+) -> tuple[str, str] | None:
+    """Clip the run's ``[year_start, year_end]`` slice by the ticker's listing
+    ``window``, or ``None`` when the window MISSES the slice entirely.
 
-    ``year_start`` / ``year_end`` are the run's CLIPPED slice for the year
-    (already bounded by the config range). The ticker's listing ``window``
-    further bounds it: listed-after-slice or delisted-before-slice ⇒ ``None``
-    (an empty placeholder is the truthful content); delisted mid-slice caps
-    the expectation at the delist date. The result is floored to the last actual
-    TRADING day (``trading_days``; the last-weekday heuristic only when no
-    calendar is available). Note the cap errs toward re-fetching: a ticker suspended through
-    its slice end (or whose final bar precedes its delist date) yields a file
-    that genuinely ends early and is re-pulled on every scan of that year —
-    bounded waste, never a silent skip of real data.
+    A ``None`` return means the ticker was listed after / delisted before the
+    slice, so no data can exist for it — distinct from "the slice exists but
+    has no trading day" (handled by the caller via the calendar floor). The two
+    None reasons must stay separable: a window-miss makes an empty placeholder
+    the truthful content (a spurious non-empty file is re-pulled to empty),
+    whereas a no-trading-day slice carries no such claim and must NOT clobber a
+    file that may hold real data for a wider range (codex P1).
     """
     list_date, delist_date = window
     lo = year_start
@@ -346,8 +341,35 @@ def _expected_year_file_end(
         lo = list_date
     if delist_date is not None and delist_date < hi:
         hi = delist_date
-    if lo > hi:
+    return None if lo > hi else (lo, hi)
+
+
+def _expected_year_file_end(
+    *,
+    year_start: str,
+    year_end: str,
+    window: tuple[str | None, str | None],
+    trading_days: Sequence[str] | None = None,
+) -> str | None:
+    """Latest ``trade_date`` this run can expect inside a (ticker, year) file,
+    or ``None`` when no boundary can be claimed for the slice.
+
+    ``year_start`` / ``year_end`` are the run's CLIPPED slice for the year
+    (already bounded by the config range). The ticker's listing ``window``
+    further bounds it: listed-after-slice or delisted-before-slice ⇒ ``None``
+    (an empty placeholder is the truthful content); delisted mid-slice caps
+    the expectation at the delist date. The result is floored to the last actual
+    TRADING day (``trading_days``; the last-weekday heuristic only when no
+    calendar is available) — and is ``None`` when the slice holds no trading day
+    at all. Note the cap errs toward re-fetching: a ticker suspended through
+    its slice end (or whose final bar precedes its delist date) yields a file
+    that genuinely ends early and is re-pulled on every scan of that year —
+    bounded waste, never a silent skip of real data.
+    """
+    clipped = _clip_slice_to_window(year_start, year_end, window)
+    if clipped is None:
         return None
+    lo, hi = clipped
     floored = _last_trading_day_on_or_before(hi, trading_days)
     if floored is None or floored < lo:
         return None
@@ -837,6 +859,26 @@ class TushareFetcher:
                         trading_days=tdays,
                     )
                     if expected is None:
+                        window_covers = (
+                            _clip_slice_to_window(
+                                year_start,
+                                year_end,
+                                windows.get(ticker, (None, None)),
+                            )
+                            is not None
+                        )
+                        if window_covers:
+                            # expected is None NOT because the listing window
+                            # misses the slice, but because the slice holds no
+                            # trading day (e.g. a holiday-only re-run such as
+                            # --start 20181231 --end 20181231). The existing
+                            # file may hold real data for a WIDER range; no
+                            # boundary is claimed, so PRESERVE it — never
+                            # overwrite with an empty pull (codex P1). Positive
+                            # knowledge for this slice (nothing was expected).
+                            skipped += 1
+                            verified += 1
+                            continue
                         # The ticker's listing window misses this year slice —
                         # no data can exist, so a readable EMPTY placeholder is
                         # the truthful content: POSITIVE knowledge → verified
