@@ -845,6 +845,30 @@ class TushareFetcher:
                 # no re-check, an empty response is the truth.
                 recheck_boundary: str | None = None
                 force_retry = self._must_retry(endpoint, unit)
+                window = windows.get(ticker, (None, None))
+                expected_boundary = _expected_year_file_end(
+                    year_start=year_start,
+                    year_end=year_end,
+                    window=window,
+                    trading_days=tdays,
+                )
+                # A slice the listing window COVERS but that holds NO trading
+                # day (a holiday-only re-run, e.g. --start 20181231 --end
+                # 20181231) claims no boundary and can pull no data. If a file
+                # already EXISTS it holds real data for the wider year, so an
+                # empty pull would silently clobber it — preserve it on EVERY
+                # path that would otherwise fetch and overwrite: the non-forced
+                # freshness scan AND a forced retry of a prior-manifest hole
+                # (codex P1 rounds 4-5). A MISSING file has nothing to lose and
+                # still falls through to write an empty placeholder. (A
+                # window-MISS keeps expected_boundary None too — but there the
+                # empty placeholder IS the truth, handled in-branch below.)
+                holiday_only_existing = (
+                    path.exists()
+                    and expected_boundary is None
+                    and _clip_slice_to_window(year_start, year_end, window)
+                    is not None
+                )
                 if path.exists() and not force_retry:
                     if not scan_year:
                         # Attested by the prior manifest's watermark — closed
@@ -852,42 +876,22 @@ class TushareFetcher:
                         # skip: proves nothing, establishes nothing.
                         skipped += 1
                         continue
-                    expected = _expected_year_file_end(
-                        year_start=year_start,
-                        year_end=year_end,
-                        window=windows.get(ticker, (None, None)),
-                        trading_days=tdays,
-                    )
+                    if holiday_only_existing:
+                        skipped += 1
+                        verified += 1
+                        continue
+                    expected = expected_boundary
                     if expected is None:
-                        window_covers = (
-                            _clip_slice_to_window(
-                                year_start,
-                                year_end,
-                                windows.get(ticker, (None, None)),
-                            )
-                            is not None
-                        )
-                        if window_covers:
-                            # expected is None NOT because the listing window
-                            # misses the slice, but because the slice holds no
-                            # trading day (e.g. a holiday-only re-run such as
-                            # --start 20181231 --end 20181231). The existing
-                            # file may hold real data for a WIDER range; no
-                            # boundary is claimed, so PRESERVE it — never
-                            # overwrite with an empty pull (codex P1). Positive
-                            # knowledge for this slice (nothing was expected).
-                            skipped += 1
-                            verified += 1
-                            continue
-                        # The ticker's listing window misses this year slice —
-                        # no data can exist, so a readable EMPTY placeholder is
-                        # the truthful content: POSITIVE knowledge → verified
-                        # (codex P2: must establish coverage, unlike a blind
-                        # resume skip). But VERIFY the placeholder before
-                        # claiming it (codex P2 round 2): a corrupt blob or a
-                        # file holding unexpected rows (external mutation /
-                        # interrupted write) falls through to the re-pull,
-                        # which overwrites it with a clean empty placeholder.
+                        # The ticker's listing window MISSES this year slice
+                        # (the holiday-covers case is handled above) — no data
+                        # can exist, so a readable EMPTY placeholder is the
+                        # truthful content: POSITIVE knowledge → verified (codex
+                        # P2: must establish coverage, unlike a blind resume
+                        # skip). But VERIFY the placeholder before claiming it
+                        # (codex P2 round 2): a corrupt blob or a file holding
+                        # unexpected rows (external mutation / interrupted
+                        # write) falls through to the re-pull, which overwrites
+                        # it with a clean empty placeholder.
                         if self._placeholder_is_clean(path):
                             skipped += 1
                             verified += 1
@@ -923,12 +927,17 @@ class TushareFetcher:
                     # entrance to the exact hole the systemic-shortfall gate
                     # closes for re-pulls. Window-misses-slice units keep the
                     # boundary None (an empty response is their truth).
-                    recheck_boundary = _expected_year_file_end(
-                        year_start=year_start,
-                        year_end=year_end,
-                        window=windows.get(ticker, (None, None)),
-                        trading_days=tdays,
-                    )
+                    if holiday_only_existing:
+                        # A FORCED retry (prior-manifest hole) of an EXISTING
+                        # file on a holiday-only slice: the hole is spurious (no
+                        # data can exist for a no-trading-day slice) and an empty
+                        # pull would clobber the real wider-year file. Preserve —
+                        # the spurious hole self-heals on the next real-range run
+                        # (codex P1 round 5).
+                        skipped += 1
+                        verified += 1
+                        continue
+                    recheck_boundary = expected_boundary
                 if self._config.dry_run:
                     if i == 1:
                         _logger.info(

@@ -1490,6 +1490,32 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             df = pd.read_parquet(path)
             self.assertIn("20181228", set(df["trade_date"].astype(str)))  # preserved
 
+    def test_forced_retry_holiday_slice_preserves_complete_year_file(self) -> None:
+        """Codex P1 round 5 (#270): the FORCED-retry path (a prior-manifest hole
+        turned into a force_retry_unit by 01_fetch_tushare) bypasses the
+        ``path.exists() and not force_retry`` freshness scan entirely. A
+        holiday-only re-run of such a unit against a COMPLETE file would fetch
+        the (empty) holiday range and clobber it — the spurious hole self-heals
+        on the next real-range run, so preserve the existing file instead.
+        Reverting the forced-path preserve guard re-pulls and clobbers → fails."""
+        unit = f"ts_code={self.TICKER} year=2018"
+        client = self._client_returning([], trade_cal_dates=[])  # holiday → empty cal
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_universe(tmp_path)  # listed 20000101 → window covers 2018
+            path = self._prefill(tmp_path, 2018, ["20180102", "20181228"])
+            fetcher = TushareFetcher(
+                client,
+                self._cfg(
+                    tmp_path, "20181231", "20181231",
+                    force_retry_units=frozenset({("daily", unit)}),
+                ),
+            )
+            fetcher.fetch()
+            self.assertEqual(_data_call_count(client), 0)  # forced unit NOT re-pulled
+            df = pd.read_parquet(path)
+            self.assertIn("20181228", set(df["trade_date"].astype(str)))  # preserved
+
     def test_partial_year_file_backfilled_when_range_extends(self) -> None:
         # 半截年文件 + 扩 end_date → 补全 (the original freeze bug).
         client = self._client_returning(["20250630", "20251231"])
