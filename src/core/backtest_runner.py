@@ -1014,7 +1014,15 @@ class BacktestRunner:
             if tr_code in series_by_code and price_code in series_by_code
             else None
         )
-        report = validate_benchmark_values(series_by_code, tr_price_pairs=pairs)
+        # Only the CONSUMED benchmark gets the per-series hard-error checks; the
+        # optional sibling is loaded solely for the (warning) cross-check, so a
+        # defect in a non-consumed TR sibling never aborts a valid price-
+        # benchmark backtest (codex P2 on PR-J).
+        report = validate_benchmark_values(
+            series_by_code,
+            consumed_codes={benchmark_code},
+            tr_price_pairs=pairs,
+        )
         for warning in report.warnings:
             _logger.warning(
                 "BacktestRunner: benchmark value-level check: %s", warning,

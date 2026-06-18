@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -217,10 +217,19 @@ def _tr_ge_price_cumret_warnings(
         return []
     p = np.asarray(price.reindex(common).to_numpy(), dtype="float64")
     t = np.asarray(tr.reindex(common).to_numpy(), dtype="float64")
+    # The TR sibling is NOT hard-checked per-series (it is not the consumed
+    # benchmark), so a non-finite / non-positive sibling cannot run the
+    # cross-check — surface that as a WARNING rather than silently skipping.
     if not (np.isfinite(p).all() and np.isfinite(t).all()):
-        return []  # per-series check already flagged the non-finite values
+        return [
+            f"{tr_code} vs {price_code}: TR/price cross-check skipped — "
+            f"non-finite close value(s) in the window"
+        ]
     if not (p[0] > 0 and t[0] > 0):
-        return []  # invalid base; positivity check already flagged it
+        return [
+            f"{tr_code} vs {price_code}: TR/price cross-check skipped — "
+            f"non-positive base value"
+        ]
     # > 0 ⇒ price index out-returned the total-return index over the window.
     deficit = (p / p[0]) - (t / t[0])
     worst = float(deficit.max())
@@ -239,15 +248,23 @@ def _tr_ge_price_cumret_warnings(
 def validate_benchmark_values(
     series_by_code: Mapping[str, pd.Series],
     *,
+    consumed_codes: Collection[str] | None = None,
     tr_price_pairs: Mapping[str, str] | None = None,
     cumret_tolerance: float = 1e-2,
 ) -> BenchmarkValueReport:
     """Value-level validation of consumed benchmark series.
 
     ``series_by_code`` maps an instrument code (e.g. ``"SH000300"``) to its
-    ``$close`` series over the consumed window. HARD ERRORS are the per-series
-    integrity checks (finite / positive / no intra-span gaps) on the consumed
-    benchmark — those would directly poison excess-return.
+    ``$close`` series over the consumed window.
+
+    ``consumed_codes`` are the codes the backtest actually CONSUMES for
+    excess-return; ONLY these get the per-series HARD ERROR checks (finite /
+    positive / no intra-span gaps) — those would directly poison excess-return.
+    A code in ``series_by_code`` but NOT in ``consumed_codes`` (e.g. a TR
+    sibling loaded only for the cross-check) is never hard-failed on its own
+    values — a defect in a non-consumed series must not abort an otherwise valid
+    backtest (codex P2). ``None`` treats every loaded code as consumed (the
+    plain-validation default used by unit tests).
 
     ``tr_price_pairs`` maps a total-return code to its price-index counterpart
     (e.g. ``{"SH000300TR": "SH000300"}``) for the cumulative-return
@@ -256,12 +273,15 @@ def validate_benchmark_values(
     session, and the TR is not consumed for the current price-benchmark
     excess-return — so a transient dip must not abort the run, while a
     sustained/large deficit still surfaces loudly. A pair whose series were not
-    both loaded also yields a warning.
+    both loaded (or whose values cannot run the check) also yields a warning.
     """
     errors: list[str] = []
     warnings: list[str] = []
-    for code, close in series_by_code.items():
-        errors.extend(_benchmark_series_value_errors(code, close))
+    hard_codes = (
+        list(series_by_code) if consumed_codes is None else list(consumed_codes)
+    )
+    for code in hard_codes:
+        errors.extend(_benchmark_series_value_errors(code, series_by_code.get(code)))
     for tr_code, price_code in (tr_price_pairs or {}).items():
         if tr_code in series_by_code and price_code in series_by_code:
             warnings.extend(

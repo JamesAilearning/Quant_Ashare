@@ -123,6 +123,36 @@ class ValidateBenchmarkValuesTests(unittest.TestCase):
             [w for w in r.warnings if "BELOW the price-index" in w], []
         )
 
+    def test_bad_non_consumed_sibling_is_not_a_hard_error(self) -> None:
+        # codex P2: the consumed benchmark (SH000300) is clean; the TR sibling
+        # has a NaN. With consumed_codes limited to the price index, the bad TR
+        # must NOT hard-fail — only the consumed series is hard-checked. The
+        # cross-check can't run on a non-finite sibling, so it warns.
+        r = validate_benchmark_values(
+            {
+                "SH000300": _series(_DATES, [100, 101, 102, 101, 103]),
+                "SH000300TR": _series(_DATES, [100, np.nan, 102, 101, 103]),
+            },
+            consumed_codes={"SH000300"},
+            tr_price_pairs={"SH000300TR": "SH000300"},
+        )
+        self.assertTrue(r.ok)  # the NON-consumed sibling's NaN is not fatal
+        self.assertEqual(r.errors, ())
+        self.assertTrue(any("cross-check skipped" in w for w in r.warnings))
+
+    def test_consumed_code_still_hard_checked(self) -> None:
+        # The flip side: a NaN in the CONSUMED benchmark is still a hard error.
+        r = validate_benchmark_values(
+            {
+                "SH000300": _series(_DATES, [100, np.nan, 102, 101, 103]),
+                "SH000300TR": _series(_DATES, [100, 101, 102, 101, 103]),
+            },
+            consumed_codes={"SH000300"},
+            tr_price_pairs={"SH000300TR": "SH000300"},
+        )
+        self.assertFalse(r.ok)
+        self.assertTrue(any("non-finite" in e for e in r.errors))
+
     def test_pair_not_loaded_is_warning_not_error(self) -> None:
         r = validate_benchmark_values(
             {"SH000300": _series(_DATES, [100, 101, 102, 101, 103])},
@@ -165,6 +195,18 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
             BacktestRunner._validate_consumed_benchmark(
                 "SH000300", "2026-06-10", "2026-06-16"
             )
+
+    def test_bad_tr_sibling_does_not_raise(self) -> None:
+        # codex P2 at the wiring level: consumed SH000300 is clean, the TR
+        # sibling has a NaN — the backtest (price benchmark) must NOT abort.
+        frame = _qlib_frame({
+            "SH000300": _series(_DATES, [100, 101, 102, 101, 103]),
+            "SH000300TR": _series(_DATES, [100, np.nan, 102, 101, 103]),
+        })
+        with self._patch_D(frame):
+            BacktestRunner._validate_consumed_benchmark(
+                "SH000300", "2026-06-10", "2026-06-16"
+            )  # no raise
 
     def test_missing_benchmark_raises(self) -> None:
         with self._patch_D(pd.DataFrame()), self.assertRaisesRegex(
