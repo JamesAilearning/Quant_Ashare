@@ -792,12 +792,24 @@ class TushareFetcher:
             # backfill). --verify-all-years forces the sweep; no watermark
             # (no / pre-P3-7b manifest) scans everything.
             _year_cap = min(self._config.end_date, f"{year}1231")
-            year_floor = _last_trading_day_on_or_before(_year_cap, tdays) or _last_weekday_str(_year_cap)
+            # year_floor: the slice's expected last trading day, used only for
+            # the watermark scan-gating below. A None from the calendar lookup
+            # is a VALID "no trading day in this slice" (e.g. a slice that is
+            # entirely a holiday on a cross-year range) — do NOT coerce it to the
+            # weekday floor: that would re-scan a watermarked complete file and,
+            # via the expected-None path, risk overwriting a real full-year file
+            # with an empty pull (Codex P2). Fall back to the weekday floor ONLY
+            # when the CALENDAR itself is unavailable (tdays is None).
+            year_floor: str | None
+            if tdays is None:
+                year_floor = _last_weekday_str(_year_cap)
+            else:
+                year_floor = _last_trading_day_on_or_before(_year_cap, tdays)
             scan_year = (
                 year == end_year
                 or self._config.verify_all_years
                 or watermark is None
-                or year_floor > watermark[1]
+                or (year_floor is not None and year_floor > watermark[1])
                 or year_start < watermark[0]
             )
             for i, ticker in enumerate(tickers, 1):
