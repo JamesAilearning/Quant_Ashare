@@ -690,19 +690,22 @@ class TushareFetcher:
                     "trade_cal returned no usable calendar — weekday-floor fallback."
                 )
                 return None
-            # Keep only well-formed YYYYMMDD dates: defends the sorted/bisect
-            # lexical comparison against NaN / dash-formatted / duplicate vendor
-            # rows (dedup via the set).
-            days = sorted({
-                s for d in df["cal_date"]
-                if (s := str(d)).isdigit() and len(s) == 8
-            })
-            if not days:
+            raw = [str(d) for d in df["cal_date"]]
+            # A malformed / NaN / dash-formatted cal_date row means we CANNOT
+            # trust this calendar as the authoritative exchange calendar. Degrade
+            # the WHOLE calendar to the weekday fallback rather than silently
+            # DROPPING the bad rows — a partial calendar could be missing a
+            # slice's real last trading day, under-expect the boundary, and mark
+            # a genuinely-stale/empty file as verified (silent loss of real
+            # data, the dangerous direction). (Codex P1.) Duplicates of
+            # well-formed dates are harmless and deduped.
+            if not raw or any(not (s.isdigit() and len(s) == 8) for s in raw):
                 _logger.warning(
-                    "trade_cal had no valid YYYYMMDD dates — weekday-floor fallback."
+                    "trade_cal contained malformed/empty cal_date value(s) — "
+                    "degrading the whole calendar to the weekday-floor fallback."
                 )
                 return None
-            self._trading_days = tuple(days)
+            self._trading_days = tuple(sorted(set(raw)))
             return self._trading_days
         except Exception as exc:
             _logger.warning(

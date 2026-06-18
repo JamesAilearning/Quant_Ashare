@@ -1887,6 +1887,30 @@ class TradingDayFloorTests(unittest.TestCase):
         )
         self.assertEqual(expected, "20181228")
 
+    def test_malformed_calendar_degrades_whole_to_weekday(self) -> None:
+        """Codex P1: a trade_cal with ANY malformed cal_date must degrade the
+        WHOLE calendar (_get_trading_days → None → weekday fallback), not become
+        a PARTIAL calendar that could be missing a slice's real last trading day,
+        under-expect the boundary, and silently skip a stale file."""
+        def _cfg(tmp):
+            return TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("daily",),
+                start_date="20180101", end_date="20181231", rate_limit_sleep_ms=0,
+            )
+        # Malformed (a NaN row) → reject the whole calendar.
+        bad = _make_client(lambda api, **p: pd.DataFrame(),
+                           trade_cal_dates=["20180102", "nan", "20180103"])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(TushareFetcher(bad, _cfg(tmp))._get_trading_days())
+        # Control: a well-formed calendar is accepted (sorted, deduped).
+        good = _make_client(lambda api, **p: pd.DataFrame(),
+                            trade_cal_dates=["20180103", "20180102", "20180102"])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                TushareFetcher(good, _cfg(tmp))._get_trading_days(),
+                ("20180102", "20180103"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
