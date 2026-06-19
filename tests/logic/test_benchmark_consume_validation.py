@@ -208,6 +208,21 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
                 "SH000300", "2026-06-10", "2026-06-16"
             )  # no raise
 
+    def test_absent_tr_sibling_warns_skipped_not_raises(self) -> None:
+        # codex P2 round 2: when the bundle returns ONLY the consumed benchmark
+        # (no TR sibling), the cross-check cannot run — it must still emit an
+        # observable "cross-check skipped" warning (absent sibling != clean
+        # cross-check), and must not raise.
+        import logging
+
+        frame = _qlib_frame({"SH000300": _series(_DATES, [100, 101, 102, 101, 103])})
+        with self._patch_D(frame):
+            with self.assertLogs("src.core.backtest_runner", level=logging.WARNING) as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300", "2026-06-10", "2026-06-16"
+                )  # no raise
+        self.assertTrue(any("cross-check skipped" in line for line in cm.output))
+
     def test_missing_benchmark_raises(self) -> None:
         with self._patch_D(pd.DataFrame()), self.assertRaisesRegex(
             BacktestRunnerError, "no rows"

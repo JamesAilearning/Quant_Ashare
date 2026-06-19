@@ -1009,15 +1009,17 @@ class BacktestRunner:
                 f"over [{start}, {end}] — cannot validate or compute "
                 f"excess-return. Verify the bundle's benchmark series."
             )
-        pairs = (
-            {tr_code: price_code}
-            if tr_code in series_by_code and price_code in series_by_code
-            else None
-        )
+        # Always declare the TR/price pair so validate_benchmark_values emits a
+        # "cross-check skipped" warning when the sibling is ABSENT (bundle lacks
+        # it / no rows in the window) — an absent optional sibling must stay
+        # observable, not silently indistinguishable from a clean cross-check
+        # (codex P2 round 2). Both present ⇒ the cumret cross-check runs; sibling
+        # missing ⇒ a skipped warning.
+        pairs = {tr_code: price_code}
         # Only the CONSUMED benchmark gets the per-series hard-error checks; the
         # optional sibling is loaded solely for the (warning) cross-check, so a
         # defect in a non-consumed TR sibling never aborts a valid price-
-        # benchmark backtest (codex P2 on PR-J).
+        # benchmark backtest (codex P2 round 1 on PR-J).
         report = validate_benchmark_values(
             series_by_code,
             consumed_codes={benchmark_code},
