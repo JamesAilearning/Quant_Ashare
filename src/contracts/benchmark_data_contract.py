@@ -231,10 +231,14 @@ def _tr_ge_price_cumret_warnings(
             f"{tr_code} vs {price_code}: TR/price cross-check skipped — "
             f"non-finite close value(s) in the window"
         ]
-    if not (p[0] > 0 and t[0] > 0):
+    # Require EVERY shared level > 0, not just the base: a non-consumed sibling
+    # is not hard-checked per-series, so a zero/negative LATER in the window
+    # would otherwise feed the normalized-return comparison invalid levels and
+    # could look clean (codex P2 round 4). Skip (warn) on any non-positive.
+    if not (np.all(p > 0) and np.all(t > 0)):
         return [
             f"{tr_code} vs {price_code}: TR/price cross-check skipped — "
-            f"non-positive base value"
+            f"non-positive close value(s) in the window"
         ]
     # > 0 ⇒ price index out-returned the total-return index over the window.
     deficit = (p / p[0]) - (t / t[0])

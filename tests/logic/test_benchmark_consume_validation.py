@@ -153,6 +153,20 @@ class ValidateBenchmarkValuesTests(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertTrue(any("non-finite" in e for e in r.errors))
 
+    def test_sibling_nonpositive_after_base_warns_skipped(self) -> None:
+        # codex P2 round 4: a non-consumed sibling with a zero/negative LATER in
+        # the window (base is fine) must skip the cross-check (warn), not run the
+        # cumret on invalid levels and look clean.
+        price = _series(_DATES, [100, 101, 102, 101, 103])
+        tr = _series(_DATES, [100, 101, 0.0, 101, 103])  # mid-window zero
+        r = validate_benchmark_values(
+            {"SH000300": price, "SH000300TR": tr},
+            consumed_codes={"SH000300"},  # sibling NOT hard-checked
+            tr_price_pairs={"SH000300TR": "SH000300"},
+        )
+        self.assertTrue(r.ok)  # non-consumed sibling defect is not a hard error
+        self.assertTrue(any("cross-check skipped" in w for w in r.warnings))
+
     def test_insufficient_overlap_warns_skipped(self) -> None:
         # codex P2 round 3: both series present but sharing < 2 dates (here
         # disjoint) ⇒ the cumret check cannot run ⇒ a skipped warning, not a
