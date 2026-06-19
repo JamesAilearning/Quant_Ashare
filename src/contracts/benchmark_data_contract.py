@@ -214,7 +214,13 @@ def _tr_ge_price_cumret_warnings(
     this when it actually consumes TR."""
     common = price.index.intersection(tr.index)
     if len(common) < 2:
-        return []
+        # < 2 shared dates (late-starting TR, calendar mismatch, one-day
+        # window) ⇒ the cumret cross-check cannot run. Surface it so a skipped
+        # check stays distinguishable from a clean one (codex P2 round 3).
+        return [
+            f"{tr_code} vs {price_code}: TR/price cross-check skipped — fewer "
+            f"than 2 shared dates in the window"
+        ]
     p = np.asarray(price.reindex(common).to_numpy(), dtype="float64")
     t = np.asarray(tr.reindex(common).to_numpy(), dtype="float64")
     # The TR sibling is NOT hard-checked per-series (it is not the consumed

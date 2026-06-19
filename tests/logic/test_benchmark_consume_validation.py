@@ -153,6 +153,20 @@ class ValidateBenchmarkValuesTests(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertTrue(any("non-finite" in e for e in r.errors))
 
+    def test_insufficient_overlap_warns_skipped(self) -> None:
+        # codex P2 round 3: both series present but sharing < 2 dates (here
+        # disjoint) ⇒ the cumret check cannot run ⇒ a skipped warning, not a
+        # silent no-op (and not an error).
+        price = _series(["2026-06-10", "2026-06-11"], [100, 101])
+        tr = _series(["2026-06-12", "2026-06-15"], [100, 101])
+        r = validate_benchmark_values(
+            {"SH000300": price, "SH000300TR": tr},
+            consumed_codes={"SH000300"},
+            tr_price_pairs={"SH000300TR": "SH000300"},
+        )
+        self.assertTrue(r.ok)
+        self.assertTrue(any("cross-check skipped" in w for w in r.warnings))
+
     def test_pair_not_loaded_is_warning_not_error(self) -> None:
         r = validate_benchmark_values(
             {"SH000300": _series(_DATES, [100, 101, 102, 101, 103])},
