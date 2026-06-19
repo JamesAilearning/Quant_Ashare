@@ -979,14 +979,27 @@ class BacktestRunner:
         if sibling not in candidates:
             candidates.append(sibling)
 
+        # qlib computes the benchmark leg as $close/Ref($close,1)-1, so the
+        # FIRST evaluation day's benchmark return consumes the PRIOR trading
+        # day's close. Pad the fetch back so that pre-window close is validated
+        # too — a NaN/zero/negative there would skew excess-return through the
+        # first return even though [start, end] looked clean (codex P2 round 5).
+        # 15 calendar days guarantees >= 1 prior trading day across the longest
+        # CN market closure (Spring Festival ~10 days); at the bundle's first
+        # day there simply is no prior row (qlib's first return is NaN anyway).
+        fetch_start = (
+            date.fromisoformat(start) - timedelta(days=15)
+        ).isoformat()
         _logger.warning(
             "BacktestRunner: consume-time benchmark value-level check loads %s "
-            "via direct qlib D.features (allow-listed — a benchmark index has "
-            "no post-delist mask). PR-J.", candidates,
+            "over [%s, %s] (start padded back from %s to cover the prior-day "
+            "close qlib's return consumes) via direct qlib D.features "
+            "(allow-listed — a benchmark index has no post-delist mask). PR-J.",
+            candidates, fetch_start, end, start,
         )
         try:
             raw = D.features(
-                candidates, ["$close"], start_time=start, end_time=end,
+                candidates, ["$close"], start_time=fetch_start, end_time=end,
             )
         except Exception as exc:  # noqa: BLE001 — surface as a loud runner error
             raise BacktestRunnerError(

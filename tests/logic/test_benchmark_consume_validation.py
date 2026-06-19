@@ -251,6 +251,21 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
                 )  # no raise
         self.assertTrue(any("cross-check skipped" in line for line in cm.output))
 
+    def test_fetch_pads_prewindow_for_ref_return(self) -> None:
+        # codex P2 round 5: qlib's benchmark return is $close/Ref($close,1)-1,
+        # so the prior-day close is consumed on the first eval day. The fetch
+        # must start BEFORE the eval window so that pre-window close is validated.
+        frame = _qlib_frame({"SH000300": _series(_DATES, [100, 101, 102, 101, 103])})
+        fake = mock.Mock()
+        fake.features.return_value = frame
+        with mock.patch("qlib.data.D", fake):
+            BacktestRunner._validate_consumed_benchmark(
+                "SH000300", "2026-06-10", "2026-06-16"
+            )
+        kwargs = fake.features.call_args.kwargs
+        self.assertLess(kwargs["start_time"], "2026-06-10")   # padded back
+        self.assertEqual(kwargs["end_time"], "2026-06-16")
+
     def test_missing_benchmark_raises(self) -> None:
         with self._patch_D(pd.DataFrame()), self.assertRaisesRegex(
             BacktestRunnerError, "no rows"
