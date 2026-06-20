@@ -21,6 +21,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Any
 
+from src.contracts.benchmark_data_contract import validate_benchmark_values
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
@@ -287,6 +288,18 @@ class BacktestRunner:
             )
         stamp_tax_fraction = effective_stamp_tax.bps / 10000.0
         slippage_fraction = cost.slippage_bps / 10000.0
+
+        # PR-J: fail-loud VALUE-level validation of the benchmark series this
+        # backtest consumes for excess-return — BEFORE qlib reads it below.
+        # Every excess number depends on the benchmark, so a corrupt/implausible
+        # one must stop the run, not silently skew the metrics. Placed after the
+        # stamp-tax calendar fetch so a calendar-load failure still surfaces as
+        # itself; still strictly before the qlib backtest consumes the benchmark.
+        cls._validate_consumed_benchmark(
+            request.benchmark_code,
+            request.evaluation_start,
+            request.evaluation_end,
+        )
         # Price-limit enforcement (PR-D, audit A2): the contract's
         # ``limit_threshold`` float is translated into qlib's EXPRESSION-mode
         # tuple ``(limit_buy_expr, limit_sell_expr)`` — NEVER passed through
@@ -936,6 +949,122 @@ class BacktestRunner:
             result[str(dt.date())] = float(np.nanmean(valid))
 
         return result
+
+    @staticmethod
+    def _validate_consumed_benchmark(
+        benchmark_code: str, start: str, end: str,
+    ) -> None:
+        """PR-J: fail-loud VALUE-level validation of the benchmark series this
+        backtest consumes for excess-return, BEFORE qlib reads it. Loads the
+        benchmark close (and its price/total-return sibling, when the bundle has
+        one) over the evaluation window and runs ``validate_benchmark_values``
+        (finite / positive / no intra-span gaps, plus the TR>=price
+        cumulative-return invariant).
+
+        Reads ``D.features`` directly: the §4.3.2 post-delist mask is irrelevant
+        for a benchmark INDEX (an index does not delist), so routing through
+        ``PITDataProvider`` would add nothing. Allow-listed in
+        tests/governance/test_pit_provider_is_sole_qlib_features_caller.py; the
+        WARN log makes the bypass observable.
+        """
+        import pandas as pd
+        from qlib.data import D
+
+        if benchmark_code.endswith("TR"):
+            price_code, tr_code = benchmark_code[:-2], benchmark_code
+        else:
+            price_code, tr_code = benchmark_code, benchmark_code + "TR"
+        candidates = [benchmark_code]
+        sibling = tr_code if benchmark_code == price_code else price_code
+        if sibling not in candidates:
+            candidates.append(sibling)
+
+        # qlib computes the benchmark leg as $close/Ref($close,1)-1, so the
+        # FIRST evaluation day's benchmark return consumes the PRIOR trading
+        # day's close. Pad the fetch back so that pre-window close is validated
+        # too — a NaN/zero/negative there would skew excess-return through the
+        # first return even though [start, end] looked clean (codex P2 round 5).
+        # 15 calendar days guarantees >= 1 prior trading day across the longest
+        # CN market closure (Spring Festival ~10 days); at the bundle's first
+        # day there simply is no prior row (qlib's first return is NaN anyway).
+        fetch_start = (
+            date.fromisoformat(start) - timedelta(days=15)
+        ).isoformat()
+        _logger.warning(
+            "BacktestRunner: consume-time benchmark value-level check loads %s "
+            "over [%s, %s] (start padded back from %s to cover the prior-day "
+            "close qlib's return consumes) via direct qlib D.features "
+            "(allow-listed — a benchmark index has no post-delist mask). PR-J.",
+            candidates, fetch_start, end, start,
+        )
+        try:
+            raw = D.features(
+                candidates, ["$close"], start_time=fetch_start, end_time=end,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface as a loud runner error
+            raise BacktestRunnerError(
+                f"BacktestRunner: failed to load benchmark {candidates} for "
+                f"consume-time value-level validation "
+                f"({type(exc).__name__}: {exc}). The backtest consumes the "
+                f"benchmark for excess-return; verify the bundle covers "
+                f"[{start}, {end}] and contains the benchmark series."
+            ) from exc
+
+        series_by_code: dict[str, pd.Series] = {}
+        if raw is not None and not raw.empty:
+            present = set(raw.index.get_level_values("instrument").unique())
+            for code in candidates:
+                if code in present:
+                    series_by_code[code] = raw.loc[code, "$close"]
+        if benchmark_code not in series_by_code:
+            raise BacktestRunnerError(
+                f"BacktestRunner: benchmark {benchmark_code!r} returned no rows "
+                f"over [{start}, {end}] — cannot validate or compute "
+                f"excess-return. Verify the bundle's benchmark series."
+            )
+        # The fetch is padded back to capture the prior-day close, but verify a
+        # row before `start` actually came back — if not (a data gap, or the
+        # eval window opens at the bundle's first trading day), qlib's first
+        # benchmark return ($close/Ref($close,1)-1) consumes an UNVALIDATED
+        # prior level. Surface it (a warning — at the bundle's first day there
+        # legitimately is no prior close to validate) (codex P2 round 6).
+        consumed_series = series_by_code[benchmark_code]
+        start_ts = pd.Timestamp(start)
+        if len(consumed_series) and not bool(
+            (consumed_series.index < start_ts).any()
+        ):
+            _logger.warning(
+                "BacktestRunner: no pre-window close before %s for benchmark "
+                "%s — qlib's first benchmark return uses an unvalidated prior "
+                "level (expected only at the bundle's first trading day). PR-J.",
+                start, benchmark_code,
+            )
+        # Always declare the TR/price pair so validate_benchmark_values emits a
+        # "cross-check skipped" warning when the sibling is ABSENT (bundle lacks
+        # it / no rows in the window) — an absent optional sibling must stay
+        # observable, not silently indistinguishable from a clean cross-check
+        # (codex P2 round 2). Both present ⇒ the cumret cross-check runs; sibling
+        # missing ⇒ a skipped warning.
+        pairs = {tr_code: price_code}
+        # Only the CONSUMED benchmark gets the per-series hard-error checks; the
+        # optional sibling is loaded solely for the (warning) cross-check, so a
+        # defect in a non-consumed TR sibling never aborts a valid price-
+        # benchmark backtest (codex P2 round 1 on PR-J).
+        report = validate_benchmark_values(
+            series_by_code,
+            consumed_codes={benchmark_code},
+            tr_price_pairs=pairs,
+        )
+        for warning in report.warnings:
+            _logger.warning(
+                "BacktestRunner: benchmark value-level check: %s", warning,
+            )
+        if not report.ok:
+            raise BacktestRunnerError(
+                "BacktestRunner: benchmark value-level validation FAILED for "
+                f"{benchmark_code!r} over [{start}, {end}] — "
+                + "; ".join(report.errors)
+            )
 
     @classmethod
     def _validate_pit_provider_alignment(cls, pit_provider: Any) -> None:

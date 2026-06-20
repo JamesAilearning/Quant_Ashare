@@ -87,7 +87,12 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # availability across the run's own candidate universe — a pure
     # diagnostic (warning only, never feeds metrics) where the post-delist
     # mask is irrelevant; WARN log ("Audit P0-6") at the call site.
-    "src/core/backtest_runner.py": 2,
+    # Call 3 (PR-J): ``_validate_consumed_benchmark`` loads the benchmark /
+    # total-return INDEX close for fail-loud value-level validation before the
+    # backtest consumes it for excess-return. The post-delist mask is
+    # irrelevant for an index (an index does not delist), so PITDataProvider
+    # would add nothing; WARN log at the call site makes the bypass observable.
+    "src/core/backtest_runner.py": 3,
 
     # Same pattern as ``backtest_runner``: ``pit_provider`` opt-in
     # plus WARN-on-fallback. Same TODO follow-up.
