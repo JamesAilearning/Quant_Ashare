@@ -266,6 +266,35 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
         self.assertLess(kwargs["start_time"], "2026-06-10")   # padded back
         self.assertEqual(kwargs["end_time"], "2026-06-16")
 
+    def test_no_prewindow_row_warns(self) -> None:
+        # codex P2 round 6: if the (padded) fetch returns NO row before `start`,
+        # qlib's first benchmark return uses an unvalidated prior level — warn.
+        import logging
+
+        frame = _qlib_frame({"SH000300": _series(_DATES, [100, 101, 102, 101, 103])})
+        fake = mock.Mock()
+        fake.features.return_value = frame  # _DATES[0] == start, no prior row
+        with mock.patch("qlib.data.D", fake):
+            with self.assertLogs("src.core.backtest_runner", level=logging.WARNING) as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300", "2026-06-10", "2026-06-16"
+                )
+        self.assertTrue(any("no pre-window close" in ln for ln in cm.output))
+
+    def test_prewindow_row_present_no_prewindow_warning(self) -> None:
+        import logging
+
+        dates = ["2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12", "2026-06-15"]
+        frame = _qlib_frame({"SH000300": _series(dates, [99, 100, 101, 102, 101])})
+        fake = mock.Mock()
+        fake.features.return_value = frame  # has 2026-06-09 < start
+        with mock.patch("qlib.data.D", fake):
+            with self.assertLogs("src.core.backtest_runner", level=logging.WARNING) as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300", "2026-06-10", "2026-06-16"
+                )
+        self.assertFalse(any("no pre-window close" in ln for ln in cm.output))
+
     def test_missing_benchmark_raises(self) -> None:
         with self._patch_D(pd.DataFrame()), self.assertRaisesRegex(
             BacktestRunnerError, "no rows"

@@ -1022,6 +1022,23 @@ class BacktestRunner:
                 f"over [{start}, {end}] — cannot validate or compute "
                 f"excess-return. Verify the bundle's benchmark series."
             )
+        # The fetch is padded back to capture the prior-day close, but verify a
+        # row before `start` actually came back — if not (a data gap, or the
+        # eval window opens at the bundle's first trading day), qlib's first
+        # benchmark return ($close/Ref($close,1)-1) consumes an UNVALIDATED
+        # prior level. Surface it (a warning — at the bundle's first day there
+        # legitimately is no prior close to validate) (codex P2 round 6).
+        consumed_series = series_by_code[benchmark_code]
+        start_ts = pd.Timestamp(start)
+        if len(consumed_series) and not bool(
+            (consumed_series.index < start_ts).any()
+        ):
+            _logger.warning(
+                "BacktestRunner: no pre-window close before %s for benchmark "
+                "%s — qlib's first benchmark return uses an unvalidated prior "
+                "level (expected only at the bundle's first trading day). PR-J.",
+                start, benchmark_code,
+            )
         # Always declare the TR/price pair so validate_benchmark_values emits a
         # "cross-check skipped" warning when the sibling is ABSENT (bundle lacks
         # it / no rows in the window) — an absent optional sibling must stay
