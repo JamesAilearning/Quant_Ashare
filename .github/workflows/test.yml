@@ -107,15 +107,38 @@ jobs:
         if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/governance/ -q --tb=short
 
+      # ``--ignore`` the REGEN-2 CI-real replay here: it is a real 23-fold qlib
+      # backtest (minutes), and running it on all 6 matrix legs would multiply
+      # that cost for no extra signal (it is deterministic + platform-independent).
+      # It runs ONCE, on the dedicated ubuntu-3.12 step below.
       - name: Run regression tests (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: pytest tests/regression/ -q --tb=short --cov=src --cov-append
+        run: pytest tests/regression/ -q --tb=short --cov=src --cov-append --ignore=tests/regression/test_walk_forward_replay_baseline_regen2.py
         env:
           RUN_E2E: "0"
 
       - name: Run regression tests
         if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
-        run: pytest tests/regression/ -q --tb=short
+        run: pytest tests/regression/ -q --tb=short --ignore=tests/regression/test_walk_forward_replay_baseline_regen2.py
+        env:
+          RUN_E2E: "0"
+
+      # REGEN-2 CI-real frozen-score replay regression — runs on ONE leg only.
+      # It is NOT RUN_E2E-gated (that is the whole point — it replays against the
+      # committed mini-bundle tarball, no production bundle, so it genuinely runs
+      # in CI rather than silently skipping). It is deterministic and
+      # platform-independent, and the 1e-6 tolerance has ~8 orders of magnitude of
+      # headroom over the observed ~7e-14 reproduction drift, so a single leg
+      # catches code regressions. This ubuntu-3.12 leg is ALSO the cross-platform
+      # check that Linux reproduces the (Windows-generated) committed baseline; if
+      # it drifts past 1e-6, investigate — do NOT loosen the tolerance.
+      # ``-s`` disables pytest's stdout capture: the 23-fold qlib backtest is
+      # output-heavy and capturing it dominates wall-time (the test also raises
+      # the qlib/backtest loggers to ERROR for the same reason). With both, the
+      # replay runs at ~its native speed.
+      - name: Run REGEN-2 CI-real replay regression (1 leg, deterministic)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: pytest tests/regression/test_walk_forward_replay_baseline_regen2.py -v -s
         env:
           RUN_E2E: "0"
 
