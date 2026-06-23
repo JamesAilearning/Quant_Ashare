@@ -123,21 +123,33 @@ jobs:
         env:
           RUN_E2E: "0"
 
-      # REGEN-2 CI-real frozen-score replay regression — runs on ONE leg only.
-      # It is NOT RUN_E2E-gated (that is the whole point — it replays against the
-      # committed mini-bundle tarball, no production bundle, so it genuinely runs
-      # in CI rather than silently skipping). It is deterministic and
-      # platform-independent, and the 1e-6 tolerance has ~8 orders of magnitude of
-      # headroom over the observed ~7e-14 reproduction drift, so a single leg
-      # catches code regressions. This ubuntu-3.12 leg is ALSO the cross-platform
-      # check that Linux reproduces the (Windows-generated) committed baseline; if
-      # it drifts past 1e-6, investigate — do NOT loosen the tolerance.
+      # REGEN-2 CI-real frozen-score replay regression — runs on ONE leg only,
+      # and that leg is **windows-3.12** (the platform the committed baseline was
+      # generated on). It is NOT RUN_E2E-gated (that is the whole point — it replays
+      # against the committed mini-bundle tarball, no production bundle, so it
+      # genuinely runs in CI rather than silently skipping) and catches any code
+      # change to the backtest semantics (1e-6 tolerance, ~8 orders of magnitude of
+      # headroom over the ~7e-14 same-platform reproduction drift).
+      #
+      # Why Windows, not a Linux leg: qlib's backtest benchmark leg
+      # (qlib/backtest/report.py ``_cal_benchmark`` -> ``get_higher_eq_freq_feature``
+      # -> ``.fillna(0)``) is NOT cross-platform-deterministic for the EARLIEST fold.
+      # On Linux the benchmark *return* for fold 0 (2020-04) comes out ~0, so its
+      # excess collapses to the absolute return (IR -0.889 -> +1.767), while folds
+      # 1..22 reproduce to ~1e-14. We confirmed this is purely the qlib benchmark
+      # leg, NOT our data or our code: the mini-bundle SH000300TR bins are
+      # byte-identical to production, and a raw ``D.features`` benchmark read returns
+      # identical values on both OSes — only the in-backtest benchmark alignment
+      # diverges. Neither a warm-up backtest nor shipping ``calendars/day_future.txt``
+      # changed it. So this is an UPSTREAM qlib cross-platform limitation; pinning the
+      # regression to the baseline's own platform is the correct close (it does NOT
+      # loosen the tolerance). The REGEN-A E2E replay anchor is likewise Windows-bound.
+      #
       # ``-s`` disables pytest's stdout capture: the 23-fold qlib backtest is
-      # output-heavy and capturing it dominates wall-time (the test also raises
-      # the qlib/backtest loggers to ERROR for the same reason). With both, the
-      # replay runs at ~its native speed.
+      # output-heavy and capturing it dominates wall-time (the test also raises the
+      # qlib/backtest loggers to ERROR for the same reason).
       - name: Run REGEN-2 CI-real replay regression (1 leg, deterministic)
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        if: matrix.os == 'windows-latest' && matrix.python-version == '3.12'
         run: pytest tests/regression/test_walk_forward_replay_baseline_regen2.py -v -s
         env:
           RUN_E2E: "0"

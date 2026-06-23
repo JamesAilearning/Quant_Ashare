@@ -111,18 +111,6 @@ def _replay_fold(fold_index: int, entry: dict[str, Any], namechange_path: str) -
         namechange_path=namechange_path,
         require_st_mask=True,
     )
-    if fold_index == 0:  # DIAG-FOLD0 (TEMPORARY — check 2: log the actual benchmark leg on Linux)
-        ra = output.risk_analysis
-        bench = list(ra.get("bench", {}).values())
-        ret = list(ra.get("return", {}).values())
-        fin = [v for v in bench if isinstance(v, (int, float)) and not math.isnan(v)]
-        nan_b = sum(1 for v in bench if v is None or (isinstance(v, float) and math.isnan(v)))
-        ewc = ra.get("excess_return_with_cost", {})
-        print(f"DIAG-FOLD0 benchmark_code={request.benchmark_code} "
-              f"bench: n={len(bench)} nan={nan_b} sum={sum(fin):.8f} mean={(sum(fin)/len(fin) if fin else float('nan')):.3e} head={bench[:3]} | "
-              f"return: n={len(ret)} sum={sum(v for v in ret if isinstance(v,(int,float)) and not math.isnan(v)):.8f} | "
-              f"excess_with_cost mean={ewc.get('mean')!r} annret={ewc.get('annualized_return')!r} ir={ewc.get('information_ratio')!r}",
-              flush=True)
     ann, dd, ir = extract_cost_metrics(output.risk_analysis, fold_index)
     return WalkForwardFold(
         fold_index=fold_index,
@@ -149,19 +137,6 @@ def replay_frozen_baseline_regen2(
     init_qlib_canonical(
         QlibRuntimeConfig(provider_uri=provider_uri, region="cn", data_adjust_mode=ADJUST_MODE_PRE)
     )
-    # DIAG-READ (TEMPORARY — narrow read-bin vs backtest-excess-leg): raw qlib read
-    # of the benchmark for fold-0's window, NO backtest. If empty/constant on Linux
-    # but valued on Windows -> the platform diff is in the bin/calendar READ, not the
-    # backtest excess leg.
-    try:
-        from qlib.data import D as _DIAG_D
-        for _code in ("SH000300TR", "SH000300"):
-            _df = _DIAG_D.features([_code], ["$close", "Ref($close,1)"],
-                                   start_time="2020-03-25", end_time="2020-04-08", freq="day")
-            _vals = _df["$close"].tolist() if (_df is not None and not _df.empty) else "EMPTY"
-            print(f"DIAG-READ {_code}: shape={None if _df is None else _df.shape} $close={_vals}", flush=True)
-    except Exception as _exc:  # noqa: BLE001 — diagnostic only
-        print(f"DIAG-READ raised: {type(_exc).__name__}: {_exc}", flush=True)
     frozen = load_frozen(frozen_path)
     # REGEN-2 is exactly 23 REAL folds (0..22). Require that exact set — a
     # truncated/extended fixture must fail loudly, never be padded (unlike REGEN-A
@@ -172,16 +147,6 @@ def replay_frozen_baseline_regen2(
             f"Frozen fold set {sorted(frozen)} != the expected {N_FOLDS} REGEN-2 "
             f"folds {sorted(expected)}. Refusing to replay a truncated/extended fixture."
         )
-    # WARM-UP (cross-platform determinism). qlib's FIRST backtest after init
-    # triggers a one-time "load calendar error: future=True; return current
-    # calendar" benchmark-calendar fallback; that COLD first-fold state diverged
-    # across platforms (Linux did not subtract the TR benchmark on fold 0, so its
-    # excess ~= the absolute return). The cold first-fold value is therefore a
-    # platform artifact, NOT a valid anchor. Run one throwaway warm-up backtest so
-    # EVERY real fold — including fold 0 — runs in the warm state and reproduces
-    # identically on every platform. The committed anchor is the warm value.
-    first = min(frozen)
-    _replay_fold(first, frozen[first], namechange_path)  # discarded: primes qlib state
     folds = [_replay_fold(i, frozen[i], namechange_path) for i in sorted(frozen)]
     # Refuse to anchor a NaN/non-finite fold (codex P2). This is a fail-LOUD guard,
     # NOT a way to drop a problem fold: REGEN-2 must REPRODUCE all 23 real folds.

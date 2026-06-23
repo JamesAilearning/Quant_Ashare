@@ -92,15 +92,6 @@ def build_dir(src: Path, frozen_path: Path, namechange_src: Path, dest: Path) ->
     (dest / "calendars").mkdir(parents=True)
     (dest / "instruments").mkdir(parents=True)
     shutil.copy2(src / "calendars" / "day.txt", dest / "calendars" / "day.txt")
-    # qlib's backtest loads the benchmark with future=True (FileCalendarStorage wants
-    # calendars/day_future.txt). Neither the production bundle nor this mini-bundle
-    # ships one, so qlib falls back to "current calendar" — and that fallback path
-    # computes the benchmark leg DIFFERENTLY across platforms for the FIRST/earliest
-    # fold (Linux returned an EMPTY benchmark, so fold-0 excess == the absolute
-    # return). Provide the future calendar (= day.txt; the bundle already extends to
-    # 2026-06-17, past every fold window) so the future=True load SUCCEEDS and the
-    # benchmark leg is deterministic on every OS. This is the cross-platform fix.
-    shutil.copy2(dest / "calendars" / "day.txt", dest / "calendars" / "day_future.txt")
     shutil.copy2(src / "instruments" / "benchmark.txt", dest / "instruments" / "benchmark.txt")
     shipped = set(universe) | set(_BENCHMARKS)
     src_all = (src / "instruments" / "all.txt").read_text(encoding="utf-8").splitlines()

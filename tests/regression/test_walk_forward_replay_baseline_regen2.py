@@ -17,14 +17,26 @@ to a TIGHT in-source tolerance. This closes the "the regression test exists but 
 skipped in CI" gap.
 
 Determinism: frozen scores + bootstrap seed 42 + the same bins qlib reads in
-production => reproduction is byte-identity (observed max drift ~7e-14). The
-tolerance lives in THIS source (not the fixture) so a tampered fixture cannot
-widen its own gate; the tarball is checksum-verified before use so tampered
-reference data fails loudly.
+production => SAME-PLATFORM reproduction is byte-identity (observed max drift
+~7e-14). The tolerance lives in THIS source (not the fixture) so a tampered
+fixture cannot widen its own gate; the tarball is checksum-verified before use so
+tampered reference data fails loudly.
+
+CROSS-PLATFORM CAVEAT — this regression runs on ONE CI leg, **windows-3.12** (the
+platform the committed baseline was generated on; see .github/workflows/test.yml).
+qlib's backtest benchmark leg (qlib/backtest/report.py ``_cal_benchmark`` ->
+``get_higher_eq_freq_feature`` -> ``.fillna(0)``) is NOT cross-platform-
+deterministic for the EARLIEST fold: on Linux the benchmark return for fold 0
+(2020-04) collapses to ~0, so its excess == the absolute return (folds 1..22
+still reproduce to ~1e-14). This was traced to qlib itself, NOT our data/code —
+the mini-bundle SH000300TR bins are byte-identical to production and a raw
+``D.features`` benchmark read is identical on both OSes; only the in-backtest
+benchmark alignment diverges. Hence the same-platform pin (it does not loosen the
+tolerance). The REGEN-A E2E replay anchor is likewise Windows-bound.
 
 The replay (23 backtests) runs ONCE in ``setUpClass`` and both test methods read
 the cached result. Skipped ONLY if qlib is unavailable or a committed fixture is
-missing — neither holds in CI, so this DOES run on every (selected) CI leg.
+missing — neither holds on the Windows CI leg, so this DOES run there for real.
 """
 from __future__ import annotations
 
