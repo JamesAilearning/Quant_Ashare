@@ -149,6 +149,19 @@ def replay_frozen_baseline_regen2(
     init_qlib_canonical(
         QlibRuntimeConfig(provider_uri=provider_uri, region="cn", data_adjust_mode=ADJUST_MODE_PRE)
     )
+    # DIAG-READ (TEMPORARY — narrow read-bin vs backtest-excess-leg): raw qlib read
+    # of the benchmark for fold-0's window, NO backtest. If empty/constant on Linux
+    # but valued on Windows -> the platform diff is in the bin/calendar READ, not the
+    # backtest excess leg.
+    try:
+        from qlib.data import D as _DIAG_D
+        for _code in ("SH000300TR", "SH000300"):
+            _df = _DIAG_D.features([_code], ["$close", "Ref($close,1)"],
+                                   start_time="2020-03-25", end_time="2020-04-08", freq="day")
+            _vals = _df["$close"].tolist() if (_df is not None and not _df.empty) else "EMPTY"
+            print(f"DIAG-READ {_code}: shape={None if _df is None else _df.shape} $close={_vals}", flush=True)
+    except Exception as _exc:  # noqa: BLE001 — diagnostic only
+        print(f"DIAG-READ raised: {type(_exc).__name__}: {_exc}", flush=True)
     frozen = load_frozen(frozen_path)
     # REGEN-2 is exactly 23 REAL folds (0..22). Require that exact set — a
     # truncated/extended fixture must fail loudly, never be padded (unlike REGEN-A
