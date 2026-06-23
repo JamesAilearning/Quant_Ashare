@@ -168,8 +168,13 @@ def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
     dest = dest.resolve()
     for member in tar.getmembers():
         target = (dest / member.name).resolve()
-        if not str(target).startswith(str(dest)):
-            raise AssertionError(f"unsafe path in mini-bundle tarball: {member.name}")
+        # Real containment check (codex P2): a textual ``startswith`` lets a sibling
+        # path with the same prefix (e.g. ``/tmp/x_evil`` vs ``/tmp/x``) slip through.
+        # ``relative_to`` raises unless ``target`` is genuinely inside ``dest``.
+        try:
+            target.relative_to(dest)
+        except ValueError:
+            raise AssertionError(f"unsafe path in mini-bundle tarball: {member.name}") from None
         if member.isfile():
             target.parent.mkdir(parents=True, exist_ok=True)
             src = tar.extractfile(member)

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -146,8 +147,36 @@ def replay_frozen_baseline_regen2(
             f"Frozen fold set {sorted(frozen)} != the expected {N_FOLDS} REGEN-2 "
             f"folds {sorted(expected)}. Refusing to replay a truncated/extended fixture."
         )
+    # WARM-UP (cross-platform determinism). qlib's FIRST backtest after init
+    # triggers a one-time "load calendar error: future=True; return current
+    # calendar" benchmark-calendar fallback; that COLD first-fold state diverged
+    # across platforms (Linux did not subtract the TR benchmark on fold 0, so its
+    # excess ~= the absolute return). The cold first-fold value is therefore a
+    # platform artifact, NOT a valid anchor. Run one throwaway warm-up backtest so
+    # EVERY real fold — including fold 0 — runs in the warm state and reproduces
+    # identically on every platform. The committed anchor is the warm value.
+    first = min(frozen)
+    _replay_fold(first, frozen[first], namechange_path)  # discarded: primes qlib state
     folds = [_replay_fold(i, frozen[i], namechange_path) for i in sorted(frozen)]
+    # Refuse to anchor a NaN/non-finite fold (codex P2). This is a fail-LOUD guard,
+    # NOT a way to drop a problem fold: REGEN-2 must REPRODUCE all 23 real folds.
+    # A non-finite metric means the replay is broken — fix it, never exclude.
+    for fold in folds:
+        for metric in ("ic_1d", "ic_5d", "annualized_return", "max_drawdown", "information_ratio"):
+            value = getattr(fold, metric)
+            if value is None or not math.isfinite(float(value)):
+                raise ValueError(
+                    f"REGEN-2 fold {fold.fold_index} produced non-finite {metric}={value!r}. "
+                    "Refusing to anchor a NaN fold — the replay must reproduce every fold, "
+                    "not exclude it (no REGEN-A-style 22+NaN backdoor)."
+                )
     aggregate = compute_aggregate(folds, seed=42)
+    valid = aggregate.get("valid_folds_information_ratio")
+    if valid != N_FOLDS:
+        raise ValueError(
+            f"aggregate valid_folds_information_ratio={valid!r} != {N_FOLDS}: not all "
+            "23 REGEN-2 folds are real. Refusing to emit a < 23-fold REGEN-2 anchor."
+        )
     return {"folds": folds, "aggregate_metrics": aggregate}
 
 
