@@ -111,6 +111,18 @@ def _replay_fold(fold_index: int, entry: dict[str, Any], namechange_path: str) -
         namechange_path=namechange_path,
         require_st_mask=True,
     )
+    if fold_index == 0:  # DIAG-FOLD0 (TEMPORARY — check 2: log the actual benchmark leg on Linux)
+        ra = output.risk_analysis
+        bench = list(ra.get("bench", {}).values())
+        ret = list(ra.get("return", {}).values())
+        fin = [v for v in bench if isinstance(v, (int, float)) and not math.isnan(v)]
+        nan_b = sum(1 for v in bench if v is None or (isinstance(v, float) and math.isnan(v)))
+        ewc = ra.get("excess_return_with_cost", {})
+        print(f"DIAG-FOLD0 benchmark_code={request.benchmark_code} "
+              f"bench: n={len(bench)} nan={nan_b} sum={sum(fin):.8f} mean={(sum(fin)/len(fin) if fin else float('nan')):.3e} head={bench[:3]} | "
+              f"return: n={len(ret)} sum={sum(v for v in ret if isinstance(v,(int,float)) and not math.isnan(v)):.8f} | "
+              f"excess_with_cost mean={ewc.get('mean')!r} annret={ewc.get('annualized_return')!r} ir={ewc.get('information_ratio')!r}",
+              flush=True)
     ann, dd, ir = extract_cost_metrics(output.risk_analysis, fold_index)
     return WalkForwardFold(
         fold_index=fold_index,
