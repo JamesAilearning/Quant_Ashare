@@ -484,7 +484,7 @@ with form_col:
                 key="cr_signal_to_execution_lag",
                 help="总延迟（含 qlib 内建一日位移）：1 = T+1 执行。0（当日执行=前视）在正典路径被拒绝。",
             )
-            benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300"), key="cr_benchmark_code")
+            benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300TR"), key="cr_benchmark_code")
 
     # --- Compute section ---
     with st.expander("⚙️ 算力", expanded=True):

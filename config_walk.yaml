@@ -90,8 +90,9 @@ bagging_freq: 5
 ensemble_window: 3
 
 # Backtest
-# Price index; canonical benchmark is total-return SH000300TR (audit E2 — switch at REGEN).
-benchmark_code: "SH000300"
+# Canonical total-return benchmark SH000300TR (applied at REGEN-2). SH000300 is the
+# price-index REGEN-A control (audit E2).
+benchmark_code: "SH000300TR"
 init_cash: 100000000
 topk: 50
 n_drop: 5

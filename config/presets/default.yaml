@@ -7,9 +7,9 @@ compute_device: cpu
 num_boost_round: 1000
 early_stopping_rounds: 50
 learning_rate: 0.005
-# Price index; canonical benchmark is total-return SH000300TR
-# (audit E2 — switch at REGEN once the bundle carries it).
-benchmark_code: SH000300
+# Canonical total-return benchmark SH000300TR (applied at REGEN-2).
+# SH000300 is the price-index REGEN-A control (audit E2).
+benchmark_code: SH000300TR
 topk: 50
 n_drop: 5
 signal_to_execution_lag: 1

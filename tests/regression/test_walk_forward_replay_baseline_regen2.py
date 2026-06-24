@@ -56,7 +56,7 @@ from typing import Any
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 FROZEN_FIXTURE = FIXTURES_DIR / "regen2" / "frozen_fold_scores.pkl.gz"
-BASELINE_FIXTURE = FIXTURES_DIR / "regen2" / "walk_forward_baseline_metrics.json"
+BASELINE_FIXTURE = FIXTURES_DIR / "walk_forward_baseline_metrics.json"  # PR-2: REGEN-2 is the canonical root
 TARBALL = FIXTURES_DIR / "regen2_minibundle.tar.gz"
 TARBALL_SHA256 = FIXTURES_DIR / "regen2_minibundle.tar.gz.sha256"
 _ARCROOT = "regen2_minibundle"  # the dir name inside the tarball

@@ -1,0 +1,127 @@
+"""Governance (CI-runnable, no bundle): canonical benchmark default == total-return.
+
+PR-2 promoted REGEN-2 (SH000300TR total-return) to the canonical baseline and flipped
+the benchmark default across config / preset / in-code sites. This guard asserts the
+SEMANTIC INVARIANTS so a NEW config OR a REVERTED flip is caught red — it deliberately
+does NOT hard-list the known flip sites:
+
+1. The canonical default benchmark — the in-code ``WalkForwardConfig`` / ``PipelineConfig``
+   field defaults AND every TRACKED config YAML that declares ``benchmark_code`` — is
+   ``SH000300TR``. A new config with a price default, or a reverted flip, fails here.
+2. The REGEN-A control path stays the SH000300 PRICE index: the price-replay generator
+   constant + the preserved ``regen_a/`` control baseline. (REGEN-A is the price control,
+   not deleted.)
+3. The total-return <-> price pairing is intact: the canonical TR (SH000300TR) and the
+   preserved control (SH000300) form a valid pair under the runtime's ``+TR`` suffix
+   convention (``BacktestRunner`` derives ``price_code = tr_code[:-2]``), so the
+   cumulative-return cross-check still pairs them.
+
+Boundary (known gap, deferred to PR-J / the LOAD contract): this is a STATIC guard — it
+checks the in-code dataclass defaults and every TRACKED config YAML. It does NOT assert
+the benchmark_code of the config a run ACTUALLY loads, so an UNTRACKED personal preset
+(``my_*.yaml``) carrying a price benchmark would run unguarded. Closing that fully needs
+a LOAD-time canonical-benchmark assertion in the runtime consume path (PR-J).
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+import yaml
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+CANONICAL_TR = "SH000300TR"
+REGEN_A_PRICE = "SH000300"
+REGEN_A_CONTROL_FIXTURE = (
+    _PROJECT_ROOT / "tests" / "regression" / "fixtures" / "regen_a"
+    / "walk_forward_baseline_metrics_regen_a.json"
+)
+
+
+def _tracked_config_yamls() -> list[Path]:
+    """All tracked config YAMLs, EXCLUDING gitignored personal overrides (my_* / *.local.*)."""
+    paths: list[Path] = []
+    paths.extend(_PROJECT_ROOT.glob("config*.yaml"))
+    paths.extend((_PROJECT_ROOT / "config" / "presets").glob("*.yaml"))
+    return sorted(
+        p for p in paths
+        if not p.name.startswith("my_") and ".local." not in p.name
+    )
+
+
+class CanonicalBenchmarkDefaultConsistencyTests(unittest.TestCase):
+    def test_incode_dataclass_defaults_are_total_return(self) -> None:
+        from src.core.pipeline import PipelineConfig
+        from src.core.walk_forward.config import WalkForwardConfig
+        for cls in (WalkForwardConfig, PipelineConfig):
+            default = cls.__dataclass_fields__["benchmark_code"].default
+            self.assertEqual(
+                CANONICAL_TR, default,
+                f"{cls.__name__}.benchmark_code default is {default!r}, not the canonical "
+                f"total-return {CANONICAL_TR!r}. A reverted in-code default leaks the price "
+                "index into every config that omits benchmark_code.",
+            )
+
+    def test_every_tracked_config_yaml_default_is_total_return(self) -> None:
+        # Scans ALL tracked config YAMLs (not a hard-list): a NEW config with a price
+        # benchmark, or a reverted flip in any existing one, is caught here.
+        offenders: list[str] = []
+        for path in _tracked_config_yamls():
+            try:
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError:
+                continue
+            bc = data.get("benchmark_code") if isinstance(data, dict) else None
+            if bc is not None and bc != CANONICAL_TR:
+                offenders.append(f"{path.relative_to(_PROJECT_ROOT).as_posix()}={bc!r}")
+        self.assertEqual(
+            [], offenders,
+            "tracked config(s) declare a non-canonical benchmark_code (expected "
+            f"{CANONICAL_TR!r} — the SH000300 price index is the REGEN-A control only): "
+            + ", ".join(offenders),
+        )
+
+    def test_regen_a_price_control_preserved(self) -> None:
+        from scripts.regen.replay_frozen_baseline import BENCHMARK
+        self.assertEqual(
+            REGEN_A_PRICE, BENCHMARK,
+            "the REGEN-A price-replay generator constant must stay the SH000300 price "
+            "index (it is the preserved price control, not the canonical baseline).",
+        )
+        if not REGEN_A_CONTROL_FIXTURE.is_file():
+            self.fail(
+                f"REGEN-A control baseline missing at {REGEN_A_CONTROL_FIXTURE} — PR-2 must "
+                "PRESERVE REGEN-A as the price control, not delete it.",
+            )
+        ctrl = json.loads(REGEN_A_CONTROL_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            REGEN_A_PRICE, str(ctrl.get("_provenance", {}).get("benchmark_code", "")),
+            "the preserved REGEN-A control baseline must measure excess vs the SH000300 "
+            "price index.",
+        )
+
+    def test_tr_price_pairing_intact(self) -> None:
+        # The runtime derives the TR<->price pair by the "+TR" suffix convention
+        # (BacktestRunner: price_code = tr_code[:-2]). The canonical TR's derived price
+        # sibling MUST be exactly the preserved control, so the cumulative-return
+        # cross-check pairs SH000300TR with SH000300.
+        self.assertTrue(
+            CANONICAL_TR.endswith("TR"),
+            f"canonical benchmark {CANONICAL_TR!r} must be a total-return ('TR'-suffixed) code.",
+        )
+        self.assertEqual(
+            REGEN_A_PRICE, CANONICAL_TR[:-2],
+            f"the canonical TR {CANONICAL_TR!r} suffix-strips to {CANONICAL_TR[:-2]!r}, which "
+            f"must equal the price control {REGEN_A_PRICE!r}; otherwise the runtime "
+            "TR<->price cumulative-return cross-check pairs the wrong sibling.",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
