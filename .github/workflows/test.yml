@@ -107,15 +107,50 @@ jobs:
         if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
         run: pytest tests/governance/ -q --tb=short
 
+      # ``--ignore`` the REGEN-2 CI-real replay here: it is a real 23-fold qlib
+      # backtest (minutes), and running it on all 6 matrix legs would multiply
+      # that cost for no extra signal (it is deterministic + platform-independent).
+      # It runs ONCE, on the dedicated ubuntu-3.12 step below.
       - name: Run regression tests (with coverage)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        run: pytest tests/regression/ -q --tb=short --cov=src --cov-append
+        run: pytest tests/regression/ -q --tb=short --cov=src --cov-append --ignore=tests/regression/test_walk_forward_replay_baseline_regen2.py
         env:
           RUN_E2E: "0"
 
       - name: Run regression tests
         if: matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11'
-        run: pytest tests/regression/ -q --tb=short
+        run: pytest tests/regression/ -q --tb=short --ignore=tests/regression/test_walk_forward_replay_baseline_regen2.py
+        env:
+          RUN_E2E: "0"
+
+      # REGEN-2 CI-real frozen-score replay regression — runs on ONE leg
+      # (ubuntu-3.12). It is NOT RUN_E2E-gated (that is the whole point — it replays
+      # against the committed mini-bundle tarball, no production bundle, so it
+      # genuinely runs in CI rather than silently skipping) and catches any code
+      # change to the backtest semantics (1e-6 tolerance, ~8 orders of magnitude of
+      # headroom over the ~1e-14 reproduction drift on the canonical stack).
+      #
+      # Why ONE leg suffices (and why it is NOT cross-OS-pinned): reproduction depends
+      # on the DEPENDENCY STACK, not the OS. CI runs the project's canonical pin
+      # (pyproject: numpy<2, scipy<1.14, pandas<2.3) on every leg, and Linux-numpy<2
+      # and Windows-numpy<2 agree on fold-0 to ~1e-15. The earlier "Windows is the
+      # correct side / qlib cross-OS bug" hypothesis was DISPROVEN: both CI runners
+      # agreed (fold-0 +0.13358); the real split was an off-pin numpy 2.4.4 dev box
+      # (where the baseline was first, wrongly, generated) vs CI's numpy<2. Root cause:
+      # fold-0's frozen scores are DEGENERATE (~39 discrete buckets vs 300 continuous
+      # unique on every other fold; pre-existing in the lineage, REGEN-A too — filed to
+      # phase-6), so the topk cutoff lands in a tie block and the selected names depend
+      # on numpy's sort tie-break, which differs across numpy MAJORS. The anchor is now
+      # generated ON the canonical pin (a gen-env==canonical assertion in
+      # replay_frozen_baseline_regen2 fails generation loud off-pin), so CI reproduces
+      # it. Do NOT loosen the 1e-6 tolerance; if it drifts, the dependency stack moved.
+      #
+      # ``-s`` disables pytest's stdout capture: the 23-fold qlib backtest is
+      # output-heavy and capturing it dominates wall-time (the test also raises the
+      # qlib/backtest loggers to ERROR for the same reason).
+      - name: Run REGEN-2 CI-real replay regression (1 leg, deterministic)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: pytest tests/regression/test_walk_forward_replay_baseline_regen2.py -v -s
         env:
           RUN_E2E: "0"
 
