@@ -18,11 +18,14 @@ canonical-semantics constants + frozen loader; it differs only in the benchmark
 (SH000300TR), the fold set (23 REAL folds — fold 22 = 2025Q4 completes on the
 extended bundle, NO NaN tail), and the provenance strings.
 
-HONEST framing (see docs/baseline_regen2.md): the REGEN-2 mean IR (~0.162) sits
-BELOW the REGEN-A price-index 0.48 because the TR benchmark honestly subtracts the
-~2.35%/yr reinvested dividend — the benchmark became honest, not a regression. The
-point estimate is positive and IC is stable, but the 95% CI straddles zero: a
-small, possibly-real but UNPROVEN edge, not predictive of live performance.
+HONEST framing (see docs/baseline_regen2.md): the REGEN-2 canonical-stack mean fold
+IR (~0.28, numpy<2; the headline is inflated by fold-0's degenerate-score tie-break
+artifact — the honest edge is ~0.16-0.20) sits BELOW the REGEN-A price-index 0.48
+because the TR benchmark honestly subtracts the ~2.35%/yr reinvested dividend — the
+benchmark became honest, not a regression. The point estimate is positive and IC is
+stable, but the 95% CI straddles zero: a small, possibly-real but UNPROVEN, not
+disproven edge, not predictive of live performance. (NB: the ~0.16 figure in older
+notes was the OFF-PIN numpy-2.4.4 mean — see fold0_known_limitation.)
 """
 from __future__ import annotations
 
