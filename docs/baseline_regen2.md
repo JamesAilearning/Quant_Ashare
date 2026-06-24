@@ -1,35 +1,52 @@
 # REGEN-2 baseline shift — total-return benchmark (SH000300TR)
 
-**Status:** ② — REGEN-2 analysis, signed off. **The canonical regression
-baseline REMAINS the REGEN-A price-index baseline** (`fixtures/walk_forward_baseline_metrics.json`,
-replay-anchored per the `v2-canonical-backtest-contract` OpenSpec spec). REGEN-2
-is **promoted to canonical in ③**, which delivers the deterministic frozen-score
-replay anchor for REGEN-2, flips the canonical benchmark default to SH000300TR,
-runs the replay CI-real, and updates the contract. The REGEN-2 numbers below are
-backed by the **non-canonical** fixture `tests/regression/fixtures/regen2_tr/walk_forward_baseline_metrics.json`
-(not wired into the regression/governance tests until ③).
-**Date:** 2026-06-20. Will supersede `docs/baseline_20260616.md` as the official
-basis once ③ promotes it.
+**Status:** ③/A — REGEN-2 **replay anchor landed**. The deterministic frozen-score
+replay anchor `tests/regression/fixtures/regen2/walk_forward_baseline_metrics.json`
+is generated + reproduced on the project's **CANONICAL dependency stack** (pyproject:
+numpy<2, scipy<1.14, pandas<2.3 — the stack CI runs), CI-real (not RUN_E2E-gated).
+A gen-env==canonical-pin assertion fails generation loud off-pin. **The numbers
+below are the CANONICAL-STACK values.** The canonical-fixture SWAP
+(`fixtures/walk_forward_baseline_metrics.json` REGEN-A → REGEN-2), the benchmark-
+default flips, the governance value-pin migration, and the contract update are **PR-2**.
+**Date:** 2026-06-24 (supersedes the 2026-06-20 off-pin ② figures).
+
+> **★ Number change vs the 2026-06-20 ② doc (off-pin → canonical): mean fold IR
+> 0.16 → 0.28, mean ann excess 2.55% → 3.40%. This rise is 100% a fold-0 ARTIFACT,
+> NOT signal** — fold-0's single-fold IR swings −0.889 → +1.767 (swing ~2.66)
+> because its DEGENERATE scores (~39 value-buckets / 261 ties over 300 stocks) select
+> a different stock set under the canonical numpy sort tie-break. folds 1..22 are
+> byte-identical (|Δ|<1e-9). See "fold-0 known limitation" below. The honest edge and
+> the "unproven, not disproven" conclusion are **unchanged** — fold-0's swing inflated
+> the mean AND the variance (SE 0.43, t 0.65, CI straddles zero), so the global
+> picture does not move.
 
 ---
 
 ## TL;DR (honest headline)
 
 Switching the excess-return benchmark from the **SH000300 price index** to the
-official **SH000300TR total-return index** lowers the reported information ratio
-(REGEN-A 0.48 → REGEN-2 0.16) and the mean excess return (5.27% → 2.55%). **This
-is the benchmark becoming honest, not a performance regression and not a data
-defect.** The total-return index adds back ~2.35%/yr of reinvested dividends to
-the benchmark leg, so the strategy must clear a higher bar; a same-model
-price-vs-TR comparison attributes essentially the entire change to that
-dividend. **The honest read is "unproven," not "disproven."** The point estimate
-stays **positive** — TR-excess IR +0.16, excess +2.55%/yr, and mean IC stable and
-positive at 0.018 — consistent with a **small, possibly-real edge**; but the 95%
-CI straddles zero, so that edge is **statistically unproven, not refuted**. We can
-neither confirm nor reject a small positive excess (the sample lacks the power),
-and we do not quote a precise REGEN-A→REGEN-2 delta. **Absolute return ~24.5%/yr
-is essentially market beta; the honest alpha — excess over the dividend-inclusive
-benchmark — is ~2.5%/yr.**
+official **SH000300TR total-return index** lowers the *honest* information ratio
+(REGEN-A 0.48 → REGEN-2 honest-edge ~0.16–0.20). **This is the benchmark becoming
+honest, not a performance regression and not a data defect.** The total-return
+index adds back ~2.35%/yr of reinvested dividends to the benchmark leg, so the
+strategy must clear a higher bar; a same-model price-vs-TR comparison attributes
+essentially the entire change to that dividend. **The honest read is "unproven,"
+not "disproven."**
+
+The committed canonical-stack **aggregate mean fold IR is 0.28** (mean ann excess
+**+3.40%/yr**), but read it with the fold-0 caveat: **the rise above the off-pin ②
+figure (0.16) is 100% a fold-0 tie-break ARTIFACT, not signal.** fold-0 is a
+DEGENERATE fold whose two metrics are **information_ratio = +1.767** and
+**annualized_return = +0.1336** (two SEPARATE metrics — do not conflate; on the
+off-pin stack they were IR −0.889 / ann −0.0616). Its IR alone swings 2.66 between
+stacks because its ~39-bucket / 261-tie scores select a different stock set under
+the canonical sort tie-break. Crucially that swing inflated the **variance** as well
+as the mean (mean-fold SE ≈ 0.43, t ≈ 0.65, 95% CI [−0.59, 1.04] straddles zero),
+so the conclusion is unchanged: a **small, possibly-real but statistically UNPROVEN,
+not refuted** edge. Mean IC is stable and positive at **0.018**. We do not quote a
+precise REGEN-A→REGEN-2 delta. **Absolute return ~24.5%/yr is essentially market
+beta; the honest alpha — excess over the dividend-inclusive benchmark, fold-0's
+artifact set aside — is ~2.5%/yr.**
 
 The historical price data is **byte-identical** between the old and new bundles
 (216/216 sampled stocks, 2018–2025), so the live model / daily recommend bundle
@@ -65,36 +82,105 @@ Three different lenses on the **same** strategy. They are **not** apples-to-appl
 (different benchmark basis, fold count, and replay-vs-retrain), so do not read a
 column-to-column subtraction as a performance change.
 
-| | **Absolute return** (strategy, no benchmark) | **Excess vs price index** (historical, inflated) | **Excess vs total-return** (official) |
+The **Excess vs total-return** column is the committed **canonical-stack** anchor
+(`fixtures/regen2/walk_forward_baseline_metrics.json`, numpy<2).
+
+| | **Absolute return** (strategy, no benchmark) | **Excess vs price index** (historical, inflated) | **Excess vs total-return** (official, CANONICAL) |
 |---|---|---|---|
-| Source | REGEN-2 retrain | REGEN-A replay (`baseline_20260616.md`) | REGEN-2 retrain |
+| Source | REGEN-2 retrain | REGEN-A replay (`baseline_20260616.md`) | REGEN-2 replay anchor (canonical numpy<2) |
 | Benchmark | — (gross) | SH000300 (price) | SH000300TR (total-return) |
-| Mean ann. return | **+24.5%** (≈ market beta; noisy) | +5.27% | **+2.55%** |
-| Mean fold IR | n/a (no benchmark) | 0.482 | **0.162** |
-| SE of mean IR | — | 0.414 | **0.424** (t ≈ 0.38) |
-| Pooled IR | — | not recomputable¹ | **0.209** (pooled t ≈ 0.49) |
-| 95% bootstrap CI | — | [−0.363, 1.243] | **[−0.689, 0.932]** |
+| Mean ann. return | **+24.5%** (≈ market beta; noisy) | +5.27% | **+3.40%** ² |
+| Mean fold IR | n/a (no benchmark) | 0.482 | **0.278** ² |
+| SE of mean IR | — | 0.414 | **0.426** (t ≈ 0.65) |
+| Pooled IR | — | not recomputable¹ | off-pin ② was 0.209; not recomputed on canonical³ |
+| 95% bootstrap CI | — | [−0.363, 1.243] | **[−0.588, 1.045]** |
 | Folds | 23 | 22 | 23 |
 
 ¹ The committed REGEN-A `per_fold` stores fold IRs but not the daily excess
-moments, so its return-pooled IR cannot be reconstructed without re-running the
-replay. REGEN-2's pooled IR (all 1397 fold-days pooled into one excess series) is
-**0.209 annualized**, slightly above the mean-fold IR (0.162) because pooling
-weights by window length.
+moments, so its return-pooled IR cannot be reconstructed without re-running the replay.
 
-**Statistical reading (both columns):** the point estimates are **positive**
-(TR-excess IR +0.16, excess +2.5%/yr; IC stable and positive at 0.018), but the
-95% CIs — REGEN-A [−0.36, 1.24], REGEN-2 [−0.69, 0.93] — straddle zero (t < 1).
-So the edge is **unproven, not disproven**: a small, possibly-real excess that the
-sample lacks the power to confirm or reject — read it as "not yet established,"
-**not** "shown to be absent." **The absolute return (~24.5%/yr) is overwhelmingly
-market beta from being long csi300-style names; the honest *alpha* — the excess
-column — is ~2.5%/yr**, and statistically inconclusive (neither established nor
-refuted).
+² **fold-0 ARTIFACT.** Both the mean fold IR (0.278) and the mean ann excess (3.40%)
+are inflated above the off-pin ② figures (0.162 / 2.55%) ENTIRELY by fold-0's
+tie-break flip (IR −0.889 → +1.767; ann −0.0616 → +0.1336) on the canonical stack —
+NOT signal (see "fold-0 known limitation"). folds 1..22 are byte-identical to the
+off-pin run; the std of fold IRs is **2.0** (fold-0 dominates both mean and variance).
+
+³ The pooled-IR row was an off-pin auxiliary computation over all fold-days; fold-0's
+daily excess series changed on the canonical stack, so 0.209 is stale and not
+re-derived here (the pooled estimate would shift with the same fold-0 artifact).
+
+**Statistical reading:** the point estimate is **positive** (canonical mean fold IR
+0.278, mean ann excess +3.40%/yr; IC stable and positive at 0.018), but the 95% CI
+[−0.59, 1.04] straddles zero (t ≈ 0.65 < 1) — and the headline mean is propped up by
+the lone fold-0 artifact, whose extreme swing is itself the reason that fold is **not
+evidence**. So the edge is **unproven, not disproven**: a small, possibly-real excess
+(honest estimate ~0.16–0.20 IR / ~2.5%/yr, fold-0's artifact set aside) that the
+sample lacks the power to confirm or reject — "not yet established," **not** "shown to
+be absent." **The absolute return (~24.5%/yr) is overwhelmingly market beta from
+being long csi300-style names.**
 
 ---
 
-## The gate: explaining the excess-return drop (5.27% → 2.55%)
+## fold-0 known limitation — degenerate scores + numpy sort tie-break
+
+**Recorded fail-loud, not silently accepted.** The deterministic replay anchor
+reproduces to 1e-6 ONLY on the canonical dependency stack (numpy<2, scipy<1.14,
+pandas<2.3). The reason is **fold-0 alone**:
+
+- **fold-0's frozen predictions are DEGENERATE**: only **~39 unique values over 300
+  stocks** (261 ties), on **56/59** days of the fold. Every OTHER fold (1..22) has
+  **300 continuous unique scores** (no ties) and is numpy-version-insensitive.
+- The strategy's **topk=50 cutoff lands inside a tie block** (e.g. day 0, ranks
+  44–54 all = 0.00023117), so *which* tied names make the top-50 depends on **numpy's
+  sort tie-break — which differs across numpy MAJORS**. Different names → different
+  return → different excess. fold-0's two metrics differ by stack:
+
+  | fold-0 metric | off-pin (numpy 2.4.4) | **canonical (numpy<2)** |
+  |---|---|---|
+  | `information_ratio` | −0.889 | **+1.767** |
+  | `annualized_return` | −0.0616 | **+0.1336** |
+
+  (IR and annualized_return are **two separate metrics** — historically conflated in
+  discussion; pinned here to stop that.)
+
+- **PRE-EXISTING across the replay lineage, NOT introduced by REGEN-2.** REGEN-A's
+  fold-0 frozen scores are **byte-identically degenerate** (same ~39 uniques). REGEN-A
+  is the current canonical baseline and already anchors on this fold; it never surfaced
+  only because REGEN-A's replay test is RUN_E2E-gated (ran solely on the off-pin gen
+  machine). REGEN-2's CI-real replay is the **first** time the anchor ran on the
+  canonical numpy<2 stack, which exposed it.
+- **NOT small-data underfit**: fold-0's training window is a full 2 years
+  (2018-01-01 → 2019-12-27), same as the others. Suspected cause: 2020Q2 (COVID)
+  test-window feature gaps / suspensions routing many stocks to one model leaf.
+
+**Why this does not change the conclusion.** fold-0's IR swing (2.66) inflated the
+aggregate mean (0.16 → 0.28) AND the variance (std of fold IRs ≈ 2.0; mean-fold
+SE ≈ 0.43, t ≈ 0.65), so the 95% CI still straddles zero. The headline edge stays
+**unproven, not disproven**; fold-0's extreme stack-sensitivity is precisely why that
+single fold is **not** admissible evidence.
+
+**Two layers, kept isolated (variable isolation):**
+- **甲 selection determinism** — handled here: the anchor is pinned to the canonical
+  stack and a gen-env==canonical assertion fails generation off-pin. A *cross-version*
+  deterministic tie-break (a stable secondary sort key) is a backlog item (it changes
+  the alpha, i.e. it would move other folds) — **not** part of this anchor.
+- **乙 signal quality** — *why* fold-0's 2020Q2 predictions are degenerate (~39
+  buckets) is filed to **PHASE-6** (and entails re-auditing REGEN-A, which carries the
+  same diseased fold). Out of scope for the ③ anchor.
+
+---
+
+## The gate: explaining the excess-return drop (price → total-return)
+
+> **Off-pin twin analysis.** The IR/excess figures in THIS section and the
+> decomposition below are from the **off-pin ② run** (numpy 2.4.4) and are NOT
+> re-derived on the canonical stack (that needs a fresh price-benchmark twin run —
+> a phase-6/PR-2 task). The canonical TR-excess mean is **0.278 / 3.40%** (the gap
+> to the off-pin 0.162 / 2.55% is the lone fold-0 tie-break artifact). What this
+> section establishes — the **dividend effect** (price-excess − TR-excess) — is the
+> benchmark-leg difference on identical holdings, so it is **fold-0-tie-break-
+> insensitive**: the canonical price-excess would shift by the same fold-0 amount as
+> the TR-excess, leaving the −0.253 IR / −2.31 pp dividend conclusion intact.
 
 This drop had to be explained before signing ②, because the same bundle feeds
 the live model and daily recommend — a *data* problem would be bigger than the
@@ -161,28 +247,28 @@ the IR/return shifts are benchmark + fold-mix, not signal decay.
 
 ---
 
-## Implications — and what stays deferred to ③
+## Implications — ③ status (A landed; PR-2 promotes)
 
-This document + the non-canonical `regen2_tr/walk_forward_baseline_metrics.json`
-are the whole of ②. The canonical baseline is **untouched** here. Promotion is ③,
-because the `v2-canonical-backtest-contract` OpenSpec spec requires the canonical
-regression baseline to be **replay-anchored** (a deterministic frozen-score
-replay reproduces it) — REGEN-2 is a fresh retrain and has no replay anchor yet.
+**Landed in ③/A** (this PR):
+- **Replay anchor for REGEN-2** — `tests/regression/fixtures/regen2/walk_forward_baseline_metrics.json`,
+  a deterministic frozen-score replay (tight in-source 1e-6 tolerance), run **CI-real**
+  (committed mini-bundle tarball + provider, NOT RUN_E2E-gated). Generated + reproduced
+  on the canonical numpy<2 stack, with a gen-env==canonical-pin assertion. This is the
+  regression-debt close; it satisfies the `v2-canonical-backtest-contract` replay-anchor
+  requirement.
 
-Deferred to ③ (must land together, atomically):
-- **Replay anchor for REGEN-2** — freeze the REGEN-2 per-fold scores + the
-  deterministic replay test (tight in-source tolerance), so the promoted baseline
-  satisfies the contract; then run it **CI-real** (committed price/score subset +
-  provider, not RUN_E2E-gated) — the actual regression-debt close.
-- **Promote the canonical fixture** `walk_forward_baseline_metrics.json` → REGEN-2,
-  and migrate the governance value-pin + the replay test together.
+**Still deferred to PR-2** (must land together, atomically):
+- **Promote the canonical fixture** `fixtures/walk_forward_baseline_metrics.json`
+  REGEN-A → REGEN-2, and migrate the governance value-pin (the band widens to
+  ~0.20 < IR < 0.35 to bracket the canonical 0.278 and exclude REGEN-A 0.48 / old-T2
+  0.37 / the off-pin 0.16) + split the REGEN-A replay test together.
 - **Flip the canonical benchmark default** to SH000300TR (`config_walk.yaml`,
-  `config.yaml`, `src/core/walk_forward/config.py`, the four `config/presets/*`)
+  `config.yaml`, `src/core/walk_forward/config.py`, the `config/presets/*`)
   — the archived REGEN checklist requires this atomically with the re-baseline.
 - **Update the contract** (`v2-canonical-backtest-contract` spec): "TR deferral"
   → "TR applied", and reflect the REGEN-2 replay anchor.
 
-Already established here (no ③ dependency):
+Already established here (no further dependency):
 - **Bundle health:** historical prices byte-identical old↔new (216/216) → the
   daily recommend / live-model bundle is price-clean (KNOWN-CLEAN above).
 

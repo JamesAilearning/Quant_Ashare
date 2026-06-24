@@ -17,26 +17,29 @@ to a TIGHT in-source tolerance. This closes the "the regression test exists but 
 skipped in CI" gap.
 
 Determinism: frozen scores + bootstrap seed 42 + the same bins qlib reads in
-production => SAME-PLATFORM reproduction is byte-identity (observed max drift
-~7e-14). The tolerance lives in THIS source (not the fixture) so a tampered
-fixture cannot widen its own gate; the tarball is checksum-verified before use so
-tampered reference data fails loudly.
+production => reproduction is byte-identity ON THE CANONICAL DEPENDENCY STACK
+(observed max drift ~1e-14). The tolerance lives in THIS source (not the fixture)
+so a tampered fixture cannot widen its own gate; the tarball is checksum-verified
+before use so tampered reference data fails loudly.
 
-CROSS-PLATFORM CAVEAT — this regression runs on ONE CI leg, **windows-3.12** (the
-platform the committed baseline was generated on; see .github/workflows/test.yml).
-qlib's backtest benchmark leg (qlib/backtest/report.py ``_cal_benchmark`` ->
-``get_higher_eq_freq_feature`` -> ``.fillna(0)``) is NOT cross-platform-
-deterministic for the EARLIEST fold: on Linux the benchmark return for fold 0
-(2020-04) collapses to ~0, so its excess == the absolute return (folds 1..22
-still reproduce to ~1e-14). This was traced to qlib itself, NOT our data/code —
-the mini-bundle SH000300TR bins are byte-identical to production and a raw
-``D.features`` benchmark read is identical on both OSes; only the in-backtest
-benchmark alignment diverges. Hence the same-platform pin (it does not loosen the
-tolerance). The REGEN-A E2E replay anchor is likewise Windows-bound.
+DEPENDENCY-STACK CAVEAT (NOT a cross-OS one) — reproduction depends on the
+dependency stack, not the OS. This runs on ONE CI leg (ubuntu-3.12; see
+.github/workflows/test.yml), and CI runs the project's canonical pin on every leg
+(pyproject: numpy<2, scipy<1.14, pandas<2.3); Linux-numpy<2 and Windows-numpy<2
+agree on fold-0 to ~1e-15. fold-0's frozen scores are DEGENERATE — ~39 discrete
+value-buckets over 300 stocks (every other fold has 300 continuous unique scores;
+pre-existing in the lineage, REGEN-A's fold-0 too — filed to phase-6), so the
+topk=50 cutoff lands inside a tie block and the selected names depend on numpy's
+SORT tie-break, which differs across numpy MAJORS. The committed baseline is
+generated ON the canonical pin (a gen-env==canonical assertion in
+replay_frozen_baseline_regen2 fails generation loud off-pin), so CI reproduces it.
+A drift past 1e-6 means the dependency stack moved — investigate, do NOT loosen.
+(The earlier "Windows is the correct side / qlib cross-OS bug" framing was
+DISPROVEN: both CI runners agreed; the split was an off-pin numpy 2.4.4 dev box.)
 
 The replay (23 backtests) runs ONCE in ``setUpClass`` and both test methods read
 the cached result. Skipped ONLY if qlib is unavailable or a committed fixture is
-missing — neither holds on the Windows CI leg, so this DOES run there for real.
+missing — neither holds on the canonical CI leg, so this DOES run there for real.
 """
 from __future__ import annotations
 
@@ -59,8 +62,10 @@ TARBALL_SHA256 = FIXTURES_DIR / "regen2_minibundle.tar.gz.sha256"
 _ARCROOT = "regen2_minibundle"  # the dir name inside the tarball
 
 # Tolerance lives in SOURCE (a tampered fixture must not widen its own gate).
-# Deterministic byte-identity replay drifts ~7e-14; 1e-6 only absorbs the
-# float-repr round-trip through the committed JSON + any cross-platform float jitter.
+# On the canonical dependency stack the replay drifts ~1e-14; 1e-6 only absorbs the
+# float-repr round-trip through the committed JSON + same-stack float jitter. A drift
+# past 1e-6 means the dependency stack moved off the canonical pin (see the docstring),
+# NOT that the tolerance should be widened.
 REPLAY_ABS_TOL = 1e-6
 
 _PER_FOLD_METRICS = ("ic_1d", "ic_5d", "annualized_return", "max_drawdown", "information_ratio")

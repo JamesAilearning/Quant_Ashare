@@ -1,6 +1,14 @@
 {
   "_provenance": {
     "regen": "REGEN-2 frozen-score replay of the REGEN-2 GPU-retrain fold scores (NO retrain, NO full bundle rebuild); replay-anchored per v2-canonical-backtest-contract.",
+    "dependency_stack": {
+      "numpy": "1.26.4",
+      "scipy": "1.13.1",
+      "pandas": "2.2.3",
+      "python": "3.11.9"
+    },
+    "dependency_stack_note": "Generated on the project's CANONICAL pinned stack (pyproject: numpy<2, scipy<1.14, pandas<2.3) \u2014 the stack CI runs. This anchor reproduces to 1e-6 ONLY on this stack; see fold0_known_limitation. A gen-env==canonical assertion (scripts/regen/replay_frozen_baseline_regen2._assert_canonical_dep_stack) fails generation LOUD off-pin, closing the 2026-06 hole where an off-pin numpy 2.4.4 box baked a fold-0 CI could never reproduce.",
+    "fold0_known_limitation": "KNOWN LIMITATION (fail-loud, not silently accepted): fold-0's frozen predictions are DEGENERATE \u2014 ~39 discrete value-buckets over 300 stocks (every OTHER fold has 300 continuous unique scores; fold-0 alone, 56/59 days). The topk=50 cutoff therefore lands inside a tie block, so the selected names depend on numpy's SORT tie-break, which differs across numpy majors. fold-0 excess (ann +0.1336 / IR +1.767) is thus the CANONICAL-STACK deterministic value, NOT a cross-implementation-robust one. PRE-EXISTING across the replay lineage (REGEN-A's fold-0 is byte-identically degenerate) \u2014 NOT introduced by REGEN-2. Suspected cause: 2020Q2 (COVID) test-window feature gaps / suspensions routing many stocks to one model leaf. Root-cause investigation is filed to PHASE-6 signal-quality, isolated from this anchor (changing the tie-break = changing the alpha, which would move other folds). Folds 1..22 are numpy-version-insensitive and reproduce byte-identically.",
     "config_file": "config_walk.yaml (semantics mirrored by frozen-score replay)",
     "config_keys": [
       "namechange_path",
@@ -16,11 +24,11 @@
     "semantics": "T+1 execution (PR-C) + close-derived limits (PR-D) + PIT ST exclusion (PR-F) + PRs #270-275 survivorship/PIT/freshness; fresh retrain on the corrected bundle, replayed at the TR benchmark.",
     "benchmark_code": "SH000300TR",
     "benchmark_note": "official CSI300 total-return index (tushare H00300.CSI, ~2.35%/yr reinvested dividends). Excess return is measured against the honest, dividend-inclusive benchmark, superseding the SH000300 price-index basis used by REGEN-A.",
-    "provider_uri": "D:/stock/Claude/qlib_trading_system_v2/tests/regression/fixtures/regen2_minibundle",
+    "provider_uri": "D:/stock/_regen2_unpack/regen2_minibundle",
     "signal_to_execution_lag": 1,
     "limit_threshold": 0.095,
     "num_folds": 23,
-    "statistical_caveat": "Point estimate is POSITIVE (mean fold IR ~0.162, pooled IR ~0.209) but the 95% bootstrap CI straddles zero (mean-fold SE ~0.42, within cross-fold noise): the edge is UNPROVEN, NOT disproven, and is NOT a prediction of live performance. The reduction vs the REGEN-A price-index baseline (0.48) is the benchmark becoming honest (the ~2.35%/yr dividend), not a regression. See docs/baseline_regen2.md."
+    "statistical_caveat": "Point estimate POSITIVE but the 95% bootstrap CI straddles zero (within cross-fold noise, mean-fold SE ~0.4): the edge is UNPROVEN, NOT disproven, and is NOT a prediction of live performance. Canonical-stack mean fold IR is in aggregate_metrics (~0.28). NOTE \u2014 the rise from the off-pin baseline's ~0.16 to ~0.28 is 100% a fold-0 ARTIFACT, NOT signal: fold-0's single-fold IR swings -0.889 -> +1.767 (swing ~2.66) because its degenerate scores (~39 value-buckets / 261 ties over 300 stocks) select a DIFFERENT stock set under the canonical numpy sort tie-break (see fold0_known_limitation). [IR and annualized_return are SEPARATE metrics \u2014 fold-0's ann moves -0.0616 -> +0.1336; do not conflate the two.] folds 1..22 are byte-identical. fold-0's extreme swing is exactly why this fold is not evidence; the honest edge stays ~0.16-0.2 and statistically unproven. The reduction vs the REGEN-A price-index baseline (0.48) is the benchmark becoming honest (the ~2.35%/yr dividend), not a regression. See docs/baseline_regen2.md."
   },
   "aggregate_metrics": {
     "mean_ic_1d": 0.018074436947416072,
@@ -33,16 +41,16 @@
     "mean_ic_5d_ci_low": 0.008552039955179886,
     "mean_ic_5d_ci_high": 0.047770134562611574,
     "valid_folds_ic_5d": 23,
-    "mean_annualized_return": 0.025540065846801744,
-    "mean_annualized_return_ci_low": -0.05201453547948056,
-    "mean_annualized_return_ci_high": 0.09648579196380933,
+    "mean_annualized_return": 0.03402471654346992,
+    "mean_annualized_return_ci_low": -0.043448572831224504,
+    "mean_annualized_return_ci_high": 0.10467124992688846,
     "valid_folds_annualized_return": 23,
-    "worst_drawdown": -0.13500584907043317,
+    "worst_drawdown": -0.13500584907043275,
     "valid_folds_max_drawdown": 23,
-    "mean_information_ratio": 0.16231361886906934,
-    "std_information_ratio": 1.987434732956641,
-    "mean_information_ratio_ci_low": -0.6888942688547757,
-    "mean_information_ratio_ci_high": 0.9324325936229948,
+    "mean_information_ratio": 0.27780331861066526,
+    "std_information_ratio": 2.0001107726774503,
+    "mean_information_ratio_ci_low": -0.5880463840682785,
+    "mean_information_ratio_ci_high": 1.0446163044173624,
     "valid_folds_information_ratio": 23,
     "num_folds": 23,
     "bootstrap_seed": 42,
@@ -61,207 +69,207 @@
       "test_period": "2020-04-01..2020-06-30",
       "ic_1d": 0.03208218441200535,
       "ic_5d": 0.07888110669608409,
-      "annualized_return": -0.06156918803516779,
-      "max_drawdown": -0.020496699560532662,
-      "information_ratio": -0.8892384751547419
+      "annualized_return": 0.13357777798819945,
+      "max_drawdown": -0.01714291305541992,
+      "information_ratio": 1.7670246189019598
     },
     {
       "fold_index": 1,
       "test_period": "2020-07-01..2020-09-30",
       "ic_1d": 0.019638119703861024,
       "ic_5d": 0.054888035721673334,
-      "annualized_return": -0.19134496313181554,
-      "max_drawdown": -0.052398496958370094,
-      "information_ratio": -1.7306000791128435
+      "annualized_return": -0.1913449631318151,
+      "max_drawdown": -0.05239849695837022,
+      "information_ratio": -1.7306000791128553
     },
     {
       "fold_index": 2,
       "test_period": "2020-10-01..2020-12-31",
       "ic_1d": 0.044929939200283,
       "ic_5d": 0.08901502837098067,
-      "annualized_return": -0.045407628736313856,
-      "max_drawdown": -0.044475204578758656,
-      "information_ratio": -0.4083109174204833
+      "annualized_return": -0.04540762873631487,
+      "max_drawdown": -0.044475204578758185,
+      "information_ratio": -0.4083109174204912
     },
     {
       "fold_index": 3,
       "test_period": "2021-01-01..2021-03-31",
       "ic_1d": 0.003134429962853161,
       "ic_5d": 0.014323742883416962,
-      "annualized_return": 0.03363222883312116,
-      "max_drawdown": -0.03842551692989915,
-      "information_ratio": 0.30393513402850564
+      "annualized_return": 0.033632228833122356,
+      "max_drawdown": -0.038425516929898984,
+      "information_ratio": 0.3039351340285173
     },
     {
       "fold_index": 4,
       "test_period": "2021-04-01..2021-06-30",
       "ic_1d": 0.019116249151103312,
       "ic_5d": 0.059680335548501766,
-      "annualized_return": 0.23572210773065724,
-      "max_drawdown": -0.02217546363077346,
-      "information_ratio": 2.3901246635499485
+      "annualized_return": 0.23572210773065744,
+      "max_drawdown": -0.02217546363077435,
+      "information_ratio": 2.3901246635499533
     },
     {
       "fold_index": 5,
       "test_period": "2021-07-01..2021-09-30",
       "ic_1d": -0.027587650265567108,
       "ic_5d": -0.04281516742643066,
-      "annualized_return": 0.06168567012880552,
-      "max_drawdown": -0.06213339869230039,
-      "information_ratio": 0.47945628232062654
+      "annualized_return": 0.06168567012880503,
+      "max_drawdown": -0.06213339869230054,
+      "information_ratio": 0.47945628232062326
     },
     {
       "fold_index": 6,
       "test_period": "2021-10-01..2021-12-31",
       "ic_1d": -0.018986497781213602,
       "ic_5d": -0.03608935712878552,
-      "annualized_return": -0.03453135982246436,
-      "max_drawdown": -0.023308011974075397,
-      "information_ratio": -0.4347418624795666
+      "annualized_return": -0.03453135982246376,
+      "max_drawdown": -0.023308011974075525,
+      "information_ratio": -0.4347418624795605
     },
     {
       "fold_index": 7,
       "test_period": "2022-01-01..2022-03-31",
       "ic_1d": -0.02637504895163835,
       "ic_5d": -0.03410316108232441,
-      "annualized_return": -0.0994864183491825,
-      "max_drawdown": -0.0631591776700906,
-      "information_ratio": -1.0805350167849146
+      "annualized_return": -0.099486418349183,
+      "max_drawdown": -0.06315917767009074,
+      "information_ratio": -1.0805350167849097
     },
     {
       "fold_index": 8,
       "test_period": "2022-04-01..2022-06-30",
       "ic_1d": 0.04360605661397071,
       "ic_5d": 0.08381593894204664,
-      "annualized_return": 0.32334929193375,
-      "max_drawdown": -0.04610690440221045,
-      "information_ratio": 2.547454911414836
+      "annualized_return": 0.32334929193375045,
+      "max_drawdown": -0.04610690440221028,
+      "information_ratio": 2.547454911414822
     },
     {
       "fold_index": 9,
       "test_period": "2022-07-01..2022-09-30",
       "ic_1d": -0.031132248866110344,
       "ic_5d": -0.03799792371465553,
-      "annualized_return": -0.07760027679032966,
-      "max_drawdown": -0.059741245975739675,
-      "information_ratio": -0.7755636822826163
+      "annualized_return": -0.07760027679033034,
+      "max_drawdown": -0.059741245975739196,
+      "information_ratio": -0.7755636822826255
     },
     {
       "fold_index": 10,
       "test_period": "2022-10-01..2022-12-31",
       "ic_1d": 0.025385581016457718,
       "ic_5d": 0.031712839384744826,
-      "annualized_return": 0.22697888744223937,
-      "max_drawdown": -0.048171183231740085,
-      "information_ratio": 2.288907057081999
+      "annualized_return": 0.22697888744224215,
+      "max_drawdown": -0.048171183231740106,
+      "information_ratio": 2.2889070570820342
     },
     {
       "fold_index": 11,
       "test_period": "2023-01-01..2023-03-31",
       "ic_1d": 0.012735653498638335,
       "ic_5d": -0.009226221298785378,
-      "annualized_return": -0.030927749755023035,
-      "max_drawdown": -0.02223020424553805,
-      "information_ratio": -0.6342894198227695
+      "annualized_return": -0.030927749755024308,
+      "max_drawdown": -0.022230204245537774,
+      "information_ratio": -0.6342894198227944
     },
     {
       "fold_index": 12,
       "test_period": "2023-04-01..2023-06-30",
       "ic_1d": 0.005455884778154709,
       "ic_5d": 0.009253498794154554,
-      "annualized_return": 0.18123708625753893,
-      "max_drawdown": -0.022428982303781722,
-      "information_ratio": 2.7317507304891895
+      "annualized_return": 0.1812370862575389,
+      "max_drawdown": -0.022428982303782194,
+      "information_ratio": 2.7317507304892072
     },
     {
       "fold_index": 13,
       "test_period": "2023-07-01..2023-09-30",
       "ic_1d": 0.014501598112624837,
       "ic_5d": 0.020808342732836257,
-      "annualized_return": -0.22838234183398817,
-      "max_drawdown": -0.05322559349372316,
-      "information_ratio": -3.5012570400793592
+      "annualized_return": -0.22838234183398706,
+      "max_drawdown": -0.053225593493723675,
+      "information_ratio": -3.5012570400792833
     },
     {
       "fold_index": 14,
       "test_period": "2023-10-01..2023-12-31",
       "ic_1d": 0.024943008720712815,
       "ic_5d": 0.05390759925226589,
-      "annualized_return": 0.09134761747553177,
-      "max_drawdown": -0.03265890136902659,
-      "information_ratio": 1.3912185281638438
+      "annualized_return": 0.09134761747553184,
+      "max_drawdown": -0.03265890136902644,
+      "information_ratio": 1.3912185281638414
     },
     {
       "fold_index": 15,
       "test_period": "2024-01-01..2024-03-31",
       "ic_1d": 0.05763424376644861,
       "ic_5d": 0.09991928829819598,
-      "annualized_return": 0.26137282436931275,
-      "max_drawdown": -0.028391967762664904,
-      "information_ratio": 2.531737659742797
+      "annualized_return": 0.26137282436931214,
+      "max_drawdown": -0.028391967762665685,
+      "information_ratio": 2.5317376597427756
     },
     {
       "fold_index": 16,
       "test_period": "2024-04-01..2024-06-30",
       "ic_1d": 0.0676671810883205,
       "ic_5d": 0.10048341397213414,
-      "annualized_return": 0.09763275141205449,
-      "max_drawdown": -0.020381634041813146,
-      "information_ratio": 1.3404756977344272
+      "annualized_return": 0.09763275141205455,
+      "max_drawdown": -0.020381634041812854,
+      "information_ratio": 1.3404756977344154
     },
     {
       "fold_index": 17,
       "test_period": "2024-07-01..2024-09-30",
       "ic_1d": 0.03512619775874,
       "ic_5d": 0.01366011988577024,
-      "annualized_return": -0.036724590395832,
-      "max_drawdown": -0.035518533619435855,
-      "information_ratio": -0.5182018174727926
+      "annualized_return": -0.036724590395831855,
+      "max_drawdown": -0.03551853361943614,
+      "information_ratio": -0.5182018174727933
     },
     {
       "fold_index": 18,
       "test_period": "2024-10-01..2024-12-31",
       "ic_1d": 0.0298503644203219,
       "ic_5d": 0.06676695346932979,
-      "annualized_return": 0.1725562893035916,
-      "max_drawdown": -0.0411069887269052,
-      "information_ratio": 0.8075658878863412
+      "annualized_return": 0.17255628930359088,
+      "max_drawdown": -0.04110698872690489,
+      "information_ratio": 0.807565887886338
     },
     {
       "fold_index": 19,
       "test_period": "2025-01-01..2025-03-31",
       "ic_1d": 0.021481782307118977,
       "ic_5d": 0.03821316595288637,
-      "annualized_return": 0.07339809910422387,
-      "max_drawdown": -0.054518814519412685,
-      "information_ratio": 0.6920019980367996
+      "annualized_return": 0.0733980991042239,
+      "max_drawdown": -0.05451881451941225,
+      "information_ratio": 0.6920019980368002
     },
     {
       "fold_index": 20,
       "test_period": "2025-04-01..2025-06-30",
       "ic_1d": 0.04450484253180195,
       "ic_5d": 0.058380066880413674,
-      "annualized_return": 0.19166471483541608,
-      "max_drawdown": -0.022214771848007644,
-      "information_ratio": 2.306255418289876
+      "annualized_return": 0.19166471483541395,
+      "max_drawdown": -0.022214771848008054,
+      "information_ratio": 2.3062554182898403
     },
     {
       "fold_index": 21,
       "test_period": "2025-07-01..2025-09-30",
       "ic_1d": -0.01009724000583845,
       "ic_5d": -0.06724014691264352,
-      "annualized_return": -0.4930604382772316,
-      "max_drawdown": -0.13500584907043317,
-      "information_ratio": -5.518271168874744
+      "annualized_return": -0.49306043827723,
+      "max_drawdown": -0.13500584907043275,
+      "information_ratio": -5.5182711688747474
     },
     {
       "fold_index": 22,
       "test_period": "2025-10-01..2025-12-31",
       "ic_1d": 0.02809741861752062,
       "ic_5d": 0.007803162992524634,
-      "annualized_return": -0.06412109922245418,
-      "max_drawdown": -0.05852311411866386,
-      "information_ratio": -0.5866612552657636
+      "annualized_return": -0.06412109922245463,
+      "max_drawdown": -0.05852311411866325,
+      "information_ratio": -0.5866612552657672
     }
   ]
 }

@@ -29,7 +29,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import platform
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +71,67 @@ from src.core.walk_forward.aggregate import compute_aggregate, extract_cost_metr
 # The ONE semantic difference vs the REGEN-A replay: the total-return benchmark.
 BENCHMARK_TR = "SH000300TR"
 N_FOLDS = 23  # 0..22, ALL real (fold 22 = 2025Q4 completes on the 2026-06-17 bundle)
+
+# DEPENDENCY-STACK guard (NOT a platform guard — the earlier "Windows is the correct
+# side" hypothesis was DISPROVEN: both CI runners, Linux and Windows, agree; the split
+# is numpy<2 vs numpy 2.x). This anchor reproduces to 1e-6 ONLY on the project's
+# CANONICAL dependency stack (pyproject pins: numpy<2, scipy<1.14, pandas<2.3) — the
+# stack CI runs. Root cause: fold-0's frozen scores are DEGENERATE — ~39 discrete
+# value-buckets over 300 stocks (every OTHER fold has 300 continuous unique scores),
+# so the topk=50 cutoff sits inside a tie block and the selected names depend on
+# numpy's SORT tie-break, which differs across numpy majors. This is a PRE-EXISTING
+# lineage condition (REGEN-A's fold-0 is identically degenerate), filed to phase-6
+# signal-quality, NOT introduced here. Generating or replaying on an OFF-PIN stack
+# (e.g. an off-pin numpy 2.x dev box — the 2026-06 incident) therefore bakes/produces
+# a DIFFERENT, non-reproducible fold-0. Guard both paths: generation HARD-fails
+# off-pin (never bake a non-canonical anchor); replay WARNS loud off-pin.
+_CANONICAL_MAX = {"numpy": (2, 0), "scipy": (1, 14), "pandas": (2, 3)}  # pyproject upper bounds
+
+_OFF_PIN_MSG = (
+    "REGEN-2 replay is OFF the canonical dependency pin: {off}. The deterministic "
+    "anchor reproduces to 1e-6 ONLY on the canonical stack (pyproject: numpy<2, "
+    "scipy<1.14, pandas<2.3) that CI runs. fold-0's scores are degenerate (a tie block "
+    "at the topk cutoff), so its selected names — hence its excess — depend on numpy's "
+    "sort tie-break, which differs across numpy majors. On this stack fold-0 will NOT "
+    "match the committed anchor. Use a canonical-pinned venv. (See docs/baseline_regen2.md.)"
+)
+
+
+def _dep_stack() -> dict[str, str]:
+    import numpy
+    import pandas
+    import scipy
+    return {
+        "numpy": numpy.__version__, "scipy": scipy.__version__,
+        "pandas": pandas.__version__, "python": platform.python_version(),
+    }
+
+
+def _off_canonical_pin(versions: dict[str, str]) -> list[str]:
+    def _mm(v: str) -> tuple[int, int]:
+        parts = (v.split(".") + ["0"])[:2]
+        return (int(parts[0]), int(parts[1]) if parts[1].isdigit() else 0)
+    off: list[str] = []
+    for pkg, hi in _CANONICAL_MAX.items():
+        if _mm(versions[pkg]) >= hi:
+            off.append(f"{pkg}={versions[pkg]} (canonical pin requires <{hi[0]}.{hi[1]})")
+    return off
+
+
+def _assert_canonical_dep_stack() -> dict[str, str]:
+    """Generation guard (meta-hardening): fail LOUD if generating off the canonical pin.
+
+    The 2026-06 incident: the anchor was generated on an off-pin numpy 2.4.4 dev box,
+    baking a fold-0 value CI (numpy<2) could never reproduce. Never again.
+    """
+    versions = _dep_stack()
+    off = _off_canonical_pin(versions)
+    if off:
+        raise RuntimeError(
+            "Refusing to GENERATE the REGEN-2 anchor off the canonical dependency pin. "
+            + _OFF_PIN_MSG.format(off="; ".join(off))
+        )
+    return versions
 FROZEN_SOURCE = (
     "REGEN-2 walk_forward_regen2_tr (fresh GPU retrain on bundle 2026-06-17, "
     "SH000300TR total-return; per-fold scores frozen by freeze_regen2_scores.py)"
@@ -133,7 +196,16 @@ def replay_frozen_baseline_regen2(
 
     Returns ``{"folds": [WalkForwardFold, ...], "aggregate_metrics": {...}}``,
     schema-identical to a real WF run (``compute_aggregate``, bootstrap seed 42).
+
+    Dependency-stack scope: the 1e-6 reproduction is guaranteed ONLY on the canonical
+    pinned stack (numpy<2, scipy<1.14, pandas<2.3 — see ``_CANONICAL_MAX`` / the module
+    docstring). On an off-pin stack this emits a loud warning because fold-0's
+    degenerate scores make its selection numpy-sort-tie-break-dependent, so fold-0 will
+    not match the committed anchor (NOT a silent wrong value).
     """
+    off = _off_canonical_pin(_dep_stack())
+    if off:
+        warnings.warn(_OFF_PIN_MSG.format(off="; ".join(off)), RuntimeWarning, stacklevel=2)
     init_qlib_canonical(
         QlibRuntimeConfig(provider_uri=provider_uri, region="cn", data_adjust_mode=ADJUST_MODE_PRE)
     )
@@ -170,12 +242,37 @@ def replay_frozen_baseline_regen2(
     return {"folds": folds, "aggregate_metrics": aggregate}
 
 
-def _provenance(provider_uri: str) -> dict[str, Any]:
+def _provenance(provider_uri: str, dep_stack: dict[str, str]) -> dict[str, Any]:
     return {
         "regen": (
             "REGEN-2 frozen-score replay of the REGEN-2 GPU-retrain fold scores "
             "(NO retrain, NO full bundle rebuild); replay-anchored per "
             "v2-canonical-backtest-contract."
+        ),
+        "dependency_stack": dep_stack,
+        "dependency_stack_note": (
+            "Generated on the project's CANONICAL pinned stack (pyproject: numpy<2, "
+            "scipy<1.14, pandas<2.3) — the stack CI runs. This anchor reproduces to "
+            "1e-6 ONLY on this stack; see fold0_known_limitation. A gen-env==canonical "
+            "assertion (scripts/regen/replay_frozen_baseline_regen2._assert_canonical_"
+            "dep_stack) fails generation LOUD off-pin, closing the 2026-06 hole where "
+            "an off-pin numpy 2.4.4 box baked a fold-0 CI could never reproduce."
+        ),
+        "fold0_known_limitation": (
+            "KNOWN LIMITATION (fail-loud, not silently accepted): fold-0's frozen "
+            "predictions are DEGENERATE — ~39 discrete value-buckets over 300 stocks "
+            "(every OTHER fold has 300 continuous unique scores; fold-0 alone, 56/59 "
+            "days). The topk=50 cutoff therefore lands inside a tie block, so the "
+            "selected names depend on numpy's SORT tie-break, which differs across "
+            "numpy majors. fold-0 excess (ann +0.1336 / IR +1.767) is thus the "
+            "CANONICAL-STACK deterministic value, NOT a cross-implementation-robust "
+            "one. PRE-EXISTING across the replay lineage (REGEN-A's fold-0 is "
+            "byte-identically degenerate) — NOT introduced by REGEN-2. Suspected cause: "
+            "2020Q2 (COVID) test-window feature gaps / suspensions routing many stocks "
+            "to one model leaf. Root-cause investigation is filed to PHASE-6 "
+            "signal-quality, isolated from this anchor (changing the tie-break = "
+            "changing the alpha, which would move other folds). Folds 1..22 are "
+            "numpy-version-insensitive and reproduce byte-identically."
         ),
         "config_file": "config_walk.yaml (semantics mirrored by frozen-score replay)",
         "config_keys": [
@@ -200,12 +297,21 @@ def _provenance(provider_uri: str) -> dict[str, Any]:
         "limit_threshold": LIMIT_THRESHOLD,
         "num_folds": N_FOLDS,
         "statistical_caveat": (
-            "Point estimate is POSITIVE (mean fold IR ~0.162, pooled IR ~0.209) but "
-            "the 95% bootstrap CI straddles zero (mean-fold SE ~0.42, within "
-            "cross-fold noise): the edge is UNPROVEN, NOT disproven, and is NOT a "
-            "prediction of live performance. The reduction vs the REGEN-A price-index "
-            "baseline (0.48) is the benchmark becoming honest (the ~2.35%/yr "
-            "dividend), not a regression. See docs/baseline_regen2.md."
+            "Point estimate POSITIVE but the 95% bootstrap CI straddles zero (within "
+            "cross-fold noise, mean-fold SE ~0.4): the edge is UNPROVEN, NOT disproven, "
+            "and is NOT a prediction of live performance. Canonical-stack mean fold IR "
+            "is in aggregate_metrics (~0.28). NOTE — the rise from the off-pin "
+            "baseline's ~0.16 to ~0.28 is 100% a fold-0 ARTIFACT, NOT signal: fold-0's "
+            "single-fold IR swings -0.889 -> +1.767 (swing ~2.66) because its degenerate "
+            "scores (~39 value-buckets / 261 ties over 300 stocks) select a DIFFERENT "
+            "stock set under the canonical numpy sort tie-break (see "
+            "fold0_known_limitation). [IR and annualized_return are SEPARATE metrics — "
+            "fold-0's ann moves -0.0616 -> +0.1336; do not conflate the two.] folds "
+            "1..22 are byte-identical. fold-0's extreme swing is exactly why this fold "
+            "is not evidence; the honest edge stays ~0.16-0.2 and statistically "
+            "unproven. The reduction vs the REGEN-A price-index baseline (0.48) is the "
+            "benchmark becoming honest (the ~2.35%/yr dividend), not a regression. See "
+            "docs/baseline_regen2.md."
         ),
     }
 
@@ -220,6 +326,9 @@ def main(argv: list[str] | None = None) -> int:
         _PROJECT_ROOT / "tests/regression/fixtures/regen2/walk_forward_baseline_metrics.json"))
     args = ap.parse_args(argv)
 
+    # Meta-hardening: refuse to GENERATE the anchor off the canonical pin (the 2026-06
+    # off-pin-numpy-2.4.4 incident). CI runs the canonical stack; the anchor must too.
+    dep_stack = _assert_canonical_dep_stack()
     res = replay_frozen_baseline_regen2(Path(args.frozen), args.provider_uri, args.namechange_path)
     agg = res["aggregate_metrics"]
     per_fold = [
@@ -231,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         for f in res["folds"]
     ]
     payload = {
-        "_provenance": _provenance(args.provider_uri),
+        "_provenance": _provenance(args.provider_uri, dep_stack),
         "aggregate_metrics": dict(agg),
         "per_fold": per_fold,
     }
