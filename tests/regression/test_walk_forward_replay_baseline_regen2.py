@@ -93,9 +93,17 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         import importlib.util
         if importlib.util.find_spec("qlib") is None:
             raise unittest.SkipTest("qlib not importable — only skips on no-qlib dev machines.")
-        for fixture in (TARBALL, TARBALL_SHA256, FROZEN_FIXTURE, BASELINE_FIXTURE):
-            if not fixture.exists():
-                raise unittest.SkipTest(f"committed REGEN-2 replay fixture missing: {fixture}")
+        # Missing committed reference data is NOT a skip (codex P2): this is the ONLY
+        # CI-real guard for the REGEN-2 anchor (it is --ignore'd on every other matrix
+        # leg), so an accidentally deleted/mis-checked-out tarball / checksum / frozen
+        # scores / baseline must FAIL the leg red, never silent-green skip.
+        missing = [str(f) for f in (TARBALL, TARBALL_SHA256, FROZEN_FIXTURE, BASELINE_FIXTURE) if not f.exists()]
+        if missing:
+            raise AssertionError(
+                "committed REGEN-2 replay fixture(s) missing — reference data was deleted "
+                f"or not checked out: {missing}. This is the only CI-real anchor guard; a "
+                "missing fixture is a hard failure, not a skip."
+            )
         # Verify the committed mini-bundle tarball checksum BEFORE trusting it —
         # a mismatch is corrupt/tampered reference data and must fail loudly (CI red),
         # not silently replay against bad bytes.

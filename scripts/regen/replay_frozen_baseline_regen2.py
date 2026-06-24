@@ -343,6 +343,20 @@ def main(argv: list[str] | None = None) -> int:
         for f in res["folds"]
     ]
     payload = {
+        # Machine-readable NON-CANONICAL marker (codex P2): this artifact lives at
+        # fixtures/regen2/ and is the CI-real replay anchor, NOT the canonical root
+        # baseline. Tooling / readers must not confuse it with the official
+        # fixtures/walk_forward_baseline_metrics.json (still REGEN-A until PR-2).
+        "_status": {
+            "canonical": False,
+            "role": "REGEN-2 CI-real replay anchor (fixtures/regen2/)",
+            "note": (
+                "NON-CANONICAL. The canonical root fixture "
+                "fixtures/walk_forward_baseline_metrics.json is still REGEN-A; PR-2 "
+                "promotes this one (swaps the root fixture, flips the benchmark "
+                "defaults, migrates the governance value-pin band to ~0.20<IR<0.35)."
+            ),
+        },
         "_provenance": _provenance(args.provider_uri, dep_stack),
         "aggregate_metrics": dict(agg),
         "per_fold": per_fold,
