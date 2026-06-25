@@ -9,10 +9,13 @@ fetch → build → atomic-swap pipeline is wasted work that also churns the bun
 slow/again-rebuilt run every weekend is noise. The orchestrator should no-op cleanly on
 closed days.
 
-This adds a **trading-calendar gate** to `run_daily_update`: when the run date is not a
-trading day, exit 0 (success) without running any stage or touching the bundle. The gate
-is placed AFTER the dry-run preview (a `--dry-run` still prints the plan) and BEFORE any
-data touch.
+This adds a **trading-calendar gate** to `run_daily_update`: on a default run whose date
+is not a trading day, exit 0 (success) without running any fetch/build/swap stage. The
+gate is placed AFTER the dry-run preview (a `--dry-run` still prints the plan) and AFTER
+the Stage 0 startup crash-repair — so an interrupted prior swap (live provider missing,
+`.bak`/`.new` present) is ALWAYS completed even on a closed day, never left broken over
+the weekend. An explicit `--end-date` (a deliberate backfill / catch-up) bypasses the
+gate and runs.
 
 ### Scope of "trading day" (deliberate, with rationale)
 

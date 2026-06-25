@@ -313,10 +313,39 @@ class TradingCalendarGateTests(unittest.TestCase):
     def test_weekend_run_is_noop_exit_0_and_runs_no_stage(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            _mk_bundle(cfg.provider_dir, "OLD")  # healthy live bundle (repair passes)
             rec = _Recorder()
             rc = run_daily_update(cfg, rec.all())
             self.assertEqual(rc, EXIT_OK)
-            self.assertEqual(rec.calls, [])  # gate returned before any stage / data touch
+            self.assertEqual(rec.calls, [])  # gate returned before any stage
+            self.assertEqual(_marker(cfg.provider_dir), "OLD")  # bundle untouched
+
+    def test_weekend_run_still_repairs_a_crashed_swap_then_noops(self) -> None:
+        # codex P1: Stage 0 crash-repair MUST run even on a non-trading day. A Friday
+        # swap that crashed mid-rename (live provider missing, .bak + .new present)
+        # must be COMPLETED on Saturday, not left broken (no live bundle) all weekend.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            _mk_bundle(bak_dir(cfg.provider_dir), "OLD")
+            _mk_bundle(new_dir(cfg.provider_dir), "PRIOR-VALIDATED")
+            rec = _Recorder()
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            # repair completed the interrupted swap (live provider restored)...
+            self.assertEqual(_marker(cfg.provider_dir), "PRIOR-VALIDATED")
+            # ...then the gate no-op'd — NO fetch/build/swap stage ran.
+            self.assertEqual(rec.calls, [])
+
+    def test_explicit_end_date_overrides_the_weekend_gate(self) -> None:
+        # codex P2: an explicit --end-date is a deliberate backfill / catch-up (recover
+        # a missed Friday update on Saturday) and MUST run, never silently no-op.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13), end_date="20260612")  # Sat -> Fri
+            _mk_bundle(cfg.provider_dir, "OLD")  # healthy (repair passes)
+            rec = _Recorder()
+            run_daily_update(cfg, rec.all())
+            # The gate did NOT no-op: the pipeline started (fetch ran) despite Saturday.
+            self.assertIn("fetch", rec.calls)
 
     def test_dry_run_preview_precedes_the_gate(self) -> None:
         # The gate is placed AFTER the dry-run preview, so --dry-run still returns

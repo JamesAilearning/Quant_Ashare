@@ -314,19 +314,11 @@ def run_daily_update(
                      config.provider_dir)
         return EXIT_OK
 
-    # Trading-calendar gate (PR-O): no-op with a clean exit 0 on a non-trading day,
-    # so a scheduled (PR-P) daily run does not run the full fetch/build/swap pipeline
-    # — or churn the bundle — on a closed day. Placed AFTER the dry-run preview (so a
-    # dry-run still prints the plan) and BEFORE any data touch.
-    if _run_date_is_non_trading(run_date):
-        _logger.info(
-            "daily_update: %s is a non-trading day (weekend) — no-op, exit 0 "
-            "(calendar gate; the full update runs only on trading days).",
-            run_date.isoformat(),
-        )
-        return EXIT_OK
-
-    # Stage 0: resolve any crash-interrupted prior swap BEFORE touching data.
+    # Stage 0: resolve any crash-interrupted prior swap BEFORE the calendar gate. A
+    # Friday swap that crashed mid-rename leaves the LIVE provider missing, and
+    # check_and_repair is what completes it; skipping it on a weekend (codex P1) would
+    # strand readers with no live bundle until the next trading day. So repair always
+    # runs, even on a closed day.
     try:
         action = check_and_repair(config.provider_dir)
     except OSError as exc:
@@ -334,6 +326,20 @@ def run_daily_update(
         return EXIT_UNREPAIRABLE
     if action != "healthy":
         _logger.warning("Startup bundle-state action: %s", action)
+
+    # Trading-calendar gate (PR-O): no-op with a clean exit 0 on a non-trading day, so
+    # a scheduled (PR-P) daily run does not run the full fetch/build/swap pipeline (or
+    # churn the bundle) on a closed day — but ONLY for a default "today" run. An
+    # explicit --end-date (``config.end_date``) is a deliberate backfill / catch-up
+    # (e.g. recovering a missed Friday update on Saturday) and MUST run, never silently
+    # no-op (codex P2). The crash-repair above has already run regardless.
+    if config.end_date is None and _run_date_is_non_trading(run_date):
+        _logger.info(
+            "daily_update: %s is a non-trading day (weekend) — no-op, exit 0 "
+            "(calendar gate; pass --end-date to force a backfill/catch-up).",
+            run_date.isoformat(),
+        )
+        return EXIT_OK
 
     # Stage 1: fetch (01 --refresh-current). Exit 3 = completed-with-holes.
     rc = active["fetch"](plan.fetch)
