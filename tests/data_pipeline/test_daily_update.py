@@ -32,11 +32,15 @@ STAGES = ("fetch", "registry", "bins", "membership", "universe", "benchmark", "v
 
 
 def _mk_bundle(path: Path, marker: str) -> None:
-    # A real qlib bundle is identified by its calendar spine calendars/day.txt — the
-    # marker _live_bundle_present (and bundle_manifest._calendar_path) key on. Store the
-    # test's identity tag THERE so seeded bundles are structurally real, not bare dirs.
+    # A readable qlib bundle skeleton = calendars/day.txt + instruments/all.txt +
+    # features/ (the same paths pit_validator._sanity_check_provider and
+    # _live_bundle_present require). Store the test's identity tag in calendars/day.txt;
+    # create the rest so seeded bundles are structurally readable, not partial dirs.
     (path / "calendars").mkdir(parents=True)
     (path / "calendars" / "day.txt").write_text(marker, encoding="utf-8")
+    (path / "instruments").mkdir()
+    (path / "instruments" / "all.txt").write_text("", encoding="utf-8")
+    (path / "features").mkdir()
 
 
 def _marker(path: Path) -> str:
@@ -432,6 +436,23 @@ class TradingCalendarGateTests(unittest.TestCase):
             self.assertEqual(rc, EXIT_OK)
             self.assertEqual(list(STAGES), rec.calls)  # bootstrapped, not no-op'd
             self.assertEqual(_marker(cfg.provider_dir), "NEW")  # real bundle over garbage
+
+    def test_weekend_partial_bundle_missing_skeleton_bootstraps(self) -> None:
+        # codex P2: a partial copy that kept calendars/day.txt but lost instruments/all.txt
+        # (or features/) is unreadable — _live_bundle_present requires the FULL skeleton
+        # pit_validator._sanity_check_provider defines, so the gate bootstraps over it
+        # instead of no-op'ing into a green-but-unreadable success.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            (cfg.provider_dir / "calendars").mkdir(parents=True)
+            (cfg.provider_dir / "calendars" / "day.txt").write_text("PARTIAL", encoding="utf-8")
+            # instruments/all.txt and features/ deliberately ABSENT (partial copy)
+            _write_snapshot(cfg.tushare_dir, "20260613")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(list(STAGES), rec.calls)  # bootstrapped, not no-op'd
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # full bundle over the partial
 
     def test_dry_run_preview_precedes_the_gate(self) -> None:
         # The gate is placed AFTER the dry-run preview, so --dry-run still returns
