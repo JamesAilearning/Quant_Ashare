@@ -213,6 +213,24 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
                 "SH000300", "2026-06-10", "2026-06-16"
             )  # no raise
 
+    def test_non_canonical_benchmark_warns_through_consume_path(self) -> None:
+        # PR-J wiring: the LOAD-time canonical-benchmark warning must fire from the
+        # real _validate_consumed_benchmark call site (not just the helper) when the
+        # consumed benchmark (here the SH000300 price control) is non-canonical.
+        frame = _qlib_frame({
+            "SH000300": _series(_DATES, [100, 101, 102, 101, 103]),
+            "SH000300TR": _series(_DATES, [100, 101.5, 103.0, 102.5, 105.0]),
+        })
+        with self._patch_D(frame):
+            with self.assertLogs("src.core.backtest_runner", level="WARNING") as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300", "2026-06-10", "2026-06-16"
+                )
+        self.assertTrue(
+            any("NOT the canonical" in line and "SH000300" in line for line in cm.output),
+            f"expected the LOAD-time canonical-benchmark warning, got: {cm.output}",
+        )
+
     def test_nan_benchmark_raises(self) -> None:
         frame = _qlib_frame(
             {"SH000300": _series(_DATES, [100, np.nan, 102, 101, 103])}

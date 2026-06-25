@@ -57,6 +57,12 @@ from src.data.st_history import (
 
 _logger = get_logger(__name__)
 
+# The canonical excess-return benchmark (REGEN-2 / PR-2): the production walk-forward
+# path measures excess against the SH000300TR TOTAL-RETURN index. A run consuming a
+# DIFFERENT benchmark is either the REGEN-A SH000300 price-index control / a deliberate
+# comparison, OR an operator mistake (e.g. an untracked preset left on the price index).
+_CANONICAL_BENCHMARK_CODE = "SH000300TR"
+
 # PR-C (audit A1): version tag for the signal→execution timing semantics,
 # folded into backtest provenance fingerprints and the walk-forward resume
 # fingerprint. "lag_total_v2" = signal_to_execution_lag is the TOTAL
@@ -951,6 +957,29 @@ class BacktestRunner:
         return result
 
     @staticmethod
+    def _warn_if_non_canonical_benchmark(benchmark_code: str) -> None:
+        """LOAD-time canonical-benchmark check (PR-J): warn LOUD when this run
+        consumes a benchmark that is NOT the canonical total-return SH000300TR.
+
+        The static config guard (test_canonical_benchmark_default_consistency) only
+        covers TRACKED config defaults; it cannot see an UNTRACKED personal preset
+        (``my_*.yaml``) that left the benchmark on the price index. This runs on the
+        benchmark a backtest ACTUALLY consumes, so a non-canonical basis is never
+        silent. A non-canonical benchmark is NOT blocked — it is legitimate for the
+        REGEN-A SH000300 price-index control or a deliberate comparison — only
+        surfaced, so an accidental price-index run does not masquerade as canonical.
+        """
+        if benchmark_code != _CANONICAL_BENCHMARK_CODE:
+            _logger.warning(
+                "BacktestRunner: consuming benchmark %s, NOT the canonical "
+                "total-return %s — excess return is measured against a NON-canonical "
+                "basis. Expected only for the REGEN-A price-index control or a "
+                "deliberate comparison; if an untracked preset left the default on the "
+                "price index, fix it. (PR-J LOAD-time canonical-benchmark check.)",
+                benchmark_code, _CANONICAL_BENCHMARK_CODE,
+            )
+
+    @staticmethod
     def _validate_consumed_benchmark(
         benchmark_code: str, start: str, end: str,
     ) -> None:
@@ -967,6 +996,7 @@ class BacktestRunner:
         tests/governance/test_pit_provider_is_sole_qlib_features_caller.py; the
         WARN log makes the bypass observable.
         """
+        BacktestRunner._warn_if_non_canonical_benchmark(benchmark_code)
         import pandas as pd
         from qlib.data import D
 

@@ -1637,5 +1637,34 @@ class MicrostructureMaskIntegrationTests(unittest.TestCase):
         self.assertIn("Audit P0-3", msg)
 
 
+class CanonicalBenchmarkLoadCheckTests(unittest.TestCase):
+    """LOAD-time canonical-benchmark warning (PR-J): the run's ACTUALLY-consumed
+    benchmark is surfaced when it is not the canonical total-return, closing the
+    untracked-preset gap the static config guard cannot see. Pure (no qlib)."""
+
+    _LOGGER = "src.core.backtest_runner"
+
+    def test_canonical_total_return_is_silent(self) -> None:
+        # The canonical SH000300TR must NOT warn (it is the expected basis).
+        with self.assertNoLogs(self._LOGGER, level="WARNING"):
+            BacktestRunner._warn_if_non_canonical_benchmark("SH000300TR")
+
+    def test_price_index_control_warns_loud(self) -> None:
+        # The SH000300 price-index control is legitimate but NON-canonical — surfaced.
+        with self.assertLogs(self._LOGGER, level="WARNING") as cm:
+            BacktestRunner._warn_if_non_canonical_benchmark("SH000300")
+        joined = " ".join(cm.output)
+        self.assertIn("SH000300", joined)
+        self.assertIn("NON-canonical", joined)
+        self.assertIn("untracked preset", joined)
+
+    def test_arbitrary_non_canonical_benchmark_warns(self) -> None:
+        # Any other valid-but-non-canonical index (e.g. an untracked preset left on
+        # csi500) is surfaced too — not blocked, but never silent.
+        with self.assertLogs(self._LOGGER, level="WARNING") as cm:
+            BacktestRunner._warn_if_non_canonical_benchmark("SH000905")
+        self.assertIn("SH000905", " ".join(cm.output))
+
+
 if __name__ == "__main__":
     unittest.main()

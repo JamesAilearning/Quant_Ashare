@@ -16,11 +16,14 @@ does NOT hard-list the known flip sites:
    convention (``BacktestRunner`` derives ``price_code = tr_code[:-2]``), so the
    cumulative-return cross-check still pairs them.
 
-Boundary (known gap, deferred to PR-J / the LOAD contract): this is a STATIC guard — it
-checks the in-code dataclass defaults and every TRACKED config YAML. It does NOT assert
-the benchmark_code of the config a run ACTUALLY loads, so an UNTRACKED personal preset
-(``my_*.yaml``) carrying a price benchmark would run unguarded. Closing that fully needs
-a LOAD-time canonical-benchmark assertion in the runtime consume path (PR-J).
+Boundary: this is a STATIC guard — it checks the in-code dataclass defaults and every
+TRACKED config YAML, so it cannot see the benchmark_code an UNTRACKED personal preset
+(``my_*.yaml``) actually loads. The COMPLEMENTARY runtime check is
+``BacktestRunner._warn_if_non_canonical_benchmark`` (PR-J): it warns LOUD when a run's
+ACTUALLY-consumed benchmark is not the canonical total-return, so an untracked preset
+left on the price index is surfaced (not blocked — the REGEN-A control legitimately
+consumes SH000300). Static guard catches tracked drift; the LOAD warning surfaces the
+loaded benchmark.
 """
 
 from __future__ import annotations
@@ -36,7 +39,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-CANONICAL_TR = "SH000300TR"
+# Single source of truth for the canonical benchmark = the runtime constant the
+# LOAD-time check (PR-J) enforces. Importing it here pins the config defaults to the
+# SAME value the runtime treats as canonical, so a drift in EITHER fails this guard.
+# (backtest_runner has no top-level qlib import, so this stays a no-bundle test.)
+from src.core.backtest_runner import _CANONICAL_BENCHMARK_CODE as CANONICAL_TR  # noqa: E402
+
 REGEN_A_PRICE = "SH000300"
 REGEN_A_CONTROL_FIXTURE = (
     _PROJECT_ROOT / "tests" / "regression" / "fixtures" / "regen_a"
