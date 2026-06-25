@@ -304,13 +304,19 @@ class TradingCalendarGateTests(unittest.TestCase):
     NO stage; trading-day runs proceed normally (the rest of the suite, now=Wed)."""
 
     def test_run_date_is_non_trading_pure(self) -> None:
-        # Mon-Fri trade; Sat/Sun do not (weekend gate; holidays handled downstream).
-        self.assertFalse(_run_date_is_non_trading(date(2026, 6, 10)))  # Wed
-        self.assertFalse(_run_date_is_non_trading(date(2026, 6, 12)))  # Fri
-        self.assertTrue(_run_date_is_non_trading(date(2026, 6, 13)))   # Sat
-        self.assertTrue(_run_date_is_non_trading(date(2026, 6, 14)))   # Sun
+        # Exhaustive over the 7-day cycle: Mon-Fri trade, Sat/Sun do not (weekend gate;
+        # weekday holidays handled downstream). 2026-06-08 is a Monday.
+        week = {
+            date(2026, 6, 8): False, date(2026, 6, 9): False, date(2026, 6, 10): False,
+            date(2026, 6, 11): False, date(2026, 6, 12): False,  # Mon-Fri
+            date(2026, 6, 13): True, date(2026, 6, 14): True,     # Sat, Sun
+        }
+        for d, expected in week.items():
+            self.assertEqual(expected, _run_date_is_non_trading(d), d.isoformat())
 
     def test_weekend_run_is_noop_exit_0_and_runs_no_stage(self) -> None:
+        # The no-op fires only because a LIVE bundle exists (seeded healthy) — that is
+        # the gate's premise: "already current, skip the redundant weekend refresh".
         with tempfile.TemporaryDirectory() as t:
             cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
             _mk_bundle(cfg.provider_dir, "OLD")  # healthy live bundle (repair passes)
@@ -336,16 +342,77 @@ class TradingCalendarGateTests(unittest.TestCase):
             # ...then the gate no-op'd — NO fetch/build/swap stage ran.
             self.assertEqual(rec.calls, [])
 
+    def test_weekend_restored_from_backup_then_noops(self) -> None:
+        # Self-review coverage: the 'restored-from-backup' repair branch (only .bak on
+        # disk) also feeds the gate's live-bundle check. Repair restores .bak -> the live
+        # provider, then the gate no-ops — a present, validated, one-day-old bundle is
+        # exactly the "skip the redundant weekend refresh" case.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            _mk_bundle(bak_dir(cfg.provider_dir), "BACKUP")  # only .bak (live + .new gone)
+            rec = _Recorder()
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(rec.calls, [])  # gate no-op'd after repair restored the bundle
+            self.assertEqual(_marker(cfg.provider_dir), "BACKUP")  # restored from backup
+
     def test_explicit_end_date_overrides_the_weekend_gate(self) -> None:
-        # codex P2: an explicit --end-date is a deliberate backfill / catch-up (recover
-        # a missed Friday update on Saturday) and MUST run, never silently no-op.
+        # codex P2: an explicit --end-date is a deliberate backfill / catch-up (recover a
+        # missed Friday update on Saturday) and MUST run the FULL pipeline to a live swap,
+        # never silently no-op. Assert the whole chain ran, not just that fetch started.
         with tempfile.TemporaryDirectory() as t:
             cfg = _config(Path(t), now=date(2026, 6, 13), end_date="20260612")  # Sat -> Fri
-            _mk_bundle(cfg.provider_dir, "OLD")  # healthy (repair passes)
-            rec = _Recorder()
-            run_daily_update(cfg, rec.all())
-            # The gate did NOT no-op: the pipeline started (fetch ran) despite Saturday.
-            self.assertIn("fetch", rec.calls)
+            _mk_bundle(cfg.provider_dir, "OLD")  # healthy live bundle
+            _write_snapshot(cfg.tushare_dir, "20260613")  # stamped to the frozen run_date
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(list(STAGES), rec.calls)  # full backfill ran to the swap...
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # ...despite Saturday
+            self.assertEqual(_marker(bak_dir(cfg.provider_dir)), "OLD")
+
+    def test_weekend_with_no_live_bundle_bootstraps_to_a_live_swap(self) -> None:
+        # codex P1 (#2): on a fresh machine (no provider / no .bak / no .new),
+        # check_and_repair returns "healthy" but creates NO live bundle. The gate must
+        # fall through and run the FULL pipeline to a successful bootstrap swap — never a
+        # green-but-empty no-op. (Asserting the live swap, not just that fetch ran.)
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday, nothing on disk
+            _write_snapshot(cfg.tushare_dir, "20260613")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(list(STAGES), rec.calls)  # bootstrap ran, not a no-op
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # bundle now live
+
+    def test_weekend_with_only_stale_new_bootstraps_to_a_live_swap(self) -> None:
+        # codex P1 (#2): a first-ever build died leaving only <provider>.new — repair
+        # removes the unprovable .new, leaving NO live bundle. The gate falls through and
+        # bootstraps a FRESH bundle to a live swap (the orphan .new is discarded).
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            _mk_bundle(new_dir(cfg.provider_dir), "ORPHAN-NEW")  # only .new, no live
+            _write_snapshot(cfg.tushare_dir, "20260613")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(list(STAGES), rec.calls)
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # rebuilt, not the orphan
+
+    def test_weekend_empty_provider_dir_bootstraps_not_noop(self) -> None:
+        # Self-review P1: provider_dir EXISTS but is empty (operator mkdir, or an
+        # AV/cloud-sync tool wiped a corrupted bundle's files but left the folder). A
+        # bare .exists() would no-op into a bundleless success; _live_bundle_present
+        # requires real content, so the gate bootstraps over the empty dir instead.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            cfg.provider_dir.mkdir(parents=True)  # empty dir — exists() True, no bundle
+            _write_snapshot(cfg.tushare_dir, "20260613")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(list(STAGES), rec.calls)  # bootstrapped, not no-op'd
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # swapped over the empty dir
 
     def test_dry_run_preview_precedes_the_gate(self) -> None:
         # The gate is placed AFTER the dry-run preview, so --dry-run still returns
