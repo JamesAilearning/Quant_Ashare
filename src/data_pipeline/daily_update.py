@@ -270,6 +270,21 @@ def _verify_snapshot_refreshed(config: DailyUpdateConfig, run_date: date) -> int
     return EXIT_SNAPSHOT_STALE
 
 
+def _run_date_is_non_trading(run_date: date) -> bool:
+    """True if ``run_date`` is a NON-trading day for A-shares.
+
+    Currently a WEEKEND check (Sat/Sun) — offline + deterministic, so the
+    orchestrator hot path and the tests take NO network (the "no real fetch in dev"
+    red line). A-share weekday HOLIDAYS (~10/yr) are intentionally NOT skipped here:
+    they fall through to the normal run, whose fetch/freshness gates already no-op
+    gracefully on a day with no new bar (the PR #270/#271 holiday-aware floor), so a
+    weekday holiday is handled, never WRONGLY skipped. Full holiday-awareness via the
+    SSE exchange calendar (tushare ``trade_cal``) is a deliberate follow-up — it would
+    add a network call to this gate. Pure -> unit-testable.
+    """
+    return run_date.weekday() >= 5  # 5 = Saturday, 6 = Sunday
+
+
 def run_daily_update(
     config: DailyUpdateConfig,
     runners: Mapping[str, Runner] | None = None,
@@ -297,6 +312,18 @@ def run_daily_update(
         _logger.info("  [dry-run] startup bundle state: %s", state)
         _logger.info("  [dry-run] swap: %s -> %s", new_dir(config.provider_dir),
                      config.provider_dir)
+        return EXIT_OK
+
+    # Trading-calendar gate (PR-O): no-op with a clean exit 0 on a non-trading day,
+    # so a scheduled (PR-P) daily run does not run the full fetch/build/swap pipeline
+    # — or churn the bundle — on a closed day. Placed AFTER the dry-run preview (so a
+    # dry-run still prints the plan) and BEFORE any data touch.
+    if _run_date_is_non_trading(run_date):
+        _logger.info(
+            "daily_update: %s is a non-trading day (weekend) — no-op, exit 0 "
+            "(calendar gate; the full update runs only on trading days).",
+            run_date.isoformat(),
+        )
         return EXIT_OK
 
     # Stage 0: resolve any crash-interrupted prior swap BEFORE touching data.

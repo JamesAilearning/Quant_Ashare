@@ -22,6 +22,7 @@ from src.data_pipeline.daily_update import (  # noqa: E402
     EXIT_SNAPSHOT_STALE,
     EXIT_VALIDATE,
     DailyUpdateConfig,
+    _run_date_is_non_trading,
     build_plan,
     run_daily_update,
 )
@@ -74,12 +75,12 @@ class _Recorder:
 
 
 def _config(tmp: Path, **kw) -> DailyUpdateConfig:
+    kw.setdefault("now", TODAY)  # overridable (e.g. a weekend date for the gate tests)
     return DailyUpdateConfig(
         tushare_dir=tmp / "raw",
         provider_dir=tmp / "provider",
         delisted_registry=tmp / "raw" / "delisted_registry.parquet",
         reference_cases=tmp / "reference_cases.yaml",
-        now=TODAY,
         **kw,
     )
 
@@ -296,6 +297,36 @@ class StartupRepairTests(unittest.TestCase):
             # and swapped its own NEW bundle on top.
             self.assertEqual(_marker(cfg.provider_dir), "NEW")
             self.assertEqual(_marker(bak_dir(cfg.provider_dir)), "PRIOR-VALIDATED")
+
+
+class TradingCalendarGateTests(unittest.TestCase):
+    """PR-O calendar gate: a non-trading (weekend) run no-ops with exit 0 and runs
+    NO stage; trading-day runs proceed normally (the rest of the suite, now=Wed)."""
+
+    def test_run_date_is_non_trading_pure(self) -> None:
+        # Mon-Fri trade; Sat/Sun do not (weekend gate; holidays handled downstream).
+        self.assertFalse(_run_date_is_non_trading(date(2026, 6, 10)))  # Wed
+        self.assertFalse(_run_date_is_non_trading(date(2026, 6, 12)))  # Fri
+        self.assertTrue(_run_date_is_non_trading(date(2026, 6, 13)))   # Sat
+        self.assertTrue(_run_date_is_non_trading(date(2026, 6, 14)))   # Sun
+
+    def test_weekend_run_is_noop_exit_0_and_runs_no_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            rec = _Recorder()
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(rec.calls, [])  # gate returned before any stage / data touch
+
+    def test_dry_run_preview_precedes_the_gate(self) -> None:
+        # The gate is placed AFTER the dry-run preview, so --dry-run still returns
+        # EXIT_OK without running stages (and the gate does not pre-empt it).
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13), dry_run=True)
+            rec = _Recorder()
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(rec.calls, [])
 
 
 if __name__ == "__main__":
