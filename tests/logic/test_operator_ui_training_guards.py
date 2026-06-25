@@ -346,6 +346,32 @@ class UniverseBenchmarkAlignmentTests(unittest.TestCase):
             f"expected mismatch warning, got: {result.warnings}",
         )
 
+    def test_all_universe_with_csi300tr_benchmark_warns(self) -> None:
+        # PR-2 flipped the canonical default to the total-return SH000300TR; the
+        # universe-mismatch warning must STILL fire (a TR index covers the same
+        # universe as its price twin — codex P2). SH000300TR normalizes to SH000300.
+        from web.operator_ui.training_guards import validate_pipeline_training_inputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            result = validate_pipeline_training_inputs(
+                provider_uri=str(provider),
+                instruments="all",
+                train_start="2025-01-02",
+                train_end="2025-01-03",
+                valid_start="2025-01-08",
+                valid_end="2025-09-26",
+                test_start="2025-10-13",
+                test_end="2025-12-30",
+                benchmark_code="SH000300TR",
+            )
+
+        self.assertTrue(
+            any("instruments=all" in w and "SH000300TR" in w for w in result.warnings),
+            f"expected universe-mismatch warning for the total-return benchmark, "
+            f"got: {result.warnings}",
+        )
+
     def test_csi300_universe_with_csi300_benchmark_no_warning(self) -> None:
         from web.operator_ui.training_guards import validate_pipeline_training_inputs
 

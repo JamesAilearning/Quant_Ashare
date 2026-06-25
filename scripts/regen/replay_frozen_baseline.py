@@ -172,8 +172,10 @@ def main(argv: list[str] | None = None) -> int:
         _PROJECT_ROOT / "tests/regression/fixtures/regen_a/frozen_fold_scores.pkl.gz"))
     ap.add_argument("--provider-uri", required=True)
     ap.add_argument("--namechange-path", required=True)
+    # PR-2: the canonical root is now REGEN-2 (total-return). REGEN-A is the preserved
+    # SH000300 price-index CONTROL — this generator writes the control copy, not the root.
     ap.add_argument("--out", default=str(
-        _PROJECT_ROOT / "tests/regression/fixtures/walk_forward_baseline_metrics.json"))
+        _PROJECT_ROOT / "tests/regression/fixtures/regen_a/walk_forward_baseline_metrics_regen_a.json"))
     args = ap.parse_args(argv)
 
     res = replay_frozen_baseline(Path(args.frozen), args.provider_uri, args.namechange_path)

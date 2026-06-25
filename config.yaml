@@ -56,13 +56,12 @@ bagging_fraction: 0.8
 bagging_freq: 5
 
 # backtest
-# SH000300 is the CSI 300 PRICE index. The CANONICAL benchmark is the
-# TOTAL-RETURN index SH000300TR (dividends reinvested), ingested by
-# scripts/data_pipeline/07_ingest_benchmark.py — strategy returns include
-# dividends (adjusted closes), so a price-index benchmark overstates excess
-# return by ~the index dividend yield (~2-2.5pp/yr; audit E2). Switch this to
-# "SH000300TR" at REGEN, once the rebuilt bundle carries that instrument.
-benchmark_code: "SH000300"
+# CANONICAL benchmark = the TOTAL-RETURN index SH000300TR (dividends reinvested),
+# ingested by scripts/data_pipeline/07_ingest_benchmark.py and APPLIED at REGEN-2.
+# Strategy returns include dividends (adjusted closes), so the total-return benchmark
+# is the honest basis; SH000300 (the PRICE index) overstates excess by ~the index
+# dividend yield (~2-2.5pp/yr; audit E2) and is preserved only as the REGEN-A control.
+benchmark_code: "SH000300TR"
 init_cash: 100000000
 commission_rate: 0.0005
 

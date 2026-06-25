@@ -147,6 +147,13 @@ class HappyPathTests(unittest.TestCase):
             self.assertEqual(
                 plan.benchmark[plan.benchmark.index("--provider-dir") + 1], staging,
             )
+            # The canonical SH000300TR is MANDATORY in the orchestrated rebuild (codex
+            # P1): an empty best-effort list makes an H00300.CSI entitlement/fetch
+            # failure abort the update, not ship a TR-less bundle that fails every run.
+            self.assertIn("--best-effort", plan.benchmark)
+            self.assertEqual(
+                plan.benchmark[plan.benchmark.index("--best-effort") + 1], "",
+            )
             self.assertIn(staging, plan.validate)  # 06 validates the STAGED dir
 
     def test_fetch_holes_with_override_continues(self) -> None:

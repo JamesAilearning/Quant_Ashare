@@ -325,8 +325,10 @@ def main(argv: list[str] | None = None) -> int:
         _PROJECT_ROOT / "tests/regression/fixtures/regen2/frozen_fold_scores.pkl.gz"))
     ap.add_argument("--provider-uri", required=True)
     ap.add_argument("--namechange-path", required=True)
+    # Canonical root baseline (PR-2 promoted REGEN-2 here). The frozen scores stay at
+    # fixtures/regen2/; only the baseline JSON is the canonical root.
     ap.add_argument("--out", default=str(
-        _PROJECT_ROOT / "tests/regression/fixtures/regen2/walk_forward_baseline_metrics.json"))
+        _PROJECT_ROOT / "tests/regression/fixtures/walk_forward_baseline_metrics.json"))
     args = ap.parse_args(argv)
 
     # Meta-hardening: refuse to GENERATE the anchor off the canonical pin (the 2026-06
@@ -343,18 +345,20 @@ def main(argv: list[str] | None = None) -> int:
         for f in res["folds"]
     ]
     payload = {
-        # Machine-readable NON-CANONICAL marker (codex P2): this artifact lives at
-        # fixtures/regen2/ and is the CI-real replay anchor, NOT the canonical root
-        # baseline. Tooling / readers must not confuse it with the official
-        # fixtures/walk_forward_baseline_metrics.json (still REGEN-A until PR-2).
+        # Machine-readable CANONICAL marker: PR-2 promoted the REGEN-2 replay anchor to
+        # the canonical root baseline (fixtures/walk_forward_baseline_metrics.json). The
+        # replay is reproduced CI-real on the canonical numpy<2 stack by
+        # test_walk_forward_replay_baseline_regen2 (mini-bundle); the frozen scores live
+        # at fixtures/regen2/. REGEN-A is preserved as the SH000300 price-index control.
         "_status": {
-            "canonical": False,
-            "role": "REGEN-2 CI-real replay anchor (fixtures/regen2/)",
+            "canonical": True,
+            "role": "CANONICAL walk-forward regression baseline (REGEN-2, SH000300TR total-return)",
             "note": (
-                "NON-CANONICAL. The canonical root fixture "
-                "fixtures/walk_forward_baseline_metrics.json is still REGEN-A; PR-2 "
-                "promotes this one (swaps the root fixture, flips the benchmark "
-                "defaults, migrates the governance value-pin band to ~0.20<IR<0.35)."
+                "Promoted from the PR-1 replay anchor (PR-2). Reproduced CI-real on the "
+                "canonical numpy<2 stack by test_walk_forward_replay_baseline_regen2 "
+                "(mini-bundle); frozen scores at fixtures/regen2/frozen_fold_scores.pkl.gz. "
+                "REGEN-A is preserved as the SH000300 price-index control at "
+                "fixtures/regen_a/walk_forward_baseline_metrics_regen_a.json."
             ),
         },
         "_provenance": _provenance(args.provider_uri, dep_stack),

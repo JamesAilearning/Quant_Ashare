@@ -40,6 +40,18 @@ _BENCHMARK_UNIVERSE_HINTS: dict[str, str] = {
 }
 
 
+def _benchmark_universe_hint(bench: str) -> str | None:
+    """Universe hint for a benchmark, normalizing total-return (``*TR``) codes to their
+    price-index sibling (e.g. ``SH000300TR`` -> ``SH000300``). A total-return index
+    covers the SAME universe as its price twin, so the universe-mismatch warning must
+    still fire after the canonical default flipped to ``SH000300TR`` (PR-2)."""
+    if bench in _BENCHMARK_UNIVERSE_HINTS:
+        return _BENCHMARK_UNIVERSE_HINTS[bench]
+    if bench.endswith("TR"):
+        return _BENCHMARK_UNIVERSE_HINTS.get(bench[:-2])
+    return None
+
+
 @dataclass(frozen=True)
 class ProviderMetadata:
     provider_uri: str
@@ -330,7 +342,7 @@ def _validate_universe_benchmark_alignment(
     bench = str(benchmark_code or "").strip().upper()
     if not instr or not bench:
         return
-    expected_universe = _BENCHMARK_UNIVERSE_HINTS.get(bench)
+    expected_universe = _benchmark_universe_hint(bench)
     if expected_universe is None:
         return
     if instr == expected_universe:

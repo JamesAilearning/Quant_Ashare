@@ -29,7 +29,9 @@ import unittest
 from pathlib import Path
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
-BASELINE_FIXTURE = FIXTURES_DIR / "walk_forward_baseline_metrics.json"
+# PR-2: the canonical root is now REGEN-2 (total-return). REGEN-A is preserved here as
+# the SH000300 PRICE-index control — this RUN_E2E replay reproduces the REGEN-A control.
+BASELINE_FIXTURE = FIXTURES_DIR / "regen_a" / "walk_forward_baseline_metrics_regen_a.json"
 FROZEN_FIXTURE = FIXTURES_DIR / "regen_a" / "frozen_fold_scores.pkl.gz"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

@@ -105,7 +105,8 @@ class PipelineConfig:
     bagging_freq: int = 5
 
     # backtest
-    benchmark_code: str = "SH000300"
+    # Canonical total-return benchmark (REGEN-2, applied). SH000300 is the REGEN-A price control.
+    benchmark_code: str = "SH000300TR"
     init_cash: float = 100_000_000
     commission_rate: float = 0.0005
     # CN A-share stamp tax — represented as a time-ordered schedule

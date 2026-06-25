@@ -211,6 +211,13 @@ def build_plan(
             "--provider-dir", str(staging),
             "--start-date", config.start_date,
             "--end-date", end_date,
+            # SH000300TR (tushare H00300.CSI) is the CANONICAL benchmark (PR-2), so the
+            # orchestrated rebuild makes it MANDATORY: an empty best-effort list means a
+            # fetch/entitlement failure ABORTS the update loudly instead of shipping a
+            # TR-less bundle that would fail every default-config run at backtest time
+            # (codex P1). The 07_ingest_benchmark CLI default keeps H00300.CSI best-effort
+            # for manual/standalone runs; only the orchestrated daily swap forces it.
+            "--best-effort", "",
         ],
         validate=[
             "--provider-dir", str(staging),
