@@ -270,6 +270,40 @@ def _verify_snapshot_refreshed(config: DailyUpdateConfig, run_date: date) -> int
     return EXIT_SNAPSHOT_STALE
 
 
+def _run_date_is_non_trading(run_date: date) -> bool:
+    """True if ``run_date`` is a NON-trading day for A-shares.
+
+    Currently a WEEKEND check (Sat/Sun) — offline + deterministic, so the
+    orchestrator hot path and the tests take NO network (the "no real fetch in dev"
+    red line). A-share weekday HOLIDAYS (~10/yr) are intentionally NOT skipped here:
+    they fall through to the normal run, whose fetch/freshness gates already no-op
+    gracefully on a day with no new bar (the PR #270/#271 holiday-aware floor), so a
+    weekday holiday is handled, never WRONGLY skipped. Full holiday-awareness via the
+    SSE exchange calendar (tushare ``trade_cal``) is a deliberate follow-up — it would
+    add a network call to this gate. Pure -> unit-testable.
+    """
+    return run_date.weekday() >= 5  # 5 = Saturday, 6 = Sunday
+
+
+def _live_bundle_present(provider_dir: Path) -> bool:
+    """True iff a NON-EMPTY provider directory exists at ``provider_dir``.
+
+    The weekend no-op's premise is "a bundle is already present — skip the redundant
+    refresh". A bare ``Path.exists()`` over-trusts an empty / garbage directory: an
+    operator who ``mkdir``-ed the provider path, an AV / cloud-sync tool that deleted a
+    corrupted bundle's files but left the folder, or a partial out-of-band copy all leave
+    an existing-but-bundleless dir. No-op'ing there would report SUCCESS with nothing for
+    readers — the exact green-but-empty failure the live-bundle guard exists to prevent.
+
+    Require actual content, matching how the orchestrator treats the provider as opaque
+    (``check_and_repair`` and ``swap`` rename it whole, never inspecting contents; deep
+    qlib-validity is 06's and the recommend integrity gate's job, NOT the calendar
+    gate's). An absent path, a plain file at the path, or an empty directory all read as
+    "no live bundle" -> the gate falls through to the bootstrap / fail-loud pipeline.
+    """
+    return provider_dir.is_dir() and any(provider_dir.iterdir())
+
+
 def run_daily_update(
     config: DailyUpdateConfig,
     runners: Mapping[str, Runner] | None = None,
@@ -299,7 +333,17 @@ def run_daily_update(
                      config.provider_dir)
         return EXIT_OK
 
-    # Stage 0: resolve any crash-interrupted prior swap BEFORE touching data.
+    # Stage 0: resolve any crash-interrupted prior swap BEFORE the calendar gate. A
+    # Friday swap that crashed mid-rename leaves the LIVE provider missing; repair either
+    # COMPLETES the interrupted swap (.bak + .new present) or RESTORES the prior bundle
+    # from .bak (after a restore the weekend no-op intentionally serves that one-day-old
+    # generation until the next trading-day rebuild). Either way it must run even on a
+    # closed day — skipping it on a weekend (codex P1) would strand readers with no live
+    # bundle until the next trading day.
+    # Concurrency: this presumes single-flight execution. swap() is crash-atomic but not
+    # reader/run-concurrent (see bundle_swap.swap docstring) — the PR-P scheduler MUST
+    # serialize firings, else the gate's live-bundle probe below could observe the brief
+    # inter-rename window of a concurrent run. Mutual exclusion is the scheduler's job.
     try:
         action = check_and_repair(config.provider_dir)
     except OSError as exc:
@@ -307,6 +351,40 @@ def run_daily_update(
         return EXIT_UNREPAIRABLE
     if action != "healthy":
         _logger.warning("Startup bundle-state action: %s", action)
+
+    # Trading-calendar gate (PR-O): no-op with a clean exit 0 on a non-trading day, so
+    # a scheduled (PR-P) daily run does not run the full fetch/build/swap pipeline (or
+    # churn the bundle) on a closed day — but ONLY when ALL of:
+    #   (a) it is a default "today" run. An explicit --end-date (``config.end_date``) is
+    #       a deliberate backfill / catch-up (recovering a missed Friday update on a
+    #       Saturday) and MUST run, never silently no-op (codex P2);
+    #   (b) a usable LIVE bundle actually exists after the Stage 0 repair. The no-op's
+    #       premise is "the bundle is already current, skip the redundant refresh" — that
+    #       only holds if there is a bundle. On a fresh machine, after a first-ever build
+    #       crashed leaving only ``.new`` (which repair just cleared), or when the
+    #       provider path exists but is empty / not a real bundle, no usable live provider
+    #       exists; a weekend no-op there would report SUCCESS with nothing for readers
+    #       (codex P1). ``_live_bundle_present`` (NOT a bare ``.exists()``) is the check —
+    #       an empty/garbage dir reads as absent. Instead fall through to the normal
+    #       pipeline so it BOOTSTRAPS a bundle from history (or fails loud with a distinct
+    #       exit code) — the fail-loud bootstrap path, not a green-but-empty exit.
+    if config.end_date is None and _run_date_is_non_trading(run_date):
+        if _live_bundle_present(config.provider_dir):
+            _logger.info(
+                "daily_update: %s is a non-trading day (weekend) — no-op, exit 0 "
+                "(calendar gate; pass --end-date to force a backfill/catch-up).",
+                run_date.isoformat(),
+            )
+            return EXIT_OK
+        _logger.warning(
+            "daily_update: %s is a non-trading day but NO usable live bundle exists at "
+            "%s — skipping the weekend no-op and running the full pipeline to BOOTSTRAP "
+            "a bundle (a no-op here would report success with nothing for readers). If "
+            "this dead-ends on a holiday-bridged weekend with the trade calendar "
+            "unavailable, re-run on the next trading day or pass an explicit --end-date "
+            "set to the last trading day.",
+            run_date.isoformat(), config.provider_dir,
+        )
 
     # Stage 1: fetch (01 --refresh-current). Exit 3 = completed-with-holes.
     rc = active["fetch"](plan.fetch)
