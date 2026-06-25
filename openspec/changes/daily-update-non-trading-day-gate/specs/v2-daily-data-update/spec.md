@@ -2,10 +2,10 @@
 
 ### Requirement: The daily update SHALL no-op cleanly on a non-trading day
 
-When the run date is NOT a trading day AND no explicit end-date was requested,
-`run_daily_update` SHALL return exit 0 (success) WITHOUT running any fetch/build/swap
-stage — so a scheduled daily run does not run the full pipeline (or churn the bundle
-with a no-data swap) on a closed day.
+`run_daily_update` SHALL return exit 0 (success) on a default run whose date is NOT a
+trading day (no explicit end-date requested), WITHOUT running any fetch/build/swap stage
+— so a scheduled daily run does not run the full pipeline (or churn the bundle with a
+no-data swap) on a closed day.
 
 The gate SHALL be placed AFTER the dry-run preview (a dry-run still prints the plan) and
 AFTER the Stage 0 startup crash-repair, so that an interrupted prior swap (a crash that
@@ -26,10 +26,8 @@ handled, never wrongly skipped.
 - **THEN** it returns exit 0 and runs NO fetch/build/swap stage
 
 #### Scenario: a crashed swap is still repaired on a non-trading day
-- **WHEN** a prior swap crashed mid-rename (live provider missing, `.bak` + `.new`
-  present) and `run_daily_update` runs on a Saturday
-- **THEN** the Stage 0 repair completes the interrupted swap (the live provider is
-  restored) BEFORE the gate no-ops, so readers are not stranded over the weekend
+- **WHEN** a prior swap crashed mid-rename (live provider missing, `.bak` + `.new` present) and `run_daily_update` runs on a Saturday
+- **THEN** the Stage 0 repair completes the interrupted swap (live provider restored) BEFORE the gate no-ops, so readers are not stranded over the weekend
 
 #### Scenario: an explicit end-date backfill overrides the gate
 - **WHEN** `run_daily_update` runs on a Saturday with an explicit `--end-date`
