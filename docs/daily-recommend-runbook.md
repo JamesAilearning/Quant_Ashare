@@ -9,8 +9,10 @@ runs the **data update** (`scripts/daily_update.py`); it never runs recommend.
 - **This step is manual, every morning, by the fund manager.** It is NOT
   scheduled and MUST NOT be put into any automated chain.
 - **The output is a decision aid, not an order.** `daily_recommend` produces a
-  ranked candidate buy list for the *next* session (T+1 entry). It places no
-  trades, sends nothing to a broker, and makes no sizing/portfolio decision. The
+  ranked candidate buy list for the entry session after its decision day T (see
+  [Which session is the list for?](#which-session-is-the-list-for) — by default
+  that entry day is the bundle's most recent session, not a future one). It places
+  no trades, sends nothing to a broker, and makes no sizing/portfolio decision. The
   buy/sell decision is always made by a human after reading the list.
 - The run is **fail-closed**: every freshness / completeness / look-ahead guard
   refuses to emit rather than print a silently-wrong list. So **a run that exits
@@ -43,7 +45,8 @@ update did not land.
 ## The command
 
 ```sh
-# Latest PIT trading day, top 50, all defaults — the normal morning run.
+# Top 50, all defaults. Decision day T = the bundle's second-to-last trading day;
+# entry T+1 = the bundle tail (see "Which session is the list for?" below).
 python scripts/daily_recommend.py
 ```
 
@@ -71,7 +74,7 @@ Flags you will actually reach for (defaults in parentheses):
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--as-of` | latest PIT trading day with a following session | Decision date **T** (data cutoff). Entry is the next trading day **T+1**. |
+| `--as-of` | latest PIT trading day with a following session | Decision day **T** (data cutoff); entry **T+1** = the next trading day in the bundle. With the default, T+1 is the bundle tail — see [Which session is the list for?](#which-session-is-the-list-for). |
 | `--topk` | `50` | Buy-list size (tradable, non-ST names). |
 | `--out-dir` | `output/daily_recommend` | Where the csv/json land. |
 | `--instruments` | `csi300` | Universe. |
@@ -82,6 +85,31 @@ Flags you will actually reach for (defaults in parentheses):
 `--model` / `--provider-uri` / `--delisted-registry` / `--name-source` /
 `--fit-start` / `--fit-end` exist for non-default layouts; the fit window MUST
 match the model that produced the artifact.
+
+## Which session is the list for?
+
+**Read the printed `entry_date` every time** — it tells you which session the list
+is actually for, and with the **default** (no `--as-of`) that is *not* a future
+session:
+
+- **Default (no `--as-of`)**: the decision day **T** is the *second-to-last*
+  trading day in the bundle and the entry day **T+1** is the **last** day in the
+  bundle (its calendar tail). So if you updated the bundle through the most recent
+  close, the entry day is that **already-completed** session — not tomorrow.
+- **Why it cannot look further forward**: each pick is screened for tradability
+  (suspension / one-price-lock) on the *entry* day, which requires that day's bars
+  to be on disk. A not-yet-traded session has no bars, so the tool refuses to treat
+  the bundle tail as a decision day (`--as-of <tail>` errors with "no next trading
+  day (T+1) to enter on"). It cannot emit a list for a session not yet in the
+  bundle.
+
+Operationally: the picks are the model's ranking **as of T**, with entry-day
+tradability validated against the bundle tail — a current signal to inform the
+upcoming session's decision. But because the `entry_date` label is the bundle's
+last session, do **not** read it as "buy at tomorrow's open" without applying your
+own judgement for the actual forward session. To score a specific historical
+decision day, pass `--as-of <that day>` (entry then resolves to the next trading
+day after it that exists in the bundle).
 
 ## What it writes
 
@@ -134,8 +162,12 @@ means every one of them passed**. Concretely, a successful run guarantees:
 
 Quick sanity read on the summary line:
 
-- `scored` is roughly the universe size (≈300 for csi300). A large unexplained
-  drop is worth a look in the audit csv.
+- The funnel reconciles as `scored + untradable_masked + st_excluded ≈ universe
+  size` (≈300 for csi300). `scored` alone is the **tradable, non-ST** pool, so on
+  days with suspensions or ST names it is correctly *below* the universe size — a
+  low `scored` with matching `untradable_masked` / `st_excluded` is normal, not an
+  alarm. A shortfall the three counts don't account for is worth a look in the
+  audit csv.
 - `st_excluded` being a small non-zero number is the ST filter working; `0`
   every day on csi300 is plausible (csi300 rarely holds ST) but worth a glance
   at the snapshot date if it surprises you.
