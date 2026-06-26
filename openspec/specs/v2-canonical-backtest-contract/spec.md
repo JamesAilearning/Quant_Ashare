@@ -390,8 +390,7 @@ basis — is committed with the value.
 
 #### Scenario: no single-fold anchor
 - **WHEN** the walk-forward regression suite runs
-- **THEN** the anchor is the full multi-fold deterministic replay, not a single
-  fold (the most volatile, sign-flipping, within-noise fold is not used alone)
+- **THEN** the anchor is the full multi-fold deterministic replay, not a single fold
 
 ### Requirement: Canonical backtest SHALL drop suspended and one-price-locked candidates from predictions before qlib strategy
 
