@@ -375,5 +375,29 @@ class WalkForwardSynthesisHelperTests(unittest.TestCase):
         self.assertEqual(logs, [])
 
 
+class WalkForwardExcessLabelTests(unittest.TestCase):
+    """The walk-forward return / drawdown / IR metrics are EXCESS vs the
+    benchmark after cost (extract_cost_metrics reads
+    risk_analysis['excess_return_with_cost']). The page must label them as
+    excess — not absolute — and disclose the basis up front, mirroring the
+    pipeline KPI card's honest labels. (No absolute mislabels may remain in a
+    metric slot.)"""
+
+    def setUp(self) -> None:
+        self.source = _WALK_FORWARD_PAGE.read_text(encoding="utf-8")
+
+    def test_excess_basis_caption_present(self) -> None:
+        self.assertIn("扣费后超额", self.source)
+
+    def test_return_drawdown_and_aggregate_labelled_excess(self) -> None:
+        self.assertIn("年化超额", self.source)
+        self.assertIn("超额回撤", self.source)
+        self.assertIn("整体样本外超额", self.source)
+
+    def test_no_absolute_return_drawdown_mislabels_remain(self) -> None:
+        self.assertNotIn('"年化收益"', self.source)
+        self.assertNotIn('"最大回撤"', self.source)
+
+
 if __name__ == "__main__":
     unittest.main()

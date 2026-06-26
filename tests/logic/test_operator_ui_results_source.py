@@ -834,5 +834,27 @@ class ResolveRunDirGuardTests(unittest.TestCase):
         )
 
 
+class BenchmarkReturnDisplayTests(unittest.TestCase):
+    """Reflect the canonical total-return benchmark (SH000300TR) in results.
+    The KPI card must show the benchmark's total return next to the strategy's
+    (``_build_metrics`` writes ``benchmark_total_return`` for exactly this), and
+    the walk-forward summary fallback must label its return / drawdown metrics
+    as excess-vs-benchmark — they read ``excess_return_with_cost`` — not as
+    absolute return."""
+
+    def setUp(self) -> None:
+        self.render = _RESULTS_RENDER.read_text(encoding="utf-8")
+
+    def test_kpi_card_reads_benchmark_total_return(self) -> None:
+        self.assertIn('("performance", "benchmark_total_return")', self.render)
+
+    def test_kpi_card_renders_benchmark_total_return_line(self) -> None:
+        self.assertIn("基准总收益", self.render)
+
+    def test_summary_fallback_labels_returns_as_excess(self) -> None:
+        self.assertIn("平均年化超额", self.render)
+        self.assertIn("最差超额回撤", self.render)
+
+
 if __name__ == "__main__":
     unittest.main()
