@@ -67,14 +67,17 @@ precedence over the env defaults.
 Common variations:
 
 ```sh
-# A specific historical decision day, smaller list.
+# Score a specific (recent) historical decision day on the CURRENT bundle. No
+# extra flag needed — the freshness guard checks the bundle against TODAY, and a
+# current bundle is fresh whatever as-of you pick.
 python scripts/daily_recommend.py --as-of 2025-06-30 --topk 30
-
-# Intentional historical run on an older bundle (relaxes the 14-day freshness
-# guard). Use ONLY when you deliberately want an old as-of; never to paper over
-# a bundle that simply was not updated.
-python scripts/daily_recommend.py --as-of 2025-01-31 --bundle-max-age-days 400
 ```
+
+`--bundle-max-age-days` only matters when the **bundle itself** is old — you are
+deliberately working off an archived bundle, not the live one. Then raise it above
+the bundle's actual age in days so the freshness guard does not refuse (e.g. a
+bundle whose tail is ~6 months back needs roughly `--bundle-max-age-days 200`).
+Never raise it to paper over a live bundle that simply was not updated.
 
 Flags you will actually reach for (defaults in parentheses):
 
@@ -145,38 +148,45 @@ code-page (GBK) display issue only — the csv/json are correct UTF-8.
 
 ## How to judge the list
 
-Every check on the recommend path is fail-loud: it **refuses (exit 1)** rather
-than emit a questionable list. So judging the list is mostly knowing what a clean
-`exit 0` does — and does **not** — rule out. Each guard below is described by what
-it *rejects*; a clean run is one where none of them fired.
+Two different things happen on a run; keep them apart.
 
-- **Look-ahead** — *refuses* if any feature row is dated after T. Features for T
-  use only data `≤ T` (handler `end_time=T`) and normalization is fit on the
-  *training* window, so the score for T never sees data after T.
-- **Stale prices** — *refuses* if the bundle's last trading day is more than
+**Run-level guards — these *refuse the whole run* (exit 1).** A clean `exit 0`
+means none of them fired:
+
+- **Look-ahead** — refuses if any feature row is dated after T (features for T use
+  only data `≤ T`; normalization is fit on the *training* window).
+- **Stale prices** — refuses if the bundle's last trading day is more than
   `--bundle-max-age-days` (14) calendar days older than today. It does **not** check
-  that today's update landed (a 1–13-day-old bundle passes — see the prerequisite
-  section); it only rules out ranking on weeks-old prices.
-- **Stale ST/name view** — *refuses* if the active-stocks snapshot is missing,
+  that today's update landed — a 1–13-day-old bundle passes (see the prerequisite
+  section) — only that prices are not weeks old.
+- **Stale ST/name source** — refuses if the active-stocks snapshot is missing,
   unreadable, schema-invalid, empty, more than `--st-max-age-days` (7) days older
   than T, or more than `--bundle-max-age-days` (14) days older than the bundle tail.
-  It does **not** reject a snapshot *newer* than T / the tail (a current-ST view is
-  correct for a historical `--as-of`), so a pass means the ST set is not stale — not
-  that it was captured in lock-step with the prices. ST/\*ST names are dropped
-  *before* the Top-K slice, so the list holds K tradable non-ST picks.
-- **Incomplete-fetch provenance** — *refuses* if the bundle has no
-  `_fetch_integrity.json` stamp, or the stamp records a holey fetch, unless you pass
-  `--allow-holey-recommend` (a corrupt / unreadable stamp refuses regardless). A
-  clean pass means the bundle was stamped built-from-a-complete fetch.
-- **Untradable entry-day names** — each pick is dropped if it is suspended /
-  one-price-locked on the entry day T+1 (the session a lag=1 fill lands on),
-  matching the backtest's execution-day masking.
+  A snapshot *newer* than T / the tail is allowed (current-ST is correct for a
+  historical `--as-of`), so a pass means the source is not stale — not that it was
+  captured in lock-step with the prices.
+- **Incomplete-fetch provenance** — refuses if the bundle has no
+  `_fetch_integrity.json` stamp or the stamp records a holey fetch — **unless** you
+  pass `--allow-holey-recommend`, which waives exactly this check (a corrupt /
+  unreadable stamp still refuses regardless).
 
-So a clean run rules out: look-ahead, weeks-old prices, a stale/missing ST view, an
-unstamped/holey bundle, and untradable picks. It does **not** by itself prove that
-today's update ran, nor that the entry day is the upcoming session (see
-[Which session is the list for?](#which-session-is-the-list-for)) — confirm those
-from the printed `entry_date` and the `daily_update` result.
+**Row filters — these drop names but the run still succeeds (exit 0).** Their
+counts are reported, not errors, so a nonzero count is normal, not a problem:
+
+- **Untradable on the entry day** — names suspended / one-price-locked on the entry
+  day T+1 (the session a lag=1 fill lands on, matching the backtest's execution-day
+  masking) are dropped and counted in `untradable_masked`.
+- **Currently ST/\*ST** — current-ST names are dropped *before* the Top-K slice
+  (counted in `st_excluded`), so the list holds K tradable, non-ST picks.
+
+So a clean run rules out look-ahead, weeks-old prices, a stale/missing ST source,
+and — *unless* you passed `--allow-holey-recommend` — an unstamped/holey bundle. It
+does **not** by itself prove that today's update ran, nor that the entry day is the
+upcoming session (see [Which session is the list for?](#which-session-is-the-list-for))
+— confirm those from the printed `entry_date` and the `daily_update` result. Nor
+does it mean nothing was dropped: the row filters above run on every clean pass, so
+expect nonzero `untradable_masked` / `st_excluded` on days with suspensions or ST
+names.
 
 Quick sanity read on the summary line:
 
