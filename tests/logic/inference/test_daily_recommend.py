@@ -38,6 +38,7 @@ from src.inference.daily_recommend import (
     _assert_st_snapshot_consistent_with_bundle,
     _bundle_is_stale,
     _load_model,
+    _name_map_from_df,
     _scores_to_inst_map,
     _st_snapshot_is_stale,
     _validate_st_snapshot,
@@ -429,10 +430,13 @@ class ValidateStSnapshotTests(unittest.TestCase):
                 "ts_code": ["000001.SZ"], "name": ["平安银行"],
                 "snapshot_date": ["20250629"],  # 1d before as-of
             }).to_parquet(p)
-            self.assertEqual(
-                _validate_st_snapshot(self._config(str(p)), "2025-06-30"),
-                date(2025, 6, 29),
+            snapshot_date, df = _validate_st_snapshot(
+                self._config(str(p)), "2025-06-30",
             )
+            self.assertEqual(snapshot_date, date(2025, 6, 29))
+            # the returned frame is the one it read (reused for the name map,
+            # not re-read from parquet)
+            self.assertEqual(list(df["ts_code"]), ["000001.SZ"])
 
     def test_old_format_without_snapshot_date_raises(self) -> None:
         # P3-5 red line: a pre-P3-5 file (no embedded snapshot_date) fails LOUD
@@ -459,7 +463,7 @@ class ValidateStSnapshotTests(unittest.TestCase):
 
     def test_malformed_schema_raises(self) -> None:
         # Present + fresh but the 'name' column dropped (upstream schema change)
-        # -> must NOT pass, else _load_name_map returns {} and ST filtering is
+        # -> must NOT pass, else the name map is empty and ST filtering is
         # silently disabled (Codex P1 on #222).
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "active.parquet"
@@ -481,6 +485,17 @@ class ValidateStSnapshotTests(unittest.TestCase):
             os.utime(p, (recent, recent))
             with self.assertRaisesRegex(DailyRecommendationError, "zero rows"):
                 _validate_st_snapshot(self._config(str(p)), "2025-06-30")
+
+    def test_name_map_from_df_builds_ts_code_to_name(self) -> None:
+        # _name_map_from_df replaces the parquet re-read: recommend() reuses
+        # the frame _validate_st_snapshot already read.
+        df = pd.DataFrame(
+            {"ts_code": ["000001.SZ", "600000.SH"], "name": ["平安银行", "浦发银行"]},
+        )
+        self.assertEqual(
+            _name_map_from_df(df),
+            {"000001.SZ": "平安银行", "600000.SH": "浦发银行"},
+        )
 
 
 class StSnapshotBundleConsistencyTests(unittest.TestCase):
