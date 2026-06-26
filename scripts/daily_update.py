@@ -35,6 +35,7 @@ from src.data_pipeline.daily_update import (  # noqa: E402
 )
 from src.data_pipeline.single_flight import (  # noqa: E402
     AlreadyRunningError,
+    SingleFlightSetupError,
     single_flight,
 )
 
@@ -104,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
     except AlreadyRunningError as exc:
         print(f"daily_update: {exc}", file=sys.stderr)
         return EXIT_ALREADY_RUNNING
+    except SingleFlightSetupError as exc:
+        # Unwritable / unreachable lock path is a setup problem, not contention — map it
+        # to the config exit code rather than crashing with an undefined one.
+        print(f"daily_update: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
 
 
 if __name__ == "__main__":

@@ -14,13 +14,13 @@ not an auto-applied change.
 
 ## Safety properties this relies on
 
-- **Single-flight (exit 17).** The CLI takes a process-exclusive lock keyed to the
-  provider dir (`<provider>.daily_update.lock`) before any bundle mutation. A second run
-  for the same provider — a manual run while the scheduled one is going, or a hung run
-  when the next day fires — exits **17 (`EXIT_ALREADY_RUNNING`)** and touches nothing.
-  A stale lock from a crashed run (holder PID confirmed dead) is reclaimed automatically;
-  an unprovable holder (probe failure / corrupt lock) is treated as held — fail-closed —
-  so it is never stolen from a live run. `--dry-run` is exempt (it mutates nothing).
+- **Single-flight (exit 17).** The CLI takes a process-exclusive **OS advisory lock**
+  keyed to the provider dir (`<provider>.daily_update.lock`) before any bundle mutation.
+  A second run for the same provider — a manual run while the scheduled one is going, or a
+  hung run when the next day fires — exits **17 (`EXIT_ALREADY_RUNNING`)** and touches
+  nothing. The kernel owns the lock and releases it when the holder exits — including on a
+  crash or kill — so there is no stale lock to clear and no PID-reuse wedge. `--dry-run` is
+  exempt (it mutates nothing).
 - **Trading-calendar gate (exit 0).** A weekend run no-ops cleanly without churning the
   bundle (PR-O). Weekday holidays fall through to a normal run whose fetch/freshness
   gates no-op on a day with no new bar — handled, never wrongly skipped.
@@ -49,6 +49,7 @@ The full `daily_update` invocation is too long and too quote-fragile for `schtas
 
    ```bat
    @echo off
+   if not exist "D:\qlib_data\logs" mkdir "D:\qlib_data\logs"
    "C:\path\to\python.exe" "D:\stock\Claude\qlib_trading_system_v2\scripts\daily_update.py" ^
      --tushare-dir D:\qlib_data\tushare_raw ^
      --provider-dir D:\qlib_data\my_cn_data_pit ^
@@ -79,7 +80,7 @@ no-op, exit 12); the next day catches up. Scheduling late avoids the wasted run.
 | Code | Meaning | Action |
 |---|---|---|
 | 0 | success (incl. weekend calendar-gate no-op; a weekday holiday runs normally and also exits 0 when there is no new bar) | none |
-| 2 | config / setup error | fix args |
+| 2 | config / setup error (incl. an unwritable / unreachable lock path) | fix args; check `--provider-dir`'s parent is writable |
 | 10 | unrepairable bundle state | investigate `.bak`/`.new`; manual repair |
 | 11 | fetch failed hard | check tushare token / network; re-run |
 | 12 | fetch holes (or pre-close, no `--allow-holey-fetch`) | usually transient (pre-close) — re-run later/next day |
@@ -87,7 +88,7 @@ no-op, exit 12); the next day catches up. Scheduling late avoids the wasted run.
 | 14 | rebuild failed | inspect 02/05/03/04 logs |
 | 15 | validation failed (06 on the staged bundle) | inspect validation; bundle NOT swapped |
 | 16 | swap failed | check disk/permissions; Stage-0 repair on next run |
-| **17** | **another run holds the single-flight lock** | **expected if runs overlap; if it persists with no run live, see [Clearing a wedged lock](#clearing-a-wedged-lock)** |
+| **17** | **another run holds the single-flight lock** | **expected if runs overlap; the OS releases the lock when that run exits (even on crash) — no manual clearing** |
 
 `schtasks /Query /TN "QuantAshare\DailyDataUpdate" /V /FO LIST` shows the **Last Result**
 (the exit code) and last run time.
@@ -104,23 +105,6 @@ python scripts/daily_recommend.py        # no overrides; clean-fetch bundle
 
 `daily_recommend` has a 14-day freshness floor, so a missed update surfaces as a refusal
 rather than a stale list.
-
-## Clearing a wedged lock
-
-A persistent **exit 17 with no `daily_update` process actually running** means a stale or
-corrupt lock that the guard cannot self-clear: a run crashed and its PID was later reused
-by an unrelated live process, or the lock file was truncated / corrupted (partial write,
-AV or cloud-sync touch). The guard is **fail-closed** — it never steals a lock it cannot
-prove is abandoned — so it stays at exit 17 until you clear it. Recover:
-
-1. Confirm none is live: `tasklist /FI "IMAGENAME eq python.exe"` (and check Task Scheduler
-   isn't mid-run).
-2. Delete the lock: `del "D:\qlib_data\my_cn_data_pit.daily_update.lock"` (the lock is a
-   sibling of `--provider-dir`, named `<provider>.daily_update.lock`).
-3. Re-run (or wait for the next scheduled firing).
-
-A normal crash that leaves a **confirmed-dead** holder is reclaimed automatically on the
-next run — no action needed; this manual step is only for PID-reuse or a corrupt lock.
 
 ## Rollback
 

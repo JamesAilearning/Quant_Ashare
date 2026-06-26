@@ -15,9 +15,10 @@ the CLI entry rather than an implicit scheduler assumption.
 ## What Changes
 
 - A process-exclusive **single-flight lock** (`src/data_pipeline/single_flight.py`): an
-  `O_EXCL` pidfile keyed to the provider dir, with a three-valued PID-liveness probe
-  (POSIX signal-0 / Windows `tasklist`, mirroring `job_manager`) so a stale lock from a
-  crashed run is reclaimed while a live or unprovable holder is never stolen.
+  OS advisory lock (`fcntl.flock` / `msvcrt.locking`, non-blocking) on a per-provider lock
+  file. The kernel releases it on process exit — even on crash — so there is no stale lock,
+  no PID-liveness probing, and no reclaim race (a naive pidfile + stale-reclaim is
+  inherently racy; two reclaimers can both proceed).
 - The `daily_update` CLI (`scripts/daily_update.py`) acquires the lock around
   `run_daily_update`; a refusal returns the new `EXIT_ALREADY_RUNNING` (17). `--dry-run`
   is exempt (it mutates nothing).
