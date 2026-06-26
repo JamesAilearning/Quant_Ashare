@@ -145,30 +145,38 @@ code-page (GBK) display issue only — the csv/json are correct UTF-8.
 
 ## How to judge the list
 
-The recommend path is a stack of fail-loud guards; **a clean `exit 0` already
-means every one of them passed**. Concretely, a successful run guarantees:
+Every check on the recommend path is fail-loud: it **refuses (exit 1)** rather
+than emit a questionable list. So judging the list is mostly knowing what a clean
+`exit 0` does — and does **not** — rule out. Each guard below is described by what
+it *rejects*; a clean run is one where none of them fired.
 
-- **No look-ahead.** Features for T use only data `≤ T` (handler `end_time=T`),
-  normalization is fit on the *training* window, and an always-on guard refuses
-  if any feature row is dated after T.
-- **Prices not stale.** The bundle's last trading day is no more than
-  `--bundle-max-age-days` (14) calendar days *older* than today — so you are not
-  ranking on weeks-old prices. (One-sided: a bundle can't be newer than today.)
-- **ST/name view not stale.** The active-stocks snapshot exists, is schema-valid
-  and non-empty, and is **not too old**: its embedded snapshot date is at most
-  `--st-max-age-days` (7) days *older* than T, and at most `--bundle-max-age-days`
-  (14) days *older* than the bundle tail. This bound is **one-sided by design** — a
-  snapshot *newer* than T or than the bundle tail is allowed (the current-ST view is
-  the correct one for inference, e.g. when scoring a historical `--as-of`). So exit 0
-  proves the ST set is not *stale*, not that it was captured in lock-step with the
-  prices. ST/\*ST names are excluded *before* the Top-K slice, so the list holds K
-  tradable non-ST picks.
-- **Complete-fetch provenance.** The bundle carries a `_fetch_integrity.json`
-  stamp confirming it was built from a complete tushare fetch (unless you
-  overrode — see below).
-- **Tradable on the entry day.** Each pick is not suspended / one-price-locked on
-  the entry day T+1 (the session a lag=1 fill lands on), matching the backtest's
-  execution-day masking.
+- **Look-ahead** — *refuses* if any feature row is dated after T. Features for T
+  use only data `≤ T` (handler `end_time=T`) and normalization is fit on the
+  *training* window, so the score for T never sees data after T.
+- **Stale prices** — *refuses* if the bundle's last trading day is more than
+  `--bundle-max-age-days` (14) calendar days older than today. It does **not** check
+  that today's update landed (a 1–13-day-old bundle passes — see the prerequisite
+  section); it only rules out ranking on weeks-old prices.
+- **Stale ST/name view** — *refuses* if the active-stocks snapshot is missing,
+  unreadable, schema-invalid, empty, more than `--st-max-age-days` (7) days older
+  than T, or more than `--bundle-max-age-days` (14) days older than the bundle tail.
+  It does **not** reject a snapshot *newer* than T / the tail (a current-ST view is
+  correct for a historical `--as-of`), so a pass means the ST set is not stale — not
+  that it was captured in lock-step with the prices. ST/\*ST names are dropped
+  *before* the Top-K slice, so the list holds K tradable non-ST picks.
+- **Incomplete-fetch provenance** — *refuses* if the bundle has no
+  `_fetch_integrity.json` stamp, or the stamp records a holey fetch, unless you pass
+  `--allow-holey-recommend` (a corrupt / unreadable stamp refuses regardless). A
+  clean pass means the bundle was stamped built-from-a-complete fetch.
+- **Untradable entry-day names** — each pick is dropped if it is suspended /
+  one-price-locked on the entry day T+1 (the session a lag=1 fill lands on),
+  matching the backtest's execution-day masking.
+
+So a clean run rules out: look-ahead, weeks-old prices, a stale/missing ST view, an
+unstamped/holey bundle, and untradable picks. It does **not** by itself prove that
+today's update ran, nor that the entry day is the upcoming session (see
+[Which session is the list for?](#which-session-is-the-list-for)) — confirm those
+from the printed `entry_date` and the `daily_update` result.
 
 Quick sanity read on the summary line:
 
