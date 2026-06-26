@@ -344,3 +344,31 @@ def test_parse_rejects_unbalanced_parens():
 def test_parse_rejects_trailing_tokens():
     with pytest.raises(GrammarError, match="trailing"):
         parse_expression("$close)")
+
+
+def test_operatorcall_hash_is_memoized():
+    """OperatorCall caches its hash on the frozen node (hot in GP dedup
+    sets / fitness_cache keys). Caching must not change the value or the
+    hash/eq contract."""
+    expr = OperatorCall("add", (Terminal("$volume"), Terminal("$money")))
+    h1 = hash(expr)
+    assert expr.__dict__.get("_hash_cache") == h1  # cache populated
+    assert hash(expr) == h1  # stable on repeat
+    # An independently-built equal expression hashes equal (contract intact).
+    expr2 = OperatorCall("add", (Terminal("$volume"), Terminal("$money")))
+    assert expr == expr2
+    assert hash(expr2) == h1
+
+
+def test_output_type_is_memoized_both_node_kinds():
+    """output_type is cached on Terminal and OperatorCall (read repeatedly
+    in GP crossover/mutation). The cached value must be the fresh compute."""
+    t = Terminal("$close")
+    ot_t = t.output_type
+    assert t.__dict__.get("_output_type_cache") is ot_t
+    assert t.output_type is ot_t  # stable cached object
+
+    expr = OperatorCall("div_safe", (Terminal("$close"), Terminal("$open")))
+    ot_e = expr.output_type
+    assert expr.__dict__.get("_output_type_cache") is ot_e
+    assert expr.output_type is ot_e

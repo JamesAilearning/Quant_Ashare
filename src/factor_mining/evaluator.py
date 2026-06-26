@@ -293,13 +293,15 @@ def evaluate_factor(
     # joins are clean.
     fwd = forward_return.reindex_like(factor_values)
 
-    ic_pearson = _ic_per_day(factor_values, fwd, method="normal")
     ic_rank = _ic_per_day(factor_values, fwd, method="rank")
-
     rank_mean, rank_std = float(ic_rank.mean()), float(ic_rank.std())
     if method == "rank":
         headline_mean, headline_std = rank_mean, rank_std
     else:
+        # Pearson IC is the headline ONLY when method != "rank". Computing it
+        # on the rank path (the validator's per-entry hot path, IS + OOS) is
+        # dead work — it is discarded there. Defer it into this branch.
+        ic_pearson = _ic_per_day(factor_values, fwd, method="normal")
         headline_mean, headline_std = float(ic_pearson.mean()), float(ic_pearson.std())
 
     return EvaluationResult(

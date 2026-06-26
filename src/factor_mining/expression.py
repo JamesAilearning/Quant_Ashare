@@ -99,8 +99,9 @@ class Terminal(Expression):
     name: str
 
     def __post_init__(self) -> None:
-        # Validate at construction; raises GrammarError on unknown name.
-        _ = self._compute_type()
+        # Validate at construction (raises GrammarError on unknown name) and
+        # warm the output_type cache in the same pass.
+        _ = self.output_type
 
     def _compute_type(self) -> ExprType:
         if FeatureRegistry.is_feature(self.name):
@@ -120,7 +121,12 @@ class Terminal(Expression):
 
     @property
     def output_type(self) -> ExprType:
-        return self._compute_type()
+        cached = self.__dict__.get("_output_type_cache")
+        if cached is not None:
+            return cached
+        result = self._compute_type()
+        object.__setattr__(self, "_output_type_cache", result)
+        return result
 
     def to_dict(self) -> dict:
         return {"type": "Terminal", "name": self.name}
@@ -187,10 +193,18 @@ class OperatorCall(Expression):
 
     @property
     def output_type(self) -> ExprType:
+        # Memoized (see __hash__): GP crossover/mutation repeatedly reads
+        # ``.output_type`` over subexpression lists; uncached it re-walks the
+        # subtree each time. Warmed once in __post_init__.
+        cached = self.__dict__.get("_output_type_cache")
+        if cached is not None:
+            return cached
         op = REGISTRY.get(self.op_name)
         assert op is not None  # checked in __post_init__
         input_types = tuple(c.output_type for c in self.children)
-        return op.output_type(*input_types)
+        result = op.output_type(*input_types)
+        object.__setattr__(self, "_output_type_cache", result)
+        return result
 
     def to_dict(self) -> dict:
         return {
@@ -209,6 +223,13 @@ class OperatorCall(Expression):
         return 1 + max(c.depth() for c in self.children)
 
     def __hash__(self) -> int:
+        # Memoized: nodes are frozen (immutable), and the GP loop hashes the
+        # same node repeatedly (dedup sets, fitness_cache / _all_evaluated
+        # keys). Uncached, every call re-walks + re-sorts the whole subtree.
+        # ``object.__setattr__`` because the dataclass is frozen.
+        cached = self.__dict__.get("_hash_cache")
+        if cached is not None:
+            return cached
         op = REGISTRY.get(self.op_name)
         assert op is not None
         child_hashes: Iterable[int] = (hash(c) for c in self.children)
@@ -216,7 +237,9 @@ class OperatorCall(Expression):
             child_hashes = sorted(child_hashes)
         else:
             child_hashes = list(child_hashes)
-        return hash(("OperatorCall", self.op_name, tuple(child_hashes)))
+        h = hash(("OperatorCall", self.op_name, tuple(child_hashes)))
+        object.__setattr__(self, "_hash_cache", h)
+        return h
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, OperatorCall):
