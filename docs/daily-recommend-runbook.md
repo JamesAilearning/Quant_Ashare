@@ -27,20 +27,26 @@ fetch. So the morning order is always **update first, recommend second**:
 1. **Data update** — `scripts/daily_update.py` (run overnight/earlier, or by
    hand). It fetches tushare → rebuilds the qlib bins into `<provider>.new` →
    validates → atomic-swaps the live bundle. Its trading-calendar gate (PR-O)
-   makes it a clean `exit 0` no-op on **weekends**; A-share weekday holidays
-   fall through to a normal run that no-ops downstream when there is no new bar.
-   So on a non-trading day there is simply no new bundle, and yesterday's list
-   stands.
+   makes it a clean `exit 0` no-op **only on weekends** (no fetch/build/swap), so
+   on a Saturday/Sunday there is no new bundle and the most recent list still
+   stands. An A-share **weekday holiday** does NOT take that branch: the run
+   proceeds through fetch → rebuild → swap, and although there is no new price
+   bar, the aggregates (stock_basic / namechange / suspend_d) can still refresh
+   and a rebuilt bundle can be swapped — so check the update's exit code / logs
+   rather than assuming nothing changed.
 2. **Recommend** — this runbook.
 
 You do **not** need to clear any feature cache before recommending:
 `daily_recommend` builds its as-of-T Alpha158 cross-section fresh on every run
 (no `cache_dir`), so there is no stale-cache risk for this step.
 
-If you are unsure the bundle is current, you don't need to check by hand — the
-recommend run's bundle-freshness guard (default: refuse if the bundle's last
-trading day lags *today* by more than 14 calendar days) will fail loud if the
-update did not land.
+Confirm the update actually landed before trusting the list — **read the printed
+`entry_date` / bundle tail** (or check `daily_update`'s exit code and logs). The
+recommend run's bundle-freshness guard only refuses when the bundle's last trading
+day lags *today* by more than `--bundle-max-age-days` (default 14), so it catches a
+grossly stale bundle (weeks/months behind) but NOT a single missed daily update: a
+bundle 1–13 days behind still scores and exits 0 on yesterday's data. The guard is a
+backstop against stale prices, not proof that today's update ran.
 
 ## The command
 
