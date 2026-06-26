@@ -28,9 +28,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.logger import setup_logging  # noqa: E402
 from src.data_pipeline.daily_update import (  # noqa: E402
+    EXIT_ALREADY_RUNNING,
     EXIT_CONFIG,
     DailyUpdateConfig,
     run_daily_update,
+)
+from src.data_pipeline.single_flight import (  # noqa: E402
+    AlreadyRunningError,
+    SingleFlightSetupError,
+    single_flight,
 )
 
 
@@ -87,7 +93,24 @@ def main(argv: list[str] | None = None) -> int:
     except (TypeError, ValueError) as exc:
         print(f"Config invalid: {exc}", file=sys.stderr)
         return EXIT_CONFIG
-    return run_daily_update(config)
+    # Single-flight (阶段5 PR-P): two runs that share ANY mutable input — the provider
+    # (the crash-atomic-but-not-run-concurrent swap), the tushare dump, or the registry
+    # (both have fixed-name temp writes) — must NOT overlap. Lock all three; a --dry-run
+    # mutates nothing, so it is exempt (an operator can preview while a real run holds it).
+    if config.dry_run:
+        return run_daily_update(config)
+    try:
+        with single_flight(config.provider_dir, config.tushare_dir,
+                           config.delisted_registry):
+            return run_daily_update(config)
+    except AlreadyRunningError as exc:
+        print(f"daily_update: {exc}", file=sys.stderr)
+        return EXIT_ALREADY_RUNNING
+    except SingleFlightSetupError as exc:
+        # Unwritable / unreachable lock path is a setup problem, not contention — map it
+        # to the config exit code rather than crashing with an undefined one.
+        print(f"daily_update: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
 
 
 if __name__ == "__main__":
