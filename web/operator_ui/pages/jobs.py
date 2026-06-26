@@ -165,7 +165,13 @@ with fcol1:
 with fcol2:
     status_filter = st.selectbox(
         "状态",
-        ["all", "queued", "running", "completed", "failed", "cancelled"],
+        # Match the real (job_io-normalized) JobListItem vocabulary:
+        # success -> completed, others pass through raw. 'cancelled' is never
+        # produced by the runner/JobManager, so offering it always yielded an
+        # empty list; the stop lifecycle (stopped / stop_failed) and the
+        # pending / partial states were unreachable from the filter.
+        ["all", "queued", "pending", "running", "completed", "partial",
+         "failed", "stopped", "stop_failed"],
         key="jobs_status",
         format_func=lambda v: _STATUS_LABELS.get(v, v),
     )
@@ -460,10 +466,14 @@ if total == 0:
 # ---------------------------------------------------------------------------
 _STATUS_ICONS = {
     "queued": "⏸",
+    "pending": "⏳",
     "running": "🔄",
     "completed": "✅",
+    "partial": "🟡",
     "failed": "❌",
-    "cancelled": "⊘",
+    "stopped": "⏹",
+    "stop_failed": "⚠️",
+    "cancelled": "⊘",  # legacy on-disk only; never written by current code
 }
 
 _TYPE_ICONS = {
@@ -556,7 +566,18 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
             )
         )
     with sel_col2:
-        act_open, act_copy = st.columns(2)
+        # A running (or stop_failed, i.e. retry-able) job gets a Stop action —
+        # the spec mandates it (v2-operator-ui-console: "Operator UI SHALL
+        # support stopping a running job") and JobManager.stop() is fully
+        # implemented + hardened (PR-K/PR-L), but until now nothing in the UI
+        # reached it. JobManager.stop() owns the status transition (writes
+        # 'stopped' only on a successful kill, 'stop_failed' otherwise), so the
+        # button just calls it and reruns to reflect the new status.
+        _stoppable = selected.status in ("running", "stop_failed")
+        if _stoppable:
+            act_open, act_copy, act_stop = st.columns(3)
+        else:
+            act_open, act_copy = st.columns(2)
         with act_open:
             if st.button(
                 "▶ 查看详情",
@@ -599,6 +620,24 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                 width="content",
                 unsafe_allow_javascript=True,
             )
+        if _stoppable:
+            with act_stop:
+                _stop_label = (
+                    "⏹ 停止" if selected.status == "running" else "⏹ 重试停止"
+                )
+                if st.button(
+                    _stop_label,
+                    key=f"jobs_stop_{selected.run_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        JobManager.stop(selected.run_id)
+                        st.toast(
+                            f"已请求停止作业 {selected.run_id}。", icon="⏹"
+                        )
+                    except JobManagerError as exc:
+                        st.toast(f"停止失败：{exc}", icon="⚠️")
+                    st.rerun()
 
 # ---------------------------------------------------------------------------
 # Pagination — real prev/next nav over offset-sliced pages (UI review

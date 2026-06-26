@@ -8,9 +8,31 @@ Invalid values silently fall back to the supplied default.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
-from web.operator_ui._param_guard import known_keys, sanitize
+from web.operator_ui._param_guard import _STATUS_ALLOWED, known_keys, sanitize
+
+
+def test_status_filter_options_match_param_guard_whitelist():
+    """The Jobs-page status selectbox and the URL param-guard whitelist MUST
+    stay in sync: a filter option missing from the whitelist is silently
+    stripped on reload/share (falls back to 'all'), and a whitelist value with
+    no selectbox option seeds an out-of-options state. This drift is exactly
+    what codex P2 caught on PR #293, so pin the two together."""
+    src = Path("web/operator_ui/pages/jobs.py").read_text(encoding="utf-8")
+    block = re.search(
+        r'status_filter = st\.selectbox\((.*?)key="jobs_status"', src, re.DOTALL
+    )
+    assert block, "could not locate the status selectbox options in jobs.py"
+    options = set(re.findall(r'"([a-z_]+)"', block.group(1)))
+    assert options == set(_STATUS_ALLOWED), (
+        f"status selectbox {sorted(options)} != param-guard whitelist "
+        f"{sorted(_STATUS_ALLOWED)} — keep _param_guard._STATUS_ALLOWED in "
+        "sync with the jobs.py selectbox."
+    )
 
 # ---------------------------------------------------------------------------
 # Schema registry surface
@@ -48,6 +70,12 @@ def test_known_keys_includes_run_id():
         ("type", "walk_forward"),
         ("status", "running"),
         ("status", "failed"),
+        # New Jobs-page filter states must round-trip so bookmarked / shared
+        # filter URLs survive a reload (codex P2 on PR #293).
+        ("status", "pending"),
+        ("status", "partial"),
+        ("status", "stopped"),
+        ("status", "stop_failed"),
         ("source", "ui"),
         ("source", "cli"),
         ("sort_by", "created_at"),
@@ -69,6 +97,7 @@ def test_enum_accepts_listed_value(key, good):
         ("type", "all'; DROP TABLE"),
         ("status", "PENDING"),  # case-sensitive
         ("status", ""),
+        ("status", "cancelled"),  # dropped: never produced; no longer an option
         ("source", "external"),
         ("sort_by", "name"),  # not a known sort column
         ("sort_dir", "ascending"),  # full word rejected
