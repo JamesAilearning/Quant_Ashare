@@ -44,7 +44,11 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
     stamp_tax_schedule_migration_snippet,
 )
 from src.core.logger import get_logger, setup_logging  # noqa: E402
-from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
+from src.core.qlib_runtime import (  # noqa: E402
+    QlibRuntimeConfig,
+    init_qlib_canonical,
+    provider_uri_guard_message,
+)
 from src.core.walk_forward import (  # noqa: E402
     ResumeMode,
     WalkForwardConfig,
@@ -277,6 +281,17 @@ def main(argv: list[str] | None = None) -> None:
     _logger.info("Loading walk-forward config from %s", config_file)
     raw_yaml = load_yaml_with_inheritance(Path(config_file))
     wf_config, qlib_config = _load_config(config_file)
+
+    # Fail loud on a missing / misconfigured bundle BEFORE qlib (or the mined
+    # bundle build, or the staleness check below) touches it: a non-existent
+    # provider_uri — e.g. QUANT_PROVIDER_URI unset on a non-Windows box so
+    # config_walk.yaml's ${...:-D:/...} default resolves to a path that isn't
+    # there — otherwise reaches qlib and crashes obscurely. Mirrors the guard in
+    # recommend() / Pipeline.run() (the official rolling engine gets the same
+    # protection).
+    guard_message = provider_uri_guard_message(qlib_config.provider_uri)
+    if guard_message is not None:
+        raise ValueError(guard_message)
     # --dataset-cache-dir overrides whatever the YAML sets. The CLI
     # value is forwarded verbatim — including the empty-string sentinel,
     # which WalkForwardConfig.dataset_cache_dir interprets as "explicit

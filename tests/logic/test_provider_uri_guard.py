@@ -130,6 +130,32 @@ class PipelineGuardTests(unittest.TestCase):
             mock_init.assert_not_called()
 
 
+class WalkForwardCliGuardTests(unittest.TestCase):
+    """scripts/run_walk_forward.py (the official rolling engine) builds its
+    QlibRuntimeConfig from config_walk.yaml and calls init directly — it must
+    fail loud on a missing provider_uri BEFORE qlib init, same as the others."""
+
+    def test_missing_provider_raises_before_init(self) -> None:
+        import sys
+
+        import scripts.run_walk_forward as mod
+        with tempfile.TemporaryDirectory() as tmp:
+            ghost = (Path(tmp) / "no_such_bundle").as_posix()
+            cfg = Path(tmp) / "wf.yaml"
+            cfg.write_text(
+                f'provider_uri: "{ghost}"\n'
+                'region: "cn"\n'
+                'feature_handler: "Alpha158"\n'
+                f'output_dir: "{(Path(tmp) / "out").as_posix()}"\n',
+                encoding="utf-8",
+            )
+            with patch.object(mod, "init_qlib_canonical") as mock_init, \
+                 patch.object(sys, "argv", ["run_walk_forward.py", str(cfg)]):
+                with self.assertRaisesRegex(ValueError, "does not exist"):
+                    mod.main()
+            mock_init.assert_not_called()
+
+
 class UiBannerNoRegressionTests(unittest.TestCase):
     """inspect_provider_metadata must keep its exact messages now that it
     delegates the existence / directory check to the shared helper."""

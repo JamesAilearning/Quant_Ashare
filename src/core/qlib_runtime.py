@@ -163,9 +163,11 @@ def provider_uri_guard_message(provider_uri: str) -> str | None:
     or ``None`` when ``provider_uri`` is a usable bundle directory.
 
     Wraps :func:`check_provider_uri` and appends the remediation hint, so the
-    "how to fix" text lives in exactly one place even though two entry points
-    (daily-recommend CLI, walk-forward pipeline) raise it under their own
-    exception types. Call this BEFORE :func:`init_qlib_canonical`: a missing or
+    "how to fix" text lives in exactly one place even though the production
+    entry points (the daily-recommend CLI, the walk-forward pipeline
+    ``Pipeline.run``, and the walk-forward CLI ``scripts/run_walk_forward.py``)
+    raise it under their own exception types. Call this BEFORE
+    :func:`init_qlib_canonical`: a missing or
     misconfigured bundle then fails loud here — with a clear "set
     QUANT_PROVIDER_URI" message — instead of surfacing as an obscure qlib error
     at first data access (e.g. an empty ``D.calendar()``).
