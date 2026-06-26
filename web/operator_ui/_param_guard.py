@@ -31,8 +31,15 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _TYPE_ALLOWED = frozenset({"all", "pipeline", "walk_forward", "provider"})
+# Mirrors the Jobs-page status selectbox options (jobs.py). 'cancelled' is
+# intentionally dropped (the runner/JobManager never writes it), so a stale
+# ``?status=cancelled`` URL now falls back to the default instead of seeding a
+# value that is no longer a selectbox option; the stop lifecycle (stopped /
+# stop_failed) and pending / partial are added so bookmarked/shared filter URLs
+# survive a reload. Keep this set in sync with the selectbox.
 _STATUS_ALLOWED = frozenset(
-    {"all", "queued", "running", "completed", "failed", "cancelled"}
+    {"all", "queued", "pending", "running", "completed", "partial",
+     "failed", "stopped", "stop_failed"}
 )
 _SOURCE_ALLOWED = frozenset({"all", "ui", "cli"})
 _SORT_BY_ALLOWED = frozenset(
