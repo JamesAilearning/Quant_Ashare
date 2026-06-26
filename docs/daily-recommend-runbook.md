@@ -190,16 +190,19 @@ names.
 
 Quick sanity read on the summary line:
 
-- The funnel reconciles as `scored + untradable_masked + st_excluded ≈ universe
-  size` (≈300 for csi300). `scored` alone is the **tradable, non-ST** pool, so on
-  days with suspensions or ST names it is correctly *below* the universe size — a
-  low `scored` with matching `untradable_masked` / `st_excluded` is normal, not an
-  alarm. A shortfall the three counts don't account for is worth a look in the
-  audit csv.
-- `st_excluded` being a small non-zero number is the ST filter working; `0`
-  every day on csi300 is plausible (csi300 rarely holds ST) but worth a glance
-  at the snapshot date if it surprises you.
-- `buy_list` should equal `--topk` unless the tradable pool was smaller.
+- **The funnel.** `scored + untradable_masked + st_excluded` equals the audit CSV's
+  row count (`len(scored_frame)` — the names that received a non-NaN score), **not**
+  the universe size. It can sit **below** the nominal universe (≈300 for csi300):
+  names the model scored NaN are dropped beforehand (reported in the run's **log** as
+  "dropped N NaN-score names", *not* in the audit CSV), and names with no data in the
+  bundle never enter the count. So don't expect the three to sum to exactly 300 —
+  read them against the audit CSV row count, and use the log for the NaN-score drop.
+- **`st_excluded` undercounts the overlap.** A name that is both currently ST *and*
+  suspended / one-price-locked is labelled by its untradable reason and counted in
+  `untradable_masked`, not `st_excluded` (untradable status is checked first). So a
+  low or zero `st_excluded` does **not** prove no ST names were dropped — check the
+  audit CSV's `unavailable_reason` column for the per-name truth.
+- `buy_list` equals `--topk` unless the tradable, non-ST pool was smaller.
 
 **Treat the list as NOT trustworthy for trading when:**
 
