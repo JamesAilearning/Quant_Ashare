@@ -15,15 +15,19 @@ day. The gate SHALL NOT fire for an explicit end-date run: an operator-supplied
 `--end-date` is a deliberate backfill / catch-up (e.g. recovering a missed Friday update
 on Saturday) and SHALL run, never silently no-op.
 
-The no-op SHALL fire only when a USABLE live bundle exists after the Stage 0 repair —
-a NON-EMPTY provider directory, not merely a present path. Its premise is "the bundle is
-already current, skip the redundant refresh", which holds only if a bundle is present. On
-a fresh machine, after a first-ever build crashed leaving only a `.new` that repair
-cleared, or when the provider path exists but is empty / not a real bundle (an operator
-`mkdir`, an antivirus or cloud-sync tool that deleted a corrupted bundle's files but left
-the folder), no usable live provider exists; the gate SHALL NOT no-op there (that would
-report success with no readable bundle) — it falls through to the normal pipeline so a
-bundle is bootstrapped from history, or the run fails loud.
+The no-op SHALL fire only when a readable qlib bundle skeleton exists after the Stage 0
+repair — `calendars/day.txt` AND `instruments/all.txt` AND `features/` all present (the
+same cheap structural set `pit_validator._sanity_check_provider` uses to define a readable
+provider), NOT a bare path, a merely non-empty directory, or the calendar spine alone. Its
+premise is "the bundle is already current, skip the redundant refresh", which holds only
+if a usable bundle is present. On a fresh machine, after a first-ever build crashed leaving
+only a `.new` that repair cleared, when the provider path is empty / a stray file / a
+garbage layout (an operator `mkdir`, an antivirus or cloud-sync tool that deleted a
+corrupted bundle's files but left the folder), or a PARTIAL copy that kept `calendars/
+day.txt` but lost `instruments/all.txt` / `features/`, no usable live bundle exists; the
+gate SHALL NOT no-op there (that would report success with no readable bundle) — it falls
+through to the normal pipeline so a bundle is bootstrapped from history, or the run fails
+loud.
 
 The trading-day determination SHALL be offline and deterministic (a weekend check), so
 the orchestrator hot path and the test suite take no network. A-share weekday holidays
@@ -40,7 +44,7 @@ handled, never wrongly skipped.
 - **THEN** the Stage 0 repair completes the interrupted swap (live provider restored) BEFORE the gate no-ops, so readers are not stranded over the weekend
 
 #### Scenario: a weekend run with no usable live bundle bootstraps instead of no-op'ing
-- **WHEN** `run_daily_update` runs on a Saturday with no usable live provider — absent (fresh machine, or repair just cleared a stale `.new`) OR an empty/garbage directory at the provider path
+- **WHEN** `run_daily_update` runs on a Saturday with no readable qlib bundle — absent (fresh machine, or repair just cleared a stale `.new`), a present path that is an empty / stray-file / garbage directory, OR a partial copy missing `instruments/all.txt` / `features/`
 - **THEN** the gate does NOT no-op; the full pipeline runs so a bundle is bootstrapped to a live swap (never a green exit with no bundle)
 
 #### Scenario: an explicit end-date backfill overrides the gate

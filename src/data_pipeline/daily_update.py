@@ -286,22 +286,29 @@ def _run_date_is_non_trading(run_date: date) -> bool:
 
 
 def _live_bundle_present(provider_dir: Path) -> bool:
-    """True iff a NON-EMPTY provider directory exists at ``provider_dir``.
+    """True iff ``provider_dir`` holds a readable qlib bundle skeleton.
 
     The weekend no-op's premise is "a bundle is already present — skip the redundant
-    refresh". A bare ``Path.exists()`` over-trusts an empty / garbage directory: an
-    operator who ``mkdir``-ed the provider path, an AV / cloud-sync tool that deleted a
-    corrupted bundle's files but left the folder, or a partial out-of-band copy all leave
-    an existing-but-bundleless dir. No-op'ing there would report SUCCESS with nothing for
-    readers — the exact green-but-empty failure the live-bundle guard exists to prevent.
+    refresh". Weaker checks are not enough: ``Path.exists()`` (a bare path), a non-empty
+    dir, or even the calendar spine ALONE would all pass for an operator ``mkdir``, an
+    AV / cloud-sync tool that left the folder after deleting a corrupted bundle's files, a
+    stray file, or a partial copy that kept ``calendars/day.txt`` but lost
+    ``instruments/all.txt`` / ``features/`` — while readers have NO usable bundle. That is
+    the green-but-empty success this guard exists to prevent (codex).
 
-    Require actual content, matching how the orchestrator treats the provider as opaque
-    (``check_and_repair`` and ``swap`` rename it whole, never inspecting contents; deep
-    qlib-validity is 06's and the recommend integrity gate's job, NOT the calendar
-    gate's). An absent path, a plain file at the path, or an empty directory all read as
-    "no live bundle" -> the gate falls through to the bootstrap / fail-loud pipeline.
+    Require the SAME cheap structural skeleton ``pit_validator._sanity_check_provider``
+    uses to define a readable provider — ``calendars/day.txt`` + ``instruments/all.txt`` +
+    ``features/`` all present. This stays a cheap, OFFLINE presence check (no qlib init,
+    no content validation — deep validity, e.g. a non-empty calendar or real features,
+    is 06's / the recommend integrity gate's job). A missing path, a file, an empty dir,
+    or a PARTIAL bundle all read as "no live bundle" -> the gate falls through to the
+    bootstrap / fail-loud pipeline.
     """
-    return provider_dir.is_dir() and any(provider_dir.iterdir())
+    return (
+        (provider_dir / "calendars" / "day.txt").exists()
+        and (provider_dir / "instruments" / "all.txt").exists()
+        and (provider_dir / "features").exists()
+    )
 
 
 def run_daily_update(
@@ -364,10 +371,13 @@ def run_daily_update(
     #       crashed leaving only ``.new`` (which repair just cleared), or when the
     #       provider path exists but is empty / not a real bundle, no usable live provider
     #       exists; a weekend no-op there would report SUCCESS with nothing for readers
-    #       (codex P1). ``_live_bundle_present`` (NOT a bare ``.exists()``) is the check —
-    #       an empty/garbage dir reads as absent. Instead fall through to the normal
-    #       pipeline so it BOOTSTRAPS a bundle from history (or fails loud with a distinct
-    #       exit code) — the fail-loud bootstrap path, not a green-but-empty exit.
+    #       (codex P1). ``_live_bundle_present`` requires the readable qlib bundle
+    #       skeleton (``calendars/day.txt`` + ``instruments/all.txt`` + ``features/``, per
+    #       ``pit_validator._sanity_check_provider``), NOT a bare ``.exists()`` / non-empty
+    #       dir / calendar-spine-only — so an empty, garbage, OR partially-copied bundle
+    #       all read as absent. Instead fall through to the normal pipeline so it
+    #       BOOTSTRAPS a bundle from history (or fails loud with a distinct exit code) —
+    #       not a green-but-empty exit.
     if config.end_date is None and _run_date_is_non_trading(run_date):
         if _live_bundle_present(config.provider_dir):
             _logger.info(
