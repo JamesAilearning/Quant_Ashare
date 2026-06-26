@@ -4,11 +4,13 @@ Drops per-day candidates from a predictions ``pd.Series`` BEFORE
 qlib's ``TopkDropoutStrategy`` rebalances. Two regimes are masked:
 
 * **Suspension (停牌)**: the stock did not trade that day —
-  ``$volume`` is NaN or ``< 1`` (a float-safe zero), or ``$close``
-  is NaN. qlib's default Exchange would otherwise fill at the
-  carried-forward close, producing a phantom trade.
+  ``$volume <= 0`` or ``$close`` is NaN (the zero-volume test is
+  coded as ``volume < 1`` to stay float-safe — see the
+  ``suspended_mask`` comment). qlib's default Exchange would
+  otherwise fill at the carried-forward close, producing a phantom
+  trade.
 * **One-price lock (一字板)**: the entire day's trading happened
-  at one price — NOT suspended (``$volume >= 1``) AND ``$high == $low``. On A-share
+  at one price — ``$volume > 0`` AND ``$high == $low``. On A-share
   this almost always means a limit-up or limit-down queue
   cleared every order at the limit price; a real buyer (on
   upper-limit days) or seller (on lower-limit days) cannot
@@ -113,13 +115,13 @@ def compute_unavailable_mask(
 
     Rules:
 
-    * Suspended: ``$volume`` is NaN or ``< 1`` (a float-safe zero), OR
-      ``$close`` is NaN.
+    * Suspended: ``$volume <= 0`` OR ``$close`` is NaN (the zero-volume
+      test is coded as ``volume < 1``, float-safe).
     * One-price lock: NOT suspended AND ``$high == $low``.
 
     The two are mutually exclusive by construction (suspension is
-    checked first; one-price lock requires NOT suspended — i.e.
-    ``$volume >= 1`` and non-NaN — so the two cannot overlap).
+    checked first; one-price lock requires ``$volume > 0`` which
+    implies not-suspended).
     """
     instrument_list = sorted(set(instruments))
     if not instrument_list:
