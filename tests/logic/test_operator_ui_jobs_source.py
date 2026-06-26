@@ -45,5 +45,76 @@ class JobsPageXssGuardTests(unittest.TestCase):
         self.assertIn('value="{escaped_run_id}"', self.source)
 
 
+class JobsPageStopActionTests(unittest.TestCase):
+    """The Jobs page MUST expose the spec-required Stop action and wire it to
+    ``JobManager.stop()`` (openspec v2-operator-ui-console: "Operator UI SHALL
+    support stopping a running job"). ``JobManager.stop()`` owns the status
+    transition (writes 'stopped' only on a successful kill, 'stop_failed'
+    otherwise), so the page only calls it, handles the typed error, and reruns.
+    """
+
+    def setUp(self) -> None:
+        self.source = _JOBS_SOURCE.read_text(encoding="utf-8")
+
+    def test_stop_button_calls_job_manager_stop(self) -> None:
+        self.assertIn("JobManager.stop(selected.run_id)", self.source)
+
+    def test_stop_action_gated_on_running_or_stop_failed(self) -> None:
+        self.assertIn(
+            'selected.status in ("running", "stop_failed")', self.source
+        )
+
+    def test_stop_button_handles_typed_error(self) -> None:
+        self.assertIn("except JobManagerError", self.source)
+
+
+class JobsPageStatusVocabularyTests(unittest.TestCase):
+    """The status filter must match the statuses the system actually produces:
+    'cancelled' is never written by the runner/JobManager, while the stop
+    lifecycle (stopped / stop_failed) and partial / pending were unreachable.
+    """
+
+    def setUp(self) -> None:
+        self.source = _JOBS_SOURCE.read_text(encoding="utf-8")
+
+    def test_filter_drops_never_produced_cancelled_option(self) -> None:
+        self.assertNotIn(
+            '["all", "queued", "running", "completed", "failed", "cancelled"]',
+            self.source,
+        )
+
+    def test_filter_offers_real_terminal_states(self) -> None:
+        for status in ('"pending"', '"partial"', '"stopped"', '"stop_failed"'):
+            self.assertIn(status, self.source)
+
+    def test_status_icons_cover_stop_lifecycle(self) -> None:
+        for icon_key in (
+            '"stopped":', '"stop_failed":', '"partial":', '"pending":',
+        ):
+            self.assertIn(icon_key, self.source)
+
+
+_APP_SOURCE = Path("web/operator_ui/app.py")
+
+
+class SidebarStatusIndicatorTests(unittest.TestCase):
+    """The sidebar global indicator reads RAW ``list_jobs()`` statuses, so it
+    must count the real vocabulary — ``stop_failed`` as a failure, ``partial``
+    as a completion — and not the dead 'completed'/'ok' aliases the runner
+    never writes (which left stop_failed jobs invisible)."""
+
+    def setUp(self) -> None:
+        self.source = _APP_SOURCE.read_text(encoding="utf-8")
+
+    def test_drops_dead_completed_ok_aliases(self) -> None:
+        self.assertNotIn('("success", "completed", "ok")', self.source)
+
+    def test_counts_stop_failed_as_failure(self) -> None:
+        self.assertIn('("failed", "stop_failed")', self.source)
+
+    def test_counts_partial_as_completion(self) -> None:
+        self.assertIn('("success", "partial")', self.source)
+
+
 if __name__ == "__main__":
     unittest.main()
