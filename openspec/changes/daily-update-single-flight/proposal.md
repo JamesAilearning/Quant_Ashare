@@ -14,14 +14,16 @@ the CLI entry rather than an implicit scheduler assumption.
 
 ## What Changes
 
-- A process-exclusive **single-flight lock** (`src/data_pipeline/single_flight.py`): an
-  OS advisory lock (`fcntl.flock` / `msvcrt.locking`, non-blocking) on a per-provider lock
-  file. The kernel releases it on process exit — even on crash — so there is no stale lock,
-  no PID-liveness probing, and no reclaim race (a naive pidfile + stale-reclaim is
-  inherently racy; two reclaimers can both proceed).
-- The `daily_update` CLI (`scripts/daily_update.py`) acquires the lock around
-  `run_daily_update`; a refusal returns the new `EXIT_ALREADY_RUNNING` (17). `--dry-run`
-  is exempt (it mutates nothing).
+- A process-exclusive **single-flight lock** (`src/data_pipeline/single_flight.py`): OS
+  advisory locks (`fcntl.flock` / `msvcrt.locking`, non-blocking), one per mutable input
+  (provider dir, tushare dump, registry), taken in canonical order so exactly one of two
+  contending runs wins. The kernel releases each on process exit — even on crash — so there
+  is no stale lock, no PID-liveness probing, and no reclaim race (a naive pidfile +
+  stale-reclaim is inherently racy; two reclaimers can both proceed).
+- The `daily_update` CLI (`scripts/daily_update.py`) acquires locks on the provider +
+  tushare dump + registry around `run_daily_update`; a contention refusal returns the new
+  `EXIT_ALREADY_RUNNING` (17), and a lock-setup failure (unwritable path) returns
+  `EXIT_CONFIG` (2). `--dry-run` is exempt (it mutates nothing).
 - A **runbook** (`docs/runbook_daily_update_scheduling.md`): Task Scheduler registration,
   the pre-close scheduling caveat, exit-code monitoring, the manual `daily_recommend`
   morning step, rollback, and the one-week supervised trial.

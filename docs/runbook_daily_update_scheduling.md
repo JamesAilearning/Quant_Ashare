@@ -14,13 +14,15 @@ not an auto-applied change.
 
 ## Safety properties this relies on
 
-- **Single-flight (exit 17).** The CLI takes a process-exclusive **OS advisory lock**
-  keyed to the provider dir (`<provider>.daily_update.lock`) before any bundle mutation.
-  A second run for the same provider — a manual run while the scheduled one is going, or a
-  hung run when the next day fires — exits **17 (`EXIT_ALREADY_RUNNING`)** and touches
-  nothing. The kernel owns the lock and releases it when the holder exits — including on a
-  crash or kill — so there is no stale lock to clear and no PID-reuse wedge. `--dry-run` is
-  exempt (it mutates nothing).
+- **Single-flight (exit 17).** The CLI takes process-exclusive **OS advisory locks** on
+  every mutable input (the provider dir, the tushare dump, and the registry — each gets a
+  sibling `<path>.daily_update.lock`) before any mutation. Two runs that share ANY of them
+  — a manual run while the scheduled one is going, a hung run when the next day fires, or
+  even a second run with a different `--provider-dir` but the same `--tushare-dir` — are
+  serialized: the second exits **17 (`EXIT_ALREADY_RUNNING`)** and touches nothing. The
+  kernel owns the locks and releases them when the holder exits — including on a crash or
+  kill — so there is no stale lock to clear and no PID-reuse wedge. `--dry-run` is exempt
+  (it mutates nothing).
 - **Trading-calendar gate (exit 0).** A weekend run no-ops cleanly without churning the
   bundle (PR-O). Weekday holidays fall through to a normal run whose fetch/freshness
   gates no-op on a day with no new bar — handled, never wrongly skipped.

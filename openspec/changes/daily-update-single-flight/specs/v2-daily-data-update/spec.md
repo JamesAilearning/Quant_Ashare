@@ -1,35 +1,42 @@
 ## ADDED Requirements
 
-### Requirement: The daily update SHALL refuse a concurrent run on the same provider
+### Requirement: The daily update SHALL refuse a concurrent run sharing any mutable input
 
-The `daily_update` CLI SHALL acquire a process-exclusive single-flight lock keyed to the
-provider directory BEFORE any bundle mutation, so a scheduled firing and a manual run (or
-a hung run and the next day's firing) targeting the same provider cannot overlap — the
-swap is crash-atomic but NOT run-concurrent, and overlapping runs would race the
-`provider` / `.bak` / `.new` triplet and could corrupt the bundle.
+The `daily_update` CLI SHALL acquire a process-exclusive single-flight lock on EVERY
+mutable input a run touches — the provider dir AND the shared raw inputs (the tushare
+dump, the delisted registry) — BEFORE any mutation, so two runs that share ANY of them
+cannot overlap. The swap is crash-atomic but NOT run-concurrent (overlapping runs would
+race the `provider` / `.bak` / `.new` triplet), and the fetch / registry stages write
+fixed-name temp files under the shared raw paths (overlapping runs would clobber them even
+with different providers).
 
-The lock SHALL be an OS advisory lock (`fcntl.flock` / `msvcrt.locking`), NOT a pidfile,
+Each lock SHALL be an OS advisory lock (`fcntl.flock` / `msvcrt.locking`), NOT a pidfile,
 so the kernel releases it when the holder exits — including on a crash or kill — leaving
-no stale lock to reclaim and no PID-reuse / corrupt-lock wedge. A second acquirer that
-cannot take the lock SHALL fail fast with a distinct exit code (17, already-running) and
+no stale lock to reclaim and no PID-reuse / corrupt-lock wedge. The locks SHALL be taken
+in a canonical order so exactly one of two contending runs wins (the other refuses
+cleanly; the non-blocking locks cannot deadlock). A run that cannot take every lock SHALL
+fail fast with a distinct exit code (17, already-running), release any lock it took, and
 run NO stage. A `--dry-run` mutates nothing and SHALL be exempt.
 
-The lock file SHALL be a sibling of the provider dir (not a child), since the swap renames
-the provider dir wholesale; and single-flight SHALL be per-provider, so runs against
-different providers never contend.
+Each lock file SHALL be a sibling of its resource (not a child), since the swap renames
+the provider dir wholesale; and runs that share NO mutable input SHALL NOT contend.
 
-#### Scenario: a concurrent run on the same provider is refused
-- **WHEN** the `daily_update` CLI starts while another run holds the lock for that provider
+#### Scenario: a run sharing a mutable input with a live run is refused
+- **WHEN** the `daily_update` CLI starts while another run holds a lock for any shared input (same provider, tushare dump, or registry)
 - **THEN** it exits 17 (already-running) and runs no fetch/build/swap stage
 
-#### Scenario: the lock is released when the holder exits
-- **WHEN** a run that held the lock exits (normally or by crash) and a later run starts
-- **THEN** the later run acquires the lock and proceeds — no manual clearing is needed
+#### Scenario: distinct providers sharing a raw input are serialized
+- **WHEN** two runs use DIFFERENT `--provider-dir` but the SAME `--tushare-dir` (or `--delisted-registry`)
+- **THEN** the second is refused — they would otherwise clobber the shared raw temp files
 
-#### Scenario: runs against different providers do not contend
-- **WHEN** two `daily_update` runs target DIFFERENT provider dirs at the same time
-- **THEN** each takes its own per-provider lock and runs
+#### Scenario: the lock is released when the holder exits
+- **WHEN** a run that held the locks exits (normally or by crash) and a later run starts
+- **THEN** the later run acquires the locks and proceeds — no manual clearing is needed
+
+#### Scenario: runs that share no mutable input do not contend
+- **WHEN** two `daily_update` runs target fully disjoint provider / tushare / registry paths
+- **THEN** each takes its own locks and runs
 
 #### Scenario: a dry-run is exempt from the lock
-- **WHEN** the `daily_update` CLI runs with `--dry-run` while the lock is held
-- **THEN** it previews the plan and is not blocked by the lock
+- **WHEN** the `daily_update` CLI runs with `--dry-run` while a lock is held
+- **THEN** it previews the plan and is not blocked

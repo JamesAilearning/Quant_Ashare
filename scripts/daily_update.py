@@ -93,14 +93,15 @@ def main(argv: list[str] | None = None) -> int:
     except (TypeError, ValueError) as exc:
         print(f"Config invalid: {exc}", file=sys.stderr)
         return EXIT_CONFIG
-    # Single-flight (阶段5 PR-P): a scheduled firing and a manual run (or a hung run
-    # and the next day's firing) targeting the SAME provider must NOT overlap — the
-    # swap is crash-atomic but not run-concurrent. A --dry-run mutates nothing, so it
-    # is exempt (an operator can preview while a real run holds the lock).
+    # Single-flight (阶段5 PR-P): two runs that share ANY mutable input — the provider
+    # (the crash-atomic-but-not-run-concurrent swap), the tushare dump, or the registry
+    # (both have fixed-name temp writes) — must NOT overlap. Lock all three; a --dry-run
+    # mutates nothing, so it is exempt (an operator can preview while a real run holds it).
     if config.dry_run:
         return run_daily_update(config)
     try:
-        with single_flight(config.provider_dir):
+        with single_flight(config.provider_dir, config.tushare_dir,
+                           config.delisted_registry):
             return run_daily_update(config)
     except AlreadyRunningError as exc:
         print(f"daily_update: {exc}", file=sys.stderr)

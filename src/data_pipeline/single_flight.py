@@ -1,23 +1,24 @@
 """Process-exclusive single-flight lock for the daily-update orchestrator (阶段5 PR-P).
 
 ``run_daily_update`` mutates the live qlib provider through a swap that is crash-atomic
-but NOT run-concurrent (see ``bundle_swap.swap``): between its two renames the live path
-briefly does not exist, and two overlapping runs would fight over the ``provider`` /
-``.bak`` / ``.new`` triplet and could corrupt the bundle. The PR-O calendar-gate comment
-designated the scheduler as the mutual-exclusion owner; this is that guard, made explicit
-at the CLI entry so a scheduled firing and a manual run (or a hung run and the next day's
-firing) targeting the SAME provider are serialized: the second acquirer fails FAST.
+but NOT run-concurrent (see ``bundle_swap.swap``), AND it writes fixed-name temp files
+under the shared raw inputs (the tushare dump, the delisted registry). Two overlapping
+runs would fight over the ``provider`` / ``.bak`` / ``.new`` triplet OR clobber each
+other's raw temp files — even with different providers, if they share a raw input. The
+PR-O calendar-gate comment designated the scheduler as the mutual-exclusion owner; this
+is that guard, made explicit at the CLI entry so any two runs sharing a mutable resource
+(provider, tushare dump, or registry) are serialized: the second acquirer fails FAST.
 
-This uses an **OS advisory lock** (``fcntl.flock`` / ``msvcrt.locking``) on a per-provider
-lock file — NOT a pidfile. The kernel releases the lock when the holding process exits,
+This uses an **OS advisory lock** (``fcntl.flock`` / ``msvcrt.locking``), one per mutable
+resource — NOT a pidfile. The kernel releases the lock when the holding process exits,
 INCLUDING on a crash or kill, so there is no stale lock to reclaim, no PID-liveness
 probing, and no PID-reuse / corrupt-lock wedge (a naive pidfile + stale-reclaim is
-inherently racy — two reclaimers can both proceed). The lock file is LEFT on disk between
+inherently racy — two reclaimers can both proceed). A lock file is LEFT on disk between
 runs: unlinking it would break the lock (a deleted-but-still-open inode no longer excludes
 a freshly re-created path), and its content is irrelevant to correctness.
 
-Assumes a LOCAL filesystem for ``provider_dir`` — advisory locks are unreliable over
-NFS/SMB. The live qlib bundle is a local-disk artifact, so this holds.
+Assumes a LOCAL filesystem for the locked paths — advisory locks are unreliable over
+NFS/SMB. The qlib bundle and raw dump are local-disk artifacts, so this holds.
 """
 
 from __future__ import annotations
@@ -95,36 +96,48 @@ def _unlock(fd: int) -> None:
 
 
 @contextlib.contextmanager
-def single_flight(provider_dir: Path) -> Iterator[None]:
-    """Hold a process-exclusive OS advisory lock for ``provider_dir`` for the duration.
+def single_flight(*resources: Path) -> Iterator[None]:
+    """Hold a process-exclusive OS advisory lock on EVERY ``resources`` path.
 
-    Raises :class:`AlreadyRunningError` if another run holds the lock. Because the kernel
-    owns the lock, it is released automatically on exit — including if the body raises or
-    the process crashes — so a run never leaves a lock that wedges the next one.
+    Pass every mutable root a run touches — the provider dir AND the shared raw inputs
+    (tushare dump, delisted registry). ``run_daily_update`` writes fixed-name temp files
+    under those shared paths, so two runs that share ANY of them would clobber each other
+    even with different providers; locking each serializes them, while runs that share
+    none stay independent. Raises :class:`AlreadyRunningError` if any lock is held.
+
+    Locks are taken in a canonical (sorted) order so two contending runs reach the shared
+    lock in the same sequence — exactly one wins, the other refuses cleanly (no
+    double-refusal, no deadlock; the locks are non-blocking). The kernel releases every
+    lock when the holder exits — including on a crash or kill — so nothing wedges the next
+    run. Paths are normalized (absolute) so spelling differences map to the same lock.
     """
-    path = lock_path_for(provider_dir)
-    # Fresh-machine bootstrap: the provider dir's parent may not exist yet. A real run
-    # needs it anyway; create it so opening the lock file does not crash.
-    with contextlib.suppress(OSError):
-        path.parent.mkdir(parents=True, exist_ok=True)
+    if not resources:
+        raise ValueError("single_flight requires at least one resource path")
+    paths = sorted({lock_path_for(Path(os.path.abspath(r))) for r in resources}, key=str)
+    held: list[int] = []
     try:
-        fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
-    except OSError as exc:
-        # Unwritable lock path / read-only fs / permission — a SETUP failure, not
-        # contention. Surface a typed error the CLI maps to a defined exit code.
-        raise SingleFlightSetupError(
-            f"could not open the single-flight lock {path}: {exc}"
-        ) from exc
-    try:
-        if not _try_lock_exclusive(fd):
-            raise AlreadyRunningError(
-                f"daily_update already running for {provider_dir} (lock {path} is held "
-                "by another process). Refusing to run concurrently — the lock releases "
-                "automatically when that run exits."
-            )
-        try:
-            yield
-        finally:
-            _unlock(fd)
+        for path in paths:
+            # Fresh-machine bootstrap: the parent may not exist yet. A real run needs it.
+            with contextlib.suppress(OSError):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+            except OSError as exc:
+                # Unwritable lock path / read-only fs / permission — a SETUP failure, not
+                # contention. Surface a typed error the CLI maps to a defined exit code.
+                raise SingleFlightSetupError(
+                    f"could not open the single-flight lock {path}: {exc}"
+                ) from exc
+            if not _try_lock_exclusive(fd):
+                os.close(fd)
+                raise AlreadyRunningError(
+                    f"daily_update already running (lock {path} is held by another "
+                    "process). Refusing to run concurrently — it releases automatically "
+                    "when that run exits."
+                )
+            held.append(fd)
+        yield
     finally:
-        os.close(fd)
+        for fd in reversed(held):
+            _unlock(fd)
+            os.close(fd)

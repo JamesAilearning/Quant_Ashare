@@ -119,6 +119,42 @@ class SingleFlightTests(unittest.TestCase):
                 pass
             self.assertTrue(lock_path_for(prov).exists())  # left on disk, reused
 
+    def test_shared_raw_input_serializes_distinct_providers(self) -> None:
+        # codex P2: two runs with DIFFERENT providers but a SHARED raw input (tushare
+        # dump / registry) would clobber each other's fixed-name temp files — so they
+        # must serialize even though their providers differ.
+        with tempfile.TemporaryDirectory() as t:
+            shared = Path(t) / "tushare"
+            with single_flight(Path(t) / "provA", shared):
+                with self.assertRaises(AlreadyRunningError):
+                    with single_flight(Path(t) / "provB", shared):
+                        self.fail("a shared raw input must serialize distinct providers")
+
+    def test_fully_disjoint_runs_do_not_contend(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            with single_flight(Path(t) / "provA", Path(t) / "tushareA"):
+                with single_flight(Path(t) / "provB", Path(t) / "tushareB"):
+                    pass  # no shared resource -> both run
+
+    def test_partial_acquire_is_released_on_contention(self) -> None:
+        # When a later lock in the set is held, the earlier ones we took are released —
+        # no leak that would wedge a subsequent run. ("prov" sorts before "tushare", so
+        # the prov lock is acquired first, then the shared lock fails.)
+        with tempfile.TemporaryDirectory() as t:
+            prov, shared = Path(t) / "prov", Path(t) / "tushare"
+            with single_flight(shared):  # hold ONLY the shared lock
+                with self.assertRaises(AlreadyRunningError):
+                    with single_flight(prov, shared):  # contends on the shared lock
+                        self.fail()
+            # the shared holder released; prov was never wedged -> both acquire now
+            with single_flight(prov, shared):
+                pass
+
+    def test_requires_at_least_one_resource(self) -> None:
+        with self.assertRaises(ValueError):
+            with single_flight():
+                self.fail("empty resource set must be rejected")
+
 
 class CliSingleFlightTests(unittest.TestCase):
     def _argv(self, tmp: Path, prov: Path, *extra: str) -> list[str]:

@@ -8,10 +8,10 @@
 
 ## Implementation
 
-- [x] `src/data_pipeline/single_flight.py`: `single_flight(provider_dir)` context manager
-      — an OS advisory lock (`fcntl.flock` / `msvcrt.locking`, non-blocking) on a
-      per-provider sibling lock file (kernel releases on exit; no stale/reclaim/pid logic)
-      + `AlreadyRunningError`
+- [x] `src/data_pipeline/single_flight.py`: `single_flight(*resources)` context manager
+      — OS advisory locks (`fcntl.flock` / `msvcrt.locking`, non-blocking) on a sibling
+      lock per mutable input, taken in canonical order (kernel releases on exit; no
+      stale/reclaim/pid logic) + `AlreadyRunningError` + `SingleFlightSetupError`
 - [x] `src/data_pipeline/daily_update.py`: `EXIT_ALREADY_RUNNING = 17` + exit-code table
 - [x] `scripts/daily_update.py`: acquire the lock around `run_daily_update`; `--dry-run`
       exempt; a refusal returns `EXIT_ALREADY_RUNNING`
