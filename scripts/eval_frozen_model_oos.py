@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Out-of-sample eval of a FROZEN qlib model over a guard window (④ promotion recon).
+
+Loads an ALREADY-TRAINED pickled model (NOT a retrain), builds the Alpha158 dataset for a
+guard window normalized to the model's own training fit window, predicts, and computes the
+CANONICAL signal + backtest metrics + a degeneracy scan — reusing the exact config the
+WF / REGEN replay uses (``replay_frozen_baseline`` constants + ``CanonicalBacktestInput``),
+so the incumbent baseline and a later candidate are apples-to-apples (variable isolation).
+
+Reports: IC(1d/5d), IC-IR(1d), turnover, backtest annualized_return / information_ratio /
+max_drawdown (excess-with-cost vs SH000300TR), and a per-date prediction-degeneracy scan
+(unique-score count / tie density — the ~39-bucket/261-tie failure mode seen in REGEN
+fold-0). The degeneracy scan also runs on the incumbent itself (does it degenerate?).
+
+This is real compute on the LIVE bundle (read-only) but NOT a retrain — run FOREGROUND.
+Defaults target the incumbent on the guard window; override --train-end / --valid-* and
+--model for the candidate. ST-mask is ENABLED (matches the incumbent's single-fold path).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pickle
+import sys
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# Canonical backtest knobs — imported from the SAME module the WF/REGEN replay uses, so
+# the metrics are computed identically (T+1, close exec, ±9.5% limit, costs).
+from scripts.regen.replay_frozen_baseline import (  # noqa: E402
+    COMMISSION,
+    EXEC_PRICE,
+    INIT_CASH,
+    LAG,
+    LIMIT_THRESHOLD,
+    MIN_COST,
+    N_DROP,
+    SLIPPAGE_BPS,
+    TOPK,
+)
+from src.core.backtest_runner import BacktestRunner  # noqa: E402
+from src.core.canonical_backtest_contract import (  # noqa: E402
+    ADJUST_MODE_PRE,
+    CN_STAMP_TAX_SCHEDULE_DEFAULT,
+    CanonicalAccountConfig,
+    CanonicalBacktestInput,
+    CanonicalExchangeConfig,
+    CanonicalExchangeCostModel,
+)
+from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
+from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer  # noqa: E402
+from src.core.walk_forward.aggregate import extract_cost_metrics  # noqa: E402
+from src.data.feature_dataset_builder import (  # noqa: E402
+    FeatureDatasetBuilder,
+    FeatureDatasetConfig,
+)
+
+_BENCHMARK_TR = "SH000300TR"  # canonical total-return basis (PR-2)
+
+
+def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
+    """Build the Alpha158 dataset (test = guard window, normalized to the fit window),
+    load the frozen model, and predict on the test segment."""
+    init_qlib_canonical(
+        QlibRuntimeConfig(
+            provider_uri=args.provider, region="cn", data_adjust_mode=ADJUST_MODE_PRE,
+        )
+    )
+    build = FeatureDatasetBuilder.build(
+        FeatureDatasetConfig(
+            instruments=args.instruments,
+            feature_handler=args.handler,
+            train_start=args.fit_start,       # normalization fit = the model's training
+            train_end=args.fit_end,
+            valid_start=args.valid_start,     # placeholder segment (unused for a frozen model;
+            valid_end=args.valid_end,         # kept embargo-valid so the builder accepts it)
+            test_start=args.guard_start,      # the GUARD window we score
+            test_end=args.guard_end,
+        )
+    )
+    with Path(args.model).open("rb") as fh:
+        model = pickle.load(fh)
+    if not hasattr(model, "predict"):
+        raise SystemExit(f"loaded object {type(model).__name__} has no .predict")
+    preds = model.predict(build.dataset, segment="test")
+    if not isinstance(preds, pd.Series):
+        preds = pd.Series(preds)
+    return preds.dropna()
+
+
+def _degeneracy_scan(preds: pd.Series) -> dict[str, Any]:
+    """Per-date unique-score count + tie density (the REGEN fold-0 failure mode: the
+    topk cutoff landing inside a tie block). Flags days that collapse to few buckets."""
+    rows = []
+    for date, grp in preds.groupby(level=0):  # level 0 = datetime (name may be unset)
+        n = int(grp.shape[0])
+        uniq = int(grp.nunique())
+        rows.append((str(date)[:10], n, uniq, 1.0 - uniq / n if n else 0.0))
+    df = pd.DataFrame(rows, columns=["date", "n", "n_unique", "tie_density"])
+    # "degenerate" heuristic: < 0.5 unique-ratio, OR fewer unique values than the topk
+    # cutoff WHILE the universe exceeds topk (so the top-K boundary sits inside a tie
+    # block, as REGEN fold-0 did) — the ``n > TOPK`` guard avoids flagging a small
+    # universe where n_unique == n <= TOPK is perfectly healthy.
+    degen = df[(df["n_unique"] < df["n"] * 0.5)
+               | ((df["n_unique"] <= TOPK) & (df["n"] > TOPK))]
+    return {
+        "n_days": int(df.shape[0]),
+        "min_unique": int(df["n_unique"].min()),
+        "median_unique": float(df["n_unique"].median()),
+        "median_universe": float(df["n"].median()),
+        "max_tie_density": float(df["tie_density"].max()),
+        "median_tie_density": float(df["tie_density"].median()),
+        "n_degenerate_days": int(degen.shape[0]),
+        "degenerate_days_sample": degen.head(10).to_dict("records"),
+    }
+
+
+def _concentration_stats(positions: Any) -> dict[str, float]:
+    """Per-date holding concentration from the backtest positions — a behavioral guard.
+    An equal-weight top-50 should sit near n_holdings~50 / top10_share~0.2 / HHI~0.02; a
+    candidate that holds far fewer effective names, or skews weight onto a few, is
+    concentrating (measured even though the backtest ran with NO risk constraints)."""
+    import statistics
+
+    n_holds: list[int] = []
+    top10: list[float] = []
+    max_w: list[float] = []
+    hhi: list[float] = []
+    for _date, holds in (positions or {}).items():
+        weights = [abs(float(x)) for x in holds.values() if x is not None]
+        tot = sum(weights)
+        if not weights or tot <= 0:
+            continue
+        shares = sorted((w / tot for w in weights), reverse=True)
+        n_holds.append(len(weights))
+        top10.append(sum(shares[:10]))
+        max_w.append(shares[0])
+        hhi.append(sum(s * s for s in shares))
+    if not n_holds:
+        return {}
+    return {
+        "median_n_holdings": float(statistics.median(n_holds)),
+        "min_n_holdings": float(min(n_holds)),
+        "median_top10_share": float(statistics.median(top10)),
+        "max_single_name_weight": float(max(max_w)),
+        "median_hhi": float(statistics.median(hhi)),
+    }
+
+
+def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, Any]:
+    request = CanonicalBacktestInput(
+        predictions_ref=f"oos_eval:{Path(args.model).name}",
+        evaluation_start=args.guard_start,
+        evaluation_end=args.guard_end,
+        account_config=CanonicalAccountConfig(init_cash=INIT_CASH),
+        exchange_config=CanonicalExchangeConfig(
+            freq="day",
+            execution_price_kind=EXEC_PRICE,
+            cost_model=CanonicalExchangeCostModel(
+                commission_rate=COMMISSION,
+                stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
+                slippage_bps=SLIPPAGE_BPS,
+                min_cost=MIN_COST,
+            ),
+            limit_threshold=LIMIT_THRESHOLD,
+        ),
+        adjust_mode=ADJUST_MODE_PRE,
+        signal_to_execution_lag=LAG,
+        benchmark_code=_BENCHMARK_TR,
+    )
+    output = BacktestRunner.run(
+        request=request,
+        predictions=preds,
+        topk=TOPK,
+        n_drop=N_DROP,
+        compute_baselines=False,
+        namechange_path=args.namechange,
+        require_st_mask=True,  # match the incumbent's single-fold path
+    )
+    ann, dd, ir = extract_cost_metrics(output.risk_analysis, 0)
+    return {
+        "annualized_return": ann,
+        "max_drawdown": dd,
+        "information_ratio": ir,
+        "concentration": _concentration_stats(output.positions),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--model", default="D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl")
+    p.add_argument("--provider", default="D:/qlib_data/my_cn_data_pit")
+    p.add_argument("--namechange", default="D:/qlib_data/tushare_raw/all_namechanges.parquet")
+    p.add_argument("--instruments", default="csi300")
+    p.add_argument("--handler", default="Alpha158")
+    # Normalization fit window = the model's OWN training window (incumbent default).
+    p.add_argument("--fit-start", default="2018-01-02")
+    p.add_argument("--fit-end", default="2023-12-20")
+    # Placeholder valid segment (unused by a frozen model; embargo-valid for the builder).
+    p.add_argument("--valid-start", default="2024-01-02")
+    p.add_argument("--valid-end", default="2024-12-18")
+    # The common clean guard window (2025-07+ : OOS for both incumbent and candidate).
+    p.add_argument("--guard-start", default="2025-07-01")
+    p.add_argument("--guard-end", default="2026-06-17")
+    p.add_argument("--out", default=None, help="JSON output path.")
+    args = p.parse_args(argv)
+
+    print(f"[oos-eval] model={args.model}")
+    print(f"[oos-eval] fit={args.fit_start}..{args.fit_end}  guard={args.guard_start}..{args.guard_end}")
+    preds = _predictions_over_window(args)
+    print(f"[oos-eval] predictions: {preds.shape[0]} rows, "
+          f"{preds.index.get_level_values(0).nunique()} dates")
+
+    signal = SignalAnalyzer.analyze(
+        predictions=preds,
+        config=SignalAnalysisConfig(forward_periods=(1, 5), topk=TOPK),
+    )
+    degen = _degeneracy_scan(preds)
+    backtest = _backtest_metrics(preds, args)
+
+    result = {
+        "model": args.model,
+        "fit_window": [args.fit_start, args.fit_end],
+        "guard_window": [args.guard_start, args.guard_end],
+        "n_pred_rows": int(preds.shape[0]),
+        "n_pred_dates": int(preds.index.get_level_values(0).nunique()),
+        "ic_1d": float(signal.ic_summary[1]["mean_ic"]),
+        "ic_5d": float(signal.ic_summary[5]["mean_ic"]),
+        "ic_ir_1d": float(signal.ic_summary[1]["ir"]),
+        "ic_1d_positive_ratio": float(signal.ic_summary[1].get("ic_positive_ratio", float("nan"))),
+        "mean_turnover": float(signal.turnover_stats.get("mean_turnover", float("nan"))),
+        "backtest_excess_with_cost": backtest,
+        "degeneracy": degen,
+    }
+    print("\n" + "=" * 64)
+    print(json.dumps({k: v for k, v in result.items() if k != "degeneracy"}, indent=2, default=str))
+    print("--- degeneracy scan ---")
+    print(json.dumps(degen, indent=2, default=str))
+    print("=" * 64)
+
+    out = Path(args.out) if args.out else (
+        PROJECT_ROOT / "output" / "oos_eval"
+        / f"{Path(args.model).stem}_{args.guard_start}_{args.guard_end}.json"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    print(f"[oos-eval] wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

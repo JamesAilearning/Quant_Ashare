@@ -1,0 +1,40 @@
+{
+  "model": "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl",
+  "fit_window": [
+    "2018-01-02",
+    "2023-12-20"
+  ],
+  "guard_window": [
+    "2025-07-01",
+    "2026-06-12"
+  ],
+  "n_pred_rows": 69049,
+  "n_pred_dates": 231,
+  "ic_1d": 0.019653846002118773,
+  "ic_5d": 0.038749570862102484,
+  "ic_ir_1d": 0.14717935049156003,
+  "ic_1d_positive_ratio": 0.5930735930735931,
+  "mean_turnover": 0.3933913043478261,
+  "backtest_excess_with_cost": {
+    "annualized_return": -0.089139606872755,
+    "max_drawdown": -0.10405855949662261,
+    "information_ratio": -1.1935442815233426,
+    "concentration": {
+      "median_n_holdings": 50.0,
+      "min_n_holdings": 48.0,
+      "median_top10_share": 0.230032703269535,
+      "max_single_name_weight": 0.1024310184468915,
+      "median_hhi": 0.020224608725268788
+    }
+  },
+  "degeneracy": {
+    "n_days": 231,
+    "min_unique": 289,
+    "median_unique": 300.0,
+    "median_universe": 300.0,
+    "max_tie_density": 0.013333333333333308,
+    "median_tie_density": 0.0,
+    "n_degenerate_days": 0,
+    "degenerate_days_sample": []
+  }
+}
