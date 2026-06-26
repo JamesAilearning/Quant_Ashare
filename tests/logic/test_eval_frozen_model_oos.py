@@ -65,6 +65,46 @@ class DegeneracyScanTests(unittest.TestCase):
         out = _degeneracy_scan(preds)
         self.assertEqual(out["n_degenerate_days"], 0)
 
+    def test_material_cutoff_straddle_is_flagged_despite_unique_universe(self) -> None:
+        # The codex P2 failure mode: scores collapse ONLY around the top-k boundary while
+        # the rest of the universe is unique. 40 distinct above + 15 tied AT the cutoff +
+        # 245 distinct below -> n_unique=286 (healthy ratio, > TOPK) so the unique-ratio
+        # check alone misses it, but the buy list is tie-break dependent -> must be vetoed.
+        high = [50.0 + 0.1 * (i + 1) for i in range(40)]   # 40 distinct, > cutoff
+        at = [50.0] * 15                                    # 15 tied AT the cutoff
+        low = [50.0 - 0.1 * (i + 1) for i in range(245)]    # 245 distinct, < cutoff
+        out = _degeneracy_scan(_series({"2025-07-01": high + at + low}))
+        self.assertEqual(out["n_degenerate_days"], 1)
+        self.assertEqual(out["n_cutoff_straddle_days"], 1)
+        self.assertEqual(out["max_names_tied_at_cutoff"], 15)
+        self.assertEqual(out["min_unique"], 286)            # ratio is healthy -> old miss
+        self.assertEqual(out["cutoff_straddle_veto_min"], 10)  # max(round(0.2*50), 2)
+
+    def test_small_cutoff_straddle_is_reported_but_not_vetoed(self) -> None:
+        # A 5-name boundary tie is reported (operator visibility) but below the materiality
+        # floor (10) -> not a hard veto, since a handful of tie-break picks is benign.
+        high = [50.0 + 0.1 * (i + 1) for i in range(48)]
+        at = [50.0] * 5
+        low = [50.0 - 0.1 * (i + 1) for i in range(247)]
+        out = _degeneracy_scan(_series({"2025-07-01": high + at + low}))
+        self.assertEqual(out["n_degenerate_days"], 0)
+        self.assertEqual(out["n_cutoff_straddle_days"], 1)
+        self.assertEqual(out["max_names_tied_at_cutoff"], 5)
+
+    def test_materiality_floor_is_inclusive_at_the_boundary(self) -> None:
+        # Pin the EXACT veto floor (_CUTOFF_STRADDLE_VETO=10) on both sides, so a `>=`->`>`
+        # regression cannot slip through: a true straddle of 9 tied at the cutoff is reported
+        # but NOT vetoed; exactly 10 IS vetoed. n_above=45 keeps the cutoff strictly inside
+        # the tie block in both days (45 < 50 < 45 + n_at).
+        nine = ([50.0 + 0.1 * (i + 1) for i in range(45)] + [50.0] * 9
+                + [50.0 - 0.1 * (i + 1) for i in range(246)])   # straddle, sub-floor (9)
+        ten = ([50.0 + 0.1 * (i + 1) for i in range(45)] + [50.0] * 10
+               + [50.0 - 0.1 * (i + 1) for i in range(245)])    # straddle, AT floor (10)
+        out = _degeneracy_scan(_series({"2025-07-01": nine, "2025-07-02": ten}))
+        self.assertEqual(out["n_cutoff_straddle_days"], 2)      # both straddle the cutoff
+        self.assertEqual(out["n_degenerate_days"], 1)           # only the n_at==10 day vetoes
+        self.assertEqual(out["max_names_tied_at_cutoff"], 10)
+
 
 class ConcentrationStatsTests(unittest.TestCase):
     def test_equal_weight_top50_is_diffuse(self) -> None:
