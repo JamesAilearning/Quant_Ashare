@@ -203,34 +203,65 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         if cls._tmpdir:
             shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
+    @classmethod
+    def _fold0_selection(cls) -> str | None:
+        """Which known selection fold-0 landed on THIS run: ``"A"`` (committed), ``"B"``
+        (the recorded alternate), or ``None`` (a mix / third value — a real regression).
+
+        Derived from fold-0's per-fold topk-dependent metrics, which are the source of
+        truth (one held portfolio). The aggregate is computed FROM the same folds, so it
+        MUST agree with this state — a per-fold A but aggregate B is an aggregator/
+        reporting regression, not a valid runner flip (codex)."""
+        committed_pf = {
+            f["fold_index"]: f
+            for f in json.loads(BASELINE_FIXTURE.read_text(encoding="utf-8")).get("per_fold", [])
+        }
+        fold0 = next((f for f in cls._result["folds"]
+                      if f.fold_index == _FOLD0_DEGENERATE_INDEX), None)
+        ref = committed_pf.get(_FOLD0_DEGENERATE_INDEX)
+        if fold0 is None or ref is None:
+            return None
+        replay = {m: getattr(fold0, m) for m in _FOLD0_TOPK_DEPENDENT}
+        if _all_match(replay, {m: ref.get(m) for m in _FOLD0_TOPK_DEPENDENT}):
+            return "A"
+        if _all_match(replay, _KNOWN_FOLD0_BACKTEST_ALT):
+            return "B"
+        return None
+
     def test_aggregate_reproduces_committed_baseline(self) -> None:
         committed = json.loads(BASELINE_FIXTURE.read_text(encoding="utf-8"))["aggregate_metrics"]
         result = self._result["aggregate_metrics"]
+        # The aggregate is computed FROM the folds, so its fold-0-derived keys MUST match
+        # the SAME selection fold-0 landed on this run (codex) — not just be internally
+        # all-A or all-B. Derive that one state from fold-0's per-fold metrics.
+        state = self._fold0_selection()
         drifts = []
-        flip_replay, flip_committed = {}, {}
         for key, ref in committed.items():
             if isinstance(ref, dict):  # nested timing block (wall-clock, non-metric)
                 continue
             if key in _KNOWN_AGGREGATE_ALT:
-                flip_replay[key] = result.get(key)   # group-checked below (all-A or all-B)
-                flip_committed[key] = ref
-                continue
-            if not _close(result.get(key), ref):  # every other key -> strict 1e-6
-                drifts.append(f"{key}: replay={result.get(key)!r} vs committed={ref!r}")
-        # The seven fold-0-derived aggregate keys must ALL be the committed (A) state OR
-        # ALL the known alternate (B); a mix is the 'third value' regression (codex).
-        if flip_replay and not (_all_match(flip_replay, flip_committed)
-                                or _all_match(flip_replay, _KNOWN_AGGREGATE_ALT)):
-            drifts.append(
-                "fold-0-derived aggregate keys are not a single known selection (neither all "
-                "committed-A nor all alternate-B): "
-                + ", ".join(f"{k}={v!r}" for k, v in flip_replay.items())
-            )
+                if state == "A":
+                    target = ref
+                elif state == "B":
+                    target = _KNOWN_AGGREGATE_ALT[key]
+                else:  # fold-0's per-fold state is undetermined (see test_each_fold)
+                    drifts.append(
+                        f"{key}: replay={result.get(key)!r} — fold-0 per-fold selection is "
+                        "undetermined (mix/third value), so the aggregate cannot reproduce"
+                    )
+                    continue
+            else:
+                target = ref  # non-fold-0-derived key -> strict committed
+            if not _close(result.get(key), target):
+                drifts.append(
+                    f"{key}: replay={result.get(key)!r} vs expected={target!r} "
+                    f"(fold-0 selection {state})"
+                )
         if drifts:
             self.fail(
-                "REGEN-2 CI-real replay did NOT reproduce the committed aggregate within "
-                f"{REPLAY_ABS_TOL} (byte-identity except fold-0's known per-runner-bimodal "
-                "topk-dependent metrics, which must all be ONE selection):\n  - "
+                "REGEN-2 CI-real replay aggregate did NOT reproduce the committed baseline "
+                f"within {REPLAY_ABS_TOL} (non-fold-0 keys byte-identity; fold-0-derived keys "
+                "must match the SAME selection fold-0 landed on):\n  - "
                 + "\n  - ".join(drifts)
                 + "\n\nIf a backtest-semantics change is intentional, regenerate via "
                 "scripts/regen/replay_frozen_baseline_regen2.py and re-sign the baseline."
@@ -250,29 +281,27 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
             f"{sorted(replay_indices)} — REGEN-2 must be exactly 23 real folds (0..22).",
         )
         drifts = []
-        fold0_replay, fold0_committed = {}, {}
         for fold in result:
             ref = committed_pf[fold.fold_index]
             for metric in _PER_FOLD_METRICS:
+                # fold-0's topk-dependent backtest metrics are state-checked via
+                # _fold0_selection() below; fold-0's ICs and all of folds 1-22 stay strict.
                 if (fold.fold_index == _FOLD0_DEGENERATE_INDEX
                         and metric in _FOLD0_TOPK_DEPENDENT):
-                    fold0_replay[metric] = getattr(fold, metric)  # group-checked below
-                    fold0_committed[metric] = ref.get(metric)
                     continue
-                # fold-0's ICs and all of folds 1-22 stay strict 1e-6.
                 if not _close(getattr(fold, metric), ref.get(metric)):
                     drifts.append(
                         f"fold {fold.fold_index}.{metric}: replay={getattr(fold, metric)!r} "
                         f"vs committed={ref.get(metric)!r}"
                     )
-        # fold-0's topk-dependent backtest metrics must ALL be committed-A OR ALL alt-B —
-        # a per-metric mix is the 'third state' regression (codex).
-        if fold0_replay and not (_all_match(fold0_replay, fold0_committed)
-                                 or _all_match(fold0_replay, _KNOWN_FOLD0_BACKTEST_ALT)):
+        # fold-0's topk-dependent backtest metrics must be ONE known selection (all-A or
+        # all-B); a per-metric mix or a third value -> None -> regression (codex).
+        if self._fold0_selection() is None:
+            fold0 = next((f for f in result if f.fold_index == _FOLD0_DEGENERATE_INDEX), None)
             drifts.append(
                 "fold 0 topk-dependent metrics are not a single known selection (neither all "
                 "committed-A nor all alternate-B): "
-                + ", ".join(f"{m}={v!r}" for m, v in fold0_replay.items())
+                + ", ".join(f"{m}={getattr(fold0, m)!r}" for m in _FOLD0_TOPK_DEPENDENT)
             )
         if drifts:
             self.fail(
