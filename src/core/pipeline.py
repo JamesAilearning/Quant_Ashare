@@ -49,7 +49,11 @@ from src.core.performance_attribution import (
     PerformanceAttributionError,
 )
 from src.core.pipeline_result_artifacts import write_pipeline_result_artifacts
-from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
+from src.core.qlib_runtime import (
+    QlibRuntimeConfig,
+    init_qlib_canonical,
+    provider_uri_guard_message,
+)
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
@@ -381,6 +385,14 @@ class Pipeline:
 
     @classmethod
     def run(cls, config: PipelineConfig) -> PipelineResult:
+        # Fail loud on a missing / misconfigured bundle BEFORE creating a run
+        # directory or initializing qlib: a non-existent provider_uri otherwise
+        # surfaces as an obscure qlib error deep in feature loading, not a clear
+        # "set QUANT_PROVIDER_URI" up front (and avoids littering an empty run
+        # dir for a doomed run).
+        guard_message = provider_uri_guard_message(config.provider_uri)
+        if guard_message is not None:
+            raise PipelineError(guard_message)
         # Per-run output directory: output/runs/{timestamp}_{fingerprint}/
         # Prevents successive runs from silently overwriting each other.
         # The fingerprint is computed from the config so re-running with

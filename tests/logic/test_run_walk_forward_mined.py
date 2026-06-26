@@ -222,8 +222,13 @@ def test_main_binds_handler_between_qlib_init_and_engine_run(tmp_path, monkeypat
     """A MinedFactor YAML drives main() to call register exactly between
     qlib init and engine run; an Alpha158 YAML does not register."""
     pool_dir = _seed_pool(tmp_path / "pool")
+    # main() now fail-loud guards a missing provider_uri before qlib init, so it
+    # must point at a real directory (qlib itself is mocked here, so the dir need
+    # only exist, not be a populated bundle).
+    provider_dir = tmp_path / "provider"
+    provider_dir.mkdir()
     cfg = _write_yaml(tmp_path / "wf.yaml", [
-        *_baseline_yaml_lines(),
+        *_baseline_yaml_lines(provider_uri=provider_dir.as_posix()),
         'feature_handler: "MinedFactor"',
         'adjust_mode: "post_adjusted"',
         f'mined_factor_pool_dir: "{pool_dir.as_posix()}"',
@@ -266,8 +271,12 @@ def test_main_binds_handler_between_qlib_init_and_engine_run(tmp_path, monkeypat
 
 def test_main_alpha158_yaml_does_not_register(tmp_path, monkeypatch):
     """An Alpha158 YAML must not invoke register_mined_factor_handler."""
+    # main() now fail-loud guards a missing provider_uri before qlib init (qlib
+    # is mocked here, so the dir need only exist).
+    provider_dir = tmp_path / "provider"
+    provider_dir.mkdir()
     cfg = _write_yaml(tmp_path / "wf.yaml", [
-        *_baseline_yaml_lines(),
+        *_baseline_yaml_lines(provider_uri=provider_dir.as_posix()),
         'feature_handler: "Alpha158"',
         f'output_dir: "{(tmp_path / "out").as_posix()}"',
     ])

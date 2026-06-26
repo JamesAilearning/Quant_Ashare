@@ -45,6 +45,7 @@ from src.core.qlib_runtime import (
     QlibRuntimeConfig,
     _normalize_provider_uri,
     init_qlib_canonical,
+    provider_uri_guard_message,
 )
 from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
 from src.data.pit._common import qlib_to_ts_code
@@ -522,6 +523,12 @@ def _load_model(model_path: Path) -> Any:
 def recommend(
     config: RecommendationConfig, *, now: date | None = None,
 ) -> DailyRecommendationResult:
+    # Fail loud on a missing / misconfigured bundle BEFORE qlib touches it: a
+    # non-existent provider_uri otherwise surfaces as an obscure qlib error at
+    # the first ``D.calendar()`` below, not a clear "set QUANT_PROVIDER_URI".
+    guard_message = provider_uri_guard_message(config.provider_uri)
+    if guard_message is not None:
+        raise DailyRecommendationError(guard_message)
     init_qlib_canonical(QlibRuntimeConfig(
         provider_uri=config.provider_uri,
         region=config.region,
