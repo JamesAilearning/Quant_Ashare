@@ -42,16 +42,20 @@ if render_topbar(title="Qlib 量化交易系统", subtitle="运维控制台"):
 # ---------------------------------------------------------------------------
 
 # ``list_jobs`` returns RAW job.json dicts — no success->completed
-# normalization (that happens in job_io for the Jobs page), so the real
-# terminal vocabulary here is success / failed / stop_failed / stopped /
-# partial / pending / queued. Bucket against that: count ``stop_failed`` as a
-# failure and ``partial`` as a completion, and drop the dead ``completed`` /
-# ``ok`` aliases the runner never writes. (``stopped`` / ``pending`` /
-# ``queued`` fall through to idle — not an alert or a completion.)
+# normalization (that happens in job_io for the Jobs page). Bucket against the
+# real terminal vocabulary: count ``stop_failed`` as a failure and ``partial``
+# as a completion (both were previously invisible here). ``completed`` / ``ok``
+# are kept alongside ``success`` because the codebase still treats them as
+# valid legacy on-disk terminal aliases (job_io ``_CLEANUP_TERMINAL_STATUSES``),
+# so an old completed run keeps counting. (``stopped`` / ``pending`` / ``queued``
+# fall through to idle — not an alert or a completion.)
 _jobs = JobManager.list_jobs()
 _running = sum(1 for j in _jobs if j.get("status") == "running")
 _failed = sum(1 for j in _jobs if j.get("status") in ("failed", "stop_failed"))
-_completed = sum(1 for j in _jobs if j.get("status") in ("success", "partial"))
+_completed = sum(
+    1 for j in _jobs
+    if j.get("status") in ("success", "completed", "ok", "partial")
+)
 
 _status_class = "idle"
 _status_text = "全部空闲"

@@ -99,21 +99,20 @@ _APP_SOURCE = Path("web/operator_ui/app.py")
 
 class SidebarStatusIndicatorTests(unittest.TestCase):
     """The sidebar global indicator reads RAW ``list_jobs()`` statuses, so it
-    must count the real vocabulary — ``stop_failed`` as a failure, ``partial``
-    as a completion — and not the dead 'completed'/'ok' aliases the runner
-    never writes (which left stop_failed jobs invisible)."""
+    must count the real vocabulary: ``stop_failed`` as a failure and ``partial``
+    as a completion (both were previously invisible). The legacy ``completed`` /
+    ``ok`` aliases are KEPT alongside ``success`` — the codebase still treats
+    them as valid on-disk terminal statuses (job_io _CLEANUP_TERMINAL_STATUSES),
+    so old completed runs must not vanish from the count (codex P2 on #293)."""
 
     def setUp(self) -> None:
         self.source = _APP_SOURCE.read_text(encoding="utf-8")
 
-    def test_drops_dead_completed_ok_aliases(self) -> None:
-        self.assertNotIn('("success", "completed", "ok")', self.source)
-
     def test_counts_stop_failed_as_failure(self) -> None:
         self.assertIn('("failed", "stop_failed")', self.source)
 
-    def test_counts_partial_as_completion(self) -> None:
-        self.assertIn('("success", "partial")', self.source)
+    def test_completed_count_keeps_legacy_aliases_and_adds_partial(self) -> None:
+        self.assertIn('("success", "completed", "ok", "partial")', self.source)
 
 
 if __name__ == "__main__":
