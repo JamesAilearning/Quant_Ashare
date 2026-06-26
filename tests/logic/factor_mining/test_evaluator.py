@@ -428,3 +428,39 @@ def test_evaluator_does_not_import_qlib_or_pit_directly():
 
 
 import pytest  # noqa: E402
+
+
+def test_evaluate_factor_rank_method_skips_pearson_ic(monkeypatch):
+    """method='rank' (the validator's per-entry hot path) must NOT compute
+    the Pearson IC — it is the headline only when method != 'rank' and is
+    discarded on the rank path. Guards the dead-work elimination."""
+    import src.factor_mining.evaluator as _ev
+
+    calls: list[str] = []
+    real = _ev._ic_per_day
+
+    def _spy(*args, **kwargs):
+        calls.append(kwargs.get("method"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_ev, "_ic_per_day", _spy)
+
+    tickers = list("ABCDE")
+    dates = pd.date_range("2024-01-01", periods=12)
+    rng = np.random.default_rng(3)
+    fwd = pd.DataFrame(
+        rng.normal(0, 0.02, size=(12, 5)),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(tickers, name="instrument"),
+    )
+    panel = _make_panel(tickers, dates)
+    panel["$volume"] = fwd
+    expr = OperatorCall("cs_rank", (Terminal("$volume"),))
+
+    calls.clear()
+    evaluate_factor(expr, panel, fwd, method="rank")
+    assert calls == ["rank"]  # Pearson IC skipped on the rank path
+
+    calls.clear()
+    evaluate_factor(expr, panel, fwd, method="normal")
+    assert "normal" in calls and "rank" in calls  # both computed off the rank path
