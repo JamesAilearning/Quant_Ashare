@@ -109,13 +109,13 @@ session:
   day (T+1) to enter on"). It cannot emit a list for a session not yet in the
   bundle.
 
-Operationally: the picks are the model's ranking **as of T**, with entry-day
-tradability validated against the bundle tail — a current signal to inform the
-upcoming session's decision. But because the `entry_date` label is the bundle's
-last session, do **not** read it as "buy at tomorrow's open" without applying your
-own judgement for the actual forward session. To score a specific historical
-decision day, pass `--as-of <that day>` (entry then resolves to the next trading
-day after it that exists in the bundle).
+Operationally: with the default, the decision day T (the second-to-last bundle
+session) and the entry day (the bundle tail) are **both already-traded sessions**,
+and the command cannot emit a list for a not-yet-traded session. So read the default
+output as scored and tradability-validated against those past sessions — do **not**
+read it as "buy at tomorrow's open". To score a specific historical decision day,
+pass `--as-of <that day>` (entry then resolves to the next trading day after it that
+exists in the bundle).
 
 ## What it writes
 
@@ -163,8 +163,8 @@ means every one of them passed**. Concretely, a successful run guarantees:
   stamp confirming it was built from a complete tushare fetch (unless you
   overrode — see below).
 - **Tradable on the entry day.** Each pick is not suspended / one-price-locked on
-  T+1 (the day it would actually fill), matching the backtest's execution-day
-  masking.
+  the entry day T+1 (the session a lag=1 fill lands on), matching the backtest's
+  execution-day masking.
 
 Quick sanity read on the summary line:
 
