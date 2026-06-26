@@ -16,6 +16,7 @@ scheduler (Phase 4 — out of scope here) can tell where a run died:
     14 rebuild failed (02 registry / 05 bins / 03 membership / 04 universe)
     15 validation failed (06 on the staged bundle)
     16 swap failed
+    17 another run holds the single-flight lock for this provider (CLI; 阶段5 PR-P)
 
 Path flow is END-TO-END EXPLICIT: the orchestrator passes every path to every
 numbered script as CLI argv (all six are pure-argparse — verified in Step 0; no
@@ -81,6 +82,7 @@ EXIT_SNAPSHOT_STALE = 13
 EXIT_REBUILD = 14
 EXIT_VALIDATE = 15
 EXIT_SWAP = 16
+EXIT_ALREADY_RUNNING = 17  # CLI single-flight (阶段5 PR-P); see scripts/daily_update.py
 
 Runner = Callable[[list[str]], int]
 

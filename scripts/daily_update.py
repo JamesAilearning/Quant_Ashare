@@ -28,9 +28,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.logger import setup_logging  # noqa: E402
 from src.data_pipeline.daily_update import (  # noqa: E402
+    EXIT_ALREADY_RUNNING,
     EXIT_CONFIG,
     DailyUpdateConfig,
     run_daily_update,
+)
+from src.data_pipeline.single_flight import (  # noqa: E402
+    AlreadyRunningError,
+    single_flight,
 )
 
 
@@ -87,7 +92,18 @@ def main(argv: list[str] | None = None) -> int:
     except (TypeError, ValueError) as exc:
         print(f"Config invalid: {exc}", file=sys.stderr)
         return EXIT_CONFIG
-    return run_daily_update(config)
+    # Single-flight (阶段5 PR-P): a scheduled firing and a manual run (or a hung run
+    # and the next day's firing) targeting the SAME provider must NOT overlap — the
+    # swap is crash-atomic but not run-concurrent. A --dry-run mutates nothing, so it
+    # is exempt (an operator can preview while a real run holds the lock).
+    if config.dry_run:
+        return run_daily_update(config)
+    try:
+        with single_flight(config.provider_dir):
+            return run_daily_update(config)
+    except AlreadyRunningError as exc:
+        print(f"daily_update: {exc}", file=sys.stderr)
+        return EXIT_ALREADY_RUNNING
 
 
 if __name__ == "__main__":
