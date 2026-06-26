@@ -265,20 +265,13 @@ def prepare_asof_features(config: RecommendationConfig, as_of_date: str) -> pd.D
 # --------------------------------------------------------------------------
 # Names (best-effort, current name only)
 # --------------------------------------------------------------------------
-def _load_name_map(parquet_path: str | None) -> dict[str, str]:
-    if not parquet_path:
-        return {}
-    p = Path(parquet_path)
-    if not p.exists():
-        _logger.info(
-            "name source %s not found; stock_name will be blank "
-            "(names are not in PIT bins).", parquet_path,
-        )
-        return {}
-    df = pd.read_parquet(p)
-    if "ts_code" not in df.columns or "name" not in df.columns:
-        _logger.info("name source %s lacks ts_code/name columns; skipping.", parquet_path)
-        return {}
+def _name_map_from_df(df: pd.DataFrame) -> dict[str, str]:
+    """Build the ts_code -> name map from a validated active-stocks frame.
+
+    The frame is the one ``_validate_st_snapshot`` already read and validated
+    (ts_code + name present, non-empty), so the recommend path reuses it
+    instead of reading the parquet a second time.
+    """
     return {str(r.ts_code): str(r.name) for r in df.itertuples(index=False)}
 
 
@@ -413,7 +406,9 @@ def _assert_bundle_fetch_complete(
         )
 
 
-def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> date:
+def _validate_st_snapshot(
+    config: RecommendationConfig, as_of_date: str,
+) -> tuple[date, pd.DataFrame]:
     """Fail-loud guard: the current-ST source must exist, be fresh, and carry
     the required schema.
 
@@ -427,8 +422,9 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> date
     and lets the guard pass silently, the opposite of fail-loud. The embedded
     date survives copies and pandas round-trips. A pre-P3-5 file (no column)
     fails loud with a re-fetch instruction rather than silently falling back to
-    mtime. Returns the validated snapshot date (recommend() then checks it for
-    consistency against the bundle calendar tail).
+    mtime. Returns the validated ``(snapshot_date, dataframe)``: recommend()
+    reuses the frame for the name map (avoiding a second parquet read) and
+    checks the date for consistency against the bundle calendar tail.
     """
     raw = config.name_source_parquet
     if not raw:
@@ -445,8 +441,8 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> date
         )
     # Schema: the required ST filter reads ts_code + name. A present, fresh, but
     # malformed snapshot (columns dropped by an upstream schema change, or an
-    # empty file) would make _load_name_map fall back to {} and silently
-    # DISABLE ST filtering — exactly the leak this guard exists to prevent.
+    # empty file) would make the name map empty and silently DISABLE ST
+    # filtering — exactly the leak this guard exists to prevent.
     try:
         df = pd.read_parquet(path)
     except Exception as exc:
@@ -485,7 +481,7 @@ def _validate_st_snapshot(config: RecommendationConfig, as_of_date: str) -> date
             "active_stocks.parquet (re-fetch tushare stock_basic) or raise "
             "st_snapshot_max_age_days."
         )
-    return snapshot_date
+    return snapshot_date, df
 
 
 def _load_model(model_path: Path) -> Any:
@@ -535,7 +531,12 @@ def recommend(
         data_adjust_mode=config.adjust_mode,
     ))
 
-    as_of_date, entry_date = resolve_dates(config.as_of_date)
+    # Materialize the trading calendar ONCE and thread it through: resolve_dates
+    # and the freshness guard below both consume it (previously two separate
+    # ``D.calendar()`` materializations per recommend()).
+    from qlib.data import D
+    calendar = list(D.calendar())
+    as_of_date, entry_date = resolve_dates(config.as_of_date, calendar=calendar)
 
     # Phase 2: price/feature-data freshness guard. resolve_dates picks the
     # as-of date from the BUNDLE's own calendar, so a stale bundle would
@@ -543,8 +544,7 @@ def recommend(
     # error. Compare the bundle's last trading day against an EXTERNAL today
     # (system date; injectable via ``now`` for tests/determinism) and refuse if
     # it lags by more than bundle_max_age_days.
-    from qlib.data import D
-    bundle_last_day = pd.Timestamp(list(D.calendar())[-1]).date()
+    bundle_last_day = pd.Timestamp(calendar[-1]).date()
     _assert_bundle_fresh(
         bundle_last_day,
         now if now is not None else date.today(),
@@ -633,11 +633,11 @@ def recommend(
     # list that could silently include ST names. Its embedded snapshot_date is
     # then checked against the bundle calendar tail (P3-5): the two artifacts
     # must come from the same update cycle.
-    st_snapshot_date = _validate_st_snapshot(config, as_of_date)
+    st_snapshot_date, st_df = _validate_st_snapshot(config, as_of_date)
     _assert_st_snapshot_consistent_with_bundle(
         st_snapshot_date, bundle_last_day, config.bundle_max_age_days,
     )
-    name_map = _load_name_map(config.name_source_parquet)
+    name_map = _name_map_from_df(st_df)
 
     def _name(inst: str) -> str:
         return name_map.get(qlib_to_ts_code(inst), "")
