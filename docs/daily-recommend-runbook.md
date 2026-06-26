@@ -151,14 +151,18 @@ means every one of them passed**. Concretely, a successful run guarantees:
 - **No look-ahead.** Features for T use only data `≤ T` (handler `end_time=T`),
   normalization is fit on the *training* window, and an always-on guard refuses
   if any feature row is dated after T.
-- **Fresh prices.** The bundle's last trading day is within
-  `--bundle-max-age-days` (14) of today — so you are not ranking on weeks-old
-  prices.
-- **Same-cycle ST/name view.** The active-stocks snapshot exists, is schema-valid
-  and non-empty, its embedded snapshot date is within `--st-max-age-days` (7) of
-  T, AND within `--bundle-max-age-days` of the bundle tail — i.e. names + the ST
-  set were refreshed in the same cycle as the prices. ST/\*ST names are excluded
-  *before* the Top-K slice, so the list holds K tradable non-ST picks.
+- **Prices not stale.** The bundle's last trading day is no more than
+  `--bundle-max-age-days` (14) calendar days *older* than today — so you are not
+  ranking on weeks-old prices. (One-sided: a bundle can't be newer than today.)
+- **ST/name view not stale.** The active-stocks snapshot exists, is schema-valid
+  and non-empty, and is **not too old**: its embedded snapshot date is at most
+  `--st-max-age-days` (7) days *older* than T, and at most `--bundle-max-age-days`
+  (14) days *older* than the bundle tail. This bound is **one-sided by design** — a
+  snapshot *newer* than T or than the bundle tail is allowed (the current-ST view is
+  the correct one for inference, e.g. when scoring a historical `--as-of`). So exit 0
+  proves the ST set is not *stale*, not that it was captured in lock-step with the
+  prices. ST/\*ST names are excluded *before* the Top-K slice, so the list holds K
+  tradable non-ST picks.
 - **Complete-fetch provenance.** The bundle carries a `_fetch_integrity.json`
   stamp confirming it was built from a complete tushare fetch (unless you
   overrode — see below).
