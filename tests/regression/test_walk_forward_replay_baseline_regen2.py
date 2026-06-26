@@ -33,20 +33,24 @@ topk=50 cutoff lands inside a tie block and the selected names depend on numpy's
 SORT tie-break, which differs across numpy MAJORS. The committed baseline is
 generated ON the canonical pin (a gen-env==canonical assertion in
 replay_frozen_baseline_regen2 fails generation loud off-pin), so CI reproduces it.
-A drift past 1e-6 means the dependency stack moved — investigate, do NOT loosen.
-(The earlier "Windows is the correct side / qlib cross-OS bug" framing was
-DISPROVEN: both CI runners agreed; the split was an off-pin numpy 2.4.4 dev box.)
+A drift past 1e-6 on the STRICT surface (folds 1-22 + fold-0's ICs) means the
+dependency stack moved — investigate, do NOT loosen. (The earlier "Windows is the
+correct side / qlib cross-OS bug" framing was DISPROVEN: both CI runners agreed; the
+split was an off-pin numpy 2.4.4 dev box.)
 
-RUN-TO-RUN FLAKE (empirical; the ~1e-15 agreement above is the COMMON case, not a
-guarantee) — fold-0's degeneracy can flip the tie-break run-to-run on the SAME
-canonical stack, not just across numpy MAJORS. Observed on an IDENTICAL commit: one
-CI run reproduced the anchor, a re-run of the very same commit first diverged
-(fold-0 IR -0.07 vs anchored +1.767) then reproduced. So the CI step wraps this in a
-BOUNDED 3-attempt retry (.github/workflows/test.yml): the 1e-6 tolerance and the
-assertions here stay UNCHANGED, a real dependency-stack drift fails all 3 attempts
-and still reds the leg, and only the known fold-0 flake is absorbed. The proper fix
-— a deterministic secondary sort key so the topk tie-break is stable — changes the
-selection and so needs a baseline regen on the canonical pin; it is a phase-6 item.
+PER-RUNNER BIMODALITY of fold-0 (CORRECTED — supersedes an earlier "run-to-run flake +
+3-attempt retry" framing that was WRONG): fold-0's degeneracy flips its topk selection
+between exactly TWO states even on the canonical pin — committed (A) and a recorded
+alternate (B) — and the choice is fixed for a whole CI run but VARIES BETWEEN runs (a
+fresh GitHub runner can flip it; the divergent value is byte-identical across runs, so it
+is a discrete tie-break flip, NOT continuous FP noise). An in-run retry therefore CANNOT
+help (all attempts share the runner). So the test ISOLATES fold-0 instead: folds 1-22
+(all metrics) and fold-0's ICs reproduce STRICTLY at 1e-6 on every runner (the real
+regression surface); fold-0's three topk-dependent backtest metrics (return / drawdown /
+IR) and the seven aggregate keys derived from them are asserted against {committed A OR
+the known alternate B} (see ``_KNOWN_*_ALT``) — a THIRD value is a real regression and
+still fails. The proper fix — a deterministic secondary sort key so the tie-break is
+stable — changes the selection and needs a baseline regen; phase-6.
 
 The replay (23 backtests) runs ONCE in ``setUpClass`` and both test methods read
 the cached result. Skipped ONLY if qlib is unavailable or a committed fixture is
@@ -90,6 +94,54 @@ def _close(a: float | None, b: float | None) -> bool:
     if math.isnan(a) or math.isnan(b):
         return False
     return abs(a - b) <= REPLAY_ABS_TOL
+
+
+# fold-0's frozen scores are DEGENERATE — ~39 discrete buckets over 300 stocks (261
+# ties), so the topk=50 cutoff lands inside a tie block and the selected names depend on
+# the sort tie-break. That tie-break is PER-RUNNER bimodal even on the canonical pin (NOT
+# merely numpy-major-sensitive): observed byte-identically across CI runs, a fresh GitHub
+# runner flips fold-0 between two selections — committed (A) and the recorded alternate
+# (B) below. So fold-0's TOPK-DEPENDENT backtest metrics (return / drawdown / IR) — and
+# the seven aggregate keys derived from the per-fold IR/ann set — are asserted against
+# {committed OR this known alternate}; a THIRD value is still a real regression and fails.
+# fold-0's ICs are full-cross-section rank correlations (NOT topk-dependent) and folds
+# 1-22 have 300 unique scores (no boundary ties), so they reproduce STRICTLY on every
+# runner — unchanged at 1e-6. The proper fix (a deterministic secondary sort key) changes
+# the selection -> needs a baseline regen -> phase-6. Do NOT widen 1e-6, and do NOT add a
+# third alternate without confirming it is the SAME degeneracy, not a real stack drift.
+# The {A, B} set is EMPIRICAL within the numpy<2 range (the pin bounds the major, not the
+# exact build); a future numpy<2 patch that partitions the ties differently could surface
+# a third selection and red a valid runner — that is the INTENDED fail-loud (investigate;
+# the phase-6 deterministic secondary sort key removes the dependence for good).
+_FOLD0_DEGENERATE_INDEX = 0
+_FOLD0_TOPK_DEPENDENT = ("annualized_return", "max_drawdown", "information_ratio")
+_KNOWN_FOLD0_BACKTEST_ALT = {
+    "annualized_return": -0.004711347265649301,
+    "max_drawdown": -0.02726356962697682,
+    "information_ratio": -0.0712889987158074,
+}
+# The aggregate is a deterministic function of the per-fold IR/ann, so fold-0's flip
+# gives each of these exactly two states: committed (A, in the JSON) or alternate (B).
+_KNOWN_AGGREGATE_ALT = {
+    "mean_annualized_return": 0.028012145880259152,
+    "mean_annualized_return_ci_low": -0.04948816928667496,
+    "mean_annualized_return_ci_high": 0.09865727070463469,
+    "mean_information_ratio": 0.19787663958380639,
+    "std_information_ratio": 1.9755829786899575,
+    "mean_information_ratio_ci_low": -0.6482102836796528,
+    "mean_information_ratio_ci_high": 0.9631212903466849,
+}
+
+
+def _all_match(replay: dict[str, float | None], state: dict[str, float | None]) -> bool:
+    """True iff EVERY metric in ``replay`` matches the SAME known ``state`` to 1e-6.
+
+    fold-0's topk-dependent metrics all come from ONE held portfolio, so a per-metric MIX
+    of the A and B selections cannot arise in a genuine run — only a real backtest-semantics
+    regression produces it. Checking the fold-0-dependent metrics as a GROUP (all-A OR
+    all-B) catches that 'third state' that a per-metric {A or B} check would silently accept
+    (codex). ``state`` must cover every key in ``replay``."""
+    return all(_close(replay[k], state[k]) for k in replay)
 
 
 class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
@@ -155,16 +207,31 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         committed = json.loads(BASELINE_FIXTURE.read_text(encoding="utf-8"))["aggregate_metrics"]
         result = self._result["aggregate_metrics"]
         drifts = []
+        flip_replay, flip_committed = {}, {}
         for key, ref in committed.items():
             if isinstance(ref, dict):  # nested timing block (wall-clock, non-metric)
                 continue
-            if not _close(result.get(key), ref):
+            if key in _KNOWN_AGGREGATE_ALT:
+                flip_replay[key] = result.get(key)   # group-checked below (all-A or all-B)
+                flip_committed[key] = ref
+                continue
+            if not _close(result.get(key), ref):  # every other key -> strict 1e-6
                 drifts.append(f"{key}: replay={result.get(key)!r} vs committed={ref!r}")
+        # The seven fold-0-derived aggregate keys must ALL be the committed (A) state OR
+        # ALL the known alternate (B); a mix is the 'third value' regression (codex).
+        if flip_replay and not (_all_match(flip_replay, flip_committed)
+                                or _all_match(flip_replay, _KNOWN_AGGREGATE_ALT)):
+            drifts.append(
+                "fold-0-derived aggregate keys are not a single known selection (neither all "
+                "committed-A nor all alternate-B): "
+                + ", ".join(f"{k}={v!r}" for k, v in flip_replay.items())
+            )
         if drifts:
             self.fail(
                 "REGEN-2 CI-real replay did NOT reproduce the committed aggregate within "
-                f"{REPLAY_ABS_TOL} (deterministic replay against the committed mini-bundle "
-                "should be byte-identity):\n  - " + "\n  - ".join(drifts)
+                f"{REPLAY_ABS_TOL} (byte-identity except fold-0's known per-runner-bimodal "
+                "topk-dependent metrics, which must all be ONE selection):\n  - "
+                + "\n  - ".join(drifts)
                 + "\n\nIf a backtest-semantics change is intentional, regenerate via "
                 "scripts/regen/replay_frozen_baseline_regen2.py and re-sign the baseline."
             )
@@ -183,18 +250,35 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
             f"{sorted(replay_indices)} — REGEN-2 must be exactly 23 real folds (0..22).",
         )
         drifts = []
+        fold0_replay, fold0_committed = {}, {}
         for fold in result:
             ref = committed_pf[fold.fold_index]
             for metric in _PER_FOLD_METRICS:
+                if (fold.fold_index == _FOLD0_DEGENERATE_INDEX
+                        and metric in _FOLD0_TOPK_DEPENDENT):
+                    fold0_replay[metric] = getattr(fold, metric)  # group-checked below
+                    fold0_committed[metric] = ref.get(metric)
+                    continue
+                # fold-0's ICs and all of folds 1-22 stay strict 1e-6.
                 if not _close(getattr(fold, metric), ref.get(metric)):
                     drifts.append(
                         f"fold {fold.fold_index}.{metric}: replay={getattr(fold, metric)!r} "
                         f"vs committed={ref.get(metric)!r}"
                     )
+        # fold-0's topk-dependent backtest metrics must ALL be committed-A OR ALL alt-B —
+        # a per-metric mix is the 'third state' regression (codex).
+        if fold0_replay and not (_all_match(fold0_replay, fold0_committed)
+                                 or _all_match(fold0_replay, _KNOWN_FOLD0_BACKTEST_ALT)):
+            drifts.append(
+                "fold 0 topk-dependent metrics are not a single known selection (neither all "
+                "committed-A nor all alternate-B): "
+                + ", ".join(f"{m}={v!r}" for m, v in fold0_replay.items())
+            )
         if drifts:
             self.fail(
-                "Per-fold metric drift in the REGEN-2 CI-real replay (every fold's "
-                f"{', '.join(_PER_FOLD_METRICS)} must reproduce within {REPLAY_ABS_TOL}):\n  - "
+                "Per-fold metric drift in the REGEN-2 CI-real replay (folds 1-22 + fold-0's "
+                f"ICs must reproduce within {REPLAY_ABS_TOL}; fold-0's topk-dependent "
+                "backtest metrics must all be ONE known selection):\n  - "
                 + "\n  - ".join(drifts)
             )
 
