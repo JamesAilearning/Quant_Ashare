@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
+from src.core.qlib_runtime import check_provider_uri  # noqa: E402
 from src.data._segment_embargo import (  # noqa: E402
     LABEL_LOOKAHEAD_DAYS as LABEL_LOOKAHEAD_DAYS,
 )
@@ -106,27 +107,33 @@ def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
     provider_path = Path(raw_uri)
     errors: list[str] = []
     warnings: list[str] = []
-    if not provider_path.exists():
-        errors.append(f"provider_uri does not exist: {provider_path}")
-        return ProviderMetadata(
-            provider_uri=raw_uri,
-            provider_path=provider_path,
-            metadata_root=None,
-            validation_path=None,
-            manifest_path=None,
-            coverage_start_date=None,
-            coverage_end_date=None,
-            calendar_dates=(),
-            instrument_universes=(),
-            health=None,
-            row_count=None,
-            instrument_count=None,
-            calendar_count=None,
-            errors=tuple(errors),
-            warnings=tuple(warnings),
-        )
-    if not provider_path.is_dir():
-        errors.append(f"provider_uri must be a directory: {provider_path}")
+    # The existence / directory precondition is shared with the CLI/pipeline
+    # pre-init guard (``src.core.qlib_runtime.check_provider_uri``) so the banner
+    # and the runtime cannot drift on what counts as a usable bundle path.
+    uri_status = check_provider_uri(raw_uri)
+    if uri_status.error is not None:
+        errors.append(uri_status.error)
+        if uri_status.missing:
+            # Nothing to read from a non-existent path — return early, exactly as
+            # before. (A path that exists but is not a directory falls through to
+            # the best-effort reads below, also as before.)
+            return ProviderMetadata(
+                provider_uri=raw_uri,
+                provider_path=provider_path,
+                metadata_root=None,
+                validation_path=None,
+                manifest_path=None,
+                coverage_start_date=None,
+                coverage_end_date=None,
+                calendar_dates=(),
+                instrument_universes=(),
+                health=None,
+                row_count=None,
+                instrument_count=None,
+                calendar_count=None,
+                errors=tuple(errors),
+                warnings=tuple(warnings),
+            )
 
     # Publisher retired (U3): a bundle's metadata (when present) lives in the
     # bundle dir itself, so read it from the provider path directly.

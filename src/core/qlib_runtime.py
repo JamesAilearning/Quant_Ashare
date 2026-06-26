@@ -30,8 +30,10 @@ Re-initialization rules:
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from src.core.canonical_backtest_contract import SUPPORTED_ADJUST_MODES
 
@@ -101,8 +103,6 @@ def _normalize_provider_uri(raw: str) -> str:
     ``D:/qlib_data/my_cn_data`` vs ``d:\\qlib_data\\my_cn_data`` vs a
     symlinked copy of the same directory.
     """
-    import os
-
     stripped = raw.strip()
     expanded = os.path.expanduser(stripped)
     absolute = os.path.abspath(expanded)
@@ -113,6 +113,79 @@ def _normalize_provider_uri(raw: str) -> str:
         # fall back to abspath-only rather than failing construction.
         resolved = absolute
     return os.path.normcase(resolved)
+
+
+@dataclass(frozen=True)
+class ProviderUriStatus:
+    """Outcome of the provider-uri filesystem precondition check.
+
+    ``error`` is the operator-facing base message (``None`` when the path is a
+    usable bundle directory). ``missing`` distinguishes "path does not exist at
+    all" — nothing to read, so the UI health banner returns early — from
+    "exists but is not a directory", where the banner still attempts its
+    best-effort reads. Both states are fatal for the CLI/pipeline pre-init
+    guard (:func:`provider_uri_guard_message`).
+    """
+
+    error: str | None
+    missing: bool
+
+
+def check_provider_uri(provider_uri: str) -> ProviderUriStatus:
+    """Filesystem precondition for a qlib provider bundle — pure ``pathlib``.
+
+    Single source of truth for "is this ``provider_uri`` a usable bundle
+    directory, and if not, what is the message". Shared by the operator-UI
+    health banner (``web.operator_ui.training_guards.inspect_provider_metadata``)
+    and the CLI/pipeline pre-init guard (:func:`provider_uri_guard_message`) so
+    the two cannot drift — one reporting an error the other silently lets qlib
+    crash on, or vice versa.
+
+    Imports neither ``qlib`` nor ``src.pit``; importing this module never
+    initializes qlib. The caller is responsible for any ``${VAR}`` / ``~``
+    expansion (the UI normalizes upstream; the guard below expands ``~``), so
+    this stays a pure existence check on the string it is given.
+    """
+    path = Path(provider_uri)
+    if not path.exists():
+        return ProviderUriStatus(
+            error=f"provider_uri does not exist: {path}", missing=True,
+        )
+    if not path.is_dir():
+        return ProviderUriStatus(
+            error=f"provider_uri must be a directory: {path}", missing=False,
+        )
+    return ProviderUriStatus(error=None, missing=False)
+
+
+def provider_uri_guard_message(provider_uri: str) -> str | None:
+    """Operator-facing fail-loud message for the CLI/pipeline pre-init guard,
+    or ``None`` when ``provider_uri`` is a usable bundle directory.
+
+    Wraps :func:`check_provider_uri` and appends the remediation hint, so the
+    "how to fix" text lives in exactly one place even though two entry points
+    (daily-recommend CLI, walk-forward pipeline) raise it under their own
+    exception types. Call this BEFORE :func:`init_qlib_canonical`: a missing or
+    misconfigured bundle then fails loud here — with a clear "set
+    QUANT_PROVIDER_URI" message — instead of surfacing as an obscure qlib error
+    at first data access (e.g. an empty ``D.calendar()``).
+
+    Empty / whitespace ``provider_uri`` returns ``None`` so the canonical-config
+    layer's own "provider_uri is required" check stays the authority on that
+    case (rather than a confusing "does not exist: ."). The path is expanded for
+    ``~`` to match what ``_normalize_provider_uri`` hands qlib, so a
+    ``QUANT_PROVIDER_URI=~/qlib_data`` does not false-positive.
+    """
+    raw = str(provider_uri or "").strip()
+    if not raw:
+        return None
+    status = check_provider_uri(os.path.expanduser(raw))
+    if status.error is None:
+        return None
+    return (
+        f"{status.error}. Set the QUANT_PROVIDER_URI environment variable to "
+        "your qlib data bundle directory, or confirm the configured path exists."
+    )
 
 
 _CANONICAL_CONFIG: QlibRuntimeConfig | None = None

@@ -412,8 +412,13 @@ class PipelineDatasetReuseTests(unittest.TestCase):
 
             import tempfile
             with tempfile.TemporaryDirectory() as tmp:
+                # provider_uri must be a real directory: Pipeline.run now
+                # fail-loud guards a missing bundle before init (qlib itself is
+                # mocked here, so the dir need only exist, not be a real bundle).
+                provider_dir = Path(tmp) / "provider"
+                provider_dir.mkdir()
                 cfg = PipelineConfig(
-                    provider_uri="/tmp/fake_data",
+                    provider_uri=str(provider_dir),
                     output_dir=tmp,
                     run_factor_analysis=True,
                     run_attribution=False,
