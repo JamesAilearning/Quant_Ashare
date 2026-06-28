@@ -16,14 +16,14 @@
   "ic_1d_positive_ratio": 0.5930735930735931,
   "mean_turnover": 0.3933913043478261,
   "backtest_excess_with_cost": {
-    "annualized_return": -0.08913960687275581,
-    "max_drawdown": -0.10405855949662283,
-    "information_ratio": -1.1935442815233415,
+    "annualized_return": -0.0891396068727554,
+    "max_drawdown": -0.10405855949662249,
+    "information_ratio": -1.193544281523339,
     "concentration": {
       "median_n_holdings": 50.0,
       "min_n_holdings": 48.0,
-      "median_top10_share": 0.23003270326953504,
-      "max_single_name_weight": 0.10243101844689151,
+      "median_top10_share": 0.23003270326953507,
+      "max_single_name_weight": 0.10243101844689148,
       "median_hhi": 0.020224608725268788
     }
   },
@@ -36,6 +36,7 @@
     "median_tie_density": 0.0,
     "n_cutoff_straddle_days": 0,
     "max_names_tied_at_cutoff": 0,
+    "max_tie_filled_slots": 0,
     "cutoff_straddle_veto_min": 10,
     "n_degenerate_days": 0,
     "degenerate_days_sample": []

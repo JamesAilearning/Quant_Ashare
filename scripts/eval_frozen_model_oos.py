@@ -96,9 +96,11 @@ def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
     return preds.dropna()
 
 
-# A tie block STRADDLING the top-k cutoff is degenerate when it is material — >= 20% of
-# top-k (so a meaningful slice of the buy list is arbitrarily tie-break-selected). Smaller
-# straddles are reported but not vetoed (a 2-3 name boundary tie is benign).
+# A tie block STRADDLING the top-k cutoff is degenerate when a MATERIAL share of the buy
+# list is filled by tie-break — >= 20% of top-k SLOTS. The materiality basis is the number
+# of top-k slots filled FROM the tie block (``TOPK - n_above``), NOT the total names tied:
+# 49 names above + 10 tied means only 1 buy is tie-break-dependent (immaterial), even though
+# 10 names sit on the bubble (codex). Smaller straddles are reported but not vetoed.
 _CUTOFF_STRADDLE_VETO = max(round(0.2 * TOPK), 2)
 
 
@@ -112,27 +114,38 @@ def _degeneracy_scan(preds: pd.Series) -> dict[str, Any]:
         high unique ratio yet an arbitrary buy list). The earlier unique-ratio-only check
         missed (b); this detects the cutoff straddle directly.
 
-    Reports both; vetoes (``n_degenerate_days``) on a gross collapse OR a MATERIAL straddle
-    (>= ``_CUTOFF_STRADDLE_VETO`` names tied AT the cutoff). Any straddle is reported in
-    ``n_cutoff_straddle_days`` / ``max_names_tied_at_cutoff`` for the operator to eyeball."""
+    Materiality of (b) is the count of top-k slots filled FROM the tie block
+    (``tie_filled_slots = TOPK - n_above``) — i.e. how many of the actual buys are arbitrary
+    — NOT the total names tied at the cutoff (which over-counts when the bubble is wide but
+    only a slot or two is in-play). Vetoes (``n_degenerate_days``) on a gross collapse OR a
+    straddle with >= ``_CUTOFF_STRADDLE_VETO`` tie-filled slots. Both the slot count
+    (``max_tie_filled_slots``, the veto basis) and the total bubble size
+    (``max_names_tied_at_cutoff``) are reported for the operator to eyeball."""
     rows = []
     for date, grp in preds.groupby(level=0):  # level 0 = datetime (name may be unset)
         n = int(grp.shape[0])
         uniq = int(grp.nunique())
         n_at_cutoff = 0
+        tie_filled_slots = 0
         if n > TOPK:
             srt = sorted(grp.tolist(), reverse=True)
             boundary = srt[TOPK - 1]                          # the k-th (cutoff) score
             n_above = sum(1 for v in srt if v > boundary)     # strictly above the cutoff
             n_at = sum(1 for v in srt if v == boundary)       # tied AT the cutoff score
             if n_above < TOPK < n_above + n_at:               # cutoff strictly inside the tie
-                n_at_cutoff = n_at
-        rows.append((str(date)[:10], n, uniq, 1.0 - uniq / n if n else 0.0, n_at_cutoff))
+                n_at_cutoff = n_at                            # total bubble size (reported)
+                tie_filled_slots = TOPK - n_above            # arbitrary buys (veto basis)
+        rows.append(
+            (str(date)[:10], n, uniq, 1.0 - uniq / n if n else 0.0,
+             n_at_cutoff, tie_filled_slots)
+        )
     df = pd.DataFrame(
-        rows, columns=["date", "n", "n_unique", "tie_density", "n_tied_at_cutoff"]
+        rows,
+        columns=["date", "n", "n_unique", "tie_density",
+                 "n_tied_at_cutoff", "tie_filled_slots"],
     )
     gross = df["n_unique"] < df["n"] * 0.5
-    material_straddle = df["n_tied_at_cutoff"] >= _CUTOFF_STRADDLE_VETO
+    material_straddle = df["tie_filled_slots"] >= _CUTOFF_STRADDLE_VETO
     degen = df[gross | material_straddle]
     return {
         "n_days": int(df.shape[0]),
@@ -143,6 +156,7 @@ def _degeneracy_scan(preds: pd.Series) -> dict[str, Any]:
         "median_tie_density": float(df["tie_density"].median()),
         "n_cutoff_straddle_days": int((df["n_tied_at_cutoff"] > 0).sum()),
         "max_names_tied_at_cutoff": int(df["n_tied_at_cutoff"].max()),
+        "max_tie_filled_slots": int(df["tie_filled_slots"].max()),
         "cutoff_straddle_veto_min": int(_CUTOFF_STRADDLE_VETO),
         "n_degenerate_days": int(degen.shape[0]),
         "degenerate_days_sample": degen.head(10).to_dict("records"),
