@@ -4,9 +4,11 @@ Drops per-day candidates from a predictions ``pd.Series`` BEFORE
 qlib's ``TopkDropoutStrategy`` rebalances. Two regimes are masked:
 
 * **Suspension (停牌)**: the stock did not trade that day —
-  ``$volume <= 0`` or ``$close`` is NaN. qlib's default Exchange
-  would otherwise fill at the carried-forward close, producing a
-  phantom trade.
+  ``$volume <= 0`` or ``$close`` is NaN (the zero-volume test is
+  coded as ``volume < 1`` to stay float-safe — see the
+  ``suspended_mask`` comment). qlib's default Exchange would
+  otherwise fill at the carried-forward close, producing a phantom
+  trade.
 * **One-price lock (一字板)**: the entire day's trading happened
   at one price — ``$volume > 0`` AND ``$high == $low``. On A-share
   this almost always means a limit-up or limit-down queue
@@ -113,7 +115,8 @@ def compute_unavailable_mask(
 
     Rules:
 
-    * Suspended: ``$volume <= 0`` OR ``$close`` is NaN.
+    * Suspended: ``$volume <= 0`` OR ``$close`` is NaN (the zero-volume
+      test is coded as ``volume < 1``, float-safe).
     * One-price lock: NOT suspended AND ``$high == $low``.
 
     The two are mutually exclusive by construction (suspension is
