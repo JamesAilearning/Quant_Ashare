@@ -27,7 +27,7 @@ def to_qlib_ticker(ts_code: str) -> str:
 
     Tushare's ``stock_basic`` returns ``ts_code`` as ``<6-digit>.<exchange>``
     (e.g. ``600087.SH``, ``000023.SZ``). The rest of this project (design
-    doc §4.1 example, ``verify_survivorship.py::KNOWN_DELISTED``, qlib's
+    doc §4.1 example, ``tests/pit/reference_cases.yaml``, qlib's
     ``instruments/*.txt`` convention) uses ``<exchange><6-digit>`` (e.g.
     ``SH600087``). PIT writers must emit the qlib-style form so
     ``reference_cases.yaml`` and downstream consumers match without

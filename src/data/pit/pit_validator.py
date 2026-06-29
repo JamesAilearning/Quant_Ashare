@@ -21,7 +21,7 @@ B. Delist boundary — full sweep. The only HARD failure is look-ahead
    weeks-to-months before their FORMAL delist, so the bin faithfully ends
    early (vendor has no bars there either). Delistings outside the built
    bundle's calendar range are skipped (out of scope). Mirrors and
-   supersedes the legacy ``scripts/data_quality/verify_survivorship.py``.
+   supersedes the legacy stand-alone survivorship smoke-check.
 C. Time-travel — sample 5 historical dates; for every active ticker
    in the universe on that date, list_date <= date and no
    delist_date <= date.
@@ -73,9 +73,8 @@ class CheckResult:
 
 @dataclass
 class PITValidationReport:
-    """Aggregate report. ``exit_code`` is the convention from the legacy
-    ``verify_survivorship.py``: 0=all green, 1=warnings only, 2=any
-    failure."""
+    """Aggregate report. ``exit_code`` follows the legacy survivorship
+    convention: 0=all green, 1=warnings only, 2=any failure."""
 
     checks: list[CheckResult]
     provider_dir: Path
@@ -637,59 +636,3 @@ class PITValidator:
             for w in c.warnings:
                 _logger.info("        WARN:  %s", w)
         _logger.info("Exit code: %d", report.exit_code)
-
-
-# ---------------------------------------------------------------------
-# Legacy helper exposed by Phase A's verify_survivorship.py
-# ---------------------------------------------------------------------
-
-def _legacy_verify_survivorship_check(
-    provider_uri: Path, known_delisted: list[tuple[str, str, str]],
-) -> int:
-    """Bridge to the legacy verify_survivorship.py logic, callable from
-    Phase B.3. Returns the legacy exit code (0/1/2).
-
-    Kept compact because Phase B.3 now owns the canonical sweep
-    (check B); this helper exists so the operator can still run the
-    legacy "did the bin builder produce GOOD data?" smoke against a
-    fresh provider without re-implementing it in two places.
-    """
-    from qlib.data import D
-
-    from src.core.canonical_backtest_contract import ADJUST_MODE_POST
-    from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical
-
-    with contextlib.redirect_stdout(None):
-        init_qlib_canonical(QlibRuntimeConfig(
-            provider_uri=str(provider_uri),
-            region="cn",
-            data_adjust_mode=ADJUST_MODE_POST,
-        ))
-    good = bad_extended = truncated = missing = errors = 0
-    for ticker, delist_str, _label in known_delisted:
-        try:
-            df = D.features([ticker], ["$close"], "2014-01-01", "2025-12-31")
-        except Exception:
-            errors += 1
-            continue
-        valid = df["$close"].dropna() if not df.empty else pd.Series([], dtype=float)
-        if valid.empty:
-            missing += 1
-            continue
-        last = valid.index.get_level_values("datetime").max()
-        expected = pd.Timestamp(delist_str)
-        days_past = (last - expected).days
-        if -90 <= days_past < 90:
-            good += 1
-        elif days_past >= 90:
-            bad_extended += 1
-        else:
-            truncated += 1
-    n_total = len(known_delisted)
-    if bad_extended > n_total / 2 or truncated > n_total / 2:
-        return 2
-    if missing > n_total / 2:
-        return 1
-    if good == n_total:
-        return 0
-    return 1

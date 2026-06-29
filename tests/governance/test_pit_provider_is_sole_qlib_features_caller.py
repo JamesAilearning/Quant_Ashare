@@ -68,8 +68,9 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # post-delist mask is applied. Routing through ``PITDataProvider``
     # would apply the very mask the validator is checking for, and
     # the validator would tautologically "pass". The validator MUST
-    # bypass PIT.
-    "src/data/pit/pit_validator.py": 5,
+    # bypass PIT. (Was 5; the dead legacy survivorship bridge with its
+    # own D.features call was removed in Q4.)
+    "src/data/pit/pit_validator.py": 4,
 
     # ``benchmark_artifact_publisher`` is a PUBLISHER — it fetches
     # benchmark index closes (e.g. SH000300) to write to a CSV
