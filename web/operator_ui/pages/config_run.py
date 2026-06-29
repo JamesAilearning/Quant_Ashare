@@ -11,6 +11,7 @@ from typing import Any, cast
 import streamlit as st
 import yaml
 
+from web.operator_ui.bundle_health import resolve_default_provider_uri
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
     WALK_FORWARD_KEYS,
@@ -317,8 +318,15 @@ with form_col:
         # is the env default for that bundle (ops Phase 1).
         provider_uri = st.text_input(
             "provider_uri *",
-            placeholder="D:/qlib_data/my_cn_data",
+            # Prefill the canonical default (config.yaml ${QUANT_PROVIDER_URI:-…}),
+            # mirroring the 数据检视 page — a rerun/preset value still wins via
+            # _cr. The old placeholder pointed at the legacy NON-PIT bundle
+            # (my_cn_data); the system now runs on the PIT bundle.
+            value=_cr("provider_uri", resolve_default_provider_uri() or ""),
+            placeholder="${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}",
             key="cr_provider_uri",
+            help="默认解析 config.yaml / QUANT_PROVIDER_URI（PIT 生产 bundle）；"
+                 "每次运行可覆盖，预设不保存此机器本地路径。",
         )
         provider_uri_valid = bool(provider_uri and provider_uri.strip())
 
@@ -697,8 +705,18 @@ with form_col:
             else:
                 save_path = _PRESETS_DIR / f"{safe}.yaml"
                 save_path.parent.mkdir(parents=True, exist_ok=True)
+                # Presets are portable: never bake machine-local paths into a
+                # saved preset (the tracked built-ins omit them). provider_uri is
+                # resolved from QUANT_PROVIDER_URI / config.yaml each session, and
+                # namechange_path from QUANT_NAMECHANGE_PATH — baking either pins
+                # one machine's layout, and a saved inspection-bundle provider_uri
+                # gets the preset rejected at launch by the non-production guard.
+                preset_to_save = {
+                    k: v for k, v in preview_config.items()
+                    if k not in ("provider_uri", "namechange_path")
+                }
                 save_path.write_text(
-                    yaml.dump(preview_config, default_flow_style=False, allow_unicode=True),
+                    yaml.dump(preset_to_save, default_flow_style=False, allow_unicode=True),
                     encoding="utf-8",
                 )
                 st.success(f"已保存为 {safe}")
