@@ -235,6 +235,38 @@ def compute_bundle_content_hash(provider_uri: str | Path) -> str:
     return f"{CONTENT_HASH_PREFIX}{digest.hexdigest()}"
 
 
+def _validate_content_hash_shape(value: object, *, where: str) -> None:
+    """Validate a content_hash's shape: ``sha256:`` + 64 lowercase hex.
+
+    Shared by :func:`load_manifest` (read) and :func:`save_manifest`
+    (write) so the shape contract cannot drift between the two. ``where``
+    prefixes the error message with the caller's context. The None /
+    absent cases are NOT handled here — they differ between read (an
+    explicit ``null`` is rejected) and write (``None`` is skipped), so
+    each caller guards those before calling this.
+    """
+    if not isinstance(value, str):
+        raise BundleManifestError(
+            f"{where} must be a string, got {type(value).__name__}"
+        )
+    if not value.startswith(CONTENT_HASH_PREFIX):
+        raise BundleManifestError(
+            f"{where} ({value!r}) must start with {CONTENT_HASH_PREFIX!r}; "
+            "use compute_bundle_content_hash() to produce a valid value."
+        )
+    hex_part = value[len(CONTENT_HASH_PREFIX):]
+    # 64 lowercase hex chars = SHA-256. Reject uppercase (case-sensitive):
+    # compute_bundle_content_hash always emits lowercase, so an uppercase
+    # hash would pass shape validation but byte-mismatch the recomputed
+    # value at verify time. Failing here is the honest error (Codex P2 on
+    # PR #175: reject vs normalise — we picked reject).
+    if len(hex_part) != 64 or any(c not in "0123456789abcdef" for c in hex_part):
+        raise BundleManifestError(
+            f"{where} hex body ({hex_part!r}) is not a 64-char SHA-256 hex "
+            "string (lowercase a-f / 0-9 only)."
+        )
+
+
 def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
     """Load and parse ``bundle_manifest.json`` from a provider directory.
 
@@ -274,12 +306,12 @@ def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
             f"got {type(raw).__name__}"
         )
 
-    required = ("provider_uri", "tail_date", "instrument_count", "built_at")
-    missing = [k for k in required if k not in raw]
+    missing = [k for k in MANIFEST_REQUIRED_FIELDS if k not in raw]
     if missing:
         raise BundleManifestError(
             f"Bundle manifest at {manifest_path} is missing required "
-            f"field(s): {missing}. Expected schema keys: {list(required)}."
+            f"field(s): {missing}. Expected schema keys: "
+            f"{list(MANIFEST_REQUIRED_FIELDS)}."
         )
 
     tail_raw = raw["tail_date"]
@@ -346,33 +378,10 @@ def load_manifest(provider_uri: str | Path) -> BundleManifest | None:
                 "a legacy bundle with no integrity check, or supply a "
                 f"valid {CONTENT_HASH_PREFIX}<64-lowercase-hex> value."
             )
-        if not isinstance(content_hash_raw, str):
-            raise BundleManifestError(
-                f"Bundle manifest at {manifest_path}: 'content_hash' "
-                f"must be a string when present, got "
-                f"{type(content_hash_raw).__name__}"
-            )
-        if not content_hash_raw.startswith(CONTENT_HASH_PREFIX):
-            raise BundleManifestError(
-                f"Bundle manifest at {manifest_path}: 'content_hash' "
-                f"({content_hash_raw!r}) must start with "
-                f"{CONTENT_HASH_PREFIX!r}; got an unknown algorithm prefix."
-            )
-        hex_part = content_hash_raw[len(CONTENT_HASH_PREFIX):]
-        # 64 lowercase hex chars = SHA-256. We deliberately reject
-        # uppercase here (case-sensitive set) — ``hashlib.hexdigest()``
-        # and :func:`compute_bundle_content_hash` always emit lowercase,
-        # so an uppercase hash on disk would pass shape validation but
-        # then byte-mismatch the recomputed value at
-        # :func:`verify_content_hash` time. Failing here is the honest
-        # error. Codex P2 on PR #175 (option: reject vs normalise; we
-        # picked reject).
-        if len(hex_part) != 64 or any(c not in "0123456789abcdef" for c in hex_part):
-            raise BundleManifestError(
-                f"Bundle manifest at {manifest_path}: 'content_hash' "
-                f"hex body ({hex_part!r}) is not a 64-char SHA-256 hex "
-                "string (lowercase a-f / 0-9 only)."
-            )
+        _validate_content_hash_shape(
+            content_hash_raw,
+            where=f"Bundle manifest at {manifest_path}: 'content_hash'",
+        )
     else:
         content_hash_raw = None
 
@@ -473,32 +482,9 @@ def save_manifest(
     # available" path that keeps the resulting manifest backwards
     # compatible.
     if content_hash is not None:
-        if not isinstance(content_hash, str):
-            raise BundleManifestError(
-                f"save_manifest: content_hash must be a string when "
-                f"set; got {type(content_hash).__name__}"
-            )
-        if not content_hash.startswith(CONTENT_HASH_PREFIX):
-            raise BundleManifestError(
-                f"save_manifest: content_hash ({content_hash!r}) must "
-                f"start with {CONTENT_HASH_PREFIX!r}; use "
-                "compute_bundle_content_hash() to produce a valid "
-                "value."
-            )
-        hex_part = content_hash[len(CONTENT_HASH_PREFIX):]
-        # Same case-sensitive lowercase requirement as load_manifest —
-        # see the comment there. compute_bundle_content_hash always
-        # emits lowercase, so accepting uppercase at write time would
-        # plant a manifest that later fails comparison even though
-        # nothing changed on disk.
-        if len(hex_part) != 64 or any(
-            c not in "0123456789abcdef" for c in hex_part
-        ):
-            raise BundleManifestError(
-                f"save_manifest: content_hash hex body ({hex_part!r}) "
-                "is not a 64-char SHA-256 hex string (lowercase a-f / "
-                "0-9 only)."
-            )
+        _validate_content_hash_shape(
+            content_hash, where="save_manifest: content_hash",
+        )
 
     payload: dict[str, Any] = {
         "provider_uri": str(provider_uri),
