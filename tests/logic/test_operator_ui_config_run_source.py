@@ -624,5 +624,35 @@ class PresetSaveStripsMachineLocalPathsTests(unittest.TestCase):
         self.assertNotIn("yaml.dump(preview_config,", self.source)
 
 
+class WalkForwardLaunchParityTests(unittest.TestCase):
+    """The walk-forward launch path must match the pipeline path on the
+    mode-agnostic bits: preset / rerun prefill for the rolling-window dates
+    (via _cr) and the universe/benchmark mismatch warning (UI-audit follow-up)."""
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_wf_dates_routed_through_cr(self) -> None:
+        # The _cr-wrapped form carries the "overall_*" literal next to the
+        # defaults lookup; the old raw form (default=walk_forward_date_defaults…)
+        # did not, so preset/prefill values were silently dropped.
+        self.assertIn(
+            '"overall_start", walk_forward_date_defaults["overall_start"]',
+            self.source,
+        )
+        self.assertIn(
+            '"overall_end", walk_forward_date_defaults["overall_end"]',
+            self.source,
+        )
+
+    def test_wf_branch_runs_universe_benchmark_alignment(self) -> None:
+        self.assertIn("_validate_universe_benchmark_alignment(", self.source)
+        self.assertIn(
+            "instruments, benchmark_code, guard_warnings", self.source
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
