@@ -17,7 +17,9 @@ has touched.
 `scripts/eval_frozen_model_oos.py` evaluates a **frozen** (already-trained) model over a
 window WITHOUT retraining — load the pkl, build the Alpha158 dataset normalized to the
 model's own fit window, predict, and compute IC / IR / backtest (ann return, IR, max
-drawdown, turnover, holding concentration) + a per-date degeneracy scan. It reuses the
+drawdown, turnover, holding concentration) + a per-date degeneracy scan (gross unique-score
+collapse AND a tie block straddling the top-k cutoff, which makes the buy list tie-break
+dependent even when the rest of the universe is unique). It reuses the
 **exact** canonical signal + backtest config the WF / REGEN replay uses
 (`replay_frozen_baseline` constants + `CanonicalBacktestInput`), so the incumbent baseline
 and the candidate are computed identically (variable isolation). Real compute on the live
@@ -39,7 +41,7 @@ for the T+1→T+2 label lookahead):
 | max drawdown | −10.4% |
 | daily turnover | 0.393 |
 | concentration (median holdings / top-10 share / HHI) | 50 / 0.230 / 0.0202 (diffuse) |
-| **degeneracy** | **0 degenerate days** (min unique 289 / 300) — clean |
+| **degeneracy** | **0 degenerate days** (min unique 289 / 300; 0 cutoff-straddle days) — clean |
 
 The model has weak positive *ranking* signal (IC>0) but its top-50 selection **underperformed
 the total-return benchmark by ~9%** over the most recent clean year.

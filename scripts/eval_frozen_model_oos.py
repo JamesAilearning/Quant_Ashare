@@ -9,8 +9,9 @@ so the incumbent baseline and a later candidate are apples-to-apples (variable i
 
 Reports: IC(1d/5d), IC-IR(1d), turnover, backtest annualized_return / information_ratio /
 max_drawdown (excess-with-cost vs SH000300TR), and a per-date prediction-degeneracy scan
-(unique-score count / tie density — the ~39-bucket/261-tie failure mode seen in REGEN
-fold-0). The degeneracy scan also runs on the incumbent itself (does it degenerate?).
+(gross unique-score collapse — the ~39-bucket/261-tie REGEN fold-0 mode — AND a tie block
+straddling the top-k cutoff, where the buy list is tie-break dependent even with an
+otherwise-unique universe). The degeneracy scan also runs on the incumbent (does it degenerate?).
 
 This is real compute on the LIVE bundle (read-only) but NOT a retrain — run FOREGROUND.
 Defaults target the incumbent on the guard window; override --train-end / --valid-* and
@@ -95,21 +96,57 @@ def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
     return preds.dropna()
 
 
+# A tie block STRADDLING the top-k cutoff is degenerate when a MATERIAL share of the buy
+# list is filled by tie-break — >= 20% of top-k SLOTS. The materiality basis is the number
+# of top-k slots filled FROM the tie block (``TOPK - n_above``), NOT the total names tied:
+# 49 names above + 10 tied means only 1 buy is tie-break-dependent (immaterial), even though
+# 10 names sit on the bubble (codex). Smaller straddles are reported but not vetoed.
+_CUTOFF_STRADDLE_VETO = max(round(0.2 * TOPK), 2)
+
+
 def _degeneracy_scan(preds: pd.Series) -> dict[str, Any]:
-    """Per-date unique-score count + tie density (the REGEN fold-0 failure mode: the
-    topk cutoff landing inside a tie block). Flags days that collapse to few buckets."""
+    """Per-date prediction degeneracy. Two failure modes:
+
+    (a) GROSS collapse — few unique scores over the whole universe (REGEN fold-0: ~39/300).
+    (b) a tie block STRADDLING the top-k cutoff — the k-th score is shared by MORE names
+        than the slots left, so top-k membership is tie-break dependent EVEN IF the rest of
+        the universe is unique (codex: 75 tied at rank 50 with 225 unique elsewhere gives a
+        high unique ratio yet an arbitrary buy list). The earlier unique-ratio-only check
+        missed (b); this detects the cutoff straddle directly.
+
+    Materiality of (b) is the count of top-k slots filled FROM the tie block
+    (``tie_filled_slots = TOPK - n_above``) — i.e. how many of the actual buys are arbitrary
+    — NOT the total names tied at the cutoff (which over-counts when the bubble is wide but
+    only a slot or two is in-play). Vetoes (``n_degenerate_days``) on a gross collapse OR a
+    straddle with >= ``_CUTOFF_STRADDLE_VETO`` tie-filled slots. Both the slot count
+    (``max_tie_filled_slots``, the veto basis) and the total bubble size
+    (``max_names_tied_at_cutoff``) are reported for the operator to eyeball."""
     rows = []
     for date, grp in preds.groupby(level=0):  # level 0 = datetime (name may be unset)
         n = int(grp.shape[0])
         uniq = int(grp.nunique())
-        rows.append((str(date)[:10], n, uniq, 1.0 - uniq / n if n else 0.0))
-    df = pd.DataFrame(rows, columns=["date", "n", "n_unique", "tie_density"])
-    # "degenerate" heuristic: < 0.5 unique-ratio, OR fewer unique values than the topk
-    # cutoff WHILE the universe exceeds topk (so the top-K boundary sits inside a tie
-    # block, as REGEN fold-0 did) — the ``n > TOPK`` guard avoids flagging a small
-    # universe where n_unique == n <= TOPK is perfectly healthy.
-    degen = df[(df["n_unique"] < df["n"] * 0.5)
-               | ((df["n_unique"] <= TOPK) & (df["n"] > TOPK))]
+        n_at_cutoff = 0
+        tie_filled_slots = 0
+        if n > TOPK:
+            srt = sorted(grp.tolist(), reverse=True)
+            boundary = srt[TOPK - 1]                          # the k-th (cutoff) score
+            n_above = sum(1 for v in srt if v > boundary)     # strictly above the cutoff
+            n_at = sum(1 for v in srt if v == boundary)       # tied AT the cutoff score
+            if n_above < TOPK < n_above + n_at:               # cutoff strictly inside the tie
+                n_at_cutoff = n_at                            # total bubble size (reported)
+                tie_filled_slots = TOPK - n_above            # arbitrary buys (veto basis)
+        rows.append(
+            (str(date)[:10], n, uniq, 1.0 - uniq / n if n else 0.0,
+             n_at_cutoff, tie_filled_slots)
+        )
+    df = pd.DataFrame(
+        rows,
+        columns=["date", "n", "n_unique", "tie_density",
+                 "n_tied_at_cutoff", "tie_filled_slots"],
+    )
+    gross = df["n_unique"] < df["n"] * 0.5
+    material_straddle = df["tie_filled_slots"] >= _CUTOFF_STRADDLE_VETO
+    degen = df[gross | material_straddle]
     return {
         "n_days": int(df.shape[0]),
         "min_unique": int(df["n_unique"].min()),
@@ -117,6 +154,10 @@ def _degeneracy_scan(preds: pd.Series) -> dict[str, Any]:
         "median_universe": float(df["n"].median()),
         "max_tie_density": float(df["tie_density"].max()),
         "median_tie_density": float(df["tie_density"].median()),
+        "n_cutoff_straddle_days": int((df["n_tied_at_cutoff"] > 0).sum()),
+        "max_names_tied_at_cutoff": int(df["n_tied_at_cutoff"].max()),
+        "max_tie_filled_slots": int(df["tie_filled_slots"].max()),
+        "cutoff_straddle_veto_min": int(_CUTOFF_STRADDLE_VETO),
         "n_degenerate_days": int(degen.shape[0]),
         "degenerate_days_sample": degen.head(10).to_dict("records"),
     }
@@ -206,9 +247,13 @@ def main(argv: list[str] | None = None) -> int:
     # Placeholder valid segment (unused by a frozen model; embargo-valid for the builder).
     p.add_argument("--valid-start", default="2024-01-02")
     p.add_argument("--valid-end", default="2024-12-18")
-    # The common clean guard window (2025-07+ : OOS for both incumbent and candidate).
+    # The common clean guard window (2025-07+ : OOS for both incumbent and candidate). The
+    # end defaults to the comparison-origin window in docs/promotion/ (2025-07-01..2026-06-12),
+    # NOT the bundle tail (2026-06-17): the backtest needs a T+1 fill bar after the last
+    # signal date, so ending on the final bar raises `index N out of bounds`. Keeping this in
+    # lockstep with the baseline JSON means a default run reproduces the committed origin.
     p.add_argument("--guard-start", default="2025-07-01")
-    p.add_argument("--guard-end", default="2026-06-17")
+    p.add_argument("--guard-end", default="2026-06-12")
     p.add_argument("--out", default=None, help="JSON output path.")
     args = p.parse_args(argv)
 

@@ -65,6 +65,64 @@ class DegeneracyScanTests(unittest.TestCase):
         out = _degeneracy_scan(preds)
         self.assertEqual(out["n_degenerate_days"], 0)
 
+    def test_material_cutoff_straddle_is_flagged_despite_unique_universe(self) -> None:
+        # The codex P2 failure mode: scores collapse ONLY around the top-k boundary while
+        # the rest of the universe is unique. 40 distinct above + 15 tied AT the cutoff +
+        # 245 distinct below -> n_unique=286 (healthy ratio, > TOPK) so the unique-ratio
+        # check alone misses it. tie_filled_slots = TOPK - n_above = 50 - 40 = 10 -> 10 of
+        # the 50 buys are tie-break dependent (20% of the book) -> must be vetoed.
+        high = [50.0 + 0.1 * (i + 1) for i in range(40)]   # 40 distinct, > cutoff
+        at = [50.0] * 15                                    # 15 tied AT the cutoff
+        low = [50.0 - 0.1 * (i + 1) for i in range(245)]    # 245 distinct, < cutoff
+        out = _degeneracy_scan(_series({"2025-07-01": high + at + low}))
+        self.assertEqual(out["n_degenerate_days"], 1)
+        self.assertEqual(out["n_cutoff_straddle_days"], 1)
+        self.assertEqual(out["max_tie_filled_slots"], 10)   # the veto basis
+        self.assertEqual(out["max_names_tied_at_cutoff"], 15)  # total bubble (reported)
+        self.assertEqual(out["min_unique"], 286)            # ratio is healthy -> old miss
+        self.assertEqual(out["cutoff_straddle_veto_min"], 10)  # max(round(0.2*50), 2)
+
+    def test_small_cutoff_straddle_is_reported_but_not_vetoed(self) -> None:
+        # A 2-slot boundary tie (48 above, 5 tied -> only 2 buys arbitrary) is reported for
+        # visibility but below the materiality floor (10) -> not a hard veto.
+        high = [50.0 + 0.1 * (i + 1) for i in range(48)]
+        at = [50.0] * 5
+        low = [50.0 - 0.1 * (i + 1) for i in range(247)]
+        out = _degeneracy_scan(_series({"2025-07-01": high + at + low}))
+        self.assertEqual(out["n_degenerate_days"], 0)
+        self.assertEqual(out["n_cutoff_straddle_days"], 1)
+        self.assertEqual(out["max_tie_filled_slots"], 2)    # 50 - 48
+        self.assertEqual(out["max_names_tied_at_cutoff"], 5)
+
+    def test_wide_bubble_filling_one_slot_is_not_vetoed(self) -> None:
+        # codex P2 on #295: the veto is on TIE-FILLED SLOTS, not total names tied. 49 above
+        # + 10 tied means only 1 of 50 buys is tie-break dependent (immaterial) even though
+        # 10 names sit on the bubble. The old n_at>=10 basis would WRONGLY veto this; the
+        # slot basis (tie_filled_slots = 50 - 49 = 1) correctly does not.
+        high = [50.0 + 0.1 * (i + 1) for i in range(49)]
+        at = [50.0] * 10
+        low = [50.0 - 0.1 * (i + 1) for i in range(241)]
+        out = _degeneracy_scan(_series({"2025-07-01": high + at + low}))
+        self.assertEqual(out["n_degenerate_days"], 0)        # 1 arbitrary buy -> not material
+        self.assertEqual(out["n_cutoff_straddle_days"], 1)   # still reported as a straddle
+        self.assertEqual(out["max_tie_filled_slots"], 1)
+        self.assertEqual(out["max_names_tied_at_cutoff"], 10)  # wide bubble, reported
+
+    def test_materiality_floor_is_on_tie_filled_slots(self) -> None:
+        # Pin the EXACT veto floor (_CUTOFF_STRADDLE_VETO=10) on both sides, on the SLOT
+        # basis: a straddle filling 9 slots (n_above=41) is reported but NOT vetoed; one
+        # filling exactly 10 (n_above=40) IS vetoed. Guards `>=` against `>` AND the slot
+        # basis against a regression back to total-tied-names.
+        nine = ([50.0 + 0.1 * (i + 1) for i in range(41)] + [50.0] * 10
+                + [50.0 - 0.1 * (i + 1) for i in range(249)])   # tie_filled_slots = 9
+        ten = ([50.0 + 0.1 * (i + 1) for i in range(40)] + [50.0] * 11
+               + [50.0 - 0.1 * (i + 1) for i in range(249)])    # tie_filled_slots = 10
+        out = _degeneracy_scan(_series({"2025-07-01": nine, "2025-07-02": ten}))
+        self.assertEqual(out["n_cutoff_straddle_days"], 2)      # both straddle the cutoff
+        self.assertEqual(out["n_degenerate_days"], 1)           # only the 10-slot day vetoes
+        self.assertEqual(out["max_tie_filled_slots"], 10)
+        self.assertEqual(out["max_names_tied_at_cutoff"], 11)
+
 
 class ConcentrationStatsTests(unittest.TestCase):
     def test_equal_weight_top50_is_diffuse(self) -> None:
