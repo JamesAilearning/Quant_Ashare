@@ -444,22 +444,19 @@ with form_col:
                     metadata=provider_metadata,
                 )
         else:
-            # _cr() so a saved preset / "rerun this job" prefill is honoured —
-            # the pipeline date widgets already do this; the WF widgets used the
-            # raw default, silently dropping preset/prefill values for the
-            # rolling window.
+            # NOTE: these read the LIVE default recomputed from the current
+            # provider's calendar each rerun (NOT via _cr). Routing them through
+            # _cr to honour preset/rerun prefill regressed provider-tracking —
+            # _cr seed-and-sticks the (provider-dependent) default, freezing a
+            # first-render no-calendar fallback and ignoring the recomputed
+            # window (codex P2 on #300). Honouring preset/prefill here without
+            # losing provider-tracking needs a separate, runtime-verified fix.
             overall_start = _select_trading_day(
-                "overall_start",
-                default=_cr(
-                    "overall_start", walk_forward_date_defaults["overall_start"],
-                ),
+                "overall_start", default=walk_forward_date_defaults["overall_start"],
                 metadata=provider_metadata,
             )
             overall_end = _select_trading_day(
-                "overall_end",
-                default=_cr(
-                    "overall_end", walk_forward_date_defaults["overall_end"],
-                ),
+                "overall_end", default=walk_forward_date_defaults["overall_end"],
                 metadata=provider_metadata,
             )
             wf1, wf2 = st.columns(2)
