@@ -157,14 +157,28 @@ def inspect_provider_metadata(provider_uri: str) -> ProviderMetadata:
     # must never crash on a bad sidecar.
     identity_tail: date | None = None
     identity_count: int | None = None
+    holey_fetch_holes: int | None = None
     try:
         from src.data.pit.bundle_integrity import read_bundle_integrity
         _integrity = read_bundle_integrity(provider_path)
-        if _integrity is not None and _integrity.identity is not None:
-            identity_tail = _parse_optional_date(_integrity.identity.tail_date)
-            identity_count = _integrity.identity.instrument_count
+        if _integrity is not None:
+            if _integrity.identity is not None:
+                identity_tail = _parse_optional_date(_integrity.identity.tail_date)
+                identity_count = _integrity.identity.instrument_count
+            # built_from_holey_fetch: the bundle was built from an incomplete
+            # tushare fetch (--allow-holey-fetch). daily_recommend REFUSES such
+            # a bundle, so the banner must downgrade ok->warning rather than
+            # show green for a bundle with known data holes.
+            if _integrity.built_from_holey_fetch:
+                holey_fetch_holes = len(_integrity.holes)
     except Exception:  # noqa: BLE001 — UI banner must not crash on a bad stamp
         pass
+
+    if holey_fetch_holes is not None:
+        warnings.append(
+            f"⚠ 该 bundle 由「带洞」的 tushare 抓取构建（{holey_fetch_holes} 处缺口）；"
+            "daily_recommend 会拒绝它，训练 / 回测前请确认数据完整性。"
+        )
 
     coverage_start = _parse_optional_date(source.get("coverage_start_date"))
     # PR-G+I: the _fetch_integrity identity is canonical → prefer it over the

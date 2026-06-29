@@ -394,5 +394,52 @@ class BundleHealthSummaryShapeTests(unittest.TestCase):
         )
 
 
+class HoleyFetchBannerTests(unittest.TestCase):
+    """A bundle whose _fetch_integrity.json is stamped built_from_holey_fetch
+    must downgrade the banner from ok to warning. daily_recommend REFUSES such
+    a bundle, so a green 'ok' on the jobs/results banner would be misleading."""
+
+    def test_holey_bundle_downgrades_to_warning(self) -> None:
+        import tempfile
+
+        from src.data.pit.bundle_integrity import write_bundle_integrity
+        from src.data.tushare.fetch_types import FetchHole
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = _make_bundle(Path(tmp))
+            write_bundle_integrity(
+                bundle,
+                built_from_holey_fetch=True,
+                holes=(
+                    FetchHole(
+                        endpoint="daily", unit="20240102",
+                        reason_class="timeout", attempts=3,
+                        last_error="read timed out",
+                    ),
+                ),
+            )
+            summary = summarise_bundle_health(str(bundle))
+        self.assertEqual(summary.status, "warning")
+        self.assertTrue(
+            any("缺口" in w for w in summary.warnings),
+            f"expected a holey-fetch warning; got {summary.warnings}",
+        )
+
+    def test_clean_integrity_stamp_stays_ok(self) -> None:
+        import tempfile
+
+        from src.data.pit.bundle_integrity import write_bundle_integrity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = _make_bundle(Path(tmp))
+            write_bundle_integrity(bundle, built_from_holey_fetch=False)
+            summary = summarise_bundle_health(str(bundle))
+        self.assertEqual(summary.status, "ok")
+        self.assertFalse(
+            any("缺口" in w for w in summary.warnings),
+            f"clean bundle must not warn about holes; got {summary.warnings}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
