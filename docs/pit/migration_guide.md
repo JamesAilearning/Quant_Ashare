@@ -329,12 +329,19 @@ Check B failed:
      year data) and rerun `01_fetch_tushare.py` — the fetcher's
      per-file existence check will re-pull only the deleted files
      and skip everything else.
-   - The reference YAML disagrees with current Tushare data. Run the
-     PIT validator's delist-boundary sweep against the provider first to
-     confirm which side is stale: `python
-     scripts/data_pipeline/06_validate_pit_data.py --reference-cases
-     tests/pit/reference_cases.yaml` (check B mirrors the old
-     verify_survivorship cross-check).
+   - The reference YAML disagrees with current Tushare data. Run the PIT
+     validator against the provider first to confirm which side is stale
+     — its delist-boundary sweep (check B, run against the
+     `--delisted-registry`) mirrors the old verify_survivorship
+     cross-check, while the reference YAML drives the reference-case
+     checks:
+
+     ```
+     python scripts/data_pipeline/06_validate_pit_data.py \
+         --provider-dir $PIT_PROVIDER \
+         --delisted-registry $TUSHARE_RAW/delisted_registry.parquet \
+         --reference-cases tests/pit/reference_cases.yaml
+     ```
 
 ---
 
