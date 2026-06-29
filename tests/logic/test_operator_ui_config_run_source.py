@@ -575,5 +575,54 @@ class WalkForwardLogFilterSourceTests(unittest.TestCase):
         self.assertNotIn('st.code(text or "（空）"', source)
 
 
+class ProviderUriPrefillTests(unittest.TestCase):
+    """provider_uri must prefill the canonical default (config.yaml
+    ${QUANT_PROVIDER_URI:-…}) like the 数据检视 page, and stop nudging operators
+    at the legacy NON-PIT bundle via the placeholder."""
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_imports_default_provider_resolver(self) -> None:
+        self.assertIn(
+            "from web.operator_ui.bundle_health import "
+            "resolve_default_provider_uri",
+            self.source,
+        )
+
+    def test_provider_uri_prefilled_from_resolved_default(self) -> None:
+        self.assertIn(
+            '_cr("provider_uri", resolve_default_provider_uri()', self.source
+        )
+
+    def test_legacy_non_pit_placeholder_gone(self) -> None:
+        # Exact old placeholder (the legacy non-PIT bundle) must be removed;
+        # the new one references the PIT bundle / QUANT_PROVIDER_URI.
+        self.assertNotIn('placeholder="D:/qlib_data/my_cn_data"', self.source)
+        self.assertIn("QUANT_PROVIDER_URI", self.source)
+
+
+class PresetSaveStripsMachineLocalPathsTests(unittest.TestCase):
+    """Saving a preset must NOT bake machine-local paths (provider_uri,
+    namechange_path) into the YAML — the tracked built-ins omit them, and a
+    saved inspection-bundle provider_uri gets the preset rejected at launch."""
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_save_excludes_machine_local_paths(self) -> None:
+        self.assertIn(
+            'if k not in ("provider_uri", "namechange_path")', self.source
+        )
+
+    def test_save_does_not_dump_raw_preview_config(self) -> None:
+        # The verbatim dump (which baked provider_uri) must be gone from save.
+        self.assertNotIn("yaml.dump(preview_config,", self.source)
+
+
 if __name__ == "__main__":
     unittest.main()
