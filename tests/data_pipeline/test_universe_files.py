@@ -83,7 +83,7 @@ class UniverseFilesBuilderTests(unittest.TestCase):
 
     def test_overlap_active_and_delisted_raises(self) -> None:
         """If the same ticker shows up in both buckets — the failure mode
-        the corrected verify_survivorship.py was built to detect — the
+        the corrected survivorship check was built to detect — the
         builder MUST raise rather than silently emit two rows.
         """
         with tempfile.TemporaryDirectory() as tmp:

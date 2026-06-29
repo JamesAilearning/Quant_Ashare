@@ -17,7 +17,7 @@ Usage::
         --reference-cases tests/pit/reference_cases.yaml \\
         --report-json /tmp/pit_validation.json
 
-Exit codes (per legacy verify_survivorship.py convention):
+Exit codes (per the legacy survivorship convention):
   0 = all checks pass cleanly
   1 = warnings only (e.g. reference YAML deferred)
   2 = any failure

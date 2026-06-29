@@ -54,7 +54,7 @@ def _mean_frame(ticker: str, dates_vals: list[tuple[str, float]]) -> pd.DataFram
 
 
 class ExitCodeTests(unittest.TestCase):
-    """Per legacy verify_survivorship.py convention: 0=clean, 1=warnings,
+    """Per the legacy survivorship convention: 0=clean, 1=warnings,
     2=any failure. The aggregation rule prefers the WORST status."""
 
     def test_all_clean_returns_zero(self) -> None:
