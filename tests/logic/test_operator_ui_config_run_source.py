@@ -624,5 +624,36 @@ class PresetSaveStripsMachineLocalPathsTests(unittest.TestCase):
         self.assertNotIn("yaml.dump(preview_config,", self.source)
 
 
+class WalkForwardLaunchParityTests(unittest.TestCase):
+    """The walk-forward guard branch must run the universe/benchmark mismatch
+    warning the pipeline path runs (instruments=all vs a major index inflates
+    "excess vs benchmark"). UI-audit follow-up.
+
+    (The sibling WF-date preset/prefill fix was reverted: routing the dates
+    through _cr regressed provider-calendar tracking — codex P2 on #300 — and a
+    correct fix needs runtime verification. The dates stay on the live default.)
+    """
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_wf_dates_stay_on_live_provider_default(self) -> None:
+        # Provider-tracking raw default (NOT _cr) — reverted per codex P2.
+        self.assertIn(
+            'default=walk_forward_date_defaults["overall_start"]', self.source
+        )
+        self.assertIn(
+            'default=walk_forward_date_defaults["overall_end"]', self.source
+        )
+
+    def test_wf_branch_runs_universe_benchmark_alignment(self) -> None:
+        self.assertIn("_validate_universe_benchmark_alignment(", self.source)
+        self.assertIn(
+            "instruments, benchmark_code, guard_warnings", self.source
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

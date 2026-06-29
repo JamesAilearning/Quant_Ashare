@@ -51,6 +51,7 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
 )
 from web.operator_ui.training_guards import (
     ProviderMetadata,
+    _validate_universe_benchmark_alignment,
     inspect_provider_metadata,
     non_production_bundle_error,
     provider_metadata_summary,
@@ -443,6 +444,13 @@ with form_col:
                     metadata=provider_metadata,
                 )
         else:
+            # NOTE: these read the LIVE default recomputed from the current
+            # provider's calendar each rerun (NOT via _cr). Routing them through
+            # _cr to honour preset/rerun prefill regressed provider-tracking —
+            # _cr seed-and-sticks the (provider-dependent) default, freezing a
+            # first-render no-calendar fallback and ignoring the recomputed
+            # window (codex P2 on #300). Honouring preset/prefill here without
+            # losing provider-tracking needs a separate, runtime-verified fix.
             overall_start = _select_trading_day(
                 "overall_start", default=walk_forward_date_defaults["overall_start"],
                 metadata=provider_metadata,
@@ -533,12 +541,19 @@ with form_col:
         guard_errors.extend(provider_metadata.errors)
         guard_warnings.extend(provider_metadata.warnings)
         # walk_forward does NOT run validate_pipeline_training_inputs, so the
-        # non-production-bundle refusal (which lives in that guard) must be
-        # applied here too — otherwise a rolling-validation launch bypasses it
-        # (codex P1 on PR #231).
+        # mode-agnostic checks that live in that guard must be applied here too,
+        # or a rolling-validation launch bypasses them:
+        #   - the non-production-bundle refusal (codex P1 on PR #231), and
+        #   - the universe/benchmark mismatch warning (instruments=all against a
+        #     major index inflates "excess vs benchmark" — same pitfall in WF as
+        #     in pipeline). Pipeline-only date/embargo checks stay out: WF has
+        #     its own rolling-window semantics.
         _wf_non_production_msg = non_production_bundle_error(provider_uri)
         if _wf_non_production_msg:
             guard_errors.append(_wf_non_production_msg)
+        _validate_universe_benchmark_alignment(
+            instruments, benchmark_code, guard_warnings,
+        )
 
     if compute_device == "gpu" and model_type != "LGBModel":
         guard_errors.append(_GPU_ONLY_LGB_MSG)
