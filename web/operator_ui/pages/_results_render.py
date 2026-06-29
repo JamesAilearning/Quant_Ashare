@@ -430,6 +430,14 @@ def _render_kpis(
         # Pre-PR6.4 reports stored excess under ``annual_return``.
         excess_annualized = _first(metrics, [("performance", "annual_return")])
     total_return_value = _first(metrics, [("performance", "total_return")])
+    # The benchmark's cumulative return over the SAME window. _build_metrics
+    # writes this (pipeline_result_artifacts) precisely so strategy total return
+    # can be read against a comparable benchmark total return — the point of the
+    # canonical total-return benchmark (SH000300TR). Without it the card showed
+    # the strategy number alone, defeating the comparison.
+    benchmark_total_return = _first(
+        metrics, [("performance", "benchmark_total_return")]
+    )
 
     if strategy_annualized is not None:
         primary_value = strategy_annualized
@@ -482,6 +490,11 @@ def _render_kpis(
                 f"总收益（{n_trading_days or '?'} 个交易日）："
                 f"{_fmt_percent(total_return_value, signed=True)}"
             )
+            if benchmark_total_return is not None:
+                secondary_lines.append(
+                    f"基准总收益（同期）："
+                    f"{_fmt_percent(benchmark_total_return, signed=True)}"
+                )
         if benchmark_annualized is not None:
             secondary_lines.append(
                 f"基准年化：{_fmt_percent(benchmark_annualized, signed=True)}"
@@ -1078,6 +1091,12 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
     st.header("滚动验证报告")
     agg = wf_report.get("aggregate_metrics", {}) if isinstance(wf_report.get("aggregate_metrics"), Mapping) else {}
     st.subheader("聚合指标")
+    # The return / drawdown metrics below are EXCESS vs the benchmark after cost
+    # (same source as the walk-forward page), not absolute — label them honestly
+    # so this fallback summary agrees with the main walk-forward view.
+    st.caption(
+        "ℹ 年化收益、回撤、IR 均为**扣费后超额**口径（相对回测基准），非绝对收益。"
+    )
     cols = st.columns(4)
     cols[0].metric(
         "平均 IC (1d, T+1对齐)",
@@ -1085,8 +1104,8 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
         help="标签对齐口径：score_T 对 T+1→T+2 收益（与训练标签、回测 T+1 成交一致，PR-C）",
     )
     cols[1].metric("平均 IR", fmt_metric(agg.get("mean_information_ratio")))
-    cols[2].metric("平均收益", fmt_metric(agg.get("mean_annualized_return")))
-    cols[3].metric("最差回撤", fmt_metric(agg.get("worst_drawdown")))
+    cols[2].metric("平均年化超额", fmt_metric(agg.get("mean_annualized_return")))
+    cols[3].metric("最差超额回撤", fmt_metric(agg.get("worst_drawdown")))
 
     st.subheader("覆盖区间")
     st.json(wf_report.get("test_window_coverage", {}))
@@ -1101,8 +1120,8 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
                 "折次": f["fold_index"],
                 "IC(1d)": fmt_metric(f.get("ic_1d")),
                 "IR": fmt_metric(f.get("information_ratio")),
-                "年化收益": fmt_metric(f.get("annualized_return")),
-                "最大回撤": fmt_metric(f.get("max_drawdown")),
+                "年化超额": fmt_metric(f.get("annualized_return")),
+                "超额回撤": fmt_metric(f.get("max_drawdown")),
             }
             for f in folds
         ])

@@ -329,6 +329,15 @@ if score >= 0:
     )
 
 # --- KPI row ---
+# All return / drawdown / IR metrics below are EXCESS vs the benchmark after
+# cost — extract_cost_metrics reads them from
+# risk_analysis['excess_return_with_cost'] — not the strategy's absolute
+# return. Say so up front (mirrors the pipeline KPI card's honest labels) so
+# the cards / table are not misread as absolute, especially now the canonical
+# benchmark is the total-return index SH000300TR.
+st.caption(
+    "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"
+)
 kpi_cols = st.columns(4)
 with kpi_cols[0]:
     mean_ir = _mean(ir_list)
@@ -346,20 +355,20 @@ with kpi_cols[0]:
 with kpi_cols[1]:
     worst_idx, worst_dd = min(drawdown_by_fold, key=lambda item: item[1]) if drawdown_by_fold else (None, None)
     render_stat_card(
-        "最差回撤",
+        "最差超额回撤",
         format_percent(worst_dd) if worst_dd is not None else MISSING,
         value_color="negative" if worst_dd is not None else "default",
         secondary=[("出现于折", str(worst_idx) if worst_idx is not None else MISSING)],
-        tooltip="所有折中的最大回撤，定位最薄弱的窗口。",
+        tooltip="所有折中的超额回撤，定位最薄弱的窗口。",
     )
 with kpi_cols[2]:
     render_stat_card(
-        "整体样本外",
+        "整体样本外超额",
         format_percent(aggregate_ar) if aggregate_ar is not None else MISSING,
         value_color=("default" if aggregate_ar is None else "positive" if aggregate_ar > 0 else "negative"),
         secondary=[
             ("IR", format_number(aggregate_ir) if aggregate_ir is not None else MISSING),
-            ("最差回撤", format_percent(aggregate_dd) if aggregate_dd is not None else MISSING),
+            ("最差超额回撤", format_percent(aggregate_dd) if aggregate_dd is not None else MISSING),
         ],
         tooltip="walk_forward_report.json 里的跨折聚合指标。",
     )
@@ -388,9 +397,9 @@ for fd in fold_data:
         {
             "折次": f"F{fd['index']}",
             "测试期": fd.get("period", MISSING),
-            "年化收益": format_percent(fd.get("annual_return")) if fd.get("annual_return") is not None else MISSING,
+            "年化超额": format_percent(fd.get("annual_return")) if fd.get("annual_return") is not None else MISSING,
             "IR": format_number(fd.get("information_ratio")) if fd.get("information_ratio") is not None else MISSING,
-            "最大回撤": format_percent(fd.get("max_drawdown")) if fd.get("max_drawdown") is not None else MISSING,
+            "超额回撤": format_percent(fd.get("max_drawdown")) if fd.get("max_drawdown") is not None else MISSING,
             "换手率": format_number(fd.get("turnover")) if fd.get("turnover") is not None else MISSING,
             "胜率": format_percent(fd.get("win_rate")) if fd.get("win_rate") is not None else MISSING,
             "交易笔数": str(fd.get("n_trades")) if fd.get("n_trades") is not None else MISSING,
@@ -407,9 +416,9 @@ if return_list or ir_list or dd_list or turnover_list or win_rate_list:
         {
             "折次": "均值",
             "测试期": "",
-            "年化收益": format_percent(mean_return) if mean_return is not None else MISSING,
+            "年化超额": format_percent(mean_return) if mean_return is not None else MISSING,
             "IR": format_number(_mean(ir_list)) if ir_list else MISSING,
-            "最大回撤": format_percent(mean_dd) if mean_dd is not None else MISSING,
+            "超额回撤": format_percent(mean_dd) if mean_dd is not None else MISSING,
             "换手率": format_number(mean_turnover) if mean_turnover is not None else MISSING,
             "胜率": format_percent(mean_win_rate) if mean_win_rate is not None else MISSING,
             "交易笔数": "",
@@ -506,7 +515,7 @@ with wf_tabs[0]:
         render_empty_state(
             "\U0001f4c8",
             "无法生成拼接净值",
-            "至少一折缺少测试窗或年化收益，缺少这些字段就无法合成样本外净值曲线。",
+            "至少一折缺少测试窗或年化超额，缺少这些字段就无法合成样本外净值曲线。",
         )
     else:
         try:
@@ -581,7 +590,7 @@ with wf_tabs[0]:
             )
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
-                "⚠ 合成曲线：由每折的年化收益与测试窗长度复利推得 — 折内路径"
+                "⚠ 合成曲线：由每折的年化超额与测试窗长度复利推得 — 折内路径"
                 "不可得（滚动验证引擎不按折落盘 nav.parquet）。仅适合做"
                 "稳定性 / 形状判断，不要作为真实回测路径截图。"
             )
@@ -610,11 +619,11 @@ with wf_tabs[1]:
 
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
-            st.metric("年化收益", format_percent(fd.get("annual_return")))
+            st.metric("年化超额", format_percent(fd.get("annual_return")))
         with fc2:
             st.metric("IR", format_number(fd.get("information_ratio")))
         with fc3:
-            st.metric("最大回撤", format_percent(fd.get("max_drawdown")))
+            st.metric("超额回撤", format_percent(fd.get("max_drawdown")))
         with fc4:
             st.metric("换手率", format_number(fd.get("turnover")))
 
@@ -661,7 +670,7 @@ with wf_tabs[2]:
             f_ar.update_layout(
                 height=220,
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
-                title={"text": "年化收益", "font": {"size": 12}, "x": 0},
+                title={"text": "年化超额", "font": {"size": 12}, "x": 0},
                 yaxis={"tickformat": ".0%"},
                 transition={"duration": 0},  # UI review P2-9.
             )
@@ -699,7 +708,7 @@ with wf_tabs[2]:
             f_dd.update_layout(
                 height=220,
                 margin={"t": 28, "b": 24, "l": 36, "r": 12},
-                title={"text": "最大回撤", "font": {"size": 12}, "x": 0},
+                title={"text": "超额回撤", "font": {"size": 12}, "x": 0},
                 yaxis={"tickformat": ".0%"},
                 transition={"duration": 0},  # UI review P2-9.
             )
