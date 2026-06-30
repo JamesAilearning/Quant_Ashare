@@ -647,6 +647,14 @@ section[data-testid="stSidebar"] [data-testid="stSidebarNav"] > span {
   margin-left: var(--space-1);
 }
 
+/* Keyboard focus ring for the now-focusable (tabindex=0) help anchor —
+   mirrors .qv2-r-card-tooltip:focus-visible (UI review P2-2). */
+.qv2-stat-card-tooltip:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  color: var(--text-primary);
+}
+
 .qv2-stat-card-secondary {
   display: flex;
   justify-content: space-between;

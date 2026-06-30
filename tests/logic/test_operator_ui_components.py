@@ -226,6 +226,43 @@ class ResultsCardTooltipA11yTests(unittest.TestCase):
         self.assertIn(".qv2-r-card-tooltip:focus-visible {", css)
 
 
+class StatCardTooltipA11yTests(unittest.TestCase):
+    """``render_stat_card`` backs the jobs / walk-forward KPI cards. Its help
+    tooltip must be keyboard / screen-reader accessible like ``_render_card``'s
+    (UI review P2-2): a focusable anchor with ``role=note`` + ``aria-label``,
+    not just a mouse-hover ``title=``. Asserted on the emitted markup."""
+
+    def _emit_for(self, **kwargs: object) -> str:
+        from unittest.mock import patch
+
+        captured: list[str] = []
+        with patch(
+            "web.operator_ui.components._emit",
+            side_effect=lambda markup, **_k: captured.append(markup),
+        ):
+            from web.operator_ui.components import render_stat_card
+            render_stat_card("年化收益", "12.3%", **kwargs)  # type: ignore[arg-type]
+        return "\n".join(captured)
+
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
+    def test_tooltip_anchor_is_focusable_with_aria_label(self) -> None:
+        markup = self._emit_for(tooltip="说明文本")
+        self.assertIn('class="qv2-stat-card-tooltip"', markup)
+        self.assertIn('tabindex="0"', markup)
+        self.assertIn('role="note"', markup)
+        self.assertIn('aria-label="说明文本"', markup)
+
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
+    def test_no_tooltip_means_no_anchor(self) -> None:
+        # Without a tooltip, no focusable element is emitted at all.
+        markup = self._emit_for(tooltip="")
+        self.assertNotIn("qv2-stat-card-tooltip", markup)
+
+    def test_theme_css_styles_stat_card_tooltip_focus(self) -> None:
+        css = Path("web/operator_ui/static/theme.css").read_text(encoding="utf-8")
+        self.assertIn(".qv2-stat-card-tooltip:focus-visible {", css)
+
+
 class PlotlyReducedMotionTests(unittest.TestCase):
     """UI review P2-9: server-rendered Plotly transitions (relayout /
     range-slider drag) bypassed the ``prefers-reduced-motion`` CSS hook
