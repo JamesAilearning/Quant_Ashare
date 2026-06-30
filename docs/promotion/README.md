@@ -12,6 +12,38 @@ has touched.
 > Alpha158 + LGB + top-50 method in the current regime — refreshing data treats the symptom,
 > not the cause; the cure is a **phase-6** item, not ④.
 
+## Promotion outcome — DONE 2026-06-30 (and a correction to the framing above)
+
+The candidate (`alpha158_lgb_pit_candidate_train2024.pkl`, GPU, best_iter 319; train
+2018-01-02..2024-12-18, valid 2025-01-02..**2025-06-26** [valid_end trimmed for the ≥2-day
+label embargo before the 2025-07-01 guard]) was **promoted to canonical** `alpha158_lgb_pit.pkl`.
+Rollback backup: `alpha158_lgb_pit_pre_promote_20260630_080700.pkl`. New comparison origin:
+[`canonical_guard_baseline.json`](canonical_guard_baseline.json); `incumbent_guard_baseline.json`
+is retained as the pre-promotion / rollback record.
+
+| guard 2025-07-01..2026-06-12, vs SH000300TR | incumbent | candidate (now canonical) |
+|---|---|---|
+| **GROSS excess (pre-cost)** ann / IR | **−3.08% / −0.41** | **+2.73% / +0.32** |
+| cost drag (ann) | −5.84% | −5.80% |
+| NET excess ann / IR | −8.91% / −1.19 | −3.08% / −0.36 |
+| real fill turnover (1-side) | 9.7% | 9.6% |
+| degeneracy / cutoff-straddle days | 0 / 0 | 0 / 0 |
+
+**Correction to the "alpha-decay → phase-6" framing above.** A cost decomposition (gross vs
+net, from `BacktestRunner`'s `excess_return_without_cost`) showed the candidate's selection is
+**skillful before cost** (gross **+2.73%**), where the incumbent's had decayed (gross −3.08%).
+The residual negative **net** (−3.08%) is **~5.8%/yr daily-rebalance cost**, NOT alpha decay
+(real fill turnover ~9.7% one-side; 5 buy / 5 sell per day under `n_drop=5`; the ~45 held names
+trade nothing → zero cost). So freshness **restored real alpha**, and the next strategic lever is
+**lower frequency / cost reduction** (the alpha exists; daily rebal eats it), likely higher ROI
+than phase-6 factor research. All promotion hard-vetoes passed (0 degenerate / 0 cutoff-straddle
+days, concentration ≤ incumbent, no turnover/drawdown jump).
+
+**Inference fit window is now meta-driven** (Q3): `scripts/daily_recommend.py` reads
+`fit_start_for_inference` / `fit_end_for_inference` from `<model>.meta.json` (fail-loud if the
+meta is present but lacks them), so a future promotion that swaps the pkl + meta moves the
+normalization window automatically — no hardcoded `_DEFAULT_FIT_END` to forget.
+
 ## The eval tool
 
 `scripts/eval_frozen_model_oos.py` evaluates a **frozen** (already-trained) model over a
@@ -49,12 +81,13 @@ the total-return benchmark by ~9%** over the most recent clean year.
 ## Candidate split (variable isolation)
 
 - **train** 2018-01-02 → 2024-12-18 (incorporates the year the incumbent only early-stopped on)
-- **valid (early-stop)** 2025-01-02 → 2025-06-30
+- **valid (early-stop)** 2025-01-02 → 2025-06-26 (valid_end trimmed from 2025-06-30 for the
+  ≥2 trading-day Alpha158 label embargo before the 2025-07-01 guard — see _segment_embargo.py)
 - **guard window** 2025-07-01 → 2026-06-12 (clean OOS for BOTH: incumbent OOS=2025+, candidate
   valid ends 2025-06)
 - Hyperparameters, Alpha158, csi300, T+1→T+2 label, ST-mask all UNCHANGED — the only variable
   is the shifted data window. Run: `eval_frozen_model_oos.py --fit-end 2024-12-18
-  --valid-start 2025-01-02 --valid-end 2025-06-30 --guard-end 2026-06-12 --model <candidate>`.
+  --valid-start 2025-01-02 --valid-end 2025-06-26 --guard-end 2026-06-12 --model <candidate>`.
 
 ## Promotion criteria (asymmetric — "freshness must not make it worse")
 

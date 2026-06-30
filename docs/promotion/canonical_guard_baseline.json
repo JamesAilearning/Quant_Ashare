@@ -1,0 +1,54 @@
+{
+  "model": "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl",
+  "promoted_from": "alpha158_lgb_pit_candidate_train2024.pkl",
+  "promoted_at": "2026-06-30",
+  "note": "Canonical model AFTER the (4) freshness promotion. This is the NEW comparison origin; incumbent_guard_baseline.json is retained as the pre-promotion record / rollback reference.",
+  "fit_window": [
+    "2018-01-02",
+    "2024-12-18"
+  ],
+  "guard_window": [
+    "2025-07-01",
+    "2026-06-12"
+  ],
+  "n_pred_rows": 69049,
+  "n_pred_dates": 231,
+  "ic_1d": 0.022240338132349186,
+  "ic_5d": 0.03980868847624689,
+  "ic_ir_1d": 0.1497434910531999,
+  "ic_1d_positive_ratio": 0.5670995670995671,
+  "mean_turnover_signal_churn": 0.3470434782608695,
+  "real_turnover_oneside": 0.0961,
+  "gross_excess": {
+    "annualized_return": 0.027288614712251757,
+    "information_ratio": 0.32144803455314347,
+    "max_drawdown": -0.07826192015839756
+  },
+  "net_excess": {
+    "annualized_return": -0.030751810520764047,
+    "information_ratio": -0.3621415393574684,
+    "max_drawdown": -0.09317704909605035,
+    "concentration": {
+      "median_n_holdings": 50.0,
+      "min_n_holdings": 49.0,
+      "median_top10_share": 0.23189048508275334,
+      "max_single_name_weight": 0.048474003838871516,
+      "median_hhi": 0.02022350791471119
+    }
+  },
+  "cost_drag_annualized": 0.05804042523301581,
+  "degeneracy": {
+    "n_days": 231,
+    "min_unique": 289,
+    "median_unique": 300.0,
+    "median_universe": 300.0,
+    "max_tie_density": 0.0,
+    "median_tie_density": 0.0,
+    "n_cutoff_straddle_days": 0,
+    "max_names_tied_at_cutoff": 0,
+    "max_tie_filled_slots": 0,
+    "cutoff_straddle_veto_min": 10,
+    "n_degenerate_days": 0,
+    "degenerate_days_sample": []
+  }
+}

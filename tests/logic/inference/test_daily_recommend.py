@@ -103,6 +103,135 @@ def _frame_for(dates_instruments: list[tuple[str, str]]) -> pd.DataFrame:
     return pd.DataFrame({"feat0": range(len(idx))}, index=idx)
 
 
+class ResolveInferenceFitWindowTests(unittest.TestCase):
+    """The CLI's meta-driven fit-window resolution (Q3). FAIL-LOUD: never
+    silently fall back to a stale window when the model meta is present but
+    incomplete — a mis-normalized prediction is a silent-wrong failure."""
+
+    @staticmethod
+    def _resolver():  # imported lazily; CLI import is qlib-free
+        from scripts.daily_recommend import _resolve_inference_fit_window
+        return _resolve_inference_fit_window
+
+    @staticmethod
+    def _write(d: str, name: str, payload) -> str:
+        import json
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        (Path(d) / name).write_text(text, encoding="utf-8")
+        return str(Path(d) / "m.pkl")
+
+    def _write_meta(self, d: str, payload) -> str:
+        # the hand-curated promotion meta convention: <stem>.meta.json
+        return self._write(d, "m.meta.json", payload)
+
+    def test_reads_window_from_promotion_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            self.assertEqual(
+                self._resolver()(model, None, None), ("2018-01-02", "2024-12-18")
+            )
+
+    def test_promotion_meta_preferred_over_trainer_sidecar(self) -> None:
+        # The canonical on-disk state: BOTH <stem>.meta.json (promotion, has the
+        # window) AND <model>.pkl.meta.json (trainer sidecar, no window) exist.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.pkl.meta.json", {"schema_version": "v1", "model_type": "LGBModel"})
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            self.assertEqual(
+                self._resolver()(model, None, None), ("2018-01-02", "2024-12-18")
+            )
+
+    def test_trainer_sidecar_without_window_raises_not_silent_fallback(self) -> None:
+        # The P1 footgun: a pipeline-trained model ships ONLY <model>.pkl.meta.json
+        # (the trainer sidecar, which carries NO fit window). The resolver must
+        # FAIL-LOUD, not silently fall back to the stale hardcoded window.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.pkl.meta.json", {
+                "schema_version": "v1", "model_type": "LGBModel", "best_iteration": 119,
+            })
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(str(Path(d) / "m.pkl"), None, None)
+
+    def test_meta_missing_fit_end_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {"fit_start_for_inference": "2018-01-02"})
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+
+    def test_meta_missing_fit_start_raises(self) -> None:  # symmetric direction
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {"fit_end_for_inference": "2024-12-18"})
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+
+    def test_non_object_meta_raises_cleanly(self) -> None:
+        # valid JSON but not an object -> clean DailyRecommendationError, NOT a raw
+        # AttributeError that main()'s except clause would miss.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.meta.json", "[1, 2, 3]")
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(str(Path(d) / "m.pkl"), None, None)
+
+    def test_non_string_field_value_raises(self) -> None:
+        # numeric year (a hand-edit slip) must NOT slip through: pd.Timestamp(2018)
+        # would silently become 1970-01-01 -> mis-normalization.
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {
+                "fit_start_for_inference": 2018,  # int, not "2018-01-02"
+                "fit_end_for_inference": "2024-12-18",
+            })
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+
+    def test_unreadable_meta_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.meta.json", "{not valid json")
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(str(Path(d) / "m.pkl"), None, None)
+
+    def test_no_meta_raises_unless_both_cli_supplied(self) -> None:
+        # codex P1: a model with NO meta of either convention must FAIL CLOSED,
+        # not fall back to a stale hardcoded window behind a log line.
+        with tempfile.TemporaryDirectory() as d:
+            model = str(Path(d) / "nope.pkl")
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, "2018-01-02", None)  # one flag is not enough
+            # both flags explicitly supplied -> the only non-meta escape hatch
+            self.assertEqual(
+                self._resolver()(model, "2018-01-02", "2024-12-18"),
+                ("2018-01-02", "2024-12-18"),
+            )
+
+    def test_explicit_cli_overrides_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            self.assertEqual(
+                self._resolver()(model, "2017-01-01", "2099-12-31"),
+                ("2017-01-01", "2099-12-31"),
+            )
+
+    def test_partial_cli_fills_a_meta_gap(self) -> None:
+        # meta has ONLY fit_start; the operator supplies the missing --fit-end ->
+        # resolves (the missing-field error tells them to do exactly this).
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {"fit_start_for_inference": "2018-01-02"})
+            self.assertEqual(
+                self._resolver()(model, None, "2024-12-18"),
+                ("2018-01-02", "2024-12-18"),
+            )
+
+
 class AssertNoLookaheadTests(unittest.TestCase):
     def test_passes_when_max_equals_as_of(self) -> None:
         frame = _frame_for([("2025-06-30", "SH600000"), ("2025-06-30", "SZ000001")])
