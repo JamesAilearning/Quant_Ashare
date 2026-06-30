@@ -173,8 +173,14 @@ def render_stat_card(
     trend_map = {"up": " \u2197", "down": " \u2198", "flat": ""}
     tooltip_html = ""
     if tooltip:
+        # Accessible help affordance, mirroring _results_render._render_card's
+        # P2-2 fix: a focusable anchor with role=note + aria-label so keyboard
+        # and screen-reader users get the help text, not only the mouse-hover
+        # title=. (render_stat_card backs the jobs / walk-forward KPIs.)
+        _tt = html.escape(tooltip, quote=True)
         tooltip_html = (
-            f'<span class="qv2-stat-card-tooltip" title="{html.escape(tooltip, quote=True)}">?</span>'
+            f'<span class="qv2-stat-card-tooltip" tabindex="0" role="note" '
+            f'aria-label="{_tt}" title="{_tt}">?</span>'
         )
     color_class = "" if value_color == "default" else f" qv2-{value_color}"
     parts = ['<div class="qv2-stat-card">']
