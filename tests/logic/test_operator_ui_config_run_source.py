@@ -680,6 +680,15 @@ class FeatureHandlerGuardTests(unittest.TestCase):
             self.source,
         )
 
+    def test_feature_handler_rechecked_on_submit(self) -> None:
+        # The submit path must re-check too: Streamlit can submit from a stale
+        # enabled-button frame before the render-time guard disables Run
+        # (codex P2 on #303).
+        self.assertIn(
+            "feature_handler and feature_handler not in _final_handlers",
+            self.source,
+        )
+
     def test_minedfactor_not_in_default_registry(self) -> None:
         # Premise the guard relies on: MinedFactor is NOT registered in a fresh
         # process (only run_walk_forward.py binds it), so the guard blocks it;

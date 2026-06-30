@@ -702,6 +702,18 @@ with form_col:
         if _np_msg:
             st.error("提交前的最终校验失败，作业未启动：\n- " + _np_msg)
             st.stop()
+        # Mode-agnostic: re-check feature_handler on the submit path too. The
+        # operator can switch to MinedFactor / a typo and click Run within the
+        # stale enabled-button frame before the rerun disables it, so the
+        # render-time guard alone is not enough (codex P2 on #303).
+        _final_handlers = list_supported_feature_handlers()
+        if feature_handler and feature_handler not in _final_handlers:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"feature_handler={feature_handler!r} 不可启动（未注册）。"
+                f"当前可用：{', '.join(_final_handlers) or '（无）'}。"
+            )
+            st.stop()
         if mode == "pipeline":
             _final_guard = validate_pipeline_training_inputs(
                 provider_uri=provider_uri,
