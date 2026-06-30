@@ -11,6 +11,7 @@ from typing import Any, cast
 import streamlit as st
 import yaml
 
+from src.data.feature_dataset_builder import list_supported_feature_handlers
 from web.operator_ui.bundle_health import resolve_default_provider_uri
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
@@ -556,6 +557,22 @@ with form_col:
             instruments, benchmark_code, guard_warnings,
         )
 
+    # feature_handler must be one registered in THIS UI process. MinedFactor
+    # (and other PIT factor handlers) is only registered when
+    # scripts/run_walk_forward.py binds a factor pool — the UI never does — so
+    # launching it here is guaranteed to fail (WalkForwardConfig.__post_init__
+    # rejects it unless adjust_mode=post_adjusted, and even then the handler is
+    # unbound). A plain text_input let an operator type it and only learn after
+    # a full handler init; fail loud up front. list_supported_feature_handlers()
+    # is the live source of truth (also catches typos).
+    _supported_handlers = list_supported_feature_handlers()
+    if feature_handler and feature_handler not in _supported_handlers:
+        guard_errors.append(
+            f"feature_handler={feature_handler!r} 在 UI 进程不可启动（未注册）。"
+            f"当前可用：{', '.join(_supported_handlers) or '（无）'}。MinedFactor 等 "
+            "PIT 因子需经 scripts/run_walk_forward.py 绑定因子池后运行。"
+        )
+
     if compute_device == "gpu" and model_type != "LGBModel":
         guard_errors.append(_GPU_ONLY_LGB_MSG)
 
@@ -685,6 +702,18 @@ with form_col:
         _np_msg = non_production_bundle_error(provider_uri)
         if _np_msg:
             st.error("提交前的最终校验失败，作业未启动：\n- " + _np_msg)
+            st.stop()
+        # Mode-agnostic: re-check feature_handler on the submit path too. The
+        # operator can switch to MinedFactor / a typo and click Run within the
+        # stale enabled-button frame before the rerun disables it, so the
+        # render-time guard alone is not enough (codex P2 on #303).
+        _final_handlers = list_supported_feature_handlers()
+        if feature_handler and feature_handler not in _final_handlers:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"feature_handler={feature_handler!r} 不可启动（未注册）。"
+                f"当前可用：{', '.join(_final_handlers) or '（无）'}。"
+            )
             st.stop()
         if mode == "pipeline":
             _final_guard = validate_pipeline_training_inputs(
