@@ -83,8 +83,8 @@ def main(argv: list[str] | None = None) -> int:
     # the user-facing walk-forward CLI actually does.
     from scripts.run_walk_forward import _load_config  # noqa: PLC0415
 
-    wf_config, qlib_config = _load_config(config_file)
     raw_yaml = load_yaml_with_inheritance(Path(config_file))
+    wf_config, qlib_config = _load_config(config_file, raw=raw_yaml)
 
     _logger.info(
         "Initialising qlib runtime (provider_uri=%s)",
