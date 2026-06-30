@@ -61,8 +61,6 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
     PLOTLY_FOLD_BAND_DARK,
     PLOTLY_FOLD_BAND_LIGHT,
     PLOTLY_INFO_COLOR,
-    PLOTLY_NEGATIVE_COLOR,
-    PLOTLY_POSITIVE_COLOR,
     PLOTLY_STRATEGY_COLOR,
     STABILITY_SCORE_HEURISTIC_NOTE,
     _compute_stability_score,
@@ -84,6 +82,7 @@ from web.operator_ui.result_view_helpers import (
     LOG_LEVEL_OPTIONS,
     filter_log_text,
 )
+from web.operator_ui.theme import load_preferences, pnl_colors
 
 
 def _stop_artifact_error(title: str, exc: Exception) -> None:
@@ -651,6 +650,11 @@ with wf_tabs[2]:
         ir_vals = [fd.get("information_ratio") for fd in fold_data]
         dd_vals = [fd.get("max_drawdown") for fd in fold_data]
 
+        # Bar sign colors follow the operator's red/green convention (chinese:
+        # red-up/green-down) so they agree with the KPI text instead of always
+        # rendering western green-up/red-down.
+        _pos_color, _neg_color = pnl_colors(load_preferences().color_convention)
+
         # Three side-by-side bar charts so the operator can eyeball
         # per-metric consistency. Drawdown rendered as positive bars
         # pointing down via negative y to match the convention.
@@ -662,7 +666,7 @@ with wf_tabs[2]:
                     x=fold_labels,
                     y=[v if v is not None else 0 for v in ar_vals],
                     marker_color=[
-                        PLOTLY_POSITIVE_COLOR if (v is not None and v > 0) else PLOTLY_NEGATIVE_COLOR
+                        _pos_color if (v is not None and v > 0) else _neg_color
                         for v in ar_vals
                     ],
                 )
@@ -682,9 +686,9 @@ with wf_tabs[2]:
                     x=fold_labels,
                     y=[v if v is not None else 0 for v in ir_vals],
                     marker_color=[
-                        PLOTLY_POSITIVE_COLOR if (v is not None and v >= 1.0)
+                        _pos_color if (v is not None and v >= 1.0)
                         else PLOTLY_INFO_COLOR if (v is not None and v > 0)
-                        else PLOTLY_NEGATIVE_COLOR
+                        else _neg_color
                         for v in ir_vals
                     ],
                 )
@@ -702,7 +706,7 @@ with wf_tabs[2]:
                 go.Bar(
                     x=fold_labels,
                     y=[v if v is not None else 0 for v in dd_vals],
-                    marker_color=PLOTLY_NEGATIVE_COLOR,
+                    marker_color=_neg_color,
                 )
             )
             f_dd.update_layout(

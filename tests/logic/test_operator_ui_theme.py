@@ -373,5 +373,34 @@ class OperatorUiThemeTests(unittest.TestCase):
         self.assertIn("MutationObserver", source)
 
 
+class PnlColorsTests(unittest.TestCase):
+    """Plotly charts are server-rendered and can't read the
+    data-color-convention CSS var the KPI text follows, so pnl_colors() resolves
+    the (positive, negative) sign colors from the convention. Must match the
+    --positive / --negative CSS tokens: chinese = red-up/green-down, western =
+    green-up/red-down."""
+
+    def test_chinese_is_red_up_green_down(self) -> None:
+        from web.operator_ui.theme import PNL_GREEN, PNL_RED, pnl_colors
+
+        positive, negative = pnl_colors("chinese")
+        self.assertEqual(positive, PNL_RED)
+        self.assertEqual(negative, PNL_GREEN)
+
+    def test_western_is_green_up_red_down(self) -> None:
+        from web.operator_ui.theme import PNL_GREEN, PNL_RED, pnl_colors
+
+        positive, negative = pnl_colors("western")
+        self.assertEqual(positive, PNL_GREEN)
+        self.assertEqual(negative, PNL_RED)
+
+    def test_positive_and_negative_always_differ(self) -> None:
+        from web.operator_ui.theme import pnl_colors
+
+        for convention in ("chinese", "western"):
+            positive, negative = pnl_colors(convention)  # type: ignore[arg-type]
+            self.assertNotEqual(positive, negative)
+
+
 if __name__ == "__main__":
     unittest.main()

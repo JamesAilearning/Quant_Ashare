@@ -399,5 +399,23 @@ class WalkForwardExcessLabelTests(unittest.TestCase):
         self.assertNotIn('"最大回撤"', self.source)
 
 
+class WalkForwardBarColorConventionTests(unittest.TestCase):
+    """The per-fold metric bars must color by the operator's red/green
+    convention (resolved via pnl_colors), not the fixed western sign colors, so
+    they agree with the KPI text."""
+
+    def setUp(self) -> None:
+        self.source = _WALK_FORWARD_PAGE.read_text(encoding="utf-8")
+
+    def test_bars_resolve_sign_colors_from_convention(self) -> None:
+        self.assertIn("pnl_colors(load_preferences().color_convention)", self.source)
+        self.assertIn("_pos_color", self.source)
+        self.assertIn("_neg_color", self.source)
+
+    def test_fixed_sign_color_constants_no_longer_used(self) -> None:
+        self.assertNotIn("PLOTLY_POSITIVE_COLOR", self.source)
+        self.assertNotIn("PLOTLY_NEGATIVE_COLOR", self.source)
+
+
 if __name__ == "__main__":
     unittest.main()
