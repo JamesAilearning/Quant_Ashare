@@ -11,6 +11,10 @@ from typing import Any, cast
 import streamlit as st
 import yaml
 
+from src.core.canonical_backtest_contract import (
+    ADJUST_MODE_PRE,
+    SUPPORTED_ADJUST_MODES,
+)
 from src.data.feature_dataset_builder import list_supported_feature_handlers
 from web.operator_ui.bundle_health import resolve_default_provider_uri
 from web.operator_ui.config_forms import (
@@ -503,6 +507,70 @@ with form_col:
             )
             benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300TR"), key="cr_benchmark_code")
 
+    # --- Backtest / cost-model section ---
+    # Cost-model + risk knobs that PipelineConfig / WalkForwardConfig accept but
+    # the form previously left at their (backend) defaults. The literals below
+    # mirror those dataclass defaults; the canonical contract validates the job
+    # config against the same field set. Collapsed by default — most runs keep
+    # the defaults. stamp_tax_schedule is intentionally NOT exposed (it's a
+    # dated schedule, not a scalar; backend resolves None -> the 2023-08-28
+    # reform default).
+    with st.expander("⚙️ 回测 / 成本模型（高级）", expanded=False):
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            adjust_default = _cr("adjust_mode", ADJUST_MODE_PRE)
+            adjust_mode = st.selectbox(
+                "复权模式 (adjust_mode)",
+                list(SUPPORTED_ADJUST_MODES),
+                index=(
+                    SUPPORTED_ADJUST_MODES.index(adjust_default)
+                    if adjust_default in SUPPORTED_ADJUST_MODES else 0
+                ),
+                key="cr_adjust_mode",
+                help="价格复权口径，默认 pre_adjusted。",
+            )
+            limit_threshold = st.number_input(
+                "涨跌停阈值 (limit_threshold)",
+                value=float(_cr("limit_threshold", 0.095)),
+                min_value=0.0, step=0.005, format="%.3f",
+                key="cr_limit_threshold",
+                help="主板 0.095（±10%）、创业板/科创板 0.195、ST 0.045；须匹配股票池主导板。",
+            )
+            commission_rate = st.number_input(
+                "佣金率 (commission_rate)",
+                value=float(_cr("commission_rate", 0.0005)),
+                min_value=0.0, step=0.0001, format="%.4f",
+                key="cr_commission_rate",
+            )
+            seed = st.number_input(
+                "随机种子 (seed)",
+                value=int(_cr("seed", 42)), min_value=0, step=1,
+                key="cr_seed",
+                help="numpy / 模型随机种子，影响结果可复现性。",
+            )
+        with bc2:
+            slippage_bps = st.number_input(
+                "滑点 (slippage_bps)",
+                value=float(_cr("slippage_bps", 5.0)),
+                min_value=0.0, step=0.5, format="%.1f",
+                key="cr_slippage_bps",
+            )
+            min_cost = st.number_input(
+                "最低单笔成本 (min_cost)",
+                value=float(_cr("min_cost", 5.0)),
+                min_value=0.0, step=1.0, format="%.1f",
+                key="cr_min_cost",
+            )
+            init_cash = st.number_input(
+                "初始资金 (init_cash)",
+                value=float(_cr("init_cash", 100_000_000.0)),
+                min_value=0.0, step=1_000_000.0, format="%.0f",
+                key="cr_init_cash",
+            )
+        st.caption(
+            "印花税按 2023-08-28 改革日程自动套用（stamp_tax_schedule），此处不暴露。"
+        )
+
     # --- Compute section ---
     with st.expander("⚙️ 算力", expanded=True):
         cc1, cc2 = st.columns(2)
@@ -596,6 +664,14 @@ with form_col:
         "topk": topk,
         "n_drop": n_drop,
         "signal_to_execution_lag": signal_to_execution_lag,
+        # Backtest / cost-model knobs (⚙️ 回测 / 成本模型 expander).
+        "adjust_mode": adjust_mode,
+        "limit_threshold": limit_threshold,
+        "commission_rate": commission_rate,
+        "slippage_bps": slippage_bps,
+        "min_cost": min_cost,
+        "init_cash": init_cash,
+        "seed": seed,
     }
     if mode == "pipeline":
         config_dict.update({

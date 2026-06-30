@@ -17,6 +17,23 @@ try:
 except ImportError:
     _HAS_STREAMLIT = False
 
+# PIPELINE_KEYS / WALK_FORWARD_KEYS are derived from the config dataclasses,
+# which transitively import qlib — unavailable in dep-light cells. Guard the
+# schema-validity check the same way as the streamlit-backed tests.
+try:
+    from web.operator_ui.config_forms import (
+        PIPELINE_KEYS as _PIPELINE_KEYS,
+    )
+    from web.operator_ui.config_forms import (
+        WALK_FORWARD_KEYS as _WALK_FORWARD_KEYS,
+    )
+
+    _HAS_CONFIG_SCHEMAS = True
+except Exception:  # noqa: BLE001 - dep-light cell (no qlib): introspection N/A
+    _HAS_CONFIG_SCHEMAS = False
+    _PIPELINE_KEYS = frozenset()
+    _WALK_FORWARD_KEYS = frozenset()
+
 
 class ConfigRunPageSourceTests(unittest.TestCase):
     def test_training_controls_are_not_inside_streamlit_form(self) -> None:
@@ -699,6 +716,44 @@ class FeatureHandlerGuardTests(unittest.TestCase):
         handlers = list_supported_feature_handlers()
         self.assertNotIn("MinedFactor", handlers)
         self.assertIn("Alpha158", handlers)
+
+
+class CostModelFieldsTests(unittest.TestCase):
+    """Backtest / cost-model knobs (adjust_mode, limit_threshold, commission,
+    slippage, init_cash, min_cost, seed) are surfaced in an advanced expander
+    and threaded into the job config. Each must be a valid key in BOTH config
+    schemas, or the shared config_dict is rejected by validate_config_keys."""
+
+    _COST_KEYS = (
+        "adjust_mode", "limit_threshold", "commission_rate",
+        "slippage_bps", "min_cost", "init_cash", "seed",
+    )
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_cost_model_expander_present(self) -> None:
+        self.assertIn("回测 / 成本模型", self.source)
+
+    def test_adjust_mode_uses_supported_modes(self) -> None:
+        self.assertIn("SUPPORTED_ADJUST_MODES", self.source)
+        self.assertIn('key="cr_adjust_mode"', self.source)
+
+    def test_config_dict_threads_cost_fields(self) -> None:
+        for key in self._COST_KEYS:
+            self.assertIn(f'"{key}":', self.source)
+
+    @unittest.skipUnless(
+        _HAS_CONFIG_SCHEMAS, "config schemas unavailable (no qlib)"
+    )
+    def test_cost_keys_valid_in_both_config_schemas(self) -> None:
+        for key in self._COST_KEYS:
+            self.assertIn(key, _PIPELINE_KEYS, f"{key} not in PIPELINE_KEYS")
+            self.assertIn(
+                key, _WALK_FORWARD_KEYS, f"{key} not in WALK_FORWARD_KEYS"
+            )
 
 
 if __name__ == "__main__":
