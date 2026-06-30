@@ -856,5 +856,25 @@ class BenchmarkReturnDisplayTests(unittest.TestCase):
         self.assertIn("最差超额回撤", self.render)
 
 
+class HeatmapColorConventionTests(unittest.TestCase):
+    """The monthly-returns heatmap colorscale must follow the operator's
+    red/green convention (chinese: red-up/green-down) — resolved server-side via
+    pnl_colors — instead of the fixed western sign colors, so it agrees with the
+    KPI text."""
+
+    def setUp(self) -> None:
+        self.render = _RESULTS_RENDER.read_text(encoding="utf-8")
+
+    def test_heatmap_resolves_sign_colors_from_convention(self) -> None:
+        self.assertIn("pnl_colors(", self.render)
+        self.assertIn("load_preferences().color_convention", self.render)
+        self.assertIn("[0.0, _neg_color]", self.render)
+        self.assertIn("[1.0, _pos_color]", self.render)
+
+    def test_fixed_sign_color_constants_no_longer_used(self) -> None:
+        self.assertNotIn("PLOTLY_POSITIVE_COLOR", self.render)
+        self.assertNotIn("PLOTLY_NEGATIVE_COLOR", self.render)
+
+
 if __name__ == "__main__":
     unittest.main()

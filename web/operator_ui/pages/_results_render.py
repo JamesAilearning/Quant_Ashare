@@ -30,9 +30,7 @@ from web.operator_ui.pages._results_helpers import (
     MISSING,
     PLOTLY_BENCHMARK_COLOR,
     PLOTLY_DRAWDOWN_COLOR,
-    PLOTLY_NEGATIVE_COLOR,
     PLOTLY_NEUTRAL_COLOR,
-    PLOTLY_POSITIVE_COLOR,
     PLOTLY_STRATEGY_COLOR,
     _chart_by_token,
     _filter_json_by_query,
@@ -69,6 +67,7 @@ from web.operator_ui.result_view_helpers import (
     filter_nav_frame_by_range,
     nav_y_range,
 )
+from web.operator_ui.theme import load_preferences, pnl_colors
 
 
 def _run_dir_signature(run_dir: Path) -> str:
@@ -869,6 +868,12 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
                 aggfunc="first",
             ).reindex(columns=month_order)
             text = pivot.apply(lambda col: col.map(lambda value: _fmt_percent(value, signed=True)))
+            # Sign colors follow the operator's red/green convention (chinese:
+            # red-up/green-down) so the heatmap agrees with the KPI text instead
+            # of always rendering western green-up/red-down.
+            _pos_color, _neg_color = pnl_colors(
+                load_preferences().color_convention
+            )
             fig = go.Figure(data=go.Heatmap(
                 z=pivot.values,
                 x=list(pivot.columns),
@@ -876,9 +881,9 @@ def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
                 text=text.values,
                 texttemplate="%{text}",
                 colorscale=[
-                    [0.0, PLOTLY_NEGATIVE_COLOR],
+                    [0.0, _neg_color],
                     [0.5, PLOTLY_NEUTRAL_COLOR],
-                    [1.0, PLOTLY_POSITIVE_COLOR],
+                    [1.0, _pos_color],
                 ],
                 zmid=0,
                 colorbar={"tickformat": ".1%"},

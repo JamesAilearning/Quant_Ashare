@@ -24,6 +24,26 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 THEME_CSS_PATH = STATIC_DIR / "theme.css"
 PREFERENCES_PATH = output_path("operator_ui", "preferences.json")
 
+# Plotly P&L sign colors. Plotly figures are server-rendered with explicit
+# colors and cannot read the ``data-color-convention`` CSS var the KPI text
+# follows, so a chart's positive/negative sign colors are resolved here from the
+# persisted convention instead. Shades match the long-standing chart palette;
+# only the red/green ASSIGNMENT flips with the convention.
+PNL_RED = "firebrick"
+PNL_GREEN = "seagreen"
+
+
+def pnl_colors(convention: ColorConvention) -> tuple[str, str]:
+    """Return ``(positive, negative)`` chart colors for ``convention``.
+
+    chinese = red-up / green-down; western = green-up / red-down — matching the
+    ``--positive`` / ``--negative`` CSS tokens the KPI text uses, so charts and
+    text agree on what green means.
+    """
+    if convention == "chinese":
+        return (PNL_RED, PNL_GREEN)
+    return (PNL_GREEN, PNL_RED)
+
 
 @dataclass(frozen=True)
 class UserPreferences:
