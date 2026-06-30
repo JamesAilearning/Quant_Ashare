@@ -78,7 +78,9 @@ _MINED_FACTOR_YAML_KEYS: tuple[str, ...] = (
 )
 
 
-def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
+def _load_config(
+    path: str, raw: dict[str, Any] | None = None,
+) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
     """Load walk-forward + qlib runtime config from a YAML mapping.
 
     The YAML may carry a top-level ``provider_uri`` and ``region``
@@ -86,12 +88,17 @@ def _load_config(path: str) -> tuple[WalkForwardConfig, QlibRuntimeConfig]:
     (consumed separately by ``_maybe_build_mined_factor_bundle``);
     everything else is funnelled into :class:`WalkForwardConfig`.
     Unknown keys raise a hard error (mirrors ``main.py``'s behaviour).
+
+    ``raw`` may be a pre-parsed YAML mapping (the CLI entry points parse
+    it once for their own logging and pass it back in) so the inheritance
+    loader does not run twice; ``None`` parses ``path`` here.
     """
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    raw = load_yaml_with_inheritance(config_path)
+    if raw is None:
+        raw = load_yaml_with_inheritance(config_path)
 
     if not isinstance(raw, dict):
         raise ValueError(
@@ -280,7 +287,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     _logger.info("Loading walk-forward config from %s", config_file)
     raw_yaml = load_yaml_with_inheritance(Path(config_file))
-    wf_config, qlib_config = _load_config(config_file)
+    wf_config, qlib_config = _load_config(config_file, raw=raw_yaml)
 
     # Fail loud on a missing / misconfigured bundle BEFORE qlib (or the mined
     # bundle build, or the staleness check below) touches it: a non-existent

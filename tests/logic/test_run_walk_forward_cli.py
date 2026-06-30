@@ -35,6 +35,32 @@ class WalkForwardCliConfigTests(unittest.TestCase):
         self.assertEqual(wf_config.adjust_mode, ADJUST_MODE_NONE)
         self.assertEqual(qlib_config.data_adjust_mode, ADJUST_MODE_NONE)
 
+    def test_load_config_reuses_supplied_raw_without_reparsing(self) -> None:
+        # CLI entry points parse the YAML once and pass it in; _load_config
+        # must not re-run the inheritance loader (B3-4).
+        from unittest.mock import patch
+
+        from scripts import run_walk_forward as rwf
+        from src.core._yaml_loader import load_yaml_with_inheritance
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "walk.yaml"
+            cfg.write_text(
+                "\n".join(
+                    [
+                        'provider_uri: "D:/qlib_data/my_cn_data"',
+                        'region: "cn"',
+                        f'adjust_mode: "{ADJUST_MODE_NONE}"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            raw = load_yaml_with_inheritance(cfg)
+            with patch.object(rwf, "load_yaml_with_inheritance") as mock_load:
+                wf_config, _ = rwf._load_config(str(cfg), raw=raw)
+            mock_load.assert_not_called()
+        self.assertEqual(wf_config.adjust_mode, ADJUST_MODE_NONE)
+
     def test_provider_uri_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "walk.yaml"
