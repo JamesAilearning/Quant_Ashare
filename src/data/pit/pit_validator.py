@@ -199,6 +199,10 @@ class PITValidator:
         self._delisted_registry_path = delisted_registry_path
         self._reference_cases_path = reference_cases_path
         self._sample_dates = sample_dates
+        # Cache the calendar range: checks A/B/D each read it, and it parses
+        # the full day.txt. The file is immutable for the validator's
+        # lifetime, so compute it at most once.
+        self._cal_range_cache: tuple[pd.Timestamp, pd.Timestamp] | None = None
 
     # ------------------------------------------------------------------
     # Public orchestrator
@@ -217,7 +221,7 @@ class PITValidator:
         checks = [
             self._check_a_survivorship(registry),
             self._check_b_delist_boundary(registry),
-            self._check_c_time_travel(),
+            self._check_c_time_travel(registry),
             self._check_d_qlib_operator_min_periods(registry),
             self._check_e_index_membership(references),
             self._check_f_borrow_shell_continuity(references),
@@ -273,6 +277,8 @@ class PITValidator:
         (or after it ends) is legitimately not in the provider, so validating
         its delist boundary against this bundle is out of scope, not a failure.
         """
+        if self._cal_range_cache is not None:
+            return self._cal_range_cache
         days = (
             (self._provider_dir / "calendars" / "day.txt")
             .read_text(encoding="utf-8")
@@ -282,7 +288,8 @@ class PITValidator:
             raise PITValidatorError(
                 f"{self._provider_dir}/calendars/day.txt is empty"
             )
-        return pd.Timestamp(days[0]), pd.Timestamp(days[-1])
+        self._cal_range_cache = (pd.Timestamp(days[0]), pd.Timestamp(days[-1]))
+        return self._cal_range_cache
 
     def _init_qlib(self) -> None:
         # Route every qlib bootstrap through the canonical runtime entry
@@ -432,13 +439,12 @@ class PITValidator:
                 )
         return result
 
-    def _check_c_time_travel(self) -> CheckResult:
+    def _check_c_time_travel(self, registry: pd.DataFrame) -> CheckResult:
         """At each sample date, all returned universe instruments have
         ``list_date <= date`` AND no delist_date <= date."""
         from qlib.data import D
 
         result = CheckResult(name="Time-travel sanity", code="C", passed=True)
-        registry = self._load_delisted_registry()
         delisted_lookup = {
             str(r["ticker"]): pd.Timestamp(r["delist_date"])
             for _, r in registry.iterrows()

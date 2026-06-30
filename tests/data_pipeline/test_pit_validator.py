@@ -150,6 +150,31 @@ class SanityCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(PITValidatorError, r"features/"):
                 validator._sanity_check_provider()
 
+    def test_calendar_range_is_cached(self) -> None:
+        # B3-3: checks A/B/D all call _calendar_range; it must parse day.txt
+        # at most once per validator.
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "calendars").mkdir()
+            (tmp_path / "calendars" / "day.txt").write_text(
+                "2020-01-02\n2020-01-03\n2020-06-30\n", encoding="utf-8",
+            )
+            validator = PITValidator(
+                provider_dir=tmp_path,
+                delisted_registry_path=tmp_path / "absent.parquet",
+            )
+            first = validator._calendar_range()
+            self.assertEqual(
+                first, (pd.Timestamp("2020-01-02"), pd.Timestamp("2020-06-30")),
+            )
+            # second call is cached — day.txt is not re-read.
+            with patch.object(Path, "read_text") as mock_read:
+                second = validator._calendar_range()
+            mock_read.assert_not_called()
+            self.assertEqual(first, second)
+
 
 class DelistVerdictHelperTests(unittest.TestCase):
     """PR #272 — pure verdict helpers. Look-ahead (data past delist) is the
