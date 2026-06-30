@@ -113,13 +113,20 @@ class ResolveInferenceFitWindowTests(unittest.TestCase):
         from scripts.daily_recommend import _resolve_inference_fit_window
         return _resolve_inference_fit_window
 
-    @staticmethod
-    def _write_meta(d: str, payload: dict) -> str:
-        import json
-        (Path(d) / "m.meta.json").write_text(json.dumps(payload), encoding="utf-8")
-        return str(Path(d) / "m.pkl")  # resolver derives <stem>.meta.json
+    _LOGGER = "src.scripts.daily_recommend"
 
-    def test_reads_window_from_model_meta(self) -> None:
+    @staticmethod
+    def _write(d: str, name: str, payload) -> str:
+        import json
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        (Path(d) / name).write_text(text, encoding="utf-8")
+        return str(Path(d) / "m.pkl")
+
+    def _write_meta(self, d: str, payload) -> str:
+        # the hand-curated promotion meta convention: <stem>.meta.json
+        return self._write(d, "m.meta.json", payload)
+
+    def test_reads_window_from_promotion_meta(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             model = self._write_meta(d, {
                 "fit_start_for_inference": "2018-01-02",
@@ -129,29 +136,75 @@ class ResolveInferenceFitWindowTests(unittest.TestCase):
                 self._resolver()(model, None, None), ("2018-01-02", "2024-12-18")
             )
 
-    def test_meta_present_but_missing_field_raises(self) -> None:
+    def test_promotion_meta_preferred_over_trainer_sidecar(self) -> None:
+        # The canonical on-disk state: BOTH <stem>.meta.json (promotion, has the
+        # window) AND <model>.pkl.meta.json (trainer sidecar, no window) exist.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.pkl.meta.json", {"schema_version": "v1", "model_type": "LGBModel"})
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            self.assertEqual(
+                self._resolver()(model, None, None), ("2018-01-02", "2024-12-18")
+            )
+
+    def test_trainer_sidecar_without_window_raises_not_silent_fallback(self) -> None:
+        # The P1 footgun: a pipeline-trained model ships ONLY <model>.pkl.meta.json
+        # (the trainer sidecar, which carries NO fit window). The resolver must
+        # FAIL-LOUD, not silently fall back to the stale hardcoded window.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.pkl.meta.json", {
+                "schema_version": "v1", "model_type": "LGBModel", "best_iteration": 119,
+            })
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(str(Path(d) / "m.pkl"), None, None)
+
+    def test_meta_missing_fit_end_raises(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             model = self._write_meta(d, {"fit_start_for_inference": "2018-01-02"})
             with self.assertRaises(DailyRecommendationError):
                 self._resolver()(model, None, None)
 
-    def test_unreadable_meta_raises(self) -> None:
+    def test_meta_missing_fit_start_raises(self) -> None:  # symmetric direction
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "m.meta.json").write_text("{not valid json", encoding="utf-8")
+            model = self._write_meta(d, {"fit_end_for_inference": "2024-12-18"})
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+
+    def test_non_object_meta_raises_cleanly(self) -> None:
+        # valid JSON but not an object -> clean DailyRecommendationError, NOT a raw
+        # AttributeError that main()'s except clause would miss.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.meta.json", "[1, 2, 3]")
             with self.assertRaises(DailyRecommendationError):
                 self._resolver()(str(Path(d) / "m.pkl"), None, None)
 
-    def test_no_meta_falls_back_to_constants(self) -> None:
-        from scripts.daily_recommend import (
-            _DEFAULT_FIT_END,
-            _DEFAULT_FIT_START,
-        )
+    def test_non_string_field_value_raises(self) -> None:
+        # numeric year (a hand-edit slip) must NOT slip through: pd.Timestamp(2018)
+        # would silently become 1970-01-01 -> mis-normalization.
         with tempfile.TemporaryDirectory() as d:
-            # no meta written -> fallback (the warning is logged, not asserted here)
-            self.assertEqual(
-                self._resolver()(str(Path(d) / "nope.pkl"), None, None),
-                (_DEFAULT_FIT_START, _DEFAULT_FIT_END),
-            )
+            model = self._write_meta(d, {
+                "fit_start_for_inference": 2018,  # int, not "2018-01-02"
+                "fit_end_for_inference": "2024-12-18",
+            })
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+
+    def test_unreadable_meta_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.meta.json", "{not valid json")
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(str(Path(d) / "m.pkl"), None, None)
+
+    def test_no_meta_falls_back_to_constants_with_warning(self) -> None:
+        from scripts.daily_recommend import _DEFAULT_FIT_END, _DEFAULT_FIT_START
+        with tempfile.TemporaryDirectory() as d:
+            # truly NO meta sidecar of either convention -> fallback, and the
+            # warning (the only signal a guessed window is in use) MUST fire.
+            with self.assertLogs(self._LOGGER, level="WARNING"):
+                out = self._resolver()(str(Path(d) / "nope.pkl"), None, None)
+            self.assertEqual(out, (_DEFAULT_FIT_START, _DEFAULT_FIT_END))
 
     def test_explicit_cli_overrides_meta(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -159,22 +212,19 @@ class ResolveInferenceFitWindowTests(unittest.TestCase):
                 "fit_start_for_inference": "2018-01-02",
                 "fit_end_for_inference": "2024-12-18",
             })
-            # both flags given -> meta is not even read
             self.assertEqual(
                 self._resolver()(model, "2017-01-01", "2099-12-31"),
                 ("2017-01-01", "2099-12-31"),
             )
 
-    def test_partial_cli_overrides_one_side_of_meta(self) -> None:
+    def test_partial_cli_fills_a_meta_gap(self) -> None:
+        # meta has ONLY fit_start; the operator supplies the missing --fit-end ->
+        # resolves (the missing-field error tells them to do exactly this).
         with tempfile.TemporaryDirectory() as d:
-            model = self._write_meta(d, {
-                "fit_start_for_inference": "2018-01-02",
-                "fit_end_for_inference": "2024-12-18",
-            })
-            # only fit_end given -> start from meta, end from CLI
+            model = self._write_meta(d, {"fit_start_for_inference": "2018-01-02"})
             self.assertEqual(
-                self._resolver()(model, None, "2025-06-30"),
-                ("2018-01-02", "2025-06-30"),
+                self._resolver()(model, None, "2024-12-18"),
+                ("2018-01-02", "2024-12-18"),
             )
 
 

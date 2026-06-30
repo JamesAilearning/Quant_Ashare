@@ -14,11 +14,12 @@ Usage::
 
 The model artifact defaults to the canonical clean-PIT model
 (D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl). The inference
-NORMALIZATION fit window is read from that model's companion
-``<model>.meta.json`` (``fit_start_for_inference`` / ``fit_end_for_inference``)
-so it always tracks whatever model is loaded — a promotion that swaps the pkl
-+ meta moves the window automatically, with no hardcoded constant to forget.
-Override with --model / --fit-start / --fit-end. See _resolve_inference_fit_window.
+NORMALIZATION fit window is read from that model's companion meta
+(``fit_start_for_inference`` / ``fit_end_for_inference``) so it tracks whatever
+model is loaded — a promotion that writes the meta moves the window with it, and
+if the meta lacks the window the run FAILS LOUD rather than silently using a
+stale hardcoded one. Override with --model / --fit-start / --fit-end.
+See _resolve_inference_fit_window / _model_meta_paths.
 
 NOTE: qlib's Alpha158 uses joblib's Windows 'spawn' workers, which
 re-import this module per worker. The ``if __name__ == "__main__"`` guard
@@ -78,6 +79,24 @@ _DEFAULT_FIT_START = "2018-01-02"
 _DEFAULT_FIT_END = "2023-12-20"
 
 
+def _model_meta_paths(model_path: str) -> list[Path]:
+    """Both sidecar conventions that can carry the inference fit window, in
+    priority order:
+
+    1. ``<stem>.meta.json``     — the hand-curated PROMOTION meta (carries
+       ``fit_*_for_inference``; written at promotion time).
+    2. ``<model>.pkl.meta.json`` — the ModelTrainer sidecar
+       (``src/core/model_trainer.py`` writes / ``ensemble.py`` reads this name).
+       It does NOT currently carry the fit window, but a model produced by the
+       pipeline ships ONLY this file — so we must inspect it to decide between
+       "meta exists but lacks the window" (fail-loud) and "no meta at all"
+       (fallback). Checking both stops the resolver from silently falling back
+       to a stale window just because the promotion meta wasn't hand-written.
+    """
+    p = Path(model_path)
+    return [p.with_suffix(".meta.json"), p.with_name(p.name + ".meta.json")]
+
+
 def _resolve_inference_fit_window(
     model_path: str,
     cli_fit_start: str | None,
@@ -88,26 +107,31 @@ def _resolve_inference_fit_window(
     Inference MUST normalize features on the model's OWN training fit window
     (training statistics) — a mismatch silently mis-normalizes every prediction.
     Rather than hardcode the window in a constant that drifts from the model on
-    every promotion, derive it from the model's companion ``<model>.meta.json``
-    (``fit_start_for_inference`` / ``fit_end_for_inference``, written at
-    promotion time).
+    every promotion, derive it from the model's companion meta
+    (``fit_start_for_inference`` / ``fit_end_for_inference`` — see
+    :func:`_model_meta_paths` for the two sidecar names).
 
-    Priority: explicit CLI flags > model meta > hardcoded fallback. FAIL-LOUD:
+    Priority: explicit CLI flags > model meta > hardcoded fallback. FAIL-LOUD,
+    so a wrong/stale window can NEVER be used silently:
 
-    * meta PRESENT but missing the inference-fit field(s) -> raise. Silently
-      falling back to a stale constant is exactly the mis-normalization this
-      wiring exists to prevent.
-    * model has NO meta sidecar -> fall back to the hardcoded constants, but
-      WARN loudly (the window is then a guess; write a meta to enforce it).
+    * a meta file EXISTS but no meta carries the fit window (e.g. only the
+      ModelTrainer sidecar is present) -> raise. Silently falling back to a
+      stale constant is exactly the mis-normalization this wiring prevents.
+    * a meta carries the field but it is not a non-empty string (a numeric year
+      like ``2018`` would silently become 1970 via ``pd.Timestamp``) -> raise.
+    * a meta is valid JSON but not an object, or unreadable -> raise.
+    * the model ships NO meta at all -> fall back to the hardcoded constants,
+      but WARN loudly (the window is then a guess; write a meta to enforce it).
 
-    A CLI flag, when given, overrides the corresponding value for that side.
+    A CLI flag, when given, fills/overrides the corresponding side — so a meta
+    that has only one side plus the matching ``--fit-*`` flag still resolves.
     """
     # Explicit on both sides => operator override; skip meta entirely.
     if cli_fit_start is not None and cli_fit_end is not None:
         return cli_fit_start, cli_fit_end
 
-    meta_path = Path(model_path).with_suffix(".meta.json")
-    if meta_path.is_file():
+    existing = [p for p in _model_meta_paths(model_path) if p.is_file()]
+    for meta_path in existing:
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -117,32 +141,56 @@ def _resolve_inference_fit_window(
                 "normalization fit window — fix the meta or pass "
                 "--fit-start/--fit-end explicitly."
             ) from exc
+        if not isinstance(meta, dict):
+            raise DailyRecommendationError(
+                f"Model meta {meta_path} is not a JSON object (got "
+                f"{type(meta).__name__}). Cannot read the inference fit window."
+            )
         meta_start = meta.get("fit_start_for_inference")
         meta_end = meta.get("fit_end_for_inference")
-        missing = [
-            name
-            for name, val in (
-                ("fit_start_for_inference", meta_start),
-                ("fit_end_for_inference", meta_end),
-            )
-            if not val
-        ]
-        if missing:
+        if meta_start is None and meta_end is None:
+            continue  # this sidecar doesn't carry the window — try the next
+        # This meta DOES carry (at least one side of) the window. Combine with any
+        # CLI override, then require both sides to be non-empty strings.
+        start = cli_fit_start or meta_start
+        end = cli_fit_end or meta_end
+        if not isinstance(start, str) or not start:
             raise DailyRecommendationError(
-                f"Model meta {meta_path} is present but missing {missing}. "
-                "Refusing to silently fall back to a hardcoded fit window — that "
-                "would mis-normalize the model's predictions. Add the field(s) to "
-                "the meta, or pass --fit-start/--fit-end explicitly."
+                f"Model meta {meta_path}: fit_start_for_inference is missing or not "
+                f"a non-empty string (got {start!r}), and was not supplied via "
+                "--fit-start. Refusing to fall back to a hardcoded window (it would "
+                "mis-normalize). Fix the meta or pass --fit-start."
             )
-        return (cli_fit_start or meta_start, cli_fit_end or meta_end)
+        if not isinstance(end, str) or not end:
+            raise DailyRecommendationError(
+                f"Model meta {meta_path}: fit_end_for_inference is missing or not a "
+                f"non-empty string (got {end!r}), and was not supplied via "
+                "--fit-end. Refusing to fall back to a hardcoded window (it would "
+                "mis-normalize). Fix the meta or pass --fit-end."
+            )
+        return start, end
 
+    # A meta file exists but NONE carried the fit window -> fail-loud (do NOT
+    # silently fall back to a stale hardcoded window).
+    if existing:
+        raise DailyRecommendationError(
+            f"Model {model_path} has a meta sidecar "
+            f"({', '.join(str(p) for p in existing)}) but none carries "
+            "fit_start_for_inference / fit_end_for_inference. Refusing to fall "
+            "back to a hardcoded fit window (it would mis-normalize the model). "
+            "Add the fields to the model's promotion meta, or pass "
+            "--fit-start/--fit-end explicitly."
+        )
+
+    # No meta at all -> last-resort fallback + loud warning.
     _logger.warning(
-        "Model %s has no companion meta sidecar (%s) — falling back to the "
-        "HARDCODED inference fit window %s..%s. This is fragile: if the model was "
-        "trained on a different window, every prediction is mis-normalized. Write "
-        "a <model>.meta.json with fit_start_for_inference / fit_end_for_inference "
-        "to make the window machine-enforced.",
-        model_path, meta_path, _DEFAULT_FIT_START, _DEFAULT_FIT_END,
+        "Model %s has NO companion meta sidecar (looked for %s) — falling back to "
+        "the HARDCODED inference fit window %s..%s. This is fragile: if the model "
+        "was trained on a different window, every prediction is mis-normalized. "
+        "Write a <model>.meta.json with fit_start_for_inference / "
+        "fit_end_for_inference to make the window machine-enforced.",
+        model_path, " / ".join(str(p) for p in _model_meta_paths(model_path)),
+        _DEFAULT_FIT_START, _DEFAULT_FIT_END,
     )
     return (cli_fit_start or _DEFAULT_FIT_START, cli_fit_end or _DEFAULT_FIT_END)
 

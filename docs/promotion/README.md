@@ -81,12 +81,13 @@ the total-return benchmark by ~9%** over the most recent clean year.
 ## Candidate split (variable isolation)
 
 - **train** 2018-01-02 → 2024-12-18 (incorporates the year the incumbent only early-stopped on)
-- **valid (early-stop)** 2025-01-02 → 2025-06-30
+- **valid (early-stop)** 2025-01-02 → 2025-06-26 (valid_end trimmed from 2025-06-30 for the
+  ≥2 trading-day Alpha158 label embargo before the 2025-07-01 guard — see _segment_embargo.py)
 - **guard window** 2025-07-01 → 2026-06-12 (clean OOS for BOTH: incumbent OOS=2025+, candidate
   valid ends 2025-06)
 - Hyperparameters, Alpha158, csi300, T+1→T+2 label, ST-mask all UNCHANGED — the only variable
   is the shifted data window. Run: `eval_frozen_model_oos.py --fit-end 2024-12-18
-  --valid-start 2025-01-02 --valid-end 2025-06-30 --guard-end 2026-06-12 --model <candidate>`.
+  --valid-start 2025-01-02 --valid-end 2025-06-26 --guard-end 2026-06-12 --model <candidate>`.
 
 ## Promotion criteria (asymmetric — "freshness must not make it worse")
 
