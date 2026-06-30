@@ -534,6 +534,7 @@ with form_col:
             valid_start=valid_start, valid_end=valid_end,
             test_start=test_start, test_end=test_end,
             benchmark_code=benchmark_code,
+            metadata=provider_metadata,  # reuse the rerun's single inspect
         )
         guard_errors.extend(guard.errors)
         guard_warnings.extend(guard.warnings)
@@ -695,6 +696,7 @@ with form_col:
                 valid_end=valid_end,
                 test_start=test_start,
                 test_end=test_end,
+                metadata=provider_metadata,  # reuse the rerun's single inspect
             )
             if _final_guard.errors:
                 st.error(

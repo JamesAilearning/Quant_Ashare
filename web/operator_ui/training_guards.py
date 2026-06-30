@@ -238,8 +238,14 @@ def validate_pipeline_training_inputs(
     test_start: str,
     test_end: str,
     benchmark_code: str = "",
+    metadata: ProviderMetadata | None = None,
 ) -> TrainingGuardResult:
-    metadata = inspect_provider_metadata(provider_uri)
+    # Accept a pre-read ProviderMetadata so a caller that already inspected
+    # the same provider_uri this Streamlit rerun (config_run reads it once
+    # up front) need not pay a second disk read. ``None`` => read it here,
+    # so every existing caller keeps working unchanged.
+    if metadata is None:
+        metadata = inspect_provider_metadata(provider_uri)
     errors: list[str] = list(metadata.errors)
     warnings: list[str] = list(metadata.warnings)
 

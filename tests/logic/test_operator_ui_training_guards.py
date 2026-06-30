@@ -90,6 +90,28 @@ class OperatorUiTrainingGuardTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(any("valid_start 必须严格晚于 train_end" in item for item in result.errors))
 
+    def test_pipeline_guard_reuses_supplied_metadata_without_reinspecting(self) -> None:
+        # config_run inspects the provider ONCE per Streamlit rerun and threads
+        # the result in; the guard must reuse it, not re-read the provider.
+        from unittest.mock import patch
+
+        from web.operator_ui import training_guards as tg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _write_provider(Path(tmp))
+            meta = tg.inspect_provider_metadata(str(provider))
+            with patch.object(tg, "inspect_provider_metadata") as mock_inspect:
+                result = tg.validate_pipeline_training_inputs(
+                    provider_uri=str(provider),
+                    instruments="all",
+                    train_start="2025-01-02", train_end="2025-06-30",
+                    valid_start="2025-07-01", valid_end="2025-09-30",
+                    test_start="2025-10-13", test_end="2025-12-30",
+                    metadata=meta,
+                )
+            mock_inspect.assert_not_called()
+            self.assertIs(result.provider_metadata, meta)
+
     def test_pipeline_guard_rejects_provider_final_trading_day_as_test_end(self) -> None:
         from web.operator_ui.training_guards import validate_pipeline_training_inputs
 
