@@ -113,8 +113,6 @@ class ResolveInferenceFitWindowTests(unittest.TestCase):
         from scripts.daily_recommend import _resolve_inference_fit_window
         return _resolve_inference_fit_window
 
-    _LOGGER = "src.scripts.daily_recommend"
-
     @staticmethod
     def _write(d: str, name: str, payload) -> str:
         import json
@@ -197,14 +195,20 @@ class ResolveInferenceFitWindowTests(unittest.TestCase):
             with self.assertRaises(DailyRecommendationError):
                 self._resolver()(str(Path(d) / "m.pkl"), None, None)
 
-    def test_no_meta_falls_back_to_constants_with_warning(self) -> None:
-        from scripts.daily_recommend import _DEFAULT_FIT_END, _DEFAULT_FIT_START
+    def test_no_meta_raises_unless_both_cli_supplied(self) -> None:
+        # codex P1: a model with NO meta of either convention must FAIL CLOSED,
+        # not fall back to a stale hardcoded window behind a log line.
         with tempfile.TemporaryDirectory() as d:
-            # truly NO meta sidecar of either convention -> fallback, and the
-            # warning (the only signal a guessed window is in use) MUST fire.
-            with self.assertLogs(self._LOGGER, level="WARNING"):
-                out = self._resolver()(str(Path(d) / "nope.pkl"), None, None)
-            self.assertEqual(out, (_DEFAULT_FIT_START, _DEFAULT_FIT_END))
+            model = str(Path(d) / "nope.pkl")
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, "2018-01-02", None)  # one flag is not enough
+            # both flags explicitly supplied -> the only non-meta escape hatch
+            self.assertEqual(
+                self._resolver()(model, "2018-01-02", "2024-12-18"),
+                ("2018-01-02", "2024-12-18"),
+            )
 
     def test_explicit_cli_overrides_meta(self) -> None:
         with tempfile.TemporaryDirectory() as d:

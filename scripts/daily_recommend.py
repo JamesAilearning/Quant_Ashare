@@ -70,15 +70,6 @@ _DEFAULT_REGISTRY = os.environ.get(
 _DEFAULT_NAME_SOURCE = os.environ.get(
     "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet"
 )
-# LAST-RESORT fallback fit window, used ONLY for a model that ships NO
-# <model>.meta.json (and then only with a loud warning — see
-# _resolve_inference_fit_window). The canonical model carries its own window in
-# its meta; these constants are NOT the source of truth and must not be relied
-# on for a promoted model.
-_DEFAULT_FIT_START = "2018-01-02"
-_DEFAULT_FIT_END = "2023-12-20"
-
-
 def _model_meta_paths(model_path: str) -> list[Path]:
     """Both sidecar conventions that can carry the inference fit window, in
     priority order:
@@ -111,17 +102,19 @@ def _resolve_inference_fit_window(
     (``fit_start_for_inference`` / ``fit_end_for_inference`` — see
     :func:`_model_meta_paths` for the two sidecar names).
 
-    Priority: explicit CLI flags > model meta > hardcoded fallback. FAIL-LOUD,
-    so a wrong/stale window can NEVER be used silently:
+    Priority: explicit CLI flags > model meta. FAIL-CLOSED — a wrong/stale window
+    can NEVER be used silently, and there is NO hardcoded fallback (a hardcoded
+    window is the pre-promotion window and would mis-normalize a newer model):
 
     * a meta file EXISTS but no meta carries the fit window (e.g. only the
-      ModelTrainer sidecar is present) -> raise. Silently falling back to a
-      stale constant is exactly the mis-normalization this wiring prevents.
+      ModelTrainer sidecar is present) -> raise.
     * a meta carries the field but it is not a non-empty string (a numeric year
       like ``2018`` would silently become 1970 via ``pd.Timestamp``) -> raise.
     * a meta is valid JSON but not an object, or unreadable -> raise.
-    * the model ships NO meta at all -> fall back to the hardcoded constants,
-      but WARN loudly (the window is then a guess; write a meta to enforce it).
+    * the model ships NO meta at all AND --fit-start/--fit-end were not both
+      supplied -> raise (codex P1: a lost/absent sidecar must not fall back to a
+      stale window behind a log line; the operator must add a meta or pass both
+      flags). The ONLY non-meta path that resolves is both CLI flags given.
 
     A CLI flag, when given, fills/overrides the corresponding side — so a meta
     that has only one side plus the matching ``--fit-*`` flag still resolves.
@@ -182,17 +175,20 @@ def _resolve_inference_fit_window(
             "--fit-start/--fit-end explicitly."
         )
 
-    # No meta at all -> last-resort fallback + loud warning.
-    _logger.warning(
-        "Model %s has NO companion meta sidecar (looked for %s) — falling back to "
-        "the HARDCODED inference fit window %s..%s. This is fragile: if the model "
-        "was trained on a different window, every prediction is mis-normalized. "
-        "Write a <model>.meta.json with fit_start_for_inference / "
-        "fit_end_for_inference to make the window machine-enforced.",
-        model_path, " / ".join(str(p) for p in _model_meta_paths(model_path)),
-        _DEFAULT_FIT_START, _DEFAULT_FIT_END,
+    # No meta at all (and not both CLI flags, per the top short-circuit) -> FAIL
+    # CLOSED. A silent fallback to a hardcoded window would normalize a promoted
+    # model on the STALE pre-promotion window (codex P1): a deployment that copied
+    # only the .pkl, or a lost sidecar mount, must NOT emit recommendations on the
+    # wrong window behind a mere log line.
+    raise DailyRecommendationError(
+        f"Model {model_path} has NO companion meta sidecar (looked for "
+        f"{' / '.join(str(p) for p in _model_meta_paths(model_path))}) and "
+        "--fit-start/--fit-end were not both supplied. Refusing to guess the "
+        "inference normalization fit window — a hardcoded default would be the "
+        "pre-promotion window and would mis-normalize a newer model. Write a "
+        "<model>.meta.json with fit_start_for_inference / fit_end_for_inference, "
+        "or pass BOTH --fit-start and --fit-end explicitly."
     )
-    return (cli_fit_start or _DEFAULT_FIT_START, cli_fit_end or _DEFAULT_FIT_END)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

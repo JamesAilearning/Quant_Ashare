@@ -50,6 +50,15 @@ test_end: "2026-06-12"
 # the WF folds (best_iter 5-470); this brings the canonical training path
 # (which trains the model daily_recommend loads) to the same tuned set.
 model_type: "LGBModel"
+# The canonical model was trained on GPU (compute_device gpu) — set here so a
+# retrain via this config reproduces it. GPU vs CPU LightGBM differ in histogram
+# math / best_iteration, so a CPU run would NOT reproduce the hash-verified
+# artifact. On a machine without a GPU-enabled LightGBM, change this to "cpu"
+# (accepting that the result will diverge from the canonical artifact). Note:
+# bit-level reproduction ALSO requires the canonical lib stack (numpy<2,
+# scipy<1.14, pandas<2.3) — this config pins the windows/hyperparams/device, not
+# the environment.
+compute_device: "gpu"
 num_boost_round: 1000
 early_stopping_rounds: 50
 learning_rate: 0.005
