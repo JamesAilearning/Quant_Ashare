@@ -244,6 +244,7 @@ class StatCardTooltipA11yTests(unittest.TestCase):
             render_stat_card("年化收益", "12.3%", **kwargs)  # type: ignore[arg-type]
         return "\n".join(captured)
 
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_tooltip_anchor_is_focusable_with_aria_label(self) -> None:
         markup = self._emit_for(tooltip="说明文本")
         self.assertIn('class="qv2-stat-card-tooltip"', markup)
@@ -251,6 +252,7 @@ class StatCardTooltipA11yTests(unittest.TestCase):
         self.assertIn('role="note"', markup)
         self.assertIn('aria-label="说明文本"', markup)
 
+    @unittest.skipUnless(_HAS_STREAMLIT, "streamlit not installed")
     def test_no_tooltip_means_no_anchor(self) -> None:
         # Without a tooltip, no focusable element is emitted at all.
         markup = self._emit_for(tooltip="")
