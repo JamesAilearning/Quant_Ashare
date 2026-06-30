@@ -241,12 +241,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--namechange", default="D:/qlib_data/tushare_raw/all_namechanges.parquet")
     p.add_argument("--instruments", default="csi300")
     p.add_argument("--handler", default="Alpha158")
-    # Normalization fit window = the model's OWN training window (incumbent default).
+    # Normalization fit window = the model's OWN training window (canonical model
+    # default; the canonical alpha158_lgb_pit.pkl trains 2018-01-02..2024-12-18).
     p.add_argument("--fit-start", default="2018-01-02")
-    p.add_argument("--fit-end", default="2023-12-20")
+    p.add_argument("--fit-end", default="2024-12-18")
     # Placeholder valid segment (unused by a frozen model; embargo-valid for the builder).
-    p.add_argument("--valid-start", default="2024-01-02")
-    p.add_argument("--valid-end", default="2024-12-18")
+    p.add_argument("--valid-start", default="2025-01-02")
+    p.add_argument("--valid-end", default="2025-06-26")
     # The common clean guard window (2025-07+ : OOS for both incumbent and candidate). The
     # end defaults to the comparison-origin window in docs/promotion/ (2025-07-01..2026-06-12),
     # NOT the bundle tail (2026-06-17): the backtest needs a T+1 fill bar after the last

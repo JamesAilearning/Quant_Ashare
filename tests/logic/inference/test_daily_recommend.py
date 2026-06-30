@@ -103,6 +103,81 @@ def _frame_for(dates_instruments: list[tuple[str, str]]) -> pd.DataFrame:
     return pd.DataFrame({"feat0": range(len(idx))}, index=idx)
 
 
+class ResolveInferenceFitWindowTests(unittest.TestCase):
+    """The CLI's meta-driven fit-window resolution (Q3). FAIL-LOUD: never
+    silently fall back to a stale window when the model meta is present but
+    incomplete — a mis-normalized prediction is a silent-wrong failure."""
+
+    @staticmethod
+    def _resolver():  # imported lazily; CLI import is qlib-free
+        from scripts.daily_recommend import _resolve_inference_fit_window
+        return _resolve_inference_fit_window
+
+    @staticmethod
+    def _write_meta(d: str, payload: dict) -> str:
+        import json
+        (Path(d) / "m.meta.json").write_text(json.dumps(payload), encoding="utf-8")
+        return str(Path(d) / "m.pkl")  # resolver derives <stem>.meta.json
+
+    def test_reads_window_from_model_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            self.assertEqual(
+                self._resolver()(model, None, None), ("2018-01-02", "2024-12-18")
+            )
+
+    def test_meta_present_but_missing_field_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {"fit_start_for_inference": "2018-01-02"})
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(model, None, None)
+
+    def test_unreadable_meta_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "m.meta.json").write_text("{not valid json", encoding="utf-8")
+            with self.assertRaises(DailyRecommendationError):
+                self._resolver()(str(Path(d) / "m.pkl"), None, None)
+
+    def test_no_meta_falls_back_to_constants(self) -> None:
+        from scripts.daily_recommend import (
+            _DEFAULT_FIT_END,
+            _DEFAULT_FIT_START,
+        )
+        with tempfile.TemporaryDirectory() as d:
+            # no meta written -> fallback (the warning is logged, not asserted here)
+            self.assertEqual(
+                self._resolver()(str(Path(d) / "nope.pkl"), None, None),
+                (_DEFAULT_FIT_START, _DEFAULT_FIT_END),
+            )
+
+    def test_explicit_cli_overrides_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            # both flags given -> meta is not even read
+            self.assertEqual(
+                self._resolver()(model, "2017-01-01", "2099-12-31"),
+                ("2017-01-01", "2099-12-31"),
+            )
+
+    def test_partial_cli_overrides_one_side_of_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write_meta(d, {
+                "fit_start_for_inference": "2018-01-02",
+                "fit_end_for_inference": "2024-12-18",
+            })
+            # only fit_end given -> start from meta, end from CLI
+            self.assertEqual(
+                self._resolver()(model, None, "2025-06-30"),
+                ("2018-01-02", "2025-06-30"),
+            )
+
+
 class AssertNoLookaheadTests(unittest.TestCase):
     def test_passes_when_max_equals_as_of(self) -> None:
         frame = _frame_for([("2025-06-30", "SH600000"), ("2025-06-30", "SZ000001")])

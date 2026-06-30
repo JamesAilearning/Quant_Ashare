@@ -12,9 +12,13 @@ Usage::
     # a specific historical decision day, top 30
     python scripts/daily_recommend.py --as-of 2025-06-30 --topk 30
 
-The model artifact + fit window default to the Phase B clean-PIT model
-(D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl, train 2018-01-02 ->
-2023-12-20). Override with --model / --fit-start / --fit-end.
+The model artifact defaults to the canonical clean-PIT model
+(D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl). The inference
+NORMALIZATION fit window is read from that model's companion
+``<model>.meta.json`` (``fit_start_for_inference`` / ``fit_end_for_inference``)
+so it always tracks whatever model is loaded — a promotion that swaps the pkl
++ meta moves the window automatically, with no hardcoded constant to forget.
+Override with --model / --fit-start / --fit-end. See _resolve_inference_fit_window.
 
 NOTE: qlib's Alpha158 uses joblib's Windows 'spawn' workers, which
 re-import this module per worker. The ``if __name__ == "__main__"`` guard
@@ -25,6 +29,7 @@ Phase A trap).
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing
 import os
 import sys
@@ -64,8 +69,82 @@ _DEFAULT_REGISTRY = os.environ.get(
 _DEFAULT_NAME_SOURCE = os.environ.get(
     "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet"
 )
+# LAST-RESORT fallback fit window, used ONLY for a model that ships NO
+# <model>.meta.json (and then only with a loud warning — see
+# _resolve_inference_fit_window). The canonical model carries its own window in
+# its meta; these constants are NOT the source of truth and must not be relied
+# on for a promoted model.
 _DEFAULT_FIT_START = "2018-01-02"
 _DEFAULT_FIT_END = "2023-12-20"
+
+
+def _resolve_inference_fit_window(
+    model_path: str,
+    cli_fit_start: str | None,
+    cli_fit_end: str | None,
+) -> tuple[str, str]:
+    """Resolve the (fit_start, fit_end) normalization window for inference.
+
+    Inference MUST normalize features on the model's OWN training fit window
+    (training statistics) — a mismatch silently mis-normalizes every prediction.
+    Rather than hardcode the window in a constant that drifts from the model on
+    every promotion, derive it from the model's companion ``<model>.meta.json``
+    (``fit_start_for_inference`` / ``fit_end_for_inference``, written at
+    promotion time).
+
+    Priority: explicit CLI flags > model meta > hardcoded fallback. FAIL-LOUD:
+
+    * meta PRESENT but missing the inference-fit field(s) -> raise. Silently
+      falling back to a stale constant is exactly the mis-normalization this
+      wiring exists to prevent.
+    * model has NO meta sidecar -> fall back to the hardcoded constants, but
+      WARN loudly (the window is then a guess; write a meta to enforce it).
+
+    A CLI flag, when given, overrides the corresponding value for that side.
+    """
+    # Explicit on both sides => operator override; skip meta entirely.
+    if cli_fit_start is not None and cli_fit_end is not None:
+        return cli_fit_start, cli_fit_end
+
+    meta_path = Path(model_path).with_suffix(".meta.json")
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise DailyRecommendationError(
+                f"Model meta {meta_path} exists but could not be read/parsed "
+                f"({type(exc).__name__}: {exc}). Cannot determine the inference "
+                "normalization fit window — fix the meta or pass "
+                "--fit-start/--fit-end explicitly."
+            ) from exc
+        meta_start = meta.get("fit_start_for_inference")
+        meta_end = meta.get("fit_end_for_inference")
+        missing = [
+            name
+            for name, val in (
+                ("fit_start_for_inference", meta_start),
+                ("fit_end_for_inference", meta_end),
+            )
+            if not val
+        ]
+        if missing:
+            raise DailyRecommendationError(
+                f"Model meta {meta_path} is present but missing {missing}. "
+                "Refusing to silently fall back to a hardcoded fit window — that "
+                "would mis-normalize the model's predictions. Add the field(s) to "
+                "the meta, or pass --fit-start/--fit-end explicitly."
+            )
+        return (cli_fit_start or meta_start, cli_fit_end or meta_end)
+
+    _logger.warning(
+        "Model %s has no companion meta sidecar (%s) — falling back to the "
+        "HARDCODED inference fit window %s..%s. This is fragile: if the model was "
+        "trained on a different window, every prediction is mis-normalized. Write "
+        "a <model>.meta.json with fit_start_for_inference / fit_end_for_inference "
+        "to make the window machine-enforced.",
+        model_path, meta_path, _DEFAULT_FIT_START, _DEFAULT_FIT_END,
+    )
+    return (cli_fit_start or _DEFAULT_FIT_START, cli_fit_end or _DEFAULT_FIT_END)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -91,10 +170,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "rejected as stale (default 14; covers A-share "
                         "holidays). Raise it for an intentional historical run.")
     p.add_argument("--instruments", default="csi300", help="Universe (default csi300).")
-    p.add_argument("--fit-start", default=_DEFAULT_FIT_START,
-                   help="Training fit-window start (must match the model).")
-    p.add_argument("--fit-end", default=_DEFAULT_FIT_END,
-                   help="Training fit-window end (must match the model).")
+    p.add_argument("--fit-start", default=None,
+                   help="Training fit-window start (must match the model). "
+                        "Default: read from <model>.meta.json fit_start_for_inference.")
+    p.add_argument("--fit-end", default=None,
+                   help="Training fit-window end (must match the model). "
+                        "Default: read from <model>.meta.json fit_end_for_inference.")
     p.add_argument(
         "--allow-holey-recommend", action="store_true",
         help="Recommend even if the bundle was built from a holey tushare fetch "
@@ -108,12 +189,20 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging()
     args = _build_arg_parser().parse_args(argv)
 
+    try:
+        fit_start, fit_end = _resolve_inference_fit_window(
+            args.model, args.fit_start, args.fit_end
+        )
+    except DailyRecommendationError as exc:
+        _logger.error("Cannot resolve inference fit window: %s", exc)
+        return 1
+
     config = RecommendationConfig(
         model_path=args.model,
         provider_uri=args.provider_uri,
         delisted_registry_path=args.delisted_registry,
-        fit_start=args.fit_start,
-        fit_end=args.fit_end,
+        fit_start=fit_start,
+        fit_end=fit_end,
         instruments=args.instruments,
         as_of_date=args.as_of,
         topk=args.topk,

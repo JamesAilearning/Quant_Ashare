@@ -71,8 +71,11 @@ class RecommendationConfig:
 
     ``fit_start`` / ``fit_end`` MUST match the model's training fit
     window so inference normalization uses training statistics (no
-    leakage, and distribution-consistent with training). For the Phase B
-    artifact these are 2018-01-02 / 2023-12-20.
+    leakage, and distribution-consistent with training). The CLI
+    (scripts/daily_recommend.py) reads these from the model's companion
+    ``<model>.meta.json`` (``fit_*_for_inference``) so they track the
+    loaded model automatically; callers constructing this config directly
+    must supply the model's own window.
     """
 
     model_path: str
