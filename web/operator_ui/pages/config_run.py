@@ -11,6 +11,7 @@ from typing import Any, cast
 import streamlit as st
 import yaml
 
+from src.data.feature_dataset_builder import list_supported_feature_handlers
 from web.operator_ui.bundle_health import resolve_default_provider_uri
 from web.operator_ui.config_forms import (
     PIPELINE_KEYS,
@@ -553,6 +554,22 @@ with form_col:
             guard_errors.append(_wf_non_production_msg)
         _validate_universe_benchmark_alignment(
             instruments, benchmark_code, guard_warnings,
+        )
+
+    # feature_handler must be one registered in THIS UI process. MinedFactor
+    # (and other PIT factor handlers) is only registered when
+    # scripts/run_walk_forward.py binds a factor pool — the UI never does — so
+    # launching it here is guaranteed to fail (WalkForwardConfig.__post_init__
+    # rejects it unless adjust_mode=post_adjusted, and even then the handler is
+    # unbound). A plain text_input let an operator type it and only learn after
+    # a full handler init; fail loud up front. list_supported_feature_handlers()
+    # is the live source of truth (also catches typos).
+    _supported_handlers = list_supported_feature_handlers()
+    if feature_handler and feature_handler not in _supported_handlers:
+        guard_errors.append(
+            f"feature_handler={feature_handler!r} 在 UI 进程不可启动（未注册）。"
+            f"当前可用：{', '.join(_supported_handlers) or '（无）'}。MinedFactor 等 "
+            "PIT 因子需经 scripts/run_walk_forward.py 绑定因子池后运行。"
         )
 
     if compute_device == "gpu" and model_type != "LGBModel":

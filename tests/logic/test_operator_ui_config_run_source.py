@@ -655,5 +655,42 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
         )
 
 
+class FeatureHandlerGuardTests(unittest.TestCase):
+    """feature_handler is a free-text input; an unregistered handler — notably
+    MinedFactor, which the UI never binds — would fail deep in
+    FeatureDatasetBuilder after a full handler init. A pre-submit guard must
+    block it up front, using the live registry as the source of truth."""
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_imports_supported_handlers_registry(self) -> None:
+        self.assertIn(
+            "from src.data.feature_dataset_builder import "
+            "list_supported_feature_handlers",
+            self.source,
+        )
+
+    def test_guard_blocks_unregistered_feature_handler(self) -> None:
+        self.assertIn("list_supported_feature_handlers()", self.source)
+        self.assertIn(
+            "feature_handler and feature_handler not in _supported_handlers",
+            self.source,
+        )
+
+    def test_minedfactor_not_in_default_registry(self) -> None:
+        # Premise the guard relies on: MinedFactor is NOT registered in a fresh
+        # process (only run_walk_forward.py binds it), so the guard blocks it;
+        # Alpha158 is, so it stays launchable.
+        from src.data.feature_dataset_builder import (
+            list_supported_feature_handlers,
+        )
+        handlers = list_supported_feature_handlers()
+        self.assertNotIn("MinedFactor", handlers)
+        self.assertIn("Alpha158", handlers)
+
+
 if __name__ == "__main__":
     unittest.main()
