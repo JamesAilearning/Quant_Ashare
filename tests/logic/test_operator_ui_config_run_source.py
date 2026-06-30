@@ -755,6 +755,30 @@ class CostModelFieldsTests(unittest.TestCase):
                 key, _WALK_FORWARD_KEYS, f"{key} not in WALK_FORWARD_KEYS"
             )
 
+    def test_builtin_presets_define_cost_keys(self) -> None:
+        # Built-in presets must define the cost keys so _apply_preset resets
+        # them on switch and _detect_preset compares them — otherwise stale
+        # advanced values launch under a clean-looking preset (codex P2 on #308).
+        import yaml
+
+        presets_dir = Path("config/presets")
+        for name in ("default", "smoke", "production"):
+            data = yaml.safe_load(
+                (presets_dir / f"{name}.yaml").read_text(encoding="utf-8")
+            )
+            for key in self._COST_KEYS:
+                self.assertIn(key, data, f"{name}.yaml missing cost key {key}")
+
+    def test_form_guards_cost_field_ranges(self) -> None:
+        # Out-of-range values are blocked in the form, not deferred to backend
+        # config construction (codex P2 on #308). Enforced on BOTH the render
+        # guard and the submit-path recheck.
+        self.assertIn("0.0 < float(limit_threshold) <= 0.25", self.source)
+        self.assertIn("float(init_cash) <= 0", self.source)
+        self.assertGreaterEqual(
+            self.source.count("0.0 < float(limit_threshold) <= 0.25"), 2
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

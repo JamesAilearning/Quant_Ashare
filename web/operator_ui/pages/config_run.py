@@ -649,6 +649,17 @@ with form_col:
 
         auto_fixes[_GPU_ONLY_LGB_MSG] = ("切换为 LGBModel", _fix_gpu_model)
 
+    # Cost-model range guards mirror the backend contracts so an out-of-range
+    # value is blocked in the form instead of only failing at config
+    # construction: limit_threshold in (0, 0.25] (Pipeline /
+    # CanonicalExchangeConfig), init_cash > 0 (Pipeline / CanonicalAccountConfig).
+    if not (0.0 < float(limit_threshold) <= 0.25):
+        guard_errors.append(
+            f"涨跌停阈值 limit_threshold 须在 (0, 0.25] 区间；当前 {limit_threshold}。"
+        )
+    if float(init_cash) <= 0:
+        guard_errors.append(f"初始资金 init_cash 须为正；当前 {init_cash}。")
+
     # Build run config separately from the UI preview; mode is selected outside
     # the runtime config schema and passed to JobManager.start as its own value.
     config_dict: dict[str, Any] = {
@@ -789,6 +800,20 @@ with form_col:
                 "提交前的最终校验失败，作业未启动：\n- "
                 f"feature_handler={feature_handler!r} 不可启动（未注册）。"
                 f"当前可用：{', '.join(_final_handlers) or '（无）'}。"
+            )
+            st.stop()
+        # Mode-agnostic cost-model range rechecks (same stale-frame defense as
+        # above): block out-of-range values before JobManager.start.
+        if not (0.0 < float(limit_threshold) <= 0.25):
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"limit_threshold 须在 (0, 0.25] 区间；当前 {limit_threshold}。"
+            )
+            st.stop()
+        if float(init_cash) <= 0:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"init_cash 须为正；当前 {init_cash}。"
             )
             st.stop()
         if mode == "pipeline":
