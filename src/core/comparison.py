@@ -255,11 +255,15 @@ def compare_runs(
     else:
         verdict = "treatment_better" if ann > 0 else "treatment_worse"
 
-    # diagnostics (ALWAYS present; mandated companion of an indistinguishable verdict)
+    # diagnostics (ALWAYS present; mandated companion of an indistinguishable verdict).
+    # gross AND IC are measured over the SAME shared comparison dates as the net paired
+    # test — otherwise out-of-comparison tail dates (the label-horizon case) could shift
+    # the mean IC and flip the contradiction flag on dates that were never compared.
     ga = np.array([a.gross[d] for d in dates])
     gb = np.array([b.gross[d] for d in dates])
-    ica = np.array(list(a.ic.values()))
-    icb = np.array(list(b.ic.values()))
+    ic_dates = [d for d in dates if d in a.ic and d in b.ic]
+    ica = np.array([a.ic[d] for d in ic_dates])
+    icb = np.array([b.ic[d] for d in ic_dates])
     mean_ic_a = float(ica.mean()) if ica.size else float("nan")
     mean_ic_b = float(icb.mean()) if icb.size else float("nan")
     diagnostics = {
@@ -268,6 +272,7 @@ def compare_runs(
         "gross_ir_treatment": _annualized_ir(gb),
         "mean_ic_baseline": mean_ic_a,
         "mean_ic_treatment": mean_ic_b,
+        "n_ic_shared_days": len(ic_dates),
         "direction": "treatment>baseline" if ann > 0 else "treatment<baseline",
         "note": (
             "'indistinguishable' means NOT statistically separable at this power — it is "
@@ -276,27 +281,50 @@ def compare_runs(
         ),
     }
 
-    # backtest primary; flag an IC verdict that disagrees in sign
+    # Backtest is authoritative, but surface ANY backtest-vs-IC divergence — INCLUDING
+    # when the net is indistinguishable yet IC clearly favours a side (that is precisely
+    # the masked-divergence case this ruler exists to expose), not only when the net is
+    # conclusive.
     ic_diff = mean_ic_b - mean_ic_a
     contradiction = None
-    if verdict != "indistinguishable" and math.isfinite(ic_diff) and ic_diff != 0.0:
-        net_favours_b = ann > 0
-        ic_favours_b = ic_diff > 0
-        if net_favours_b != ic_favours_b:
+    if math.isfinite(ic_diff) and ic_diff != 0.0:
+        ic_side = "treatment" if ic_diff > 0 else "baseline"
+        if verdict == "treatment_better" and ic_diff < 0:
             contradiction = (
-                f"backtest verdict ({verdict}) DISAGREES with IC "
-                f"(mean_ic diff {ic_diff:+.4f}); the backtest is authoritative, but the "
-                "divergence is surfaced, not hidden."
+                f"backtest says treatment_better but IC favours BASELINE (mean_ic diff "
+                f"{ic_diff:+.4f}); backtest is authoritative, divergence surfaced."
+            )
+        elif verdict == "treatment_worse" and ic_diff > 0:
+            contradiction = (
+                f"backtest says treatment_worse but IC favours TREATMENT (mean_ic diff "
+                f"{ic_diff:+.4f}); backtest is authoritative, divergence surfaced."
+            )
+        elif verdict == "indistinguishable":
+            contradiction = (
+                f"net excess is INDISTINGUISHABLE but IC favours {ic_side} (mean_ic diff "
+                f"{ic_diff:+.4f}); the net headline may hide an IC signal — investigate, "
+                "do NOT read as 'equivalent'."
             )
 
-    # seam bound: pooled net IR with fold-boundary days excluded vs included
+    # seam bound: pooled net IR with fold-boundary days excluded vs included, for BOTH
+    # runs — a large baseline seam can drive the comparison as much as a treatment one.
     boundary = set(a.fold_boundary_dates) | set(b.fold_boundary_dates)
-    incl = _annualized_ir(eb)
-    excl = _annualized_ir(np.array([b.excess[d] for d in dates if d not in boundary]))
+
+    def _seam(excess_map: dict[str, float]) -> tuple[float, float, float]:
+        incl = _annualized_ir(np.array([excess_map[d] for d in dates]))
+        excl = _annualized_ir(np.array([excess_map[d] for d in dates if d not in boundary]))
+        impact = (excl - incl) if (math.isfinite(incl) and math.isfinite(excl)) else float("nan")
+        return incl, excl, impact
+
+    incl_a, excl_a, imp_a = _seam(a.excess)
+    incl_b, excl_b, imp_b = _seam(b.excess)
     seam_bound = {
-        "pooled_net_ir_incl_boundary": incl,
-        "pooled_net_ir_excl_boundary": excl,
-        "seam_impact": (excl - incl) if (math.isfinite(incl) and math.isfinite(excl)) else float("nan"),
+        "baseline_pooled_net_ir_incl_boundary": incl_a,
+        "baseline_pooled_net_ir_excl_boundary": excl_a,
+        "baseline_seam_impact": imp_a,
+        "treatment_pooled_net_ir_incl_boundary": incl_b,
+        "treatment_pooled_net_ir_excl_boundary": excl_b,
+        "treatment_seam_impact": imp_b,
     }
 
     return RunComparison(

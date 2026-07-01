@@ -133,8 +133,21 @@ class VerdictTests(unittest.TestCase):
             b = _write_run(Path(tmp) / "B", [_fold(d[:60], np.full(60, 0.001)),
                                              _fold(d[60:], np.full(60, 0.001))])
             r = compare_runs(a, b, pre_registration_ref=_PREREG)
-        self.assertIn("pooled_net_ir_incl_boundary", r.seam_bound)
-        self.assertIn("seam_impact", r.seam_bound)
+        # BOTH runs' seam bounded, not only treatment
+        for k in ("baseline_pooled_net_ir_incl_boundary", "baseline_seam_impact",
+                  "treatment_pooled_net_ir_incl_boundary", "treatment_seam_impact"):
+            self.assertIn(k, r.seam_bound)
+
+    def test_indistinguishable_but_ic_favours_a_side_is_flagged(self) -> None:
+        rng = np.random.default_rng(7)
+        base = rng.standard_normal(250) * 0.01
+        treat = base + rng.standard_normal(250) * 0.01  # net indistinguishable
+        with TemporaryDirectory() as tmp:
+            a, b = self._runs(tmp, base, treat, ic_a=0.01, ic_b=0.06)  # IC clearly favours B
+            r = compare_runs(a, b, pre_registration_ref=_PREREG)
+        self.assertEqual(r.verdict, "indistinguishable")
+        self.assertIsNotNone(r.contradiction_flag)
+        self.assertIn("indistinguishable", (r.contradiction_flag or "").lower())
 
 
 class FailLoudTests(unittest.TestCase):
