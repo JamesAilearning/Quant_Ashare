@@ -788,6 +788,18 @@ class CostModelFieldsTests(unittest.TestCase):
             self.source.count("float(commission_rate) > COMMISSION_RATE_MAX"), 2
         )
 
+    def test_invalid_adjust_mode_not_silently_coerced(self) -> None:
+        # An unsupported adjust_mode (hand-edited preset / prefill) is kept
+        # visible and selected (not coerced to index 0) and blocked by a guard on
+        # both the render and submit paths (codex P2 round 3 on #308).
+        self.assertNotIn(
+            "if adjust_default in SUPPORTED_ADJUST_MODES else 0", self.source
+        )
+        self.assertIn("adjust_mode not in SUPPORTED_ADJUST_MODES", self.source)
+        self.assertGreaterEqual(
+            self.source.count("adjust_mode not in SUPPORTED_ADJUST_MODES"), 2
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

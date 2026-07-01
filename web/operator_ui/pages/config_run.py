@@ -545,14 +545,21 @@ with form_col:
     with st.expander("⚙️ 回测 / 成本模型（高级）", expanded=False):
         bc1, bc2 = st.columns(2)
         with bc1:
-            adjust_default = _cr("adjust_mode", _COST_FIELD_DEFAULTS["adjust_mode"])
+            adjust_default = str(
+                _cr("adjust_mode", _COST_FIELD_DEFAULTS["adjust_mode"])
+            )
+            # If a hand-edited preset / rerun prefill carries an unsupported
+            # adjust_mode, keep it VISIBLE + selected rather than silently
+            # coercing to the default — adjust_mode changes official backtest
+            # semantics — and let the guard below block Run until it's fixed
+            # (codex P2 on #308).
+            _adjust_options = list(SUPPORTED_ADJUST_MODES)
+            if adjust_default not in _adjust_options:
+                _adjust_options.append(adjust_default)
             adjust_mode = st.selectbox(
                 "复权模式 (adjust_mode)",
-                list(SUPPORTED_ADJUST_MODES),
-                index=(
-                    SUPPORTED_ADJUST_MODES.index(adjust_default)
-                    if adjust_default in SUPPORTED_ADJUST_MODES else 0
-                ),
+                _adjust_options,
+                index=_adjust_options.index(adjust_default),
                 key="cr_adjust_mode",
                 help="价格复权口径，默认 pre_adjusted。",
             )
@@ -695,6 +702,11 @@ with form_col:
     if float(slippage_bps) > SLIPPAGE_BPS_MAX:
         guard_errors.append(
             f"滑点 slippage_bps 须 ≤ {SLIPPAGE_BPS_MAX}；当前 {slippage_bps}。"
+        )
+    if adjust_mode not in SUPPORTED_ADJUST_MODES:
+        guard_errors.append(
+            f"复权模式 adjust_mode={adjust_mode!r} 无效（预设/预填带入）；"
+            f"允许：{', '.join(SUPPORTED_ADJUST_MODES)}。"
         )
 
     # Build run config separately from the UI preview; mode is selected outside
@@ -863,6 +875,13 @@ with form_col:
             st.error(
                 "提交前的最终校验失败，作业未启动：\n- "
                 f"slippage_bps 须 ≤ {SLIPPAGE_BPS_MAX}；当前 {slippage_bps}。"
+            )
+            st.stop()
+        if adjust_mode not in SUPPORTED_ADJUST_MODES:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"adjust_mode={adjust_mode!r} 无效；"
+                f"允许：{', '.join(SUPPORTED_ADJUST_MODES)}。"
             )
             st.stop()
         if mode == "pipeline":
