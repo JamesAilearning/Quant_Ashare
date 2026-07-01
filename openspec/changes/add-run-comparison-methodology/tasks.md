@@ -30,36 +30,35 @@
 
 ## PR-2 — The comparison ruler (pure statistics), stacks on PR-1
 
-- [ ] `src/core/comparison.py`: read two runs' persisted daily series →
-  - [ ] **Pooled IR** (true concatenation, per definition) per run + pooled difference.
-  - [ ] **Paired daily-difference moving-block bootstrap** with ACF-calibrated,
-        configurable block length (default derived from measured ACF decay; recorded
-        in provenance). Annualized diff + 95% CI + SE.
-  - [ ] **Date alignment:** intersection; report overlap fraction; **fail loud** below
-        the configurable overlap floor (default 90%).
-  - [ ] **Verdict** (fail-loud): CI includes 0 → "indistinguishable at this power";
-        CI one-sided → "significantly better/worse". Never a point-estimate winner.
-  - [ ] **Backtest-primary / IC-diagnostic:** compute both; resolve to backtest;
-        **flag the contradiction explicitly** when backtest and IC disagree.
-  - [ ] **CI caveat envelope:** every output carries the regime-heterogeneity /
-        single-period limitation + the block-length provenance + the pre-registration
-        reference + the date-overlap fraction.
-  - [ ] **Pre-registration gate (git-provable):** the hypothesis is a COMMITTED artifact
-        (committed before the runs exist); the output records its git commit HASH so
-        "hypothesis preceded experiment" is provable from history, not human-trusted;
-        flag when the compared variant set exceeds the pre-registered plan.
-  - [ ] **Seam-bound guard (from PR-1):** report the fold-boundary seam's upper-bound
-        impact on pooled IR (boundary days excluded vs included) — a check DISTINCT from
-        PR-1's per-fold lossless reconciliation.
-- [ ] Synthetic-only unit tests (no bundle): known-difference series recover the right
-      verdict; overlapping-regime autocorrelation widens the block-bootstrap CI vs iid;
-      date-mismatch below floor fails loud; contradiction flag fires on sign-disagreement.
-- [ ] Replace / repoint `scripts/compare_walk_forward_runs.py` to emit the ruler's
-      verdict (keep the human-readable per-fold table; add significance).
-- [ ] Constraints honoured & documented in the runbook: **ST-off isolated labels**
-      for label-horizon experiments (PR#223 drift), winner re-verified **ST-on vs the
-      REGEN-2 canonical** baseline, strict **variable isolation** (only the target
-      variable differs).
+- [x] `src/core/comparison.py`: read two runs' persisted daily series →
+  - [x] **Pooled IR** (true concatenation, per definition) per run (net + gross).
+  - [x] **Paired daily-difference moving-block bootstrap** with ACF-calibrated,
+        configurable block length (default from measured ACF decay; recorded in the
+        caveat provenance). Annualized diff + 95% CI + SE.
+  - [x] **Date alignment:** intersection; overlap = intersection ÷ shorter series;
+        **fail loud** below the configurable overlap floor (default 90%).
+  - [x] **Verdict** (fail-loud three-state): CI includes 0 → "indistinguishable"; CI
+        one-sided → "treatment_better/worse". Never a point-estimate winner.
+  - [x] **Backtest-primary / IC-diagnostic:** both computed; verdict on net excess;
+        **contradiction flagged** when the IC verdict disagrees in sign.
+  - [x] **Indistinguishable → mandatory diagnostics** (gross-vs-net / IC / direction +
+        the "'indistinguishable' ≠ 'equivalent'" note).
+  - [x] **CI caveat envelope:** regime-heterogeneity caveat + block-length provenance +
+        date-overlap fraction + pre-registration reference on every output.
+  - [x] **Seam-bound guard (from PR-1):** pooled net IR boundary-days included vs
+        excluded + the seam_impact delta.
+  - [~] **Pre-registration:** a non-empty ref is REQUIRED (fail-closed) and recorded;
+        the **git-ancestor verification + variant-set-exceeds-plan flag** is the CLI's
+        job → PR-2 tail below.
+- [x] Synthetic-only unit tests (9, no bundle): indistinguishable-on-noise,
+      better-when-CI-excludes-0, block-bootstrap SE > iid under autocorrelation,
+      overlap-below-floor / missing-prereg / missing-substrate fail loud, contradiction
+      flag, seam bound reported.
+- [ ] **PR-2 tail:** repoint `scripts/compare_walk_forward_runs.py` to emit the ruler's
+      verdict (keep the per-fold table; add significance) + the git-provable
+      pre-registration gate (commit-hash ancestor check + variant-set flag).
+- [ ] **PR-2 tail:** runbook constraints — **ST-off isolated labels** (PR#223 drift),
+      winner re-verified **ST-on vs REGEN-2 canonical**, strict **variable isolation**.
 
 ## Longer OOS (methodology, no code)
 
