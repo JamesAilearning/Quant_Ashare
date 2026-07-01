@@ -818,6 +818,120 @@ class FoldReportSerialisationTests(unittest.TestCase):
         self.assertEqual(loaded["fold_index"], 0)
         self.assertEqual(loaded["windows"]["test"]["start"], "2024-10-01")
 
+    # --- daily_series substrate (add-run-comparison-methodology, PR-1) ---
+
+    def _args_with_series(self) -> dict:
+        import dataclasses
+
+        import pandas as pd
+        dates = [pd.Timestamp("2024-10-01"), pd.Timestamp("2024-10-02"),
+                 pd.Timestamp("2024-10-03")]
+        sig = dataclasses.replace(_stub_signal_result(), ic_series={
+            1: pd.Series([0.03, float("nan"), 0.05], index=dates),  # mid NaN -> dropped
+            5: pd.Series([0.01, 0.02, 0.03], index=dates),
+        })
+        bt = dataclasses.replace(_stub_backtest_output(), return_series={
+            "return": {"2024-10-01": 0.010, "2024-10-02": -0.004, "2024-10-03": 0.006},
+            "bench": {"2024-10-01": 0.002, "2024-10-02": -0.001, "2024-10-03": 0.003},
+            "cost": {"2024-10-01": 0.0005, "2024-10-02": 0.0005, "2024-10-03": 0.0005},
+        })
+        args = self._build_args()
+        args["signal_result"] = sig
+        args["backtest_output"] = bt
+        return args
+
+    def test_daily_series_present_and_purely_additive(self) -> None:
+        d = build_fold_report(**self._args_with_series())
+        self.assertIn("daily_series", d)
+        # additive: the top-level key set is EXACTLY the pre-existing schema plus the
+        # one new daily_series key — nothing else added, nothing dropped.
+        preexisting = {
+            "fold_index", "windows", "model", "signal_analysis", "backtest",
+            "metrics", "attribution", "ensemble", "positions_path", "generated_at",
+        }
+        self.assertEqual(set(d), preexisting | {"daily_series"})
+        # signal_analysis is untouched (IC goes into daily_series, not here).
+        self.assertEqual(
+            set(d["signal_analysis"]), {"ic_summary", "ic_decay", "turnover_stats"}
+        )
+
+    def test_daily_series_excess_is_return_minus_bench_minus_cost(self) -> None:
+        d = build_fold_report(**self._args_with_series())
+        exc = d["daily_series"]["excess_return"]
+        self.assertAlmostEqual(exc["2024-10-01"], 0.010 - 0.002 - 0.0005)
+        self.assertAlmostEqual(exc["2024-10-02"], -0.004 + 0.001 - 0.0005)
+        self.assertAlmostEqual(exc["2024-10-03"], 0.006 - 0.003 - 0.0005)
+        self.assertEqual(set(d["daily_series"]["components"]), {"return", "bench", "cost"})
+
+    def test_daily_series_ic_serialized_with_nan_dropped(self) -> None:
+        d = build_fold_report(**self._args_with_series())
+        ic = d["daily_series"]["ic"]
+        self.assertEqual(set(ic), {"1", "5"})                  # str period keys
+        self.assertEqual(set(ic["1"]), {"2024-10-01", "2024-10-03"})  # mid NaN dropped
+        self.assertEqual(len(ic["5"]), 3)
+        self.assertAlmostEqual(ic["1"]["2024-10-03"], 0.05)
+
+    def test_daily_series_survives_strict_json(self) -> None:
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "fold_report.json"
+            write_fold_report(report_path=report_path, **self._args_with_series())
+            with open(report_path) as f:
+                loaded = json.load(f)
+        self.assertAlmostEqual(loaded["daily_series"]["excess_return"]["2024-10-01"], 0.0075)
+        self.assertEqual(set(loaded["daily_series"]["ic"]["1"]), {"2024-10-01", "2024-10-03"})
+
+    def test_daily_excess_reconciles_to_fold_scalars(self) -> None:
+        """Root-not-crooked (add-run-comparison-methodology): the persisted daily excess,
+        run back through the SAME canonical risk_analysis, reproduces this fold's stored
+        scalar IR / max-drawdown within 1e-6 — proof the daily series IS the substrate
+        the scalar was computed from, not merely some series."""
+        import dataclasses
+
+        import pytest
+        pytest.importorskip("qlib")
+        import pandas as pd
+
+        from src.core.backtest_runner import _risk_analysis_to_flat_dict
+        from src.core.canonical_backtest_contract import (
+            CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE as risk_analysis,
+        )
+
+        # deterministic, non-degenerate daily return / bench / cost
+        keys = [str(d.date()) for d in pd.date_range("2024-10-01", periods=60, freq="D")]
+        ret = {k: 0.001 * ((i % 7) - 3) for i, k in enumerate(keys)}
+        bench = {k: 0.0005 * ((i % 5) - 2) for i, k in enumerate(keys)}
+        cost = {k: 0.0005 for k in keys}
+
+        def _series(m: dict) -> pd.Series:
+            ks = sorted(m)
+            return pd.Series([m[k] for k in ks], index=pd.to_datetime(ks))
+
+        excess = {k: ret[k] - bench[k] - cost[k] for k in keys}
+        scalar = _risk_analysis_to_flat_dict(risk_analysis(_series(excess), freq="day"))
+
+        bt = dataclasses.replace(
+            _stub_backtest_output(),
+            return_series={"return": ret, "bench": bench, "cost": cost},
+        )
+        args = self._build_args()
+        args["backtest_output"] = bt
+        args["information_ratio"] = scalar["information_ratio"]
+        args["max_drawdown"] = scalar["max_drawdown"]
+        args["annualized_return"] = scalar["annualized_return"]
+        d = build_fold_report(**args)
+
+        recon = _risk_analysis_to_flat_dict(
+            risk_analysis(_series(d["daily_series"]["excess_return"]), freq="day")
+        )
+        self.assertAlmostEqual(
+            recon["information_ratio"], d["metrics"]["information_ratio"], places=6
+        )
+        self.assertAlmostEqual(
+            recon["max_drawdown"], d["metrics"]["max_drawdown"], places=6
+        )
+
 
 class AggregateReportSerialisationTests(unittest.TestCase):
     """Aggregate report contract: a single index file pointing at every
