@@ -755,19 +755,21 @@ class CostModelFieldsTests(unittest.TestCase):
                 key, _WALK_FORWARD_KEYS, f"{key} not in WALK_FORWARD_KEYS"
             )
 
-    def test_builtin_presets_define_cost_keys(self) -> None:
-        # Built-in presets must define the cost keys so _apply_preset resets
-        # them on switch and _detect_preset compares them — otherwise stale
-        # advanced values launch under a clean-looking preset (codex P2 on #308).
-        import yaml
+    def test_presets_normalize_missing_cost_keys(self) -> None:
+        # A preset that omits the cost keys (older / custom, saved before these
+        # fields existed) must still reset them: _apply_preset fills from
+        # _COST_FIELD_DEFAULTS and _detect_preset treats the omitted keys as
+        # those defaults, so switching never leaves stale advanced values under
+        # a clean-looking preset (codex P2 round 2 on #308).
+        self.assertIn("_COST_FIELD_DEFAULTS", self.source)
+        self.assertIn("if key not in preset:", self.source)
+        self.assertIn("{**_COST_FIELD_DEFAULTS, **preset}", self.source)
 
-        presets_dir = Path("config/presets")
-        for name in ("default", "smoke", "production"):
-            data = yaml.safe_load(
-                (presets_dir / f"{name}.yaml").read_text(encoding="utf-8")
-            )
-            for key in self._COST_KEYS:
-                self.assertIn(key, data, f"{name}.yaml missing cost key {key}")
+    def test_cost_widgets_use_single_source_defaults(self) -> None:
+        # Widget defaults reference _COST_FIELD_DEFAULTS (no literal drift vs the
+        # preset-reset defaults).
+        for key in self._COST_KEYS:
+            self.assertIn(f'_COST_FIELD_DEFAULTS["{key}"]', self.source)
 
     def test_form_guards_cost_field_ranges(self) -> None:
         # Out-of-range values are blocked in the form, not deferred to backend
@@ -777,6 +779,13 @@ class CostModelFieldsTests(unittest.TestCase):
         self.assertIn("float(init_cash) <= 0", self.source)
         self.assertGreaterEqual(
             self.source.count("0.0 < float(limit_threshold) <= 0.25"), 2
+        )
+        # commission_rate / slippage_bps upper bounds mirror
+        # CanonicalExchangeCostModel, on both render + submit (codex P2 rd 2).
+        self.assertIn("float(commission_rate) > COMMISSION_RATE_MAX", self.source)
+        self.assertIn("float(slippage_bps) > SLIPPAGE_BPS_MAX", self.source)
+        self.assertGreaterEqual(
+            self.source.count("float(commission_rate) > COMMISSION_RATE_MAX"), 2
         )
 
 

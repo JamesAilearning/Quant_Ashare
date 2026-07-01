@@ -13,12 +13,3 @@ benchmark_code: SH000300TR
 topk: 50
 n_drop: 5
 signal_to_execution_lag: 1
-# Backtest / cost model (canonical defaults; identical across presets so
-# switching presets resets these advanced knobs — codex P2 on #308).
-adjust_mode: pre_adjusted
-limit_threshold: 0.095
-commission_rate: 0.0005
-slippage_bps: 5.0
-min_cost: 5.0
-init_cash: 100000000.0
-seed: 42

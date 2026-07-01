@@ -13,6 +13,8 @@ import yaml
 
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
+    COMMISSION_RATE_MAX,
+    SLIPPAGE_BPS_MAX,
     SUPPORTED_ADJUST_MODES,
 )
 from src.data.feature_dataset_builder import list_supported_feature_handlers
@@ -78,6 +80,21 @@ _ESTIMATE_CALIBRATION_WINDOW = 5
 # pre-submit validation and the final-guard re-check (intentionally duplicated
 # predicate) can never drift on wording.
 _GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
+
+# Canonical defaults for the backtest / cost-model fields (mirror PipelineConfig
+# / WalkForwardConfig). SINGLE source used by the form widgets AND by preset
+# apply/detect, so switching to ANY preset — built-in, or an older custom one
+# saved before these fields existed — normalizes them to defaults instead of
+# leaving stale advanced values from a prior selection (codex P2 on #308).
+_COST_FIELD_DEFAULTS: dict[str, Any] = {
+    "adjust_mode": ADJUST_MODE_PRE,
+    "limit_threshold": 0.095,
+    "commission_rate": 0.0005,
+    "slippage_bps": 5.0,
+    "min_cost": 5.0,
+    "init_cash": 100_000_000.0,
+    "seed": 42,
+}
 
 
 def _duration_seconds(started_at: Any, ended_at: Any) -> float | None:
@@ -181,6 +198,12 @@ def _apply_preset(preset_name: str) -> None:
         return
     for key, value in preset.items():
         st.session_state[f"cr_{key}"] = value
+    # Reset cost-model fields the preset doesn't define to canonical defaults so
+    # an older / custom preset (saved before these fields existed) can't carry
+    # stale advanced values over from a prior selection (codex P2 on #308).
+    for key, default in _COST_FIELD_DEFAULTS.items():
+        if key not in preset:
+            st.session_state[f"cr_{key}"] = default
     st.session_state["cr_preset"] = preset_name
 
 
@@ -193,7 +216,11 @@ def _detect_preset() -> str:
         if not preset:
             continue
         match = True
-        for key, expected in preset.items():
+        # Treat cost fields the preset omits as their canonical defaults (mirrors
+        # _apply_preset), so a preset without these keys isn't reported as the
+        # active selection while the form carries non-default cost values.
+        effective = {**_COST_FIELD_DEFAULTS, **preset}
+        for key, expected in effective.items():
             current = st.session_state.get(f"cr_{key}")
             # Normalize types for comparison
             if isinstance(expected, int) and isinstance(current, str):
@@ -518,7 +545,7 @@ with form_col:
     with st.expander("⚙️ 回测 / 成本模型（高级）", expanded=False):
         bc1, bc2 = st.columns(2)
         with bc1:
-            adjust_default = _cr("adjust_mode", ADJUST_MODE_PRE)
+            adjust_default = _cr("adjust_mode", _COST_FIELD_DEFAULTS["adjust_mode"])
             adjust_mode = st.selectbox(
                 "复权模式 (adjust_mode)",
                 list(SUPPORTED_ADJUST_MODES),
@@ -531,39 +558,39 @@ with form_col:
             )
             limit_threshold = st.number_input(
                 "涨跌停阈值 (limit_threshold)",
-                value=float(_cr("limit_threshold", 0.095)),
+                value=float(_cr("limit_threshold", _COST_FIELD_DEFAULTS["limit_threshold"])),
                 min_value=0.0, step=0.005, format="%.3f",
                 key="cr_limit_threshold",
                 help="主板 0.095（±10%）、创业板/科创板 0.195、ST 0.045；须匹配股票池主导板。",
             )
             commission_rate = st.number_input(
                 "佣金率 (commission_rate)",
-                value=float(_cr("commission_rate", 0.0005)),
+                value=float(_cr("commission_rate", _COST_FIELD_DEFAULTS["commission_rate"])),
                 min_value=0.0, step=0.0001, format="%.4f",
                 key="cr_commission_rate",
             )
             seed = st.number_input(
                 "随机种子 (seed)",
-                value=int(_cr("seed", 42)), min_value=0, step=1,
+                value=int(_cr("seed", _COST_FIELD_DEFAULTS["seed"])), min_value=0, step=1,
                 key="cr_seed",
                 help="numpy / 模型随机种子，影响结果可复现性。",
             )
         with bc2:
             slippage_bps = st.number_input(
                 "滑点 (slippage_bps)",
-                value=float(_cr("slippage_bps", 5.0)),
+                value=float(_cr("slippage_bps", _COST_FIELD_DEFAULTS["slippage_bps"])),
                 min_value=0.0, step=0.5, format="%.1f",
                 key="cr_slippage_bps",
             )
             min_cost = st.number_input(
                 "最低单笔成本 (min_cost)",
-                value=float(_cr("min_cost", 5.0)),
+                value=float(_cr("min_cost", _COST_FIELD_DEFAULTS["min_cost"])),
                 min_value=0.0, step=1.0, format="%.1f",
                 key="cr_min_cost",
             )
             init_cash = st.number_input(
                 "初始资金 (init_cash)",
-                value=float(_cr("init_cash", 100_000_000.0)),
+                value=float(_cr("init_cash", _COST_FIELD_DEFAULTS["init_cash"])),
                 min_value=0.0, step=1_000_000.0, format="%.0f",
                 key="cr_init_cash",
             )
@@ -659,6 +686,16 @@ with form_col:
         )
     if float(init_cash) <= 0:
         guard_errors.append(f"初始资金 init_cash 须为正；当前 {init_cash}。")
+    # Upper bounds mirror CanonicalExchangeCostModel ([0, MAX]); the widget min
+    # already covers >= 0, so guard the max here (codex P2 on #308).
+    if float(commission_rate) > COMMISSION_RATE_MAX:
+        guard_errors.append(
+            f"佣金率 commission_rate 须 ≤ {COMMISSION_RATE_MAX}；当前 {commission_rate}。"
+        )
+    if float(slippage_bps) > SLIPPAGE_BPS_MAX:
+        guard_errors.append(
+            f"滑点 slippage_bps 须 ≤ {SLIPPAGE_BPS_MAX}；当前 {slippage_bps}。"
+        )
 
     # Build run config separately from the UI preview; mode is selected outside
     # the runtime config schema and passed to JobManager.start as its own value.
@@ -814,6 +851,18 @@ with form_col:
             st.error(
                 "提交前的最终校验失败，作业未启动：\n- "
                 f"init_cash 须为正；当前 {init_cash}。"
+            )
+            st.stop()
+        if float(commission_rate) > COMMISSION_RATE_MAX:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"commission_rate 须 ≤ {COMMISSION_RATE_MAX}；当前 {commission_rate}。"
+            )
+            st.stop()
+        if float(slippage_bps) > SLIPPAGE_BPS_MAX:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                f"slippage_bps 须 ≤ {SLIPPAGE_BPS_MAX}；当前 {slippage_bps}。"
             )
             st.stop()
         if mode == "pipeline":
