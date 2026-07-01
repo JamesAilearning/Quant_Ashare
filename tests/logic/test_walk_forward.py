@@ -849,11 +849,23 @@ class FoldReportSerialisationTests(unittest.TestCase):
             "fold_index", "windows", "model", "signal_analysis", "backtest",
             "metrics", "attribution", "ensemble", "positions_path", "generated_at",
         }
-        self.assertEqual(set(d), preexisting | {"daily_series"})
+        self.assertEqual(set(d), preexisting | {"daily_series", "schema_version"})
         # signal_analysis is untouched (IC goes into daily_series, not here).
         self.assertEqual(
             set(d["signal_analysis"]), {"ic_summary", "ic_decay", "turnover_stats"}
         )
+
+    def test_daily_series_missing_channel_fails_loud(self) -> None:
+        import dataclasses
+
+        from src.core.walk_forward.config import WalkForwardError
+        args = self._args_with_series()
+        # a producer that drops the 'cost' channel must fail loud, not ship null excess
+        args["backtest_output"] = dataclasses.replace(
+            args["backtest_output"], return_series={"return": {}, "bench": {}},
+        )
+        with self.assertRaises(WalkForwardError):
+            build_fold_report(**args)
 
     def test_daily_series_excess_is_return_minus_bench_minus_cost(self) -> None:
         d = build_fold_report(**self._args_with_series())
