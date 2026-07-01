@@ -861,7 +861,13 @@ class FoldReportSerialisationTests(unittest.TestCase):
         self.assertAlmostEqual(exc["2024-10-01"], 0.010 - 0.002 - 0.0005)
         self.assertAlmostEqual(exc["2024-10-02"], -0.004 + 0.001 - 0.0005)
         self.assertAlmostEqual(exc["2024-10-03"], 0.006 - 0.003 - 0.0005)
-        self.assertEqual(set(d["daily_series"]["components"]), {"return", "bench", "cost"})
+        comp = d["daily_series"]["components"]
+        self.assertEqual(set(comp), {"return", "bench", "cost"})
+        # Pin each channel's VALUES (bench != cost), so a bench/cost mislabel — which
+        # leaves the symmetric excess unchanged — is caught.
+        self.assertAlmostEqual(comp["return"]["2024-10-02"], -0.004)
+        self.assertAlmostEqual(comp["bench"]["2024-10-02"], -0.001)
+        self.assertAlmostEqual(comp["cost"]["2024-10-02"], 0.0005)
 
     def test_daily_series_ic_serialized_with_nan_dropped(self) -> None:
         d = build_fold_report(**self._args_with_series())
@@ -882,11 +888,14 @@ class FoldReportSerialisationTests(unittest.TestCase):
         self.assertAlmostEqual(loaded["daily_series"]["excess_return"]["2024-10-01"], 0.0075)
         self.assertEqual(set(loaded["daily_series"]["ic"]["1"]), {"2024-10-01", "2024-10-03"})
 
-    def test_daily_excess_reconciles_to_fold_scalars(self) -> None:
-        """Root-not-crooked (add-run-comparison-methodology): the persisted daily excess,
-        run back through the SAME canonical risk_analysis, reproduces this fold's stored
-        scalar IR / max-drawdown within 1e-6 — proof the daily series IS the substrate
-        the scalar was computed from, not merely some series."""
+    def test_daily_excess_reconciles_through_engine_extraction_path(self) -> None:
+        """Root-not-crooked, via the REAL wiring: the fold scalar the engine stores —
+        ``extract_cost_metrics(backtest_output.risk_analysis)`` — reconciles to
+        ``risk_analysis`` of the PERSISTED daily excess within 1e-6. The backtest output
+        is self-CONSISTENT (its ``risk_analysis`` and its ``return_series`` derive from
+        the same series), so if ``_daily_series_block`` persisted the WRONG series (e.g.
+        return instead of excess) the reconciliation would break — the earlier version
+        that self-injected the scalar could not catch that."""
         import dataclasses
 
         import pytest
@@ -897,8 +906,8 @@ class FoldReportSerialisationTests(unittest.TestCase):
         from src.core.canonical_backtest_contract import (
             CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE as risk_analysis,
         )
+        from src.core.walk_forward.aggregate import extract_cost_metrics
 
-        # deterministic, non-degenerate daily return / bench / cost
         keys = [str(d.date()) for d in pd.date_range("2024-10-01", periods=60, freq="D")]
         ret = {k: 0.001 * ((i % 7) - 3) for i, k in enumerate(keys)}
         bench = {k: 0.0005 * ((i % 5) - 2) for i, k in enumerate(keys)}
@@ -909,17 +918,20 @@ class FoldReportSerialisationTests(unittest.TestCase):
             return pd.Series([m[k] for k in ks], index=pd.to_datetime(ks))
 
         excess = {k: ret[k] - bench[k] - cost[k] for k in keys}
-        scalar = _risk_analysis_to_flat_dict(risk_analysis(_series(excess), freq="day"))
+        excess_scalar = _risk_analysis_to_flat_dict(risk_analysis(_series(excess), freq="day"))
 
+        # self-consistent output: risk_analysis (what the engine reads) AND return_series
+        # (what the daily series is built from) both derive from the same excess.
         bt = dataclasses.replace(
             _stub_backtest_output(),
             return_series={"return": ret, "bench": bench, "cost": cost},
+            risk_analysis={"excess_return_with_cost": excess_scalar},
         )
+        # the engine's own extraction path -> the scalar it hands build_fold_report.
+        ann, dd, ir = extract_cost_metrics(bt.risk_analysis, 0)
         args = self._build_args()
         args["backtest_output"] = bt
-        args["information_ratio"] = scalar["information_ratio"]
-        args["max_drawdown"] = scalar["max_drawdown"]
-        args["annualized_return"] = scalar["annualized_return"]
+        args["annualized_return"], args["max_drawdown"], args["information_ratio"] = ann, dd, ir
         d = build_fold_report(**args)
 
         recon = _risk_analysis_to_flat_dict(

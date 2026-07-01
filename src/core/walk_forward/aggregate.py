@@ -246,7 +246,16 @@ def _daily_series_block(
     ret = {str(d): float(v) for d, v in dict(rs.get("return", {})).items()}
     bench = {str(d): float(v) for d, v in dict(rs.get("bench", {})).items()}
     cost = {str(d): float(v) for d, v in dict(rs.get("cost", {})).items()}
-    excess = {d: ret[d] - bench.get(d, 0.0) - cost.get(d, 0.0) for d in ret}
+    # Match the canonical scalar semantics EXACTLY: BacktestRunner feeds
+    # ``risk_analysis`` a pandas union-index subtraction return-bench-cost, where a
+    # day missing from bench/cost is NaN (which risk_analysis drops). Emit NaN for a
+    # gap day rather than masking it as 0.0, so the persisted excess reconciles to
+    # the fold scalar for ANY producer, not only the single-DataFrame live path
+    # (where the three share one index). NaN -> null via _sanitize_for_json.
+    excess = {
+        d: (ret[d] - bench[d] - cost[d]) if (d in bench and d in cost) else float("nan")
+        for d in ret
+    }
     ic = {
         str(period): _ic_series_to_map(series)
         for period, series in signal_result.ic_series.items()
