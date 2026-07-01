@@ -121,6 +121,20 @@ class ResumeFingerprintTests(unittest.TestCase):
         with_id = compute_config_fingerprint(cfg, bundle_identity="2025-12-31@sha256:abc")
         self.assertNotEqual(base, with_id)
 
+    def test_report_schema_version_changes_fingerprint(self) -> None:
+        # add-run-comparison-methodology / codex P1 on #310: a fold-report SCHEMA bump
+        # (here: the daily_series substrate) must invalidate resume so stale pre-PR
+        # folds re-run instead of leaving a non-comparable aggregate that claims to be
+        # comparable. The fingerprint folds in FOLD_REPORT_SCHEMA_VERSION.
+        from unittest import mock
+        cfg = _make_config()
+        base = compute_config_fingerprint(cfg)
+        with mock.patch(
+            "src.core.walk_forward.aggregate.FOLD_REPORT_SCHEMA_VERSION", "SCHEMA-XYZ"
+        ):
+            bumped = compute_config_fingerprint(cfg)
+        self.assertNotEqual(base, bumped)
+
     def test_unknown_or_none_leaves_fingerprint_unchanged(self) -> None:
         # Adoption is free on identity-less bundles: "unknown"/None is NOT folded
         # in, so the digest equals the pre-PR-G+I fingerprint.

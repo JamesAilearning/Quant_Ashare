@@ -171,6 +171,14 @@ def compute_config_fingerprint(config: Any, *, bundle_identity: str | None = Non
     )
     raw["execution_timing_semantics"] = EXECUTION_TIMING_SEMANTICS
     raw["price_limit_semantics"] = PRICE_LIMIT_SEMANTICS
+    # Run-comparison substrate schema (add-run-comparison-methodology): a run resumed
+    # across the daily_series schema boundary would silently mix folds that carry the
+    # comparison substrate with pre-PR folds that do not — a non-comparable aggregate
+    # claiming to be comparable. Fold the schema version in so the boundary invalidates
+    # resume and the stale folds re-run (codex P1 on #310). Local import keeps this
+    # module free of a heavy top-level dependency.
+    from src.core.walk_forward.aggregate import FOLD_REPORT_SCHEMA_VERSION
+    raw["fold_report_schema_version"] = FOLD_REPORT_SCHEMA_VERSION
     # PR-G+I: fold the bundle content identity in so a same-window data re-ingest
     # (new calendar bytes → new content_hash → new tag) invalidates resume. Only
     # a REAL identity is injected; "unknown"/None (no _fetch_integrity identity)

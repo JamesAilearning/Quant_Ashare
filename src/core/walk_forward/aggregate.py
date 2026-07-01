@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import warnings
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -214,6 +215,74 @@ def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
     return max_depth
 
 
+# Bumped whenever the fold-report SCHEMA changes in a way that affects
+# comparability (here: the daily_series substrate is added). Written into every
+# fold report AND folded into the resume fingerprint (_resume.py), so a run
+# resumed across this boundary re-runs the stale folds instead of silently mixing
+# comparable (daily_series-carrying) and non-comparable folds in one aggregate.
+FOLD_REPORT_SCHEMA_VERSION = "2-daily-series"
+
+
+def _ic_series_to_map(series: Any) -> dict[str, float]:
+    """Serialize a daily-IC pandas Series (date index) to ``{date_str: float}``,
+    dropping non-finite days (an NaN IC day carries no signal and would otherwise be
+    sanitized to null; dropping keeps a clean date->float map for paired comparison)."""
+    out: dict[str, float] = {}
+    if series is None or not hasattr(series, "items"):
+        return out
+    for k, v in series.items():
+        fv = float(v)
+        if not math.isfinite(fv):
+            continue
+        out[str(k.date()) if hasattr(k, "date") else str(k)] = fv
+    return out
+
+
+def _daily_series_block(
+    signal_result: SignalAnalysisResult,
+    backtest_output: CanonicalBacktestOutput,
+) -> dict[str, Any]:
+    """The run-comparison SUBSTRATE (add-run-comparison-methodology): the per-day
+    excess-return series ``return − bench − cost`` — the exact series
+    ``BacktestRunner`` feeds to ``risk_analysis`` for the ``excess_return_with_cost``
+    scalar, so it reconciles LOSSLESSLY back to this fold's ``information_ratio`` /
+    ``max_drawdown`` — plus its components and the per-period daily IC series.
+
+    Purely ADDITIVE: the existing ``signal_analysis`` / ``backtest`` / ``metrics``
+    blocks are untouched, so a re-run's pre-existing fields are byte-identical."""
+    rs = backtest_output.return_series or {}
+    missing = [c for c in ("return", "bench", "cost") if c not in rs]
+    if missing:
+        raise WalkForwardError(
+            f"backtest_output.return_series is missing required channel(s) {missing}: "
+            "cannot persist the run-comparison daily_series substrate. Fail loud at the "
+            "producer boundary rather than shipping an empty/all-null excess that would "
+            "hide a non-comparable fold (codex P2)."
+        )
+    ret = {str(d): float(v) for d, v in dict(rs["return"]).items()}
+    bench = {str(d): float(v) for d, v in dict(rs["bench"]).items()}
+    cost = {str(d): float(v) for d, v in dict(rs["cost"]).items()}
+    # Match the canonical scalar semantics EXACTLY: BacktestRunner feeds
+    # ``risk_analysis`` a pandas union-index subtraction return-bench-cost, where a
+    # day missing from bench/cost is NaN (which risk_analysis drops). Emit NaN for a
+    # gap day rather than masking it as 0.0, so the persisted excess reconciles to
+    # the fold scalar for ANY producer, not only the single-DataFrame live path
+    # (where the three share one index). NaN -> null via _sanitize_for_json.
+    excess = {
+        d: (ret[d] - bench[d] - cost[d]) if (d in bench and d in cost) else float("nan")
+        for d in ret
+    }
+    ic = {
+        str(period): _ic_series_to_map(series)
+        for period, series in signal_result.ic_series.items()
+    }
+    return {
+        "excess_return": excess,
+        "components": {"return": ret, "bench": bench, "cost": cost},
+        "ic": ic,
+    }
+
+
 def build_fold_report(
     *,
     fold_index: int,
@@ -284,6 +353,12 @@ def build_fold_report(
             "max_drawdown": max_drawdown,
             "information_ratio": information_ratio,
         },
+        # Run-comparison substrate (add-run-comparison-methodology). Purely additive;
+        # reconciles losslessly to metrics.information_ratio / max_drawdown.
+        "daily_series": _daily_series_block(signal_result, backtest_output),
+        # Self-describing schema marker: lets the comparison layer detect a
+        # pre-daily_series (non-comparable) report, and gates resume (see _resume.py).
+        "schema_version": FOLD_REPORT_SCHEMA_VERSION,
         # Always emit the attribution block — same convention as
         # ``Pipeline._attribution_section``: ``status`` / ``skipped_reason``
         # are present whether or not the engine ran, so downstream
