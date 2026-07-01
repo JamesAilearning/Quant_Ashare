@@ -17,6 +17,23 @@ try:
 except ImportError:
     _HAS_STREAMLIT = False
 
+# PIPELINE_KEYS / WALK_FORWARD_KEYS are derived from the config dataclasses,
+# which transitively import qlib — unavailable in dep-light cells. Guard the
+# schema-validity check the same way as the streamlit-backed tests.
+try:
+    from web.operator_ui.config_forms import (
+        PIPELINE_KEYS as _PIPELINE_KEYS,
+    )
+    from web.operator_ui.config_forms import (
+        WALK_FORWARD_KEYS as _WALK_FORWARD_KEYS,
+    )
+
+    _HAS_CONFIG_SCHEMAS = True
+except Exception:  # noqa: BLE001 - dep-light cell (no qlib): introspection N/A
+    _HAS_CONFIG_SCHEMAS = False
+    _PIPELINE_KEYS = frozenset()
+    _WALK_FORWARD_KEYS = frozenset()
+
 
 class ConfigRunPageSourceTests(unittest.TestCase):
     def test_training_controls_are_not_inside_streamlit_form(self) -> None:
@@ -699,6 +716,89 @@ class FeatureHandlerGuardTests(unittest.TestCase):
         handlers = list_supported_feature_handlers()
         self.assertNotIn("MinedFactor", handlers)
         self.assertIn("Alpha158", handlers)
+
+
+class CostModelFieldsTests(unittest.TestCase):
+    """Backtest / cost-model knobs (adjust_mode, limit_threshold, commission,
+    slippage, init_cash, min_cost, seed) are surfaced in an advanced expander
+    and threaded into the job config. Each must be a valid key in BOTH config
+    schemas, or the shared config_dict is rejected by validate_config_keys."""
+
+    _COST_KEYS = (
+        "adjust_mode", "limit_threshold", "commission_rate",
+        "slippage_bps", "min_cost", "init_cash", "seed",
+    )
+
+    def setUp(self) -> None:
+        self.source = Path(
+            "web/operator_ui/pages/config_run.py"
+        ).read_text(encoding="utf-8")
+
+    def test_cost_model_expander_present(self) -> None:
+        self.assertIn("回测 / 成本模型", self.source)
+
+    def test_adjust_mode_uses_supported_modes(self) -> None:
+        self.assertIn("SUPPORTED_ADJUST_MODES", self.source)
+        self.assertIn('key="cr_adjust_mode"', self.source)
+
+    def test_config_dict_threads_cost_fields(self) -> None:
+        for key in self._COST_KEYS:
+            self.assertIn(f'"{key}":', self.source)
+
+    @unittest.skipUnless(
+        _HAS_CONFIG_SCHEMAS, "config schemas unavailable (no qlib)"
+    )
+    def test_cost_keys_valid_in_both_config_schemas(self) -> None:
+        for key in self._COST_KEYS:
+            self.assertIn(key, _PIPELINE_KEYS, f"{key} not in PIPELINE_KEYS")
+            self.assertIn(
+                key, _WALK_FORWARD_KEYS, f"{key} not in WALK_FORWARD_KEYS"
+            )
+
+    def test_presets_normalize_missing_cost_keys(self) -> None:
+        # A preset that omits the cost keys (older / custom, saved before these
+        # fields existed) must still reset them: _apply_preset fills from
+        # _COST_FIELD_DEFAULTS and _detect_preset treats the omitted keys as
+        # those defaults, so switching never leaves stale advanced values under
+        # a clean-looking preset (codex P2 round 2 on #308).
+        self.assertIn("_COST_FIELD_DEFAULTS", self.source)
+        self.assertIn("if key not in preset:", self.source)
+        self.assertIn("{**_COST_FIELD_DEFAULTS, **preset}", self.source)
+
+    def test_cost_widgets_use_single_source_defaults(self) -> None:
+        # Widget defaults reference _COST_FIELD_DEFAULTS (no literal drift vs the
+        # preset-reset defaults).
+        for key in self._COST_KEYS:
+            self.assertIn(f'_COST_FIELD_DEFAULTS["{key}"]', self.source)
+
+    def test_form_guards_cost_field_ranges(self) -> None:
+        # Out-of-range values are blocked in the form, not deferred to backend
+        # config construction (codex P2 on #308). Enforced on BOTH the render
+        # guard and the submit-path recheck.
+        self.assertIn("0.0 < float(limit_threshold) <= 0.25", self.source)
+        self.assertIn("float(init_cash) <= 0", self.source)
+        self.assertGreaterEqual(
+            self.source.count("0.0 < float(limit_threshold) <= 0.25"), 2
+        )
+        # commission_rate / slippage_bps upper bounds mirror
+        # CanonicalExchangeCostModel, on both render + submit (codex P2 rd 2).
+        self.assertIn("float(commission_rate) > COMMISSION_RATE_MAX", self.source)
+        self.assertIn("float(slippage_bps) > SLIPPAGE_BPS_MAX", self.source)
+        self.assertGreaterEqual(
+            self.source.count("float(commission_rate) > COMMISSION_RATE_MAX"), 2
+        )
+
+    def test_invalid_adjust_mode_not_silently_coerced(self) -> None:
+        # An unsupported adjust_mode (hand-edited preset / prefill) is kept
+        # visible and selected (not coerced to index 0) and blocked by a guard on
+        # both the render and submit paths (codex P2 round 3 on #308).
+        self.assertNotIn(
+            "if adjust_default in SUPPORTED_ADJUST_MODES else 0", self.source
+        )
+        self.assertIn("adjust_mode not in SUPPORTED_ADJUST_MODES", self.source)
+        self.assertGreaterEqual(
+            self.source.count("adjust_mode not in SUPPORTED_ADJUST_MODES"), 2
+        )
 
 
 if __name__ == "__main__":
