@@ -75,6 +75,29 @@ class StatisticsTests(unittest.TestCase):
         self.assertTrue(math.isnan(_annualized_ir(np.zeros(50))))
         self.assertTrue(math.isnan(_annualized_ir(np.full(50, 0.1))))
 
+    def test_block_length_caps_when_decay_never_observed(self) -> None:
+        # a persistently-autocorrelated series (linear ramp) never decays within the
+        # checked lags -> the block must be the CAP (_MAX_BLOCK), not a short 10 that
+        # would understate the bootstrap SE (codex P1).
+        from src.core.comparison import _MAX_BLOCK
+        self.assertEqual(estimate_block_length(np.arange(300.0)), _MAX_BLOCK)
+
+    def test_pooled_ir_uses_full_run_not_just_shared_dates(self) -> None:
+        from src.core.comparison import _annualized_ir
+        shared = _dates(100, "2025-07-01")
+        extra = _dates(10, "2026-01-01")  # tail dates A lacks (label-horizon case)
+        rng = np.random.default_rng(5)
+        b_shared = _fold(shared, rng.standard_normal(100) * 0.01)
+        b_extra = _fold(extra, np.full(10, 0.05))  # distinct tail so full != shared
+        with TemporaryDirectory() as tmp:
+            a = _write_run(Path(tmp) / "A",
+                           [_fold(shared, rng.standard_normal(100) * 0.01)])
+            b = _write_run(Path(tmp) / "B", [{**b_shared, **b_extra}])
+            r = compare_runs(a, b, pre_registration_ref=_PREREG)
+        b_all = np.array([v[0] - v[1] - v[2] for v in {**b_shared, **b_extra}.values()])
+        # pooled treatment IR reflects ALL of B's days, not only the 100 shared
+        self.assertAlmostEqual(r.pooled_net_ir_treatment, _annualized_ir(b_all), places=6)
+
     def test_bootstrap_se_wider_under_autocorrelation(self) -> None:
         rng = np.random.default_rng(1)
         # AR(1) diff with strong positive autocorrelation

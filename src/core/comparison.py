@@ -183,7 +183,10 @@ def estimate_block_length(diff: np.ndarray[Any, Any]) -> int:
         ac = float((x[:-lag] * x[lag:]).sum()) / denom
         if abs(ac) < thresh:
             return max(lag, 1)
-    return min(n // 2, 10)
+    # decay never observed within the checked lags -> the series is persistently
+    # autocorrelated, so the block should be LONGEST (the cap), not a mid value; a short
+    # block here would understate the bootstrap SE and overstate confidence (codex P1).
+    return min(n // 2, _MAX_BLOCK)
 
 
 def paired_block_bootstrap(
@@ -334,10 +337,14 @@ def compare_runs(
         overlap_fraction=round(overlap, 4),
         block_length=blk,
         block_length_source=blk_src,
-        pooled_net_ir_baseline=_annualized_ir(ea),
-        pooled_net_ir_treatment=_annualized_ir(eb),
-        pooled_gross_ir_baseline=_annualized_ir(ga),
-        pooled_gross_ir_treatment=_annualized_ir(gb),
+        # pooled IR is each run's FULL study-protocol series (all its OOS days), NOT the
+        # paired intersection — the intersection is only for the paired bootstrap. In the
+        # label-horizon tail-loss case, restricting these to shared dates would silently
+        # discard valid run-specific days and misreport the study-protocol IR (codex P1).
+        pooled_net_ir_baseline=_annualized_ir(np.array(list(a.excess.values()))),
+        pooled_net_ir_treatment=_annualized_ir(np.array(list(b.excess.values()))),
+        pooled_gross_ir_baseline=_annualized_ir(np.array(list(a.gross.values()))),
+        pooled_gross_ir_treatment=_annualized_ir(np.array(list(b.gross.values()))),
         paired_net_ann_diff=round(ann, 6),
         paired_net_se=round(se, 6),
         paired_net_ci95=(round(lo, 6), round(hi, 6)),
