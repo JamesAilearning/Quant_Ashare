@@ -645,5 +645,35 @@ class SignalAnalyzerIndexValidationTests(unittest.TestCase):
         self.assertEqual(captured["end_time"], pd.Timestamp("2025-10-02"))
 
 
+class DailyIcSeriesTests(unittest.TestCase):
+    """The shared _ic_utils.daily_ic_series (B4-1) — one IC per date,
+    consumed identically by signal_analyzer and factor_analyzer."""
+
+    def test_yields_one_ic_per_date(self) -> None:
+        import pandas as pd
+
+        from src.core._ic_utils import daily_ic_series
+
+        rows = [
+            (pd.Timestamp(day), f"T{i}", float(i), float(i))
+            for day in ("2025-01-02", "2025-01-03")
+            for i in range(5)  # perfect within-day rank correlation
+        ]
+        merged = pd.DataFrame(
+            {"pred": [r[2] for r in rows], "ret": [r[3] for r in rows]},
+            index=pd.MultiIndex.from_tuples(
+                [(r[0], r[1]) for r in rows], names=["datetime", "instrument"],
+            ),
+        )
+        ic = daily_ic_series(merged, "rank")
+        self.assertEqual(
+            list(ic.index),
+            [pd.Timestamp("2025-01-02"), pd.Timestamp("2025-01-03")],
+        )
+        self.assertAlmostEqual(
+            float(ic.loc[pd.Timestamp("2025-01-02")]), 1.0, places=9,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

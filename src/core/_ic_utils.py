@@ -3,8 +3,10 @@
 Both :mod:`signal_analyzer` and :mod:`factor_analyzer` compute
 cross-sectional IC in the same way; this module avoids the duplication.
 
-The top-level helpers are intentionally thin — just the rank/normal IC
-logic — so callers own the groupby and result aggregation.
+Two levels: :func:`compute_ic_for_group` is the per-date primitive, and
+:func:`daily_ic_series` runs the shared date-groupby over a merged frame.
+Callers still own the result aggregation (dropna / mean / std / naming),
+which genuinely differs per call site.
 """
 
 from __future__ import annotations
@@ -44,3 +46,17 @@ def compute_ic_for_group(group: Any, method: str) -> float:
     if method == "rank":
         return float(group[signal_col].rank().corr(group["ret"].rank()))
     return float(group[signal_col].corr(group["ret"]))
+
+
+def daily_ic_series(merged: Any, method: str) -> Any:
+    """Per-date cross-sectional IC series for a merged signal/return frame.
+
+    ``merged`` carries a ``datetime`` index level plus a signal column
+    (``pred`` or ``factor``) and a ``ret`` column. Groups by date and
+    applies :func:`compute_ic_for_group`, returning one IC per date. The
+    caller owns any aggregation (dropna / mean / std / naming).
+    """
+    return merged.groupby(level="datetime").apply(
+        lambda g: compute_ic_for_group(g, method),
+        include_groups=False,
+    )
