@@ -40,8 +40,16 @@ _ANN = 252.0
 DEFAULT_OVERLAP_FLOOR = 0.90
 DEFAULT_MIN_PAIRED_DAYS = 20   # a paired bootstrap on fewer days gives a ~zero-width CI
 DEFAULT_N_BOOT = 10000
+MIN_N_BOOT = 1000  # below this a percentile CI is unstable / can collapse to a point
 DEFAULT_SEED = 42
 _MAX_BLOCK = 40
+# CI (and se) are serialized at 6 decimals; a 95% CI whose annualized width is at/below the
+# reporting resolution is a REPORTED point and can never back a directional verdict. Real
+# daily-diff bootstrap widths are O(1e-2..1) — ~4+ orders above this floor — so it never
+# false-positives on real data, and it is ABSOLUTE (not relative to |ann|) so a large
+# constant offset cannot inflate past it (the round-7 relative floor was defeated that way).
+_MIN_CI_WIDTH = 1e-6
+_SERIALIZE_DP = 6
 
 REGIME_CAVEAT = (
     "CI narrows the SAMPLING SE (pooled + paired + block bootstrap for autocorrelation) "
@@ -63,7 +71,7 @@ class RunSeries:
     excess: dict[str, float]          # net excess = return - bench - cost
     gross: dict[str, float]           # gross excess = return - bench
     ic: dict[str, float]              # daily 1d IC
-    fold_boundary_dates: list[str]    # first date of each fold (for the seam bound)
+    fold_boundary_dates: list[str]    # first FINITE date of each fold (for the seam bound)
 
 
 @dataclass(frozen=True)
@@ -98,9 +106,21 @@ class RunComparison:
 
 # --------------------------------------------------------------------------- load
 
+def _reject_nonfinite(token: str) -> float:
+    # json.load accepts the bare literals NaN / Infinity / -Infinity by default. A gap day
+    # MUST be serialized as JSON null, so a non-finite literal means a corrupt / legacy /
+    # non-canonical producer (the canonical one uses allow_nan=False). Refuse at the
+    # boundary rather than let a NaN poison the paired diff into a fabricated verdict.
+    raise ComparisonError(
+        f"Non-finite JSON literal {token!r} in a fold report — a gap day must be null, not "
+        "NaN/Infinity. This report was written by a non-canonical producer and is "
+        "NON-COMPARABLE; re-run the walk-forward for this config."
+    )
+
+
 def _read_json(p: Path) -> dict[str, Any]:
     with p.open(encoding="utf-8") as f:
-        loaded: dict[str, Any] = json.load(f)
+        loaded: dict[str, Any] = json.load(f, parse_constant=_reject_nonfinite)
         return loaded
 
 
@@ -133,29 +153,81 @@ def load_run_daily_series(run_dir: str | Path) -> RunSeries:
                 "contract and is NON-COMPARABLE. Backfill by re-running the walk-forward "
                 "for this config (the daily series cannot be reconstructed post-hoc)."
             )
-        comp = ds["components"]
-        ret, bench = comp["return"], comp["bench"]  # net excess read from excess_return
-        fold_dates = sorted(ds["excess_return"])
-        if fold_dates:
-            boundaries.append(fold_dates[0])
-        for d in fold_dates:
-            v = ds["excess_return"][d]
-            if v is None:  # sanitized NaN (a gap day) — not part of the realized series
-                continue
-            if d in excess:
-                # overlapping test windows share an OOS date across folds; collapsing by
-                # date would silently drop one fold's realized day and shift IR/verdict.
-                # Refuse rather than pick a winner arbitrarily (codex P2).
+        # A present-but-MALFORMED daily_series (non-dict, missing components/return/bench/
+        # excess_return, a per-date channel hole, a non-numeric or non-mapping value) is the
+        # same "cannot compare honestly" class as a missing one — it must fail loud with an
+        # actionable message, never a bare KeyError/TypeError/AttributeError/ValueError. The
+        # explicit checks below name the exact defect; the wrapper is the catch-all backstop.
+        try:
+            if not isinstance(ds, dict):
                 raise ComparisonError(
-                    f"Run {run}: duplicate OOS date {d} across folds (overlapping test "
-                    "windows). Pooling/pairing by date would drop a realized fold-day; "
-                    "refuse. Use non-overlapping test windows for run comparison."
+                    f"Run {run}: fold {i} daily_series is {type(ds).__name__}, not an "
+                    "object — corrupt/partial fold report. NON-COMPARABLE; re-run the "
+                    "walk-forward for this config."
                 )
-            excess[d] = float(v)
-            gross[d] = float(ret[d]) - float(bench[d])
-        for d, v in (ds.get("ic", {}).get("1", {}) or {}).items():
-            if v is not None:
-                ic[d] = float(v)
+            comp = ds.get("components")
+            xr = ds.get("excess_return")
+            if not isinstance(comp, dict) or not isinstance(xr, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series is malformed — 'components' and "
+                    "'excess_return' must both be objects. NON-COMPARABLE; re-run the "
+                    "walk-forward for this config."
+                )
+            ret, bench = comp.get("return"), comp.get("bench")
+            if not isinstance(ret, dict) or not isinstance(bench, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series.components is missing/ malformed "
+                    "'return' or 'bench'. NON-COMPARABLE; re-run the walk-forward."
+                )
+            fold_dates = sorted(xr)
+            fold_first_finite: str | None = None
+            for d in fold_dates:
+                v = xr[d]
+                if v is None:  # gap day (canonical null) — not part of the realized series
+                    continue
+                if fold_first_finite is None:
+                    # the seam boundary is the fold's first REALIZED day (model switch +
+                    # start from cash), NOT fold_dates[0] — if the producer emits null for a
+                    # leading gap day, that date is absent from `excess`, so recording it as
+                    # the boundary would exclude nothing and understate the seam (codex P2).
+                    fold_first_finite = d
+                if d in excess:
+                    # overlapping test windows share an OOS date across folds; collapsing by
+                    # date would silently drop one fold's realized day and shift IR/verdict.
+                    # Refuse rather than pick a winner arbitrarily (codex P2).
+                    raise ComparisonError(
+                        f"Run {run}: duplicate OOS date {d} across folds (overlapping test "
+                        "windows). Pooling/pairing by date would drop a realized fold-day; "
+                        "refuse. Use non-overlapping test windows for run comparison."
+                    )
+                if d not in ret or d not in bench:
+                    missing = "return" if d not in ret else "bench"
+                    raise ComparisonError(
+                        f"Run {run}: fold {i} date {d} has a finite excess_return but is "
+                        f"absent from components.{missing} — cannot compute gross excess. "
+                        "The report is malformed/legacy (the canonical producer keeps "
+                        "excess finite only when the date is in return AND bench). Re-run."
+                    )
+                excess[d] = float(v)
+                gross[d] = float(ret[d]) - float(bench[d])
+            if fold_first_finite is not None:
+                boundaries.append(fold_first_finite)
+            ic_block = ds.get("ic", {})
+            ic_1d = ic_block.get("1", {}) if isinstance(ic_block, dict) else {}
+            if not isinstance(ic_1d, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series.ic['1'] is {type(ic_1d).__name__}, "
+                    "expected a {date: value} mapping. Non-canonical/corrupt writer; re-run."
+                )
+            for d, v in ic_1d.items():
+                if v is not None:
+                    ic[d] = float(v)
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
+            raise ComparisonError(
+                f"Run {run}: fold {i} daily_series is malformed ({exc!r}). NON-COMPARABLE "
+                "(corrupt / non-canonical / hand-edited report); re-run the walk-forward "
+                "for this config to regenerate the daily series."
+            ) from exc
     if not excess:
         raise ComparisonError(f"Run {run}: no finite daily excess across any fold.")
     return RunSeries(str(run), excess, gross, ic, boundaries)
@@ -203,15 +275,24 @@ def paired_block_bootstrap(
     diff: np.ndarray[Any, Any], block_len: int, n_boot: int = DEFAULT_N_BOOT, seed: int = DEFAULT_SEED,
 ) -> tuple[float, float, float, float]:
     """Annualized mean of the paired daily difference + moving-block bootstrap SE / 95%
-    CI. Block resampling honours autocorrelation (an i.i.d. bootstrap understates SE)."""
+    CI. Block resampling honours autocorrelation (an i.i.d. bootstrap understates SE).
+
+    CIRCULAR (wrap-around) blocks: every observation is included with equal expected
+    frequency, so E[boot mean] == the sample mean EXACTLY. A non-circular sampler with the
+    ``[:, :n]`` tail truncation over-weights early within-block positions, biasing the
+    bootstrap distribution off the sample mean; on a short series with a large (override)
+    block that shift can push BOTH CI endpoints to one side of 0 while the point estimate
+    sits at 0 — a spurious directional verdict (the verdict side is taken from the CI). The
+    circular sampler removes that bias, so a directional verdict requires the POINT estimate
+    itself to be away from 0, keeping verdict and point estimate consistent."""
     n = diff.size
     block_len = max(1, min(block_len, n))
     rng = np.random.default_rng(seed)
     n_blocks = int(math.ceil(n / block_len))
-    max_start = n - block_len
-    starts = rng.integers(0, max_start + 1, size=(n_boot, n_blocks))
+    starts = rng.integers(0, n, size=(n_boot, n_blocks))  # any start; wrap-around below
     offs = np.arange(block_len)
     idx = (starts[:, :, None] + offs[None, None, :]).reshape(n_boot, n_blocks * block_len)[:, :n]
+    idx %= n  # circular: unbiased for the sample mean regardless of block_len | n
     boot_ann = diff[idx].mean(axis=1) * _ANN
     ann = float(diff.mean() * _ANN)
     lo, hi = (float(x) for x in np.percentile(boot_ann, [2.5, 97.5]))
@@ -244,6 +325,15 @@ def compare_runs(
             "is REQUIRED — design-time control of multiple comparisons. Refusing to run "
             "an unregistered comparison."
         )
+    if n_boot < MIN_N_BOOT:
+        # a too-small n_boot makes the percentile CI unstable, and at the limit (n_boot=1)
+        # se=0 and lo==hi, so the verdict would collapse into a zero-uncertainty point
+        # winner — the same fail-loud violation as a full-length block (codex P2).
+        raise ComparisonError(
+            f"n_boot={n_boot} is below the floor MIN_N_BOOT={MIN_N_BOOT}: too few "
+            "resamples for a stable 95% percentile CI (at the limit se=0, lo==hi, faking a "
+            "zero-uncertainty verdict). Pass n_boot>=1000 or omit it for the default."
+        )
     a = load_run_daily_series(baseline_dir)
     b = load_run_daily_series(treatment_dir)
 
@@ -275,8 +365,8 @@ def compare_runs(
             raise ComparisonError(
                 f"block_length override {block_length} is out of range [1, {cap}] "
                 f"(<= n_paired//2). A block near the full sample length ({diff.size}) "
-                "collapses the moving-block bootstrap (max_start -> 0, every replicate is "
-                "the whole sample) to a zero-width CI, which would fake a point-estimate "
+                "collapses the (circular) moving-block bootstrap toward rotations of the "
+                "whole sample — a near-zero-width CI that would fake a point-estimate "
                 "verdict (codex P2). Pass a smaller value or omit it for the ACF default."
             )
         blk, blk_src = block_length, "operator-override"
@@ -284,15 +374,45 @@ def compare_runs(
         blk, blk_src = estimate_block_length(diff), "acf-decay"
     ann, se, lo, hi = paired_block_bootstrap(diff, blk, n_boot, seed)
 
-    # verdict SIDE comes from the CI, NOT the point estimate: with the non-circular block
-    # sampler the bootstrap CI can land opposite the sample mean, and the verdict must
-    # never contradict its own reported CI (codex P2).
+    # Non-finite guard, UNGATED by the verdict (defense-in-depth): a NaN anywhere in the
+    # paired arm makes ann/lo/hi NaN, and `nan > 0` / `nan < 0` are both False, so the
+    # verdict would silently fall to 'indistinguishable' — a fabricated verdict on
+    # non-comparable data. (Ingestion already rejects non-finite literals; this is the
+    # backstop for any residual computational NaN.) A NaN CI is 'no CI', not 'straddles 0'.
+    if not (math.isfinite(ann) and math.isfinite(lo) and math.isfinite(hi)):
+        raise ComparisonError(
+            f"Non-finite paired result (ann={ann!r}, ci95=({lo!r}, {hi!r})) — a NaN in the "
+            "paired difference makes an honest comparison impossible. Refusing a verdict."
+        )
+
+    # verdict SIDE comes from the CI, NOT the point estimate. With the circular block
+    # sampler the CI is centered (in expectation) on the sample mean, but a directional
+    # verdict must still never contradict its own reported CI (codex P2).
     if lo > 0:
         verdict = "treatment_better"
     elif hi < 0:
         verdict = "treatment_worse"
     else:
         verdict = "indistinguishable"
+
+    # Invariant backstop closing the whole degenerate-CI class: a DIRECTIONAL verdict must
+    # rest on a CI with real width. The floor is ABSOLUTE (annualized), tied to the 6-dp
+    # serialization resolution — a CI narrower than what we can even print is a reported
+    # point. This is robust to the round-7 hole (a relative-to-|ann| floor that a large
+    # constant offset inflated past while the true width stayed ~machine-epsilon): a
+    # near-constant diff (huge offset + imperceptible jitter) has width << _MIN_CI_WIDTH and
+    # is refused regardless of |ann|. Real bootstrap widths are O(1e-2..1), ~4+ orders above.
+    # The per-knob guards above (block_length cap, n_boot floor) still fail earlier with
+    # actionable messages; this catches ANY residual path. The indistinguishable case (CI
+    # straddles 0) is NOT refused.
+    if verdict != "indistinguishable" and (hi - lo) <= _MIN_CI_WIDTH:
+        raise ComparisonError(
+            f"Degenerate CI: verdict '{verdict}' would rest on a CI of annualized width "
+            f"{hi - lo:.2e} (ci95=({lo!r}, {hi!r}), se={se!r}), at/below the reporting "
+            f"resolution {_MIN_CI_WIDTH:.0e} — a REPORTED point, no estimable sampling "
+            "uncertainty. This means a (near-)constant paired difference or too few paired "
+            "days. Refusing a point-estimate winner; use varying, sufficient daily series."
+        )
 
     # diagnostics (ALWAYS present; mandated companion of an indistinguishable verdict).
     # gross AND IC are measured over the SAME shared comparison dates as the net paired

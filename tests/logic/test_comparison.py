@@ -10,6 +10,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import numpy as np
 
@@ -50,11 +51,22 @@ def _write_run(root: Path, folds: list[dict[str, tuple[float, float, float, floa
     return str(root)
 
 
-def _fold(dates: list[str], excess: np.ndarray, ic: float = 0.02
+def _fold(dates: list[str], excess: np.ndarray[Any, Any], ic: float = 0.02
           ) -> dict[str, tuple[float, float, float, float]]:
     # return=excess+bench+cost, fixed bench/cost so excess_return == excess
     return {d: (float(e) + 0.001 + 0.0005, 0.001, 0.0005, ic)
             for d, e in zip(dates, excess, strict=True)}
+
+
+def _write_single_fold(root: Path, ds: object,
+                       schema: str = FOLD_REPORT_SCHEMA_VERSION) -> Path:
+    """Write a 1-fold run with an arbitrary (possibly malformed / NaN-bearing) daily_series.
+    Default json.dumps allow_nan=True emits a bare `NaN` token for a float('nan')."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "walk_forward_report.json").write_text(json.dumps({"num_folds": 1}))
+    (root / "fold_00_report.json").write_text(json.dumps(
+        {"fold_index": 0, "daily_series": ds, "schema_version": schema, "metrics": {}}))
+    return root
 
 
 class StatisticsTests(unittest.TestCase):
@@ -112,7 +124,8 @@ class StatisticsTests(unittest.TestCase):
 
 
 class VerdictTests(unittest.TestCase):
-    def _runs(self, tmp: str, base_excess: np.ndarray, treat_excess: np.ndarray,
+    def _runs(self, tmp: str, base_excess: np.ndarray[Any, Any],
+              treat_excess: np.ndarray[Any, Any],
               ic_a: float = 0.02, ic_b: float = 0.02) -> tuple[str, str]:
         d = _dates(len(base_excess))
         a = _write_run(Path(tmp) / "A", [_fold(d, base_excess, ic_a)])
@@ -132,24 +145,46 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("gross_ir_treatment", r.diagnostics)
 
     def test_treatment_better_when_clear_positive(self) -> None:
-        base = np.full(250, 0.0)
-        treat = np.full(250, 0.002) + np.linspace(0, 1e-9, 250)  # steady +, tiny jitter
+        rng = np.random.default_rng(3)
+        base = rng.standard_normal(250) * 0.01
+        # a clear +0.002/day drift WITH real daily dispersion -> the CI has genuine width
+        # (not a serialized point). A constant offset + imperceptible jitter would fake a
+        # zero-width CI and is refused by the degenerate-CI backstop.
+        treat = base + 0.002 + rng.standard_normal(250) * 0.001
         with TemporaryDirectory() as tmp:
             a, b = self._runs(tmp, base, treat)
             r = compare_runs(a, b, pre_registration_ref=_PREREG)
         self.assertEqual(r.verdict, "treatment_better")
-        self.assertGreater(r.paired_net_ci95[0], 0.0)  # CI strictly above 0
+        self.assertGreater(r.paired_net_ci95[0], 0.0)              # CI strictly above 0
+        self.assertGreater(r.paired_net_ci95[1] - r.paired_net_ci95[0], 1e-6)  # real width
         # verdict SIDE must track the CI, not the point estimate
         self.assertEqual(r.verdict == "treatment_better", r.paired_net_ci95[0] > 0)
 
     def test_contradiction_flag_when_ic_disagrees(self) -> None:
-        base = np.full(250, 0.0)
-        treat = np.full(250, 0.002) + np.linspace(0, 1e-9, 250)  # B better on net excess
+        rng = np.random.default_rng(4)
+        base = rng.standard_normal(250) * 0.01
+        treat = base + 0.002 + rng.standard_normal(250) * 0.001  # B better on net excess
         with TemporaryDirectory() as tmp:
             a, b = self._runs(tmp, base, treat, ic_a=0.05, ic_b=0.01)  # but B worse on IC
             r = compare_runs(a, b, pre_registration_ref=_PREREG)
         self.assertEqual(r.verdict, "treatment_better")
         self.assertIsNotNone(r.contradiction_flag)
+
+    def test_block_override_near_cap_gives_no_spurious_verdict(self) -> None:
+        # adversarial sweep #10: a large block_length override on a short, EXACTLY zero-mean
+        # paired diff must NOT manufacture a directional verdict. The circular (wrap-around)
+        # bootstrap keeps E[boot]==sample mean, so a ~0 point estimate yields a CI straddling
+        # 0 (indistinguishable), not the truncation-bias-driven treatment_better the old
+        # non-circular sampler produced.
+        rng = np.random.default_rng(123)
+        n = 68
+        base = rng.standard_normal(n) * 0.01
+        diff = rng.standard_normal(n) * 0.01
+        diff = diff - diff.mean()          # exactly zero-mean paired difference
+        with TemporaryDirectory() as tmp:
+            a, b = self._runs(tmp, base, base + diff)
+            r = compare_runs(a, b, pre_registration_ref=_PREREG, block_length=n // 2)
+        self.assertEqual(r.verdict, "indistinguishable")
 
     def test_zero_difference_direction_is_flat(self) -> None:
         # identical runs -> paired diff == 0 -> indistinguishable, and the direction
@@ -185,8 +220,9 @@ class VerdictTests(unittest.TestCase):
     def test_serialized_output_carries_study_protocol_caveat(self) -> None:
         with TemporaryDirectory() as tmp:
             d = _dates(120)
-            a = _write_run(Path(tmp) / "A", [_fold(d, np.zeros(120))])
-            b = _write_run(Path(tmp) / "B", [_fold(d, np.full(120, 0.001))])
+            rng = np.random.default_rng(5)  # real dispersion -> a non-degenerate CI
+            a = _write_run(Path(tmp) / "A", [_fold(d, rng.standard_normal(120) * 0.01)])
+            b = _write_run(Path(tmp) / "B", [_fold(d, rng.standard_normal(120) * 0.01)])
             out = compare_runs(a, b, pre_registration_ref=_PREREG).to_dict()
         joined = " ".join(out["caveats"]).lower()
         self.assertIn("study-protocol", joined)
@@ -260,6 +296,126 @@ class FailLoudTests(unittest.TestCase):
         msg = str(cm.exception).lower()
         self.assertIn("non-comparable", msg)
         self.assertIn("re-run", msg)
+
+    def test_too_small_n_boot_raises(self) -> None:
+        # below MIN_N_BOOT the percentile CI is unstable, and n_boot=1 gives se=0/lo==hi
+        # -> a zero-uncertainty point-estimate verdict. Refuse up front.
+        with TemporaryDirectory() as tmp:
+            d = _dates(60)
+            a = _write_run(Path(tmp) / "A", [_fold(d, np.arange(60) * 0.001)])
+            b = _write_run(Path(tmp) / "B", [_fold(d, np.arange(60) * 0.002)])
+            for bad in (1, 999):
+                with self.assertRaises(ComparisonError):
+                    compare_runs(a, b, pre_registration_ref=_PREREG, n_boot=bad)
+
+    def test_constant_paired_diff_refuses_directional_verdict(self) -> None:
+        # invariant backstop: a perfectly-constant paired diff has zero bootstrap variance
+        # -> a zero-width CI; a directional verdict off it would be a point-estimate winner.
+        # Refuse whatever the cause (closes the degenerate-CI class the per-knob guards
+        # address individually — block_length cap, n_boot floor).
+        d = _dates(60)
+        with TemporaryDirectory() as tmp:
+            a = _write_run(Path(tmp) / "A", [_fold(d, np.zeros(60))])
+            b = _write_run(Path(tmp) / "B", [_fold(d, np.full(60, 0.002))])  # constant +diff
+            with self.assertRaises(ComparisonError):
+                compare_runs(a, b, pre_registration_ref=_PREREG)
+
+    def test_near_constant_diff_with_tiny_jitter_refused(self) -> None:
+        # THE round-7 P0 (adversarial sweep): a large constant offset + an imperceptible
+        # ramp defeats a RELATIVE-to-|ann| width floor (|ann| from the offset, CI width from
+        # the jitter — two independent knobs). The ABSOLUTE width floor refuses it: the CI
+        # is a reported point regardless of how large the offset is.
+        n = 60
+        d = _dates(n)
+        with TemporaryDirectory() as tmp:
+            a = _write_run(Path(tmp) / "A", [_fold(d, np.zeros(n))])
+            b = _write_run(Path(tmp) / "B", [_fold(d, 0.002 + np.linspace(0, 1e-9, n))])
+            with self.assertRaises(ComparisonError):
+                compare_runs(a, b, pre_registration_ref=_PREREG)
+
+    def test_raw_nan_literal_rejected_at_load(self) -> None:
+        # a raw JSON NaN token (json.load accepts it by default) must be refused at the
+        # boundary, not silently poison the paired diff into a fabricated verdict.
+        d = _dates(30)
+        ds = {
+            "excess_return": {d[0]: float("nan"), **{dd: 0.01 for dd in d[1:]}},
+            "components": {"return": {dd: 0.0115 for dd in d},
+                           "bench": {dd: 0.001 for dd in d},
+                           "cost": {dd: 0.0005 for dd in d}},
+            "ic": {"1": {dd: 0.02 for dd in d}},
+        }
+        with TemporaryDirectory() as tmp:
+            root = _write_single_fold(Path(tmp) / "A", ds)
+            with self.assertRaises(ComparisonError):
+                load_run_daily_series(root)
+
+    def test_malformed_daily_series_shapes_raise_comparison_error(self) -> None:
+        # present-but-malformed substrate must fail loud with ComparisonError, never a bare
+        # KeyError/TypeError/AttributeError/ValueError (adversarial sweep, findings #3-#7).
+        d = _dates(30)
+        good_ret = {dd: 0.0115 for dd in d}
+        good_comp = {"return": good_ret, "bench": {dd: 0.001 for dd in d},
+                     "cost": {dd: 0.0005 for dd in d}}
+        good_xr = {dd: 0.01 for dd in d}
+        cases: list[object] = [
+            [],                                                        # non-dict daily_series
+            {"components": good_comp},                                 # missing excess_return
+            {"excess_return": good_xr},                                # missing components
+            {"excess_return": good_xr, "components": {"return": good_ret}},  # no bench
+            {"excess_return": good_xr, "components": good_comp,
+             "ic": {"1": [0.02, 0.03]}},                               # ic['1'] not a mapping
+            {"excess_return": {dd: "oops" for dd in d},
+             "components": good_comp},                                 # non-numeric value
+        ]
+        for k, ds in enumerate(cases):
+            with TemporaryDirectory() as tmp:
+                root = _write_single_fold(Path(tmp) / f"A{k}", ds)
+                with self.assertRaises(ComparisonError):
+                    load_run_daily_series(root)
+
+    def test_finite_excess_missing_from_bench_channel_raises(self) -> None:
+        # a finite-excess date absent from components.bench -> actionable ComparisonError
+        # (naming the channel), not a bare KeyError on the raw date string.
+        d = _dates(30)
+        ds = {
+            "excess_return": {dd: 0.01 for dd in d},
+            "components": {"return": {dd: 0.0115 for dd in d},
+                           "bench": {dd: 0.001 for dd in d[:-1]},   # last date absent
+                           "cost": {dd: 0.0005 for dd in d}},
+            "ic": {"1": {dd: 0.02 for dd in d}},
+        }
+        with TemporaryDirectory() as tmp:
+            root = _write_single_fold(Path(tmp) / "A", ds)
+            with self.assertRaises(ComparisonError) as cm:
+                load_run_daily_series(root)
+        self.assertIn("bench", str(cm.exception).lower())
+
+    def test_leading_null_gap_day_is_not_the_seam_boundary(self) -> None:
+        # a fold whose FIRST serialized day is a null gap day: the seam boundary must be
+        # the first FINITE (realized) day. Recording the null date would exclude nothing
+        # from the seam and understate its impact (codex P2, round 7).
+        d = _dates(30)
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "A"
+            root.mkdir(parents=True)
+            (root / "walk_forward_report.json").write_text(json.dumps({"num_folds": 1}))
+            excess: dict[str, float | None] = {d[0]: None}   # leading gap day (null)
+            excess.update({dd: 0.01 for dd in d[1:]})        # realized days
+            ds = {
+                "excess_return": excess,
+                "components": {
+                    "return": {dd: 0.0115 for dd in d},
+                    "bench": {dd: 0.001 for dd in d},
+                    "cost": {dd: 0.0005 for dd in d},
+                },
+                "ic": {"1": {dd: 0.02 for dd in d}},
+            }
+            (root / "fold_00_report.json").write_text(json.dumps(
+                {"fold_index": 0, "daily_series": ds,
+                 "schema_version": FOLD_REPORT_SCHEMA_VERSION, "metrics": {}}))
+            rs = load_run_daily_series(root)
+        self.assertNotIn(d[0], rs.excess)               # the null day is not realized
+        self.assertEqual(rs.fold_boundary_dates, [d[1]])  # boundary = first finite, not d[0]
 
 
 if __name__ == "__main__":
