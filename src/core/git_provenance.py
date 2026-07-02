@@ -11,7 +11,9 @@ which engine produced the run.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,3 +48,35 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
     except (OSError, subprocess.SubprocessError):
         dirty = None
     return {"commit": commit, "dirty": dirty}
+
+
+def resolve_run_git_provenance(
+    per_fold: Sequence[Mapping[str, Any] | None],
+) -> dict[str, str | bool | None]:
+    """Resolve ONE report-level provenance from per-fold provenance.
+
+    A resumed walk-forward run can mix folds produced by DIFFERENT commits
+    (folds generated at commit A, run resumed at commit B). Stamping the
+    current invocation's HEAD on such a report would let a pre-registration
+    plan committed between A and B falsely appear to predate the fold
+    artifacts (codex P1 on #313, round 4). So:
+
+    - every fold agrees on one known commit -> that commit; ``dirty`` is True
+      if ANY fold was dirty, None if any fold's dirty is unknown, else False;
+    - mixed commits, or ANY fold with unknown provenance (a legacy manifest
+      written before provenance stamping, or a capture that failed) -> BOTH
+      fields None. The ancestor gate then fails loud on the run instead of
+      trusting a commit that did not produce every fold. NEVER guesses.
+    """
+    commits = {(p or {}).get("commit") for p in per_fold}
+    if len(commits) != 1 or None in commits:
+        return {"commit": None, "dirty": None}
+    dirties = [(p or {}).get("dirty") for p in per_fold]
+    dirty: bool | None
+    if any(d is True for d in dirties):
+        dirty = True
+    elif any(d is None for d in dirties):
+        dirty = None
+    else:
+        dirty = False
+    return {"commit": commits.pop(), "dirty": dirty}
