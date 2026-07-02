@@ -170,6 +170,35 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(r.verdict, "treatment_better")
         self.assertIsNotNone(r.contradiction_flag)
 
+    def test_noisy_ic_difference_does_not_flag_contradiction(self) -> None:
+        # codex round 8: a nonzero-but-NOISY mean-IC gap must NOT be reported as a
+        # contradiction. The IC verdict comes from a paired bootstrap CI (like the net
+        # arbiter); a tiny mean gap swamped by IC noise -> CI straddles 0 -> no flag.
+        rng = np.random.default_rng(21)
+        n = 250
+        d = _dates(n)
+        base_ex = rng.standard_normal(n) * 0.01
+        treat_ex = base_ex + rng.standard_normal(n) * 0.01     # net indistinguishable
+        ic_a = rng.standard_normal(n) * 0.05 + 0.02
+        ic_noise = rng.standard_normal(n) * 0.05
+        ic_noise = ic_noise - ic_noise.mean()                  # zero-mean IC noise
+        ic_b = ic_a + 0.001 + ic_noise                         # tiny +mean gap, noise-swamped
+
+        def _ds(ex: np.ndarray[Any, Any], icv: np.ndarray[Any, Any]) -> dict[str, object]:
+            return {
+                "excess_return": {d[i]: float(ex[i]) for i in range(n)},
+                "components": {"return": {d[i]: float(ex[i]) + 0.0015 for i in range(n)},
+                               "bench": {di: 0.001 for di in d},
+                               "cost": {di: 0.0005 for di in d}},
+                "ic": {"1": {d[i]: float(icv[i]) for i in range(n)}},
+            }
+        with TemporaryDirectory() as tmp:
+            a = _write_single_fold(Path(tmp) / "A", _ds(base_ex, ic_a))
+            b = _write_single_fold(Path(tmp) / "B", _ds(treat_ex, ic_b))
+            r = compare_runs(a, b, pre_registration_ref=_PREREG)
+        self.assertEqual(r.diagnostics["ic_verdict"], "indistinguishable")
+        self.assertIsNone(r.contradiction_flag)  # OLD code (raw mean sign) would flag this
+
     def test_block_override_near_cap_gives_no_spurious_verdict(self) -> None:
         # adversarial sweep #10: a large block_length override on a short, EXACTLY zero-mean
         # paired diff must NOT manufacture a directional verdict. The circular (wrap-around)

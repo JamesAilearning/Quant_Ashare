@@ -272,10 +272,13 @@ def estimate_block_length(diff: np.ndarray[Any, Any]) -> int:
 
 
 def paired_block_bootstrap(
-    diff: np.ndarray[Any, Any], block_len: int, n_boot: int = DEFAULT_N_BOOT, seed: int = DEFAULT_SEED,
+    diff: np.ndarray[Any, Any], block_len: int, n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED, scale: float = _ANN,
 ) -> tuple[float, float, float, float]:
-    """Annualized mean of the paired daily difference + moving-block bootstrap SE / 95%
-    CI. Block resampling honours autocorrelation (an i.i.d. bootstrap understates SE).
+    """``scale``-weighted mean of the paired daily difference + moving-block bootstrap SE /
+    95% CI. ``scale`` is _ANN for a daily RETURN difference (annualized) and 1.0 for a
+    daily IC difference (native units). Block resampling honours autocorrelation (an
+    i.i.d. bootstrap understates SE).
 
     CIRCULAR (wrap-around) blocks: every observation is included with equal expected
     frequency, so E[boot mean] == the sample mean EXACTLY. A non-circular sampler with the
@@ -293,10 +296,10 @@ def paired_block_bootstrap(
     offs = np.arange(block_len)
     idx = (starts[:, :, None] + offs[None, None, :]).reshape(n_boot, n_blocks * block_len)[:, :n]
     idx %= n  # circular: unbiased for the sample mean regardless of block_len | n
-    boot_ann = diff[idx].mean(axis=1) * _ANN
-    ann = float(diff.mean() * _ANN)
-    lo, hi = (float(x) for x in np.percentile(boot_ann, [2.5, 97.5]))
-    return ann, float(boot_ann.std()), lo, hi
+    boot = diff[idx].mean(axis=1) * scale
+    point = float(diff.mean() * scale)
+    lo, hi = (float(x) for x in np.percentile(boot, [2.5, 97.5]))
+    return point, float(boot.std()), lo, hi
 
 
 # ------------------------------------------------------------------------- compare
@@ -425,6 +428,25 @@ def compare_runs(
     icb = np.array([b.ic[d] for d in ic_dates])
     mean_ic_a = float(ica.mean()) if ica.size else float("nan")
     mean_ic_b = float(icb.mean()) if icb.size else float("nan")
+
+    # IC VERDICT (three-state), from a paired bootstrap CI on the daily IC difference — the
+    # SAME method as the net-excess arbiter, in native IC units (scale=1). A contradiction
+    # must reflect a STATISTICAL disagreement between the two verdicts, NOT a raw mean-IC
+    # gap: mean_ic_b - mean_ic_a is essentially never exactly 0, so keying off its sign
+    # flagged a "contradiction" on virtually every run (especially 'indistinguishable') from
+    # pure IC noise (codex P2, round 8). IC stays a diagnostic; the backtest remains the
+    # arbiter. No degenerate-width refusal here — for a DIAGNOSTIC note a deterministic
+    # nonzero IC gap legitimately favours a side (unlike the primary verdict).
+    ic_verdict = "indistinguishable"
+    ic_diff_ci: tuple[float, float] | None = None
+    if len(ic_dates) >= min_paired_days:
+        ic_blk = estimate_block_length(icb - ica)
+        _, _, ic_lo, ic_hi = paired_block_bootstrap(icb - ica, ic_blk, n_boot, seed, scale=1.0)
+        ic_diff_ci = (round(ic_lo, 6), round(ic_hi, 6))
+        if ic_lo > 0:
+            ic_verdict = "treatment"
+        elif ic_hi < 0:
+            ic_verdict = "baseline"
     diagnostics = {
         "net_ann_diff": ann,
         "gross_ir_baseline": _annualized_ir(ga),
@@ -432,6 +454,8 @@ def compare_runs(
         "mean_ic_baseline": mean_ic_a,
         "mean_ic_treatment": mean_ic_b,
         "n_ic_shared_days": len(ic_dates),
+        "ic_verdict": ic_verdict,          # "treatment" | "baseline" | "indistinguishable"
+        "ic_diff_ci95": ic_diff_ci,        # 95% CI of mean(IC_b - IC_a); None if too few days
         "direction": (
             "undetermined (non-finite)" if not math.isfinite(ann)
             else "treatment>baseline" if ann > 0
@@ -445,30 +469,28 @@ def compare_runs(
         ),
     }
 
-    # Backtest is authoritative, but surface ANY backtest-vs-IC divergence — INCLUDING
-    # when the net is indistinguishable yet IC clearly favours a side (that is precisely
-    # the masked-divergence case this ruler exists to expose), not only when the net is
-    # conclusive.
-    ic_diff = mean_ic_b - mean_ic_a
+    # Backtest is authoritative, but surface a STATISTICAL backtest-vs-IC divergence —
+    # INCLUDING when the net is indistinguishable yet the IC verdict is directional (the
+    # masked-divergence case this ruler exists to expose). Keyed off ic_verdict (a CI that
+    # excludes 0), never a raw mean-IC gap.
+    _ic_ci_str = f"IC 95% CI {ic_diff_ci} excludes 0"
     contradiction = None
-    if math.isfinite(ic_diff) and ic_diff != 0.0:
-        ic_side = "treatment" if ic_diff > 0 else "baseline"
-        if verdict == "treatment_better" and ic_diff < 0:
-            contradiction = (
-                f"backtest says treatment_better but IC favours BASELINE (mean_ic diff "
-                f"{ic_diff:+.4f}); backtest is authoritative, divergence surfaced."
-            )
-        elif verdict == "treatment_worse" and ic_diff > 0:
-            contradiction = (
-                f"backtest says treatment_worse but IC favours TREATMENT (mean_ic diff "
-                f"{ic_diff:+.4f}); backtest is authoritative, divergence surfaced."
-            )
-        elif verdict == "indistinguishable":
-            contradiction = (
-                f"net excess is INDISTINGUISHABLE but IC favours {ic_side} (mean_ic diff "
-                f"{ic_diff:+.4f}); the net headline may hide an IC signal — investigate, "
-                "do NOT read as 'equivalent'."
-            )
+    if ic_verdict == "baseline" and verdict == "treatment_better":
+        contradiction = (
+            f"backtest says treatment_better but the IC verdict favours BASELINE "
+            f"({_ic_ci_str}); backtest is authoritative, divergence surfaced."
+        )
+    elif ic_verdict == "treatment" and verdict == "treatment_worse":
+        contradiction = (
+            f"backtest says treatment_worse but the IC verdict favours TREATMENT "
+            f"({_ic_ci_str}); backtest is authoritative, divergence surfaced."
+        )
+    elif ic_verdict != "indistinguishable" and verdict == "indistinguishable":
+        contradiction = (
+            f"net excess is INDISTINGUISHABLE but the IC verdict favours {ic_verdict} "
+            f"({_ic_ci_str}); the net headline may hide an IC signal — investigate, do NOT "
+            "read as 'equivalent'."
+        )
 
     # seam bound: pooled net IR with fold-boundary days excluded vs included, for BOTH
     # runs — a large baseline seam can drive the comparison as much as a treatment one.
