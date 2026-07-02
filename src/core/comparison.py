@@ -1,0 +1,550 @@
+"""Run-comparison ruler (add-run-comparison-methodology, PR-2).
+
+Compares walk-forward run B against baseline A on their PERSISTED per-fold daily
+series (PR-1's ``daily_series`` block) — offline, CPU, no replay, no qlib, no bundle.
+
+The point (see the openspec proposal): the old comparison averaged K per-fold scalar
+IRs, whose CI is dominated by between-fold variance (the SE≈0.42 noise floor). This
+ruler instead:
+
+* **Pooled IR** over the TRUE-concatenated daily excess of the whole WF study protocol
+  (includes the fold-boundary model switches + each fold starting from cash — it is the
+  study protocol's realized IR, NOT a continuous production strategy's).
+* **Paired moving-block bootstrap** of the daily A-vs-B excess difference on the shared
+  dates (common market moves cancel), with an ACF-calibrated block length; annualized
+  difference + 95% CI.
+* A **fail-loud three-state verdict** ("indistinguishable at this power" when the CI
+  straddles 0 — never a point-estimate winner), and when indistinguishable it MANDATES
+  a diagnostic breakdown (gross vs net, IC, direction) so an "equally good, pick either"
+  misread (the n_drop trap) cannot happen.
+* Backtest excess is the primary arbiter; a disagreeing IC verdict is FLAGGED.
+* Every output carries its limitation envelope (regime heterogeneity, block-length
+  provenance, date-overlap fraction) and the pre-registration reference.
+
+FAIL-LOUD everywhere: a run whose folds lack the ``daily_series`` substrate, or a
+date-overlap below the floor, refuses a verdict rather than fabricating one.
+"""
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from src.core.walk_forward.aggregate import FOLD_REPORT_SCHEMA_VERSION
+
+_ANN = 252.0
+DEFAULT_OVERLAP_FLOOR = 0.90
+DEFAULT_MIN_PAIRED_DAYS = 20   # a paired bootstrap on fewer days gives a ~zero-width CI
+DEFAULT_N_BOOT = 10000
+MIN_N_BOOT = 1000  # below this a percentile CI is unstable / can collapse to a point
+DEFAULT_SEED = 42
+_MAX_BLOCK = 40
+# CI (and se) are serialized at 6 decimals; a 95% CI whose annualized width is at/below the
+# reporting resolution is a REPORTED point and can never back a directional verdict. Real
+# daily-diff bootstrap widths are O(1e-2..1) — ~4+ orders above this floor — so it never
+# false-positives on real data, and it is ABSOLUTE (not relative to |ann|) so a large
+# constant offset cannot inflate past it (the round-7 relative floor was defeated that way).
+_MIN_CI_WIDTH = 1e-6
+_SERIALIZE_DP = 6
+
+REGIME_CAVEAT = (
+    "CI narrows the SAMPLING SE (pooled + paired + block bootstrap for autocorrelation) "
+    "but does NOT model regime heterogeneity — a COVID-2020 fold vs a calm fold carry "
+    "structural uncertainty the bootstrap cannot resample away. A narrow CI is not "
+    "certainty; a single-period OOS can leave a small real edge 'indistinguishable'."
+)
+
+
+class ComparisonError(RuntimeError):
+    """Raised when a comparison cannot be made honestly (missing substrate, too little
+    date overlap, missing pre-registration) — fail-loud, never a fabricated verdict."""
+
+
+@dataclass(frozen=True)
+class RunSeries:
+    """A run's concatenated daily series, loaded from its per-fold reports."""
+    run_dir: str
+    excess: dict[str, float]          # net excess = return - bench - cost
+    gross: dict[str, float]           # gross excess = return - bench
+    ic: dict[str, float]              # daily 1d IC
+    fold_boundary_dates: list[str]    # first FINITE date of each fold (for the seam bound)
+
+
+@dataclass(frozen=True)
+class RunComparison:
+    baseline_dir: str
+    treatment_dir: str
+    n_paired_days: int
+    overlap_fraction: float
+    block_length: int
+    block_length_source: str
+    # pooled IR (study-protocol, true concatenation)
+    pooled_net_ir_baseline: float
+    pooled_net_ir_treatment: float
+    pooled_gross_ir_baseline: float
+    pooled_gross_ir_treatment: float
+    # paired inferential result on NET excess (the primary arbiter)
+    paired_net_ann_diff: float
+    paired_net_se: float
+    paired_net_ci95: tuple[float, float]
+    verdict: str                      # "treatment_better" | "treatment_worse" | "indistinguishable"
+    # diagnostics (ALWAYS emitted; the mandated companion of an indistinguishable verdict)
+    diagnostics: dict[str, Any]
+    contradiction_flag: str | None
+    # honesty envelope
+    seam_bound: dict[str, float]
+    pre_registration_ref: str
+    caveats: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+# --------------------------------------------------------------------------- load
+
+def _reject_nonfinite(token: str) -> float:
+    # json.load accepts the bare literals NaN / Infinity / -Infinity by default. A gap day
+    # MUST be serialized as JSON null, so a non-finite literal means a corrupt / legacy /
+    # non-canonical producer (the canonical one uses allow_nan=False). Refuse at the
+    # boundary rather than let a NaN poison the paired diff into a fabricated verdict.
+    raise ComparisonError(
+        f"Non-finite JSON literal {token!r} in a fold report — a gap day must be null, not "
+        "NaN/Infinity. This report was written by a non-canonical producer and is "
+        "NON-COMPARABLE; re-run the walk-forward for this config."
+    )
+
+
+def _read_json(p: Path) -> dict[str, Any]:
+    with p.open(encoding="utf-8") as f:
+        loaded: dict[str, Any] = json.load(f, parse_constant=_reject_nonfinite)
+        return loaded
+
+
+def load_run_daily_series(run_dir: str | Path) -> RunSeries:
+    """Load + concatenate a run's per-fold ``daily_series``. FAIL-LOUD, actionably, if
+    any fold predates the substrate (the message names the run and how to backfill)."""
+    run = Path(run_dir)
+    agg = run / "walk_forward_report.json"
+    if not agg.is_file():
+        raise ComparisonError(f"No walk_forward_report.json under {run} — not a run dir.")
+    n_folds = int(_read_json(agg).get("num_folds", 0))
+    if n_folds <= 0:
+        raise ComparisonError(f"Run {run} reports num_folds={n_folds}.")
+
+    excess: dict[str, float] = {}
+    gross: dict[str, float] = {}
+    ic: dict[str, float] = {}
+    boundaries: list[str] = []
+    for i in range(n_folds):
+        fp = run / f"fold_{i:02d}_report.json"
+        if not fp.is_file():
+            raise ComparisonError(f"Run {run}: missing fold report {fp.name}.")
+        rep = _read_json(fp)
+        ds = rep.get("daily_series")
+        if ds is None or rep.get("schema_version") != FOLD_REPORT_SCHEMA_VERSION:
+            raise ComparisonError(
+                f"Run {run}: fold {i} lacks the daily_series substrate "
+                f"(schema_version={rep.get('schema_version')!r}, want "
+                f"{FOLD_REPORT_SCHEMA_VERSION!r}). This run pre-dates the comparison "
+                "contract and is NON-COMPARABLE. Backfill by re-running the walk-forward "
+                "for this config (the daily series cannot be reconstructed post-hoc)."
+            )
+        # A present-but-MALFORMED daily_series (non-dict, missing components/return/bench/
+        # excess_return, a per-date channel hole, a non-numeric or non-mapping value) is the
+        # same "cannot compare honestly" class as a missing one — it must fail loud with an
+        # actionable message, never a bare KeyError/TypeError/AttributeError/ValueError. The
+        # explicit checks below name the exact defect; the wrapper is the catch-all backstop.
+        try:
+            if not isinstance(ds, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series is {type(ds).__name__}, not an "
+                    "object — corrupt/partial fold report. NON-COMPARABLE; re-run the "
+                    "walk-forward for this config."
+                )
+            comp = ds.get("components")
+            xr = ds.get("excess_return")
+            if not isinstance(comp, dict) or not isinstance(xr, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series is malformed — 'components' and "
+                    "'excess_return' must both be objects. NON-COMPARABLE; re-run the "
+                    "walk-forward for this config."
+                )
+            ret, bench = comp.get("return"), comp.get("bench")
+            if not isinstance(ret, dict) or not isinstance(bench, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series.components is missing/ malformed "
+                    "'return' or 'bench'. NON-COMPARABLE; re-run the walk-forward."
+                )
+            fold_dates = sorted(xr)
+            fold_first_finite: str | None = None
+            for d in fold_dates:
+                v = xr[d]
+                if v is None:  # gap day (canonical null) — not part of the realized series
+                    continue
+                if fold_first_finite is None:
+                    # the seam boundary is the fold's first REALIZED day (model switch +
+                    # start from cash), NOT fold_dates[0] — if the producer emits null for a
+                    # leading gap day, that date is absent from `excess`, so recording it as
+                    # the boundary would exclude nothing and understate the seam (codex P2).
+                    fold_first_finite = d
+                if d in excess:
+                    # overlapping test windows share an OOS date across folds; collapsing by
+                    # date would silently drop one fold's realized day and shift IR/verdict.
+                    # Refuse rather than pick a winner arbitrarily (codex P2).
+                    raise ComparisonError(
+                        f"Run {run}: duplicate OOS date {d} across folds (overlapping test "
+                        "windows). Pooling/pairing by date would drop a realized fold-day; "
+                        "refuse. Use non-overlapping test windows for run comparison."
+                    )
+                if d not in ret or d not in bench:
+                    missing = "return" if d not in ret else "bench"
+                    raise ComparisonError(
+                        f"Run {run}: fold {i} date {d} has a finite excess_return but is "
+                        f"absent from components.{missing} — cannot compute gross excess. "
+                        "The report is malformed/legacy (the canonical producer keeps "
+                        "excess finite only when the date is in return AND bench). Re-run."
+                    )
+                excess[d] = float(v)
+                gross[d] = float(ret[d]) - float(bench[d])
+            if fold_first_finite is not None:
+                boundaries.append(fold_first_finite)
+            ic_block = ds.get("ic", {})
+            ic_1d = ic_block.get("1", {}) if isinstance(ic_block, dict) else {}
+            if not isinstance(ic_1d, dict):
+                raise ComparisonError(
+                    f"Run {run}: fold {i} daily_series.ic['1'] is {type(ic_1d).__name__}, "
+                    "expected a {date: value} mapping. Non-canonical/corrupt writer; re-run."
+                )
+            for d, v in ic_1d.items():
+                if v is not None:
+                    ic[d] = float(v)
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
+            raise ComparisonError(
+                f"Run {run}: fold {i} daily_series is malformed ({exc!r}). NON-COMPARABLE "
+                "(corrupt / non-canonical / hand-edited report); re-run the walk-forward "
+                "for this config to regenerate the daily series."
+            ) from exc
+    if not excess:
+        raise ComparisonError(f"Run {run}: no finite daily excess across any fold.")
+    return RunSeries(str(run), excess, gross, ic, boundaries)
+
+
+# ---------------------------------------------------------------------- statistics
+
+def _annualized_ir(values: np.ndarray[Any, Any]) -> float:
+    """Annualized IR of a daily series: mean/std * sqrt(252). NaN if <2 pts or zero std."""
+    v = values[np.isfinite(values)]
+    if v.size < 2:
+        return float("nan")
+    sd = float(v.std(ddof=1))
+    # Guard a degenerate (constant) series: exact-zero std, OR a numerically-tiny std
+    # from float error on identical-ish values (which would otherwise divide into an
+    # absurd IR). 1e-15 sits far below any real daily-excess std (~1e-2).
+    if not math.isfinite(sd) or sd <= 1e-15:
+        return float("nan")
+    return float(v.mean() / sd * math.sqrt(_ANN))
+
+
+def estimate_block_length(diff: np.ndarray[Any, Any]) -> int:
+    """Moving-block length = the autocorrelation-DECAY length of the difference series
+    (first lag whose |ACF| falls below the ~2/sqrt(n) significance band), NOT a
+    holding-period proxy. Clamped to [1, _MAX_BLOCK]."""
+    n = diff.size
+    if n < 8:
+        return 1
+    x = diff - diff.mean()
+    denom = float((x * x).sum())
+    if denom == 0.0:
+        return 1
+    thresh = 2.0 / math.sqrt(n)
+    for lag in range(1, min(n // 2, _MAX_BLOCK)):
+        ac = float((x[:-lag] * x[lag:]).sum()) / denom
+        if abs(ac) < thresh:
+            return max(lag, 1)
+    # decay never observed within the checked lags -> the series is persistently
+    # autocorrelated, so the block should be LONGEST (the cap), not a mid value; a short
+    # block here would understate the bootstrap SE and overstate confidence (codex P1).
+    return min(n // 2, _MAX_BLOCK)
+
+
+def paired_block_bootstrap(
+    diff: np.ndarray[Any, Any], block_len: int, n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED, scale: float = _ANN,
+) -> tuple[float, float, float, float]:
+    """``scale``-weighted mean of the paired daily difference + moving-block bootstrap SE /
+    95% CI. ``scale`` is _ANN for a daily RETURN difference (annualized) and 1.0 for a
+    daily IC difference (native units). Block resampling honours autocorrelation (an
+    i.i.d. bootstrap understates SE).
+
+    CIRCULAR (wrap-around) blocks: every observation is included with equal expected
+    frequency, so E[boot mean] == the sample mean EXACTLY. A non-circular sampler with the
+    ``[:, :n]`` tail truncation over-weights early within-block positions, biasing the
+    bootstrap distribution off the sample mean; on a short series with a large (override)
+    block that shift can push BOTH CI endpoints to one side of 0 while the point estimate
+    sits at 0 — a spurious directional verdict (the verdict side is taken from the CI). The
+    circular sampler removes that bias, so a directional verdict requires the POINT estimate
+    itself to be away from 0, keeping verdict and point estimate consistent."""
+    n = diff.size
+    block_len = max(1, min(block_len, n))
+    rng = np.random.default_rng(seed)
+    n_blocks = int(math.ceil(n / block_len))
+    starts = rng.integers(0, n, size=(n_boot, n_blocks))  # any start; wrap-around below
+    offs = np.arange(block_len)
+    idx = (starts[:, :, None] + offs[None, None, :]).reshape(n_boot, n_blocks * block_len)[:, :n]
+    idx %= n  # circular: unbiased for the sample mean regardless of block_len | n
+    boot = diff[idx].mean(axis=1) * scale
+    point = float(diff.mean() * scale)
+    lo, hi = (float(x) for x in np.percentile(boot, [2.5, 97.5]))
+    return point, float(boot.std()), lo, hi
+
+
+# ------------------------------------------------------------------------- compare
+
+def _aligned(a: dict[str, float], b: dict[str, float]) -> tuple[list[str], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    dates = sorted(set(a) & set(b))
+    return dates, np.array([a[d] for d in dates]), np.array([b[d] for d in dates])
+
+
+def compare_runs(
+    baseline_dir: str | Path,
+    treatment_dir: str | Path,
+    *,
+    pre_registration_ref: str,
+    overlap_floor: float = DEFAULT_OVERLAP_FLOOR,
+    min_paired_days: int = DEFAULT_MIN_PAIRED_DAYS,
+    block_length: int | None = None,
+    n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED,
+) -> RunComparison:
+    """Compare treatment (B) vs baseline (A). FAIL-LOUD on missing substrate, on too
+    little date overlap, or on a missing pre-registration reference."""
+    if not str(pre_registration_ref or "").strip():
+        raise ComparisonError(
+            "A pre-registration reference (the committed hypothesis's git commit hash) "
+            "is REQUIRED — design-time control of multiple comparisons. Refusing to run "
+            "an unregistered comparison."
+        )
+    if n_boot < MIN_N_BOOT:
+        # a too-small n_boot makes the percentile CI unstable, and at the limit (n_boot=1)
+        # se=0 and lo==hi, so the verdict would collapse into a zero-uncertainty point
+        # winner — the same fail-loud violation as a full-length block (codex P2).
+        raise ComparisonError(
+            f"n_boot={n_boot} is below the floor MIN_N_BOOT={MIN_N_BOOT}: too few "
+            "resamples for a stable 95% percentile CI (at the limit se=0, lo==hi, faking a "
+            "zero-uncertainty verdict). Pass n_boot>=1000 or omit it for the default."
+        )
+    a = load_run_daily_series(baseline_dir)
+    b = load_run_daily_series(treatment_dir)
+
+    # date alignment on NET excess, overlap = intersection / SHORTER series
+    dates, ea, eb = _aligned(a.excess, b.excess)
+    shorter = min(len(a.excess), len(b.excess))
+    overlap = (len(dates) / shorter) if shorter else 0.0
+    if overlap < overlap_floor:
+        raise ComparisonError(
+            f"Date overlap {overlap:.1%} (intersection {len(dates)} / shorter {shorter}) "
+            f"is below the floor {overlap_floor:.0%}: the runs barely share dates, so a "
+            "paired comparison would be on a biased subset. Refusing a verdict."
+        )
+    if len(dates) < min_paired_days:
+        raise ComparisonError(
+            f"Only {len(dates)} shared finite day(s) (< min_paired_days={min_paired_days}): "
+            "too few for a paired bootstrap. A 1-2 day 'CI' is ~zero-width and would declare "
+            "a spurious winner from a point estimate with no estimable sampling uncertainty. "
+            "Refusing a verdict — use longer runs."
+        )
+
+    diff = eb - ea
+    if block_length is not None:
+        # reject an out-of-range override up front, so the RECORDED block_length always
+        # equals the one the bootstrap actually used (the bootstrap clamps internally;
+        # recording the un-clamped override would make the CI non-reproducible — codex P2).
+        cap = diff.size // 2
+        if not (1 <= block_length <= cap):
+            raise ComparisonError(
+                f"block_length override {block_length} is out of range [1, {cap}] "
+                f"(<= n_paired//2). A block near the full sample length ({diff.size}) "
+                "collapses the (circular) moving-block bootstrap toward rotations of the "
+                "whole sample — a near-zero-width CI that would fake a point-estimate "
+                "verdict (codex P2). Pass a smaller value or omit it for the ACF default."
+            )
+        blk, blk_src = block_length, "operator-override"
+    else:
+        blk, blk_src = estimate_block_length(diff), "acf-decay"
+    ann, se, lo, hi = paired_block_bootstrap(diff, blk, n_boot, seed)
+
+    # Non-finite guard, UNGATED by the verdict (defense-in-depth): a NaN anywhere in the
+    # paired arm makes ann/lo/hi NaN, and `nan > 0` / `nan < 0` are both False, so the
+    # verdict would silently fall to 'indistinguishable' — a fabricated verdict on
+    # non-comparable data. (Ingestion already rejects non-finite literals; this is the
+    # backstop for any residual computational NaN.) A NaN CI is 'no CI', not 'straddles 0'.
+    if not (math.isfinite(ann) and math.isfinite(lo) and math.isfinite(hi)):
+        raise ComparisonError(
+            f"Non-finite paired result (ann={ann!r}, ci95=({lo!r}, {hi!r})) — a NaN in the "
+            "paired difference makes an honest comparison impossible. Refusing a verdict."
+        )
+
+    # verdict SIDE comes from the CI, NOT the point estimate. With the circular block
+    # sampler the CI is centered (in expectation) on the sample mean, but a directional
+    # verdict must still never contradict its own reported CI (codex P2).
+    if lo > 0:
+        verdict = "treatment_better"
+    elif hi < 0:
+        verdict = "treatment_worse"
+    else:
+        verdict = "indistinguishable"
+
+    # Invariant backstop closing the whole degenerate-CI class: a DIRECTIONAL verdict must
+    # rest on a CI with real width. The floor is ABSOLUTE (annualized), tied to the 6-dp
+    # serialization resolution — a CI narrower than what we can even print is a reported
+    # point. This is robust to the round-7 hole (a relative-to-|ann| floor that a large
+    # constant offset inflated past while the true width stayed ~machine-epsilon): a
+    # near-constant diff (huge offset + imperceptible jitter) has width << _MIN_CI_WIDTH and
+    # is refused regardless of |ann|. Real bootstrap widths are O(1e-2..1), ~4+ orders above.
+    # The per-knob guards above (block_length cap, n_boot floor) still fail earlier with
+    # actionable messages; this catches ANY residual path. The indistinguishable case (CI
+    # straddles 0) is NOT refused.
+    if verdict != "indistinguishable" and (hi - lo) <= _MIN_CI_WIDTH:
+        raise ComparisonError(
+            f"Degenerate CI: verdict '{verdict}' would rest on a CI of annualized width "
+            f"{hi - lo:.2e} (ci95=({lo!r}, {hi!r}), se={se!r}), at/below the reporting "
+            f"resolution {_MIN_CI_WIDTH:.0e} — a REPORTED point, no estimable sampling "
+            "uncertainty. This means a (near-)constant paired difference or too few paired "
+            "days. Refusing a point-estimate winner; use varying, sufficient daily series."
+        )
+
+    # diagnostics (ALWAYS present; mandated companion of an indistinguishable verdict).
+    # gross AND IC are measured over the SAME shared comparison dates as the net paired
+    # test — otherwise out-of-comparison tail dates (the label-horizon case) could shift
+    # the mean IC and flip the contradiction flag on dates that were never compared.
+    ga = np.array([a.gross[d] for d in dates])
+    gb = np.array([b.gross[d] for d in dates])
+    ic_dates = [d for d in dates if d in a.ic and d in b.ic]
+    ica = np.array([a.ic[d] for d in ic_dates])
+    icb = np.array([b.ic[d] for d in ic_dates])
+    mean_ic_a = float(ica.mean()) if ica.size else float("nan")
+    mean_ic_b = float(icb.mean()) if icb.size else float("nan")
+
+    # IC VERDICT (three-state), from a paired bootstrap CI on the daily IC difference — the
+    # SAME method as the net-excess arbiter, in native IC units (scale=1). A contradiction
+    # must reflect a STATISTICAL disagreement between the two verdicts, NOT a raw mean-IC
+    # gap: mean_ic_b - mean_ic_a is essentially never exactly 0, so keying off its sign
+    # flagged a "contradiction" on virtually every run (especially 'indistinguishable') from
+    # pure IC noise (codex P2, round 8). IC stays a diagnostic; the backtest remains the
+    # arbiter. No degenerate-width refusal here — for a DIAGNOSTIC note a deterministic
+    # nonzero IC gap legitimately favours a side (unlike the primary verdict).
+    ic_verdict = "indistinguishable"
+    ic_diff_ci: tuple[float, float] | None = None
+    if len(ic_dates) >= min_paired_days:
+        ic_blk = estimate_block_length(icb - ica)
+        _, _, ic_lo, ic_hi = paired_block_bootstrap(icb - ica, ic_blk, n_boot, seed, scale=1.0)
+        ic_diff_ci = (round(ic_lo, 6), round(ic_hi, 6))
+        if ic_lo > 0:
+            ic_verdict = "treatment"
+        elif ic_hi < 0:
+            ic_verdict = "baseline"
+    diagnostics = {
+        "net_ann_diff": ann,
+        "gross_ir_baseline": _annualized_ir(ga),
+        "gross_ir_treatment": _annualized_ir(gb),
+        "mean_ic_baseline": mean_ic_a,
+        "mean_ic_treatment": mean_ic_b,
+        "n_ic_shared_days": len(ic_dates),
+        "ic_verdict": ic_verdict,          # "treatment" | "baseline" | "indistinguishable"
+        "ic_diff_ci95": ic_diff_ci,        # 95% CI of mean(IC_b - IC_a); None if too few days
+        "direction": (
+            "undetermined (non-finite)" if not math.isfinite(ann)
+            else "treatment>baseline" if ann > 0
+            else "treatment<baseline" if ann < 0
+            else "flat (treatment==baseline)"
+        ),
+        "note": (
+            "'indistinguishable' means NOT statistically separable at this power — it is "
+            "NOT 'equivalent'. Check the gross-vs-net and IC breakdown for a divergence "
+            "the net-excess headline may mask (the n_drop lesson)."
+        ),
+    }
+
+    # Backtest is authoritative, but surface a STATISTICAL backtest-vs-IC divergence —
+    # INCLUDING when the net is indistinguishable yet the IC verdict is directional (the
+    # masked-divergence case this ruler exists to expose). Keyed off ic_verdict (a CI that
+    # excludes 0), never a raw mean-IC gap.
+    _ic_ci_str = f"IC 95% CI {ic_diff_ci} excludes 0"
+    contradiction = None
+    if ic_verdict == "baseline" and verdict == "treatment_better":
+        contradiction = (
+            f"backtest says treatment_better but the IC verdict favours BASELINE "
+            f"({_ic_ci_str}); backtest is authoritative, divergence surfaced."
+        )
+    elif ic_verdict == "treatment" and verdict == "treatment_worse":
+        contradiction = (
+            f"backtest says treatment_worse but the IC verdict favours TREATMENT "
+            f"({_ic_ci_str}); backtest is authoritative, divergence surfaced."
+        )
+    elif ic_verdict != "indistinguishable" and verdict == "indistinguishable":
+        contradiction = (
+            f"net excess is INDISTINGUISHABLE but the IC verdict favours {ic_verdict} "
+            f"({_ic_ci_str}); the net headline may hide an IC signal — investigate, do NOT "
+            "read as 'equivalent'."
+        )
+
+    # seam bound: pooled net IR with fold-boundary days excluded vs included, for BOTH
+    # runs — a large baseline seam can drive the comparison as much as a treatment one.
+    # Computed over each run's FULL series minus THAT run's own boundary dates, so it
+    # bounds the seam on the reported (full-series) pooled IR, not the intersection
+    # (which would miss boundary/tail effects outside the shared dates — codex P2).
+    def _seam(excess_map: dict[str, float], run_boundaries: set[str]) -> tuple[float, float, float]:
+        full = sorted(excess_map)
+        incl = _annualized_ir(np.array([excess_map[d] for d in full]))
+        excl = _annualized_ir(np.array([excess_map[d] for d in full if d not in run_boundaries]))
+        impact = (excl - incl) if (math.isfinite(incl) and math.isfinite(excl)) else float("nan")
+        return incl, excl, impact
+
+    incl_a, excl_a, imp_a = _seam(a.excess, set(a.fold_boundary_dates))
+    incl_b, excl_b, imp_b = _seam(b.excess, set(b.fold_boundary_dates))
+    seam_bound = {
+        "baseline_pooled_net_ir_incl_boundary": incl_a,
+        "baseline_pooled_net_ir_excl_boundary": excl_a,
+        "baseline_seam_impact": imp_a,
+        "treatment_pooled_net_ir_incl_boundary": incl_b,
+        "treatment_pooled_net_ir_excl_boundary": excl_b,
+        "treatment_seam_impact": imp_b,
+    }
+
+    return RunComparison(
+        baseline_dir=str(baseline_dir),
+        treatment_dir=str(treatment_dir),
+        n_paired_days=len(dates),
+        overlap_fraction=round(overlap, 4),
+        block_length=blk,
+        block_length_source=blk_src,
+        # pooled IR is each run's FULL study-protocol series (all its OOS days), NOT the
+        # paired intersection — the intersection is only for the paired bootstrap. In the
+        # label-horizon tail-loss case, restricting these to shared dates would silently
+        # discard valid run-specific days and misreport the study-protocol IR (codex P1).
+        pooled_net_ir_baseline=_annualized_ir(np.array(list(a.excess.values()))),
+        pooled_net_ir_treatment=_annualized_ir(np.array(list(b.excess.values()))),
+        pooled_gross_ir_baseline=_annualized_ir(np.array(list(a.gross.values()))),
+        pooled_gross_ir_treatment=_annualized_ir(np.array(list(b.gross.values()))),
+        paired_net_ann_diff=round(ann, 6),
+        paired_net_se=round(se, 6),
+        paired_net_ci95=(round(lo, 6), round(hi, 6)),
+        verdict=verdict,
+        diagnostics=diagnostics,
+        contradiction_flag=contradiction,
+        seam_bound=seam_bound,
+        pre_registration_ref=pre_registration_ref,
+        caveats=[
+            REGIME_CAVEAT,
+            "pooled_*_ir are the WF STUDY-PROTOCOL realized IR (each run's full OOS series, "
+            "INCLUDING fold-boundary model switches + each fold starting from cash) — NOT a "
+            "continuous production strategy's return; do not read them as 'what running this "
+            "live would earn'.",
+            f"block_length={blk} ({blk_src}); moving-block bootstrap, n_boot={n_boot}, seed={seed}.",
+            f"date overlap {overlap:.1%} of the shorter series ({len(dates)} shared days).",
+        ],
+    )
