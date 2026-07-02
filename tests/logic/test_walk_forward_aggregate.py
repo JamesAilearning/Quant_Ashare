@@ -25,11 +25,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.core.git_provenance import capture_git_provenance  # noqa: E402
 from src.core.walk_forward._types import WalkForwardFold  # noqa: E402
 from src.core.walk_forward.aggregate import (  # noqa: E402
     attribution_section_for_fold,
     build_aggregate_report,
-    capture_git_provenance,
     compute_aggregate,
     compute_test_window_coverage,
     extract_cost_metrics,
@@ -372,24 +372,19 @@ class BuildAggregateReportTests(unittest.TestCase):
         self.assertIsNone(gp["dirty"])
         self.assertEqual(calls["n"], 2)
 
-    def test_write_aggregate_report_captures_git(self):
+    def test_write_aggregate_report_records_injected_git_provenance(self):
         import json
         import tempfile
-        from unittest.mock import patch
 
+        # git_provenance is INJECTED by the caller (the engine captures it at RUN START,
+        # not write time — codex P1 on #313); the writer passes it through verbatim.
         config = WalkForwardConfig(output_dir="output/wf")
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "walk_forward_report.json"
-            # patch the function's OWN globals (not a string module target): immune to
-            # sys.modules churn / duplicate module objects in the full CI suite — the
-            # exact failure mode that broke the pipeline-side mock on CI.
-            with patch.dict(
-                write_aggregate_report.__globals__,
-                {"capture_git_provenance": lambda: {"commit": "deadbeef", "dirty": False}},
-            ):
-                write_aggregate_report(
-                    path=path, config=config, folds=[_make_fold(0)], aggregate_metrics={},
-                )
+            write_aggregate_report(
+                path=path, config=config, folds=[_make_fold(0)], aggregate_metrics={},
+                git_provenance={"commit": "deadbeef", "dirty": False},
+            )
             data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(data["git_commit"], "deadbeef")
         self.assertIs(data["git_dirty"], False)

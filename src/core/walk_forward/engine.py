@@ -30,6 +30,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeCostModel,
     resolve_stamp_tax_schedule,
 )
+from src.core.git_provenance import capture_git_provenance
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
 from src.core.model_trainer import ModelTrainer
@@ -86,6 +87,12 @@ class WalkForwardEngine:
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now(tz=timezone.utc).isoformat()
+        # Captured at RUN START, not at report-write time: a walk-forward run takes hours
+        # (and can resume), so HEAD can advance mid-run — a write-time capture would
+        # attribute the fold artifacts to code that did not produce them, and the
+        # pre-registration ancestor gate could mistake a plan committed mid-run for one
+        # predating the run (codex P1 on #313).
+        git_provenance = capture_git_provenance()
 
         # PR-G+I: resolve the bundle content identity ONCE here (the canonical
         # provider_uri is in scope after init) and thread it through the resume
@@ -300,6 +307,7 @@ class WalkForwardEngine:
             config=config,
             folds=folds,
             aggregate_metrics=aggregate,
+            git_provenance=git_provenance,  # captured at run start, not write time
         )
         _logger.info("Aggregate report: %s", aggregate_path)
 

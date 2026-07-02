@@ -407,6 +407,11 @@ class Pipeline:
         output_dir.mkdir(parents=True, exist_ok=False)
         _logger.info("Run directory: %s", output_dir)
         started_at = datetime.now(tz=timezone.utc).isoformat()
+        # Captured at RUN START, not at report-write time: if HEAD advances while the run
+        # executes, a write-time capture would attribute the artifacts to code that did
+        # not produce them — and the pre-registration ancestor gate could mistake a plan
+        # committed mid-run for one that predates the run (codex P1 on #313).
+        git_provenance = capture_git_provenance()
 
         # Step 1: Initialize qlib (or validate config matches existing init)
         _logger.info("Initializing qlib runtime...")
@@ -679,7 +684,7 @@ class Pipeline:
                 signal_result, backtest_output, factor_result, attribution_result,
                 attribution_skipped_reason=attribution_skipped_reason,
                 factor_skipped_reason=factor_skipped_reason,
-                git_provenance=capture_git_provenance(),
+                git_provenance=git_provenance,  # captured at run start, not write time
             )
             _logger.info("  Report: %s", report_path)
         except Exception as exc:  # noqa: BLE001
