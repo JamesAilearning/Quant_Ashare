@@ -142,6 +142,15 @@ def load_run_daily_series(run_dir: str | Path) -> RunSeries:
             v = ds["excess_return"][d]
             if v is None:  # sanitized NaN (a gap day) — not part of the realized series
                 continue
+            if d in excess:
+                # overlapping test windows share an OOS date across folds; collapsing by
+                # date would silently drop one fold's realized day and shift IR/verdict.
+                # Refuse rather than pick a winner arbitrarily (codex P2).
+                raise ComparisonError(
+                    f"Run {run}: duplicate OOS date {d} across folds (overlapping test "
+                    "windows). Pooling/pairing by date would drop a realized fold-day; "
+                    "refuse. Use non-overlapping test windows for run comparison."
+                )
             excess[d] = float(v)
             gross[d] = float(ret[d]) - float(bench[d])
         for d, v in (ds.get("ic", {}).get("1", {}) or {}).items():
@@ -272,11 +281,15 @@ def compare_runs(
         blk, blk_src = estimate_block_length(diff), "acf-decay"
     ann, se, lo, hi = paired_block_bootstrap(diff, blk, n_boot, seed)
 
-    ci_excludes_zero = lo > 0 or hi < 0
-    if not ci_excludes_zero:
-        verdict = "indistinguishable"
+    # verdict SIDE comes from the CI, NOT the point estimate: with the non-circular block
+    # sampler the bootstrap CI can land opposite the sample mean, and the verdict must
+    # never contradict its own reported CI (codex P2).
+    if lo > 0:
+        verdict = "treatment_better"
+    elif hi < 0:
+        verdict = "treatment_worse"
     else:
-        verdict = "treatment_better" if ann > 0 else "treatment_worse"
+        verdict = "indistinguishable"
 
     # diagnostics (ALWAYS present; mandated companion of an indistinguishable verdict).
     # gross AND IC are measured over the SAME shared comparison dates as the net paired

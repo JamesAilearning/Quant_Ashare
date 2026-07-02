@@ -139,6 +139,8 @@ class VerdictTests(unittest.TestCase):
             r = compare_runs(a, b, pre_registration_ref=_PREREG)
         self.assertEqual(r.verdict, "treatment_better")
         self.assertGreater(r.paired_net_ci95[0], 0.0)  # CI strictly above 0
+        # verdict SIDE must track the CI, not the point estimate
+        self.assertEqual(r.verdict == "treatment_better", r.paired_net_ci95[0] > 0)
 
     def test_contradiction_flag_when_ic_disagrees(self) -> None:
         base = np.full(250, 0.0)
@@ -236,6 +238,16 @@ class FailLoudTests(unittest.TestCase):
             for bad in (0, -1, 10_000):
                 with self.assertRaises(ComparisonError):
                     compare_runs(a, b, pre_registration_ref=_PREREG, block_length=bad)
+
+    def test_duplicate_oos_date_across_folds_raises(self) -> None:
+        # overlapping test windows -> same OOS date in two folds -> refuse (collapsing by
+        # date would silently drop a realized fold-day).
+        with TemporaryDirectory() as tmp:
+            d = _dates(30)
+            a = _write_run(Path(tmp) / "A",
+                           [_fold(d[:25], np.zeros(25)), _fold(d[20:], np.zeros(10))])
+            with self.assertRaises(ComparisonError):
+                load_run_daily_series(a)
 
     def test_missing_daily_series_raises_actionable(self) -> None:
         with TemporaryDirectory() as tmp:
