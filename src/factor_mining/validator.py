@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .evaluator import evaluate_factor, max_abs_corr
+from .evaluator import evaluate_factor, joint_obs_mask, max_abs_corr
 from .expression import Expression
 from .factor_pool import LEGACY_METHOD_TAG, FactorPool
 
@@ -157,10 +157,9 @@ def _evaluate_segment(
         result = evaluate_factor(expr, seg_panel, seg_fwd, method="rank")
     except Exception:  # noqa: BLE001 — segment may legitimately fail; we just flag
         return float("nan"), float("nan"), 0
-    # n_obs = the count of joint non-NaN cells.
-    factor_mask = result.factor_values.notna()
-    fwd_mask = seg_fwd.reindex_like(result.factor_values).notna()
-    n_obs = int((factor_mask & fwd_mask).sum().sum())
+    # n_obs = the count of joint non-NaN cells (shared convention with
+    # evaluator._n_obs_per_day_min via joint_obs_mask).
+    n_obs = int(joint_obs_mask(result.factor_values, seg_fwd).sum().sum())
     return float(result.rank_ir), float(result.rank_ic_mean), n_obs
 
 

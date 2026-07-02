@@ -464,3 +464,25 @@ def test_evaluate_factor_rank_method_skips_pearson_ic(monkeypatch):
     calls.clear()
     evaluate_factor(expr, panel, fwd, method="normal")
     assert "normal" in calls and "rank" in calls  # both computed off the rank path
+
+
+def test_joint_obs_mask_marks_only_jointly_observed_cells():
+    """B4-2: the shared joint-observation mask — a cell is True iff BOTH
+    the factor and the (re-aligned) forward return are non-NaN."""
+    from src.factor_mining.evaluator import joint_obs_mask
+
+    dates = pd.date_range("2024-01-01", periods=2)
+    idx = pd.Index(dates, name="datetime")
+    cols = pd.Index(["A", "B"], name="instrument")
+    factor = pd.DataFrame([[1.0, np.nan], [3.0, 4.0]], index=idx, columns=cols)
+    # fwd has column order reversed + a NaN at (day2, A): reindex_like must
+    # re-align columns before masking.
+    fwd = pd.DataFrame(
+        [[10.0, 20.0], [30.0, np.nan]],
+        index=idx, columns=pd.Index(["B", "A"], name="instrument"),
+    )
+    mask = joint_obs_mask(factor, fwd)
+    assert mask.columns.tolist() == ["A", "B"]  # aligned to factor
+    # (d1,A): both -> True; (d1,B): factor NaN -> False;
+    # (d2,A): fwd NaN -> False; (d2,B): both -> True.
+    assert mask.to_numpy().tolist() == [[True, False], [False, True]]

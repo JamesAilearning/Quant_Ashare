@@ -225,6 +225,20 @@ def _coverage(
     return float(num) / float(denom)
 
 
+def joint_obs_mask(
+    factor_values: pd.DataFrame, forward_return: pd.DataFrame,
+) -> pd.DataFrame:
+    """Boolean mask of jointly-observed (factor, forward-return) cells.
+
+    Aligns ``forward_return`` onto ``factor_values``' index/columns and
+    marks cells where BOTH are non-NaN — the joint-observation convention
+    shared by :func:`_n_obs_per_day_min` (per-day minimum) and the
+    validator's segment ``n_obs`` (total count). Callers own the
+    aggregation.
+    """
+    return factor_values.notna() & forward_return.reindex_like(factor_values).notna()
+
+
 def _n_obs_per_day_min(
     factor_values: pd.DataFrame, forward_return: pd.DataFrame,
 ) -> int:
@@ -233,9 +247,7 @@ def _n_obs_per_day_min(
     to compute a meaningful IC."""
     if factor_values.empty or forward_return.empty:
         return 0
-    f_mask = factor_values.notna()
-    r_mask = forward_return.reindex_like(factor_values).notna()
-    both = (f_mask & r_mask).sum(axis=1)
+    both = joint_obs_mask(factor_values, forward_return).sum(axis=1)
     return int(both.min()) if len(both) > 0 else 0
 
 
