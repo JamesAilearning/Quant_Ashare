@@ -54,10 +54,16 @@
       better-when-CI-excludes-0, block-bootstrap SE > iid under autocorrelation,
       overlap-below-floor / missing-prereg / missing-substrate fail loud, contradiction
       flag, seam bound reported.
-- [ ] **PR-2 tail:** repoint `scripts/compare_walk_forward_runs.py` to emit the ruler's
-      verdict (keep the per-fold table; add significance) + the git-provable
-      pre-registration gate (commit-hash ancestor check + variant-set flag).
-- [ ] **PR-2 tail:** runbook constraints — **ST-off isolated labels** (PR#223 drift),
+- [x] **PR-3a:** repoint `scripts/compare_walk_forward_runs.py` to emit the ruler's
+      verdict (keep the per-fold table + aggregate deltas; add the pooled-IR / paired-CI /
+      seam / contradiction / caveats block via `build_ruler_report`). `--prereg` is a
+      recorded pass-through here; missing prereg / missing substrate / low overlap render
+      an ACTIONABLE fail-loud note (the table still prints). Synthetic CLI tests added.
+- [ ] **PR-3b:** the git-provable pre-registration gate (commit-hash ancestor check +
+      variant-set-exceeds-plan flag). NOTE: run artifacts record `generated_at` but no git
+      commit yet — the ancestor check needs either a timestamp comparison or a
+      run-recorded commit (design decision deferred to PR-3b).
+- [ ] **PR-3b:** runbook constraints — **ST-off isolated labels** (PR#223 drift),
       winner re-verified **ST-on vs REGEN-2 canonical**, strict **variable isolation**.
 
 ## Longer OOS (methodology, no code)
