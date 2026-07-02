@@ -34,6 +34,7 @@ from src.core.canonical_backtest_contract import (
     resolve_stamp_tax_schedule,
 )
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
+from src.core.git_provenance import capture_git_provenance
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
 from src.core.model_trainer import (
@@ -826,8 +827,15 @@ class Pipeline:
         attribution_skipped_reason: str | None = None,
         factor_skipped_reason: str | None = None,
     ) -> None:
+        # Two engines, one schema: pipeline_report.json and walk_forward_report.json
+        # carry the SAME top-level git_commit / git_dirty provenance fields (captured at
+        # this write boundary via the shared helper), so the run-comparison
+        # pre-registration gate reads one provenance path regardless of engine.
+        git_provenance = capture_git_provenance()
         report: dict[str, Any] = {
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "git_commit": git_provenance.get("commit"),
+            "git_dirty": git_provenance.get("dirty"),
             "metric_status": backtest_output.metric_status,
             "official_backtest_path": backtest_output.official_backtest_path,
             "config": {

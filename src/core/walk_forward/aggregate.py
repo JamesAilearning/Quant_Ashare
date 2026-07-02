@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import subprocess
 import warnings
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.core._json_utils import _sanitize_for_json
+from src.core.git_provenance import capture_git_provenance
 from src.core.logger import get_logger
 from src.core.walk_forward._types import WalkForwardFold
 from src.core.walk_forward.config import WalkForwardError
@@ -24,31 +24,10 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def capture_git_provenance() -> dict[str, str | bool | None]:
-    """Best-effort git HEAD + working-tree-dirty flag of the CODE that produced this run.
-
-    Recorded in the aggregate report so the run-comparison pre-registration gate can prove
-    (topologically, via ``git merge-base --is-ancestor``) that a pre-registered hypothesis
-    commit PREDATES the run — provable from git history, not trusted to a timestamp. Runs
-    generated before this field simply lack it (the gate then fails loud on that run).
-
-    NEVER raises: returns ``{'commit': None, 'dirty': None}`` if git or a repo is
-    unavailable (a detached bundle env, no ``.git``, git not on PATH, a timeout)."""
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5, check=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "-C", str(_REPO_ROOT), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5, check=True,
-        ).stdout
-        return {"commit": commit or None, "dirty": bool(status.strip())}
-    except (OSError, subprocess.SubprocessError):
-        return {"commit": None, "dirty": None}
+# NOTE: capture_git_provenance lives in the shared src.core.git_provenance so BOTH
+# engines' report writers (pipeline_report.json / walk_forward_report.json — two engines,
+# one schema) record identical git_commit / git_dirty provenance through one code path
+# (codex P1 on #313). It stays importable from this module for existing callers/tests.
 
 
 def build_aggregate_report(
