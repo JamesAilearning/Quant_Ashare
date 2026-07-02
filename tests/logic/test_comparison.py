@@ -149,6 +149,19 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(r.verdict, "treatment_better")
         self.assertIsNotNone(r.contradiction_flag)
 
+    def test_zero_difference_direction_is_flat(self) -> None:
+        # identical runs -> paired diff == 0 -> indistinguishable, and the direction
+        # diagnostic must say FLAT, not "treatment<baseline".
+        rng = np.random.default_rng(11)
+        exc = rng.standard_normal(60) * 0.01
+        with TemporaryDirectory() as tmp:
+            d = _dates(60)
+            a = _write_run(Path(tmp) / "A", [_fold(d, exc)])
+            b = _write_run(Path(tmp) / "B", [_fold(d, exc)])   # identical excess
+            r = compare_runs(a, b, pre_registration_ref=_PREREG)
+        self.assertEqual(r.verdict, "indistinguishable")
+        self.assertIn("flat", r.diagnostics["direction"])
+
     def test_seam_bound_reported(self) -> None:
         d = _dates(120)
         rng = np.random.default_rng(9)  # varying excess -> finite IR (not the degenerate NaN)
@@ -202,6 +215,15 @@ class FailLoudTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             a = _write_run(Path(tmp) / "A", [_fold(_dates(200, "2025-07-01"), np.zeros(200))])
             b = _write_run(Path(tmp) / "B", [_fold(_dates(200, "2026-07-01"), np.zeros(200))])
+            with self.assertRaises(ComparisonError):
+                compare_runs(a, b, pre_registration_ref=_PREREG)
+
+    def test_too_few_paired_days_raises(self) -> None:
+        # < min_paired_days shared days -> refuse (a ~zero-width CI would fake a winner)
+        with TemporaryDirectory() as tmp:
+            d = _dates(10)
+            a = _write_run(Path(tmp) / "A", [_fold(d, np.arange(10) * 0.001)])
+            b = _write_run(Path(tmp) / "B", [_fold(d, np.arange(10) * 0.002)])
             with self.assertRaises(ComparisonError):
                 compare_runs(a, b, pre_registration_ref=_PREREG)
 

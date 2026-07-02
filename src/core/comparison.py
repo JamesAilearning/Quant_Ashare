@@ -38,6 +38,7 @@ from src.core.walk_forward.aggregate import FOLD_REPORT_SCHEMA_VERSION
 
 _ANN = 252.0
 DEFAULT_OVERLAP_FLOOR = 0.90
+DEFAULT_MIN_PAIRED_DAYS = 20   # a paired bootstrap on fewer days gives a ~zero-width CI
 DEFAULT_N_BOOT = 10000
 DEFAULT_SEED = 42
 _MAX_BLOCK = 40
@@ -221,6 +222,7 @@ def compare_runs(
     *,
     pre_registration_ref: str,
     overlap_floor: float = DEFAULT_OVERLAP_FLOOR,
+    min_paired_days: int = DEFAULT_MIN_PAIRED_DAYS,
     block_length: int | None = None,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
@@ -245,6 +247,13 @@ def compare_runs(
             f"Date overlap {overlap:.1%} (intersection {len(dates)} / shorter {shorter}) "
             f"is below the floor {overlap_floor:.0%}: the runs barely share dates, so a "
             "paired comparison would be on a biased subset. Refusing a verdict."
+        )
+    if len(dates) < min_paired_days:
+        raise ComparisonError(
+            f"Only {len(dates)} shared finite day(s) (< min_paired_days={min_paired_days}): "
+            "too few for a paired bootstrap. A 1-2 day 'CI' is ~zero-width and would declare "
+            "a spurious winner from a point estimate with no estimable sampling uncertainty. "
+            "Refusing a verdict — use longer runs."
         )
 
     diff = eb - ea
@@ -287,7 +296,12 @@ def compare_runs(
         "mean_ic_baseline": mean_ic_a,
         "mean_ic_treatment": mean_ic_b,
         "n_ic_shared_days": len(ic_dates),
-        "direction": "treatment>baseline" if ann > 0 else "treatment<baseline",
+        "direction": (
+            "undetermined (non-finite)" if not math.isfinite(ann)
+            else "treatment>baseline" if ann > 0
+            else "treatment<baseline" if ann < 0
+            else "flat (treatment==baseline)"
+        ),
         "note": (
             "'indistinguishable' means NOT statistically separable at this power — it is "
             "NOT 'equivalent'. Check the gross-vs-net and IC breakdown for a divergence "
