@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
 import warnings
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -23,12 +24,39 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def capture_git_provenance() -> dict[str, str | bool | None]:
+    """Best-effort git HEAD + working-tree-dirty flag of the CODE that produced this run.
+
+    Recorded in the aggregate report so the run-comparison pre-registration gate can prove
+    (topologically, via ``git merge-base --is-ancestor``) that a pre-registered hypothesis
+    commit PREDATES the run — provable from git history, not trusted to a timestamp. Runs
+    generated before this field simply lack it (the gate then fails loud on that run).
+
+    NEVER raises: returns ``{'commit': None, 'dirty': None}`` if git or a repo is
+    unavailable (a detached bundle env, no ``.git``, git not on PATH, a timeout)."""
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout
+        return {"commit": commit or None, "dirty": bool(status.strip())}
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "dirty": None}
+
 
 def build_aggregate_report(
     *,
     config: WalkForwardConfig,
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
+    git_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the aggregate JSON report dict.
 
@@ -42,9 +70,16 @@ def build_aggregate_report(
     - ``aggregate_metrics``: cross-fold aggregates from
       ``_compute_aggregate``.
     - ``num_folds``, ``generated_at``: provenance.
+    - ``git_commit``, ``git_dirty``: provenance of the CODE that produced
+      the run, for the run-comparison pre-registration gate (both ``None``
+      when the caller does not supply ``git_provenance`` — e.g. a synthetic
+      report — or when git is unavailable). Purely additive.
     """
+    gp = git_provenance or {}
     return {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "git_commit": gp.get("commit"),
+        "git_dirty": gp.get("dirty"),
         "config": asdict(config),
         "folds": [
             {
@@ -92,6 +127,7 @@ def write_aggregate_report(
     """
     report = build_aggregate_report(
         config=config, folds=folds, aggregate_metrics=aggregate_metrics,
+        git_provenance=capture_git_provenance(),  # the impurity lives at the I/O boundary
     )
     sanitised = _sanitize_for_json(report)
     with open(path, "w", encoding="utf-8") as f:

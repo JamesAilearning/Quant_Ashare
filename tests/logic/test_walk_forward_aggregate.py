@@ -29,9 +29,11 @@ from src.core.walk_forward._types import WalkForwardFold  # noqa: E402
 from src.core.walk_forward.aggregate import (  # noqa: E402
     attribution_section_for_fold,
     build_aggregate_report,
+    capture_git_provenance,
     compute_aggregate,
     compute_test_window_coverage,
     extract_cost_metrics,
+    write_aggregate_report,
 )
 from src.core.walk_forward.config import WalkForwardConfig, WalkForwardError  # noqa: E402
 
@@ -312,6 +314,54 @@ class BuildAggregateReportTests(unittest.TestCase):
         self.assertIsInstance(
             report["folds"][0]["prediction_shape"], list,
         )
+
+    def test_git_provenance_recorded_when_supplied(self):
+        # the run-comparison pre-registration gate reads git_commit; the builder records
+        # whatever provenance the I/O boundary captured (PR-3b-i).
+        config = WalkForwardConfig(output_dir="output/wf")
+        report = build_aggregate_report(
+            config=config, folds=[_make_fold(0)], aggregate_metrics={},
+            git_provenance={"commit": "abc1234def", "dirty": True},
+        )
+        self.assertEqual(report["git_commit"], "abc1234def")
+        self.assertIs(report["git_dirty"], True)
+
+    def test_git_provenance_defaults_to_none(self):
+        # a synthetic report (no provenance supplied) carries null git fields — additive,
+        # and the gate then fails loud on that run rather than trusting an absent commit.
+        config = WalkForwardConfig(output_dir="output/wf")
+        report = build_aggregate_report(
+            config=config, folds=[_make_fold(0)], aggregate_metrics={},
+        )
+        self.assertIsNone(report["git_commit"])
+        self.assertIsNone(report["git_dirty"])
+
+    def test_capture_git_provenance_shape_never_raises(self):
+        # runs in the repo (commit is a sha) or outside one (None); either way the shape is
+        # {'commit': str|None, 'dirty': bool|None} and it never raises.
+        gp = capture_git_provenance()
+        self.assertEqual(set(gp), {"commit", "dirty"})
+        self.assertIsInstance(gp["commit"], (str, type(None)))
+        self.assertIsInstance(gp["dirty"], (bool, type(None)))
+
+    def test_write_aggregate_report_captures_git(self):
+        import json
+        import tempfile
+        from unittest.mock import patch
+
+        config = WalkForwardConfig(output_dir="output/wf")
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "walk_forward_report.json"
+            with patch(
+                "src.core.walk_forward.aggregate.capture_git_provenance",
+                return_value={"commit": "deadbeef", "dirty": False},
+            ):
+                write_aggregate_report(
+                    path=path, config=config, folds=[_make_fold(0)], aggregate_metrics={},
+                )
+            data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["git_commit"], "deadbeef")
+        self.assertIs(data["git_dirty"], False)
 
 
 # ---------------------------------------------------------------------------
