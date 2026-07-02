@@ -270,11 +270,14 @@ def compare_runs(
         # reject an out-of-range override up front, so the RECORDED block_length always
         # equals the one the bootstrap actually used (the bootstrap clamps internally;
         # recording the un-clamped override would make the CI non-reproducible — codex P2).
-        if not (1 <= block_length <= diff.size):
+        cap = diff.size // 2
+        if not (1 <= block_length <= cap):
             raise ComparisonError(
-                f"block_length override {block_length} is out of range "
-                f"[1, {diff.size}] (n paired days). Pass a value in range or omit it "
-                "to use the ACF-calibrated default."
+                f"block_length override {block_length} is out of range [1, {cap}] "
+                f"(<= n_paired//2). A block near the full sample length ({diff.size}) "
+                "collapses the moving-block bootstrap (max_start -> 0, every replicate is "
+                "the whole sample) to a zero-width CI, which would fake a point-estimate "
+                "verdict (codex P2). Pass a smaller value or omit it for the ACF default."
             )
         blk, blk_src = block_length, "operator-override"
     else:

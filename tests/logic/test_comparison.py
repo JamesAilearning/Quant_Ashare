@@ -235,7 +235,9 @@ class FailLoudTests(unittest.TestCase):
             d = _dates(60)
             a = _write_run(Path(tmp) / "A", [_fold(d, np.zeros(60))])
             b = _write_run(Path(tmp) / "B", [_fold(d, np.zeros(60))])
-            for bad in (0, -1, 10_000):
+            # 60 shared days -> cap is 30 (n//2); reject 0/-1, > cap, and the full length
+            # (which would collapse the bootstrap CI to a point).
+            for bad in (0, -1, 31, 60, 10_000):
                 with self.assertRaises(ComparisonError):
                     compare_runs(a, b, pre_registration_ref=_PREREG, block_length=bad)
 
