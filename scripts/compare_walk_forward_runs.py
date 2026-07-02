@@ -166,6 +166,11 @@ def build_ruler_report(
         f"excl={sb['treatment_pooled_net_ir_excl_boundary']:+.3f}  "
         f"impact={sb['treatment_seam_impact']:+.3f}",
     ]
+    if r.verdict == "indistinguishable":
+        # the MANDATED companion of an indistinguishable verdict (spec + the comparison
+        # tests): 'indistinguishable' is NOT 'equivalent'. Surface it prominently, right
+        # under the VERDICT line, so the CLI can't show it stripped of the warning.
+        lines.insert(2, f"  NOTE: {d['note']}")
     if r.contradiction_flag:
         lines += ["  ** CONTRADICTION (backtest is authoritative):", f"    {r.contradiction_flag}"]
     lines.append(f"  pre-registration ref: {r.pre_registration_ref}")

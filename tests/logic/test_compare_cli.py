@@ -90,6 +90,20 @@ class CompareCliTests(unittest.TestCase):
         self.assertIn("block_length=", out)
         self.assertIn("study-protocol", out.lower())     # honesty envelope present
 
+    def test_indistinguishable_verdict_carries_not_equivalent_note(self) -> None:
+        # codex #312 P2: an indistinguishable verdict MUST surface the mandated
+        # "not 'equivalent'" note in CLI output (the n_drop 'pick either' trap guard).
+        rng = np.random.default_rng(2)
+        d = _dates(250)
+        base = rng.standard_normal(250) * 0.01
+        treat = base + rng.standard_normal(250) * 0.01  # noisy, zero-mean diff
+        with TemporaryDirectory() as tmp:
+            a = _write_run(Path(tmp) / "A", d, base)
+            b = _write_run(Path(tmp) / "B", d, treat)
+            out = "\n".join(self.cli.build_ruler_report(a, b, prereg=_PREREG))
+        self.assertIn("INDISTINGUISHABLE", out)
+        self.assertIn("not 'equivalent'", out.lower().replace('"', "'"))
+
     def test_missing_prereg_skips_with_actionable_note(self) -> None:
         d = _dates(60)
         with TemporaryDirectory() as tmp:
