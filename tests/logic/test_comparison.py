@@ -151,15 +151,31 @@ class VerdictTests(unittest.TestCase):
 
     def test_seam_bound_reported(self) -> None:
         d = _dates(120)
+        rng = np.random.default_rng(9)  # varying excess -> finite IR (not the degenerate NaN)
         with TemporaryDirectory() as tmp:
-            a = _write_run(Path(tmp) / "A", [_fold(d[:60], np.zeros(60)), _fold(d[60:], np.zeros(60))])
-            b = _write_run(Path(tmp) / "B", [_fold(d[:60], np.full(60, 0.001)),
-                                             _fold(d[60:], np.full(60, 0.001))])
+            a = _write_run(Path(tmp) / "A", [_fold(d[:60], rng.standard_normal(60) * 0.01),
+                                             _fold(d[60:], rng.standard_normal(60) * 0.01)])
+            b = _write_run(Path(tmp) / "B", [_fold(d[:60], rng.standard_normal(60) * 0.01),
+                                             _fold(d[60:], rng.standard_normal(60) * 0.01)])
             r = compare_runs(a, b, pre_registration_ref=_PREREG)
         # BOTH runs' seam bounded, not only treatment
         for k in ("baseline_pooled_net_ir_incl_boundary", "baseline_seam_impact",
                   "treatment_pooled_net_ir_incl_boundary", "treatment_seam_impact"):
             self.assertIn(k, r.seam_bound)
+        # seam is computed on the SAME full series as the reported pooled IR, so the
+        # "included-boundary" leg must equal the pooled IR (not the intersection).
+        self.assertEqual(r.seam_bound["treatment_pooled_net_ir_incl_boundary"],
+                         r.pooled_net_ir_treatment)
+
+    def test_serialized_output_carries_study_protocol_caveat(self) -> None:
+        with TemporaryDirectory() as tmp:
+            d = _dates(120)
+            a = _write_run(Path(tmp) / "A", [_fold(d, np.zeros(120))])
+            b = _write_run(Path(tmp) / "B", [_fold(d, np.full(120, 0.001))])
+            out = compare_runs(a, b, pre_registration_ref=_PREREG).to_dict()
+        joined = " ".join(out["caveats"]).lower()
+        self.assertIn("study-protocol", joined)
+        self.assertIn("not a continuous production", joined)
 
     def test_indistinguishable_but_ic_favours_a_side_is_flagged(self) -> None:
         rng = np.random.default_rng(7)
@@ -188,6 +204,16 @@ class FailLoudTests(unittest.TestCase):
             b = _write_run(Path(tmp) / "B", [_fold(_dates(200, "2026-07-01"), np.zeros(200))])
             with self.assertRaises(ComparisonError):
                 compare_runs(a, b, pre_registration_ref=_PREREG)
+
+    def test_out_of_range_block_length_override_raises(self) -> None:
+        # a bad override must be rejected up front so the RECORDED block == the one used
+        with TemporaryDirectory() as tmp:
+            d = _dates(60)
+            a = _write_run(Path(tmp) / "A", [_fold(d, np.zeros(60))])
+            b = _write_run(Path(tmp) / "B", [_fold(d, np.zeros(60))])
+            for bad in (0, -1, 10_000):
+                with self.assertRaises(ComparisonError):
+                    compare_runs(a, b, pre_registration_ref=_PREREG, block_length=bad)
 
     def test_missing_daily_series_raises_actionable(self) -> None:
         with TemporaryDirectory() as tmp:

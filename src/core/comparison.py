@@ -248,8 +248,19 @@ def compare_runs(
         )
 
     diff = eb - ea
-    blk = block_length if block_length is not None else estimate_block_length(diff)
-    blk_src = "operator-override" if block_length is not None else "acf-decay"
+    if block_length is not None:
+        # reject an out-of-range override up front, so the RECORDED block_length always
+        # equals the one the bootstrap actually used (the bootstrap clamps internally;
+        # recording the un-clamped override would make the CI non-reproducible — codex P2).
+        if not (1 <= block_length <= diff.size):
+            raise ComparisonError(
+                f"block_length override {block_length} is out of range "
+                f"[1, {diff.size}] (n paired days). Pass a value in range or omit it "
+                "to use the ACF-calibrated default."
+            )
+        blk, blk_src = block_length, "operator-override"
+    else:
+        blk, blk_src = estimate_block_length(diff), "acf-decay"
     ann, se, lo, hi = paired_block_bootstrap(diff, blk, n_boot, seed)
 
     ci_excludes_zero = lo > 0 or hi < 0
@@ -311,16 +322,18 @@ def compare_runs(
 
     # seam bound: pooled net IR with fold-boundary days excluded vs included, for BOTH
     # runs — a large baseline seam can drive the comparison as much as a treatment one.
-    boundary = set(a.fold_boundary_dates) | set(b.fold_boundary_dates)
-
-    def _seam(excess_map: dict[str, float]) -> tuple[float, float, float]:
-        incl = _annualized_ir(np.array([excess_map[d] for d in dates]))
-        excl = _annualized_ir(np.array([excess_map[d] for d in dates if d not in boundary]))
+    # Computed over each run's FULL series minus THAT run's own boundary dates, so it
+    # bounds the seam on the reported (full-series) pooled IR, not the intersection
+    # (which would miss boundary/tail effects outside the shared dates — codex P2).
+    def _seam(excess_map: dict[str, float], run_boundaries: set[str]) -> tuple[float, float, float]:
+        full = sorted(excess_map)
+        incl = _annualized_ir(np.array([excess_map[d] for d in full]))
+        excl = _annualized_ir(np.array([excess_map[d] for d in full if d not in run_boundaries]))
         impact = (excl - incl) if (math.isfinite(incl) and math.isfinite(excl)) else float("nan")
         return incl, excl, impact
 
-    incl_a, excl_a, imp_a = _seam(a.excess)
-    incl_b, excl_b, imp_b = _seam(b.excess)
+    incl_a, excl_a, imp_a = _seam(a.excess, set(a.fold_boundary_dates))
+    incl_b, excl_b, imp_b = _seam(b.excess, set(b.fold_boundary_dates))
     seam_bound = {
         "baseline_pooled_net_ir_incl_boundary": incl_a,
         "baseline_pooled_net_ir_excl_boundary": excl_a,
@@ -355,6 +368,10 @@ def compare_runs(
         pre_registration_ref=pre_registration_ref,
         caveats=[
             REGIME_CAVEAT,
+            "pooled_*_ir are the WF STUDY-PROTOCOL realized IR (each run's full OOS series, "
+            "INCLUDING fold-boundary model switches + each fold starting from cash) — NOT a "
+            "continuous production strategy's return; do not read them as 'what running this "
+            "live would earn'.",
             f"block_length={blk} ({blk_src}); moving-block bootstrap, n_boot={n_boot}, seed={seed}.",
             f"date overlap {overlap:.1%} of the shorter series ({len(dates)} shared days).",
         ],
