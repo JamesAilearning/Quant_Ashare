@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, compute_ic_for_group
+from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, daily_ic_series
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -353,10 +353,7 @@ class SignalAnalyzer:
         merged = merged.rename(columns={"forward_ret": "ret"})
         # Group by name, not position — same defence-in-depth as
         # ``_fetch_returns`` above.
-        daily_ic = merged.groupby(level="datetime").apply(
-            lambda g: compute_ic_for_group(g, method),
-            include_groups=False,
-        )
+        daily_ic = daily_ic_series(merged, method)
         daily_ic.name = f"IC_{period}d"
         return daily_ic
 
@@ -404,10 +401,7 @@ class SignalAnalyzer:
                 continue
 
             merged = merged.rename(columns={"forward_ret": "ret"})
-            daily_ic = merged.groupby(level="datetime").apply(
-                lambda g: compute_ic_for_group(g, method),
-                include_groups=False,
-            ).dropna()
+            daily_ic = daily_ic_series(merged, method).dropna()
             decay.append(
                 float(daily_ic.mean()) if len(daily_ic) > 0 else float("nan")
             )

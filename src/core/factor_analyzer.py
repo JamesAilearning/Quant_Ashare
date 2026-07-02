@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, compute_ic_for_group
+from src.core._ic_utils import MIN_IC_OBSERVATIONS_PER_LAG, daily_ic_series
 from src.core.logger import get_logger
 from src.core.qlib_runtime import is_canonical_qlib_initialized
 
@@ -464,10 +464,7 @@ class FactorAnalyzer:
             if len(merged) < MIN_IC_OBSERVATIONS_PER_LAG:
                 continue
 
-            daily_ic = merged.groupby(level="datetime").apply(
-                lambda g: compute_ic_for_group(g, ic_method),
-                include_groups=False,
-            ).dropna()
+            daily_ic = daily_ic_series(merged, ic_method).dropna()
 
             if len(daily_ic) == 0:
                 continue
@@ -569,10 +566,7 @@ class FactorAnalyzer:
                     decay_values.append(float("nan"))
                     continue
 
-                daily_ic = merged.groupby(level="datetime").apply(
-                    lambda g: compute_ic_for_group(g, config.ic_method),
-                    include_groups=False,
-                ).dropna()
+                daily_ic = daily_ic_series(merged, config.ic_method).dropna()
                 decay_values.append(
                     float(daily_ic.mean()) if len(daily_ic) > 0 else float("nan")
                 )
