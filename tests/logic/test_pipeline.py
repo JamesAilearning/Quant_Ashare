@@ -681,7 +681,6 @@ class ReportGitProvenanceTests(unittest.TestCase):
     @staticmethod
     def _write_minimal_report(path: Path) -> None:
         from types import SimpleNamespace
-        from unittest.mock import patch
 
         from src.core.signal_analyzer import SignalAnalysisResult
 
@@ -707,15 +706,15 @@ class ReportGitProvenanceTests(unittest.TestCase):
             metric_status="ok", official_backtest_path="official",
             report={}, provenance={}, risk_analysis={},
         )
-        with patch(
-            "src.core.pipeline.capture_git_provenance",
-            return_value={"commit": "cafebabe" * 5, "dirty": False},
-        ):
-            Pipeline._write_report(
-                str(path), config, feature_result, model_result,
-                signal_result, backtest_output,
-                factor_skipped_reason="unit-test",
-            )
+        # git_provenance is INJECTED (mirroring build_aggregate_report) — deterministic,
+        # no mock. (A string-target mock.patch here proved order/module-identity fragile
+        # in the full CI suite.)
+        Pipeline._write_report(
+            str(path), config, feature_result, model_result,
+            signal_result, backtest_output,
+            factor_skipped_reason="unit-test",
+            git_provenance={"commit": "cafebabe" * 5, "dirty": False},
+        )
 
     def test_pipeline_report_records_git_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as td:

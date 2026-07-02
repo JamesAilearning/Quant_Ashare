@@ -22,18 +22,27 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
     Runs generated before this field simply lack it (the pre-registration gate
     then fails loud on that run rather than trusting an absent commit).
 
-    NEVER raises: returns ``{'commit': None, 'dirty': None}`` if git or a repo
-    is unavailable (a detached bundle env, no ``.git``, git not on PATH, a
-    timeout)."""
+    NEVER raises. The two probes are guarded SEPARATELY (codex P2 on #313): if
+    ``rev-parse HEAD`` succeeds but the dirty probe fails (e.g. ``git status``
+    times out on a large/locked worktree), the commit is KEPT and only ``dirty``
+    degrades to ``None`` — otherwise a run from a valid checkout would lose its
+    ``git_commit`` and the pre-registration ancestor gate would reject it even
+    though the commit was available. ``{'commit': None, 'dirty': None}`` only
+    when git or a repo is unavailable (detached bundle env, no ``.git``, git not
+    on PATH, a timeout on rev-parse itself)."""
     try:
-        commit = subprocess.run(
+        commit: str | None = subprocess.run(
             ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5, check=True,
-        ).stdout.strip()
+        ).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "dirty": None}
+    try:
         status = subprocess.run(
             ["git", "-C", str(_REPO_ROOT), "status", "--porcelain"],
             capture_output=True, text=True, timeout=5, check=True,
         ).stdout
-        return {"commit": commit or None, "dirty": bool(status.strip())}
+        dirty: bool | None = bool(status.strip())
     except (OSError, subprocess.SubprocessError):
-        return {"commit": None, "dirty": None}
+        dirty = None
+    return {"commit": commit, "dirty": dirty}

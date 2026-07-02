@@ -344,6 +344,34 @@ class BuildAggregateReportTests(unittest.TestCase):
         self.assertIsInstance(gp["commit"], (str, type(None)))
         self.assertIsInstance(gp["dirty"], (bool, type(None)))
 
+    def test_capture_git_provenance_keeps_commit_when_dirty_probe_fails(self):
+        # codex P2 on #313: rev-parse succeeds but the dirty probe fails/times out ->
+        # the commit must be KEPT (dirty degrades to None), otherwise a valid checkout's
+        # run loses git_commit and the ancestor gate rejects it needlessly.
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from src.core import git_provenance as gp_mod
+
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            calls["n"] += 1
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc123\n")
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        # patch.object on the module OBJECT (not a string target) — identity-safe.
+        with patch.object(gp_mod, "subprocess") as fake_sp:
+            fake_sp.run = fake_run
+            fake_sp.SubprocessError = subprocess.SubprocessError
+            fake_sp.TimeoutExpired = subprocess.TimeoutExpired
+            gp = gp_mod.capture_git_provenance()
+        self.assertEqual(gp["commit"], "abc123")
+        self.assertIsNone(gp["dirty"])
+        self.assertEqual(calls["n"], 2)
+
     def test_write_aggregate_report_captures_git(self):
         import json
         import tempfile
@@ -352,9 +380,12 @@ class BuildAggregateReportTests(unittest.TestCase):
         config = WalkForwardConfig(output_dir="output/wf")
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "walk_forward_report.json"
-            with patch(
-                "src.core.walk_forward.aggregate.capture_git_provenance",
-                return_value={"commit": "deadbeef", "dirty": False},
+            # patch the function's OWN globals (not a string module target): immune to
+            # sys.modules churn / duplicate module objects in the full CI suite — the
+            # exact failure mode that broke the pipeline-side mock on CI.
+            with patch.dict(
+                write_aggregate_report.__globals__,
+                {"capture_git_provenance": lambda: {"commit": "deadbeef", "dirty": False}},
             ):
                 write_aggregate_report(
                     path=path, config=config, folds=[_make_fold(0)], aggregate_metrics={},

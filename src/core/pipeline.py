@@ -8,6 +8,7 @@ All steps are wired through V2's contract and governance system.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -678,6 +679,7 @@ class Pipeline:
                 signal_result, backtest_output, factor_result, attribution_result,
                 attribution_skipped_reason=attribution_skipped_reason,
                 factor_skipped_reason=factor_skipped_reason,
+                git_provenance=capture_git_provenance(),
             )
             _logger.info("  Report: %s", report_path)
         except Exception as exc:  # noqa: BLE001
@@ -826,16 +828,18 @@ class Pipeline:
         attribution_result: AttributionResult | None = None,
         attribution_skipped_reason: str | None = None,
         factor_skipped_reason: str | None = None,
+        git_provenance: Mapping[str, Any] | None = None,
     ) -> None:
         # Two engines, one schema: pipeline_report.json and walk_forward_report.json
-        # carry the SAME top-level git_commit / git_dirty provenance fields (captured at
-        # this write boundary via the shared helper), so the run-comparison
-        # pre-registration gate reads one provenance path regardless of engine.
-        git_provenance = capture_git_provenance()
+        # carry the SAME top-level git_commit / git_dirty provenance fields, so the
+        # run-comparison pre-registration gate reads one provenance path regardless of
+        # engine. Injectable (mirroring build_aggregate_report) — the impurity lives at
+        # the run() call site; a caller that omits it gets null fields, deterministic.
+        gp = git_provenance or {}
         report: dict[str, Any] = {
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
-            "git_commit": git_provenance.get("commit"),
-            "git_dirty": git_provenance.get("dirty"),
+            "git_commit": gp.get("commit"),
+            "git_dirty": gp.get("dirty"),
             "metric_status": backtest_output.metric_status,
             "official_backtest_path": backtest_output.official_backtest_path,
             "config": {
