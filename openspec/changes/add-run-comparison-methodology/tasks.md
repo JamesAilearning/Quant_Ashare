@@ -59,11 +59,18 @@
       seam / contradiction / caveats block via `build_ruler_report`). `--prereg` is a
       recorded pass-through here; missing prereg / missing substrate / low overlap render
       an ACTIONABLE fail-loud note (the table still prints). Synthetic CLI tests added.
-- [ ] **PR-3b:** the git-provable pre-registration gate (commit-hash ancestor check +
-      variant-set-exceeds-plan flag). NOTE: run artifacts record `generated_at` but no git
-      commit yet — the ancestor check needs either a timestamp comparison or a
-      run-recorded commit (design decision deferred to PR-3b).
-- [ ] **PR-3b:** runbook constraints — **ST-off isolated labels** (PR#223 drift),
+- [x] **PR-3b-i:** the walk-forward aggregate report records the CODE's `git_commit` +
+      `git_dirty` (`capture_git_provenance` at the write boundary; `build_aggregate_report`
+      takes injectable `git_provenance`, defaults to null for synthetic reports). Purely
+      additive; the enabler for the topological ancestor check. Unit tests added.
+- [ ] **PR-3b-ii:** the git-provable pre-registration gate — chosen mechanism (operator
+      "full compliance"): `--prereg` points to a COMMITTED plan file (declares the
+      hypothesis + registered variants/comparisons); the gate verifies the plan's commit is
+      an ANCESTOR of each run's recorded `git_commit` (`git merge-base --is-ancestor`,
+      forgery-robust) and flags a compared variant set that exceeds the plan. Runs lacking a
+      `git_commit` fail loud. Lives in a pure `src/core/preregistration.py`; wired into the
+      CLI (compare_runs stays pure-stats).
+- [ ] **PR-3b-ii:** runbook constraints — **ST-off isolated labels** (PR#223 drift),
       winner re-verified **ST-on vs REGEN-2 canonical**, strict **variable isolation**.
 
 ## Longer OOS (methodology, no code)

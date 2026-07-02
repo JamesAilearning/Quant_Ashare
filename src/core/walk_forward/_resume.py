@@ -218,6 +218,13 @@ class FoldManifest:
     positions_path: str | None
     completed_at: str
     fold: WalkForwardFold
+    # Git provenance of the CODE that produced THIS fold (additive; None on manifests
+    # written before provenance stamping). A resumed run resolves the report-level
+    # git_commit across all folds' values — mixed/unknown resolves to null so the
+    # pre-registration ancestor gate fails loud rather than trusting the resuming
+    # invocation's HEAD for folds it did not produce (codex P1 on #313, round 4).
+    git_commit: str | None = None
+    git_dirty: bool | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -234,6 +241,7 @@ class FoldManifest:
         predictions_path: str,
         positions_path: str | None,
         bundle_identity: str | None = None,
+        git_provenance: Mapping[str, Any] | None = None,
     ) -> FoldManifest:
         # Store basenames only — paths are location-independent so a
         # ``output_dir`` rename between the original run and the resume
@@ -260,6 +268,8 @@ class FoldManifest:
             ),
             completed_at=datetime.now(tz=timezone.utc).isoformat(),
             fold=fold,
+            git_commit=(git_provenance or {}).get("commit"),
+            git_dirty=(git_provenance or {}).get("dirty"),
         )
 
     # ------------------------------------------------------------------
@@ -325,6 +335,8 @@ class FoldManifest:
             "positions_path": self.positions_path,
             "completed_at": self.completed_at,
             "fold": fold_dict,
+            "git_commit": self.git_commit,
+            "git_dirty": self.git_dirty,
         }
 
     @classmethod
@@ -352,6 +364,16 @@ class FoldManifest:
             ),
             completed_at=str(payload["completed_at"]),
             fold=fold,
+            # .get: additive fields — manifests written before provenance stamping
+            # stay loadable and resolve as unknown (None) provenance.
+            git_commit=(
+                str(payload["git_commit"]) if payload.get("git_commit") else None
+            ),
+            git_dirty=(
+                bool(payload["git_dirty"])
+                if payload.get("git_dirty") is not None
+                else None
+            ),
         )
 
     # ------------------------------------------------------------------

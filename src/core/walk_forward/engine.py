@@ -30,6 +30,7 @@ from src.core.canonical_backtest_contract import (
     CanonicalExchangeCostModel,
     resolve_stamp_tax_schedule,
 )
+from src.core.git_provenance import capture_git_provenance, resolve_run_git_provenance
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
 from src.core.model_trainer import ModelTrainer
@@ -86,6 +87,12 @@ class WalkForwardEngine:
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now(tz=timezone.utc).isoformat()
+        # Captured at RUN START, not at report-write time: a walk-forward run takes hours
+        # (and can resume), so HEAD can advance mid-run — a write-time capture would
+        # attribute the fold artifacts to code that did not produce them, and the
+        # pre-registration ancestor gate could mistake a plan committed mid-run for one
+        # predating the run (codex P1 on #313).
+        git_provenance = capture_git_provenance()
 
         # PR-G+I: resolve the bundle content identity ONCE here (the canonical
         # provider_uri is in scope after init) and thread it through the resume
@@ -139,6 +146,13 @@ class WalkForwardEngine:
         # NaN-placeholder fold instead of aborting the entire run.
         folds: list[WalkForwardFold] = []
         prior_model_paths: list[tuple[int, str]] = []
+        # Per-fold git provenance: fresh folds get THIS invocation's run-start capture;
+        # resumed folds keep their manifest's stamp (None on pre-provenance manifests).
+        # Resolved into ONE report-level value before the aggregate write — mixed or
+        # unknown resolves to null so the pre-registration ancestor gate fails loud
+        # rather than attributing resumed folds to a HEAD that did not produce them
+        # (codex P1 on #313, round 4).
+        fold_provenances: list[dict[str, Any] | None] = []
 
         for i, (train_s, train_e, valid_s, valid_e, test_s, test_e) in enumerate(windows):
             decision = decide_fold(
@@ -161,6 +175,12 @@ class WalkForwardEngine:
                 )
                 fold = decision.manifest.fold
                 folds.append(fold)
+                fold_provenances.append(
+                    {"commit": decision.manifest.git_commit,
+                     "dirty": decision.manifest.git_dirty}
+                    if decision.manifest.git_commit is not None
+                    else None  # legacy manifest: provenance unknown
+                )
                 if fold.prediction_shape != (0,):
                     prior_model_paths.append((i, decision.manifest.model_path))
                 continue
@@ -227,6 +247,7 @@ class WalkForwardEngine:
                 finished_at=fold_finished_at,
             )
             folds.append(fold)
+            fold_provenances.append(git_provenance)  # produced by THIS invocation
 
             # Placeholder fold (prediction_shape=(0,)) means
             # _run_single_fold raised — the model pickle may be
@@ -255,6 +276,7 @@ class WalkForwardEngine:
                             else None
                         ),
                         bundle_identity=bundle_identity,
+                        git_provenance=git_provenance,  # the code that produced THIS fold
                     )
                     manifest.save(output_dir)
                 except Exception:  # noqa: BLE001
@@ -294,12 +316,25 @@ class WalkForwardEngine:
                 _logger.info("  %s: %s", key, val)
         _logger.info("=" * 60)
 
+        # Report-level provenance = the resolution ACROSS folds, not this invocation's
+        # HEAD: a resumed run may carry folds produced by an older commit, and stamping
+        # the resuming HEAD would let a plan committed between the two falsely predate
+        # the fold artifacts. Mixed/unknown resolves to null (gate fails loud).
+        resolved_provenance = resolve_run_git_provenance(fold_provenances)
+        if resolved_provenance["commit"] is None:
+            _logger.warning(
+                "Report git provenance UNRESOLVED (mixed commits across resumed folds, "
+                "or folds from pre-provenance manifests): git_commit=null — a "
+                "pre-registration ancestor check will refuse this run. Re-run all folds "
+                "in one invocation for a provenance-clean comparison run."
+            )
         aggregate_path = output_dir / "walk_forward_report.json"
         write_aggregate_report(
             path=aggregate_path,
             config=config,
             folds=folds,
             aggregate_metrics=aggregate,
+            git_provenance=resolved_provenance,  # resolved across folds, run-start based
         )
         _logger.info("Aggregate report: %s", aggregate_path)
 

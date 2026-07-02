@@ -8,6 +8,7 @@ All steps are wired through V2's contract and governance system.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ from src.core.canonical_backtest_contract import (
     resolve_stamp_tax_schedule,
 )
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
+from src.core.git_provenance import capture_git_provenance
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
 from src.core.model_trainer import (
@@ -405,6 +407,11 @@ class Pipeline:
         output_dir.mkdir(parents=True, exist_ok=False)
         _logger.info("Run directory: %s", output_dir)
         started_at = datetime.now(tz=timezone.utc).isoformat()
+        # Captured at RUN START, not at report-write time: if HEAD advances while the run
+        # executes, a write-time capture would attribute the artifacts to code that did
+        # not produce them — and the pre-registration ancestor gate could mistake a plan
+        # committed mid-run for one that predates the run (codex P1 on #313).
+        git_provenance = capture_git_provenance()
 
         # Step 1: Initialize qlib (or validate config matches existing init)
         _logger.info("Initializing qlib runtime...")
@@ -677,6 +684,7 @@ class Pipeline:
                 signal_result, backtest_output, factor_result, attribution_result,
                 attribution_skipped_reason=attribution_skipped_reason,
                 factor_skipped_reason=factor_skipped_reason,
+                git_provenance=git_provenance,  # captured at run start, not write time
             )
             _logger.info("  Report: %s", report_path)
         except Exception as exc:  # noqa: BLE001
@@ -714,6 +722,7 @@ class Pipeline:
                 report_path=report_path,
                 model_artifact_path=model_result.model_artifact_path,
                 status="completed",
+                git_provenance=git_provenance,  # same run-start capture as the report
             )
             _logger.info(
                 "  Result artifacts: %s",
@@ -825,9 +834,18 @@ class Pipeline:
         attribution_result: AttributionResult | None = None,
         attribution_skipped_reason: str | None = None,
         factor_skipped_reason: str | None = None,
+        git_provenance: Mapping[str, Any] | None = None,
     ) -> None:
+        # Two engines, one schema: pipeline_report.json and walk_forward_report.json
+        # carry the SAME top-level git_commit / git_dirty provenance fields, so the
+        # run-comparison pre-registration gate reads one provenance path regardless of
+        # engine. Injectable (mirroring build_aggregate_report) — the impurity lives at
+        # the run() call site; a caller that omits it gets null fields, deterministic.
+        gp = git_provenance or {}
         report: dict[str, Any] = {
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "git_commit": gp.get("commit"),
+            "git_dirty": gp.get("dirty"),
             "metric_status": backtest_output.metric_status,
             "official_backtest_path": backtest_output.official_backtest_path,
             "config": {

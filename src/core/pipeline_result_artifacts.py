@@ -12,7 +12,6 @@ import json
 import math
 import platform
 import shutil
-import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -48,6 +47,7 @@ def write_pipeline_result_artifacts(
     model_artifact_path: str | None = None,
     stage_timings: Mapping[str, Any] | None = None,
     status: str = "completed",
+    git_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Write structured pipeline artifacts and return their paths.
 
@@ -109,6 +109,7 @@ def write_pipeline_result_artifacts(
         finished_at=finished_at,
         status=status,
         report_path=report_path,
+        git_provenance=git_provenance,
         stage_timings=dict(stage_timings or {}),
         artifact_paths={
             "config": str(config_path),
@@ -610,6 +611,7 @@ def _build_metadata(
     report_path: str,
     stage_timings: dict[str, Any],
     artifact_paths: dict[str, str],
+    git_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": PIPELINE_RESULT_ARTIFACT_SCHEMA_VERSION,
@@ -623,7 +625,11 @@ def _build_metadata(
         "config_hash": config_hash,
         "host": platform.node(),
         "qlib_version": _qlib_version(),
-        "git_commit": _git_commit(),
+        # The SAME run-start capture pipeline_report.json records (full sha) — NOT a
+        # second write-time probe: if HEAD advances mid-run, two independent captures
+        # would leave the run directory with two competing git_commit values and break
+        # any metadata-based ancestor reasoning (codex P2 on #313, round 5).
+        "git_commit": (git_provenance or {}).get("commit"),
         "metric_status": backtest_output.metric_status,
         "official_backtest_path": backtest_output.official_backtest_path,
         "config_summary": {
@@ -660,24 +666,6 @@ def _qlib_version() -> str | None:
         return None
     version = getattr(qlib, "__version__", "")
     return version if version else None
-
-
-def _git_commit() -> str | None:
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "--short=8", "HEAD"],
-            cwd=Path(__file__).resolve().parents[2],
-            check=False,
-            capture_output=True,
-            text=True,
-            shell=False,
-        )
-    except OSError:
-        return None
-    if completed.returncode != 0:
-        return None
-    value = completed.stdout.strip()
-    return value or None
 
 
 def _duration_seconds(started_at: str, finished_at: str) -> int | None:

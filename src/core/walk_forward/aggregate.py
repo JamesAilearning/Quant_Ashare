@@ -23,12 +23,18 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
+# NOTE: git provenance (git_commit / git_dirty) comes from the shared
+# src.core.git_provenance and is captured by each ENGINE at RUN START (not at report-write
+# time — a run can take hours / resume, and HEAD can advance mid-run), then injected here.
+# Two engines, one schema: pipeline_report.json records the same fields the same way.
+
 
 def build_aggregate_report(
     *,
     config: WalkForwardConfig,
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
+    git_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the aggregate JSON report dict.
 
@@ -42,9 +48,16 @@ def build_aggregate_report(
     - ``aggregate_metrics``: cross-fold aggregates from
       ``_compute_aggregate``.
     - ``num_folds``, ``generated_at``: provenance.
+    - ``git_commit``, ``git_dirty``: provenance of the CODE that produced
+      the run, for the run-comparison pre-registration gate (both ``None``
+      when the caller does not supply ``git_provenance`` — e.g. a synthetic
+      report — or when git is unavailable). Purely additive.
     """
+    gp = git_provenance or {}
     return {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "git_commit": gp.get("commit"),
+        "git_dirty": gp.get("dirty"),
         "config": asdict(config),
         "folds": [
             {
@@ -81,8 +94,17 @@ def write_aggregate_report(
     config: WalkForwardConfig,
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
+    git_provenance: Mapping[str, Any] | None = None,
 ) -> None:
     """Build and persist the aggregate JSON report.
+
+    ``git_provenance`` must be captured by the CALLER at RUN START (the engine
+    does this next to ``started_at``), NOT at write time: a walk-forward run
+    takes hours and can be resumed, so a write-time capture would attribute the
+    fold artifacts to a HEAD that advanced mid-run — and the pre-registration
+    ancestor gate could mistake a plan committed mid-run for one predating the
+    run (codex P1 on #313). A caller that omits it writes null fields and the
+    gate fails loud on that run.
 
     Same NaN handling as ``_write_fold_report`` — the aggregate
     metrics include ``mean_ic_1d`` etc. which are intentionally NaN
@@ -92,6 +114,7 @@ def write_aggregate_report(
     """
     report = build_aggregate_report(
         config=config, folds=folds, aggregate_metrics=aggregate_metrics,
+        git_provenance=git_provenance,
     )
     sanitised = _sanitize_for_json(report)
     with open(path, "w", encoding="utf-8") as f:

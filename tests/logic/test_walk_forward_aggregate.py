@@ -25,6 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.core.git_provenance import capture_git_provenance  # noqa: E402
 from src.core.walk_forward._types import WalkForwardFold  # noqa: E402
 from src.core.walk_forward.aggregate import (  # noqa: E402
     attribution_section_for_fold,
@@ -32,6 +33,7 @@ from src.core.walk_forward.aggregate import (  # noqa: E402
     compute_aggregate,
     compute_test_window_coverage,
     extract_cost_metrics,
+    write_aggregate_report,
 )
 from src.core.walk_forward.config import WalkForwardConfig, WalkForwardError  # noqa: E402
 
@@ -312,6 +314,80 @@ class BuildAggregateReportTests(unittest.TestCase):
         self.assertIsInstance(
             report["folds"][0]["prediction_shape"], list,
         )
+
+    def test_git_provenance_recorded_when_supplied(self):
+        # the run-comparison pre-registration gate reads git_commit; the builder records
+        # whatever provenance the I/O boundary captured (PR-3b-i).
+        config = WalkForwardConfig(output_dir="output/wf")
+        report = build_aggregate_report(
+            config=config, folds=[_make_fold(0)], aggregate_metrics={},
+            git_provenance={"commit": "abc1234def", "dirty": True},
+        )
+        self.assertEqual(report["git_commit"], "abc1234def")
+        self.assertIs(report["git_dirty"], True)
+
+    def test_git_provenance_defaults_to_none(self):
+        # a synthetic report (no provenance supplied) carries null git fields — additive,
+        # and the gate then fails loud on that run rather than trusting an absent commit.
+        config = WalkForwardConfig(output_dir="output/wf")
+        report = build_aggregate_report(
+            config=config, folds=[_make_fold(0)], aggregate_metrics={},
+        )
+        self.assertIsNone(report["git_commit"])
+        self.assertIsNone(report["git_dirty"])
+
+    def test_capture_git_provenance_shape_never_raises(self):
+        # runs in the repo (commit is a sha) or outside one (None); either way the shape is
+        # {'commit': str|None, 'dirty': bool|None} and it never raises.
+        gp = capture_git_provenance()
+        self.assertEqual(set(gp), {"commit", "dirty"})
+        self.assertIsInstance(gp["commit"], (str, type(None)))
+        self.assertIsInstance(gp["dirty"], (bool, type(None)))
+
+    def test_capture_git_provenance_keeps_commit_when_dirty_probe_fails(self):
+        # codex P2 on #313: rev-parse succeeds but the dirty probe fails/times out ->
+        # the commit must be KEPT (dirty degrades to None), otherwise a valid checkout's
+        # run loses git_commit and the ancestor gate rejects it needlessly.
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from src.core import git_provenance as gp_mod
+
+        calls = {"n": 0}
+
+        def fake_run(cmd, **kwargs):
+            calls["n"] += 1
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc123\n")
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        # patch.object on the module OBJECT (not a string target) — identity-safe.
+        with patch.object(gp_mod, "subprocess") as fake_sp:
+            fake_sp.run = fake_run
+            fake_sp.SubprocessError = subprocess.SubprocessError
+            fake_sp.TimeoutExpired = subprocess.TimeoutExpired
+            gp = gp_mod.capture_git_provenance()
+        self.assertEqual(gp["commit"], "abc123")
+        self.assertIsNone(gp["dirty"])
+        self.assertEqual(calls["n"], 2)
+
+    def test_write_aggregate_report_records_injected_git_provenance(self):
+        import json
+        import tempfile
+
+        # git_provenance is INJECTED by the caller (the engine captures it at RUN START,
+        # not write time — codex P1 on #313); the writer passes it through verbatim.
+        config = WalkForwardConfig(output_dir="output/wf")
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "walk_forward_report.json"
+            write_aggregate_report(
+                path=path, config=config, folds=[_make_fold(0)], aggregate_metrics={},
+                git_provenance={"commit": "deadbeef", "dirty": False},
+            )
+            data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["git_commit"], "deadbeef")
+        self.assertIs(data["git_dirty"], False)
 
 
 # ---------------------------------------------------------------------------

@@ -354,3 +354,40 @@ def test_qlib_version_returns_none_when_qlib_not_importable(monkeypatch):
     # invokes __import__ rather than reading from sys.modules.
     monkeypatch.delitem(sys.modules, "qlib", raising=False)
     assert _qlib_version() is None
+
+
+def test_metadata_git_commit_is_the_injected_run_start_capture(tmp_path):
+    """codex P2 on #313 round 5: metadata.json must record the SAME run-start
+    git provenance as pipeline_report.json — never a second write-time probe,
+    which could disagree if HEAD advances mid-run. Omitted -> null (no probe)."""
+    backtest = _make_backtest_output()
+    predictions = pd.Series(
+        [0.1, 0.2],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000", "SH600001"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        tmp_path / "with_gp",
+        config=_TinyConfig(),
+        backtest_output=backtest,
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+        git_provenance={"commit": "cafebabe" * 5, "dirty": False},
+    )
+    meta = json.loads((tmp_path / "with_gp" / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["git_commit"] == "cafebabe" * 5
+
+    write_pipeline_result_artifacts(
+        tmp_path / "without_gp",
+        config=_TinyConfig(),
+        backtest_output=backtest,
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+    )
+    meta2 = json.loads((tmp_path / "without_gp" / "metadata.json").read_text(encoding="utf-8"))
+    assert meta2["git_commit"] is None

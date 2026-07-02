@@ -673,6 +673,76 @@ class AttributionSectionStatusTests(unittest.TestCase):
         self.assertEqual(block["skipped_reason"], "unknown_reason")
 
 
+class ReportGitProvenanceTests(unittest.TestCase):
+    """Two engines, one schema: ``pipeline_report.json`` records the SAME top-level
+    ``git_commit`` / ``git_dirty`` provenance as ``walk_forward_report.json``
+    (codex P1 on #313 — the fields must be symmetric across engines)."""
+
+    @staticmethod
+    def _write_minimal_report(path: Path) -> None:
+        from types import SimpleNamespace
+
+        from src.core.signal_analyzer import SignalAnalysisResult
+
+        config = SimpleNamespace(
+            instruments="csi300", feature_handler="alpha158",
+            train_start="2022-01-01", train_end="2022-12-31",
+            valid_start="2023-01-01", valid_end="2023-03-31",
+            test_start="2023-04-01", test_end="2023-06-30",
+            model_type="LGBModel", benchmark_code="SH000300",
+            topk=50, n_drop=5, industry_taxonomy_id=None,
+        )
+        feature_result = SimpleNamespace(
+            train_shape=(10, 5), valid_shape=(5, 5), test_shape=(5, 5),
+        )
+        model_result = SimpleNamespace(
+            prediction_shape=(5, 1), model_artifact_path="m.pkl",
+        )
+        signal_result = SignalAnalysisResult(
+            ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5, "num_days": 5}},
+            ic_series={}, ic_decay=[0.01], turnover_stats={"mean_turnover": 0.1},
+        )
+        backtest_output = SimpleNamespace(
+            metric_status="ok", official_backtest_path="official",
+            report={}, provenance={}, risk_analysis={},
+        )
+        # git_provenance is INJECTED (mirroring build_aggregate_report) — deterministic,
+        # no mock. (A string-target mock.patch here proved order/module-identity fragile
+        # in the full CI suite.)
+        Pipeline._write_report(
+            str(path), config, feature_result, model_result,
+            signal_result, backtest_output,
+            factor_skipped_reason="unit-test",
+            git_provenance={"commit": "cafebabe" * 5, "dirty": False},
+        )
+
+    def test_pipeline_report_records_git_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "pipeline_report.json"
+            self._write_minimal_report(path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["git_commit"], "cafebabe" * 5)
+        self.assertIs(data["git_dirty"], False)
+
+    def test_git_provenance_key_names_match_walk_forward(self) -> None:
+        # the cross-engine symmetry pin: both report writers emit the identical
+        # top-level provenance key names.
+        from src.core.walk_forward.aggregate import build_aggregate_report
+        from src.core.walk_forward.config import WalkForwardConfig
+
+        wf = build_aggregate_report(
+            config=WalkForwardConfig(output_dir="output/wf"), folds=[],
+            aggregate_metrics={}, git_provenance={"commit": "x", "dirty": True},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "pipeline_report.json"
+            self._write_minimal_report(path)
+            pl = json.loads(path.read_text(encoding="utf-8"))
+        for key in ("git_commit", "git_dirty"):
+            self.assertIn(key, wf)
+            self.assertIn(key, pl)
+
+
 class SignalAnalysisSectionTests(unittest.TestCase):
     """``Pipeline._signal_analysis_section`` must coerce ``ic_summary``
     keys to ``str`` *up front*, not lean on ``json.dump``'s implicit

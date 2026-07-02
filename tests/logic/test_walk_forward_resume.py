@@ -210,6 +210,87 @@ class ManifestRoundTripTests(unittest.TestCase):
             tmp_files = list(Path(td).glob("*.tmp"))
             self.assertEqual(tmp_files, [])
 
+    def test_git_provenance_roundtrips(self) -> None:
+        # a fold's manifest records the commit of the code that PRODUCED it, so a
+        # resumed run can resolve honest report-level provenance (codex P1 #313 r4).
+        cfg = _make_config()
+        m = FoldManifest.from_fold(
+            fold=_make_fold(idx=1), config=cfg,
+            model_path="m", report_path="r",
+            predictions_path="p", positions_path=None,
+            git_provenance={"commit": "abc123", "dirty": False},
+        )
+        reborn = FoldManifest.from_dict(json.loads(json.dumps(m.to_dict())))
+        self.assertEqual(reborn.git_commit, "abc123")
+        self.assertIs(reborn.git_dirty, False)
+
+    def test_legacy_manifest_without_git_fields_loads_as_unknown(self) -> None:
+        # manifests written before provenance stamping stay loadable; their
+        # provenance is UNKNOWN (None), which the resolver maps to a null report
+        # commit -> the ancestor gate fails loud rather than guessing.
+        cfg = _make_config()
+        m = FoldManifest.from_fold(
+            fold=_make_fold(idx=2), config=cfg,
+            model_path="m", report_path="r",
+            predictions_path="p", positions_path=None,
+        )
+        payload = m.to_dict()
+        del payload["git_commit"], payload["git_dirty"]  # simulate a legacy file
+        reborn = FoldManifest.from_dict(payload)
+        self.assertIsNone(reborn.git_commit)
+        self.assertIsNone(reborn.git_dirty)
+
+
+# ---------------------------------------------------------------------------
+# Report-level provenance resolution across folds
+# ---------------------------------------------------------------------------
+
+
+class ResolveRunGitProvenanceTests(unittest.TestCase):
+    """codex P1 on #313 round 4: a resumed run must NOT stamp the resuming
+    invocation's HEAD over folds an older commit produced."""
+
+    def test_all_folds_same_commit_resolves_to_it(self) -> None:
+        from src.core.git_provenance import resolve_run_git_provenance
+        r = resolve_run_git_provenance(
+            [{"commit": "aaa", "dirty": False}, {"commit": "aaa", "dirty": False}]
+        )
+        self.assertEqual(r, {"commit": "aaa", "dirty": False})
+
+    def test_mixed_commits_resolve_to_null(self) -> None:
+        # folds generated at commit A, resumed at commit B -> refuse to stamp either
+        from src.core.git_provenance import resolve_run_git_provenance
+        r = resolve_run_git_provenance(
+            [{"commit": "aaa", "dirty": False}, {"commit": "bbb", "dirty": False}]
+        )
+        self.assertEqual(r, {"commit": None, "dirty": None})
+
+    def test_any_unknown_provenance_resolves_to_null(self) -> None:
+        # a legacy (pre-provenance) manifest in the mix -> unknown -> null
+        from src.core.git_provenance import resolve_run_git_provenance
+        r = resolve_run_git_provenance([{"commit": "aaa", "dirty": False}, None])
+        self.assertEqual(r, {"commit": None, "dirty": None})
+
+    def test_any_dirty_fold_marks_run_dirty(self) -> None:
+        from src.core.git_provenance import resolve_run_git_provenance
+        r = resolve_run_git_provenance(
+            [{"commit": "aaa", "dirty": True}, {"commit": "aaa", "dirty": False}]
+        )
+        self.assertEqual(r, {"commit": "aaa", "dirty": True})
+
+    def test_unknown_dirty_degrades_to_none_but_keeps_commit(self) -> None:
+        from src.core.git_provenance import resolve_run_git_provenance
+        r = resolve_run_git_provenance(
+            [{"commit": "aaa", "dirty": None}, {"commit": "aaa", "dirty": False}]
+        )
+        self.assertEqual(r, {"commit": "aaa", "dirty": None})
+
+    def test_empty_fold_list_resolves_to_null(self) -> None:
+        from src.core.git_provenance import resolve_run_git_provenance
+        self.assertEqual(
+            resolve_run_git_provenance([]), {"commit": None, "dirty": None},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Discover
