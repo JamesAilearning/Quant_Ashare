@@ -722,6 +722,7 @@ class Pipeline:
                 report_path=report_path,
                 model_artifact_path=model_result.model_artifact_path,
                 status="completed",
+                git_provenance=git_provenance,  # same run-start capture as the report
             )
             _logger.info(
                 "  Result artifacts: %s",
