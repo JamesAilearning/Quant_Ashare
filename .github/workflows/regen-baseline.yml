@@ -74,13 +74,19 @@ jobs:
         run: |
           python - <<'EOF'
           import hashlib, json, os, subprocess
-          def sha(p):
-              # text fixtures are hashed over CRLF->LF-normalized bytes so the
-              # digest is checkout-stable across OSes (binary files unaffected
-              # in practice: parquet contains no CRLF byte pairs by design here)
+          def sha_text(p):
+              # TEXT fixtures: CRLF->LF-normalized so the digest is
+              # checkout-stable across OSes (mirrors _normalized_sha256 in the
+              # regression guard)
               return hashlib.sha256(
                   open(p, "rb").read().replace(b"\r\n", b"\n")
               ).hexdigest()
+          def sha_raw(p):
+              # BINARY files (parquet): RAW bytes — normalizing would corrupt
+              # legitimate 0x0d0a pairs inside the binary payload, and the
+              # regression guard compares the registry over raw bytes
+              # (codex P2 #321 r7)
+              return hashlib.sha256(open(p, "rb").read()).hexdigest()
           freeze = subprocess.run(["pip", "freeze"], capture_output=True, text=True).stdout
           meta = {
               "reason": os.environ.get("REASON", ""),
@@ -88,8 +94,8 @@ jobs:
                   f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
                   f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
               ),
-              "baseline_sha256": sha("/tmp/regen2/new_baseline.json"),
-              "registry_sha256": sha(
+              "baseline_sha256": sha_text("/tmp/regen2/new_baseline.json"),
+              "registry_sha256": sha_raw(
                   "tests/regression/fixtures/regen2/"
                   "delisted_registry_frozen_20260618.parquet"
               ),

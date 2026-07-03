@@ -201,6 +201,80 @@ class DiffBaselinesTests(unittest.TestCase):
                        new_agg={"mean_ic": 0.016})
         self.assertEqual(rc, 1)
 
+    def _fold0_b(self, ic_1d: float = 0.01) -> dict:
+        """fold-0 landed on the documented alternate selection (B)."""
+        alt = self.cli._KNOWN_FOLD0_BACKTEST_ALT
+        return _fold(0, self._F0, ic_1d, ret=alt["annualized_return"],
+                     dd=alt["max_drawdown"], ir=alt["information_ratio"])
+
+    def test_fold0_known_alternate_state_passes(self) -> None:
+        # codex P2 #321 r7: fold-0's topk selection is per-runner bimodal —
+        # a re-sign run landing on the documented alternate (B) must NOT fail
+        # R2, and its derived aggregate keys are accepted on the SAME state.
+        agg_alt = self.cli._KNOWN_AGGREGATE_ALT
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [self._fold0_b(), _fold(1, self._F1, 0.02)]
+        rc = self._run(
+            old, new,
+            old_agg={"mean_information_ratio": 0.5},
+            new_agg={"mean_information_ratio": agg_alt["mean_information_ratio"]},
+        )
+        self.assertEqual(rc, 0)
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("fold-0 selection B", md)
+
+    def test_fold0_third_state_fails_r2(self) -> None:
+        # a value that is neither the committed selection nor the documented
+        # alternate is a real regression, not the known bimodality.
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.01, ret=0.42), _fold(1, self._F1, 0.02)]
+        self.assertEqual(self._run(old, new), 1)
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("R2 VIOLATION", md)
+
+    def test_fold0_per_metric_ab_mix_fails_r2(self) -> None:
+        # the three topk metrics come from ONE held portfolio — a per-metric
+        # mix of A and B values cannot arise in a genuine run (group check).
+        alt = self.cli._KNOWN_FOLD0_BACKTEST_ALT
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.01, ret=alt["annualized_return"]),
+               _fold(1, self._F1, 0.02)]  # ret=B, dd/ir=A
+        self.assertEqual(self._run(old, new), 1)
+
+    def test_fold0_aggregate_state_mismatch_fails_r4(self) -> None:
+        # fold-0 landed on B but a fold-0-derived aggregate key stayed on the
+        # committed A value — internally inconsistent baseline, must abort
+        # even though that aggregate value "did not move".
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [self._fold0_b(), _fold(1, self._F1, 0.02)]
+        rc = self._run(old, new,
+                       old_agg={"mean_information_ratio": 0.5},
+                       new_agg={"mean_information_ratio": 0.5})
+        self.assertEqual(rc, 1)
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("R4 VIOLATION", md)
+        self.assertIn("state-consistent", md)
+
+    def test_fold0_ab_constants_mirror_regression_test(self) -> None:
+        # the gate's A/B constants are MIRRORED from the replay regression
+        # test (the source of truth) — a one-sided update must fail HERE, not
+        # surface as a nondeterministic re-sign failure months later.
+        path = (PROJECT_ROOT / "tests" / "regression"
+                / "test_walk_forward_replay_baseline_regen2.py")
+        spec = importlib.util.spec_from_file_location("_regen2_replay_ref", path)
+        assert spec and spec.loader
+        ref = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ref)
+        self.assertEqual(self.cli._FOLD0_DEGENERATE_INDEX,
+                         ref._FOLD0_DEGENERATE_INDEX)
+        self.assertEqual(self.cli._FOLD0_TOPK_DEPENDENT,
+                         ref._FOLD0_TOPK_DEPENDENT)
+        self.assertEqual(self.cli._KNOWN_FOLD0_BACKTEST_ALT,
+                         ref._KNOWN_FOLD0_BACKTEST_ALT)
+        self.assertEqual(self.cli._KNOWN_AGGREGATE_ALT,
+                         ref._KNOWN_AGGREGATE_ALT)
+        self.assertEqual(self.cli._FOLD0_ABS_TOL, ref.REPLAY_ABS_TOL)
+
     def test_aggregate_schema_change_fails_r4(self) -> None:
         folds = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
         rc = self._run(folds, [dict(f) for f in folds],

@@ -22,6 +22,17 @@ up front, not negotiated after seeing the numbers:
       "ic"-named key that maps to no known per-fold horizon cannot be
       attributed and aborts.
 
+FOLD-0 EXCEPTION (codex P2 on #321 round 7): fold-0's frozen scores are
+degenerate and its topk selection is PER-RUNNER bimodal even on the canonical
+pin — the replay regression test accepts the committed state (A) or the ONE
+documented alternate (B) for fold-0's topk-dependent backtest metrics and the
+seven aggregate keys derived from them. This gate mirrors that exception
+EXACTLY (same constants, same 1e-6 tolerance, same group-wise all-A-or-all-B
+check, same state-consistency between fold-0 and its derived aggregates), so
+the sanctioned re-sign workflow cannot fail nondeterministically on a runner
+that lands on B. A THIRD state, a per-metric A/B mix, or a fold-0/aggregate
+state mismatch still aborts. Everything else stays strict.
+
 A fold "has a hit" when a registry instrument BOTH (a) appears in that
 fold's FROZEN PREDICTIONS (actual (datetime, instrument) rows — the registry
 is full-market, so date overlap alone would let an unrelated market delisting
@@ -41,6 +52,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import math
 import pickle
 from pathlib import Path
 from typing import Any
@@ -49,6 +61,55 @@ _METRICS = ("ic_1d", "ic_5d", "annualized_return", "max_drawdown", "information_
 _BACKTEST_METRICS = ("annualized_return", "max_drawdown", "information_ratio")
 _IC_METRICS = ("ic_1d", "ic_5d")
 LOOKBACK_DAYS = 14  # calendar days: max_period(5)+entry(1) trading days + holiday slack
+
+# Fold-0 A/B bimodality — MIRRORED from tests/regression/
+# test_walk_forward_replay_baseline_regen2.py (codex P2 #321 r7; keep the two
+# files in sync — the regression test is the source of truth). fold-0's
+# degenerate scores make its topk selection per-runner bimodal on the
+# canonical pin; the re-sign runner may land on the documented alternate (B)
+# with NO semantic change, so this gate must accept exactly {A, B} — and
+# nothing else — or the only sanctioned re-sign channel fails
+# nondeterministically before producing artifacts.
+_FOLD0_DEGENERATE_INDEX = 0
+_FOLD0_TOPK_DEPENDENT = ("annualized_return", "max_drawdown", "information_ratio")
+_KNOWN_FOLD0_BACKTEST_ALT = {
+    "annualized_return": -0.004711347265649301,
+    "max_drawdown": -0.02726356962697682,
+    "information_ratio": -0.0712889987158074,
+}
+_KNOWN_AGGREGATE_ALT = {
+    "mean_annualized_return": 0.028012145880259152,
+    "mean_annualized_return_ci_low": -0.04948816928667496,
+    "mean_annualized_return_ci_high": 0.09865727070463469,
+    "mean_information_ratio": 0.19787663958380639,
+    "std_information_ratio": 1.9755829786899575,
+    "mean_information_ratio_ci_low": -0.6482102836796528,
+    "mean_information_ratio_ci_high": 0.9631212903466849,
+}
+_FOLD0_ABS_TOL = 1e-6  # same tolerance the replay regression test uses
+
+
+def _tol_close(a: Any, b: Any) -> bool:
+    return math.isclose(float(a), float(b), rel_tol=0.0, abs_tol=_FOLD0_ABS_TOL)
+
+
+def _fold0_state(
+    old: dict[int, dict[str, Any]], new: dict[int, dict[str, Any]],
+) -> str | None:
+    """Which known selection fold-0 landed on: "A" (committed), "B" (documented
+    alternate), or None (a THIRD state / per-metric mix — a real regression).
+    Group-wise on purpose: all three topk metrics come from ONE held portfolio,
+    so a mix of A and B values cannot arise in a genuine run."""
+    fo = old[_FOLD0_DEGENERATE_INDEX]
+    fn = new[_FOLD0_DEGENERATE_INDEX]
+    if all(_tol_close(fn[m], fo[m]) for m in _FOLD0_TOPK_DEPENDENT):
+        return "A"
+    if all(
+        _tol_close(fn[m], _KNOWN_FOLD0_BACKTEST_ALT[m])
+        for m in _FOLD0_TOPK_DEPENDENT
+    ):
+        return "B"
+    return None
 
 
 def _load(path: str) -> dict[str, Any]:
@@ -148,6 +209,20 @@ def main(argv: list[str] | None = None) -> int:
     ]
     failures: list[str] = []
     n_changed = 0
+    # Fold-0 A/B exception (codex P2 #321 r7): its topk-dependent backtest
+    # metrics are checked as a GROUP against the two documented states instead
+    # of the strict per-metric R2 — everything else on fold-0 (its ICs) and
+    # every other fold stays strict.
+    fold0_state = (
+        _fold0_state(old, new) if _FOLD0_DEGENERATE_INDEX in old else None
+    )
+    if _FOLD0_DEGENERATE_INDEX in old and fold0_state is None:
+        failures.append(
+            "R2 VIOLATION: fold 0 topk-dependent backtest metrics are neither "
+            "the committed selection (A) nor the documented tie-break alternate "
+            "(B) — a THIRD state (or a per-metric A/B mix) is a real "
+            "regression, not the known fold-0 bimodality."
+        )
     for i in sorted(old):
         fo, fn = old[i], new[i]
         fold_hits = hits.get(i, [])
@@ -155,6 +230,15 @@ def main(argv: list[str] | None = None) -> int:
             vo, vn = fo[m], fn[m]
             identical = repr(vo) == repr(vn)
             if identical:
+                continue
+            if i == _FOLD0_DEGENERATE_INDEX and m in _FOLD0_TOPK_DEPENDENT:
+                # group-checked above; the table still records the movement
+                n_changed += 1
+                lines.append(
+                    f"| {i} | {fo['test_period']} | {m} | {vo!r} | {vn!r} "
+                    f"| {vn - vo:+.3e} | fold-0 selection "
+                    f"{fold0_state or 'UNKNOWN'} (documented bimodality) |"
+                )
                 continue
             n_changed += 1
             attributed = ", ".join(fold_hits) if fold_hits else "NONE"
@@ -199,7 +283,41 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
         vo, vn = agg_old[key], agg_new[key]
-        if repr(vo) == repr(vn):
+        changed = repr(vo) != repr(vn)
+        if key in _KNOWN_AGGREGATE_ALT and _FOLD0_DEGENERATE_INDEX in old:
+            # fold-0-derived aggregate keys are bimodal WITH fold-0 (codex P2
+            # #321 r7): each must match the SAME selection fold-0 landed on —
+            # A -> committed value, B -> documented alternate — checked even
+            # when the value did NOT move (an unchanged A value under a
+            # fold-0 B flip is an internally inconsistent baseline). A third
+            # value or a fold-0/aggregate state mismatch aborts.
+            target = (
+                vo if fold0_state == "A"
+                else _KNOWN_AGGREGATE_ALT[key] if fold0_state == "B"
+                else None
+            )
+            ok = target is not None and _tol_close(vn, target)
+            if changed:
+                n_changed += 1
+            if changed or not ok:
+                attributed = (
+                    f"fold-0 selection {fold0_state} (documented bimodality)"
+                    if ok else "NONE"
+                )
+                lines.append(
+                    f"| aggregate | - | {key} | {vo!r} | {vn!r} | - | "
+                    f"{attributed} |"
+                )
+            if not ok:
+                failures.append(
+                    f"R4 VIOLATION: fold-0-derived aggregate key {key!r} "
+                    f"(old={vo!r}, new={vn!r}) does not match fold-0's "
+                    f"selection state ({fold0_state or 'UNDETERMINED'}) — "
+                    "bimodality must be state-consistent between fold-0 and "
+                    "its derived aggregates."
+                )
+            continue
+        if not changed:
             continue
         n_changed += 1
         ic_derived = "ic" in key.lower()

@@ -156,6 +156,9 @@ def _close(a: float | None, b: float | None) -> bool:
 # exact build); a future numpy<2 patch that partitions the ties differently could surface
 # a third selection and red a valid runner — that is the INTENDED fail-loud (investigate;
 # the phase-6 deterministic secondary sort key removes the dependence for good).
+# NOTE: these A/B constants are MIRRORED in scripts/regen/diff_baselines.py —
+# the re-sign gate accepts the same {A, B} set (codex P2 #321 r7). Update BOTH
+# together; this file is the source of truth.
 _FOLD0_DEGENERATE_INDEX = 0
 _FOLD0_TOPK_DEPENDENT = ("annualized_return", "max_drawdown", "information_ratio")
 _KNOWN_FOLD0_BACKTEST_ALT = {

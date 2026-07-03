@@ -318,6 +318,15 @@ by `scripts/regen/diff_baselines.py`:**
   transfer), or any aggregate key added/removed (schema change) aborts. An
   `ic`-named key that maps to no known per-fold horizon aborts likewise.
 
+**Fold-0 exception:** fold-0's topk selection is per-runner bimodal (see "the
+fold-0 story" above); the gate mirrors the regression test's documented
+{A, B} states for fold-0's three topk-dependent backtest metrics and the
+seven aggregate keys derived from them, group-wise and state-consistent
+(fold-0 landing on B requires its derived aggregates on B too). A third
+state, a per-metric mix, or a state mismatch aborts — the constants live in
+the regression test (source of truth) and are mirrored in the gate; update
+both together.
+
 **Evidence, not trust:** the workflow emits
 `walk_forward_baseline_metrics.evidence.json` (workflow run URL,
 baseline/registry sha256, pip-freeze hash, runner image) — named exactly as
