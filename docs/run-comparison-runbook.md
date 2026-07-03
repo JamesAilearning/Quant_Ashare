@@ -45,7 +45,7 @@ Spec: `openspec` change `add-run-comparison-methodology`.
 | Plan's **last-touched commit** is not a git **ancestor** of a run's `git_commit` | The plan (or its latest edit) does not provably predate the run. Editing a plan after the runs moves its last-touched commit past them — exactly the post-hoc change being caught. Re-register and re-run. |
 | Run has `git_commit: null` | Pre-provenance run, **or a resume that mixed commits across folds**, or git was unavailable. Ancestry cannot be proven. Re-run all folds in one invocation. |
 | Run has `git_dirty: true` (or unknown) | The commit does not fully describe the code that ran; ancestry against it proves nothing. Run from a clean committed state. |
-| The two runs' embedded configs disagree on ST handling (`st_mask_mode` / ST-input presence) | One side ST-on and one ST-off measures the PR#223 ST interaction, not the registered hypothesis — "ST-off on both sides" must hold by machine check, not by care. Re-run the mismatched side. |
+| The two runs' embedded configs disagree on ST handling (`st_mask_mode` / the CONCRETE `namechange_path`, separator-normalized) | ST-on vs ST-off measures the PR#223 ST interaction; two different namechange snapshots exclude different ST sets — either way the pair measures an input change, not the registered hypothesis. "Same ST handling on both sides" must hold by machine check, not by care. Re-run the mismatched side. |
 | A run's report embeds no `config` block | ST-handling parity cannot be proven. Re-run on the current engine, or use `--prereg <ref>` for an exploratory (non-decision-grade) comparison. |
 | `--prereg-plan` without `--variant` | Without the claimed variant the unregistered-comparison check is vacuous. |
 

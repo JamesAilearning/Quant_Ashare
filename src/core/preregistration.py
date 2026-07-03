@@ -30,7 +30,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -191,9 +191,19 @@ def is_ancestor(ancestor: str, descendant: str, *, repo_root: str | Path) -> boo
     )
 
 
-def _st_handling(report: Mapping[str, Any], *, run_label: str) -> tuple[str, bool]:
+def _st_handling(
+    report: Mapping[str, Any], *, run_label: str,
+) -> tuple[str, str | None]:
     """The run's ST-exclusion handling, derived from the report's EMBEDDED
-    config: ``(st_mask_mode, st-inputs-present)``.
+    config: ``(st_mask_mode, concrete namechange input path or None)``.
+
+    The CONCRETE path matters, not mere presence (codex P1 #323 round 2): two
+    ST-on runs fed different namechange snapshots exclude DIFFERENT ST sets —
+    that is an input change between baseline and treatment, not the
+    registered variant. The path is separator-normalized (a pure string
+    operation — deterministic on every platform, no filesystem access) so a
+    slash-vs-backslash spelling of the same file doesn't refuse; case is NOT
+    folded (a case-only difference refuses — the safe, fail-loud direction).
 
     FAIL-LOUD when the report carries no ``config`` block — parity cannot be
     proven, and an ST-on-vs-ST-off pair would contaminate an isolated
@@ -212,8 +222,9 @@ def _st_handling(report: Mapping[str, Any], *, run_label: str) -> tuple[str, boo
             "comparison."
         )
     mode = str(cfg.get("st_mask_mode") or "required")
-    has_st_inputs = bool(str(cfg.get("namechange_path") or "").strip())
-    return mode, has_st_inputs
+    raw = str(cfg.get("namechange_path") or "").strip()
+    st_inputs = str(PurePosixPath(raw.replace("\\", "/"))) if raw else None
+    return mode, st_inputs
 
 
 def gate_comparison(
@@ -250,15 +261,15 @@ def gate_comparison(
     if base_st != treat_st:
         raise PreregistrationError(
             "ST-handling MISMATCH between the compared runs: baseline has "
-            f"st_mask_mode={base_st[0]!r} (st inputs "
-            f"{'set' if base_st[1] else 'absent'}) vs treatment "
-            f"st_mask_mode={treat_st[0]!r} (st inputs "
-            f"{'set' if treat_st[1] else 'absent'}). An isolated experiment "
-            "must hold ST handling constant on both sides "
-            "(docs/run-comparison-runbook.md) — one side ST-on and one ST-off "
-            "measures the PR#223 ST interaction, not the registered "
-            "hypothesis. Refusing the decision-grade verdict; re-run the "
-            "mismatched side."
+            f"st_mask_mode={base_st[0]!r} (st inputs: {base_st[1] or 'NONE'}) "
+            f"vs treatment st_mask_mode={treat_st[0]!r} (st inputs: "
+            f"{treat_st[1] or 'NONE'}). An isolated experiment must hold ST "
+            "handling constant on both sides — SAME mode AND the SAME "
+            "namechange input (docs/run-comparison-runbook.md): ST-on vs "
+            "ST-off measures the PR#223 ST interaction, and two different "
+            "namechange snapshots exclude different ST sets — either way the "
+            "pair measures an input change, not the registered hypothesis. "
+            "Refusing the decision-grade verdict; re-run the mismatched side."
         )
     flags: list[str] = []
     if variant not in plan.treatments:

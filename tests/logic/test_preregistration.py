@@ -276,6 +276,42 @@ class GateTests(unittest.TestCase):
             )
         self.assertEqual(flags, [])
 
+    def test_st_on_with_different_namechange_inputs_refused(self) -> None:
+        # codex P1 #323 round 2: presence is not parity — two ST-on runs fed
+        # DIFFERENT namechange snapshots exclude different ST sets; the pair
+        # measures an input change, not the registered variant.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(
+                        run_commit, namechange_path="D:/data/nc_20260101.parquet",
+                    ),
+                    treatment_report=_report(
+                        run_commit, namechange_path="D:/data/nc_20260601.parquet",
+                    ),
+                    variant="5d",
+                )
+        self.assertIn("ST-handling MISMATCH", str(cm.exception))
+
+    def test_cosmetic_path_spelling_is_not_a_mismatch(self) -> None:
+        # separator/case-normalized comparison: the SAME file spelled with
+        # different separators (or case, on Windows) must not false-refuse.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_report(
+                    run_commit, namechange_path="D:/data/all_namechanges.parquet",
+                ),
+                treatment_report=_report(
+                    run_commit, namechange_path="D:\\data\\all_namechanges.parquet",
+                ),
+                variant="5d",
+            )
+        self.assertEqual(flags, [])
+
     def test_pre_field_config_reads_as_required(self) -> None:
         # a report whose config predates st_mask_mode (key absent) is the old
         # mandatory-mask engine: parity with an explicit "required" run holds.
