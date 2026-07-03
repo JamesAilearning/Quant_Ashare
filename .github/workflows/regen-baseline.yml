@@ -75,7 +75,12 @@ jobs:
           python - <<'EOF'
           import hashlib, json, os, subprocess
           def sha(p):
-              return hashlib.sha256(open(p, "rb").read()).hexdigest()
+              # text fixtures are hashed over CRLF->LF-normalized bytes so the
+              # digest is checkout-stable across OSes (binary files unaffected
+              # in practice: parquet contains no CRLF byte pairs by design here)
+              return hashlib.sha256(
+                  open(p, "rb").read().replace(b"\r\n", b"\n")
+              ).hexdigest()
           freeze = subprocess.run(["pip", "freeze"], capture_output=True, text=True).stdout
           meta = {
               "reason": os.environ.get("REASON", ""),

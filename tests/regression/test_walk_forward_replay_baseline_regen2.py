@@ -99,7 +99,19 @@ EVIDENCE_SIDECAR = FIXTURES_DIR / "walk_forward_baseline_metrics.evidence.json"
 # "presence mandatory from the first re-sign" must be machine-enforceable, not
 # aspirational). Any OTHER baseline content REQUIRES the sidecar. A re-sign PR
 # updates the baseline + sidecar + this pin together.
-LEGACY_BASELINE_SHA256 = "0a74f8e0e829dbacd7d6948967fc81b1ee68bed007f940745f4fc18130432298"
+# NOTE: the hash is over LINE-ENDING-NORMALIZED bytes (CRLF -> LF): the
+# baseline is a TEXT fixture subject to git autocrlf, so raw-byte hashes
+# differ between Windows and Linux checkouts of identical content.
+LEGACY_BASELINE_SHA256 = "51d9f1eb88cc3c6df47ca26bd37081ba2895c148e3fa2725e067c1ef01fc4760"
+
+
+def _normalized_sha256(path: Path) -> str:
+    """sha256 over CRLF->LF-normalized bytes — checkout-stable for text files."""
+    return hashlib.sha256(
+        path.read_bytes().replace(b"\r\n", b"\n")
+    ).hexdigest()
+
+
 TARBALL = FIXTURES_DIR / "regen2_minibundle.tar.gz"
 TARBALL_SHA256 = FIXTURES_DIR / "regen2_minibundle.tar.gz.sha256"
 _ARCROOT = "regen2_minibundle"  # the dir name inside the tarball
@@ -225,7 +237,7 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         # the ONE pinned legacy baseline is exempt; ANY other baseline content
         # is by definition a re-sign and MUST ship the evidence sidecar — a
         # re-sign PR that forgets it fails here, red, not silently green.
-        baseline_digest = hashlib.sha256(BASELINE_FIXTURE.read_bytes()).hexdigest()
+        baseline_digest = _normalized_sha256(BASELINE_FIXTURE)
         if baseline_digest != LEGACY_BASELINE_SHA256 and not EVIDENCE_SIDECAR.exists():
             raise AssertionError(
                 "baseline content differs from the pinned legacy baseline "
@@ -239,7 +251,7 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         # re-sign channel.
         if EVIDENCE_SIDECAR.exists():
             ev = json.loads(EVIDENCE_SIDECAR.read_text(encoding="utf-8"))
-            actual_baseline = hashlib.sha256(BASELINE_FIXTURE.read_bytes()).hexdigest()
+            actual_baseline = _normalized_sha256(BASELINE_FIXTURE)
             actual_registry = hashlib.sha256(REGISTRY_FIXTURE.read_bytes()).hexdigest()
             if ev.get("baseline_sha256") != actual_baseline or (
                 ev.get("registry_sha256") != actual_registry
