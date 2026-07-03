@@ -215,6 +215,46 @@ class AlignmentGuardTests(unittest.TestCase):
             )
 
 
+class RegistryFingerprintTests(unittest.TestCase):
+    """codex P2 on #320: the registry CONTENT (not just its path) folds into
+    the resume fingerprint — a registry regenerated in place must invalidate
+    resume, mirroring the namechange_path handling."""
+
+    def _fp(self, registry_path: str = "") -> str:
+        from src.core.walk_forward._resume import compute_config_fingerprint
+        from src.core.walk_forward.config import WalkForwardConfig
+
+        return compute_config_fingerprint(
+            WalkForwardConfig(delisted_registry_path=registry_path),
+        )
+
+    def test_in_place_content_change_changes_fingerprint(self) -> None:
+        with TemporaryDirectory() as td:
+            reg = Path(td) / "registry.parquet"
+            pd.DataFrame(
+                {"ticker": ["SH600068"], "delist_date": ["2021-09-13"]}
+            ).to_parquet(reg)
+            fp_a = self._fp(str(reg))
+            fp_a_again = self._fp(str(reg))
+            pd.DataFrame(
+                {"ticker": ["SH600068", "SZ002411"],
+                 "delist_date": ["2021-09-13", "2023-07-12"]}
+            ).to_parquet(reg)  # regenerated IN PLACE, same path
+            fp_b = self._fp(str(reg))
+        self.assertEqual(fp_a, fp_a_again)  # deterministic on same content
+        self.assertNotEqual(fp_a, fp_b)    # content change invalidates resume
+
+    def test_empty_path_adds_no_key_and_missing_file_is_deterministic(self) -> None:
+        # empty default must NOT change pre-existing fingerprints (adoption is
+        # free on opted-out configs); a configured-but-missing file still
+        # yields a deterministic fingerprint (MISSING sentinel, same as
+        # namechange_path).
+        self.assertEqual(self._fp(""), self._fp(""))
+        fp_missing = self._fp("X:/nonexistent/registry.parquet")
+        self.assertEqual(fp_missing, self._fp("X:/nonexistent/registry.parquet"))
+        self.assertNotEqual(self._fp(""), fp_missing)
+
+
 class EngineActivationTests(unittest.TestCase):
     """Operator review point 1: the wiring is EXERCISED in PR-1 — a configured
     provider reaches the attribution call site through the engine, not dead
