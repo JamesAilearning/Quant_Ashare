@@ -454,7 +454,10 @@ class Pipeline:
         from src.core.pit_wiring import build_pit_provider
         pit_provider = build_pit_provider(
             delisted_registry_path=config.delisted_registry_path,
-            provider_uri=config.provider_uri,
+            # the NORMALIZED runtime value (QlibRuntimeConfig.__post_init__
+            # expands ~/relative/casing), same as the engine's canonical_cfg
+            # source — never the raw config string (codex P2 on #320)
+            provider_uri=requested_config.provider_uri,
             data_adjust_mode=config.adjust_mode,
             region=config.region,
         )

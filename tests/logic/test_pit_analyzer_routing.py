@@ -114,6 +114,22 @@ class WiringHelperTests(unittest.TestCase):
         self.assertEqual(kwargs["data_adjust_mode"], ADJUST_MODE_PRE)
         self.assertEqual(kwargs["delisted_registry_path"], "X:/reg.parquet")
 
+    def test_provider_uri_is_normalized_before_construction(self) -> None:
+        # codex P2 #320 round 2: a "~" path that canonical init accepts must
+        # not fail the provider's pre-expansion calendars check — the helper
+        # normalizes for EVERY caller.
+        import src.pit.query as query_mod
+
+        fake_cls = MagicMock(return_value="P")
+        with patch.object(query_mod, "PITDataProvider", fake_cls):
+            build_pit_provider(
+                delisted_registry_path="X:/reg.parquet",
+                provider_uri="~/some_bundle",
+                data_adjust_mode=ADJUST_MODE_PRE,
+            )
+        passed_uri = fake_cls.call_args.kwargs["provider_uri"]
+        self.assertNotIn("~", str(passed_uri))
+
     def test_missing_registry_propagates_fail_loud(self) -> None:
         # never a silent fall-through to the WARN path (spec)
         with self.assertRaises(PITDataProviderError):

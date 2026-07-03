@@ -30,10 +30,16 @@ def build_pit_provider(
     """
     if not str(delisted_registry_path or "").strip():
         return None
+    from src.core.qlib_runtime import _normalize_provider_uri
     from src.pit.query import PITDataProvider
 
+    # Normalize HERE so every caller is immune: the provider's own
+    # calendars/day.txt existence check runs on the raw path BEFORE
+    # QlibRuntimeConfig would expand ``~`` — an un-normalized "~/bundle"
+    # that canonical init accepts would fail PIT construction (codex P2
+    # on #320). Idempotent for already-normalized runtime values.
     return PITDataProvider(
-        provider_uri=provider_uri,
+        provider_uri=_normalize_provider_uri(str(provider_uri)),
         delisted_registry_path=delisted_registry_path,
         data_adjust_mode=data_adjust_mode,
         region=region,
