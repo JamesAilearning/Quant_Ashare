@@ -290,3 +290,58 @@ Already established here (no further dependency):
   benchmark), confirmed at the full **23 folds** (benchmark effect −0.253 IR /
   −2.31 pp; 17-fold agreed at −0.305 / −2.37 pp). REGEN-2 price-excess IR 0.415,
   CI [−0.389, 1.137] — also straddles zero, consistent with an unproven edge.
+
+---
+
+## Re-sign channel (audit P2, operator decision 2 — 2026-07-03)
+
+Any future regeneration of `walk_forward_baseline_metrics.json` goes ONLY
+through `.github/workflows/regen-baseline.yml` (manual dispatch, runner
+PINNED to ubuntu-22.04 — never `ubuntu-latest`; OS/BLAS drift is an off-pin
+variable, the numpy 2.x lesson applies to runner images too).
+
+**Acceptance rules — committed BEFORE the numbers are seen, enforced in-job
+by `scripts/regen/diff_baselines.py`:**
+
+- **R1** — folds without an attributable cause (for the PIT re-sign: no
+  delisted instrument whose delist_date falls within the fold's IC
+  forward-return reach) must be IDENTICAL, not "close".
+- **R2** — backtest metrics (`annualized_return` / `max_drawdown` /
+  `information_ratio`) must be identical on EVERY fold; the channel only
+  re-signs IC-input changes. Any drift aborts.
+- **R3** — a change that cannot be attributed aborts the re-sign.
+  Investigate; never explain past it.
+- **R4** — the `aggregate_metrics` block is gated too: a non-IC aggregate key
+  moving at all, an IC-derived aggregate key moving without an attributed
+  per-fold IC change **on the same horizon** to derive from (`mean_ic_5d`
+  needs an attributed per-fold `ic_5d` change — `ic_1d` evidence does not
+  transfer), or any aggregate key added/removed (schema change) aborts. An
+  `ic`-named key that maps to no known per-fold horizon aborts likewise.
+
+**Fold-0 exception:** fold-0's topk selection is per-runner bimodal (see "the
+fold-0 story" above); the gate mirrors the regression test's documented
+{A, B} states for fold-0's three topk-dependent backtest metrics and the
+seven aggregate keys derived from them, group-wise and state-consistent
+(fold-0 landing on B requires its derived aggregates on B too). A third
+state, a per-metric mix, or a state mismatch aborts — the constants live in
+the regression test (source of truth) and are mirrored in the gate; update
+both together.
+
+**Evidence, not trust:** the workflow emits
+`walk_forward_baseline_metrics.evidence.json` (workflow run URL,
+baseline/registry sha256, pip-freeze hash, runner image) — named exactly as
+the regression guard requires, so the operator commits it verbatim to
+`tests/regression/fixtures/` next to the baseline.
+A re-sign PR commits the new baseline + the diff table + the evidence sidecar
+TOGETHER (artifacts expire after 90 days; committed evidence does not). The
+regression test asserts sidecar-vs-file digest consistency whenever the
+sidecar exists; presence is mandatory from the first re-sign onward — enforced
+by `LEGACY_BASELINE_SHA256` in the replay test, which pins the ONE pre-channel
+baseline and is FROZEN FOREVER. A re-sign PR never updates that pin (a mutable
+pin would re-open the sidecar exemption); it ships the sidecar instead. The
+operator's merge of that PR is the signature — no auto-promotion.
+
+**Registry fixture:** `regen2/delisted_registry_frozen_20260618.parquet` is a
+FROZEN FULL byte-level snapshot of the production registry (sha256-pinned in
+the replay test; three-way reconciled and operator-signed on 2026-07-03).
+Updates go only through this channel, never in place.

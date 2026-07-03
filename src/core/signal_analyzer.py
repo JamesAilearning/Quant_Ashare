@@ -72,6 +72,7 @@ class SignalAnalyzer:
         cls,
         predictions: Any,  # pd.Series with (datetime, instrument) MultiIndex
         config: SignalAnalysisConfig | None = None,
+        pit_provider: Any | None = None,
     ) -> SignalAnalysisResult:
         """Run signal quality analysis on predictions.
 
@@ -81,11 +82,22 @@ class SignalAnalyzer:
             Model predictions with (datetime, instrument) MultiIndex.
         config : SignalAnalysisConfig, optional
             Analysis configuration. Uses defaults if None.
+        pit_provider : PITDataProvider, optional
+            Audit P2 (P0-6 follow-up, PR-2 — INTENTIONAL SEMANTIC CHANGE with
+            a deliberate REGEN-2 baseline re-sign): when supplied, the close
+            fetch behind IC / IC-decay routes through
+            ``pit_provider.get_features`` (§4.3.2 post-delist mask), so a
+            ticker delisted inside the window contributes NaN — not stale
+            forward-filled closes — to the realized-return panel. When
+            omitted, the direct ``D.features`` path runs BIT-IDENTICALLY with
+            the existing WARN (independent callers unchanged).
 
         Returns
         -------
         SignalAnalysisResult
         """
+        if pit_provider is not None:
+            cls._validate_pit_provider_alignment(pit_provider)
         if not is_canonical_qlib_initialized():
             raise SignalAnalyzerError(
                 "Canonical qlib runtime must be initialized before signal analysis."
@@ -151,7 +163,10 @@ class SignalAnalyzer:
         # Fetch actual returns from qlib. ``+1`` covers the label-aligned
         # entry offset: the headline IC's return window starts at T+1, so
         # the longest horizon needs closes through T + max_period + 1.
-        returns_data = cls._fetch_returns(predictions, max(config.forward_periods) + 1)
+        returns_data = cls._fetch_returns(
+            predictions, max(config.forward_periods) + 1,
+            pit_provider=pit_provider,
+        )
 
         # Compute IC for each forward period. HEADLINE convention (PR-C,
         # audit A3): entry-aligned — corr(score_T, REALIZED return over
@@ -234,38 +249,62 @@ class SignalAnalyzer:
             turnover_stats=turnover_stats,
         )
 
+    @staticmethod
+    def _validate_pit_provider_alignment(pit_provider: Any) -> None:
+        """Alignment guard — identical contract to
+        ``BacktestRunner`` / ``FeatureDatasetBuilder`` /
+        ``PerformanceAttribution._validate_pit_provider_alignment``. The
+        (fourth) duplication is intentional: each entry point enforces the
+        invariant independently, so a refactor changing one cannot silently
+        weaken the others.
+        """
+        from src.core.qlib_runtime import (
+            _normalize_provider_uri,
+            get_canonical_qlib_config,
+        )
+
+        canonical = get_canonical_qlib_config()
+        if canonical is None:
+            raise SignalAnalyzerError(
+                "pit_provider was supplied but the canonical qlib config is "
+                "unavailable. Initialize qlib via init_qlib_canonical(...) "
+                "before passing a PITDataProvider to signal analysis."
+            )
+        pit_uri_raw = str(getattr(pit_provider, "_provider_uri", ""))
+        if not pit_uri_raw:
+            raise SignalAnalyzerError(
+                "pit_provider has no readable _provider_uri attribute "
+                f"(got {pit_provider!r}). Expected a PITDataProvider."
+            )
+        pit_norm = _normalize_provider_uri(pit_uri_raw)
+        if canonical.provider_uri != pit_norm:
+            raise SignalAnalyzerError(
+                "PIT provider / qlib provider_uri mismatch — IC would "
+                "silently consume closes from the wrong provider. "
+                f"qlib canonical provider_uri = {canonical.provider_uri!r}; "
+                f"pit_provider._provider_uri = {pit_norm!r}."
+            )
+
     @classmethod
-    def _fetch_returns(cls, predictions: Any, max_period: int) -> Any:
+    def _fetch_returns(
+        cls, predictions: Any, max_period: int, pit_provider: Any | None = None,
+    ) -> Any:
         """Fetch close-to-close returns from qlib for all instruments in predictions.
 
         Returns a DataFrame with (datetime, instrument) MultiIndex and 'close' column.
 
-        WARNING — non-PIT path
-        ----------------------
-        Unlike ``BacktestRunner._compute_equalweight_baseline`` and
-        ``FactorAnalyzer._fetch_close_panel`` (both of which accept an
-        optional ``pit_provider`` to route through the §4.3.2
-        post-delist mask), this method has NO PIT opt-in yet. IC and
-        IC-decay diagnostics derived from this panel may include
-        stale / forward-filled closes for tickers delisted within the
-        window. The WARN log below makes the bypass observable in
-        every run log.
+        Audit P2 (P0-6 follow-up, PR-2): when ``pit_provider`` is supplied the
+        close fetch routes through ``PITDataProvider.get_features`` — the
+        §4.3.2 post-delist mask applies, so a ticker delisted inside the
+        window contributes NaN (dropped per-day from the IC cross-section)
+        instead of stale forward-filled closes. Same opt-in pattern as
+        ``BacktestRunner._compute_equalweight_baseline`` and
+        ``FactorAnalyzer._fetch_close_panel``.
 
-        TODO(P0-6 follow-up): add ``pit_provider`` parameter to
-        ``SignalAnalyzer.analyze`` and thread it through here; until
-        then, treat IC numbers for portfolios with mid-period
-        delistings as approximate.
+        When ``pit_provider`` is None the direct ``D.features`` path runs
+        BIT-IDENTICALLY to the pre-opt-in implementation, and the WARN below
+        keeps the bypass observable (independent callers unchanged).
         """
-        from qlib.data import D
-
-        _logger.warning(
-            "SignalAnalyzer._fetch_returns: bypasses PITDataProvider "
-            "(no opt-in yet) — IC / IC-decay numbers may absorb "
-            "stale / forward-filled closes for tickers delisted "
-            "within the prediction window. See TODO above; audit "
-            "P0-6."
-        )
-
         # Read by name (not position) so an internal caller that bypasses
         # the public ``analyze`` boundary still gets correct data. The
         # public boundary already enforces ``(datetime, instrument)``
@@ -281,13 +320,28 @@ class SignalAnalyzer:
         # returns. Fallback: if the calendar lookup fails for any reason,
         # pad by 3× calendar days (safer than the old 2×).
         extended_end = cls._extend_end_trading_days(end_date, max_period)
-        close_df = D.features(
-            instruments,
-            ["$close"],
-            start_time=start_date,
-            end_time=extended_end,
-            freq="day",
-        )
+        if pit_provider is not None:
+            close_df = pit_provider.get_features(
+                ["$close"], start_date, extended_end,
+                instruments=instruments,
+            )
+        else:
+            from qlib.data import D
+
+            _logger.warning(
+                "SignalAnalyzer._fetch_returns: bypasses PITDataProvider "
+                "(pit_provider is None) — IC / IC-decay numbers may absorb "
+                "stale / forward-filled closes for tickers delisted within "
+                "the prediction window. Pass a PITDataProvider to opt into "
+                "the §4.3.2 post-delist mask. Audit P0-6."
+            )
+            close_df = D.features(
+                instruments,
+                ["$close"],
+                start_time=start_date,
+                end_time=extended_end,
+                freq="day",
+            )
         close_df.columns = ["close"]
         # qlib returns (instrument, datetime) — swap to (datetime, instrument)
         close_df = close_df.swaplevel()

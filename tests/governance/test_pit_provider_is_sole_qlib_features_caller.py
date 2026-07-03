@@ -107,9 +107,13 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # WARN-logged fallback for callers without a provider.
     "src/core/performance_attribution.py": 1,
 
-    # No opt-in yet, WARN-only. PR-2 of add-pit-analyzer-routing threads
-    # ``pit_provider`` through ``SignalAnalyzer.analyze`` (anchor-moving:
-    # deliberate baseline re-sign per the proposal).
+    # Audit P2 (add-pit-analyzer-routing PR-2): ``pit_provider`` opt-in
+    # EXISTS — ``SignalAnalyzer.analyze(..., pit_provider=...)`` routes the
+    # IC close fetch through the §4.3.2 mask, and the canonical engines
+    # thread it when ``delisted_registry_path`` is configured (anchor-moving:
+    # deliberate REGEN-2 baseline re-sign per the proposal). The 1 remaining
+    # direct ``D.features`` call is the DELIBERATE WARN-logged fallback for
+    # callers without a provider.
     "src/core/signal_analyzer.py": 1,
 
     # ``microstructure_mask`` (audit P0-3 /

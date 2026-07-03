@@ -141,12 +141,19 @@ FROZEN_SOURCE = (
 )
 
 
-def _replay_fold(fold_index: int, entry: dict[str, Any], namechange_path: str) -> WalkForwardFold:
+def _replay_fold(
+    fold_index: int, entry: dict[str, Any], namechange_path: str,
+    pit_provider: Any | None = None,
+) -> WalkForwardFold:
     scores = entry["scores"]
     test = entry["test"]
     signal = SignalAnalyzer.analyze(
         predictions=scores,
         config=SignalAnalysisConfig(forward_periods=(1, 5), topk=TOPK),
+        # Audit P2 PR-2 (intentional semantic change, deliberate re-sign): the
+        # anchor replays the CANONICAL semantics — when the registry fixture is
+        # supplied, IC consumes PIT-masked closes exactly like production.
+        pit_provider=pit_provider,
     )
     request = CanonicalBacktestInput(
         predictions_ref=f"regen2_fold{fold_index}",
@@ -194,6 +201,7 @@ def _replay_fold(fold_index: int, entry: dict[str, Any], namechange_path: str) -
 
 def replay_frozen_baseline_regen2(
     frozen_path: Path, provider_uri: str, namechange_path: str,
+    delisted_registry_path: str | None = None,
 ) -> dict[str, Any]:
     """Replay all 23 REGEN-2 folds at canonical TR semantics; return per-fold + aggregate.
 
@@ -212,6 +220,15 @@ def replay_frozen_baseline_regen2(
     init_qlib_canonical(
         QlibRuntimeConfig(provider_uri=provider_uri, region="cn", data_adjust_mode=ADJUST_MODE_PRE)
     )
+    # Audit P2 PR-2: mirror the canonical engines' wiring (same labels -> the
+    # provider's init is an idempotent no-op). None/empty -> legacy WARN path.
+    from src.core.pit_wiring import build_pit_provider
+    pit_provider = build_pit_provider(
+        delisted_registry_path=delisted_registry_path or "",
+        provider_uri=provider_uri,
+        data_adjust_mode=ADJUST_MODE_PRE,
+        region="cn",
+    )
     frozen = load_frozen(frozen_path)
     # REGEN-2 is exactly 23 REAL folds (0..22). Require that exact set — a
     # truncated/extended fixture must fail loudly, never be padded (unlike REGEN-A
@@ -222,7 +239,10 @@ def replay_frozen_baseline_regen2(
             f"Frozen fold set {sorted(frozen)} != the expected {N_FOLDS} REGEN-2 "
             f"folds {sorted(expected)}. Refusing to replay a truncated/extended fixture."
         )
-    folds = [_replay_fold(i, frozen[i], namechange_path) for i in sorted(frozen)]
+    folds = [
+        _replay_fold(i, frozen[i], namechange_path, pit_provider=pit_provider)
+        for i in sorted(frozen)
+    ]
     # Refuse to anchor a NaN/non-finite fold (codex P2). This is a fail-LOUD guard,
     # NOT a way to drop a problem fold: REGEN-2 must REPRODUCE all 23 real folds.
     # A non-finite metric means the replay is broken — fix it, never exclude.
@@ -325,6 +345,11 @@ def main(argv: list[str] | None = None) -> int:
         _PROJECT_ROOT / "tests/regression/fixtures/regen2/frozen_fold_scores.pkl.gz"))
     ap.add_argument("--provider-uri", required=True)
     ap.add_argument("--namechange-path", required=True)
+    ap.add_argument(
+        "--delisted-registry-path", default=None,
+        help="delisted registry parquet for PIT-masked IC (audit P2 PR-2); "
+        "omit for the legacy pre-PIT replay semantics",
+    )
     # Canonical root baseline (PR-2 promoted REGEN-2 here). The frozen scores stay at
     # fixtures/regen2/; only the baseline JSON is the canonical root.
     ap.add_argument("--out", default=str(
@@ -334,7 +359,10 @@ def main(argv: list[str] | None = None) -> int:
     # Meta-hardening: refuse to GENERATE the anchor off the canonical pin (the 2026-06
     # off-pin-numpy-2.4.4 incident). CI runs the canonical stack; the anchor must too.
     dep_stack = _assert_canonical_dep_stack()
-    res = replay_frozen_baseline_regen2(Path(args.frozen), args.provider_uri, args.namechange_path)
+    res = replay_frozen_baseline_regen2(
+        Path(args.frozen), args.provider_uri, args.namechange_path,
+        delisted_registry_path=args.delisted_registry_path,
+    )
     agg = res["aggregate_metrics"]
     per_fold = [
         {
