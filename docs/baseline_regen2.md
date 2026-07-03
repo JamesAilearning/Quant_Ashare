@@ -313,11 +313,16 @@ by `scripts/regen/diff_baselines.py`:**
   Investigate; never explain past it.
 - **R4** — the `aggregate_metrics` block is gated too: a non-IC aggregate key
   moving at all, an IC-derived aggregate key moving without an attributed
-  per-fold IC change to derive from, or any aggregate key added/removed
-  (schema change) aborts.
+  per-fold IC change **on the same horizon** to derive from (`mean_ic_5d`
+  needs an attributed per-fold `ic_5d` change — `ic_1d` evidence does not
+  transfer), or any aggregate key added/removed (schema change) aborts. An
+  `ic`-named key that maps to no known per-fold horizon aborts likewise.
 
-**Evidence, not trust:** the workflow emits `baseline_evidence.json`
-(workflow run URL, baseline/registry sha256, pip-freeze hash, runner image).
+**Evidence, not trust:** the workflow emits
+`walk_forward_baseline_metrics.evidence.json` (workflow run URL,
+baseline/registry sha256, pip-freeze hash, runner image) — named exactly as
+the regression guard requires, so the operator commits it verbatim to
+`tests/regression/fixtures/` next to the baseline.
 A re-sign PR commits the new baseline + the diff table + the evidence sidecar
 TOGETHER (artifacts expire after 90 days; committed evidence does not). The
 regression test asserts sidecar-vs-file digest consistency whenever the

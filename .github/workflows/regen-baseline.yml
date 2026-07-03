@@ -98,7 +98,13 @@ jobs:
               "python": "3.12",
               "commit": os.environ.get("GITHUB_SHA", ""),
           }
-          with open("/tmp/regen2/baseline_evidence.json", "w") as f:
+          # The basename below is EXACTLY what the regression guard enforces
+          # (tests/regression: EVIDENCE_SIDECAR) — the operator commits this
+          # file verbatim to tests/regression/fixtures/ next to the baseline;
+          # any other name would fail the mandatory-evidence check (codex P2
+          # #321 r6).
+          out = "/tmp/regen2/walk_forward_baseline_metrics.evidence.json"
+          with open(out, "w") as f:
               json.dump(meta, f, indent=2)
           print(json.dumps(meta, indent=2))
           EOF
@@ -112,5 +118,5 @@ jobs:
           path: |
             /tmp/regen2/new_baseline.json
             /tmp/regen2/diff_table.md
-            /tmp/regen2/baseline_evidence.json
+            /tmp/regen2/walk_forward_baseline_metrics.evidence.json
           retention-days: 90

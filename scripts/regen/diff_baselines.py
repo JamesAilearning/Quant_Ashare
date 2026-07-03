@@ -13,10 +13,14 @@ up front, not negotiated after seeing the numbers:
       investigate, never explain past it.
   R4. Aggregate metrics are gated too (codex P1 on #321 round 2): a non-IC
       aggregate key changing at all, or an IC-derived aggregate key changing
-      without at least one ATTRIBUTED per-fold IC change to derive from,
-      aborts — the aggregate block is part of the published baseline and must
-      never be re-signed without a per-fold explanation. Added/removed
-      aggregate keys are a schema change and abort likewise.
+      without at least one ATTRIBUTED per-fold IC change ON THE SAME HORIZON
+      to derive from (codex P1 round 6: mean_ic_5d needs an attributed
+      per-fold ic_5d change — ic_1d evidence does not transfer across
+      horizons), aborts — the aggregate block is part of the published
+      baseline and must never be re-signed without a per-fold explanation.
+      Added/removed aggregate keys are a schema change and abort likewise; an
+      "ic"-named key that maps to no known per-fold horizon cannot be
+      attributed and aborts.
 
 A fold "has a hit" when a registry instrument BOTH (a) appears in that
 fold's FROZEN PREDICTIONS (actual (datetime, instrument) rows — the registry
@@ -168,14 +172,21 @@ def main(argv: list[str] | None = None) -> int:
                     f"R3 VIOLATION: fold {i} {m} moved ({vo!r} -> {vn!r}) with NO "
                     "attributable delisted instrument in its window."
                 )
-    attributed_ic_change = any(
-        repr(old[i][m]) != repr(new[i][m]) and hits.get(i)
-        for i in sorted(old) for m in _IC_METRICS
-    )
+    # Per-HORIZON attribution (codex P1 #321 r6): each IC aggregate key is
+    # gated against the SPECIFIC per-fold horizon it derives from — a single
+    # cross-horizon boolean would let an attributed ic_1d change license
+    # mean_ic_5d/std_ic_5d drift when no per-fold ic_5d value moved.
+    attributed_by_horizon = {
+        m: any(
+            repr(old[i][m]) != repr(new[i][m]) and hits.get(i)
+            for i in sorted(old)
+        )
+        for m in _IC_METRICS
+    }
     # R4 (codex P1 #321 r2): the aggregate block is part of the published
-    # baseline — gate it too. IC-derived keys may move ONLY when at least one
-    # attributed per-fold IC change exists to derive from; everything else
-    # (backtest-derived keys, schema changes) aborts.
+    # baseline — gate it too. IC-derived keys may move ONLY when the per-fold
+    # horizon they derive from has an attributed change; everything else
+    # (backtest-derived keys, schema changes, unmappable IC keys) aborts.
     agg_old = dict(old_doc_json.get("aggregate_metrics") or {})
     agg_new = dict(new_doc_json.get("aggregate_metrics") or {})
     for key in sorted(set(agg_old) | set(agg_new)):
@@ -192,20 +203,32 @@ def main(argv: list[str] | None = None) -> int:
             continue
         n_changed += 1
         ic_derived = "ic" in key.lower()
-        attributed = "derived from attributed per-fold IC changes" if (
-            ic_derived and attributed_ic_change
-        ) else "NONE"
+        horizons = [m for m in _IC_METRICS if m in key.lower()]
+        attributed_ok = bool(horizons) and all(
+            attributed_by_horizon[h] for h in horizons
+        )
+        attributed = (
+            "derived from attributed per-fold " + "+".join(horizons) + " changes"
+        ) if (ic_derived and attributed_ok) else "NONE"
         lines.append(f"| aggregate | - | {key} | {vo!r} | {vn!r} | - | {attributed} |")
         if not ic_derived:
             failures.append(
                 f"R4 VIOLATION: non-IC aggregate key {key!r} moved "
                 f"({vo!r} -> {vn!r}) — this channel only re-signs IC inputs."
             )
-        elif not attributed_ic_change:
+        elif not horizons:
+            failures.append(
+                f"R4 VIOLATION: aggregate key {key!r} looks IC-derived but maps "
+                f"to no known per-fold IC horizon {list(_IC_METRICS)} — cannot "
+                "attribute, refusing to re-sign."
+            )
+        elif not attributed_ok:
+            unbacked = ", ".join(h for h in horizons if not attributed_by_horizon[h])
             failures.append(
                 f"R4 VIOLATION: IC-derived aggregate key {key!r} moved "
-                f"({vo!r} -> {vn!r}) with NO attributed per-fold IC change to "
-                "derive from."
+                f"({vo!r} -> {vn!r}) but its per-fold horizon(s) [{unbacked}] "
+                "have NO attributed change to derive from — cross-horizon "
+                "evidence does not transfer."
             )
     if n_changed == 0:
         lines.append("| - | - | (no changes: baselines identical) | | | | |")
@@ -218,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     if failures:
         print(f"\nFAIL: {len(failures)} acceptance-rule violation(s).")
         return 1
-    print("\nOK: acceptance rules R1-R3 hold.")
+    print("\nOK: acceptance rules R1-R4 hold.")
     return 0
 
 

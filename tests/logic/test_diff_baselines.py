@@ -167,6 +167,40 @@ class DiffBaselinesTests(unittest.TestCase):
                        new_agg={"mean_ic_1d": 0.0155})
         self.assertEqual(rc, 0)
 
+    def test_cross_horizon_ic_aggregate_fails_r4(self) -> None:
+        # codex P1 #321 r6: an attributed per-fold ic_1d change must NOT
+        # license an ic_5d AGGREGATE move when no per-fold ic_5d value changed
+        # — horizon evidence does not transfer.
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.021)]  # ic_1d hit
+        rc = self._run(old, new,
+                       old_agg={"mean_ic_5d": 0.05},
+                       new_agg={"mean_ic_5d": 0.051})
+        self.assertEqual(rc, 1)
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("R4 VIOLATION", md)
+        self.assertIn("ic_5d", md)
+
+    def test_same_horizon_ic_aggregate_passes(self) -> None:
+        # the mirror of the cross-horizon case: an attributed per-fold ic_5d
+        # change DOES license an ic_5d aggregate move.
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02, ic_5d=0.05)]
+        new = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02, ic_5d=0.051)]
+        rc = self._run(old, new,
+                       old_agg={"mean_ic_5d": 0.05},
+                       new_agg={"mean_ic_5d": 0.0505})
+        self.assertEqual(rc, 0)
+
+    def test_unmappable_ic_aggregate_key_fails_r4(self) -> None:
+        # an "ic"-named aggregate key that maps to no known per-fold horizon
+        # cannot be attributed at all — abort, never guess.
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.021)]  # attributed
+        rc = self._run(old, new,
+                       old_agg={"mean_ic": 0.015},
+                       new_agg={"mean_ic": 0.016})
+        self.assertEqual(rc, 1)
+
     def test_aggregate_schema_change_fails_r4(self) -> None:
         folds = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
         rc = self._run(folds, [dict(f) for f in folds],
