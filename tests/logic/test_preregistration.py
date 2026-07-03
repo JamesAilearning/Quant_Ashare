@@ -156,6 +156,17 @@ class RunCommitTests(unittest.TestCase):
                 run_commit_from_report(_report("abc123", dirty=dirty), run_label="t")
 
 
+def _folds(
+    sha: str | None = "cafebabe12345678", n: int = 2,
+) -> list[dict[str, object]]:
+    """Per-fold reports with st_mask provenance (the content-hash evidence
+    the gate requires for ST-on runs; codex P1 #323 r3)."""
+    st: dict[str, object] = {"namechange_path": "D:/data/all_namechanges.parquet"}
+    if sha is not None:
+        st["namechange_sha256"] = sha
+    return [{"provenance": {"st_mask": dict(st)}} for _ in range(n)]
+
+
 class GateTests(unittest.TestCase):
     def _repo_with_plan_then_run_commit(self, td: str) -> tuple[Path, object, str]:
         repo = _init_repo(Path(td) / "r")
@@ -173,6 +184,8 @@ class GateTests(unittest.TestCase):
                 baseline_report=_report(run_commit),
                 treatment_report=_report(run_commit),
                 variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(flags, [])
 
@@ -187,6 +200,8 @@ class GateTests(unittest.TestCase):
             flags = gate_comparison(
                 plan, baseline_report=_report(c), treatment_report=_report(c),
                 variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(flags, [])
 
@@ -239,6 +254,8 @@ class GateTests(unittest.TestCase):
                 baseline_report=_report(run_commit),
                 treatment_report=_report(run_commit),
                 variant="7d",  # NOT in the registered {5d, 10d}
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(len(flags), 1)
         self.assertIn("UNREGISTERED MULTIPLE COMPARISON", flags[0])
@@ -309,8 +326,83 @@ class GateTests(unittest.TestCase):
                     run_commit, namechange_path="D:\\data\\all_namechanges.parquet",
                 ),
                 variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(flags, [])
+
+    def test_st_on_same_path_different_content_refused(self) -> None:
+        # codex P1 #323 r3: same path, snapshot refreshed IN PLACE between
+        # the runs — only the recorded content hash can catch it.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                    baseline_fold_reports=_folds("aaaa000011112222"),
+                    treatment_fold_reports=_folds("bbbb000011112222"),
+                )
+        self.assertIn("ST INPUT CONTENT MISMATCH", str(cm.exception))
+
+    def test_st_on_without_fold_hashes_refused(self) -> None:
+        # path-only proof is no proof: an ST-on run whose fold reports carry
+        # no content hash (or are absent) cannot receive a decision-grade
+        # verdict.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError):
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                )
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                    baseline_fold_reports=_folds(sha=None),  # provenance, no hash
+                    treatment_fold_reports=_folds(),
+                )
+        self.assertIn("no st_mask content hash", str(cm.exception))
+
+    def test_mid_run_snapshot_refresh_refused(self) -> None:
+        # two distinct hashes WITHIN one run = the input moved mid-run.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                    baseline_fold_reports=_folds("aaaa000011112222", n=1)
+                    + _folds("bbbb000011112222", n=1),
+                    treatment_fold_reports=_folds("aaaa000011112222"),
+                )
+        self.assertIn("MULTIPLE distinct", str(cm.exception))
+
+    def test_st_off_with_recorded_hash_refused(self) -> None:
+        # config says off_experiment but fold provenance recorded an ST input
+        # hash — the artifacts contradict the config.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            off = {"st_mask_mode": "off_experiment", "namechange_path": ""}
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit, **off),  # type: ignore[arg-type]
+                    treatment_report=_report(run_commit, **off),  # type: ignore[arg-type]
+                    variant="5d",
+                    baseline_fold_reports=_folds(),  # hash present despite off
+                    treatment_fold_reports=[{}],
+                )
+        self.assertIn("contradict", str(cm.exception))
 
     def test_pre_field_config_reads_as_required(self) -> None:
         # a report whose config predates st_mask_mode (key absent) is the old
@@ -322,6 +414,8 @@ class GateTests(unittest.TestCase):
                 baseline_report=_report(run_commit, st_mask_mode=None),
                 treatment_report=_report(run_commit),
                 variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(flags, [])
 

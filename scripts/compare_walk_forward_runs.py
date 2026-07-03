@@ -87,6 +87,18 @@ def _delta(a: Any, b: Any) -> str:
         return "  n/a"
 
 
+def _load_all_folds(run_dir: Path, aggregate: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every fold report the aggregate references (missing ones load as ``{}``
+    — the prereg gate treats an unprovable fold as a refusal for ST-on runs,
+    never as silently absent)."""
+    out: list[dict[str, Any]] = []
+    for fold in aggregate.get("folds") or []:
+        idx = fold.get("fold_index")
+        if idx is not None:
+            out.append(_load_fold(run_dir, int(idx)))
+    return out
+
+
 def build_ruler_report(
     baseline_dir: Path,
     treatment_dir: Path,
@@ -137,11 +149,19 @@ def build_ruler_report(
             return [title, f"  unavailable — {exc} (needs src.core.preregistration)."]
         try:
             plan = load_plan(prereg_plan)
+            base_agg = _load_aggregate(baseline_dir)
+            treat_agg = _load_aggregate(treatment_dir)
             flags = gate_comparison(
                 plan,
-                baseline_report=_load_aggregate(baseline_dir),
-                treatment_report=_load_aggregate(treatment_dir),
+                baseline_report=base_agg,
+                treatment_report=treat_agg,
                 variant=str(variant).strip(),
+                # Per-fold st_mask provenance (namechange content hashes) —
+                # the gate proves the ST input CONTENT held constant, not
+                # just the path (codex P1 #323 r3: a snapshot refreshed in
+                # place between runs changes the exclusion set).
+                baseline_fold_reports=_load_all_folds(baseline_dir, base_agg),
+                treatment_fold_reports=_load_all_folds(treatment_dir, treat_agg),
             )
         except PreregistrationError as exc:
             return [

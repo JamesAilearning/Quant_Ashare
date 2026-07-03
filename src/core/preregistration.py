@@ -28,7 +28,7 @@ than weakening the proof.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -227,23 +227,103 @@ def _st_handling(
     return mode, st_inputs
 
 
+def _st_input_hashes(
+    fold_reports: Sequence[Mapping[str, Any]] | None,
+    *,
+    mode: str,
+    run_label: str,
+) -> frozenset[str]:
+    """The run's recorded ST-input CONTENT hashes (``namechange_sha256`` from
+    per-fold ``provenance.st_mask``, stamped by ``BacktestRunner``).
+
+    A path can be refreshed IN PLACE between two runs (codex P1 #323 round
+    3), so path parity alone cannot prove the ST exclusion set held constant
+    — only the recorded content hash can. FAIL-LOUD rules:
+
+    * ST-on (``"required"``): EVERY provided fold report must carry a hash —
+      no fold reports, or any fold without one, refuses (path-only proof is
+      no proof); more than one distinct hash within the run means the input
+      was refreshed MID-RUN and refuses likewise.
+    * ST-off (``"off_experiment"``): NO fold may record an ST input hash —
+      one appearing means the artifacts contradict the config; refuse.
+    """
+    if mode == "off_experiment":
+        stray = {
+            sha
+            for fr in fold_reports or ()
+            if isinstance(st := (fr.get("provenance") or {}).get("st_mask"), Mapping)
+            and (sha := str(st.get("namechange_sha256") or "").strip())
+        }
+        if stray:
+            raise PreregistrationError(
+                f"{run_label}: config says st_mask_mode='off_experiment' but "
+                f"fold provenance records ST input hash(es) {sorted(stray)} — "
+                "the run artifacts contradict the config; refusing."
+            )
+        return frozenset()
+    provided = list(fold_reports or ())
+    if not provided:
+        raise PreregistrationError(
+            f"{run_label}: ST-on run but no per-fold reports are available to "
+            "prove the ST input CONTENT (namechange_sha256) — path-only parity "
+            "cannot prove the exclusion set held constant (the file can be "
+            "refreshed in place). Decision-grade comparisons need the fold "
+            "provenance the current engine records; re-run, or use "
+            "--prereg <ref> for an exploratory comparison."
+        )
+    hashes: set[str] = set()
+    unproven = 0
+    for fr in provided:
+        prov = fr.get("provenance")
+        st = prov.get("st_mask") if isinstance(prov, Mapping) else None
+        sha = (
+            str(st.get("namechange_sha256") or "").strip()
+            if isinstance(st, Mapping) else ""
+        )
+        if sha:
+            hashes.add(sha)
+        else:
+            unproven += 1
+    if unproven:
+        raise PreregistrationError(
+            f"{run_label}: {unproven} of {len(provided)} fold report(s) carry "
+            "no st_mask content hash (namechange_sha256) — the ST input cannot "
+            "be proven constant across the run. Re-run on the current engine "
+            "in one uninterrupted invocation."
+        )
+    if len(hashes) > 1:
+        raise PreregistrationError(
+            f"{run_label}: fold provenance records MULTIPLE distinct "
+            f"namechange content hashes {sorted(hashes)} — the ST input was "
+            "refreshed MID-RUN; this is not a single-input experiment arm. "
+            "Re-run in one uninterrupted invocation against one snapshot."
+        )
+    return frozenset(hashes)
+
+
 def gate_comparison(
     plan: PreregPlan,
     *,
     baseline_report: Mapping[str, Any],
     treatment_report: Mapping[str, Any],
     variant: str,
+    baseline_fold_reports: Sequence[Mapping[str, Any]] | None = None,
+    treatment_fold_reports: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """Verify the plan predates BOTH runs AND the runs are ST-comparable;
     return advisory flags (never silently).
 
     Raises ``PreregistrationError`` on any hard failure (missing/dirty
-    provenance, plan not an ancestor, mismatched ST handling — one side ST-on
-    and one ST-off measures the ST interaction, not the registered
-    hypothesis). Returns a list of FLAG strings for advisory findings — per
-    the spec an unregistered variant is FLAGGED, not refused, so the number of
-    comparisons actually attempted stays visible instead of being driven
-    underground.
+    provenance, plan not an ancestor, mismatched ST handling — mode, concrete
+    input path, AND recorded input CONTENT hash must all agree; one side
+    ST-on and one ST-off measures the ST interaction, and a snapshot
+    refreshed in place between runs changes the exclusion set, either way not
+    the registered hypothesis). ``*_fold_reports`` carry the per-fold
+    ``provenance.st_mask`` content hashes — REQUIRED for ST-on runs; ST-off
+    runs need none. Returns a list of FLAG strings for advisory findings —
+    per the spec an unregistered variant is FLAGGED, not refused, so the
+    number of comparisons actually attempted stays visible instead of being
+    driven underground.
     """
     base_commit = run_commit_from_report(baseline_report, run_label="baseline run")
     treat_commit = run_commit_from_report(treatment_report, run_label="treatment run")
@@ -270,6 +350,21 @@ def gate_comparison(
             "namechange snapshots exclude different ST sets — either way the "
             "pair measures an input change, not the registered hypothesis. "
             "Refusing the decision-grade verdict; re-run the mismatched side."
+        )
+    base_hashes = _st_input_hashes(
+        baseline_fold_reports, mode=base_st[0], run_label="baseline run",
+    )
+    treat_hashes = _st_input_hashes(
+        treatment_fold_reports, mode=treat_st[0], run_label="treatment run",
+    )
+    if base_hashes != treat_hashes:
+        raise PreregistrationError(
+            "ST INPUT CONTENT MISMATCH: the runs record different namechange "
+            f"content hash(es) (baseline {sorted(base_hashes)} vs treatment "
+            f"{sorted(treat_hashes)}) despite matching mode/path — the "
+            "snapshot was refreshed in place between the runs, so the two "
+            "sides exclude DIFFERENT ST sets. Re-run one side against the "
+            "other's exact snapshot."
         )
     flags: list[str] = []
     if variant not in plan.treatments:

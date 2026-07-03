@@ -63,6 +63,13 @@ def _write_run(root: Path, dates: list[str], excess: np.ndarray[Any, Any],
         "fold_index": 0, "test_period": tp, "ic_1d": float(ic),
         "annualized_return": 0.05, "information_ratio": 0.3,
         "daily_series": ds, "schema_version": schema,
+        # Real fold reports carry backtest provenance incl. the ST input
+        # content hash; the prereg gate proves input parity from it
+        # (codex P1 #323 r3).
+        "provenance": {"st_mask": {
+            "namechange_path": "D:/data/all_namechanges.parquet",
+            "namechange_sha256": "cafebabe12345678",
+        }},
     }))
     (root / "walk_forward_report.json").write_text(json.dumps({
         "num_folds": 1, "generated_at": generated,
