@@ -227,6 +227,22 @@ def _st_handling(
     return mode, st_inputs
 
 
+def _fold_st_sha(fold_report: Mapping[str, Any]) -> str:
+    """The fold's recorded ST-input content hash, read from the shape
+    ``write_fold_report`` actually writes: ``backtest.provenance.st_mask.
+    namechange_sha256`` (codex P1 #323 round 4 — an earlier draft read a
+    top-level ``provenance`` key that real fold reports never carry, which
+    would have refused every real ST-on comparison as unproven; a
+    writer-reader consistency test now pins this path against
+    ``build_fold_report``'s output). Empty string when absent."""
+    bt = fold_report.get("backtest")
+    prov = bt.get("provenance") if isinstance(bt, Mapping) else None
+    st = prov.get("st_mask") if isinstance(prov, Mapping) else None
+    if not isinstance(st, Mapping):
+        return ""
+    return str(st.get("namechange_sha256") or "").strip()
+
+
 def _st_input_hashes(
     fold_reports: Sequence[Mapping[str, Any]] | None,
     *,
@@ -251,8 +267,7 @@ def _st_input_hashes(
         stray = {
             sha
             for fr in fold_reports or ()
-            if isinstance(st := (fr.get("provenance") or {}).get("st_mask"), Mapping)
-            and (sha := str(st.get("namechange_sha256") or "").strip())
+            if (sha := _fold_st_sha(fr))
         }
         if stray:
             raise PreregistrationError(
@@ -274,12 +289,7 @@ def _st_input_hashes(
     hashes: set[str] = set()
     unproven = 0
     for fr in provided:
-        prov = fr.get("provenance")
-        st = prov.get("st_mask") if isinstance(prov, Mapping) else None
-        sha = (
-            str(st.get("namechange_sha256") or "").strip()
-            if isinstance(st, Mapping) else ""
-        )
+        sha = _fold_st_sha(fr)
         if sha:
             hashes.add(sha)
         else:

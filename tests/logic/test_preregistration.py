@@ -160,11 +160,16 @@ def _folds(
     sha: str | None = "cafebabe12345678", n: int = 2,
 ) -> list[dict[str, object]]:
     """Per-fold reports with st_mask provenance (the content-hash evidence
-    the gate requires for ST-on runs; codex P1 #323 r3)."""
+    the gate requires for ST-on runs; codex P1 #323 r3) — in the REAL
+    ``write_fold_report`` shape (``backtest.provenance.st_mask``; codex P1
+    r4 caught a flat-shape draft). The writer-reader consistency test below
+    pins this shape against ``build_fold_report`` itself."""
     st: dict[str, object] = {"namechange_path": "D:/data/all_namechanges.parquet"}
     if sha is not None:
         st["namechange_sha256"] = sha
-    return [{"provenance": {"st_mask": dict(st)}} for _ in range(n)]
+    return [
+        {"backtest": {"provenance": {"st_mask": dict(st)}}} for _ in range(n)
+    ]
 
 
 class GateTests(unittest.TestCase):
@@ -386,6 +391,58 @@ class GateTests(unittest.TestCase):
                     treatment_fold_reports=_folds("aaaa000011112222"),
                 )
         self.assertIn("MULTIPLE distinct", str(cm.exception))
+
+    def test_gate_reads_the_shape_build_fold_report_writes(self) -> None:
+        # codex P1 #323 r4: the gate must read the SAME nesting the fold
+        # report writer produces (backtest.provenance.st_mask) — a
+        # hand-guessed fixture shape let a top-level-'provenance' reader
+        # pass every unit test while refusing every REAL ST-on run as
+        # unproven. Pin reader == writer by feeding an actual
+        # build_fold_report product through the hash extractor.
+        from unittest.mock import MagicMock
+
+        from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+        from src.core.preregistration import _st_input_hashes
+        from src.core.signal_analyzer import SignalAnalysisResult
+        from src.core.walk_forward.aggregate import build_fold_report
+
+        backtest_output = CanonicalBacktestOutput(
+            metric_status="official",
+            official_backtest_path="qlib.backtest.backtest",
+            return_series={"return": {}, "bench": {}, "cost": {}},
+            risk_analysis={"excess_return_with_cost": {
+                "annualized_return": 0.11, "max_drawdown": -0.08,
+                "information_ratio": 1.2,
+            }},
+            report={"total_days": 60},
+            provenance={"st_mask": {
+                "namechange_path": "D:/data/all_namechanges.parquet",
+                "namechange_sha256": "feedface00000001",
+            }},
+            positions={},
+        )
+        report = build_fold_report(
+            fold_index=0,
+            train_start="2024-01-01", train_end="2024-06-30",
+            valid_start="2024-07-01", valid_end="2024-09-30",
+            test_start="2024-10-01", test_end="2024-12-31",
+            model_artifact_path="/tmp/model_fold0.pkl",
+            model_result=MagicMock(
+                best_iteration=3, final_valid_loss=0.95, prediction_shape=(1,),
+            ),
+            signal_result=SignalAnalysisResult(
+                ic_summary={1: {"mean_ic": 0.01}}, ic_series={},
+                ic_decay=[0.01], turnover_stats={},
+            ),
+            backtest_output=backtest_output,
+            positions_path=None,
+            ic_1d=0.02, ic_5d=0.04, annualized_return=0.11,
+            max_drawdown=-0.08, information_ratio=1.2,
+        )
+        hashes = _st_input_hashes(
+            [report], mode="required", run_label="writer-shape run",
+        )
+        self.assertEqual(hashes, frozenset({"feedface00000001"}))
 
     def test_st_off_with_recorded_hash_refused(self) -> None:
         # config says off_experiment but fold provenance recorded an ST input
