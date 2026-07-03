@@ -1106,7 +1106,8 @@ def _render_walk_forward_summary(wf_report: Mapping[str, Any]) -> None:
     cols[0].metric(
         "平均 IC (1d, T+1对齐)",
         fmt_metric(agg.get("mean_ic_1d")),
-        help="标签对齐口径：score_T 对 T+1→T+2 收益（与训练标签、回测 T+1 成交一致，PR-C）",
+        help="入场对齐口径：score_T 对 T+1→T+2 实际收益（与回测 T+1 成交一致，PR-C）。"
+             "固定 1 天测量窗口，与标签跨度无关；默认标签（label_horizon_days=1）下恰与训练标签同窗。",
     )
     cols[1].metric("平均 IR", fmt_metric(agg.get("mean_information_ratio")))
     cols[2].metric("平均年化超额", fmt_metric(agg.get("mean_annualized_return")))

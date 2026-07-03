@@ -225,6 +225,12 @@ class FoldManifest:
     # invocation's HEAD for folds it did not produce (codex P1 on #313, round 4).
     git_commit: str | None = None
     git_dirty: bool | None = None
+    # The label horizon this fold was TRAINED under (additive; None on manifests
+    # written before horizon stamping). The fingerprint already invalidates a
+    # horizon change; this field exists so the re-run can NAME its cause
+    # ("label_horizon_days changed: manifest=1, config=5") instead of a bare
+    # unexplained fingerprint mismatch (operator review on add-label-horizon-config).
+    label_horizon_days: int | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -270,6 +276,7 @@ class FoldManifest:
             fold=fold,
             git_commit=(git_provenance or {}).get("commit"),
             git_dirty=(git_provenance or {}).get("dirty"),
+            label_horizon_days=getattr(config, "label_horizon_days", None),
         )
 
     # ------------------------------------------------------------------
@@ -337,6 +344,7 @@ class FoldManifest:
             "fold": fold_dict,
             "git_commit": self.git_commit,
             "git_dirty": self.git_dirty,
+            "label_horizon_days": self.label_horizon_days,
         }
 
     @classmethod
@@ -372,6 +380,11 @@ class FoldManifest:
             git_dirty=(
                 bool(payload["git_dirty"])
                 if payload.get("git_dirty") is not None
+                else None
+            ),
+            label_horizon_days=(
+                int(payload["label_horizon_days"])
+                if payload.get("label_horizon_days") is not None
                 else None
             ),
         )
@@ -526,6 +539,7 @@ def decide_fold(
     discovered: Mapping[int, FoldManifest],
     resume_mode: ResumeMode,
     valid_period: str | None = None,
+    label_horizon_days: int | None = None,
 ) -> ResumeDecision:
     """Apply the resume policy to one fold.
 
@@ -558,12 +572,32 @@ def decide_fold(
         )
 
     if manifest.config_fingerprint != config_fingerprint:
+        # Fail-LOUD re-run, never a bare unexplained one: when the cause is
+        # determinable, NAME it (operator review on add-label-horizon-config).
+        # A changed label horizon names both values ("expected" — the horizon
+        # experiment does exactly this); a pre-upgrade manifest (no recorded
+        # horizon) is named as such; anything else stays the generic mismatch.
+        cause = ""
+        if label_horizon_days is not None:
+            if manifest.label_horizon_days is None:
+                cause = (
+                    " (manifest predates label-horizon stamping — one-time "
+                    "invalidation after the label_horizon_days upgrade; "
+                    "re-running is expected)"
+                )
+            elif manifest.label_horizon_days != label_horizon_days:
+                cause = (
+                    f" (label_horizon_days changed: manifest="
+                    f"{manifest.label_horizon_days}, config="
+                    f"{label_horizon_days} — re-running is expected for a "
+                    "horizon change)"
+                )
         return ResumeDecision(
             fold_index=fold_index, skip=False, manifest=None,
             reason=(
                 f"fingerprint_mismatch:"
                 f"manifest={manifest.config_fingerprint[:8]} "
-                f"current={config_fingerprint[:8]}"
+                f"current={config_fingerprint[:8]}{cause}"
             ),
         )
 

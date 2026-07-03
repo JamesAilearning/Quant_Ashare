@@ -52,6 +52,9 @@ def _cfg(**over: object) -> SimpleNamespace:
     base: dict[str, object] = dict(
         overall_start="2018-01-01", overall_end="2025-12-31",
         train_months=24, valid_months=3, test_months=3, step_months=3,
+        # H=1 keeps the gap sourced from LABEL_LOOKAHEAD_DAYS (this suite
+        # patches the constant and relies on the call-time read).
+        label_horizon_days=1,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -131,6 +134,22 @@ class WalkForwardEmbargoGapTests(unittest.TestCase):
         for _tr_s, tr_e, va_s, va_e, te_s, _te_e in self.folds:
             self.assertEqual(trading_days_between(tr_e, va_s, _CAL), LABEL_LOOKAHEAD_DAYS)
             self.assertEqual(trading_days_between(va_e, te_s, _CAL), LABEL_LOOKAHEAD_DAYS)
+
+    def test_h5_widens_gap_to_six(self) -> None:
+        """label_horizon_days=5 -> the fold gap is 6 trading days (H+1) on
+        both boundaries — the engine consumer of the horizon-driven embargo
+        (add-label-horizon-config scenario 'a longer horizon widens the
+        required gap')."""
+        folds = [
+            tuple(date.fromisoformat(x) for x in f)
+            for f in WalkForwardEngine._generate_windows(
+                _cfg(label_horizon_days=5), calendar=_CAL,
+            )
+        ]
+        self.assertGreater(len(folds), 0)
+        for _tr_s, tr_e, va_s, va_e, te_s, _te_e in folds:
+            self.assertEqual(trading_days_between(tr_e, va_s, _CAL), 6)
+            self.assertEqual(trading_days_between(va_e, te_s, _CAL), 6)
 
     def test_gap_zero_reduces_to_adjacent(self) -> None:
         """gap == 0 (a future zero-lookahead handler) reduces to adjacent

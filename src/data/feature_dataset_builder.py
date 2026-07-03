@@ -59,6 +59,14 @@ class FeatureDatasetConfig:
     valid_end: str
     test_start: str
     test_end: str
+    # Holding horizon H in trading days (buy T+1 close, sell T+1+H close).
+    # H=1 is today's behavior byte-identical: the Alpha158 label expression
+    # ``Ref($close, -(H+1))/Ref($close, -1) - 1`` reproduces qlib's hard-coded
+    # default character-for-character, the cache-key payload is unchanged, and
+    # the embargo stays at LABEL_LOOKAHEAD_DAYS. Non-positive / non-int values
+    # refuse fail-loud in ``_validate`` (defence-in-depth: also in
+    # ``label_lookahead_days``).
+    label_horizon_days: int = 1
 
 
 @dataclass(frozen=True)
@@ -211,6 +219,15 @@ def _reset_feature_handler_registry_to_defaults() -> None:
     )
 
 
+def alpha158_label_expression(label_horizon_days: int) -> str:
+    """The Alpha158 label for holding horizon H: ``Ref($close, -(H+1))/Ref($close, -1) - 1``.
+
+    H=1 reproduces qlib's hard-coded default CHARACTER-FOR-CHARACTER
+    (``Ref($close, -2)/Ref($close, -1) - 1``) — pinned by test; the default
+    path must stay byte-identical (REGEN-2 anchor)."""
+    return f"Ref($close, -{label_horizon_days + 1})/Ref($close, -1) - 1"
+
+
 def _alpha158_factory(config: FeatureDatasetConfig) -> Any:
     from qlib.contrib.data.handler import Alpha158
 
@@ -220,6 +237,13 @@ def _alpha158_factory(config: FeatureDatasetConfig) -> Any:
         end_time=config.test_end,
         fit_start_time=config.train_start,
         fit_end_time=config.train_end,
+        # qlib's Alpha158 accepts a label override (kwargs.pop("label", ...));
+        # for H=1 this equals the handler's own default, so passing it is
+        # behavior-identical (the expression string is pinned by test).
+        label=(
+            [alpha158_label_expression(config.label_horizon_days)],
+            ["LABEL0"],
+        ),
     )
 
 
@@ -476,6 +500,24 @@ class FeatureDatasetBuilder:
                 f"got '{config.feature_handler}'."
             )
 
+        h = config.label_horizon_days
+        if not isinstance(h, int) or isinstance(h, bool) or h < 1:
+            raise FeatureDatasetBuilderError(
+                f"label_horizon_days must be a positive integer (holding days, "
+                f"T+1 close -> T+1+H close); got {h!r}."
+            )
+        if h != 1 and config.feature_handler != "Alpha158":
+            # Only the Alpha158 factory consumes the horizon (it overrides the
+            # handler's label). For any other handler a non-default horizon
+            # would be SILENTLY IGNORED — the run would claim H=5 while
+            # training on the handler's own label. Refuse instead.
+            raise FeatureDatasetBuilderError(
+                f"label_horizon_days={h} is only supported for feature_handler="
+                f"'Alpha158'; handler '{config.feature_handler}' defines its own "
+                "label and would silently ignore the horizon. Use the default "
+                "(1) or add horizon support to that handler first."
+            )
+
         date_fields = (
             ("train_start", config.train_start),
             ("train_end", config.train_end),
@@ -549,7 +591,7 @@ class FeatureDatasetBuilder:
             return
 
         from src.data._segment_embargo import (  # noqa: PLC0415
-            LABEL_LOOKAHEAD_DAYS,
+            label_lookahead_days,
             validate_segment_embargo,
         )
 
@@ -585,14 +627,17 @@ class FeatureDatasetBuilder:
             valid_end=parsed["valid_end"],
             test_start=parsed["test_start"],
             calendar=calendar,
-            lookahead_days=LABEL_LOOKAHEAD_DAYS,
+            # horizon-driven: H=1 -> LABEL_LOOKAHEAD_DAYS (today's 2), H>1 -> H+1
+            lookahead_days=label_lookahead_days(config.label_horizon_days),
         )
         if errors:
             joined = "\n  - ".join(errors)
             raise FeatureDatasetBuilderError(
-                "Alpha158 label embargo violation — refusing to build "
-                "feature dataset (silent label leakage would inflate "
-                "OOS metrics):\n  - " + joined,
+                f"Alpha158 label embargo violation (label_horizon_days="
+                f"{config.label_horizon_days}, required gap="
+                f"{label_lookahead_days(config.label_horizon_days)} trading "
+                "days) — refusing to build feature dataset (silent label "
+                "leakage would inflate OOS metrics):\n  - " + joined,
             )
 
     @staticmethod

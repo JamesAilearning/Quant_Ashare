@@ -275,6 +275,14 @@ def compute_cache_key(
         "bundle_tag": bundle_tag,
         "handler_identity": handler_identity or "_no_handler_identity_",
     }
+    # Materialisation-affecting dimensions added AFTER the original schema join
+    # the payload ONLY WHEN NON-DEFAULT: the default payload stays byte-identical
+    # to the pre-dimension key, so existing cache entries remain valid, while a
+    # non-default value produces a structurally distinct key (a shared entry
+    # across label horizons would silently serve one horizon's labels to
+    # another's training). Future dimensions follow this same pattern.
+    if config.label_horizon_days != 1:
+        payload["label_horizon_days"] = str(config.label_horizon_days)
     encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:32]
 
