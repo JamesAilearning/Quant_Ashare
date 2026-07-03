@@ -250,7 +250,7 @@ class IcConventionTests(unittest.TestCase):
         summary = result.ic_summary[1]
         self.assertAlmostEqual(summary["mean_ic"], 1.0, places=6)
         self.assertAlmostEqual(summary["mean_ic_stamp_day"], -1.0, places=6)
-        self.assertEqual(summary["convention"], "label_aligned_t1_entry")
+        self.assertEqual(summary["convention"], "t1_entry_realized_return")
 
     def test_compute_daily_ic_entry_offset_arithmetic(self) -> None:
         predictions, returns_data = self._panel()

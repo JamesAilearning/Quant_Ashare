@@ -44,6 +44,11 @@ class WalkForwardConfig:
     # Universe & features
     instruments: str = "csi300"
     feature_handler: str = "Alpha158"
+    # Holding horizon H in trading days (buy T+1 close, sell T+1+H close).
+    # H=1 = today's 2-day Alpha158 label, byte-identical (REGEN-2 anchor).
+    # Threaded to the feature dataset (label expression + cache key), the
+    # fold-gap embargo (H+1 trading days), and the resume fingerprint.
+    label_horizon_days: int = 1
 
     # Overall period
     overall_start: str = "2022-01-01"
@@ -212,6 +217,24 @@ class WalkForwardConfig:
                     "A zero-length window would hang the walk-forward loop "
                     "or produce empty folds."
                 )
+
+        h = self.label_horizon_days
+        if not isinstance(h, int) or isinstance(h, bool) or h < 1:
+            raise WalkForwardError(
+                f"label_horizon_days must be a positive integer (holding days, "
+                f"T+1 close -> T+1+H close); got {h!r}."
+            )
+        if h != 1 and self.feature_handler != "Alpha158":
+            # Must refuse HERE, at config construction: the engine's per-fold
+            # error isolation would otherwise catch FeatureDatasetBuilder's
+            # rejection fold by fold and finish with an all-NaN placeholder
+            # report instead of failing at config load (codex P2 on #318).
+            raise WalkForwardError(
+                f"label_horizon_days={h} is only supported for feature_handler="
+                f"'Alpha158'; handler '{self.feature_handler}' defines its own "
+                "label and would silently ignore the horizon. Use the default "
+                "(1) or add horizon support to that handler first."
+            )
 
         # Validate ISO dates up-front so misconfiguration surfaces at config
         # construction rather than deep inside ``_generate_windows``.

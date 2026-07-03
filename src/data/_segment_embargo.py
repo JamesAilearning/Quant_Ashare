@@ -30,7 +30,34 @@ from datetime import date
 # — the label at day t consumes close prices at t+1 and t+2. We
 # require at least this many trading days of gap between adjacent
 # walk-forward segments to prevent boundary-row label leakage.
+# This is the H=1 (default holding-horizon) value; a configured horizon
+# derives its lookahead via :func:`label_lookahead_days`.
 LABEL_LOOKAHEAD_DAYS = 2
+
+
+def label_lookahead_days(label_horizon_days: int = 1) -> int:
+    """Label lookahead (trading days) for a configured holding horizon H.
+
+    The label ``Ref($close, -(H+1))/Ref($close, -1) - 1`` at day t consumes
+    closes through t+H+1, so the embargo must cover H+1 trading days. This is
+    the ONE shared derivation for all three consumers (the feature-builder
+    segment check, the walk-forward fold gap, the operator-UI segment guard) —
+    they cannot drift.
+
+    H=1 returns the module constant :data:`LABEL_LOOKAHEAD_DAYS` (read at call
+    time, so tests that patch the constant keep working); H>1 returns H+1.
+    A non-positive or non-integer horizon is rejected fail-loud here as the
+    last line of defence (config validation rejects it earlier).
+    """
+    if not isinstance(label_horizon_days, int) or isinstance(label_horizon_days, bool) \
+            or label_horizon_days < 1:
+        raise ValueError(
+            f"label_horizon_days must be a positive integer (holding days, "
+            f"T+1 close -> T+1+H close); got {label_horizon_days!r}."
+        )
+    if label_horizon_days == 1:
+        return LABEL_LOOKAHEAD_DAYS
+    return label_horizon_days + 1
 
 
 def trading_days_between(
@@ -127,6 +154,7 @@ def validate_segment_embargo(
 
 __all__ = [
     "LABEL_LOOKAHEAD_DAYS",
+    "label_lookahead_days",
     "trading_days_between",
     "validate_segment_embargo",
 ]

@@ -635,6 +635,7 @@ def _build_metadata(
         "config_summary": {
             "instruments": config_dict.get("instruments"),
             "feature_handler": config_dict.get("feature_handler"),
+            "label_horizon_days": config_dict.get("label_horizon_days"),
             "model_type": config_dict.get("model_type"),
             "benchmark_code": config_dict.get("benchmark_code"),
             "topk": config_dict.get("topk"),

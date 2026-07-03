@@ -154,13 +154,18 @@ class SignalAnalyzer:
         returns_data = cls._fetch_returns(predictions, max(config.forward_periods) + 1)
 
         # Compute IC for each forward period. HEADLINE convention (PR-C,
-        # audit A3): label-aligned — corr(score_T, return over
-        # T+1 → T+1+period), matching both the Alpha158 training label
-        # (``Ref($close,-2)/Ref($close,-1)-1`` for period=1) and the
-        # T+1-close fill of the canonical backtest. The pre-PR-C
-        # stamp-day convention (corr(score_T, T → T+period)) measured a
-        # window no strategy can earn — it is kept per period as the
-        # explicitly-labelled secondary ``mean_ic_stamp_day``.
+        # audit A3): entry-aligned — corr(score_T, REALIZED return over
+        # T+1 → T+1+period), matching the T+1-close fill of the canonical
+        # backtest. These are fixed MEASUREMENT horizons computed from
+        # realized prices, independent of the model's training label: under
+        # the default label (label_horizon_days=1, i.e.
+        # ``Ref($close,-2)/Ref($close,-1)-1``) period=1 happens to share the
+        # label's window; under a longer configured horizon the label-matched
+        # measurement is the corresponding period, and period=1 remains a
+        # valid 1-day-forward measurement. The pre-PR-C stamp-day convention
+        # (corr(score_T, T → T+period)) measured a window no strategy can
+        # earn — it is kept per period as the explicitly-labelled secondary
+        # ``mean_ic_stamp_day``.
         ic_series_dict = {}
         ic_summary_dict = {}
 
@@ -195,7 +200,7 @@ class SignalAnalyzer:
                     "ir": (mean_ic / std_ic) if std_ic > 0 else float("nan"),
                     "ic_positive_ratio": float((valid_ic > 0).mean()),
                     "num_days": int(len(valid_ic)),
-                    "convention": "label_aligned_t1_entry",
+                    "convention": "t1_entry_realized_return",
                     "mean_ic_stamp_day": mean_ic_stamp_day,
                 }
             else:
@@ -209,7 +214,7 @@ class SignalAnalyzer:
                     "ir": float("nan"),
                     "ic_positive_ratio": float("nan"),
                     "num_days": 0,
-                    "convention": "label_aligned_t1_entry",
+                    "convention": "t1_entry_realized_return",
                     "mean_ic_stamp_day": mean_ic_stamp_day,
                 }
 

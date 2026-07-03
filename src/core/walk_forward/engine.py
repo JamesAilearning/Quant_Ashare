@@ -163,6 +163,7 @@ class WalkForwardEngine:
                 config_fingerprint=config_fingerprint,
                 discovered=discovered_manifests,
                 resume_mode=effective_resume_mode,
+                label_horizon_days=config.label_horizon_days,  # names the re-run cause
             )
 
             if decision.skip and decision.manifest is not None:
@@ -397,6 +398,7 @@ class WalkForwardEngine:
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
+                    "label_horizon_days": config.label_horizon_days,
                     "model_type": config.model_type,
                     "ensemble_window": config.ensemble_window,
                     "topk": config.topk,
@@ -445,17 +447,20 @@ class WalkForwardEngine:
         boundaries.
         """
         # Imported at call time (NOT hoisted): test_walk_forward_embargo_gap
-        # patches ``_segment_embargo.LABEL_LOOKAHEAD_DAYS`` and relies on this
-        # read picking up the patched value — a module-level binding would
-        # capture a private copy at import time and silently defeat the patch.
-        from src.data._segment_embargo import LABEL_LOOKAHEAD_DAYS
+        # patches ``_segment_embargo.LABEL_LOOKAHEAD_DAYS`` and relies on the
+        # helper's call-time read picking up the patched value (H=1 reads the
+        # constant) — a module-level binding would capture a private copy at
+        # import time and silently defeat the patch.
+        from src.data._segment_embargo import label_lookahead_days
 
         if calendar is None:
             from qlib.data import D
             calendar = list(D.calendar())
         # Normalize + sort + de-dup the trading calendar for bisect/index.
         cal = sorted({cls._to_date(d) for d in calendar})
-        gap = LABEL_LOOKAHEAD_DAYS
+        # Horizon-driven: H=1 -> LABEL_LOOKAHEAD_DAYS (today's 2), H>1 -> H+1.
+        # Same shared derivation as the builder check and the UI guard.
+        gap = label_lookahead_days(config.label_horizon_days)
 
         def _end_before(anchor: date) -> date | None:
             """Trading day ``gap``+1 positions before the first trading day
@@ -644,6 +649,7 @@ class WalkForwardEngine:
                 valid_end=valid_end,
                 test_start=test_start,
                 test_end=test_end,
+                label_horizon_days=config.label_horizon_days,
             ),
             cache_dir=ds_cache_dir,
         )

@@ -64,6 +64,10 @@ def _six_increasing_indices(last_index: int) -> list[int]:
     Non-boundary pairs only need strict ordering (+1).
     """
 
+    # H=1 (default-horizon) assumption is fine HERE: this helper only lays out
+    # DEFAULT form suggestions (the UI form cannot set label_horizon_days), and
+    # the horizon-aware validator in training_guards is the enforcement point —
+    # a suggestion too tight for a larger horizon would be refused there.
     embargo = LABEL_LOOKAHEAD_DAYS
     # Min slots needed = 1 (train_start→train_end) + embargo + 1
     # (→valid_start) + 1 (→valid_end) + embargo + 1 (→test_start) + 1

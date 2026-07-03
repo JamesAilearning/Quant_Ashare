@@ -18,6 +18,9 @@ from src.data._segment_embargo import (  # noqa: E402
     LABEL_LOOKAHEAD_DAYS as LABEL_LOOKAHEAD_DAYS,
 )
 from src.data._segment_embargo import (
+    label_lookahead_days as label_lookahead_days,
+)
+from src.data._segment_embargo import (
     trading_days_between as trading_days_between,
 )
 
@@ -239,6 +242,7 @@ def validate_pipeline_training_inputs(
     test_end: str,
     benchmark_code: str = "",
     metadata: ProviderMetadata | None = None,
+    label_horizon_days: int = 1,
 ) -> TrainingGuardResult:
     # Accept a pre-read ProviderMetadata so a caller that already inspected
     # the same provider_uri this Streamlit rerun (config_run reads it once
@@ -290,7 +294,24 @@ def validate_pipeline_training_inputs(
             errors.append("test_start 必须严格早于 test_end。")
 
         _validate_provider_coverage(parsed_dates, metadata, errors, warnings)
-        _validate_segment_embargo(parsed_dates, metadata, errors)
+        # Horizon threaded through the PUBLIC validator (codex P2 #318 round 3):
+        # a UI/preset/prefill flow carrying label_horizon_days>1 is validated
+        # against the widened embargo, not silently green-lit at H=1. Callers
+        # that don't set it (today's form) keep the default = today's behavior.
+        # A malformed horizon surfaces as a validation ERROR (the guard's
+        # contract), not an exception out of the Streamlit rerun.
+        if (not isinstance(label_horizon_days, int)
+                or isinstance(label_horizon_days, bool)
+                or label_horizon_days < 1):
+            errors.append(
+                f"label_horizon_days 必须是正整数（持有交易日数），"
+                f"当前值：{label_horizon_days!r}。"
+            )
+        else:
+            _validate_segment_embargo(
+                parsed_dates, metadata, errors,
+                label_horizon_days=label_horizon_days,
+            )
 
     _validate_instruments(instruments, metadata, errors)
     _validate_universe_benchmark_alignment(instruments, benchmark_code, warnings)
@@ -306,6 +327,7 @@ def _validate_segment_embargo(
     parsed: Mapping[str, date | None],
     metadata: ProviderMetadata,
     errors: list[str],
+    label_horizon_days: int = 1,
 ) -> None:
     """Surface Alpha158 label-lookahead embargo violations in Chinese.
 
@@ -331,19 +353,25 @@ def _validate_segment_embargo(
         ("train_end", train_end, "valid_start", valid_start),
         ("valid_end", valid_end, "test_start", test_start),
     )
+    # Horizon-driven via the SAME shared helper as the core builder check and
+    # the walk-forward fold gap (they cannot drift). The UI form cannot set
+    # label_horizon_days today, so callers pass the default (1) and behavior
+    # is unchanged; when the form grows the field, only the call site changes.
+    required = label_lookahead_days(label_horizon_days)
     for e_name, e_date, l_name, l_date in pairs:
         if e_date is None or l_date is None or l_date <= e_date:
             # Other validators already flag missing / non-monotone dates.
             continue
         gap = trading_days_between(e_date, l_date, calendar)
-        if gap < LABEL_LOOKAHEAD_DAYS:
+        if gap < required:
             errors.append(
                 f"{e_name}（{e_date}）与 {l_name}（{l_date}）之间只有 "
-                f"{gap} 个交易日，少于 Alpha158 默认 label 所需的 "
-                f"{LABEL_LOOKAHEAD_DAYS} 个交易日 embargo——"
+                f"{gap} 个交易日，少于 label（持有期 "
+                f"{label_horizon_days} 天）所需的 "
+                f"{required} 个交易日 embargo——"
                 f"前一段的尾部 label 会用到后一段的收盘价，"
                 "造成验证集/测试集的 label 泄漏。请将后一段起始日往后推 "
-                f"至少 {LABEL_LOOKAHEAD_DAYS} 个交易日。"
+                f"至少 {required} 个交易日。"
             )
 
 

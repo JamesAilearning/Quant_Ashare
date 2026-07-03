@@ -84,6 +84,10 @@ class PipelineConfig:
     # features
     instruments: str = "csi300"
     feature_handler: str = "Alpha158"
+    # Holding horizon H in trading days (buy T+1 close, sell T+1+H close).
+    # H=1 = today's 2-day Alpha158 label, byte-identical. Two engines, one
+    # schema: same field/semantics as WalkForwardConfig.label_horizon_days.
+    label_horizon_days: int = 1
     train_start: str = "2022-01-01"
     train_end: str = "2024-12-31"
     valid_start: str = "2025-01-01"
@@ -179,6 +183,22 @@ class PipelineConfig:
             raise PipelineError(
                 "PipelineConfig.benchmark_code must be non-empty; the "
                 "canonical backtest contract requires a benchmark."
+            )
+        h = self.label_horizon_days
+        if not isinstance(h, int) or isinstance(h, bool) or h < 1:
+            raise PipelineError(
+                f"label_horizon_days must be a positive integer (holding days, "
+                f"T+1 close -> T+1+H close); got {h!r}."
+            )
+        if h != 1 and self.feature_handler != "Alpha158":
+            # Same up-front refusal as WalkForwardConfig (two engines, one
+            # schema): fail at config construction, not deep inside the run
+            # (codex P2 on #318).
+            raise PipelineError(
+                f"label_horizon_days={h} is only supported for feature_handler="
+                f"'Alpha158'; handler '{self.feature_handler}' defines its own "
+                "label and would silently ignore the horizon. Use the default "
+                "(1) or add horizon support to that handler first."
             )
         if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
             raise PipelineError(
@@ -434,6 +454,7 @@ class Pipeline:
             valid_end=config.valid_end,
             test_start=config.test_start,
             test_end=config.test_end,
+            label_horizon_days=config.label_horizon_days,
         ))
         _logger.info(
             "  Train: %s, Valid: %s, Test: %s",
@@ -773,6 +794,7 @@ class Pipeline:
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
+                    "label_horizon_days": config.label_horizon_days,
                     "model_type": config.model_type,
                     "topk": config.topk,
                 },
@@ -851,6 +873,10 @@ class Pipeline:
             "config": {
                 "instruments": config.instruments,
                 "feature_handler": config.feature_handler,
+                # Two engines, one schema: walk_forward_report.json carries this
+                # via asdict(config); a non-default single-fold run must be
+                # distinguishable from H=1 to report consumers (codex P2 #318).
+                "label_horizon_days": config.label_horizon_days,
                 "train_period": f"{config.train_start} ~ {config.train_end}",
                 "valid_period": f"{config.valid_start} ~ {config.valid_end}",
                 "test_period": f"{config.test_start} ~ {config.test_end}",
