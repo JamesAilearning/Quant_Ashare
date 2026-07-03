@@ -184,6 +184,41 @@ class EmbargoTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])  # 2 trading days between = today's requirement
 
+    def test_public_ui_validator_threads_horizon(self) -> None:
+        # codex P2 #318 round 3: the PUBLIC validator accepts and threads the
+        # horizon — a preset carrying H=5 is checked against the widened
+        # embargo through the public path, not just the private helper.
+        from web.operator_ui.training_guards import (
+            ProviderMetadata,
+            validate_pipeline_training_inputs,
+        )
+
+        cal = tuple(_cal(400, start="2022-01-01"))
+        metadata = ProviderMetadata(
+            provider_uri="X:/fake", provider_path=None, metadata_root=None,
+            validation_path=None, manifest_path=None,
+            coverage_start_date=cal[0], coverage_end_date=cal[-1],
+            calendar_dates=cal, instrument_universes=("csi300",),
+            health=None, row_count=None, instrument_count=None,
+            calendar_count=len(cal),
+        )
+        common = dict(
+            provider_uri="X:/fake", instruments="csi300",
+            train_start="2022-01-10", train_end="2022-06-30",
+            # 3 calendar days apart -> 2 trading days between: legal at H=1
+            valid_start="2022-07-03", valid_end="2022-09-30",
+            test_start="2022-10-03", test_end="2022-12-30",
+            metadata=metadata,
+        )
+        r1 = validate_pipeline_training_inputs(**common)  # type: ignore[arg-type]
+        embargo_errors_h1 = [e for e in r1.errors if "embargo" in e]
+        self.assertEqual(embargo_errors_h1, [])
+        r5 = validate_pipeline_training_inputs(**common, label_horizon_days=5)  # type: ignore[arg-type]
+        self.assertTrue(any("embargo" in e for e in r5.errors))
+        # malformed horizon -> a guard ERROR, not an exception out of the rerun
+        r_bad = validate_pipeline_training_inputs(**common, label_horizon_days=0)  # type: ignore[arg-type]
+        self.assertTrue(any("label_horizon_days" in e for e in r_bad.errors))
+
     def test_ui_guard_is_horizon_aware(self) -> None:
         # the operator-UI guard (3rd consumer) shares the same helper: a gap
         # legal at H=1 is refused at H=5, through the UI code path itself.

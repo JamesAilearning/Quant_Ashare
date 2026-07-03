@@ -242,6 +242,7 @@ def validate_pipeline_training_inputs(
     test_end: str,
     benchmark_code: str = "",
     metadata: ProviderMetadata | None = None,
+    label_horizon_days: int = 1,
 ) -> TrainingGuardResult:
     # Accept a pre-read ProviderMetadata so a caller that already inspected
     # the same provider_uri this Streamlit rerun (config_run reads it once
@@ -293,7 +294,24 @@ def validate_pipeline_training_inputs(
             errors.append("test_start 必须严格早于 test_end。")
 
         _validate_provider_coverage(parsed_dates, metadata, errors, warnings)
-        _validate_segment_embargo(parsed_dates, metadata, errors)
+        # Horizon threaded through the PUBLIC validator (codex P2 #318 round 3):
+        # a UI/preset/prefill flow carrying label_horizon_days>1 is validated
+        # against the widened embargo, not silently green-lit at H=1. Callers
+        # that don't set it (today's form) keep the default = today's behavior.
+        # A malformed horizon surfaces as a validation ERROR (the guard's
+        # contract), not an exception out of the Streamlit rerun.
+        if (not isinstance(label_horizon_days, int)
+                or isinstance(label_horizon_days, bool)
+                or label_horizon_days < 1):
+            errors.append(
+                f"label_horizon_days 必须是正整数（持有交易日数），"
+                f"当前值：{label_horizon_days!r}。"
+            )
+        else:
+            _validate_segment_embargo(
+                parsed_dates, metadata, errors,
+                label_horizon_days=label_horizon_days,
+            )
 
     _validate_instruments(instruments, metadata, errors)
     _validate_universe_benchmark_alignment(instruments, benchmark_code, warnings)

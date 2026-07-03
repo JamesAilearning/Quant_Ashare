@@ -200,7 +200,7 @@ class SignalAnalyzer:
                     "ir": (mean_ic / std_ic) if std_ic > 0 else float("nan"),
                     "ic_positive_ratio": float((valid_ic > 0).mean()),
                     "num_days": int(len(valid_ic)),
-                    "convention": "label_aligned_t1_entry",
+                    "convention": "t1_entry_realized_return",
                     "mean_ic_stamp_day": mean_ic_stamp_day,
                 }
             else:
@@ -214,7 +214,7 @@ class SignalAnalyzer:
                     "ir": float("nan"),
                     "ic_positive_ratio": float("nan"),
                     "num_days": 0,
-                    "convention": "label_aligned_t1_entry",
+                    "convention": "t1_entry_realized_return",
                     "mean_ic_stamp_day": mean_ic_stamp_day,
                 }
 
