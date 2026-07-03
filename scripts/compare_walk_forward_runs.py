@@ -19,7 +19,12 @@ Usage::
     python scripts/compare_walk_forward_runs.py \
         output/walk_forward_industry \
         output/walk_forward_industry_n3 \
-        --prereg <hypothesis-commit-hash>
+        --prereg-plan docs/prereg/label_horizon.yaml --variant 5d
+
+``--prereg-plan`` + ``--variant`` is the GIT-PROVABLE gate (the plan's
+last-touched commit must be an ancestor of both runs' recorded ``git_commit``;
+an unregistered variant is flagged). ``--prereg <ref>`` records an UNVERIFIED
+reference and is loudly marked as such.
 
 The per-fold table + aggregate deltas are stdlib-only. The verdict section
 lazily imports numpy via ``src.core.comparison``; if that import fails (or a
@@ -86,7 +91,9 @@ def build_ruler_report(
     baseline_dir: Path,
     treatment_dir: Path,
     *,
-    prereg: str | None,
+    prereg: str | None = None,
+    prereg_plan: str | None = None,
+    variant: str | None = None,
     overlap_floor: float | None = None,
     min_paired_days: int | None = None,
     block_length: int | None = None,
@@ -95,16 +102,77 @@ def build_ruler_report(
 ) -> list[str]:
     """Render the trustworthy run-comparison verdict as text lines.
 
-    NEVER raises: a missing ``--prereg``, an unavailable numpy/comparison module,
-    a non-comparable substrate (old runs without ``daily_series``), too little
-    date overlap, etc. each return an ACTIONABLE note — fail-loud is preserved
-    (no fabricated verdict), and the caller can still print the per-fold table.
+    Two pre-registration modes:
+
+    * ``prereg_plan`` (+ ``variant``) — the GIT-PROVABLE gate: the plan file's
+      last-touched commit must be an ancestor of both runs' recorded
+      ``git_commit`` (see ``src.core.preregistration``); an unregistered
+      variant is FLAGGED. This is the canonical mode.
+    * ``prereg`` — a RECORD-ONLY reference (no proof); loudly marked as such.
+
+    NEVER raises: a missing prereg, a failed gate, an unavailable
+    numpy/comparison module, a non-comparable substrate (old runs without
+    ``daily_series``), too little date overlap, etc. each return an ACTIONABLE
+    note — fail-loud is preserved (no fabricated verdict), and the caller can
+    still print the per-fold table.
     """
     title = "RUN-COMPARISON VERDICT (ruler: pooled IR + paired block-bootstrap)"
-    if prereg is None or not prereg.strip():
+    gate_lines: list[str] = []
+    plan = None
+    if prereg_plan is not None:
+        if not (variant or "").strip():
+            return [
+                title,
+                "  NO VERDICT: --prereg-plan requires --variant <name> — the gate must",
+                "  know WHICH registered variant this treatment run claims to be, or the",
+                "  unregistered-multiple-comparison check would be vacuous.",
+            ]
+        try:
+            from src.core.preregistration import (
+                PreregistrationError,
+                gate_comparison,
+                load_plan,
+            )
+        except ImportError as exc:
+            return [title, f"  unavailable — {exc} (needs src.core.preregistration)."]
+        try:
+            plan = load_plan(prereg_plan)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_load_aggregate(baseline_dir),
+                treatment_report=_load_aggregate(treatment_dir),
+                variant=str(variant).strip(),
+            )
+        except PreregistrationError as exc:
+            return [
+                title,
+                "  NO VERDICT (pre-registration gate failed):",
+                *(f"    {ln}" for ln in str(exc).splitlines()),
+            ]
+        except SystemExit as exc:  # _load_aggregate on a non-run dir — keep never-raises
+            return [title, f"  NO VERDICT (pre-registration gate failed): {exc}"]
+        prereg_ref = plan.commit
+        gate_lines = [
+            "  pre-registration GATE: PASSED (plan commit is an ancestor of both runs)",
+            f"    plan: {plan.path} @ {plan.commit[:12]}",
+            f"    hypothesis: {plan.hypothesis}",
+            f"    expected_direction: {plan.expected_direction}   "
+            f"registered variants: {list(plan.treatments)}",
+            f"    compared variant: {variant}",
+        ]
+        for flag in flags:
+            gate_lines += ["    ** FLAG:", f"       {flag}"]
+    elif prereg is not None and prereg.strip():
+        prereg_ref = prereg
+        gate_lines = [
+            "  pre-registration ref is RECORD-ONLY — NOT git-verified. Use",
+            "  --prereg-plan <committed-plan.yaml> --variant <name> for the provable gate.",
+        ]
+    else:
         return [
             title,
-            "  skipped — pass --prereg <hypothesis-commit-hash> for a significance",
+            "  skipped — pass --prereg-plan <committed-plan.yaml> --variant <name>",
+            "  (git-provable gate) or --prereg <ref> (record-only) for a significance",
             "  verdict (every comparison must carry a pre-registered hypothesis).",
         ]
     try:
@@ -123,7 +191,7 @@ def build_ruler_report(
         r = compare_runs(
             baseline_dir,
             treatment_dir,
-            pre_registration_ref=prereg,
+            pre_registration_ref=prereg_ref,
             overlap_floor=DEFAULT_OVERLAP_FLOOR if overlap_floor is None else overlap_floor,
             min_paired_days=(
                 DEFAULT_MIN_PAIRED_DAYS if min_paired_days is None else min_paired_days
@@ -171,11 +239,22 @@ def build_ruler_report(
         # tests): 'indistinguishable' is NOT 'equivalent'. Surface it prominently, right
         # under the VERDICT line, so the CLI can't show it stripped of the warning.
         lines.insert(2, f"  NOTE: {d['note']}")
+    if plan is not None and r.verdict != "indistinguishable":
+        # registered expectation vs realized verdict — recorded, not enforced; an
+        # OPPOSITE outcome is surfaced so it cannot be quietly re-narrated post-hoc.
+        lines.append(
+            "  direction vs plan: as registered"
+            if r.verdict == plan.expected_direction
+            else f"  ** direction vs plan: OPPOSITE of the registered expectation "
+                 f"({plan.expected_direction})"
+        )
     if r.contradiction_flag:
         lines += ["  ** CONTRADICTION (backtest is authoritative):", f"    {r.contradiction_flag}"]
     lines.append(f"  pre-registration ref: {r.pre_registration_ref}")
     lines.append("  caveats:")
     lines += [f"    - {c}" for c in r.caveats]
+    # gate block right under the title — the proof (or its absence) frames the verdict
+    lines[1:1] = gate_lines
     return lines
 
 
@@ -187,10 +266,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("baseline_dir", type=Path, help="baseline run dir (A)")
     parser.add_argument("treatment_dir", type=Path, help="treatment run dir (B)")
     parser.add_argument(
+        "--prereg-plan",
+        default=None,
+        help="path to the COMMITTED pre-registration plan file (YAML: hypothesis / "
+        "expected_direction / baseline / treatments). The plan's last-touched commit "
+        "must be a git ancestor of both runs' recorded git_commit — the provable gate. "
+        "Requires --variant.",
+    )
+    parser.add_argument(
+        "--variant",
+        default=None,
+        help="which registered variant this treatment run claims to be (checked "
+        "against the plan's treatments; an unregistered variant is FLAGGED)",
+    )
+    parser.add_argument(
         "--prereg",
         default=None,
-        help="git commit hash of the committed pre-registered hypothesis "
-        "(required for a significance verdict; every comparison must carry one)",
+        help="RECORD-ONLY pre-registration reference (no git proof; loudly marked). "
+        "Prefer --prereg-plan.",
     )
     parser.add_argument("--overlap-floor", type=float, default=None,
                         help="min date-overlap fraction of the shorter series (default 0.90)")
@@ -285,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         baseline_dir,
         treatment_dir,
         prereg=args.prereg,
+        prereg_plan=args.prereg_plan,
+        variant=args.variant,
         overlap_floor=args.overlap_floor,
         min_paired_days=args.min_paired_days,
         block_length=args.block_length,

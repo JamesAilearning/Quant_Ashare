@@ -63,20 +63,27 @@
       `git_dirty` (`capture_git_provenance` at the write boundary; `build_aggregate_report`
       takes injectable `git_provenance`, defaults to null for synthetic reports). Purely
       additive; the enabler for the topological ancestor check. Unit tests added.
-- [ ] **PR-3b-ii:** the git-provable pre-registration gate — chosen mechanism (operator
-      "full compliance"): `--prereg` points to a COMMITTED plan file (declares the
-      hypothesis + registered variants/comparisons); the gate verifies the plan's commit is
-      an ANCESTOR of each run's recorded `git_commit` (`git merge-base --is-ancestor`,
-      forgery-robust) and flags a compared variant set that exceeds the plan. Runs lacking a
-      `git_commit` fail loud. Lives in a pure `src/core/preregistration.py`; wired into the
-      CLI (compare_runs stays pure-stats).
-- [ ] **PR-3b-ii:** runbook constraints — **ST-off isolated labels** (PR#223 drift),
-      winner re-verified **ST-on vs REGEN-2 canonical**, strict **variable isolation**.
+- [x] **PR-3b-ii:** the git-provable pre-registration gate (`src/core/preregistration.py`,
+      pure; `compare_runs` stays pure-stats): `--prereg-plan` points to a COMMITTED plan
+      file (hypothesis / expected_direction / baseline / registered `treatments`); the
+      plan's identity is its LAST-TOUCHED commit (post-hoc edits move it past the runs →
+      caught); gate verifies that commit is a git ANCESTOR of each run's recorded
+      `git_commit` (`merge-base --is-ancestor`, forgery-robust). REFUSED: uncommitted /
+      locally-edited plan, run with null `git_commit` (pre-provenance or mixed-commit
+      resume), dirty/unknown worktree, missing `--variant`. FLAGGED (not refused):
+      unregistered variant (multiple-comparison), verdict opposite the registered
+      direction. `--prereg <ref>` remains as RECORD-ONLY, loudly marked NOT git-verified.
+      Tests use real throwaway git repos (init → commit plan → advance) — ancestry is
+      exercised against git itself, no mocks.
+- [x] **PR-3b-ii:** runbook `docs/run-comparison-runbook.md` — the ordered workflow
+      (plan → commit → clean single-invocation runs → compare), the refusal matrix,
+      **ST-off isolated labels** (PR#223 drift), winner re-verified **ST-on vs REGEN-2
+      canonical**, strict **variable isolation**.
 
 ## Longer OOS (methodology, no code)
 
-- [ ] Runbook note: extend the WF span (more folds / longer test windows) is the
-      data-side lever for power; it does not change the ruler.
+- [x] Runbook note ("power comes from the data side"): extend the WF span (more folds /
+      longer test windows) is the lever; it does not change the ruler.
 
 ## Must-not-touch
 
