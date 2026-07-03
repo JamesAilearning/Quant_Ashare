@@ -186,6 +186,14 @@ class DiffBaselinesTests(unittest.TestCase):
         md = (self.root / "diff.md").read_text(encoding="utf-8")
         self.assertIn("SH600068", md)
 
+    def test_changed_fold_window_fails(self) -> None:
+        # codex P2 #321 r3: same fold indexes, shifted test_period — a moved
+        # replay window must abort before any metric diffing/attribution.
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.01),
+               _fold(1, "2021-07-01..2021-09-15", 0.02)]  # truncated window
+        self.assertEqual(self._run(old, new), 1)
+
     def test_fold_set_mismatch_fails(self) -> None:
         old = [_fold(0, self._F0, 0.01)]
         new = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]

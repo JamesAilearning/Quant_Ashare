@@ -117,6 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     if set(old) != set(new):
         print(f"FAIL: fold sets differ (old={sorted(old)}, new={sorted(new)})")
         return 1
+    # Baseline METADATA is guarded too (codex P2 on #321 round 3): identical
+    # fold indexes with a shifted/truncated test_period would otherwise slip
+    # through — and hits computed from the OLD periods would attribute IC
+    # drift against the wrong delisting window. Any window change is a replay
+    # semantics change, not a re-signable drift.
+    for i in sorted(old):
+        if old[i]["test_period"] != new[i]["test_period"]:
+            print(
+                f"FAIL: fold {i} test_period changed "
+                f"({old[i]['test_period']!r} -> {new[i]['test_period']!r}) — "
+                "the replay window moved; this gate only re-signs metric "
+                "values on IDENTICAL fold windows."
+            )
+            return 1
     hits = _hits_by_fold(list(old.values()), args.registry, args.frozen)
 
     lines = [
