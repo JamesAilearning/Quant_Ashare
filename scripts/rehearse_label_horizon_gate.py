@@ -27,6 +27,7 @@ Exit 0 = all three scenarios behaved; exit 1 = the chain is broken somewhere
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -55,10 +56,14 @@ def _write_run(root: Path, *, delta: float, git_commit: str,
     d0 = date.fromisoformat("2025-07-01")
     dates = [(d0 + timedelta(days=i)).isoformat() for i in range(120)]
     # Deterministic, mildly autocorrelated excess series; the treatment adds
-    # a constant daily edge. The rehearsal asserts CHAIN behavior, never the
-    # numeric verdict.
+    # a VARYING daily edge (a constant paired difference has zero sampling
+    # variance and the ruler rightly refuses the degenerate CI — fail-loud).
+    # The rehearsal asserts CHAIN behavior, never the numeric verdict.
     base = [0.0004 if (i // 5) % 2 == 0 else -0.0003 for i in range(len(dates))]
-    excess = [b + delta for b in base]
+    excess = [
+        b + delta * (0.5 + (i % 5) / 4.0)  # 0.5x..1.5x delta, deterministic
+        for i, b in enumerate(base)
+    ]
     ds = {
         "excess_return": dict(zip(dates, excess)),
         "components": {
@@ -85,12 +90,18 @@ def _write_run(root: Path, *, delta: float, git_commit: str,
 
 
 def _compare(a: Path, b: Path, variant: str) -> tuple[int, str]:
+    # Pin BOTH ends of the pipe to UTF-8: the CLI prints em-dashes, and on a
+    # GBK-locale Windows box a mixed encoding misaligns the multi-byte decode
+    # and corrupts ASCII downstream of the first dash — the assertions below
+    # would then fail on perfectly correct CLI output.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.run(
         [sys.executable, str(CLI), str(a), str(b),
          "--prereg-plan", PLAN, "--variant", variant],
-        cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=300,
+        cwd=PROJECT_ROOT, capture_output=True, encoding="utf-8",
+        errors="replace", timeout=300, env=env,
     )
-    return proc.returncode, proc.stdout + proc.stderr
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
 def main() -> int:
@@ -106,12 +117,17 @@ def main() -> int:
     dirty_b = _write_run(REHEARSAL_ROOT / "B_dirty", delta=0.0002,
                          git_commit=head, git_dirty=True)
 
-    # 1. ACCEPT — registered variant, clean provenance.
+    # 1. ACCEPT — registered variant, clean provenance: the gate must verify
+    # ancestry AND a verdict must print.
     rc, out = _compare(clean_a, clean_b, "5d")
-    if "VERDICT" not in out or "UNREGISTERED" in out:
+    if (
+        "pre-registration GATE: PASSED" not in out
+        or "VERDICT" not in out
+        or "UNREGISTERED" in out
+    ):
         failures.append(
-            f"scenario 1 (accept): expected a gated verdict for variant 5d; "
-            f"rc={rc}. Tail:\n{out[-800:]}"
+            f"scenario 1 (accept): expected gate PASSED + a verdict for "
+            f"variant 5d; rc={rc}. Tail:\n{out[-800:]}"
         )
     else:
         print("scenario 1 ACCEPT ok — ancestry verified, verdict printed.")
@@ -128,7 +144,10 @@ def main() -> int:
 
     # 3. REFUSE — dirty provenance yields no verdict.
     rc, out = _compare(clean_a, dirty_b, "5d")
-    if "DIRTY" not in out or "VERDICT (" in out:
+    if (
+        "NO VERDICT (pre-registration gate failed)" not in out
+        or "DIRTY" not in out
+    ):
         failures.append(
             f"scenario 3 (refuse): dirty provenance must refuse the gate with "
             f"no verdict; rc={rc}. Tail:\n{out[-800:]}"
