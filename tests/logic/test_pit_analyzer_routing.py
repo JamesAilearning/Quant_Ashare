@@ -271,6 +271,60 @@ class RegistryFingerprintTests(unittest.TestCase):
         self.assertNotEqual(self._fp(""), fp_missing)
 
 
+class ReportRecordsRegistryTests(unittest.TestCase):
+    """codex P2 #320 r3: pipeline_report.json must expose the PIT-routing
+    status (walk-forward reports carry the full config via asdict) — an
+    operator reading the primary report can tell mask vs legacy path."""
+
+    def _report(self, registry: str) -> dict:
+        import json
+        import tempfile
+
+        from src.core.pipeline import Pipeline
+        from src.core.signal_analyzer import SignalAnalysisResult
+
+        config = SimpleNamespace(
+            instruments="csi300", feature_handler="Alpha158",
+            label_horizon_days=1, delisted_registry_path=registry,
+            train_start="2022-01-01", train_end="2022-12-31",
+            valid_start="2023-01-01", valid_end="2023-03-31",
+            test_start="2023-04-01", test_end="2023-06-30",
+            model_type="LGBModel", benchmark_code="SH000300",
+            topk=50, n_drop=5, industry_taxonomy_id=None,
+        )
+        signal_result = SignalAnalysisResult(
+            ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5, "num_days": 5}},
+            ic_series={}, ic_decay=[0.01], turnover_stats={"mean_turnover": 0.1},
+        )
+        backtest_output = SimpleNamespace(
+            metric_status="ok", official_backtest_path="official",
+            report={}, provenance={}, risk_analysis={},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "pipeline_report.json"
+            Pipeline._write_report(
+                str(path), config,  # type: ignore[arg-type]
+                SimpleNamespace(train_shape=(1, 1), valid_shape=(1, 1),
+                                test_shape=(1, 1)),  # type: ignore[arg-type]
+                SimpleNamespace(prediction_shape=(1, 1),
+                                model_artifact_path="m"),  # type: ignore[arg-type]
+                signal_result, backtest_output,  # type: ignore[arg-type]
+                factor_skipped_reason="unit-test",
+            )
+            return dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def test_configured_registry_recorded(self) -> None:
+        data = self._report("D:/qlib_data/tushare_raw/delisted_registry.parquet")
+        self.assertEqual(
+            data["config"]["delisted_registry_path"],
+            "D:/qlib_data/tushare_raw/delisted_registry.parquet",
+        )
+
+    def test_legacy_path_recorded_as_null(self) -> None:
+        data = self._report("")
+        self.assertIsNone(data["config"]["delisted_registry_path"])
+
+
 class EngineActivationTests(unittest.TestCase):
     """Operator review point 1: the wiring is EXERCISED in PR-1 — a configured
     provider reaches the attribution call site through the engine, not dead

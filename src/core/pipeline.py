@@ -815,6 +815,7 @@ class Pipeline:
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
                     "label_horizon_days": config.label_horizon_days,
+                    "delisted_registry_path": config.delisted_registry_path or None,
                     "model_type": config.model_type,
                     "topk": config.topk,
                 },
@@ -897,6 +898,10 @@ class Pipeline:
                 # via asdict(config); a non-default single-fold run must be
                 # distinguishable from H=1 to report consumers (codex P2 #318).
                 "label_horizon_days": config.label_horizon_days,
+                # PIT-routing governance status (codex P2 #320 r3): non-empty =
+                # attribution used the PIT post-delist mask; null = legacy WARN
+                # path. Walk-forward reports carry this via asdict(config).
+                "delisted_registry_path": config.delisted_registry_path or None,
                 "train_period": f"{config.train_start} ~ {config.train_end}",
                 "valid_period": f"{config.valid_start} ~ {config.valid_end}",
                 "test_period": f"{config.test_start} ~ {config.test_end}",

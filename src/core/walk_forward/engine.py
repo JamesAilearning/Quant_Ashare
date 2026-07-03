@@ -426,6 +426,7 @@ class WalkForwardEngine:
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
                     "label_horizon_days": config.label_horizon_days,
+                    "delisted_registry_path": config.delisted_registry_path or None,
                     "model_type": config.model_type,
                     "ensemble_window": config.ensemble_window,
                     "topk": config.topk,

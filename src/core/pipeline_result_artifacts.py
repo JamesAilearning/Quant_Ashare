@@ -636,6 +636,7 @@ def _build_metadata(
             "instruments": config_dict.get("instruments"),
             "feature_handler": config_dict.get("feature_handler"),
             "label_horizon_days": config_dict.get("label_horizon_days"),
+            "delisted_registry_path": config_dict.get("delisted_registry_path") or None,
             "model_type": config_dict.get("model_type"),
             "benchmark_code": config_dict.get("benchmark_code"),
             "topk": config_dict.get("topk"),
