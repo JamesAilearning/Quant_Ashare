@@ -95,6 +95,11 @@ REPLAY_WINDOW_END = "2025-12-31"  # fold 22 = 2025Q4 (see N_FOLDS)
 # re-sign onward (the current baseline predates the evidence channel; a
 # fabricated retroactive sidecar would defeat the point).
 EVIDENCE_SIDECAR = FIXTURES_DIR / "walk_forward_baseline_metrics.evidence.json"
+# The ONE legacy baseline that predates the evidence channel (codex P2 #321 r4:
+# "presence mandatory from the first re-sign" must be machine-enforceable, not
+# aspirational). Any OTHER baseline content REQUIRES the sidecar. A re-sign PR
+# updates the baseline + sidecar + this pin together.
+LEGACY_BASELINE_SHA256 = "0a74f8e0e829dbacd7d6948967fc81b1ee68bed007f940745f4fc18130432298"
 TARBALL = FIXTURES_DIR / "regen2_minibundle.tar.gz"
 TARBALL_SHA256 = FIXTURES_DIR / "regen2_minibundle.tar.gz.sha256"
 _ARCROOT = "regen2_minibundle"  # the dir name inside the tarball
@@ -216,9 +221,22 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
                 f"the replay window end ({REPLAY_WINDOW_END}) — take a fresh "
                 "snapshot through the re-sign channel before rolling the window."
             )
-        # Evidence sidecar consistency (operator decision 2-1): if the sidecar
-        # exists, its digests MUST match the committed files — a mismatch means
-        # the baseline (or registry) was edited outside the re-sign channel.
+        # Evidence sidecar enforcement (operator decision 2-1 + codex P2 r4):
+        # the ONE pinned legacy baseline is exempt; ANY other baseline content
+        # is by definition a re-sign and MUST ship the evidence sidecar — a
+        # re-sign PR that forgets it fails here, red, not silently green.
+        baseline_digest = hashlib.sha256(BASELINE_FIXTURE.read_bytes()).hexdigest()
+        if baseline_digest != LEGACY_BASELINE_SHA256 and not EVIDENCE_SIDECAR.exists():
+            raise AssertionError(
+                "baseline content differs from the pinned legacy baseline "
+                f"({baseline_digest[:16]} != {LEGACY_BASELINE_SHA256[:16]}) but no "
+                "evidence sidecar is committed — a re-signed baseline MUST ship "
+                "walk_forward_baseline_metrics.evidence.json from the "
+                "regen-baseline workflow (and update LEGACY_BASELINE_SHA256)."
+            )
+        # If the sidecar exists, its digests MUST match the committed files — a
+        # mismatch means the baseline (or registry) was edited outside the
+        # re-sign channel.
         if EVIDENCE_SIDECAR.exists():
             ev = json.loads(EVIDENCE_SIDECAR.read_text(encoding="utf-8"))
             actual_baseline = hashlib.sha256(BASELINE_FIXTURE.read_bytes()).hexdigest()
