@@ -66,6 +66,7 @@ jobs:
           python scripts/regen/diff_baselines.py \
             --old tests/regression/fixtures/walk_forward_baseline_metrics.json \
             --new /tmp/regen2/new_baseline.json \
+            --frozen tests/regression/fixtures/regen2/frozen_fold_scores.pkl.gz \
             --out-md /tmp/regen2/diff_table.md
           cat /tmp/regen2/diff_table.md
 

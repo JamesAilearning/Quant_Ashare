@@ -12,11 +12,15 @@ up front, not negotiated after seeing the numbers:
   R3. An IC change on a fold with NO attributable delisted instrument aborts —
       investigate, never explain past it.
 
-A fold "has a hit" when a registry instrument's delist_date falls within
-[test_start - LOOKBACK_DAYS, test_end]: the IC forward-return window of the
-last pre-delist prediction rows reaches past the delist date, so those folds
-may legitimately move. LOOKBACK_DAYS covers max forward period (5) + entry
-offset + calendar slack.
+A fold "has a hit" when a registry instrument BOTH (a) appears in that
+fold's FROZEN PREDICTIONS (actual (datetime, instrument) rows — the registry
+is full-market, so date overlap alone would let an unrelated market delisting
+launder arbitrary IC drift past R3; codex P1 on #321) AND (b) has its
+delist_date within [test_start - LOOKBACK_DAYS, test_end]: the IC
+forward-return window of the last pre-delist prediction rows reaches past the
+delist date. LOOKBACK_DAYS covers max forward period (5) + entry offset +
+calendar slack. The frozen-scores fixture is REQUIRED — no membership data,
+no attribution, no re-sign.
 
 Exit 0 = all rules hold (diff table written); exit 1 = a rule failed (the
 workflow job goes red and no re-sign bundle should be trusted).
@@ -24,7 +28,9 @@ workflow job goes red and no re-sign bundle should be trusted).
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -39,21 +45,45 @@ def _load(path: str) -> list[dict[str, Any]]:
     return list(data["per_fold"])
 
 
+def _fold_instruments(frozen_path: str) -> dict[int, set[str]]:
+    """Per-fold prediction membership from the frozen-scores fixture."""
+    with gzip.open(frozen_path, "rb") as fh:
+        frozen = pickle.load(fh)
+    out: dict[int, set[str]] = {}
+    for i, entry in frozen.items():
+        insts = entry["scores"].index.get_level_values("instrument")
+        out[int(i)] = {str(x).upper() for x in insts}
+    return out
+
+
 def _hits_by_fold(
-    folds: list[dict[str, Any]], registry_path: str,
+    folds: list[dict[str, Any]], registry_path: str, frozen_path: str,
 ) -> dict[int, list[str]]:
     import pandas as pd
 
+    membership = _fold_instruments(frozen_path)
     reg = pd.read_parquet(registry_path)
     reg["dd"] = pd.to_datetime(reg["delist_date"], format="mixed", errors="coerce")
     reg = reg[reg["dd"].notna()]
     out: dict[int, list[str]] = {}
     for f in folds:
+        idx = int(f["fold_index"])
+        if idx not in membership:
+            raise SystemExit(
+                f"FAIL: fold {idx} has no frozen predictions — cannot derive "
+                "attribution membership; refusing to gate on date overlap alone."
+            )
         start_s, end_s = f["test_period"].split("..")
         lo = pd.Timestamp(start_s) - pd.Timedelta(days=LOOKBACK_DAYS)
         hi = pd.Timestamp(end_s)
-        hit = reg[(reg["dd"] >= lo) & (reg["dd"] <= hi)]
-        out[int(f["fold_index"])] = sorted(hit["ticker"].tolist())
+        in_window = reg[(reg["dd"] >= lo) & (reg["dd"] <= hi)]
+        # codex P1 on #321: attribution requires PREDICTION MEMBERSHIP, not
+        # just date overlap — the registry is full-market, and an unrelated
+        # delisting in the same quarter must not launder IC drift past R3.
+        out[idx] = sorted(
+            t for t in in_window["ticker"].astype(str).str.upper()
+            if t in membership[idx]
+        )
     return out
 
 
@@ -65,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         Path(__file__).resolve().parents[2]
         / "tests/regression/fixtures/regen2/delisted_registry_frozen_20260618.parquet"
     ))
+    ap.add_argument("--frozen", default=str(
+        Path(__file__).resolve().parents[2]
+        / "tests/regression/fixtures/regen2/frozen_fold_scores.pkl.gz"
+    ))
     ap.add_argument("--out-md", required=True)
     args = ap.parse_args(argv)
 
@@ -73,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     if set(old) != set(new):
         print(f"FAIL: fold sets differ (old={sorted(old)}, new={sorted(new)})")
         return 1
-    hits = _hits_by_fold(list(old.values()), args.registry)
+    hits = _hits_by_fold(list(old.values()), args.registry, args.frozen)
 
     lines = [
         "# REGEN-2 baseline re-sign diff",

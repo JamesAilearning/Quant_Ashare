@@ -2,8 +2,10 @@
 (audit P2, operator decision 2: rules committed before the numbers are seen)."""
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import json
+import pickle
 import sys
 import unittest
 from pathlib import Path
@@ -41,12 +43,31 @@ class DiffBaselinesTests(unittest.TestCase):
         self.cli = _load_cli()
         self.td = TemporaryDirectory()
         root = Path(self.td.name)
-        # registry: one instrument delisted inside fold-1's window
+        # registry: SH600068 delisted inside fold-1's window; SH999999 is an
+        # UNRELATED market delisting in the same window (never predicted).
         pd.DataFrame({
-            "ticker": ["SH600068"], "delist_date": ["2021-08-15"],
+            "ticker": ["SH600068", "SH999999"],
+            "delist_date": ["2021-08-15", "2021-08-20"],
         }).to_parquet(root / "reg.parquet")
         self.reg = str(root / "reg.parquet")
         self.root = root
+        # frozen predictions: folds 0/1 both predict SH600068 + SH600001 —
+        # SH999999 is in NO fold's membership.
+        def _scores(dates: list[str]) -> pd.Series:
+            idx = pd.MultiIndex.from_product(
+                [pd.to_datetime(dates), ["SH600068", "SH600001"]],
+                names=["datetime", "instrument"],
+            )
+            return pd.Series(range(len(idx)), index=idx, dtype=float)
+        frozen = {
+            0: {"scores": _scores(["2021-01-05", "2021-02-05"]),
+                "test": {"start": "2021-01-01", "end": "2021-03-31"}},
+            1: {"scores": _scores(["2021-07-05", "2021-08-05"]),
+                "test": {"start": "2021-07-01", "end": "2021-09-30"}},
+        }
+        self.frozen = str(root / "frozen.pkl.gz")
+        with gzip.open(self.frozen, "wb") as fh:
+            pickle.dump(frozen, fh)
 
     def tearDown(self) -> None:
         self.td.cleanup()
@@ -59,6 +80,7 @@ class DiffBaselinesTests(unittest.TestCase):
         return self.cli.main([
             "--old", str(old_p), "--new", str(new_p),
             "--registry", self.reg,
+            "--frozen", self.frozen,
             "--out-md", str(self.root / "diff.md"),
         ])
 
@@ -90,6 +112,32 @@ class DiffBaselinesTests(unittest.TestCase):
         self.assertEqual(self._run(old, new), 1)
         md = (self.root / "diff.md").read_text(encoding="utf-8")
         self.assertIn("R2 VIOLATION", md)
+
+    def test_unrelated_market_delisting_does_not_launder_drift(self) -> None:
+        # codex P1 on #321: SH999999 delists inside fold-1's window but is in
+        # NO fold's predictions. fold-0 (no delisting at all) moving must fail
+        # R3; fold-1's legitimate change must be attributed ONLY to the
+        # PREDICTED instrument, never the unrelated market delisting.
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.011), _fold(1, self._F1, 0.02)]
+        self.assertEqual(self._run(old, new), 1)  # fold-0: no hit at all
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("R3 VIOLATION", md)
+        old2 = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new2 = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.021)]
+        self.assertEqual(self._run(old2, new2), 0)
+        md2 = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("SH600068", md2)
+        self.assertNotIn("SH999999", md2)
+
+    def test_missing_fold_membership_fails_loud(self) -> None:
+        # a fold absent from the frozen fixture must abort, never degrade to
+        # date-overlap-only attribution (exactly the P1 hole)
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02),
+               _fold(2, "2022-01-01..2022-03-31", 0.03)]
+        new = [dict(f) for f in old]
+        with self.assertRaises(SystemExit):
+            self._run(old, new)
 
     def test_fold_set_mismatch_fails(self) -> None:
         old = [_fold(0, self._F0, 0.01)]
