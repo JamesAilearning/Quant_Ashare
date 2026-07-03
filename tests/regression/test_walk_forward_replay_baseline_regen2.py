@@ -72,6 +72,29 @@ from typing import Any
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 FROZEN_FIXTURE = FIXTURES_DIR / "regen2" / "frozen_fold_scores.pkl.gz"
 BASELINE_FIXTURE = FIXTURES_DIR / "walk_forward_baseline_metrics.json"  # PR-2: REGEN-2 is the canonical root
+# Audit P2 PR-2: the anchor replays CANONICAL semantics — PIT-masked IC via the
+# committed delisted-registry snapshot (operator-signed reference data;
+# three-way reconciliation table in the PR). NOT a subset: a FROZEN FULL
+# byte-level snapshot of the production registry taken 2026-06-18. Updates go
+# ONLY through the baseline re-sign channel (regen workflow), never in place —
+# the sha256 pin below turns any other edit into a loud failure.
+REGISTRY_FIXTURE = FIXTURES_DIR / "regen2" / "delisted_registry_frozen_20260618.parquet"
+REGISTRY_FIXTURE_SHA256 = (
+    "ba24d66cae524e12"  # first 16 hex chars; full digest asserted at runtime
+)
+# Freshness guard: the registry snapshot must cover the replay window's end.
+# When the walk-forward window rolls forward (new folds / later overall_end),
+# this assertion fails LOUDLY instead of the fixture silently going stale —
+# take a new snapshot through the re-sign channel and update BOTH constants.
+REGISTRY_SNAPSHOT_DATE = "2026-06-18"
+REPLAY_WINDOW_END = "2025-12-31"  # fold 22 = 2025Q4 (see N_FOLDS)
+# Evidence sidecar (operator decision 2-1): every re-signed baseline is
+# accompanied by baseline_evidence.json from the regen-baseline workflow
+# (run URL, sha256 digests, pip-freeze hash, runner image). Enforcement is
+# "if present, it MUST match" — presence becomes mandatory from the first
+# re-sign onward (the current baseline predates the evidence channel; a
+# fabricated retroactive sidecar would defeat the point).
+EVIDENCE_SIDECAR = FIXTURES_DIR / "walk_forward_baseline_metrics.evidence.json"
 TARBALL = FIXTURES_DIR / "regen2_minibundle.tar.gz"
 TARBALL_SHA256 = FIXTURES_DIR / "regen2_minibundle.tar.gz.sha256"
 _ARCROOT = "regen2_minibundle"  # the dir name inside the tarball
@@ -160,13 +183,55 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         # CI-real guard for the REGEN-2 anchor (it is --ignore'd on every other matrix
         # leg), so an accidentally deleted/mis-checked-out tarball / checksum / frozen
         # scores / baseline must FAIL the leg red, never silent-green skip.
-        missing = [str(f) for f in (TARBALL, TARBALL_SHA256, FROZEN_FIXTURE, BASELINE_FIXTURE) if not f.exists()]
+        missing = [
+            str(f)
+            for f in (TARBALL, TARBALL_SHA256, FROZEN_FIXTURE, BASELINE_FIXTURE,
+                      REGISTRY_FIXTURE)
+            if not f.exists()
+        ]
         if missing:
             raise AssertionError(
                 "committed REGEN-2 replay fixture(s) missing — reference data was deleted "
                 f"or not checked out: {missing}. This is the only CI-real anchor guard; a "
                 "missing fixture is a hard failure, not a skip."
             )
+        # Registry fixture physical lock (operator sign-off condition 2): the
+        # snapshot is FROZEN — any in-place edit fails loudly here; updates go
+        # only through the baseline re-sign channel.
+        reg_digest = hashlib.sha256(REGISTRY_FIXTURE.read_bytes()).hexdigest()
+        if not reg_digest.startswith(REGISTRY_FIXTURE_SHA256):
+            raise AssertionError(
+                "delisted-registry fixture sha256 mismatch — the frozen snapshot "
+                f"was modified in place (got {reg_digest[:16]}, pinned "
+                f"{REGISTRY_FIXTURE_SHA256}). Updates must go through the baseline "
+                "re-sign channel (regen workflow + operator sign-off), never an "
+                "in-place edit."
+            )
+        # Freshness guard (operator sign-off condition 3): the snapshot must
+        # cover the replay window's end, else the fixture silently goes stale
+        # when the window rolls forward.
+        if REGISTRY_SNAPSHOT_DATE < REPLAY_WINDOW_END:
+            raise AssertionError(
+                f"delisted-registry snapshot ({REGISTRY_SNAPSHOT_DATE}) predates "
+                f"the replay window end ({REPLAY_WINDOW_END}) — take a fresh "
+                "snapshot through the re-sign channel before rolling the window."
+            )
+        # Evidence sidecar consistency (operator decision 2-1): if the sidecar
+        # exists, its digests MUST match the committed files — a mismatch means
+        # the baseline (or registry) was edited outside the re-sign channel.
+        if EVIDENCE_SIDECAR.exists():
+            ev = json.loads(EVIDENCE_SIDECAR.read_text(encoding="utf-8"))
+            actual_baseline = hashlib.sha256(BASELINE_FIXTURE.read_bytes()).hexdigest()
+            actual_registry = hashlib.sha256(REGISTRY_FIXTURE.read_bytes()).hexdigest()
+            if ev.get("baseline_sha256") != actual_baseline or (
+                ev.get("registry_sha256") != actual_registry
+            ):
+                raise AssertionError(
+                    "baseline evidence sidecar digests do not match the committed "
+                    "files — the baseline or registry was modified outside the "
+                    "re-sign channel (regen-baseline workflow). "
+                    f"sidecar={EVIDENCE_SIDECAR}"
+                )
         # Verify the committed mini-bundle tarball checksum BEFORE trusting it —
         # a mismatch is corrupt/tampered reference data and must fail loudly (CI red),
         # not silently replay against bad bytes.
@@ -194,7 +259,10 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
         for lg, _level in cls._silenced:
             lg.setLevel(logging.ERROR)
         from scripts.regen.replay_frozen_baseline_regen2 import replay_frozen_baseline_regen2
-        cls._result = replay_frozen_baseline_regen2(FROZEN_FIXTURE, str(provider), str(namechange))
+        cls._result = replay_frozen_baseline_regen2(
+            FROZEN_FIXTURE, str(provider), str(namechange),
+            delisted_registry_path=str(REGISTRY_FIXTURE),
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:

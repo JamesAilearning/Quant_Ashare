@@ -271,6 +271,147 @@ class RegistryFingerprintTests(unittest.TestCase):
         self.assertNotEqual(self._fp(""), fp_missing)
 
 
+def _signal_close_panel() -> pd.DataFrame:
+    # (instrument, datetime) $close panel — the shape both D.features and
+    # PITDataProvider.get_features return before the analyzer's swaplevel.
+    idx = pd.MultiIndex.from_product(
+        [["SH600000", "SH600001"],
+         pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04",
+                         "2024-01-05", "2024-01-08"])],
+        names=["instrument", "datetime"],
+    )
+    vals = [10.0, 10.5, 11.0, 11.2, 11.5, 20.0, 19.0, 18.0, 18.5, 18.2]
+    return pd.DataFrame({"$close": vals}, index=idx)
+
+
+class SignalFetchReturnsRoutingTests(unittest.TestCase):
+    """PR-2: SignalAnalyzer._fetch_returns routes through the provider; the
+    None path stays bit-identical with the WARN."""
+
+    def _preds(self) -> pd.Series:
+        idx = pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-02", "2024-01-03"]),
+             ["SH600000", "SH600001"]],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series([0.1, 0.2, 0.3, 0.4], index=idx, name="score")
+
+    def test_provider_path_routes_and_matches_fallback_shape(self) -> None:
+        from src.core.signal_analyzer import SignalAnalyzer
+
+        provider = MagicMock()
+        provider.get_features.return_value = _signal_close_panel()
+        fake_qlib_data = MagicMock()
+        with patch.dict(sys.modules, {"qlib.data": fake_qlib_data}):
+            via_provider = SignalAnalyzer._fetch_returns(
+                self._preds(), 2, pit_provider=provider,
+            )
+        provider.get_features.assert_called_once()
+        fake_qlib_data.D.features.assert_not_called()
+
+        fake_D = MagicMock()
+        fake_D.features.return_value = _signal_close_panel()
+        with patch.dict(sys.modules, {"qlib.data": MagicMock(D=fake_D)}):
+            via_fallback = SignalAnalyzer._fetch_returns(self._preds(), 2)
+        # same input panel -> identical output (the opt-in changes the SOURCE,
+        # not the reshaping arithmetic)
+        pd.testing.assert_frame_equal(via_provider, via_fallback)
+        self.assertEqual(list(via_provider.index.names), ["datetime", "instrument"])
+        self.assertEqual(list(via_provider.columns), ["close"])
+
+    def test_fallback_warns(self) -> None:
+        from src.core.signal_analyzer import SignalAnalyzer
+
+        fake_D = MagicMock()
+        fake_D.features.return_value = _signal_close_panel()
+        with patch.dict(sys.modules, {"qlib.data": MagicMock(D=fake_D)}):
+            with self.assertLogs("src.core.signal_analyzer", level="WARNING") as logs:
+                SignalAnalyzer._fetch_returns(self._preds(), 2)
+        self.assertTrue(any("bypasses" in m for m in logs.output))
+
+    def test_provider_path_does_not_warn(self) -> None:
+        import logging
+
+        from src.core.signal_analyzer import SignalAnalyzer
+
+        provider = MagicMock()
+        provider.get_features.return_value = _signal_close_panel()
+        records: list = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger = logging.getLogger("src.core.signal_analyzer")
+        logger.addHandler(handler)
+        try:
+            SignalAnalyzer._fetch_returns(self._preds(), 2, pit_provider=provider)
+        finally:
+            logger.removeHandler(handler)
+        self.assertFalse(any("bypasses" in r.getMessage() for r in records))
+
+    def test_analyze_threads_provider_to_fetch(self) -> None:
+        # ACTIVATION (same spirit as PR-1's engine test): analyze passes the
+        # provider through to _fetch_returns — with alignment satisfied.
+        from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer
+
+        provider = SimpleNamespace(_provider_uri="X:/right")
+        canonical = SimpleNamespace(
+            provider_uri=qlib_runtime_mod._normalize_provider_uri("X:/right"),
+        )
+        captured: dict = {}
+
+        def fake_fetch(predictions, max_period, pit_provider=None):  # noqa: ANN001
+            captured["provider"] = pit_provider
+            panel = _signal_close_panel().rename(columns={"$close": "close"})
+            return panel.swaplevel().sort_index()
+
+        with patch.object(
+            qlib_runtime_mod, "get_canonical_qlib_config", return_value=canonical,
+        ), patch.dict(
+            SignalAnalyzer.analyze.__func__.__globals__,
+            {"is_canonical_qlib_initialized": lambda: True},
+        ), patch.object(
+            SignalAnalyzer, "_fetch_returns", staticmethod(fake_fetch),
+        ):
+            result = SignalAnalyzer.analyze(
+                predictions=self._preds(),
+                config=SignalAnalysisConfig(
+                    forward_periods=(1,), compute_turnover=False,
+                ),
+                pit_provider=provider,
+            )
+        self.assertIs(captured["provider"], provider)
+        self.assertIn(1, result.ic_summary)
+
+
+class SignalAlignmentGuardTests(unittest.TestCase):
+    def test_no_canonical_config_refused(self) -> None:
+        from src.core.signal_analyzer import SignalAnalyzer, SignalAnalyzerError
+
+        with patch.object(
+            qlib_runtime_mod, "get_canonical_qlib_config", return_value=None,
+        ):
+            with self.assertRaises(SignalAnalyzerError):
+                SignalAnalyzer._validate_pit_provider_alignment(
+                    SimpleNamespace(_provider_uri="X:/b"),
+                )
+
+    def test_uri_mismatch_refused_and_match_passes(self) -> None:
+        from src.core.signal_analyzer import SignalAnalyzer, SignalAnalyzerError
+
+        canonical = SimpleNamespace(
+            provider_uri=qlib_runtime_mod._normalize_provider_uri("X:/right"),
+        )
+        with patch.object(
+            qlib_runtime_mod, "get_canonical_qlib_config", return_value=canonical,
+        ):
+            with self.assertRaises(SignalAnalyzerError):
+                SignalAnalyzer._validate_pit_provider_alignment(
+                    SimpleNamespace(_provider_uri="X:/wrong"),
+                )
+            SignalAnalyzer._validate_pit_provider_alignment(
+                SimpleNamespace(_provider_uri="X:/right"),
+            )
+
+
 class ReportRecordsRegistryTests(unittest.TestCase):
     """codex P2 #320 r3: pipeline_report.json must expose the PIT-routing
     status (walk-forward reports carry the full config via asdict) — an

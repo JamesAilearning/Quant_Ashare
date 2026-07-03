@@ -1,0 +1,110 @@
+# REGEN-2 baseline re-sign channel (audit P2 / operator decision 2, 2026-07-03).
+#
+# The ONLY sanctioned way to regenerate tests/regression/fixtures/
+# walk_forward_baseline_metrics.json. Manual dispatch; produces an artifact
+# bundle containing the new baseline + per-fold diff table + EVIDENCE sidecar
+# (workflow run URL, sha256 digests, pip-freeze hash, runner image). The
+# operator-approved acceptance rules are enforced IN-JOB before the artifact
+# is even produced:
+#
+#   R1. Folds without a delisted-instrument hit must be IDENTICAL to the old
+#       baseline (not "close") on every pinned metric.
+#   R2. Backtest metrics (annualized_return / max_drawdown /
+#       information_ratio) must be identical on EVERY fold — this channel
+#       only ever re-signs IC-input changes.
+#   R3. Any fold change that cannot be attributed to the documented cause
+#       fails the job — investigate, never explain past it.
+#
+# The end state is a PR: the diff table + evidence sidecar are committed WITH
+# the new baseline (artifacts expire; committed evidence does not), and the
+# operator's merge is the signature. Runner is PINNED to ubuntu-22.04 —
+# bit-reproduction is sensitive to OS/BLAS drift; never ubuntu-latest.
+name: regen-baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this re-sign is happening (goes into the evidence sidecar)"
+        required: true
+        type: string
+
+jobs:
+  regen:
+    runs-on: ubuntu-22.04  # PINNED (operator decision 2-4): never ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 (canonical leg)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install canonical-pinned stack (same pins as test.yml)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy>=1.24,<2.0" "scipy>=1.10,<1.14" git+https://github.com/microsoft/qlib.git@8fd6d5ca7eab59a69bf5c62f84e8b4e2a4e8910b
+          pip install -e ".[dev,ui]"
+
+      - name: Unpack the frozen mini-bundle
+        run: |
+          mkdir -p /tmp/regen2
+          tar -xzf tests/regression/fixtures/regen2_minibundle.tar.gz -C /tmp/regen2
+          echo "PROVIDER_URI=/tmp/regen2/regen2_minibundle" >> "$GITHUB_ENV"
+          echo "NAMECHANGE=/tmp/regen2/regen2_minibundle/all_namechanges.parquet" >> "$GITHUB_ENV"
+
+      - name: Regenerate the baseline (gen-env pin asserted in-script)
+        run: |
+          python scripts/regen/replay_frozen_baseline_regen2.py \
+            --provider-uri "$PROVIDER_URI" \
+            --namechange-path "$NAMECHANGE" \
+            --delisted-registry-path tests/regression/fixtures/regen2/delisted_registry_frozen_20260618.parquet \
+            --out /tmp/regen2/new_baseline.json
+
+      - name: Diff vs committed baseline + enforce acceptance rules R1-R3
+        run: |
+          python scripts/regen/diff_baselines.py \
+            --old tests/regression/fixtures/walk_forward_baseline_metrics.json \
+            --new /tmp/regen2/new_baseline.json \
+            --out-md /tmp/regen2/diff_table.md
+          cat /tmp/regen2/diff_table.md
+
+      - name: Build the evidence sidecar
+        run: |
+          python - <<'EOF'
+          import hashlib, json, os, subprocess
+          def sha(p):
+              return hashlib.sha256(open(p, "rb").read()).hexdigest()
+          freeze = subprocess.run(["pip", "freeze"], capture_output=True, text=True).stdout
+          meta = {
+              "reason": os.environ.get("REASON", ""),
+              "workflow_run_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+              ),
+              "baseline_sha256": sha("/tmp/regen2/new_baseline.json"),
+              "registry_sha256": sha(
+                  "tests/regression/fixtures/regen2/"
+                  "delisted_registry_frozen_20260618.parquet"
+              ),
+              "pip_freeze_sha256": hashlib.sha256(freeze.encode()).hexdigest(),
+              "runner_image": "ubuntu-22.04",
+              "python": "3.12",
+              "commit": os.environ.get("GITHUB_SHA", ""),
+          }
+          with open("/tmp/regen2/baseline_evidence.json", "w") as f:
+              json.dump(meta, f, indent=2)
+          print(json.dumps(meta, indent=2))
+          EOF
+        env:
+          REASON: ${{ inputs.reason }}
+
+      - name: Upload re-sign bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: regen2-baseline-resign
+          path: |
+            /tmp/regen2/new_baseline.json
+            /tmp/regen2/diff_table.md
+            /tmp/regen2/baseline_evidence.json
+          retention-days: 90

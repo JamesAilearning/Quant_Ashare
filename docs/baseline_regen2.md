@@ -290,3 +290,37 @@ Already established here (no further dependency):
   benchmark), confirmed at the full **23 folds** (benchmark effect −0.253 IR /
   −2.31 pp; 17-fold agreed at −0.305 / −2.37 pp). REGEN-2 price-excess IR 0.415,
   CI [−0.389, 1.137] — also straddles zero, consistent with an unproven edge.
+
+---
+
+## Re-sign channel (audit P2, operator decision 2 — 2026-07-03)
+
+Any future regeneration of `walk_forward_baseline_metrics.json` goes ONLY
+through `.github/workflows/regen-baseline.yml` (manual dispatch, runner
+PINNED to ubuntu-22.04 — never `ubuntu-latest`; OS/BLAS drift is an off-pin
+variable, the numpy 2.x lesson applies to runner images too).
+
+**Acceptance rules — committed BEFORE the numbers are seen, enforced in-job
+by `scripts/regen/diff_baselines.py`:**
+
+- **R1** — folds without an attributable cause (for the PIT re-sign: no
+  delisted instrument whose delist_date falls within the fold's IC
+  forward-return reach) must be IDENTICAL, not "close".
+- **R2** — backtest metrics (`annualized_return` / `max_drawdown` /
+  `information_ratio`) must be identical on EVERY fold; the channel only
+  re-signs IC-input changes. Any drift aborts.
+- **R3** — a change that cannot be attributed aborts the re-sign.
+  Investigate; never explain past it.
+
+**Evidence, not trust:** the workflow emits `baseline_evidence.json`
+(workflow run URL, baseline/registry sha256, pip-freeze hash, runner image).
+A re-sign PR commits the new baseline + the diff table + the evidence sidecar
+TOGETHER (artifacts expire after 90 days; committed evidence does not). The
+regression test asserts sidecar-vs-file digest consistency whenever the
+sidecar exists; presence is mandatory from the first re-sign onward. The
+operator's merge of that PR is the signature — no auto-promotion.
+
+**Registry fixture:** `regen2/delisted_registry_frozen_20260618.parquet` is a
+FROZEN FULL byte-level snapshot of the production registry (sha256-pinned in
+the replay test; three-way reconciled and operator-signed on 2026-07-03).
+Updates go only through this channel, never in place.

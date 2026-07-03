@@ -495,6 +495,7 @@ class Pipeline:
         signal_result = SignalAnalyzer.analyze(
             predictions=model_result.predictions,
             config=SignalAnalysisConfig(topk=config.topk),
+            pit_provider=pit_provider,
         )
         SignalAnalyzer.print_report(signal_result)
 

@@ -718,6 +718,7 @@ class WalkForwardEngine:
         signal_result = SignalAnalyzer.analyze(
             predictions=predictions,
             config=SignalAnalysisConfig(forward_periods=(1, 5), topk=config.topk),
+            pit_provider=pit_provider,
         )
         # Structural: both periods we asked for must come back. Missing keys
         # signal an analyzer-layer bug, not a bad model — fall-through to
