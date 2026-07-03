@@ -1,0 +1,28 @@
+# 阶段6 label-horizon campaign — BASELINE side (H=1, ST-off).
+#
+# Pre-registered comparison: docs/prereg/label_horizon.yaml (commit the plan
+# BEFORE producing this run — the gate proves ancestry topologically).
+# Methodology: docs/run-comparison-runbook.md. ST is OFF on BOTH sides of the
+# isolated label experiment (st_mask_mode: off_experiment — the explicit,
+# config-stamped opt-out; the PR#223 ST-drift interaction must not contaminate
+# the label effect). The PIT delisted-registry IC mask stays ON on both sides
+# (canonical semantics, inherited, not part of the treatment).
+#
+# Run discipline (gate REFUSES otherwise):
+#   * clean checkout at (or after) the plan commit — git_dirty must be false
+#   * ONE uninterrupted invocation (a resume across commits voids provenance):
+#       python scripts/run_walk_forward.py config/presets/stage6_label_h1.yaml
+#
+# EVERYTHING except the four keys below is inherited from config_walk.yaml —
+# the H1-vs-H5 preset diff is exactly the treatment variable plus output dirs.
+extends: ../../config_walk.yaml
+
+label_horizon_days: 1
+
+# ST-off experiment opt-out (explicit; validated against a contradictory
+# namechange_path at config construction; stamped into walk_forward_report.json
+# via the embedded config so the comparison can prove ST parity).
+st_mask_mode: off_experiment
+namechange_path: ""
+
+output_dir: "output/stage6/h1_st_off_baseline"

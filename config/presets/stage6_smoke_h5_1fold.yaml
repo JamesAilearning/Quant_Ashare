@@ -1,0 +1,18 @@
+# 阶段6 gate-rehearsal step 3.5 — ONE-FOLD smoke on the treatment config.
+#
+# Purpose: estimate wall-clock + memory headroom for the campaign runs on the
+# operator's machine BEFORE igniting the full 23-fold pair. Extends the H=5
+# treatment preset (the novel configuration) and truncates the walk-forward
+# range so exactly ONE fold is generated:
+#   train 2018-01 .. 2019-12, valid 2020-01 .. 2020-03, test 2020-04 .. 2020-06
+# (fold-1's test would end 2020-09-30 > overall_end and is excluded).
+# scripts/preflight_label_horizon.py --smoke asserts the fold count is 1.
+#
+# This output is DISPOSABLE — never compared, never promoted, not part of the
+# pre-registered variant set. Ignite manually:
+#   python scripts/run_walk_forward.py config/presets/stage6_smoke_h5_1fold.yaml
+extends: stage6_label_h5.yaml
+
+overall_end: "2020-06-30"
+
+output_dir: "output/stage6/smoke_h5_1fold"

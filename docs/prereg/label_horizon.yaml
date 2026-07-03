@@ -1,0 +1,148 @@
+# =========================================================================
+# 阶段6 label-horizon campaign — PRE-REGISTRATION PLAN (git-provable gate)
+# =========================================================================
+# The four top-level keys below (hypothesis / expected_direction / baseline /
+# treatments) are the machine-validated registration consumed by
+# scripts/compare_walk_forward_runs.py --prereg-plan (src/core/preregistration.py).
+# Everything else is the PRE-COMMITTED decision protocol: written and reviewed
+# BEFORE any run exists, so no rule can be invented after seeing numbers.
+# Editing this file after the runs moves its last-touched commit past their
+# git_commit and the ancestry gate REFUSES — that is the design.
+#
+# Methodology: docs/run-comparison-runbook.md.
+# Fold-structure preflight EVIDENCE: docs/prereg/label_horizon_preflight.md
+#   (23 folds both sides, test windows identical, 1397 paired OOS trading days).
+# Presets (committed): config/presets/stage6_label_h1.yaml (baseline),
+#   config/presets/stage6_label_h5.yaml (treatment),
+#   config/presets/stage6_smoke_h5_1fold.yaml (disposable wall-clock smoke).
+
+hypothesis: >-
+  Lengthening the Alpha158 label horizon from 1 to 5 holding days slows label
+  decay relative to the 2-trading-day effective horizon of the current
+  production label, preserving more gross alpha per unit turnover; at equal
+  costs this shows up as a non-negative gross-excess delta and a net-excess
+  delta that is at least indistinguishable (treatment not worse), with the
+  upside case being net improvement via reduced effective turnover.
+
+expected_direction: treatment_better
+
+baseline: stage6-h1-st-off        # run 1: config/presets/stage6_label_h1.yaml
+treatments: ["5d"]                # the FULL registered variant set, fixed NOW.
+                                  # 10d is deliberately NOT registered here —
+                                  # it may ONLY be pursued via the escalation
+                                  # rule below (a NEW registration citing this
+                                  # commit), never as a quiet second comparison
+                                  # under this plan.
+
+# -------------------------------------------------------------------------
+# Run sequencing + paired-design guard (abort BEFORE burning run 2)
+# -------------------------------------------------------------------------
+# Order: (0) optional 1-fold smoke (disposable) -> (1) baseline run H=1
+# ST-off -> SANITY BAND CHECK vs the REGEN-2 anchor -> (2) treatment run H=5
+# ST-off -> compare.
+#
+# The sanity band exists because the fresh H=1 ST-off baseline is a NEW run
+# on a config that differs from the REGEN-2 anchor ONLY by ST handling
+# (ST-on vs ST-off) and PIT IC routing (a proven no-op on this bundle).
+# If the fresh baseline lands outside the band, something OTHER than ST
+# handling moved (environment, data, code) — the pair would measure that
+# contamination, not the label. ABORT: do not ignite run 2; diagnose first.
+#
+# REGEN-2 anchor reference (ST-on, H=1, canonical pins):
+#   gross excess ≈ +2.73%/yr; net excess ≈ −3.08%/yr; cost wedge ≈ 5.81pp.
+# csi300 carries few ST names at any time, so ST-off should move the
+# aggregate modestly. Band (operator may tighten at review; numbers are
+# DELIBERATELY wide — the guard catches sign flips and order-of-magnitude
+# breaks, not noise):
+sanity_band_baseline_vs_anchor:
+  gross_excess_annualized: {min: 0.0, max: +0.08}    # same sign as +2.73%, bounded above
+  net_excess_annualized:   {min: -0.08, max: +0.02}  # anchor −3.08% ± ~5pp
+  cost_wedge_pp:           {min: 3.0, max: 9.0}      # anchor 5.81pp ± 3pp (ST handling must not swing turnover wildly)
+  on_breach: >-
+    ABORT the campaign before run 2. Diagnose the non-ST delta (environment
+    pins, bundle freshness, code drift) and re-register. A breached band
+    consumed one run, not two — that is the guard's job.
+
+# -------------------------------------------------------------------------
+# Verdict reading protocol (pre-committed; runbook's three-state verdict)
+# -------------------------------------------------------------------------
+verdict_protocol:
+  primary_metric: paired daily NET excess (moving-block-bootstrap CI), per the ruler
+  mandated_diagnostics: [gross vs net split, IC decay verdict, direction vs plan]
+  comparison_command: >-
+    python scripts/compare_walk_forward_runs.py output/stage6/h1_st_off_baseline
+    output/stage6/h5_st_off_treatment --prereg-plan docs/prereg/label_horizon.yaml
+    --variant 5d
+  sensitivity_slices:
+    # Pre-specified BEFORE the runs. A primary verdict whose STATE (better /
+    # indistinguishable / worse) flips on either slice is slice-driven and
+    # NOT decision-grade; report both readings verbatim either way.
+    - name: exclude-fold-0
+      why: >-
+        fold 0 (test 2020Q2) is doubly exceptional: COVID-rebound regime AND
+        the documented degenerate-topk A/B fold (per-runner bimodality).
+        Recompute the paired stats excluding fold 0's test days.
+    - name: exclude-2020H2
+      why: >-
+        the 2020 style regime (folds 1-2) dominated several past sweeps;
+        recompute excluding 2020-07-01..2020-12-31 to check the verdict is
+        not one regime's artifact.
+
+# -------------------------------------------------------------------------
+# 10d line — escalation / termination rules (PRE-WRITTEN, decided NOW)
+# -------------------------------------------------------------------------
+# These rules are the ONLY sanctioned paths to a 10d experiment. Anything
+# else is post-hoc fishing and stays unrun.
+horizon_10d_rules:
+  escalate_to_10d_iff: >-
+    5d-vs-baseline GROSS excess delta is positive (CI excludes zero or the
+    point estimate is positive with the IC verdict supporting slower decay)
+    AND the NET delta is indistinguishable — i.e. the signal survives longer
+    holding but costs still eat it. Then the "longer horizon dilutes costs
+    further" hypothesis is alive and 10d gets a NEW pre-registration plan
+    file citing THIS commit, new presets, and its own run pair.
+  terminate_10d_line_iff: >-
+    5d GROSS excess is NOT better than baseline AND the 5d IC-decay structure
+    is isomorphic to the 2d one (no slower-decay evidence). Longer horizons
+    are then hopeless by the same mechanism — the label line CLOSES and the
+    campaign records a negative result; attention moves to 阶段7/阶段8.
+  if_5d_wins_net: >-
+    No escalation needed — proceed directly to the ST-on re-verify of the
+    winning branch (below).
+
+# -------------------------------------------------------------------------
+# Winning-branch ST-on re-verify (operator decision: option (a), 4 runs)
+# -------------------------------------------------------------------------
+st_on_reverify:
+  decision: >-
+    Option (a) — the winning branch costs 4 runs total: the two ST-off
+    experiment runs above PLUS a FRESH ST-on pair (H=1 ST-on rebaseline +
+    H=winner ST-on) under production semantics before any promotion talk.
+  rejected_alternative: >-
+    Replay-backfilling daily_series onto REGEN-2 was REJECTED: the replay-time
+    commit is not the model-producing commit, so the backfilled series carries
+    no valid provenance for the pre-registration gate — it would reintroduce
+    exactly the unprovable-ancestry hole the gate closes.
+  note: >-
+    The fresh ST-on H=1 run doubles as the post-P2 canonical rebaseline
+    (PIT-routed IC inputs, provably no-op on this bundle) — the 4th run is
+    not pure overhead.
+
+# -------------------------------------------------------------------------
+# Decisions record (honesty entries, carried into the campaign archive)
+# -------------------------------------------------------------------------
+decisions_record:
+  - id: batch-a-rationale-correction
+    text: >-
+      批次A (audit P1+P2 before the campaign) was justified partly by "P2 will
+      move the anchor, so land it before GPU runs". Bins-level evidence later
+      showed the PIT mask is a no-op on this bundle and the anchor did not
+      move — the sequencing rationale was weakened EX POST. No time was
+      wasted (P1 perf + P2 governance/re-sign channel are standing value),
+      but the record must not pretend the original justification held.
+  - id: backtest-runner-pit-deferred
+    text: >-
+      BacktestRunner / microstructure-mask canonical PIT wiring is DEFERRED to
+      after the campaign, through the (now validated, unused) re-sign channel
+      — backtest metrics are the true anchor surface and must not move
+      mid-campaign.

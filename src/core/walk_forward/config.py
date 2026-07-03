@@ -106,11 +106,25 @@ class WalkForwardConfig:
     signal_to_execution_lag: int = 1
     limit_threshold: float = 0.095
     # Tushare namechange parquet for PIT historical ST/*ST exclusion in the
-    # backtest (C2-d PR2). None -> ST mask disabled (the WF universe still
-    # includes ST, logged as a WARN per fold). Set to all_namechanges.parquet
-    # to exclude ST point-in-time; the C1 baseline must be regenerated when
-    # this is enabled (tests/regression/fixtures/README.md).
+    # backtest (C2-d PR2). On the official walk-forward path the mask is
+    # MANDATORY (audit E1 / PR-F): the engine passes
+    # ``require_st_mask=True`` and a missing/blank path is a HARD error —
+    # NOT a WARN — unless ``st_mask_mode`` explicitly opts out (below).
     namechange_path: str | None = None
+    # ST-exclusion mode for the official backtest. Audit E1 / PR-F made the
+    # ST mask mandatory on the walk-forward path; the run-comparison
+    # runbook's isolated label experiments (阶段6 label-horizon campaign)
+    # need an EXPLICIT, stamped opt-out — never a silent one:
+    #   * "required" (default) — official semantics, byte-identical to
+    #     pre-field behavior: missing namechange_path fails loud.
+    #   * "off_experiment"     — pre-registered experiment runs ONLY
+    #     (ST-off on BOTH sides per docs/run-comparison-runbook.md). The
+    #     universe keeps ST names and BacktestRunner WARNs per fold; the
+    #     mode rides into walk_forward_report.json via the embedded config
+    #     (and the resume fingerprint), so a comparison can PROVE both
+    #     sides ran the same ST handling. Combining it with a set
+    #     namechange_path is contradictory and rejected at construction.
+    st_mask_mode: str = "required"
 
     # Cross-fold model ensemble.
     #
@@ -225,6 +239,24 @@ class WalkForwardConfig:
                     "A zero-length window would hang the walk-forward loop "
                     "or produce empty folds."
                 )
+
+        if self.st_mask_mode not in ("required", "off_experiment"):
+            raise WalkForwardError(
+                f"st_mask_mode must be 'required' or 'off_experiment'; got "
+                f"{self.st_mask_mode!r}. 'required' is the official path "
+                "(audit E1 / PR-F); 'off_experiment' is ONLY for "
+                "pre-registered isolated experiments (ST-off on both sides, "
+                "docs/run-comparison-runbook.md)."
+            )
+        if self.st_mask_mode == "off_experiment" and (self.namechange_path or "").strip():
+            raise WalkForwardError(
+                "st_mask_mode='off_experiment' with a namechange_path set is "
+                f"contradictory (namechange_path={self.namechange_path!r}): an "
+                "ST-off experiment run must not silently carry ST-mask inputs "
+                "— one variable at a time (docs/run-comparison-runbook.md). "
+                "Drop/blank namechange_path for the experiment, or use "
+                "st_mask_mode='required' for official semantics."
+            )
 
         h = self.label_horizon_days
         if not isinstance(h, int) or isinstance(h, bool) or h < 1:
@@ -390,3 +422,14 @@ class WalkForwardConfig:
             error_class=WalkForwardError,
             error_prefix="WalkForwardConfig",
         )
+
+    @property
+    def requires_st_mask(self) -> bool:
+        """What the engine passes to ``BacktestRunner.run(require_st_mask=)``.
+
+        ``True`` on the official path (``st_mask_mode="required"``, audit
+        E1 / PR-F: a missing namechange_path fails LOUD). ``False`` only for
+        ``"off_experiment"`` — the explicit, validated, report-stamped
+        experiment opt-out; BacktestRunner then takes its research WARN path.
+        """
+        return self.st_mask_mode == "required"

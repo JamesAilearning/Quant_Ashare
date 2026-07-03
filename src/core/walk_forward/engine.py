@@ -771,7 +771,13 @@ class WalkForwardEngine:
             # Official walk-forward path: ST exclusion is mandatory (audit
             # E1 / PR-F) — config_walk.yaml sets namechange_path; a missing
             # one fails loud instead of silently including ST per fold.
-            require_st_mask=True,
+            # The ONE sanctioned exception is st_mask_mode="off_experiment"
+            # (pre-registered isolated experiments, ST-off on both sides per
+            # docs/run-comparison-runbook.md): explicit in the config,
+            # rejected at construction when combined with a namechange_path,
+            # and stamped into walk_forward_report.json via the embedded
+            # config — never a silent opt-out.
+            require_st_mask=config.requires_st_mask,
             st_audit_path=str(output_dir / f"fold_{fold_index:02d}_st_mask_audit.csv"),
         )
 
