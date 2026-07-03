@@ -101,7 +101,9 @@ def main() -> int:
           "| H1 train_end/valid_end | H5 train_end/valid_end |")
     print("|---|---|---|---|---|")
     total_days = 0
-    for i, (f1, f5) in enumerate(zip(w_h1, w_h5)):
+    # strict=False: a fold-count mismatch is already a recorded failure above;
+    # still render the common-prefix table for diagnosis.
+    for i, (f1, f5) in enumerate(zip(w_h1, w_h5, strict=False)):
         t1s, t1e = f1[4], f1[5]
         t5s, t5e = f5[4], f5[5]
         same = (t1s, t1e) == (t5s, t5e)
