@@ -58,29 +58,45 @@ def ts_to_iso_date(ts: Any) -> str:
 def _iso_dates_for(level: Any) -> Any:
     """Vectorized ``ts_to_iso_date`` over an index level, element-bit-identical.
 
-    ``pd.factorize`` maps the level to codes over its (few) UNIQUE values —
-    ~250 distinct dates in a year-long panel — then the SAME ``ts_to_iso_date``
-    runs once per unique value and a C-speed gather expands back to full
-    length. Every output element therefore equals exactly what the old per-row
-    loop produced (tz-aware, NaT, ``object``-dtype fallbacks included: it IS
-    the same function on the same value)."""
+    Fast path (the qlib norm — a homogeneous ``datetime64[ns]`` /
+    ``datetime64[ns, tz]`` level): ``pd.factorize`` maps the level to codes
+    over its (few) UNIQUE values — ~250 distinct dates in a year-long panel —
+    then the SAME ``ts_to_iso_date`` runs once per unique value and a C-speed
+    gather expands back. Within one datetime64 dtype, equality implies the
+    same instant in the SAME timezone, so equal values share a local date and
+    grouping is safe.
+
+    Fallback (``object`` / anything else): row-wise, verbatim the old loop.
+    ``factorize`` groups by raw EQUALITY, and a mixed-tz object level can hold
+    Timestamps that compare equal (same instant) yet have DIFFERENT local
+    dates (UTC 16:00 == Asia/Shanghai next-day 00:00) — grouping would let
+    later rows inherit the first value's ISO date (codex P2 on #319)."""
     import numpy as np
     import pandas as pd
 
-    codes, uniques = pd.factorize(level, use_na_sentinel=False)
-    iso_uniques = np.array([ts_to_iso_date(ts) for ts in uniques], dtype=object)
-    return iso_uniques[codes]
+    if str(getattr(level, "dtype", "")).startswith("datetime64"):
+        codes, uniques = pd.factorize(level, use_na_sentinel=False)
+        iso_uniques = np.array(
+            [ts_to_iso_date(ts) for ts in uniques], dtype=object,
+        )
+        return iso_uniques[codes]
+    return np.array([ts_to_iso_date(ts) for ts in level], dtype=object)
 
 
 def _str_insts_for(level: Any) -> Any:
-    """Vectorized ``str(...)`` over an instrument level — same factorize +
-    per-unique + gather pattern as :func:`_iso_dates_for`."""
+    """Vectorized ``str(...)`` over an instrument level — factorize + gather
+    when every element is a plain string (equal strings stringify equal);
+    row-wise fallback otherwise (an object level mixing e.g. ``1`` and ``1.0``
+    holds values that compare equal but stringify differently — same
+    equality-vs-projection trap as :func:`_iso_dates_for`)."""
     import numpy as np
     import pandas as pd
 
-    codes, uniques = pd.factorize(level, use_na_sentinel=False)
-    str_uniques = np.array([str(x) for x in uniques], dtype=object)
-    return str_uniques[codes]
+    if pd.api.types.infer_dtype(level, skipna=False) == "string":
+        codes, uniques = pd.factorize(level, use_na_sentinel=False)
+        str_uniques = np.array([str(x) for x in uniques], dtype=object)
+        return str_uniques[codes]
+    return np.array([str(x) for x in level], dtype=object)
 
 
 def _pairs_at_positions(date_level: Any, inst_level: Any, hit: Any) -> list[tuple[str, str]]:

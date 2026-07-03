@@ -176,6 +176,70 @@ class VectorizationEquivalenceTests(unittest.TestCase):
         ]
         self._assert_compute_equivalent(_dollar_frame(rows))
 
+    def test_mixed_tz_grouping_trap_fixed_at_helper_level(self) -> None:
+        # codex P2 on #319: two Timestamps at the SAME INSTANT compare equal
+        # (factorize would group them) but have DIFFERENT local dates — UTC
+        # 16:00 == Asia/Shanghai next-day 00:00. NOTE pandas NORMALIZES
+        # mixed-tz values to a single UTC datetime64 level at Index/MultiIndex
+        # CONSTRUCTION (verified below), so this state cannot arrive through
+        # the public API — the fix is defence-in-depth at the helper, which
+        # accepts any level-like. A raw numpy object array CAN hold the state:
+        # the helper must fall back to row-wise conversion and yield TWO
+        # distinct ISO dates, exactly like the old per-row loop.
+        from src.core.microstructure_mask import _iso_dates_for
+
+        utc_ts = pd.Timestamp("2024-01-02 16:00", tz="UTC")
+        sha_ts = pd.Timestamp("2024-01-03 00:00", tz="Asia/Shanghai")
+        assert utc_ts == sha_ts                    # same instant: the trap
+        assert utc_ts.date() != sha_ts.date()      # different local dates
+        raw = np.array([utc_ts, sha_ts], dtype=object)
+        out = list(_iso_dates_for(raw))
+        old = [ts_to_iso_date(t) for t in raw]     # the old loop, per row
+        self.assertEqual(out, old)
+        self.assertEqual(out, ["2024-01-02", "2024-01-03"])
+        # and the unreachability claim itself, pinned: pandas normalizes
+        lvl = pd.MultiIndex.from_arrays(
+            [pd.Index([utc_ts, sha_ts], dtype=object),
+             pd.Index(["A", "B"], dtype=object)],
+            names=["datetime", "instrument"],
+        ).get_level_values("datetime")
+        self.assertTrue(str(lvl.dtype).startswith("datetime64"))
+
+    def test_str_projection_trap_fixed_at_helper_level(self) -> None:
+        # the str-side twin: 1 == 1.0 (factorize would group) but
+        # str(1) != str(1.0). The helper's infer_dtype guard must route a
+        # non-pure-string level through the row-wise fallback.
+        from src.core.microstructure_mask import _str_insts_for
+
+        raw = np.array([1, 1.0, "SH600000"], dtype=object)
+        out = list(_str_insts_for(raw))
+        self.assertEqual(out, ["1", "1.0", "SH600000"])
+
+    def test_object_datetime_level_equivalent_end_to_end(self) -> None:
+        # a CONSTRUCTIBLE object datetime level (mixing a Timestamp with an
+        # ISO string resists pandas' datetime coercion) goes through the real
+        # API and must match the old loop verbatim (row-wise fallback path).
+        idx = pd.MultiIndex.from_arrays(
+            [pd.Index(["SH600000", "SH600001"], dtype=object),
+             pd.Index([pd.Timestamp("2024-01-02"), "2024-01-03 00:00:00"],
+                      dtype=object)],
+            names=["instrument", "datetime"],
+        )
+        df = pd.DataFrame(
+            {"$volume": [0.0, 0.0], "$high": [10.0, 10.0],
+             "$low": [10.0, 10.0], "$close": [10.0, 10.0]},
+            index=idx,
+        )
+        if not str(idx.get_level_values("datetime").dtype).startswith("object"):
+            self.skipTest("pandas coerced the mixed level; fallback unreachable here")
+        self._assert_compute_equivalent(df)
+        clean = df.rename(columns={
+            "$volume": "volume", "$high": "high",
+            "$low": "low", "$close": "close",
+        })
+        old_set, _, _ = _old_loop_mask(clean)
+        self.assertEqual({d for d, _ in old_set}, {"2024-01-02", "2024-01-03"})
+
     # -- predictions filter --------------------------------------------------
 
     def _preds(self, tz: str | None = None) -> pd.Series:
@@ -214,6 +278,25 @@ class VectorizationEquivalenceTests(unittest.TestCase):
         preds = self._preds(tz="Asia/Shanghai")
         pair_set = frozenset({("2024-01-03", "SH600001")})
         self._assert_apply_equivalent(preds, pair_set)
+
+    def test_apply_equivalent_object_datetime_level(self) -> None:
+        # the apply-side fallback: a constructible OBJECT datetime level
+        # (Timestamp + ISO string) matched against the mask by each row's own
+        # ts_to_iso_date projection, exactly as the old row loop did.
+        idx = pd.MultiIndex.from_arrays(
+            [pd.Index([pd.Timestamp("2024-01-02"), "2024-01-03 00:00:00"],
+                      dtype=object),
+             pd.Index(["SH600000", "SH600001"], dtype=object)],
+            names=["datetime", "instrument"],
+        )
+        if not str(idx.get_level_values("datetime").dtype).startswith("object"):
+            self.skipTest("pandas coerced the mixed level; fallback unreachable here")
+        preds = pd.Series([0.1, 0.2], index=idx, name="score")
+        pair_set = frozenset({("2024-01-03", "SH600001")})
+        self._assert_apply_equivalent(preds, pair_set)
+        new_f, new_n = apply_mask_to_predictions(preds, pair_set)
+        self.assertEqual(new_n, 1)
+        self.assertEqual(list(new_f.index.get_level_values("instrument")), ["SH600000"])
 
     def test_apply_no_hit_returns_same_object(self) -> None:
         # the non-empty-mask / zero-hit fast path must keep IDENTITY (no copy)
