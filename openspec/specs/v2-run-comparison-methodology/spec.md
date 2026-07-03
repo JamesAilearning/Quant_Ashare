@@ -178,16 +178,20 @@ mandatory companion of every indistinguishable verdict.
 
 ### Requirement: Each comparison SHALL carry a pre-registered hypothesis and its limitation envelope
 
-Each comparison experiment SHALL carry a **pre-registered hypothesis** as a COMMITTED
-ARTIFACT — the single planned A-vs-B comparison and its expected direction, committed
-to git BEFORE the compared runs exist — and the comparison output SHALL record that
-artifact's **git commit hash**, so that "the hypothesis preceded the experiment" is
-provable from git history rather than trusted to a human ("cannot change post-hoc" is
-machine-verifiable: the hypothesis commit must be an ancestor predating the run
-artifacts). The ruler SHALL flag any comparison whose compared variant set exceeds the
-pre-registered plan (design-time control of multiple comparisons; a Bonferroni/FDR
-correction is only a backstop and is documented to be near-undetectable under SE≈0.42,
-so the discipline must be design-time). Every output SHALL ALSO carry its statistical-
+A **DECISION-GRADE** comparison SHALL carry a **pre-registered hypothesis** as a
+COMMITTED ARTIFACT — the single planned A-vs-B comparison and its expected direction,
+committed to git BEFORE the compared runs exist — and the comparison output SHALL
+record that artifact's **git commit hash**, so that "the hypothesis preceded the
+experiment" is provable from git history rather than trusted to a human ("cannot
+change post-hoc" is machine-verifiable: the hypothesis commit must be an ancestor
+predating the run artifacts). The ruler SHALL flag any comparison whose compared
+variant set exceeds the pre-registered plan (design-time control of multiple
+comparisons; a Bonferroni/FDR correction is only a backstop and is documented to be
+near-undetectable under SE≈0.42, so the discipline must be design-time). An
+**EXPLORATORY** comparison MAY run with a record-only reference instead of the
+committed-plan gate, but its output — INCLUDING the verdict line itself — SHALL be
+loudly marked as exploratory / NOT git-verified, so it cannot be excerpted as a
+decision-grade result. Every output SHALL ALSO carry its statistical-
 limitation envelope: the regime-heterogeneity / single-period caveat (the bootstrap
 narrows sampling SE but does not resample structural regime uncertainty), the
 block-length provenance, and the date-overlap fraction — pinned by a CI-runnable test
@@ -197,6 +201,11 @@ so a verdict cannot be emitted stripped of its honesty envelope.
 - **WHEN** a comparison run compares more variants than the pre-registered hypothesis
   named
 - **THEN** the ruler flags the excess as an unregistered multiple comparison
+
+#### Scenario: a record-only comparison cannot pose as decision-grade
+- **WHEN** a comparison runs with a record-only pre-registration reference (no
+  committed-plan gate)
+- **THEN** the output's verdict line itself is marked exploratory / NOT git-verified
 
 #### Scenario: a verdict cannot shed its caveats
 - **WHEN** a comparison output is produced

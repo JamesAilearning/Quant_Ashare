@@ -87,7 +87,8 @@ class CompareCliTests(unittest.TestCase):
             a = _write_run(Path(tmp) / "A", d, base)
             b = _write_run(Path(tmp) / "B", d, treat)
             out = "\n".join(self.cli.build_ruler_report(a, b, prereg=_PREREG))
-        self.assertIn("VERDICT:", out)
+        # record-only mode: the verdict LINE ITSELF carries the exploratory marking
+        self.assertIn("VERDICT (EXPLORATORY", out)
         self.assertIn("treatment_better".upper(), out)   # the clearly-better fixture
         self.assertIn(f"pre-registration ref: {_PREREG}", out)
         self.assertIn("block_length=", out)
@@ -137,6 +138,13 @@ class CompareCliTests(unittest.TestCase):
             out = "\n".join(self.cli.build_ruler_report(a, b, prereg=_PREREG))
         self.assertIn("RECORD-ONLY", out)
         self.assertIn("NOT git-verified", out)
+        # spec scenario "a record-only comparison cannot pose as decision-grade": the
+        # marking is ON the verdict line, so an excerpt of just that line still shows it.
+        verdict_line = next(
+            ln for ln in out.splitlines() if ln.lstrip().startswith("VERDICT")
+        )
+        self.assertIn("EXPLORATORY", verdict_line)
+        self.assertNotIn("VERDICT: TREATMENT", out)  # the unmarked form must not appear
 
     def test_main_prints_table_and_verdict(self) -> None:
         rng = np.random.default_rng(7)
@@ -153,7 +161,7 @@ class CompareCliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("BASELINE :", text)          # the per-fold table header block
         self.assertIn("AGGREGATE METRICS", text)
-        self.assertIn("VERDICT:", text)            # the ruler section wired into main
+        self.assertIn("VERDICT (EXPLORATORY", text)  # record-only mode, marked verdict
 
 
 _PLAN_YAML = """\
