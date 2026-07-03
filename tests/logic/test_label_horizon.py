@@ -283,6 +283,72 @@ class ResumeTests(unittest.TestCase):
         self.assertNotIn("label_horizon_days changed", decision.reason)
 
 
+class ReportsRecordHorizonTests(unittest.TestCase):
+    """codex P2 on #318 (round 2): every artifact that records run semantics
+    carries label_horizon_days — pipeline_report.json's config block (the
+    walk-forward report gets it via asdict) and the metadata config_summary —
+    so a non-default run is distinguishable from H=1 to report consumers."""
+
+    def test_pipeline_report_config_block_records_horizon(self) -> None:
+        import tempfile
+
+        from src.core.pipeline import Pipeline
+        from src.core.signal_analyzer import SignalAnalysisResult
+
+        config = SimpleNamespace(
+            instruments="csi300", feature_handler="Alpha158",
+            label_horizon_days=5,
+            train_start="2022-01-01", train_end="2022-12-31",
+            valid_start="2023-01-01", valid_end="2023-03-31",
+            test_start="2023-04-01", test_end="2023-06-30",
+            model_type="LGBModel", benchmark_code="SH000300",
+            topk=50, n_drop=5, industry_taxonomy_id=None,
+        )
+        feature_result = SimpleNamespace(
+            train_shape=(10, 5), valid_shape=(5, 5), test_shape=(5, 5),
+        )
+        model_result = SimpleNamespace(
+            prediction_shape=(5, 1), model_artifact_path="m.pkl",
+        )
+        signal_result = SignalAnalysisResult(
+            ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5, "num_days": 5}},
+            ic_series={}, ic_decay=[0.01], turnover_stats={"mean_turnover": 0.1},
+        )
+        backtest_output = SimpleNamespace(
+            metric_status="ok", official_backtest_path="official",
+            report={}, provenance={}, risk_analysis={},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "pipeline_report.json"
+            Pipeline._write_report(
+                str(path), config, feature_result, model_result,  # type: ignore[arg-type]
+                signal_result, backtest_output,  # type: ignore[arg-type]
+                factor_skipped_reason="unit-test",
+            )
+            data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["config"]["label_horizon_days"], 5)
+
+    def test_metadata_config_summary_records_horizon(self) -> None:
+        from src.core.pipeline_result_artifacts import _build_metadata
+
+        backtest_output = SimpleNamespace(
+            metric_status="ok", official_backtest_path="official",
+        )
+        meta = _build_metadata(
+            output_dir=Path("out/run-x"),
+            config_dict={"instruments": "csi300", "label_horizon_days": 5},
+            config_hash="h",
+            backtest_output=backtest_output,  # type: ignore[arg-type]
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:10:00+00:00",
+            status="completed",
+            report_path="r",
+            stage_timings={},
+            artifact_paths={},
+        )
+        self.assertEqual(meta["config_summary"]["label_horizon_days"], 5)
+
+
 class SignalAnalyzerIndependenceTests(unittest.TestCase):
     def test_ic_measurement_has_no_label_input(self) -> None:
         # The label-independence pin: the analyzer's measurement API surface has

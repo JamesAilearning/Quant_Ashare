@@ -794,6 +794,7 @@ class Pipeline:
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
+                    "label_horizon_days": config.label_horizon_days,
                     "model_type": config.model_type,
                     "topk": config.topk,
                 },
@@ -872,6 +873,10 @@ class Pipeline:
             "config": {
                 "instruments": config.instruments,
                 "feature_handler": config.feature_handler,
+                # Two engines, one schema: walk_forward_report.json carries this
+                # via asdict(config); a non-default single-fold run must be
+                # distinguishable from H=1 to report consumers (codex P2 #318).
+                "label_horizon_days": config.label_horizon_days,
                 "train_period": f"{config.train_start} ~ {config.train_end}",
                 "valid_period": f"{config.valid_start} ~ {config.valid_end}",
                 "test_period": f"{config.test_start} ~ {config.test_end}",

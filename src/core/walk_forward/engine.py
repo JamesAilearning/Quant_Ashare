@@ -398,6 +398,7 @@ class WalkForwardEngine:
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
+                    "label_horizon_days": config.label_horizon_days,
                     "model_type": config.model_type,
                     "ensemble_window": config.ensemble_window,
                     "topk": config.topk,
