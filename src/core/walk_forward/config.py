@@ -49,6 +49,14 @@ class WalkForwardConfig:
     # Threaded to the feature dataset (label expression + cache key), the
     # fold-gap embargo (H+1 trading days), and the resume fingerprint.
     label_horizon_days: int = 1
+    # Audit P2 (add-pit-analyzer-routing): path to the Phase A.2 delisted
+    # registry parquet. Empty (default) = no PIT provider constructed, the
+    # analyzers run their legacy WARN path — today's behavior, identity-
+    # preserving. Non-empty = the engine constructs ONE PITDataProvider at
+    # run start (missing/malformed registry FAILS LOUD at construction, never
+    # a silent fall-through) and threads it to analyzers accepting
+    # pit_provider (PR-1: PerformanceAttribution; PR-2: SignalAnalyzer).
+    delisted_registry_path: str = ""
 
     # Overall period
     overall_start: str = "2022-01-01"

@@ -87,7 +87,33 @@ class PITDataProvider:
         provider_uri: str | Path,
         delisted_registry_path: str | Path,
         cache_max_entries: int = 256,
+        data_adjust_mode: str | None = None,
+        region: str = "cn",
     ) -> None:
+        # ``data_adjust_mode`` is the canonical runtime's DECLARATION LABEL for
+        # the bins (it does not change how qlib reads them). Default None ->
+        # ADJUST_MODE_POST, the label this provider always pinned (Phase B.2
+        # bins = close x adj_factor) — every existing caller is unchanged.
+        # The walk-forward / pipeline runtimes declare the SAME bins as
+        # pre_adjusted, and init_qlib_canonical refuses two different configs
+        # in one process — so a caller living in that runtime passes its own
+        # label here and the init is an idempotent no-op instead of a crash
+        # (audit P2, add-pit-analyzer-routing: the label clash was the wall
+        # between the canonical engines and this provider).
+        from src.core.canonical_backtest_contract import (
+            ADJUST_MODE_POST,
+            SUPPORTED_ADJUST_MODES,
+        )
+
+        if data_adjust_mode is None:
+            data_adjust_mode = ADJUST_MODE_POST
+        if data_adjust_mode not in SUPPORTED_ADJUST_MODES:
+            raise PITDataProviderError(
+                f"data_adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
+                f"got {data_adjust_mode!r}."
+            )
+        self._data_adjust_mode = data_adjust_mode
+        self._region = region
         self._provider_uri = Path(provider_uri)
         self._delisted_registry_path = Path(delisted_registry_path)
         self._registry = self._load_registry()
@@ -316,10 +342,11 @@ class PITDataProvider:
         # Route every qlib bootstrap through the canonical runtime entry
         # point so the governance guard at
         # tests/governance/test_publisher_uses_canonical_init.py stays
-        # green. We pin ADJUST_MODE_POST to match what Phase B.2 wrote
-        # into the bins (close × adj_factor).
+        # green. The adjust-mode label comes from the constructor (default
+        # ADJUST_MODE_POST — Phase B.2 bins = close × adj_factor); a caller
+        # inside an already-initialized canonical runtime passes that
+        # runtime's label so this init is an idempotent no-op.
         try:
-            from src.core.canonical_backtest_contract import ADJUST_MODE_POST
             from src.core.qlib_runtime import (
                 QlibRuntimeConfig,
                 init_qlib_canonical,
@@ -335,8 +362,8 @@ class PITDataProvider:
             )
         config = QlibRuntimeConfig(
             provider_uri=str(self._provider_uri),
-            region="cn",
-            data_adjust_mode=ADJUST_MODE_POST,
+            region=self._region,
+            data_adjust_mode=self._data_adjust_mode,
         )
         with contextlib.redirect_stdout(None):
             init_qlib_canonical(config)

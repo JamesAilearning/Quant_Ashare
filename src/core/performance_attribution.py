@@ -249,6 +249,7 @@ class PerformanceAttribution:
         predictions: Any,
         config: AttributionConfig | None = None,
         positions: Mapping[str, Mapping[str, float]] | None = None,
+        pit_provider: Any | None = None,
     ) -> AttributionResult:
         """Run complete performance attribution.
 
@@ -267,12 +268,20 @@ class PerformanceAttribution:
             Brinson weighting reflects the real topk-dropout selection rather
             than a predictions-score proxy. Pass ``None`` to fall back to
             prediction-score weighting (looser but works without a backtest).
+        pit_provider : PITDataProvider, optional
+            Audit P2 (P0-6 follow-up): when supplied, per-instrument close
+            fetches route through ``pit_provider.get_features`` (post-delist
+            masking applied — no forward-filled pseudo-prices from delisted
+            names in the Brinson decomposition). When omitted, the direct
+            ``D.features`` path runs unchanged with the existing WARN.
         """
         if config is None:
             config = AttributionConfig()
 
         cls._validate(config, return_series, positions)
         cls._validate_predictions(predictions)
+        if pit_provider is not None:
+            cls._validate_pit_provider_alignment(pit_provider)
 
         import pandas as pd
 
@@ -296,6 +305,7 @@ class PerformanceAttribution:
         _logger.info("Computing Brinson sector attribution...")
         sector_attr = cls._brinson_attribution(
             predictions, port_returns, bench_returns, config, positions,
+            pit_provider=pit_provider,
         )
 
         total_alloc = sum(s.allocation_effect for s in sector_attr)
@@ -493,6 +503,43 @@ class PerformanceAttribution:
             )
 
     @staticmethod
+    def _validate_pit_provider_alignment(pit_provider: Any) -> None:
+        """Alignment guard — identical contract to
+        ``BacktestRunner._validate_pit_provider_alignment`` and
+        ``FeatureDatasetBuilder._validate_pit_provider_alignment``. When a
+        PIT provider is supplied, the canonical qlib runtime's
+        ``provider_uri`` MUST match. The (third) duplication is intentional:
+        each entry point enforces the invariant independently, so a future
+        refactor changing one cannot silently weaken the others.
+        """
+        from src.core.qlib_runtime import (
+            _normalize_provider_uri,
+            get_canonical_qlib_config,
+        )
+
+        canonical = get_canonical_qlib_config()
+        if canonical is None:
+            raise PerformanceAttributionError(
+                "pit_provider was supplied but the canonical qlib config is "
+                "unavailable. Initialize qlib via init_qlib_canonical(...) "
+                "before passing a PITDataProvider to attribution."
+            )
+        pit_uri_raw = str(getattr(pit_provider, "_provider_uri", ""))
+        if not pit_uri_raw:
+            raise PerformanceAttributionError(
+                "pit_provider has no readable _provider_uri attribute "
+                f"(got {pit_provider!r}). Expected a PITDataProvider."
+            )
+        pit_norm = _normalize_provider_uri(pit_uri_raw)
+        if canonical.provider_uri != pit_norm:
+            raise PerformanceAttributionError(
+                "PIT provider / qlib provider_uri mismatch — attribution "
+                "would silently consume closes from the wrong provider. "
+                f"qlib canonical provider_uri = {canonical.provider_uri!r}; "
+                f"pit_provider._provider_uri = {pit_norm!r}."
+            )
+
+    @staticmethod
     def _validate_predictions(predictions: Any) -> None:
         """Structural validation for the predictions Series.
 
@@ -556,6 +603,7 @@ class PerformanceAttribution:
         bench_returns: Any,
         config: AttributionConfig,
         positions: Mapping[str, Mapping[str, float]] | None = None,
+        pit_provider: Any | None = None,
     ) -> list[SectorAttribution]:
         """Brinson-Fachler single-period attribution by sector.
 
@@ -660,7 +708,9 @@ class PerformanceAttribution:
         bench_weights = cls._resolve_benchmark_weights(instruments, config)
 
         # Get per-instrument returns over the period
-        inst_returns = cls._get_instrument_returns(instruments, config)
+        inst_returns = cls._get_instrument_returns(
+            instruments, config, pit_provider=pit_provider,
+        )
         if inst_returns.empty:
             raise PerformanceAttributionError(
                 "No finite instrument close returns were available for "
@@ -827,46 +877,48 @@ class PerformanceAttribution:
         )
 
     @classmethod
-    def _get_instrument_returns(cls, instruments: list[str], config: AttributionConfig) -> Any:
+    def _get_instrument_returns(
+        cls,
+        instruments: list[str],
+        config: AttributionConfig,
+        pit_provider: Any | None = None,
+    ) -> Any:
         """Get total return per instrument over the attribution period.
 
-        WARNING — non-PIT path
-        ----------------------
-        Unlike ``BacktestRunner._compute_equalweight_baseline`` and
-        ``FactorAnalyzer._fetch_close_panel`` (both of which accept an
-        optional ``pit_provider`` to route through the §4.3.2
-        post-delist mask), this method has NO PIT opt-in yet. Close
-        prices for instruments that were delisted mid-period may flow
-        through to the Brinson decomposition with qlib's default
-        ``min_periods``-less window behaviour. For a portfolio that
-        holds delisted names, sector returns can be skewed by
-        forward-filled stale closes.
+        Audit P2 (P0-6 follow-up): when ``pit_provider`` is supplied the
+        close fetch routes through ``PITDataProvider.get_features`` — the
+        §4.3.2 post-delist mask applies, so a delisted instrument's closes
+        past its delist_date are NaN instead of forward-filled stale values,
+        and its total return is computed from real trading days only. Same
+        opt-in pattern as ``BacktestRunner._compute_equalweight_baseline``
+        and ``FactorAnalyzer._fetch_close_panel``.
 
-        The WARN log below makes the bypass observable in every run
-        log so an operator inspecting an attribution report has
-        evidence to discount it appropriately. The fix is to thread a
-        ``PITDataProvider`` through ``Pipeline`` /
-        ``WalkForwardEngine`` into ``PerformanceAttribution.analyze``
-        and on into this helper — that's a wider contract change than
-        this PR's scope.
-
-        TODO(P0-6 follow-up): add ``pit_provider`` parameter and
-        prefer it when set.
+        When ``pit_provider`` is None the legacy direct ``D.features`` path
+        runs BIT-IDENTICALLY to the pre-opt-in implementation, and the WARN
+        below keeps the bypass observable (independent callers unchanged).
         """
         import pandas as pd
-        from qlib.data import D
 
-        _logger.warning(
-            "PerformanceAttribution._get_instrument_returns: bypasses "
-            "PITDataProvider (no opt-in yet) — close prices for "
-            "delisted instruments may carry stale / forward-filled "
-            "values into the Brinson decomposition. See TODO above; "
-            "audit P0-6."
-        )
-        close = D.features(
-            instruments, ["$close"],
-            start_time=config.start_date, end_time=config.end_date,
-        )
+        if pit_provider is not None:
+            close = pit_provider.get_features(
+                ["$close"], config.start_date, config.end_date,
+                instruments=instruments,
+            )
+        else:
+            from qlib.data import D
+
+            _logger.warning(
+                "PerformanceAttribution._get_instrument_returns: bypasses "
+                "PITDataProvider (pit_provider is None) — close prices for "
+                "delisted instruments may carry stale / forward-filled "
+                "values into the Brinson decomposition. Pass a "
+                "PITDataProvider to opt into the §4.3.2 post-delist mask. "
+                "Audit P0-6."
+            )
+            close = D.features(
+                instruments, ["$close"],
+                start_time=config.start_date, end_time=config.end_date,
+            )
         close.columns = ["close"]
 
         # Total return = last_close / first_close - 1

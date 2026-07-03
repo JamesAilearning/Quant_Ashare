@@ -94,6 +94,32 @@ class WalkForwardEngine:
         # predating the run (codex P1 on #313).
         git_provenance = capture_git_provenance()
 
+        # Audit P2 (add-pit-analyzer-routing): ONE optional PIT provider for the
+        # whole run, threaded to the analyzers that accept it. Empty registry
+        # path -> None (legacy WARN path, identity-preserving). Bound to THIS
+        # runtime's labels (canonical provider_uri + this config's adjust_mode
+        # declaration) so the provider's init_qlib_canonical is an idempotent
+        # no-op rather than a config clash.
+        pit_provider = None
+        if str(config.delisted_registry_path or "").strip():
+            from src.core.pit_wiring import build_pit_provider
+            from src.core.qlib_runtime import get_canonical_qlib_config
+
+            canonical_cfg = get_canonical_qlib_config()
+            if canonical_cfg is None:
+                raise WalkForwardError(
+                    "delisted_registry_path is configured but the canonical "
+                    "qlib config is unavailable — cannot bind the PIT "
+                    "provider to the runtime's provider_uri. Initialize qlib "
+                    "via init_qlib_canonical(...) first."
+                )
+            pit_provider = build_pit_provider(
+                delisted_registry_path=config.delisted_registry_path,
+                provider_uri=canonical_cfg.provider_uri,
+                data_adjust_mode=config.adjust_mode,
+                region=canonical_cfg.region,
+            )
+
         # PR-G+I: resolve the bundle content identity ONCE here (the canonical
         # provider_uri is in scope after init) and thread it through the resume
         # fingerprint, exactly the value + resolution the feature-cache key uses
@@ -213,6 +239,7 @@ class WalkForwardEngine:
                     test_start=test_s, test_end=test_e,
                     output_dir=output_dir,
                     prior_model_paths=tuple(prior_model_paths),
+                    pit_provider=pit_provider,
                 )
                 fold_failed = False
             except Exception as exc:  # noqa: BLE001
@@ -399,6 +426,7 @@ class WalkForwardEngine:
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
                     "label_horizon_days": config.label_horizon_days,
+                    "delisted_registry_path": config.delisted_registry_path or None,
                     "model_type": config.model_type,
                     "ensemble_window": config.ensemble_window,
                     "topk": config.topk,
@@ -590,6 +618,7 @@ class WalkForwardEngine:
         test_start: str, test_end: str,
         output_dir: Path,
         prior_model_paths: Sequence[tuple[int, str]] = (),
+        pit_provider: Any | None = None,
     ) -> WalkForwardFold:
         """Execute one fold: feature build → train → ensemble → signal
         → backtest → attribution.  Returns a ``WalkForwardFold`` with
@@ -776,6 +805,7 @@ class WalkForwardEngine:
                 test_start=test_start, test_end=test_end,
                 predictions=predictions,
                 backtest_output=backtest_output,
+                pit_provider=pit_provider,
             )
         )
 
@@ -823,6 +853,7 @@ class WalkForwardEngine:
         test_start: str, test_end: str,
         predictions: Any,
         backtest_output: CanonicalBacktestOutput,
+        pit_provider: Any | None = None,
     ) -> tuple[AttributionResult | None, str | None]:
         """Run per-fold performance attribution; return ``(result, reason)``.
 
@@ -905,6 +936,7 @@ class WalkForwardEngine:
                 predictions=predictions,
                 config=attr_config,
                 positions=backtest_output.positions,
+                pit_provider=pit_provider,
             )
         except PerformanceAttributionError as exc:
             _logger.warning(

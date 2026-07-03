@@ -159,6 +159,23 @@ def compute_config_fingerprint(config: Any, *, bundle_identity: str | None = Non
             if nc_file.is_file()
             else "MISSING"
         )
+    # Audit P2 (add-pit-analyzer-routing): same treatment for the delisted
+    # registry — when configured, its CONTENT drives each fold's attribution
+    # post-delist mask (PR-2: also the IC inputs). A registry regenerated IN
+    # PLACE at the same path must invalidate resume rather than skip folds
+    # and leave reports computed with the OLD mask while claiming the current
+    # registry (codex P2 on #320; mirrors the namechange_path handling above).
+    # Empty path (the default) adds no key — pre-existing fingerprints stay
+    # byte-identical, so adopting this change forces no re-run on opted-out
+    # configs.
+    registry_path = raw.get("delisted_registry_path")
+    if isinstance(registry_path, str) and registry_path.strip():
+        reg_file = Path(registry_path)
+        raw["delisted_registry_content_sha256"] = (
+            hashlib.sha256(reg_file.read_bytes()).hexdigest()
+            if reg_file.is_file()
+            else "MISSING"
+        )
     # PR-C / PR-D: fold the backtest semantics versions into the resume
     # fingerprint. The same config bytes mean T+2 fills before PR-C and T+1
     # after, and dead price limits before PR-D vs enforced ones after —

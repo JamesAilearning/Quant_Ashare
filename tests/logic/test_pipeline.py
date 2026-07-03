@@ -692,6 +692,7 @@ class ReportGitProvenanceTests(unittest.TestCase):
             test_start="2023-04-01", test_end="2023-06-30",
             model_type="LGBModel", benchmark_code="SH000300",
             topk=50, n_drop=5, industry_taxonomy_id=None,
+            delisted_registry_path="",
         )
         feature_result = SimpleNamespace(
             train_shape=(10, 5), valid_shape=(5, 5), test_shape=(5, 5),
