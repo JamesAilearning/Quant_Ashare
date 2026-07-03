@@ -27,8 +27,9 @@ def _load_cli():
     return mod
 
 
-def _baseline(folds: list[dict]) -> dict:
-    return {"_status": "x", "_provenance": "x", "aggregate_metrics": {}, "per_fold": folds}
+def _baseline(folds: list[dict], agg: dict | None = None) -> dict:
+    return {"_status": "x", "_provenance": "x",
+            "aggregate_metrics": agg or {}, "per_fold": folds}
 
 
 def _fold(i: int, test_period: str, ic_1d: float, ic_5d: float = 0.05,
@@ -72,11 +73,12 @@ class DiffBaselinesTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.td.cleanup()
 
-    def _run(self, old_folds: list[dict], new_folds: list[dict]) -> int:
+    def _run(self, old_folds: list[dict], new_folds: list[dict],
+             old_agg: dict | None = None, new_agg: dict | None = None) -> int:
         old_p = self.root / "old.json"
         new_p = self.root / "new.json"
-        old_p.write_text(json.dumps(_baseline(old_folds)), encoding="utf-8")
-        new_p.write_text(json.dumps(_baseline(new_folds)), encoding="utf-8")
+        old_p.write_text(json.dumps(_baseline(old_folds, old_agg)), encoding="utf-8")
+        new_p.write_text(json.dumps(_baseline(new_folds, new_agg)), encoding="utf-8")
         return self.cli.main([
             "--old", str(old_p), "--new", str(new_p),
             "--registry", self.reg,
@@ -138,6 +140,51 @@ class DiffBaselinesTests(unittest.TestCase):
         new = [dict(f) for f in old]
         with self.assertRaises(SystemExit):
             self._run(old, new)
+
+    def test_aggregate_drift_without_fold_changes_fails_r4(self) -> None:
+        # codex P1 #321 r2: per-fold identical but aggregate moved (generator /
+        # compute_aggregate change) — must abort, never silently re-sign.
+        folds = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        rc = self._run(folds, [dict(f) for f in folds],
+                       old_agg={"mean_information_ratio": 0.5},
+                       new_agg={"mean_information_ratio": 0.6})
+        self.assertEqual(rc, 1)
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("R4 VIOLATION", md)
+
+    def test_ic_aggregate_without_attributed_fold_change_fails_r4(self) -> None:
+        folds = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        rc = self._run(folds, [dict(f) for f in folds],
+                       old_agg={"mean_ic_1d": 0.015},
+                       new_agg={"mean_ic_1d": 0.016})
+        self.assertEqual(rc, 1)
+
+    def test_ic_aggregate_with_attributed_fold_change_passes(self) -> None:
+        old = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        new = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.021)]  # attributed
+        rc = self._run(old, new,
+                       old_agg={"mean_ic_1d": 0.015},
+                       new_agg={"mean_ic_1d": 0.0155})
+        self.assertEqual(rc, 0)
+
+    def test_aggregate_schema_change_fails_r4(self) -> None:
+        folds = [_fold(0, self._F0, 0.01), _fold(1, self._F1, 0.02)]
+        rc = self._run(folds, [dict(f) for f in folds],
+                       old_agg={"mean_ic_1d": 0.015},
+                       new_agg={"mean_ic_1d": 0.015, "brand_new_key": 1.0})
+        self.assertEqual(rc, 1)
+
+    def test_delist_shortly_after_test_end_counts_as_hit(self) -> None:
+        # codex P2 #321 r2: the IC forward window reaches past test_end — a
+        # predicted instrument delisting a few days after the fold ends is a
+        # legitimate attribution, not an R3 failure. SH600068 delists
+        # 2021-08-15; craft a fold ending 2021-08-10 (delist 5 days later).
+        f_early = "2021-05-01..2021-08-10"
+        old = [_fold(0, self._F0, 0.01), _fold(1, f_early, 0.02)]
+        new = [_fold(0, self._F0, 0.01), _fold(1, f_early, 0.021)]
+        self.assertEqual(self._run(old, new), 0)
+        md = (self.root / "diff.md").read_text(encoding="utf-8")
+        self.assertIn("SH600068", md)
 
     def test_fold_set_mismatch_fails(self) -> None:
         old = [_fold(0, self._F0, 0.01)]

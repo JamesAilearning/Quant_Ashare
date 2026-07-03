@@ -11,14 +11,21 @@ up front, not negotiated after seeing the numbers:
       changes; any backtest drift aborts.
   R3. An IC change on a fold with NO attributable delisted instrument aborts —
       investigate, never explain past it.
+  R4. Aggregate metrics are gated too (codex P1 on #321 round 2): a non-IC
+      aggregate key changing at all, or an IC-derived aggregate key changing
+      without at least one ATTRIBUTED per-fold IC change to derive from,
+      aborts — the aggregate block is part of the published baseline and must
+      never be re-signed without a per-fold explanation. Added/removed
+      aggregate keys are a schema change and abort likewise.
 
 A fold "has a hit" when a registry instrument BOTH (a) appears in that
 fold's FROZEN PREDICTIONS (actual (datetime, instrument) rows — the registry
 is full-market, so date overlap alone would let an unrelated market delisting
 launder arbitrary IC drift past R3; codex P1 on #321) AND (b) has its
-delist_date within [test_start - LOOKBACK_DAYS, test_end]: the IC
-forward-return window of the last pre-delist prediction rows reaches past the
-delist date. LOOKBACK_DAYS covers max forward period (5) + entry offset +
+delist_date within [test_start - LOOKBACK_DAYS, test_end + LOOKBACK_DAYS]: the IC forward-return
+window of the last prediction rows reaches PAST test_end (T+1 -> T+1+period),
+so a delisting a few trading days after the fold ends can legitimately move
+that fold's IC (codex P2 on #321 round 2); symmetric slack on both sides. LOOKBACK_DAYS covers max forward period (5) + entry offset +
 calendar slack. The frozen-scores fixture is REQUIRED — no membership data,
 no attribution, no re-sign.
 
@@ -40,9 +47,9 @@ _IC_METRICS = ("ic_1d", "ic_5d")
 LOOKBACK_DAYS = 14  # calendar days: max_period(5)+entry(1) trading days + holiday slack
 
 
-def _load(path: str) -> list[dict[str, Any]]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return list(data["per_fold"])
+def _load(path: str) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return data
 
 
 def _fold_instruments(frozen_path: str) -> dict[int, set[str]]:
@@ -75,7 +82,8 @@ def _hits_by_fold(
             )
         start_s, end_s = f["test_period"].split("..")
         lo = pd.Timestamp(start_s) - pd.Timedelta(days=LOOKBACK_DAYS)
-        hi = pd.Timestamp(end_s)
+        # forward-return reach extends PAST test_end (codex P2 #321 r2)
+        hi = pd.Timestamp(end_s) + pd.Timedelta(days=LOOKBACK_DAYS)
         in_window = reg[(reg["dd"] >= lo) & (reg["dd"] <= hi)]
         # codex P1 on #321: attribution requires PREDICTION MEMBERSHIP, not
         # just date overlap — the registry is full-market, and an unrelated
@@ -102,8 +110,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-md", required=True)
     args = ap.parse_args(argv)
 
-    old = {int(f["fold_index"]): f for f in _load(args.old)}
-    new = {int(f["fold_index"]): f for f in _load(args.new)}
+    old_doc_json = _load(args.old)
+    new_doc_json = _load(args.new)
+    old = {int(f["fold_index"]): f for f in old_doc_json["per_fold"]}
+    new = {int(f["fold_index"]): f for f in new_doc_json["per_fold"]}
     if set(old) != set(new):
         print(f"FAIL: fold sets differ (old={sorted(old)}, new={sorted(new)})")
         return 1
@@ -112,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     lines = [
         "# REGEN-2 baseline re-sign diff",
         "",
-        "Acceptance rules R1-R3 enforced by scripts/regen/diff_baselines.py "
+        "Acceptance rules R1-R4 enforced by scripts/regen/diff_baselines.py "
         "(committed BEFORE the numbers were seen).",
         "",
         "| fold | test_period | metric | old | new | delta | attributed to |",
@@ -144,6 +154,45 @@ def main(argv: list[str] | None = None) -> int:
                     f"R3 VIOLATION: fold {i} {m} moved ({vo!r} -> {vn!r}) with NO "
                     "attributable delisted instrument in its window."
                 )
+    attributed_ic_change = any(
+        repr(old[i][m]) != repr(new[i][m]) and hits.get(i)
+        for i in sorted(old) for m in _IC_METRICS
+    )
+    # R4 (codex P1 #321 r2): the aggregate block is part of the published
+    # baseline — gate it too. IC-derived keys may move ONLY when at least one
+    # attributed per-fold IC change exists to derive from; everything else
+    # (backtest-derived keys, schema changes) aborts.
+    agg_old = dict(old_doc_json.get("aggregate_metrics") or {})
+    agg_new = dict(new_doc_json.get("aggregate_metrics") or {})
+    for key in sorted(set(agg_old) | set(agg_new)):
+        if key in agg_old and key not in agg_new or key in agg_new and key not in agg_old:
+            n_changed += 1
+            lines.append(f"| aggregate | - | {key} | {agg_old.get(key)!r} | {agg_new.get(key)!r} | - | SCHEMA |")
+            failures.append(
+                f"R4 VIOLATION: aggregate key {key!r} added/removed — schema "
+                "change, not a re-signable drift."
+            )
+            continue
+        vo, vn = agg_old[key], agg_new[key]
+        if repr(vo) == repr(vn):
+            continue
+        n_changed += 1
+        ic_derived = "ic" in key.lower()
+        attributed = "derived from attributed per-fold IC changes" if (
+            ic_derived and attributed_ic_change
+        ) else "NONE"
+        lines.append(f"| aggregate | - | {key} | {vo!r} | {vn!r} | - | {attributed} |")
+        if not ic_derived:
+            failures.append(
+                f"R4 VIOLATION: non-IC aggregate key {key!r} moved "
+                f"({vo!r} -> {vn!r}) — this channel only re-signs IC inputs."
+            )
+        elif not attributed_ic_change:
+            failures.append(
+                f"R4 VIOLATION: IC-derived aggregate key {key!r} moved "
+                f"({vo!r} -> {vn!r}) with NO attributed per-fold IC change to "
+                "derive from."
+            )
     if n_changed == 0:
         lines.append("| - | - | (no changes: baselines identical) | | | | |")
     lines.append("")

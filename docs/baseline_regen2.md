@@ -311,6 +311,10 @@ by `scripts/regen/diff_baselines.py`:**
   re-signs IC-input changes. Any drift aborts.
 - **R3** — a change that cannot be attributed aborts the re-sign.
   Investigate; never explain past it.
+- **R4** — the `aggregate_metrics` block is gated too: a non-IC aggregate key
+  moving at all, an IC-derived aggregate key moving without an attributed
+  per-fold IC change to derive from, or any aggregate key added/removed
+  (schema change) aborts.
 
 **Evidence, not trust:** the workflow emits `baseline_evidence.json`
 (workflow run URL, baseline/registry sha256, pip-freeze hash, runner image).
