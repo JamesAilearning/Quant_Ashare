@@ -88,6 +88,11 @@ class PipelineConfig:
     # H=1 = today's 2-day Alpha158 label, byte-identical. Two engines, one
     # schema: same field/semantics as WalkForwardConfig.label_horizon_days.
     label_horizon_days: int = 1
+    # Audit P2 (add-pit-analyzer-routing): same field/semantics as
+    # WalkForwardConfig.delisted_registry_path (two engines, one schema).
+    # Empty = legacy WARN path (identity-preserving); non-empty = ONE
+    # PITDataProvider built at run start, missing registry fails loud.
+    delisted_registry_path: str = ""
     train_start: str = "2022-01-01"
     train_end: str = "2024-12-31"
     valid_start: str = "2025-01-01"
@@ -443,6 +448,17 @@ class Pipeline:
         # init_qlib_canonical is idempotent for same config, raises on mismatch
         init_qlib_canonical(requested_config)
 
+        # Audit P2 (add-pit-analyzer-routing): ONE optional PIT provider for the
+        # run (empty registry path -> None = legacy WARN path). Bound to THIS
+        # runtime's labels so the provider's init is an idempotent no-op.
+        from src.core.pit_wiring import build_pit_provider
+        pit_provider = build_pit_provider(
+            delisted_registry_path=config.delisted_registry_path,
+            provider_uri=config.provider_uri,
+            data_adjust_mode=config.adjust_mode,
+            region=config.region,
+        )
+
         # Step 2: Build feature dataset
         _logger.info("Building feature dataset...")
         feature_result = FeatureDatasetBuilder.build(FeatureDatasetConfig(
@@ -658,6 +674,7 @@ class Pipeline:
                             predictions=model_result.predictions,
                             config=attribution_config,
                             positions=backtest_output.positions,
+                            pit_provider=pit_provider,
                         )
                         PerformanceAttribution.print_report(attribution_result)
                     except PerformanceAttributionError as exc:

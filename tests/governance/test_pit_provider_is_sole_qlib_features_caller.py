@@ -99,16 +99,17 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # plus WARN-on-fallback. Same TODO follow-up.
     "src/core/factor_analyzer.py": 1,
 
-    # No ``pit_provider`` opt-in yet — the public ``analyze`` method
-    # would need a contract change. WARN log added at the call site
-    # so operators reading attribution reports see the bypass on
-    # every run. TODO(P0-6 follow-up): thread ``pit_provider``
-    # through ``PerformanceAttribution.analyze``.
+    # Audit P2 (add-pit-analyzer-routing PR-1): ``pit_provider`` opt-in
+    # EXISTS — ``PerformanceAttribution.analyze(..., pit_provider=...)``
+    # routes the close fetch through the §4.3.2 mask, and the canonical
+    # engines thread it when ``delisted_registry_path`` is configured.
+    # The 1 remaining direct ``D.features`` call is the DELIBERATE
+    # WARN-logged fallback for callers without a provider.
     "src/core/performance_attribution.py": 1,
 
-    # Same as ``performance_attribution`` — no opt-in yet, WARN-only.
-    # TODO(P0-6 follow-up): thread ``pit_provider`` through
-    # ``SignalAnalyzer.analyze``.
+    # No opt-in yet, WARN-only. PR-2 of add-pit-analyzer-routing threads
+    # ``pit_provider`` through ``SignalAnalyzer.analyze`` (anchor-moving:
+    # deliberate baseline re-sign per the proposal).
     "src/core/signal_analyzer.py": 1,
 
     # ``microstructure_mask`` (audit P0-3 /
