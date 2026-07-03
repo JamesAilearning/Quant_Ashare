@@ -65,9 +65,9 @@ def _write_run(root: Path, *, delta: float, git_commit: str,
         for i, b in enumerate(base)
     ]
     ds = {
-        "excess_return": dict(zip(dates, excess)),
+        "excess_return": dict(zip(dates, excess, strict=True)),
         "components": {
-            "return": {d: e + 0.0015 for d, e in zip(dates, excess)},
+            "return": {d: e + 0.0015 for d, e in zip(dates, excess, strict=True)},
             "bench": {d: 0.001 for d in dates},
             "cost": {d: 0.0005 for d in dates},
         },
