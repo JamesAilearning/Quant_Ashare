@@ -109,6 +109,27 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(WalkForwardConfig().label_horizon_days, 1)
         self.assertEqual(PipelineConfig(provider_uri="/tmp/fake").label_horizon_days, 1)
 
+    def test_non_alpha_handler_with_horizon_refused_at_config_load(self) -> None:
+        # codex P2 on #318: the walk-forward engine's per-fold error isolation
+        # would convert FeatureDatasetBuilder's later rejection into all-NaN
+        # placeholder folds — an unsupported config must refuse at CONFIG
+        # construction, before any fold starts. Both engines, same rule.
+        with self.assertRaises(WalkForwardError) as cm:
+            WalkForwardConfig(feature_handler="MinedFactor", label_horizon_days=5)
+        self.assertIn("silently ignore", str(cm.exception))
+        with self.assertRaises(PipelineError):
+            PipelineConfig(provider_uri="/tmp/fake",
+                           feature_handler="MinedFactor", label_horizon_days=5)
+
+    def test_non_alpha_handler_with_default_horizon_accepts(self) -> None:
+        # H=1 stays universally valid — the refusal is only for a horizon the
+        # handler would ignore, not for using another handler at all.
+        # (adjust_mode: MinedFactor's own pre-existing requirement, unrelated.)
+        cfg = WalkForwardConfig(
+            feature_handler="MinedFactor", adjust_mode="post_adjusted",
+        )
+        self.assertEqual(cfg.label_horizon_days, 1)
+
 
 class CacheKeyTests(unittest.TestCase):
     def test_horizons_never_share_cache_keys(self) -> None:

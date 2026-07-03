@@ -190,6 +190,16 @@ class PipelineConfig:
                 f"label_horizon_days must be a positive integer (holding days, "
                 f"T+1 close -> T+1+H close); got {h!r}."
             )
+        if h != 1 and self.feature_handler != "Alpha158":
+            # Same up-front refusal as WalkForwardConfig (two engines, one
+            # schema): fail at config construction, not deep inside the run
+            # (codex P2 on #318).
+            raise PipelineError(
+                f"label_horizon_days={h} is only supported for feature_handler="
+                f"'Alpha158'; handler '{self.feature_handler}' defines its own "
+                "label and would silently ignore the horizon. Use the default "
+                "(1) or add horizon support to that handler first."
+            )
         if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
             raise PipelineError(
                 f"PipelineConfig.compute_device must be one of "
