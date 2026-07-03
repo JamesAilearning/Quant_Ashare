@@ -321,7 +321,10 @@ by `scripts/regen/diff_baselines.py`:**
 A re-sign PR commits the new baseline + the diff table + the evidence sidecar
 TOGETHER (artifacts expire after 90 days; committed evidence does not). The
 regression test asserts sidecar-vs-file digest consistency whenever the
-sidecar exists; presence is mandatory from the first re-sign onward. The
+sidecar exists; presence is mandatory from the first re-sign onward — enforced
+by `LEGACY_BASELINE_SHA256` in the replay test, which pins the ONE pre-channel
+baseline and is FROZEN FOREVER. A re-sign PR never updates that pin (a mutable
+pin would re-open the sidecar exemption); it ships the sidecar instead. The
 operator's merge of that PR is the signature — no auto-promotion.
 
 **Registry fixture:** `regen2/delisted_registry_frozen_20260618.parquet` is a

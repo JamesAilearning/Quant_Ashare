@@ -97,8 +97,11 @@ REPLAY_WINDOW_END = "2025-12-31"  # fold 22 = 2025Q4 (see N_FOLDS)
 EVIDENCE_SIDECAR = FIXTURES_DIR / "walk_forward_baseline_metrics.evidence.json"
 # The ONE legacy baseline that predates the evidence channel (codex P2 #321 r4:
 # "presence mandatory from the first re-sign" must be machine-enforceable, not
-# aspirational). Any OTHER baseline content REQUIRES the sidecar. A re-sign PR
-# updates the baseline + sidecar + this pin together.
+# aspirational). Any OTHER baseline content REQUIRES the sidecar.
+# THIS PIN IS FROZEN FOREVER — it identifies the pre-channel baseline and only
+# that. A re-sign PR ships baseline + sidecar and NEVER touches this constant
+# (codex P2 #321 r5: a pin that re-sign PRs update would re-enter the exemption
+# when the sidecar is forgotten, defeating the guard).
 # NOTE: the hash is over LINE-ENDING-NORMALIZED bytes (CRLF -> LF): the
 # baseline is a TEXT fixture subject to git autocrlf, so raw-byte hashes
 # differ between Windows and Linux checkouts of identical content.
@@ -244,7 +247,10 @@ class WalkForwardReplayBaselineRegen2Tests(unittest.TestCase):
                 f"({baseline_digest[:16]} != {LEGACY_BASELINE_SHA256[:16]}) but no "
                 "evidence sidecar is committed — a re-signed baseline MUST ship "
                 "walk_forward_baseline_metrics.evidence.json from the "
-                "regen-baseline workflow (and update LEGACY_BASELINE_SHA256)."
+                "regen-baseline workflow. Do NOT update LEGACY_BASELINE_SHA256: "
+                "the pin identifies the pre-channel baseline only and is frozen "
+                "forever; every re-signed baseline satisfies this guard via the "
+                "sidecar, never via the exemption."
             )
         # If the sidecar exists, its digests MUST match the committed files — a
         # mismatch means the baseline (or registry) was edited outside the
