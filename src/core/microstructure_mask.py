@@ -55,6 +55,44 @@ def ts_to_iso_date(ts: Any) -> str:
     return ts.date().isoformat() if hasattr(ts, "date") else str(ts)[:10]
 
 
+def _iso_dates_for(level: Any) -> Any:
+    """Vectorized ``ts_to_iso_date`` over an index level, element-bit-identical.
+
+    ``pd.factorize`` maps the level to codes over its (few) UNIQUE values —
+    ~250 distinct dates in a year-long panel — then the SAME ``ts_to_iso_date``
+    runs once per unique value and a C-speed gather expands back to full
+    length. Every output element therefore equals exactly what the old per-row
+    loop produced (tz-aware, NaT, ``object``-dtype fallbacks included: it IS
+    the same function on the same value)."""
+    import numpy as np
+    import pandas as pd
+
+    codes, uniques = pd.factorize(level, use_na_sentinel=False)
+    iso_uniques = np.array([ts_to_iso_date(ts) for ts in uniques], dtype=object)
+    return iso_uniques[codes]
+
+
+def _str_insts_for(level: Any) -> Any:
+    """Vectorized ``str(...)`` over an instrument level — same factorize +
+    per-unique + gather pattern as :func:`_iso_dates_for`."""
+    import numpy as np
+    import pandas as pd
+
+    codes, uniques = pd.factorize(level, use_na_sentinel=False)
+    str_uniques = np.array([str(x) for x in uniques], dtype=object)
+    return str_uniques[codes]
+
+
+def _pairs_at_positions(date_level: Any, inst_level: Any, hit: Any) -> list[tuple[str, str]]:
+    """``[(iso_date, str_inst)]`` for the True positions of ``hit`` —
+    the vectorized equivalent of appending inside the old row loop."""
+    if not hit.any():
+        return []
+    dates_hit = _iso_dates_for(date_level[hit])
+    insts_hit = _str_insts_for(inst_level[hit])
+    return list(zip(dates_hit, insts_hit, strict=True))
+
+
 class MicrostructureMaskError(RuntimeError):
     """Raised when the mask cannot be computed (bad qlib fetch,
     malformed OHLCV, etc.). Callers in the canonical path catch
@@ -232,26 +270,20 @@ def compute_unavailable_mask(
         & (high == low)
     )
 
-    masked_pairs: list[tuple[str, str]] = []
-    n_suspended = 0
-    n_one_price = 0
-
-    # Iterate aligned to mask positions. ``boolean.values`` is a
-    # numpy array; ``inst_level[i]`` / ``date_level[i]`` give the
-    # MultiIndex parts. Convert pd.Timestamp to ISO date string.
+    # Vectorized (audit P1): the old per-row Python loop cost O(N) iterations
+    # (5000 insts x 250 days ~ 1.25M; x23 walk-forward folds). ``masked`` is a
+    # frozenset, so pair ORDER is immaterial — only the set contents and the
+    # two counts must be exactly what the loop produced. Element semantics stay
+    # BIT-IDENTICAL by calling the SAME ``ts_to_iso_date`` / ``str`` on the
+    # (few) UNIQUE level values via factorize + C-speed gather, instead of once
+    # per row — tz/NaT/object-dtype behavior is inherited verbatim.
     sus_values = suspended_mask.to_numpy(copy=False)
     one_values = one_price_mask.to_numpy(copy=False)
-    for i in range(len(df)):
-        if sus_values[i]:
-            ts = date_level[i]
-            date_iso = ts_to_iso_date(ts)
-            masked_pairs.append((date_iso, str(inst_level[i])))
-            n_suspended += 1
-        elif one_values[i]:
-            ts = date_level[i]
-            date_iso = ts_to_iso_date(ts)
-            masked_pairs.append((date_iso, str(inst_level[i])))
-            n_one_price += 1
+    n_suspended = int(sus_values.sum())
+    n_one_price = int(one_values.sum())
+
+    hit = sus_values | one_values  # one_price already excludes suspended rows
+    masked_pairs = _pairs_at_positions(date_level, inst_level, hit)
 
     return MicrostructureMaskResult(
         masked=frozenset(masked_pairs),
@@ -300,27 +332,26 @@ def apply_mask_to_predictions(
             f"{type(predictions.index).__name__}."
         )
 
-    # Build a boolean array: True for rows whose (date_iso, inst)
-    # tuple is in the mask. Then keep the complement.
+    # Vectorized (audit P1): build the (date_iso, str_inst) key per row via
+    # factorize + gather (element-bit-identical to the old per-row loop — see
+    # _iso_dates_for), then ONE vectorized membership test. Both sides of the
+    # comparison are plain (str, str) tuples after the conversion above, so
+    # MultiIndex.isin's engine lookup is exact — no dtype coercion subtleties
+    # remain (they were consumed by ts_to_iso_date/str, same as the old loop).
     date_level = predictions.index.get_level_values("datetime")
     inst_level = predictions.index.get_level_values("instrument")
-    keep = []
-    n_dropped = 0
-    for i in range(len(predictions)):
-        ts = date_level[i]
-        date_iso = ts_to_iso_date(ts)
-        if (date_iso, str(inst_level[i])) in pair_set:
-            keep.append(False)
-            n_dropped += 1
-        else:
-            keep.append(True)
+    date_isos = _iso_dates_for(date_level)
+    inst_strs = _str_insts_for(inst_level)
+    key_index = pd.MultiIndex.from_arrays([date_isos, inst_strs])
+    dropped = key_index.isin(pair_set)
+    n_dropped = int(dropped.sum())
 
     if n_dropped == 0:
         # Mask was non-empty but didn't hit any predictions row —
         # likely a different instrument universe. No-op fast path.
         return predictions, 0
 
-    filtered = predictions[keep]
+    filtered = predictions[~dropped]
     return filtered, n_dropped
 
 
