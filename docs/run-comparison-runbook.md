@@ -53,9 +53,12 @@ comparisons stay visible instead of being driven underground. A directional
 verdict **opposite** the registered `expected_direction` is likewise surfaced
 (`direction vs plan: OPPOSITE...`) — it cannot be quietly re-narrated.
 
-`--prereg <ref>` (no plan file) still produces a verdict but is loudly marked
-**RECORD-ONLY — NOT git-verified**. Use it for exploratory reruns only; a
-decision-grade comparison goes through `--prereg-plan`.
+`--prereg <ref>` (no plan file) still produces a verdict but it is NOT
+decision-grade: the gate block is marked **RECORD-ONLY — NOT git-verified** and
+the verdict line itself reads `VERDICT (EXPLORATORY — prereg NOT git-verified):`
+— an excerpt of just that line still shows it was never verified. Use it for
+exploratory reruns only; a decision-grade comparison goes through
+`--prereg-plan`.
 
 ## Experiment-design constraints (the label-horizon campaign and after)
 

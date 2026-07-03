@@ -206,9 +206,16 @@ def build_ruler_report(
     lo, hi = r.paired_net_ci95
     d = r.diagnostics
     sb = r.seam_bound
+    # A record-only reference is NOT decision-grade: the verdict LINE ITSELF carries the
+    # marking (spec: a record-only comparison cannot pose as decision-grade — an excerpt
+    # of just this line must still show it was never git-verified).
+    verdict_label = (
+        f"VERDICT: {r.verdict.upper()}" if plan is not None
+        else f"VERDICT (EXPLORATORY — prereg NOT git-verified): {r.verdict.upper()}"
+    )
     lines = [
         title,
-        f"  VERDICT: {r.verdict.upper()}   "
+        f"  {verdict_label}   "
         f"(n_paired={r.n_paired_days}, overlap={r.overlap_fraction:.1%})",
         f"  paired net annualized diff (treatment - baseline): "
         f"{r.paired_net_ann_diff:+.4f}   95% CI [{lo:+.4f}, {hi:+.4f}]   "
