@@ -12,6 +12,9 @@ subprocess (no mocks):
                UNREGISTERED MULTIPLE COMPARISON flag (flagged, not refused).
   3. REFUSE  — dirty-worktree provenance (git_dirty=true): the gate must
                refuse with no verdict.
+  4. REFUSE  — ST-handling mismatch (one side ST-on, one ST-off): the gate
+               must refuse — the pair would measure the ST interaction, not
+               the registered hypothesis (codex P1 #323).
 
 Prerequisite: docs/prereg/label_horizon.yaml is COMMITTED (the gate anchors to
 committed content only — an uncommitted plan correctly fails scenario 1).
@@ -47,7 +50,8 @@ def _head_commit() -> str:
 
 
 def _write_run(root: Path, *, delta: float, git_commit: str,
-               git_dirty: bool) -> Path:
+               git_dirty: bool, st_mask_mode: str = "off_experiment",
+               namechange_path: str = "") -> Path:
     """A minimal 1-fold run dir carrying the daily_series substrate the ruler
     needs (mirrors tests/logic/test_compare_cli.py's builder)."""
     from src.core.walk_forward.aggregate import FOLD_REPORT_SCHEMA_VERSION
@@ -82,6 +86,10 @@ def _write_run(root: Path, *, delta: float, git_commit: str,
     (root / "walk_forward_report.json").write_text(json.dumps({
         "num_folds": 1, "generated_at": "2026-07-03T00:00:00Z",
         "git_commit": git_commit, "git_dirty": git_dirty,
+        # The gate derives ST-handling parity from the embedded config
+        # (codex P1 #323); the campaign shape is off_experiment + no inputs.
+        "config": {"st_mask_mode": st_mask_mode,
+                   "namechange_path": namechange_path},
         "folds": [{"test_period": tp, "fold_index": 0, "ic_1d": 0.02,
                    "annualized_return": 0.05, "information_ratio": 0.3}],
         "aggregate_metrics": {"pooled_ir": 0.3},
@@ -116,6 +124,10 @@ def main() -> int:
                          git_commit=head, git_dirty=False)
     dirty_b = _write_run(REHEARSAL_ROOT / "B_dirty", delta=0.0002,
                          git_commit=head, git_dirty=True)
+    st_on_b = _write_run(REHEARSAL_ROOT / "B_st_on", delta=0.0002,
+                         git_commit=head, git_dirty=False,
+                         st_mask_mode="required",
+                         namechange_path="D:/data/all_namechanges.parquet")
 
     # 1. ACCEPT — registered variant, clean provenance: the gate must verify
     # ancestry AND a verdict must print.
@@ -155,14 +167,29 @@ def main() -> int:
     else:
         print("scenario 3 REFUSE ok — dirty worktree refused, no verdict.")
 
+    # 4. REFUSE — ST-handling mismatch (codex P1 #323): baseline ST-off vs a
+    # treatment accidentally run ST-on must never yield a decision-grade
+    # verdict.
+    rc, out = _compare(clean_a, st_on_b, "5d")
+    if (
+        "NO VERDICT (pre-registration gate failed)" not in out
+        or "ST-handling MISMATCH" not in out
+    ):
+        failures.append(
+            f"scenario 4 (refuse): mismatched ST handling must refuse the "
+            f"gate with no verdict; rc={rc}. Tail:\n{out[-800:]}"
+        )
+    else:
+        print("scenario 4 REFUSE ok — ST-handling mismatch refused, no verdict.")
+
     if failures:
         print("\nREHEARSAL FAILED:")
         for f in failures:
             print(f"- {f}")
         return 1
     print("\nREHEARSAL PASS: plan->gate->verdict chain fully exercised "
-          "(accept / flag / refuse). Ready for the 1-fold smoke, then the "
-          "real runs.")
+          "(accept / flag / refuse-dirty / refuse-st-mismatch). Ready for "
+          "the 1-fold smoke, then the real runs.")
     return 0
 
 

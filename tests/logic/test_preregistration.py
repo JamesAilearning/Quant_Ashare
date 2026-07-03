@@ -62,8 +62,25 @@ def _write_plan(repo: Path, content: str = _PLAN_YAML,
     return p
 
 
-def _report(commit: str | None, dirty: bool | None = False) -> dict[str, object]:
-    return {"git_commit": commit, "git_dirty": dirty}
+def _report(
+    commit: str | None,
+    dirty: bool | None = False,
+    *,
+    st_mask_mode: str | None = "required",
+    namechange_path: str | None = "D:/data/all_namechanges.parquet",
+    with_config: bool = True,
+) -> dict[str, object]:
+    """A minimal aggregate report. Real reports embed the full config
+    (aggregate.py: ``"config": asdict(config)``); the gate derives ST-handling
+    parity from it (codex P1 #323), so the fixture carries the ST-relevant
+    keys. ``st_mask_mode=None`` mimics a config that predates the field."""
+    report: dict[str, object] = {"git_commit": commit, "git_dirty": dirty}
+    if with_config:
+        cfg: dict[str, object] = {"namechange_path": namechange_path}
+        if st_mask_mode is not None:
+            cfg["st_mask_mode"] = st_mask_mode
+        report["config"] = cfg
+    return report
 
 
 class LoadPlanTests(unittest.TestCase):
@@ -225,6 +242,65 @@ class GateTests(unittest.TestCase):
             )
         self.assertEqual(len(flags), 1)
         self.assertIn("UNREGISTERED MULTIPLE COMPARISON", flags[0])
+
+    def test_st_handling_mismatch_refused(self) -> None:
+        # codex P1 #323: one side ST-on, one ST-off — the pair measures the
+        # ST interaction, not the registered hypothesis. HARD refusal.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),  # required + inputs
+                    treatment_report=_report(
+                        run_commit, st_mask_mode="off_experiment",
+                        namechange_path="",
+                    ),
+                    variant="5d",
+                )
+        self.assertIn("ST-handling MISMATCH", str(cm.exception))
+
+    def test_st_off_both_sides_passes(self) -> None:
+        # the 阶段6 campaign shape: off_experiment + no ST inputs on BOTH sides.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_report(
+                    run_commit, st_mask_mode="off_experiment", namechange_path="",
+                ),
+                treatment_report=_report(
+                    run_commit, st_mask_mode="off_experiment", namechange_path="",
+                ),
+                variant="5d",
+            )
+        self.assertEqual(flags, [])
+
+    def test_pre_field_config_reads_as_required(self) -> None:
+        # a report whose config predates st_mask_mode (key absent) is the old
+        # mandatory-mask engine: parity with an explicit "required" run holds.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_report(run_commit, st_mask_mode=None),
+                treatment_report=_report(run_commit),
+                variant="5d",
+            )
+        self.assertEqual(flags, [])
+
+    def test_report_without_config_block_refused(self) -> None:
+        # no config block -> ST parity unprovable -> no decision-grade verdict.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit, with_config=False),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                )
+        self.assertIn("no 'config' block", str(cm.exception))
 
     def test_run_without_provenance_rejected(self) -> None:
         with TemporaryDirectory() as td:

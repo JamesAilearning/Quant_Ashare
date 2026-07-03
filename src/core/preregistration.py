@@ -191,6 +191,31 @@ def is_ancestor(ancestor: str, descendant: str, *, repo_root: str | Path) -> boo
     )
 
 
+def _st_handling(report: Mapping[str, Any], *, run_label: str) -> tuple[str, bool]:
+    """The run's ST-exclusion handling, derived from the report's EMBEDDED
+    config: ``(st_mask_mode, st-inputs-present)``.
+
+    FAIL-LOUD when the report carries no ``config`` block — parity cannot be
+    proven, and an ST-on-vs-ST-off pair would contaminate an isolated
+    experiment with the ST interaction (codex P1 on #323). A config that
+    predates the ``st_mask_mode`` field reads as ``"required"`` (the only
+    semantics the engine had then).
+    """
+    cfg = report.get("config")
+    if not isinstance(cfg, Mapping):
+        raise PreregistrationError(
+            f"{run_label}: the run's report embeds no 'config' block, so "
+            "ST-handling parity cannot be proven. Decision-grade comparisons "
+            "need runs produced by the current engine (which embeds the full "
+            "config in walk_forward_report.json) — re-run the walk-forward, "
+            "or use --prereg <ref> for an exploratory, non-decision-grade "
+            "comparison."
+        )
+    mode = str(cfg.get("st_mask_mode") or "required")
+    has_st_inputs = bool(str(cfg.get("namechange_path") or "").strip())
+    return mode, has_st_inputs
+
+
 def gate_comparison(
     plan: PreregPlan,
     *,
@@ -198,12 +223,16 @@ def gate_comparison(
     treatment_report: Mapping[str, Any],
     variant: str,
 ) -> list[str]:
-    """Verify the plan predates BOTH runs; return advisory flags (never silently).
+    """Verify the plan predates BOTH runs AND the runs are ST-comparable;
+    return advisory flags (never silently).
 
-    Raises ``PreregistrationError`` on any hard failure (missing/dirty provenance,
-    plan not an ancestor). Returns a list of FLAG strings for advisory findings —
-    per the spec an unregistered variant is FLAGGED, not refused, so the number of
-    comparisons actually attempted stays visible instead of being driven underground.
+    Raises ``PreregistrationError`` on any hard failure (missing/dirty
+    provenance, plan not an ancestor, mismatched ST handling — one side ST-on
+    and one ST-off measures the ST interaction, not the registered
+    hypothesis). Returns a list of FLAG strings for advisory findings — per
+    the spec an unregistered variant is FLAGGED, not refused, so the number of
+    comparisons actually attempted stays visible instead of being driven
+    underground.
     """
     base_commit = run_commit_from_report(baseline_report, run_label="baseline run")
     treat_commit = run_commit_from_report(treatment_report, run_label="treatment run")
@@ -216,6 +245,21 @@ def gate_comparison(
                 "last-touched commit past them; that is exactly the post-hoc change "
                 "this gate exists to catch. Re-register and re-run."
             )
+    base_st = _st_handling(baseline_report, run_label="baseline run")
+    treat_st = _st_handling(treatment_report, run_label="treatment run")
+    if base_st != treat_st:
+        raise PreregistrationError(
+            "ST-handling MISMATCH between the compared runs: baseline has "
+            f"st_mask_mode={base_st[0]!r} (st inputs "
+            f"{'set' if base_st[1] else 'absent'}) vs treatment "
+            f"st_mask_mode={treat_st[0]!r} (st inputs "
+            f"{'set' if treat_st[1] else 'absent'}). An isolated experiment "
+            "must hold ST handling constant on both sides "
+            "(docs/run-comparison-runbook.md) — one side ST-on and one ST-off "
+            "measures the PR#223 ST interaction, not the registered "
+            "hypothesis. Refusing the decision-grade verdict; re-run the "
+            "mismatched side."
+        )
     flags: list[str] = []
     if variant not in plan.treatments:
         flags.append(

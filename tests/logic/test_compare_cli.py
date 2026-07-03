@@ -67,6 +67,10 @@ def _write_run(root: Path, dates: list[str], excess: np.ndarray[Any, Any],
     (root / "walk_forward_report.json").write_text(json.dumps({
         "num_folds": 1, "generated_at": generated,
         "git_commit": git_commit, "git_dirty": git_dirty,
+        # Real reports embed the full config; the prereg gate derives
+        # ST-handling parity from it (codex P1 #323).
+        "config": {"st_mask_mode": "required",
+                   "namechange_path": "D:/data/all_namechanges.parquet"},
         "folds": [{"test_period": tp, "fold_index": 0, "ic_1d": float(ic),
                    "annualized_return": 0.05, "information_ratio": 0.3}],
         "aggregate_metrics": {"pooled_ir": 0.3},
