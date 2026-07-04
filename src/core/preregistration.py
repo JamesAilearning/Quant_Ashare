@@ -228,16 +228,25 @@ def _st_handling(
 
 
 def _fold_st_sha(fold_report: Mapping[str, Any]) -> str:
-    """The fold's recorded ST-input content hash, read from the shape
-    ``write_fold_report`` actually writes: ``backtest.provenance.st_mask.
-    namechange_sha256`` (codex P1 #323 round 4 — an earlier draft read a
-    top-level ``provenance`` key that real fold reports never carry, which
-    would have refused every real ST-on comparison as unproven; a
-    writer-reader consistency test now pins this path against
-    ``build_fold_report``'s output). Empty string when absent."""
+    """The fold's recorded ST-input content hash, read from the shape a real
+    run actually writes: ``backtest.provenance.config.st_mask.
+    namechange_sha256`` — ``BacktestRunner._build_provenance`` flattens the
+    strategy dict (which carries ``st_mask``) INTO the ``config`` sub-mapping,
+    and ``build_fold_report`` nests that provenance under ``backtest``.
+
+    History of this path (it was wrong twice): codex P1 #323 round 4 caught a
+    top-level ``provenance`` read, and the fix STILL guessed one level short
+    (``provenance.st_mask``) because the consistency test hand-built the
+    provenance mapping instead of producing it through
+    ``_build_provenance`` — the 1-fold smoke run exposed it. The consistency
+    test now drives the FULL real writer chain
+    (``_build_provenance`` → ``CanonicalBacktestOutput`` →
+    ``build_fold_report`` → this extractor), so the read path cannot diverge
+    from either writer layer again. Empty string when absent."""
     bt = fold_report.get("backtest")
     prov = bt.get("provenance") if isinstance(bt, Mapping) else None
-    st = prov.get("st_mask") if isinstance(prov, Mapping) else None
+    cfg = prov.get("config") if isinstance(prov, Mapping) else None
+    st = cfg.get("st_mask") if isinstance(cfg, Mapping) else None
     if not isinstance(st, Mapping):
         return ""
     return str(st.get("namechange_sha256") or "").strip()
