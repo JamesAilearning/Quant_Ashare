@@ -48,16 +48,27 @@ treatments: ["5d"]                # the FULL registered variant set, fixed NOW.
 # handling moved (environment, data, code) — the pair would measure that
 # contamination, not the label. ABORT: do not ignite run 2; diagnose first.
 #
-# REGEN-2 anchor reference (ST-on, H=1, canonical pins):
-#   gross excess ≈ +2.73%/yr; net excess ≈ −3.08%/yr; cost wedge ≈ 5.81pp.
-# csi300 carries few ST names at any time, so ST-off should move the
-# aggregate modestly. Band (operator may tighten at review; numbers are
-# DELIBERATELY wide — the guard catches sign flips and order-of-magnitude
-# breaks, not noise):
+# REGEN-2 anchor reference — the COMMITTED baseline fixture's OWN aggregate
+# (tests/regression/fixtures/walk_forward_baseline_metrics.json, the file the
+# CI anchor leg pins bit-level; mean-of-folds convention, the only convention
+# available on BOTH sides):
+#   net excess (mean_annualized_return) = +0.0340/yr
+#   mean_ic_1d = +0.0181 ; mean_information_ratio = 0.2778
+#
+# BAND v2 (re-registered 2026-07-04). v1 anchored the band on the #306
+# promotion analysis's numbers (gross +2.73% / net −3.08% / wedge 5.81pp),
+# which are a DIFFERENT metric convention than the walk-forward aggregate the
+# band is checked against — the true anchor (+3.40% net) sat OUTSIDE v1's own
+# net band, so a healthy baseline could never pass. The first run-1 ignition
+# (2026-07-04, commit 863214a) was structurally sane (net +3.32%, Δ vs anchor
+# −0.09pp; IC/IR/drawdown ≈ anchor) yet breached v1 by the letter → aborted +
+# re-registered per on_breach; run 1 re-runs under this v2. csi300 carries
+# few ST names, so ST-off should move the aggregate modestly.
 sanity_band_baseline_vs_anchor:
-  gross_excess_annualized: {min: 0.0, max: +0.08}    # same sign as +2.73%, bounded above
-  net_excess_annualized:   {min: -0.08, max: +0.02}  # anchor −3.08% ± ~5pp
-  cost_wedge_pp:           {min: 3.0, max: 9.0}      # anchor 5.81pp ± 3pp (ST handling must not swing turnover wildly)
+  net_mean_of_folds_abs_delta_max: 0.05   # |run1 mean_annualized_return − (+0.0340)| ≤ 5pp
+  mean_ic_1d_abs_delta_max: 0.01          # |run1 mean_ic_1d − (+0.0181)| ≤ 0.01
+  pooled_gross_excess_sign: positive      # pooled daily (return − bench) must stay positive
+  cost_wedge_pp: {min: 3.0, max: 9.0}     # pooled (gross − net); unchanged from v1
   on_breach: >-
     ABORT the campaign before run 2. Diagnose the non-ST delta (environment
     pins, bundle freshness, code drift) and re-register. A breached band
@@ -132,6 +143,21 @@ st_on_reverify:
 # Decisions record (honesty entries, carried into the campaign archive)
 # -------------------------------------------------------------------------
 decisions_record:
+  - id: sanity-band-v1-convention-error
+    text: >-
+      Band v1 referenced the #306 promotion analysis's gross/net numbers
+      (+2.73% / −3.08% / 5.81pp) as "the anchor", but those are a different
+      metric convention than the walk-forward aggregate the band is checked
+      against — the committed fixture's own mean_annualized_return (+3.40%)
+      sat outside v1's net band, so a healthy fresh baseline could never
+      pass. The first run-1 ignition (2026-07-04, commit 863214a) was
+      structurally sane (net +3.32%, Δ vs anchor −0.09pp; ic_1d Δ +0.0001;
+      IR Δ −0.006; worst_drawdown identical) yet breached v1 by the letter;
+      per the pre-committed on_breach it was ABORTED before run 2 and the
+      band re-registered as v2, anchored on the committed fixture's own
+      aggregate. Run 1 re-runs under v2 — the topological cost of editing
+      the plan (ancestry invalidates the earlier run) is paid deliberately,
+      never waived.
   - id: batch-a-rationale-correction
     text: >-
       批次A (audit P1+P2 before the campaign) was justified partly by "P2 will
