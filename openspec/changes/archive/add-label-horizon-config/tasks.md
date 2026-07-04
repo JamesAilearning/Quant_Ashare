@@ -69,13 +69,21 @@
       over synthetic run dirs: accept (registered 5d) / flag (unregistered
       10d) / refuse (dirty provenance); evidence at
       `docs/prereg/label_horizon_rehearsal.md`.
-- [ ] 1-fold smoke ignition (operator, timing their call):
-      `python scripts/run_walk_forward.py config/presets/stage6_smoke_h5_1fold.yaml`
-- [ ] GPU window: baseline + treatment runs (clean checkout, ONE uninterrupted
-      invocation each; sanity-band check between run 1 and run 2 per the plan)
-- [ ] `compare_walk_forward_runs --prereg-plan docs/prereg/label_horizon.yaml
-      --variant 5d` (dependency chain satisfied: the ruler #310–#316 is merged;
-      this enabler was the last prerequisite)
+- [x] 1-fold smoke ignition — DONE 2026-07-04 (49s wall-clock; caught the ST
+      provenance-layout gate bug -> fixed in #324 before any decision-grade use).
+- [x] Runs: baseline + treatment — DONE 2026-07-04 (23 folds each, ~16 min
+      each, clean `fa85ddc`, one invocation each; first run-1 ignition
+      breached band v1 -> aborted + re-registered as v2 (#325, convention
+      error recorded) -> run-1 re-run passed v2 ALL-CHECKS -> run 2).
+- [x] `compare_walk_forward_runs --prereg-plan --variant 5d` — DONE:
+      gate PASSED; **VERDICT: INDISTINGUISHABLE** (net −0.71pp
+      [−5.80, +4.44]pp); gross point NEGATIVE -> 10d escalation rule did not
+      fire; verdict state stable on both pre-specified sensitivity slices.
+      **Campaign concluded with a pre-registered NEGATIVE result — the label
+      line closes; the ic_5d signal-level gain (+15%) did not convert under
+      a horizon-blind daily rebalance (handoff to 阶段7 cadence).**
+      Full adjudication: `docs/prereg/label_horizon_results.md`; verbatim
+      verdict: `docs/prereg/label_horizon_verdict_20260704.txt`.
 
 ## Must-not-touch
 

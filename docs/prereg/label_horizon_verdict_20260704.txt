@@ -1,0 +1,83 @@
+==============================================================================================================
+BASELINE : output\stage6\h1_st_off_baseline  (23 folds, generated 2026-07-04T11:09:48.427516+00:00)
+TREATMENT: output\stage6\h5_st_off_treatment  (23 folds, generated 2026-07-04T11:22:48.512667+00:00)
+==============================================================================================================
+fold                     IC1d (b → t)              Return (b → t)              IR (b → t)              n_models (t)  
+---------------------------------------------------------------------------------------------------------------------
+2020-04-01 ~ 2020-06-30  +0.0321 → +0.0290  (-0.0031)  +5.06% → +17.67%  +0.66 → +2.15  1  [0]
+2020-07-01 ~ 2020-09-30  +0.0203 → +0.0166  (-0.0037)  -21.64% → -25.02%  -1.91 → -2.39  2  [0, 1]
+2020-10-01 ~ 2020-12-31  +0.0454 → +0.0444  (-0.0010)  -2.10% → -2.85%  -0.19 → -0.24  3  [0, 1, 2]
+2021-01-01 ~ 2021-03-31  +0.0034 → +0.0012  (-0.0021)  +3.77% → -19.46%  +0.33 → -1.93  3  [1, 2, 3]
+2021-04-01 ~ 2021-06-30  +0.0191 → +0.0160  (-0.0031)  +23.57% → +15.22%  +2.39 → +1.75  3  [2, 3, 4]
+2021-07-01 ~ 2021-09-30  -0.0278 → -0.0279  (-0.0001)  +10.46% → +10.79%  +0.80 → +0.82  3  [3, 4, 5]
+2021-10-01 ~ 2021-12-31  -0.0196 → -0.0122  (+0.0074)  -3.22% → -1.48%  -0.41 → -0.21  3  [4, 5, 6]
+2022-01-01 ~ 2022-03-31  -0.0263 → -0.0254  (+0.0008)  -6.33% → -8.42%  -0.68 → -0.67  3  [5, 6, 7]
+2022-04-01 ~ 2022-06-30  +0.0436 → +0.0299  (-0.0137)  +31.01% → +14.06%  +2.43 → +1.21  3  [6, 7, 8]
+2022-07-01 ~ 2022-09-30  -0.0332 → -0.0221  (+0.0110)  -10.70% → -9.00%  -1.01 → -0.96  3  [7, 8, 9]
+2022-10-01 ~ 2022-12-31  +0.0261 → +0.0254  (-0.0008)  +20.63% → +31.87%  +1.98 → +2.65  3  [8, 9, 10]
+2023-01-01 ~ 2023-03-31  +0.0137 → +0.0123  (-0.0015)  -1.28% → +1.52%  -0.26 → +0.25  3  [9, 10, 11]
+2023-04-01 ~ 2023-06-30  +0.0058 → +0.0099  (+0.0041)  +8.56% → +9.47%  +1.27 → +1.35  3  [10, 11, 12]
+2023-07-01 ~ 2023-09-30  +0.0145 → +0.0179  (+0.0033)  -24.13% → -8.71%  -3.78 → -1.34  3  [11, 12, 13]
+2023-10-01 ~ 2023-12-31  +0.0266 → +0.0331  (+0.0064)  +17.19% → +21.67%  +2.74 → +3.34  3  [12, 13, 14]
+2024-01-01 ~ 2024-03-31  +0.0565 → +0.0566  (+0.0001)  +28.30% → +27.11%  +2.67 → +2.11  3  [13, 14, 15]
+2024-04-01 ~ 2024-06-30  +0.0688 → +0.0539  (-0.0149)  +8.67% → +9.72%  +1.21 → +1.43  3  [14, 15, 16]
+2024-07-01 ~ 2024-09-30  +0.0350 → +0.0367  (+0.0017)  +2.63% → +10.48%  +0.36 → +1.78  3  [15, 16, 17]
+2024-10-01 ~ 2024-12-31  +0.0298 → +0.0042  (-0.0257)  +14.65% → -7.78%  +0.70 → -0.39  3  [16, 17, 18]
+2025-01-01 ~ 2025-03-31  +0.0220 → +0.0344  (+0.0124)  +7.75% → +18.47%  +0.75 → +1.89  3  [17, 18, 19]
+2025-04-01 ~ 2025-06-30  +0.0445 → +0.0505  (+0.0060)  +19.17% → +12.48%  +2.31 → +1.48  3  [18, 19, 20]
+2025-07-01 ~ 2025-09-30  -0.0101 → -0.0096  (+0.0005)  -49.31% → -57.79%  -5.52 → -6.02  3  [19, 20, 21]
+2025-10-01 ~ 2025-12-31  +0.0281 → +0.0329  (+0.0048)  -6.41% → +0.23%  -0.59 → +0.02  3  [20, 21, 22]
+---------------------------------------------------------------------------------------------------------------------
+AGGREGATE METRICS
+  bootstrap_n                         baseline=+10000.0000  treatment=+10000.0000  Δ=+0.0000
+  bootstrap_seed                      baseline=+42.0000  treatment=+42.0000  Δ=+0.0000
+  mean_annualized_return              baseline=+0.0332  treatment=+0.0262  Δ=-0.0070
+  mean_annualized_return_ci_high      baseline=+0.1022  treatment=+0.0994  Δ=-0.0028
+  mean_annualized_return_ci_low       baseline=-0.0440  treatment=-0.0567  Δ=-0.0127
+  mean_ic_1d                          baseline=+0.0182  treatment=+0.0177  Δ=-0.0005
+  mean_ic_1d_ci_high                  baseline=+0.0289  treatment=+0.0276  Δ=-0.0013
+  mean_ic_1d_ci_low                   baseline=+0.0071  treatment=+0.0074  Δ=+0.0003
+  mean_ic_5d                          baseline=+0.0288  treatment=+0.0330  Δ=+0.0042
+  mean_ic_5d_ci_high                  baseline=+0.0484  treatment=+0.0508  Δ=+0.0024
+  mean_ic_5d_ci_low                   baseline=+0.0087  treatment=+0.0144  Δ=+0.0057
+  mean_information_ratio              baseline=+0.2721  treatment=+0.3511  Δ=+0.0791
+  mean_information_ratio_ci_high      baseline=+1.0191  treatment=+1.1099  Δ=+0.0908
+  mean_information_ratio_ci_low       baseline=-0.5914  treatment=-0.5245  Δ=+0.0669
+  num_folds                           baseline=+23.0000  treatment=+23.0000  Δ=+0.0000
+  std_ic_1d                           baseline=+0.0266  treatment=+0.0245  Δ=-0.0022
+  std_ic_5d                           baseline=+0.0488  treatment=+0.0446  Δ=-0.0042
+  std_information_ratio               baseline=+1.9760  treatment=+1.9959  Δ=+0.0199
+  timing                              baseline={'total_duration_seconds': 759.9773621000204, 'mean_fold_duration_seconds': 33.04249400434871, 'slowest_fold_index': 0, 'slowest_fold_duration_seconds': 37.00105900000199, 'valid_folds_duration': 23}  treatment={'total_duration_seconds': 749.8348127000208, 'mean_fold_duration_seconds': 32.60151359565308, 'slowest_fold_index': 17, 'slowest_fold_duration_seconds': 34.42967920000956, 'valid_folds_duration': 23}  Δ=  n/a
+  valid_folds_annualized_return       baseline=+23.0000  treatment=+23.0000  Δ=+0.0000
+  valid_folds_ic_1d                   baseline=+23.0000  treatment=+23.0000  Δ=+0.0000
+  valid_folds_ic_5d                   baseline=+23.0000  treatment=+23.0000  Δ=+0.0000
+  valid_folds_information_ratio       baseline=+23.0000  treatment=+23.0000  Δ=+0.0000
+  valid_folds_max_drawdown            baseline=+23.0000  treatment=+23.0000  Δ=+0.0000
+  worst_drawdown                      baseline=-0.1350  treatment=-0.1585  Δ=-0.0235
+---------------------------------------------------------------------------------------------------------------------
+RUN-COMPARISON VERDICT (ruler: pooled IR + paired block-bootstrap)
+  pre-registration GATE: PASSED (plan commit is an ancestor of both runs)
+    plan: docs\prereg\label_horizon.yaml @ fa85ddcb4210
+    hypothesis: Lengthening the Alpha158 label horizon from 1 to 5 holding days slows label decay relative to the 2-trading-day effective horizon of the current production label, preserving more gross alpha per unit turnover; at equal costs this shows up as a non-negative gross-excess delta and a net-excess delta that is at least indistinguishable (treatment not worse), with the upside case being net improvement via reduced effective turnover.
+    expected_direction: treatment_better   registered variants: ['5d']
+    compared variant: 5d
+  VERDICT: INDISTINGUISHABLE   (n_paired=1397, overlap=100.0%)
+  NOTE: 'indistinguishable' means NOT statistically separable at this power — it is NOT 'equivalent'. Check the gross-vs-net and IC breakdown for a divergence the net-excess headline may mask (the n_drop lesson).
+  paired net annualized diff (treatment - baseline): -0.0071   95% CI [-0.0580, +0.0444]   SE 0.0263
+  block_length=1 (acf-decay)
+  pooled IR (study-protocol, each run's full OOS series):
+    net   baseline=+0.283  treatment=+0.215
+    gross baseline=+0.948  treatment=+0.877
+  diagnostics:
+    gross IR  baseline=+0.948  treatment=+0.877
+    mean IC   baseline=+0.0177  treatment=+0.0173   (IC verdict: indistinguishable, shared_days=1397)
+    direction: treatment<baseline
+  seam bound (pooled net IR, fold-boundary days incl vs excl):
+    baseline  incl=+0.283  excl=+0.558  impact=+0.275
+    treatment incl=+0.215  excl=+0.484  impact=+0.269
+  pre-registration ref: fa85ddcb42102dc7c2e0d79f1aa4498f8b1151f2
+  caveats:
+    - CI narrows the SAMPLING SE (pooled + paired + block bootstrap for autocorrelation) but does NOT model regime heterogeneity — a COVID-2020 fold vs a calm fold carry structural uncertainty the bootstrap cannot resample away. A narrow CI is not certainty; a single-period OOS can leave a small real edge 'indistinguishable'.
+    - pooled_*_ir are the WF STUDY-PROTOCOL realized IR (each run's full OOS series, INCLUDING fold-boundary model switches + each fold starting from cash) — NOT a continuous production strategy's return; do not read them as 'what running this live would earn'.
+    - block_length=1 (acf-decay); moving-block bootstrap, n_boot=10000, seed=42.
+    - date overlap 100.0% of the shorter series (1397 shared days).
