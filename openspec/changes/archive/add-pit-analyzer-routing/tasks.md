@@ -17,20 +17,20 @@
       vs 真实退市事实,逐只对日期)——签的是"忠实子集、日期都对"。
       并行性:本 change 不抢 GPU,可与阶段6 并行;顺带提升阶段6 IC 诊断的 PIT 洁净度。
 
-## PR-1 — 归因穿透 + 配置面 + 引擎接线(锚中性,先行)
+## PR-1 — 归因穿透 + 配置面 + 引擎接线(锚中性,先行)— **MERGED #320**
 
-- [ ] `PerformanceAttribution.analyze(..., pit_provider=None)`:
+- [x] `PerformanceAttribution.analyze(..., pit_provider=None)`:
       `_get_instrument_returns` 走 provider;缺席 WARN 路径逐位不变(回归钉死)。
-- [ ] `WalkForwardConfig`/`PipelineConfig` + `delisted_registry_path: str = ""`
+- [x] `WalkForwardConfig`/`PipelineConfig` + `delisted_registry_path: str = ""`
       (默认空 = 恒等;非空缺失 → 构造期 fail-loud);引擎 run 起点构造一次
       provider,alignment 校验沿用 backtest_runner 先例。
-- [ ] 引擎把 provider 传给 PerformanceAttribution(SignalAnalyzer 留给 PR-2)。
-- [ ] mock-PITDataProvider 单测:走 provider 不走 D.features;WARN 回归;
+- [x] 引擎把 provider 传给 PerformanceAttribution(SignalAnalyzer 留给 PR-2)。
+- [x] mock-PITDataProvider 单测:走 provider 不走 D.features;WARN 回归;
       坏路径 fail-loud;白名单注释/计数逐条更新。
-- [ ] **接线激活测试(操作员补充 1)**:配非空 registry 时,PR-1 管道把 provider
+- [x] **接线激活测试(操作员补充 1)**:配非空 registry 时,PR-1 管道把 provider
       一路传到 PerformanceAttribution 的调用点(mock 断言收到同一 provider 实例)
       ——接线在 PR-1 就被执行过,不是等 PR-2 激活的死代码。
-- [ ] 验收:CI 6 legs 绿(REGEN-2 leg 不动 = 归因确不在锚内的证明)。
+- [x] 验收:CI 6 legs 绿(REGEN-2 leg 不动 = 归因确不在锚内的证明)。
 
 ## PR-2 — SignalAnalyzer 穿透 + replay 接线（锚敏感通道，已建）
 
@@ -62,8 +62,11 @@
 - [x] **确认项（停牌→摘牌间隙语义）**：bins 层实证抽查 3 只不同退市类型
       （601989 吸收合并、000961/000671 面值）——停牌首日起 bins 即 NaN，
       间隙由 bundle 层天然覆盖，IC 逐日 dropna 兼容 ✓。
-- [ ] CI 判定锚影响（见下方判定修正）；若动 → 走重签通道（diff 表 R1-R3 +
-      新锚 CI 重跑绿 = 确定性复现证明）；若不动 → 通道备而未用。
+- [x] CI 判定锚影响（见下方判定修正）：**REGEN-2 leg 绿 = 锚逐位不动 =
+      判定修正成立**（#321 全 legs 绿合并）；重签通道建成但**备而未用**——
+      首次真重签（如 BacktestRunner 战役后接线）时启用。7 轮 codex 加固：
+      成员归因防洗白、R4 聚合门（逐 horizon）、fold-0 A/B 镜像+同步测试、
+      行尾规范化哈希、legacy pin 永久冻结、sidecar 强制文件名。
 
 ## 判定修正（bins 层实证，2026-07-03）
 
