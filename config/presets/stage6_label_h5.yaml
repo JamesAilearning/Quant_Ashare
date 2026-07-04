@@ -1,0 +1,26 @@
+# 阶段6 label-horizon campaign — TREATMENT side (H=5, ST-off).
+#
+# Pre-registered comparison: docs/prereg/label_horizon.yaml. Methodology:
+# docs/run-comparison-runbook.md. Mirror of stage6_label_h1.yaml — the ONLY
+# differences are label_horizon_days and output_dir (ST-off on both sides;
+# PIT delisted-registry IC mask inherited ON on both sides).
+#
+# H=5 widens the label-lookahead embargo 2 -> 6 trading days, shrinking
+# train/valid segment TAILS only — the month-aligned test windows are
+# unchanged, so the paired daily net-excess statistics compare identical OOS
+# days. scripts/preflight_label_horizon.py verifies this (fold count, test
+# windows, shared-OOS-day count) — run it BEFORE burning the real runs.
+#
+# Run discipline (gate REFUSES otherwise):
+#   * clean checkout at (or after) the plan commit — git_dirty must be false
+#   * ONE uninterrupted invocation:
+#       python scripts/run_walk_forward.py config/presets/stage6_label_h5.yaml
+extends: ../../config_walk.yaml
+
+label_horizon_days: 5
+
+# ST-off experiment opt-out — see stage6_label_h1.yaml for the full note.
+st_mask_mode: off_experiment
+namechange_path: ""
+
+output_dir: "output/stage6/h5_st_off_treatment"

@@ -62,8 +62,25 @@ def _write_plan(repo: Path, content: str = _PLAN_YAML,
     return p
 
 
-def _report(commit: str | None, dirty: bool | None = False) -> dict[str, object]:
-    return {"git_commit": commit, "git_dirty": dirty}
+def _report(
+    commit: str | None,
+    dirty: bool | None = False,
+    *,
+    st_mask_mode: str | None = "required",
+    namechange_path: str | None = "D:/data/all_namechanges.parquet",
+    with_config: bool = True,
+) -> dict[str, object]:
+    """A minimal aggregate report. Real reports embed the full config
+    (aggregate.py: ``"config": asdict(config)``); the gate derives ST-handling
+    parity from it (codex P1 #323), so the fixture carries the ST-relevant
+    keys. ``st_mask_mode=None`` mimics a config that predates the field."""
+    report: dict[str, object] = {"git_commit": commit, "git_dirty": dirty}
+    if with_config:
+        cfg: dict[str, object] = {"namechange_path": namechange_path}
+        if st_mask_mode is not None:
+            cfg["st_mask_mode"] = st_mask_mode
+        report["config"] = cfg
+    return report
 
 
 class LoadPlanTests(unittest.TestCase):
@@ -139,6 +156,22 @@ class RunCommitTests(unittest.TestCase):
                 run_commit_from_report(_report("abc123", dirty=dirty), run_label="t")
 
 
+def _folds(
+    sha: str | None = "cafebabe12345678", n: int = 2,
+) -> list[dict[str, object]]:
+    """Per-fold reports with st_mask provenance (the content-hash evidence
+    the gate requires for ST-on runs; codex P1 #323 r3) — in the REAL
+    ``write_fold_report`` shape (``backtest.provenance.st_mask``; codex P1
+    r4 caught a flat-shape draft). The writer-reader consistency test below
+    pins this shape against ``build_fold_report`` itself."""
+    st: dict[str, object] = {"namechange_path": "D:/data/all_namechanges.parquet"}
+    if sha is not None:
+        st["namechange_sha256"] = sha
+    return [
+        {"backtest": {"provenance": {"st_mask": dict(st)}}} for _ in range(n)
+    ]
+
+
 class GateTests(unittest.TestCase):
     def _repo_with_plan_then_run_commit(self, td: str) -> tuple[Path, object, str]:
         repo = _init_repo(Path(td) / "r")
@@ -156,6 +189,8 @@ class GateTests(unittest.TestCase):
                 baseline_report=_report(run_commit),
                 treatment_report=_report(run_commit),
                 variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(flags, [])
 
@@ -170,6 +205,8 @@ class GateTests(unittest.TestCase):
             flags = gate_comparison(
                 plan, baseline_report=_report(c), treatment_report=_report(c),
                 variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(flags, [])
 
@@ -222,9 +259,235 @@ class GateTests(unittest.TestCase):
                 baseline_report=_report(run_commit),
                 treatment_report=_report(run_commit),
                 variant="7d",  # NOT in the registered {5d, 10d}
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
             )
         self.assertEqual(len(flags), 1)
         self.assertIn("UNREGISTERED MULTIPLE COMPARISON", flags[0])
+
+    def test_st_handling_mismatch_refused(self) -> None:
+        # codex P1 #323: one side ST-on, one ST-off — the pair measures the
+        # ST interaction, not the registered hypothesis. HARD refusal.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),  # required + inputs
+                    treatment_report=_report(
+                        run_commit, st_mask_mode="off_experiment",
+                        namechange_path="",
+                    ),
+                    variant="5d",
+                )
+        self.assertIn("ST-handling MISMATCH", str(cm.exception))
+
+    def test_st_off_both_sides_passes(self) -> None:
+        # the 阶段6 campaign shape: off_experiment + no ST inputs on BOTH sides.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_report(
+                    run_commit, st_mask_mode="off_experiment", namechange_path="",
+                ),
+                treatment_report=_report(
+                    run_commit, st_mask_mode="off_experiment", namechange_path="",
+                ),
+                variant="5d",
+            )
+        self.assertEqual(flags, [])
+
+    def test_st_on_with_different_namechange_inputs_refused(self) -> None:
+        # codex P1 #323 round 2: presence is not parity — two ST-on runs fed
+        # DIFFERENT namechange snapshots exclude different ST sets; the pair
+        # measures an input change, not the registered variant.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(
+                        run_commit, namechange_path="D:/data/nc_20260101.parquet",
+                    ),
+                    treatment_report=_report(
+                        run_commit, namechange_path="D:/data/nc_20260601.parquet",
+                    ),
+                    variant="5d",
+                )
+        self.assertIn("ST-handling MISMATCH", str(cm.exception))
+
+    def test_cosmetic_path_spelling_is_not_a_mismatch(self) -> None:
+        # separator/case-normalized comparison: the SAME file spelled with
+        # different separators (or case, on Windows) must not false-refuse.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_report(
+                    run_commit, namechange_path="D:/data/all_namechanges.parquet",
+                ),
+                treatment_report=_report(
+                    run_commit, namechange_path="D:\\data\\all_namechanges.parquet",
+                ),
+                variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
+            )
+        self.assertEqual(flags, [])
+
+    def test_st_on_same_path_different_content_refused(self) -> None:
+        # codex P1 #323 r3: same path, snapshot refreshed IN PLACE between
+        # the runs — only the recorded content hash can catch it.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                    baseline_fold_reports=_folds("aaaa000011112222"),
+                    treatment_fold_reports=_folds("bbbb000011112222"),
+                )
+        self.assertIn("ST INPUT CONTENT MISMATCH", str(cm.exception))
+
+    def test_st_on_without_fold_hashes_refused(self) -> None:
+        # path-only proof is no proof: an ST-on run whose fold reports carry
+        # no content hash (or are absent) cannot receive a decision-grade
+        # verdict.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError):
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                )
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                    baseline_fold_reports=_folds(sha=None),  # provenance, no hash
+                    treatment_fold_reports=_folds(),
+                )
+        self.assertIn("no st_mask content hash", str(cm.exception))
+
+    def test_mid_run_snapshot_refresh_refused(self) -> None:
+        # two distinct hashes WITHIN one run = the input moved mid-run.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                    baseline_fold_reports=_folds("aaaa000011112222", n=1)
+                    + _folds("bbbb000011112222", n=1),
+                    treatment_fold_reports=_folds("aaaa000011112222"),
+                )
+        self.assertIn("MULTIPLE distinct", str(cm.exception))
+
+    def test_gate_reads_the_shape_build_fold_report_writes(self) -> None:
+        # codex P1 #323 r4: the gate must read the SAME nesting the fold
+        # report writer produces (backtest.provenance.st_mask) — a
+        # hand-guessed fixture shape let a top-level-'provenance' reader
+        # pass every unit test while refusing every REAL ST-on run as
+        # unproven. Pin reader == writer by feeding an actual
+        # build_fold_report product through the hash extractor.
+        from unittest.mock import MagicMock
+
+        from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+        from src.core.preregistration import _st_input_hashes
+        from src.core.signal_analyzer import SignalAnalysisResult
+        from src.core.walk_forward.aggregate import build_fold_report
+
+        backtest_output = CanonicalBacktestOutput(
+            metric_status="official",
+            official_backtest_path="qlib.backtest.backtest",
+            return_series={"return": {}, "bench": {}, "cost": {}},
+            risk_analysis={"excess_return_with_cost": {
+                "annualized_return": 0.11, "max_drawdown": -0.08,
+                "information_ratio": 1.2,
+            }},
+            report={"total_days": 60},
+            provenance={"st_mask": {
+                "namechange_path": "D:/data/all_namechanges.parquet",
+                "namechange_sha256": "feedface00000001",
+            }},
+            positions={},
+        )
+        report = build_fold_report(
+            fold_index=0,
+            train_start="2024-01-01", train_end="2024-06-30",
+            valid_start="2024-07-01", valid_end="2024-09-30",
+            test_start="2024-10-01", test_end="2024-12-31",
+            model_artifact_path="/tmp/model_fold0.pkl",
+            model_result=MagicMock(
+                best_iteration=3, final_valid_loss=0.95, prediction_shape=(1,),
+            ),
+            signal_result=SignalAnalysisResult(
+                ic_summary={1: {"mean_ic": 0.01}}, ic_series={},
+                ic_decay=[0.01], turnover_stats={},
+            ),
+            backtest_output=backtest_output,
+            positions_path=None,
+            ic_1d=0.02, ic_5d=0.04, annualized_return=0.11,
+            max_drawdown=-0.08, information_ratio=1.2,
+        )
+        hashes = _st_input_hashes(
+            [report], mode="required", run_label="writer-shape run",
+        )
+        self.assertEqual(hashes, frozenset({"feedface00000001"}))
+
+    def test_st_off_with_recorded_hash_refused(self) -> None:
+        # config says off_experiment but fold provenance recorded an ST input
+        # hash — the artifacts contradict the config.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            off = {"st_mask_mode": "off_experiment", "namechange_path": ""}
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit, **off),  # type: ignore[arg-type]
+                    treatment_report=_report(run_commit, **off),  # type: ignore[arg-type]
+                    variant="5d",
+                    baseline_fold_reports=_folds(),  # hash present despite off
+                    treatment_fold_reports=[{}],
+                )
+        self.assertIn("contradict", str(cm.exception))
+
+    def test_pre_field_config_reads_as_required(self) -> None:
+        # a report whose config predates st_mask_mode (key absent) is the old
+        # mandatory-mask engine: parity with an explicit "required" run holds.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            flags = gate_comparison(
+                plan,
+                baseline_report=_report(run_commit, st_mask_mode=None),
+                treatment_report=_report(run_commit),
+                variant="5d",
+                baseline_fold_reports=_folds(),
+                treatment_fold_reports=_folds(),
+            )
+        self.assertEqual(flags, [])
+
+    def test_report_without_config_block_refused(self) -> None:
+        # no config block -> ST parity unprovable -> no decision-grade verdict.
+        with TemporaryDirectory() as td:
+            _, plan, run_commit = self._repo_with_plan_then_run_commit(td)
+            with self.assertRaises(PreregistrationError) as cm:
+                gate_comparison(
+                    plan,
+                    baseline_report=_report(run_commit, with_config=False),
+                    treatment_report=_report(run_commit),
+                    variant="5d",
+                )
+        self.assertIn("no 'config' block", str(cm.exception))
 
     def test_run_without_provenance_rejected(self) -> None:
         with TemporaryDirectory() as td:

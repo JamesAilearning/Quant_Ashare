@@ -63,10 +63,22 @@ def _write_run(root: Path, dates: list[str], excess: np.ndarray[Any, Any],
         "fold_index": 0, "test_period": tp, "ic_1d": float(ic),
         "annualized_return": 0.05, "information_ratio": 0.3,
         "daily_series": ds, "schema_version": schema,
+        # Real fold reports carry backtest provenance incl. the ST input
+        # content hash; the prereg gate proves input parity from it
+        # (codex P1 #323 r3) — nested exactly as write_fold_report writes
+        # it (backtest.provenance.st_mask; codex P1 r4).
+        "backtest": {"provenance": {"st_mask": {
+            "namechange_path": "D:/data/all_namechanges.parquet",
+            "namechange_sha256": "cafebabe12345678",
+        }}},
     }))
     (root / "walk_forward_report.json").write_text(json.dumps({
         "num_folds": 1, "generated_at": generated,
         "git_commit": git_commit, "git_dirty": git_dirty,
+        # Real reports embed the full config; the prereg gate derives
+        # ST-handling parity from it (codex P1 #323).
+        "config": {"st_mask_mode": "required",
+                   "namechange_path": "D:/data/all_namechanges.parquet"},
         "folds": [{"test_period": tp, "fold_index": 0, "ic_1d": float(ic),
                    "annualized_return": 0.05, "information_ratio": 0.3}],
         "aggregate_metrics": {"pooled_ir": 0.3},

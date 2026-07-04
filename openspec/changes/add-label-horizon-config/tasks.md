@@ -10,12 +10,13 @@
       (4th consumer found: operator-UI segment-gap guard)
 
 ## PR — feat/label-horizon-config (single PR, dev-batch safe: mock/synthetic only)
+## — **MERGED #318**; items ticked retroactively 2026-07-03 (grep-verified in-tree)
 
-- [ ] `label_horizon_days: int = 1` on `FeatureDatasetConfig` + `PipelineConfig` +
+- [x] `label_horizon_days: int = 1` on `FeatureDatasetConfig` + `PipelineConfig` +
       `WalkForwardConfig`; validation rejects non-positive/non-integer fail-loud.
-- [ ] `_alpha158_factory` passes `label=[f"Ref($close, -{H+1})/Ref($close, -1) - 1"]`
+- [x] `_alpha158_factory` passes `label=[f"Ref($close, -{H+1})/Ref($close, -1) - 1"]`
       (H=1 char-identical to today's expression; unit test pins both H=1 and H=5).
-- [ ] Cache separation via the EXTENSIBLE `compute_cache_key` payload (the file's
+- [x] Cache separation via the EXTENSIBLE `compute_cache_key` payload (the file's
       own "future fields MUST be included here" contract — mechanism refined
       during implementation grounding: the callable identity is zero-arg and
       cannot see the config, whereas the key payload is exactly the extensible
@@ -24,38 +25,57 @@
       (existing caches stay valid), H≠1 structurally distinct. Identity string
       (`alpha158_default`) untouched, single responsibility. Test pins
       separation AND default key stability.
-- [ ] Embargo: ONE shared horizon-driven helper consumed by (a) the builder check,
+- [x] Embargo: ONE shared horizon-driven helper consumed by (a) the builder check,
       (b) the walk-forward fold gap, (c) the operator-UI segment-gap guard
       (`training_guards.py`; horizon from parsed config when present, else 1);
       `LABEL_LOOKAHEAD_DAYS` stays as the H=1 value; refusal message names the
       horizon and required gap; tests for H=1 (unchanged) and H=5 (refuses a
       2-day gap) on all three consumers.
-- [ ] Resume fingerprint picks up the field (auto via config asdict — verify and pin
+- [x] Resume fingerprint picks up the field (auto via config asdict — verify and pin
       with a test: H=1 vs H=5 fingerprints differ). FAIL-LOUD messaging: FoldManifest
       additionally records `label_horizon_days` (additive; legacy=None); a mismatch
       re-run names the changed horizon (both values) or the pre-upgrade manifest —
       test pins the message.
-- [ ] SignalAnalyzer IC-period label-independence pinned by test; horizon-conditional
+- [x] SignalAnalyzer IC-period label-independence pinned by test; horizon-conditional
       wording fixed (analyzer comment + `_results_render` IC help text made
       horizon-neutral).
-- [ ] UI layout suggester `_six_increasing_indices`: H=1 assumption commented
+- [x] UI layout suggester `_six_increasing_indices`: H=1 assumption commented
       (suggestion-only; the validator is the enforcement point).
-- [ ] Default-path byte-identity regression: default-config label expression, cache
+- [x] Default-path byte-identity regression: default-config label expression, cache
       identity, and gap all equal pre-change values; REGEN-2 anchor green in CI.
 
 ## After merge (operational, NOT this change)
 
-- [ ] **H=5 fold-structure preflight (operator warning, recorded here per review):**
-      the embargo widens 2→6 trading days, shifting fold windows — before the GPU
-      runs, confirm the walk-forward fold structure stays intact (same fold count
-      as intended, no fold squeezed out, no boundary-fold overflow of the fold-22
-      class) on BOTH the H=1 baseline and the H=5 treatment configs.
-- [ ] 阶段6 prereg plan file (through the #316 gate; operator reviews + commits)
-- [ ] Experiment presets (2d + 5d, ST-off both sides per the runbook)
-- [ ] GPU window: baseline + treatment runs (clean checkout, single invocation each)
-- [ ] `compare_walk_forward_runs --prereg-plan ... --variant 5d`
-      (dependency chain satisfied: the ruler #310–#316 is already merged; this
-      enabler is the last prerequisite)
+- [x] **H=5 fold-structure preflight (operator warning, recorded here per review):**
+      DONE — `scripts/preflight_label_horizon.py`; evidence committed at
+      `docs/prereg/label_horizon_preflight.md`: 23 folds BOTH sides, per-fold
+      test windows identical, smoke preset = exactly 1 fold, paired
+      shared-OOS total = 1397 trading days. (Prerequisite discovered en
+      route: audit E1/PR-F had made ST-off walk-forwards impossible — added
+      the explicit `st_mask_mode: off_experiment` opt-out: validated against
+      contradictory namechange_path, report-stamped, tests pin both paths.)
+- [x] 阶段6 prereg plan file — DRAFTED + committed
+      (`docs/prereg/label_horizon.yaml`: variant set {5d}; 10d escalation/
+      termination rules pre-written; sanity band baseline-vs-anchor with
+      abort-before-run-2; fold-0 + 2020H2 sensitivity slices; ST-on
+      re-verify = option (a) 4-run winning branch; decisions record).
+      Operator review of the band numbers = registration sign-off; any later
+      edit re-registers (by design of the ancestry gate).
+- [x] Experiment presets (H=1 + H=5, ST-off both sides per the runbook):
+      `config/presets/stage6_label_h{1,5}.yaml` + `stage6_smoke_h5_1fold.yaml`
+      (extends-based — the pair's file diff IS the treatment variable).
+- [x] **Step 3.5 gate rehearsal (added per operator review):**
+      `scripts/rehearse_label_horizon_gate.py` — REAL compare-CLI subprocess
+      over synthetic run dirs: accept (registered 5d) / flag (unregistered
+      10d) / refuse (dirty provenance); evidence at
+      `docs/prereg/label_horizon_rehearsal.md`.
+- [ ] 1-fold smoke ignition (operator, timing their call):
+      `python scripts/run_walk_forward.py config/presets/stage6_smoke_h5_1fold.yaml`
+- [ ] GPU window: baseline + treatment runs (clean checkout, ONE uninterrupted
+      invocation each; sanity-band check between run 1 and run 2 per the plan)
+- [ ] `compare_walk_forward_runs --prereg-plan docs/prereg/label_horizon.yaml
+      --variant 5d` (dependency chain satisfied: the ruler #310–#316 is merged;
+      this enabler was the last prerequisite)
 
 ## Must-not-touch
 
