@@ -160,15 +160,17 @@ def _folds(
     sha: str | None = "cafebabe12345678", n: int = 2,
 ) -> list[dict[str, object]]:
     """Per-fold reports with st_mask provenance (the content-hash evidence
-    the gate requires for ST-on runs; codex P1 #323 r3) — in the REAL
-    ``write_fold_report`` shape (``backtest.provenance.st_mask``; codex P1
-    r4 caught a flat-shape draft). The writer-reader consistency test below
-    pins this shape against ``build_fold_report`` itself."""
+    the gate requires for ST-on runs; codex P1 #323 r3) — in the REAL run
+    shape ``backtest.provenance.config.st_mask`` (BacktestRunner flattens the
+    strategy dict into provenance's ``config`` sub-mapping; verified against
+    an actual smoke-run fold report after two wrong guesses). The consistency
+    test below drives the full real writer chain to keep this honest."""
     st: dict[str, object] = {"namechange_path": "D:/data/all_namechanges.parquet"}
     if sha is not None:
         st["namechange_sha256"] = sha
     return [
-        {"backtest": {"provenance": {"st_mask": dict(st)}}} for _ in range(n)
+        {"backtest": {"provenance": {"config": {"st_mask": dict(st)}}}}
+        for _ in range(n)
     ]
 
 
@@ -392,20 +394,59 @@ class GateTests(unittest.TestCase):
                 )
         self.assertIn("MULTIPLE distinct", str(cm.exception))
 
-    def test_gate_reads_the_shape_build_fold_report_writes(self) -> None:
-        # codex P1 #323 r4: the gate must read the SAME nesting the fold
-        # report writer produces (backtest.provenance.st_mask) — a
-        # hand-guessed fixture shape let a top-level-'provenance' reader
-        # pass every unit test while refusing every REAL ST-on run as
-        # unproven. Pin reader == writer by feeding an actual
-        # build_fold_report product through the hash extractor.
+    def test_gate_reads_the_shape_the_real_writer_chain_writes(self) -> None:
+        # The gate must read the SAME nesting a real run produces. This went
+        # wrong TWICE (codex P1 #323 r4: top-level 'provenance'; then the fix
+        # guessed provenance.st_mask while the real path is
+        # provenance.config.st_mask — caught by the 1-fold smoke run) because
+        # earlier versions hand-built the provenance mapping. This test now
+        # drives the FULL real writer chain: BacktestRunner._build_provenance
+        # -> CanonicalBacktestOutput -> build_fold_report -> the gate's hash
+        # extractor. No hand-crafted provenance anywhere.
         from unittest.mock import MagicMock
 
-        from src.core.canonical_backtest_contract import CanonicalBacktestOutput
+        from src.core.backtest_runner import BacktestRunner
+        from src.core.canonical_backtest_contract import (
+            ADJUST_MODE_PRE,
+            CN_STAMP_TAX_SCHEDULE_DEFAULT,
+            EXECUTION_PRICE_CLOSE,
+            CanonicalAccountConfig,
+            CanonicalBacktestInput,
+            CanonicalBacktestOutput,
+            CanonicalExchangeConfig,
+            CanonicalExchangeCostModel,
+        )
         from src.core.preregistration import _st_input_hashes
         from src.core.signal_analyzer import SignalAnalysisResult
         from src.core.walk_forward.aggregate import build_fold_report
 
+        request = CanonicalBacktestInput(
+            predictions_ref="model_v1",
+            evaluation_start="2024-10-01",
+            evaluation_end="2024-12-31",
+            account_config=CanonicalAccountConfig(init_cash=100_000_000),
+            exchange_config=CanonicalExchangeConfig(
+                freq="day",
+                execution_price_kind=EXECUTION_PRICE_CLOSE,
+                cost_model=CanonicalExchangeCostModel(
+                    commission_rate=0.0005,
+                    stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
+                    slippage_bps=5.0,
+                    min_cost=5.0,
+                ),
+            ),
+            adjust_mode=ADJUST_MODE_PRE,
+            signal_to_execution_lag=1,
+            benchmark_code="SH000300",
+        )
+        provenance = BacktestRunner._build_provenance(
+            request, 50, 5,
+            {
+                "namechange_path": "D:/data/all_namechanges.parquet",
+                "namechange_sha256": "feedface00000001",
+                "n_st_masked": 3,
+            },
+        )
         backtest_output = CanonicalBacktestOutput(
             metric_status="official",
             official_backtest_path="qlib.backtest.backtest",
@@ -415,10 +456,7 @@ class GateTests(unittest.TestCase):
                 "information_ratio": 1.2,
             }},
             report={"total_days": 60},
-            provenance={"st_mask": {
-                "namechange_path": "D:/data/all_namechanges.parquet",
-                "namechange_sha256": "feedface00000001",
-            }},
+            provenance=provenance,
             positions={},
         )
         report = build_fold_report(
