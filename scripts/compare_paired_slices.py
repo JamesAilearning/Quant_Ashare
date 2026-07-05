@@ -133,6 +133,29 @@ def main(argv: list[str] | None = None) -> int:
                     "would just duplicate FULL under a slice name. Fix the "
                     "range (stale window? non-ISO/zero-padded date?)."
                 )
+        # Slice-level overlap recheck (codex P2 #326 r4): the FULL-run floor
+        # can pass while a slice's remaining universe overlaps on a biased
+        # subset (each arm's non-shared dates sitting outside the excluded
+        # window). Same formula as the ruler, applied to the sliced arms.
+        if rng is None:
+            kept_base, kept_treat = len(base.excess), len(treat.excess)
+        else:
+            lo_d, hi_d = rng
+            kept_base = sum(
+                1 for d in base.excess if not (lo_d <= d <= hi_d))
+            kept_treat = sum(
+                1 for d in treat.excess if not (lo_d <= d <= hi_d))
+        shorter_kept = min(kept_base, kept_treat)
+        slice_overlap = (int(mask.sum()) / shorter_kept) if shorter_kept else 0.0
+        if slice_overlap < DEFAULT_OVERLAP_FLOOR:
+            raise SystemExit(
+                f"FAIL (slice {name!r}): after the exclusion the paired days "
+                f"cover only {slice_overlap:.1%} of the shorter arm's "
+                f"remaining series ({int(mask.sum())} / {shorter_kept}) — "
+                f"below the ruler's floor {DEFAULT_OVERLAP_FLOOR:.0%}; the "
+                "slice would compare a biased subset. Refusing to emit "
+                "evidence."
+            )
         if int(mask.sum()) < DEFAULT_MIN_PAIRED_DAYS:
             # The ruler's min-paired-days guard, mirrored: a handful of days
             # gives a ~zero-width CI — fail loud (mistyped/over-broad slice),
