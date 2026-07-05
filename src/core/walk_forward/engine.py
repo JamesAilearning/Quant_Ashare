@@ -553,29 +553,34 @@ class WalkForwardEngine:
                 continue
 
             # Tail execution headroom (the fold-22 class, phase C1 §6): the
-            # backtest fills at T+signal_to_execution_lag, so the fold's
-            # LAST tradable day needs `lag` trading days after it on the
-            # calendar. A fold ending at (or within lag of) the calendar's
-            # last day used to crash BacktestRunner with an index-out-of-
-            # bounds at the final bar — and per-fold error isolation then
-            # swallowed the crash into a silent NaN placeholder fold
-            # (22/23 "valid"). Such a fold is unrunnable BY CONSTRUCTION:
-            # skip it with a LOUD, named cause; it becomes runnable when the
-            # bundle rolls forward. Later folds only end later (less
-            # headroom still), so stop enumerating entirely.
+            # fold's LAST trading day needs exactly ONE trading bar after it
+            # on the calendar — qlib's built-in one-day shift consumes the
+            # stamp on the NEXT bar, and that requirement is INDEPENDENT of
+            # signal_to_execution_lag: the lag's external component restamps
+            # WITHIN the fold's own prediction index (BacktestRunner.
+            # _apply_lag drops the boundary rows), so the latest stamp never
+            # exceeds the fold's last trading day (codex P2 on #327 —
+            # requiring `lag` bars would wrongly drop runnable folds for
+            # lag>1 configs). A fold ending ON the calendar's last day used
+            # to crash BacktestRunner with an index-out-of-bounds at the
+            # final bar — and per-fold error isolation then swallowed the
+            # crash into a silent NaN placeholder fold (22/23 "valid").
+            # Such a fold is unrunnable BY CONSTRUCTION: skip it with a
+            # LOUD, named cause; it becomes runnable when the bundle rolls
+            # forward. Later folds only end later, so stop enumerating.
             idx_last = bisect.bisect_right(cal, test_e) - 1
-            lag = config.signal_to_execution_lag
-            if idx_last >= 0 and idx_last + lag >= len(cal):
+            if idx_last >= 0 and idx_last + 1 >= len(cal):
                 _logger.warning(
                     "Fold with test %s..%s SKIPPED (tail execution "
-                    "headroom): its last trading day %s needs %d execution "
-                    "bar(s) after it but the calendar ends %s — the "
-                    "backtest would overflow at the final bar (the fold-22 "
-                    "class, phase C1 §6). The fold becomes runnable once "
-                    "the bundle extends past it; refusing to emit a fold "
-                    "that could only produce a NaN placeholder.",
+                    "headroom): its last trading day %s is the calendar's "
+                    "final bar (%s) — the T+1 execution bar qlib's built-in "
+                    "shift needs does not exist, and the backtest would "
+                    "overflow at the final bar (the fold-22 class, phase C1 "
+                    "§6). The fold becomes runnable once the bundle extends "
+                    "past it; refusing to emit a fold that could only "
+                    "produce a NaN placeholder.",
                     test_s.isoformat(), test_e.isoformat(),
-                    cal[idx_last].isoformat(), lag, cal[-1].isoformat(),
+                    cal[idx_last].isoformat(), cal[-1].isoformat(),
                 )
                 break
 

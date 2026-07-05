@@ -33,6 +33,10 @@ def _business_days(start: date, end: date) -> list[date]:
 
 
 def _cfg(**over: object) -> SimpleNamespace:
+    # signal_to_execution_lag is carried so the lag-independence test can
+    # construct lag>1 configs — the generator deliberately does NOT read it
+    # (the headroom requirement is one bar regardless of lag; see the
+    # lag-independence test below).
     base: dict[str, object] = dict(
         overall_start="2018-01-01", overall_end="2025-12-31",
         train_months=24, valid_months=3, test_months=3, step_months=3,
@@ -71,19 +75,24 @@ class FoldTailExecutionHeadroomTests(unittest.TestCase):
         windows = WalkForwardEngine._generate_windows(_cfg(), calendar=cal)
         self.assertEqual(len(windows), 23)
 
-    def test_headroom_scales_with_execution_lag(self) -> None:
-        # lag=3 needs three bars after the last tradable day: a calendar
-        # with only two extra bars drops the tail fold; three keeps it.
-        cal_two_extra = _business_days(date(2017, 1, 2), date(2026, 1, 2))
+    def test_headroom_is_lag_independent(self) -> None:
+        # codex P2 #327: the lag's EXTERNAL component restamps WITHIN the
+        # fold's own prediction index (BacktestRunner._apply_lag drops the
+        # boundary rows), so the latest stamp never exceeds the fold's last
+        # trading day — only qlib's built-in one-day shift needs a bar past
+        # the tail. A lag=3 config with exactly ONE extra bar keeps the
+        # fold; requiring `lag` bars would wrongly drop a runnable fold.
+        cal_one_extra = _business_days(date(2017, 1, 2), date(2026, 1, 1))
         windows = WalkForwardEngine._generate_windows(
-            _cfg(signal_to_execution_lag=3), calendar=cal_two_extra,
-        )
-        self.assertEqual(len(windows), 22)
-        cal_three_extra = _business_days(date(2017, 1, 2), date(2026, 1, 5))
-        windows = WalkForwardEngine._generate_windows(
-            _cfg(signal_to_execution_lag=3), calendar=cal_three_extra,
+            _cfg(signal_to_execution_lag=3), calendar=cal_one_extra,
         )
         self.assertEqual(len(windows), 23)
+        # ...and with NO extra bar the tail fold drops regardless of lag.
+        cal_flush = _business_days(date(2017, 1, 2), date(2025, 12, 31))
+        windows = WalkForwardEngine._generate_windows(
+            _cfg(signal_to_execution_lag=3), calendar=cal_flush,
+        )
+        self.assertEqual(len(windows), 22)
 
     def test_earlier_folds_are_byte_identical_when_tail_drops(self) -> None:
         # Dropping the unrunnable tail must not perturb any earlier window.

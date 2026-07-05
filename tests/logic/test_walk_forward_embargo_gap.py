@@ -55,9 +55,6 @@ def _cfg(**over: object) -> SimpleNamespace:
         # H=1 keeps the gap sourced from LABEL_LOOKAHEAD_DAYS (this suite
         # patches the constant and relies on the call-time read).
         label_horizon_days=1,
-        # Read by the tail execution-headroom guard (fold-22 class); _CAL
-        # extends a year past overall_end, so headroom never binds here.
-        signal_to_execution_lag=1,
     )
     base.update(over)
     return SimpleNamespace(**base)

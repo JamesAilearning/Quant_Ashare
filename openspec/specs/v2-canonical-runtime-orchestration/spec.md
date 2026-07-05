@@ -306,14 +306,18 @@ back onto the trading calendar.
 
 #### Scenario: a fold without tail execution headroom is not emitted
 
-- **WHEN** a fold's last tradable test day has fewer than
-  `signal_to_execution_lag` trading days after it on the calendar (the
-  backtest's T+lag fill bar would not exist — historically the "fold 22"
-  crash, swallowed by per-fold error isolation into a silent NaN
-  placeholder fold)
+- **WHEN** a fold's last trading day is the calendar's final bar (the T+1
+  execution bar qlib's built-in shift consumes would not exist —
+  historically the "fold 22" crash, swallowed by per-fold error isolation
+  into a silent NaN placeholder fold)
 - **THEN** the fold generator does not emit that fold (or any later one),
-  logging a WARNING that names the skipped test window, the lag, and the
-  calendar end — never a fold that can only produce a NaN placeholder
+  logging a WARNING that names the skipped test window and the calendar
+  end — never a fold that can only produce a NaN placeholder
+- **AND** the requirement is one bar INDEPENDENT of
+  `signal_to_execution_lag` (the lag's external component restamps within
+  the fold's own prediction index, so the latest stamp never exceeds the
+  fold's last trading day — requiring `lag` bars would wrongly drop
+  runnable folds)
 - **AND** with ample calendar headroom past `overall_end`, the emitted
   fold set is unchanged (earlier folds byte-identical when a tail fold is
   dropped)
