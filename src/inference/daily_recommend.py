@@ -508,7 +508,7 @@ def _validate_st_snapshot(
     return snapshot_date, df
 
 
-def _load_model(model_path: Path) -> Any:
+def _load_model(model_path: Path) -> tuple[Any, str]:
     """Load the pickled qlib model, failing closed with a domain error.
 
     A missing path, a corrupt / truncated pickle, or an unpickle that
@@ -516,13 +516,19 @@ def _load_model(model_path: Path) -> Any:
     rather than letting a raw ``UnpicklingError`` / ``EOFError`` /
     ``ModuleNotFoundError`` escape. The loaded object must expose
     ``.predict`` (qlib model contract).
+
+    Returns ``(model, pkl_sha256)``. The hash is computed from the SAME
+    byte buffer that is unpickled — a single ``read_bytes()`` feeds both —
+    so an atomic model swap (promotion replaces the file) between two
+    separate reads can never make the artifact's provenance hash disagree
+    with the pickle that actually produced the scores (codex P2 on #328).
     """
     if not model_path.exists():
         raise DailyRecommendationError(f"model artifact not found: {model_path}")
     import pickle
     try:
-        with model_path.open("rb") as f:
-            model = pickle.load(f)
+        raw = model_path.read_bytes()
+        model = pickle.loads(raw)
     except (pickle.UnpicklingError, EOFError, OSError, ValueError,
             AttributeError, ImportError) as exc:
         raise DailyRecommendationError(
@@ -534,7 +540,7 @@ def _load_model(model_path: Path) -> Any:
             f"loaded object {type(model).__name__} has no .predict; "
             "not a qlib model."
         )
-    return model
+    return model, hashlib.sha256(raw).hexdigest()
 
 
 def _assemble_run_meta(
@@ -621,14 +627,13 @@ def recommend(
         as_of_date, entry_date, config.instruments, config.topk,
     )
 
-    # 1. Load the trained model. Hash the exact pickle bytes that produced this
-    # list (artifact contract v2) — _load_model has already fail-louded on a
-    # missing file, so the read here cannot race a nonexistent path.
-    model_path = Path(config.model_path)
-    model = _load_model(model_path)
+    # 1. Load the trained model. _load_model hashes the SAME byte buffer it
+    # unpickles (artifact contract v2), so provenance cannot disagree with the
+    # scores even if the model file is atomically swapped mid-run.
+    model, model_pkl_sha256 = _load_model(Path(config.model_path))
     run_meta = _assemble_run_meta(
         config,
-        model_pkl_sha256=hashlib.sha256(model_path.read_bytes()).hexdigest(),
+        model_pkl_sha256=model_pkl_sha256,
         bundle_tag=(
             integrity.identity.tag
             if integrity is not None and integrity.identity is not None

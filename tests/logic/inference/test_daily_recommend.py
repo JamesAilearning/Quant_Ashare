@@ -717,6 +717,30 @@ class LoadModelTests(unittest.TestCase):
             with self.assertRaisesRegex(DailyRecommendationError, "no .predict"):
                 _load_model(p)
 
+    def test_returned_sha_matches_the_unpickled_bytes(self) -> None:
+        # Artifact contract v2: the provenance hash and the unpickle MUST come
+        # from the same byte buffer (single read). A separate read could race
+        # an atomic model swap and stamp the NEW file's hash on scores from
+        # the OLD pickle (codex P2 on #328).
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "model.pkl"
+            with p.open("wb") as f:
+                pickle.dump(_PicklableFakeModel(), f)
+            expected_sha = hashlib.sha256(p.read_bytes()).hexdigest()
+            model, sha = _load_model(p)
+        self.assertTrue(hasattr(model, "predict"))
+        self.assertEqual(sha, expected_sha)
+
+
+class _PicklableFakeModel:
+    """Module-scope (hence picklable) stand-in satisfying the ``.predict``
+    contract, for _load_model round-trip tests."""
+
+    def predict(self, *args: object, **kwargs: object) -> None:  # pragma: no cover
+        raise NotImplementedError
+
 
 def _dummy_run_meta(**overrides: object) -> dict[str, object]:
     """A representative artifact-v2 meta block for constructor tests."""
