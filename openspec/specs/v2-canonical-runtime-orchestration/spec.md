@@ -257,13 +257,18 @@ any supported `adjust_mode`.
 ### Requirement: Walk-forward fold generation SHALL embargo the Alpha158 label lookahead
 
 `WalkForwardEngine` SHALL generate fold boundaries such that, for every
-fold, there are at least `LABEL_LOOKAHEAD_DAYS` trading days strictly
-between `train_end` and `valid_start`, and at least `LABEL_LOOKAHEAD_DAYS`
-trading days strictly between `valid_end` and `test_start`. The gap SHALL
-be created by an embargo gap (the gap trading days belong to no segment),
-NOT by weakening, lowering, or bypassing the embargo guard
-(`src/data/_segment_embargo.py`). The gap size SHALL be read from
-`LABEL_LOOKAHEAD_DAYS` so the generator and the guard cannot drift.
+fold, there are at least the label-lookahead embargo's trading days
+strictly between `train_end` and `valid_start`, and the same strictly
+between `valid_end` and `test_start`. The gap size SHALL come from the ONE
+shared horizon-driven derivation
+(`label_lookahead_days(label_horizon_days)` in
+`src/data/_segment_embargo.py`; `v2-label-horizon-config` governs the
+horizon semantics): the default `label_horizon_days=1` SHALL yield exactly
+the historical `LABEL_LOOKAHEAD_DAYS` value — default runs unchanged — and
+`H>1` widens the gap to `H+1` trading days. The gap SHALL be created by an
+embargo gap (the gap trading days belong to no segment), NOT by weakening,
+lowering, or bypassing the embargo guard; generator and guard SHALL read
+the same derivation so they cannot drift.
 
 The month-aligned start anchors (`train_start`, `valid_start`,
 `test_start`) and `test_end` SHALL be preserved; the embargo gap SHALL be
@@ -276,7 +281,8 @@ back onto the trading calendar.
   month-aligned boundaries would be adjacent
 - **THEN** every generated fold passes `validate_segment_embargo`
   (both `train_end→valid_start` and `valid_end→test_start` have at least
-  `LABEL_LOOKAHEAD_DAYS` trading days between them)
+  the horizon-driven gap's trading days between them; at the default
+  horizon that gap equals `LABEL_LOOKAHEAD_DAYS`)
 - **AND** `FeatureDatasetBuilder.build` does not reject any fold for an
   embargo violation
 
@@ -291,10 +297,12 @@ back onto the trading calendar.
 #### Scenario: the embargo guard is not weakened
 
 - **WHEN** this change is applied
-- **THEN** `src/data/_segment_embargo.py`, `LABEL_LOOKAHEAD_DAYS`, and
-  `FeatureDatasetBuilder`'s embargo validation are unchanged
-- **AND** the fold generator obtains its gap size from
-  `LABEL_LOOKAHEAD_DAYS` rather than a hardcoded constant
+- **THEN** `src/data/_segment_embargo.py` keeps `LABEL_LOOKAHEAD_DAYS` as
+  the H=1 value and `FeatureDatasetBuilder`'s embargo validation is not
+  weakened
+- **AND** the fold generator obtains its gap size from the shared
+  horizon-driven derivation (`label_lookahead_days`), never a hardcoded
+  constant
 
 #### Scenario: quarter-grid fold anchors are preserved
 
