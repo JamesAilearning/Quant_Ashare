@@ -15,6 +15,7 @@ Two tiers (per AGENTS.md "E2E + synthetic unit twin"):
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import tempfile
@@ -33,6 +34,7 @@ from src.inference.daily_recommend import (
     DailyRecommendationError,
     DailyRecommendationResult,
     RecommendationConfig,
+    _assemble_run_meta,
     _assert_bundle_fetch_complete,
     _assert_bundle_fresh,
     _assert_st_snapshot_consistent_with_bundle,
@@ -716,6 +718,23 @@ class LoadModelTests(unittest.TestCase):
                 _load_model(p)
 
 
+def _dummy_run_meta(**overrides: object) -> dict[str, object]:
+    """A representative artifact-v2 meta block for constructor tests."""
+    meta: dict[str, object] = {
+        "generated_at": "2025-06-30T18:00:00+08:00",
+        "model_path": "D:/models/m.pkl",
+        "model_pkl_sha256": "ab" * 32,
+        "fit_start_for_inference": "2018-01-02",
+        "fit_end_for_inference": "2024-12-18",
+        "provider_uri": "D:/qlib_data/my_cn_data_pit",
+        "bundle_tag": "2025-06-30@sha256:deadbeef",
+        "instruments": "csi300",
+        "topk": 50,
+    }
+    meta.update(overrides)
+    return meta
+
+
 class WriteOutputsTests(unittest.TestCase):
     def test_empty_buy_list_csv_still_has_header(self) -> None:
         # Empty picks (e.g. --topk 0 or all masked) must still write a CSV
@@ -724,11 +743,91 @@ class WriteOutputsTests(unittest.TestCase):
             as_of_date="2025-06-30", entry_date="2025-07-01",
             picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
             scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+            run_meta=_dummy_run_meta(),
         )
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_outputs(result, tmp)
             header = Path(paths["csv"]).read_text(encoding="utf-8-sig").splitlines()[0]
             self.assertEqual(header.split(","), _BUY_LIST_COLUMNS)
+
+    def test_json_carries_schema_version_and_meta_block(self) -> None:
+        # Artifact contract v2: the JSON must be self-describing — version
+        # marker + verbatim meta block — so readers can bind "this file" to
+        # "that model" instead of silently mismatching (A1 of
+        # add-daily-decision-page).
+        meta = _dummy_run_meta()
+        result = DailyRecommendationResult(
+            as_of_date="2025-06-30", entry_date="2025-07-01",
+            picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+            scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+            run_meta=meta,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(result, tmp)
+            payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["artifact_schema_version"], 2)
+        self.assertEqual(payload["meta"], meta)
+
+    def test_null_bundle_tag_survives_serialization(self) -> None:
+        # An unstamped bundle records bundle_tag null — never a fabricated
+        # placeholder, and serialization must not drop or coerce it.
+        result = DailyRecommendationResult(
+            as_of_date="2025-06-30", entry_date="2025-07-01",
+            picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+            scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+            run_meta=_dummy_run_meta(bundle_tag=None),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(result, tmp)
+            payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+        self.assertIn("bundle_tag", payload["meta"])
+        self.assertIsNone(payload["meta"]["bundle_tag"])
+
+
+class AssembleRunMetaTests(unittest.TestCase):
+    """Unit twins for the pure meta assembler (no qlib, no bundle)."""
+
+    def _config(self) -> RecommendationConfig:
+        return RecommendationConfig(
+            model_path="D:/models/m.pkl",
+            provider_uri="D:/qlib_data/my_cn_data_pit",
+            delisted_registry_path="r",
+            fit_start="2018-01-02", fit_end="2024-12-18",
+            instruments="csi300", topk=37,
+        )
+
+    def test_fields_mirror_resolved_config(self) -> None:
+        meta = _assemble_run_meta(
+            self._config(), model_pkl_sha256="ab" * 32,
+            bundle_tag="2025-06-30@sha256:feed",
+            generated_at="2025-06-30T18:00:00+08:00",
+        )
+        self.assertEqual(meta["fit_start_for_inference"], "2018-01-02")
+        self.assertEqual(meta["fit_end_for_inference"], "2024-12-18")
+        self.assertEqual(meta["model_path"], "D:/models/m.pkl")
+        self.assertEqual(meta["model_pkl_sha256"], "ab" * 32)
+        self.assertEqual(meta["bundle_tag"], "2025-06-30@sha256:feed")
+        self.assertEqual(meta["instruments"], "csi300")
+        self.assertEqual(meta["topk"], 37)
+        # Injectable timestamp is used verbatim (value-injection pattern).
+        self.assertEqual(meta["generated_at"], "2025-06-30T18:00:00+08:00")
+
+    def test_default_generated_at_is_cn_offset_iso(self) -> None:
+        meta = _assemble_run_meta(
+            self._config(), model_pkl_sha256="ab" * 32, bundle_tag=None,
+        )
+        # Fixed +08:00 (repo convention; Asia/Shanghai has no DST) and
+        # parseable ISO8601 — never a naive local timestamp.
+        generated_at = str(meta["generated_at"])
+        self.assertTrue(generated_at.endswith("+08:00"), generated_at)
+        parsed = datetime.fromisoformat(generated_at)
+        self.assertIsNotNone(parsed.tzinfo)
+
+    def test_missing_bundle_identity_is_null_not_fabricated(self) -> None:
+        meta = _assemble_run_meta(
+            self._config(), model_pkl_sha256="ab" * 32, bundle_tag=None,
+        )
+        self.assertIsNone(meta["bundle_tag"])
 
 
 # ===========================================================================
