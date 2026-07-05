@@ -7,6 +7,10 @@ did not fire, and the label line CLOSES.**
 
 Registration: `docs/prereg/label_horizon.yaml` @ `fa85ddcb4210` (band v2).
 Verbatim gated verdict: `docs/prereg/label_horizon_verdict_20260704.txt`.
+Paired GROSS delta + sensitivity slices (adjudication-critical numbers the
+CLI does not emit directly): `docs/prereg/label_horizon_slices_20260704.txt`,
+reproducible via `scripts/compare_paired_slices.py` (same ruler machinery +
+seed; its FULL net row reproduces the gated verdict bit-for-bit).
 Runs (operator box, Python 3.11 / numpy 1.26.4, clean checkout `fa85ddc`,
 one uninterrupted invocation each; ST-off both sides per the runbook):
 `output/stage6/h1_st_off_baseline` and `output/stage6/h5_st_off_treatment`,
@@ -33,7 +37,7 @@ one uninterrupted invocation each; ST-off both sides per the runbook):
 |---|---|
 | **VERDICT (net)** | **INDISTINGUISHABLE** |
 | paired net annualized diff (t−b) | **−0.71pp**, 95% CI [−5.80, +4.44]pp, SE 2.63pp |
-| paired gross annualized diff | −0.70pp, 95% CI [−5.80, +4.44]pp |
+| paired gross annualized diff | −0.70pp, 95% CI [−5.80, +4.44]pp — from the committed slices evidence (`label_horizon_slices_20260704.txt`; the CLI emits gross only as IR diagnostics) |
 | pooled net IR | 0.283 → 0.215 |
 | pooled gross IR | 0.948 → 0.877 |
 | mean ic_1d | +0.0182 → +0.0177 (IC verdict: indistinguishable) |
@@ -43,7 +47,8 @@ one uninterrupted invocation each; ST-off both sides per the runbook):
 | worst drawdown | −13.50% → −15.85% |
 | direction vs plan | **treatment<baseline — OPPOSITE the registered expectation** |
 
-**Pre-specified sensitivity slices (verdict STATE stable on both):**
+**Pre-specified sensitivity slices (verdict STATE stable on both; evidence:
+`label_horizon_slices_20260704.txt`, net AND gross per slice):**
 
 | slice | n days | paired net diff [95% CI] | state |
 |---|---|---|---|
