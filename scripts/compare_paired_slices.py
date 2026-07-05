@@ -25,6 +25,7 @@ changed since the verdict and BOTH artifacts must be regenerated.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -173,6 +174,18 @@ def main(argv: list[str] | None = None) -> int:
         # gates 10d escalation.
         pn, _, lon, hin = paired_block_bootstrap(dn, estimate_block_length(dn))
         pg, _, log_, hig = paired_block_bootstrap(dg, estimate_block_length(dg))
+        # The ruler's non-finite refusal, mirrored (codex P2 #326 r5): a
+        # malformed report can smuggle NaN through float("NaN") past the
+        # JSON parse_constant hook; NaN comparisons are all False, so
+        # state() would fall through to a fabricated directional row.
+        if not all(map(math.isfinite, (pn, lon, hin, pg, log_, hig))):
+            raise SystemExit(
+                f"FAIL (slice {name!r}): non-finite bootstrap result "
+                f"(net={pn!r} ci=({lon!r},{hin!r}); gross={pg!r} "
+                f"ci=({log_!r},{hig!r})) — a fold report carries non-finite "
+                "daily values. Fix the run artifacts; refusing to emit "
+                "evidence."
+            )
         print(
             f"| {name} | {int(mask.sum())} "
             f"| {pn:+.4f} [{lon:+.4f}, {hin:+.4f}] "
