@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     from src.core.comparison import (
         _MIN_CI_WIDTH,
         DEFAULT_MIN_PAIRED_DAYS,
+        DEFAULT_OVERLAP_FLOOR,
         estimate_block_length,
         load_run_daily_series,
         paired_block_bootstrap,
@@ -62,6 +63,19 @@ def main(argv: list[str] | None = None) -> int:
     dates = sorted(set(base.excess) & set(treat.excess))
     if not dates:
         raise SystemExit("FAIL: no shared days between the two runs.")
+    # The ruler's overlap refusal, mirrored (codex P2 #326 r2): runs that
+    # only overlap on a small biased subset must not receive ANY evidence
+    # rows — same formula as compare_runs (intersection / shorter series).
+    shorter = min(len(base.excess), len(treat.excess))
+    overlap = (len(dates) / shorter) if shorter else 0.0
+    if overlap < DEFAULT_OVERLAP_FLOOR:
+        raise SystemExit(
+            f"FAIL: date overlap {overlap:.1%} (intersection {len(dates)} / "
+            f"shorter {shorter}) is below the ruler's floor "
+            f"{DEFAULT_OVERLAP_FLOOR:.0%} — a paired comparison would be on "
+            "a biased subset; the official ruler would refuse these runs. "
+            "Refusing to emit evidence."
+        )
     dn_all = np.array([treat.excess[d] - base.excess[d] for d in dates])
     dg_all = np.array([treat.gross[d] - base.gross[d] for d in dates])
 
@@ -118,9 +132,13 @@ def main(argv: list[str] | None = None) -> int:
                 "exclusion range is mistyped or removes nearly everything."
             )
         dn, dg = dn_all[mask], dg_all[mask]
-        bl = estimate_block_length(dn)
-        pn, _, lon, hin = paired_block_bootstrap(dn, bl)
-        pg, _, log_, hig = paired_block_bootstrap(dg, bl)
+        # Each series gets ITS OWN acf-decay block length (codex P2 #326 r2):
+        # gross and net paired differences can carry different
+        # autocorrelation (cost differences are low-noise), and reusing the
+        # net block for gross could mis-size the gross CI — the number that
+        # gates 10d escalation.
+        pn, _, lon, hin = paired_block_bootstrap(dn, estimate_block_length(dn))
+        pg, _, log_, hig = paired_block_bootstrap(dg, estimate_block_length(dg))
         print(
             f"| {name} | {int(mask.sum())} "
             f"| {pn:+.4f} [{lon:+.4f}, {hin:+.4f}] "
