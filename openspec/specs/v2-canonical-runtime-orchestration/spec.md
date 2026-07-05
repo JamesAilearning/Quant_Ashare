@@ -304,3 +304,17 @@ back onto the trading calendar.
   nominal dates (the embargo gap is taken from the segment tails, not by
   shifting the start anchors)
 
+#### Scenario: a fold without tail execution headroom is not emitted
+
+- **WHEN** a fold's last tradable test day has fewer than
+  `signal_to_execution_lag` trading days after it on the calendar (the
+  backtest's T+lag fill bar would not exist — historically the "fold 22"
+  crash, swallowed by per-fold error isolation into a silent NaN
+  placeholder fold)
+- **THEN** the fold generator does not emit that fold (or any later one),
+  logging a WARNING that names the skipped test window, the lag, and the
+  calendar end — never a fold that can only produce a NaN placeholder
+- **AND** with ample calendar headroom past `overall_end`, the emitted
+  fold set is unchanged (earlier folds byte-identical when a tail fold is
+  dropped)
+
