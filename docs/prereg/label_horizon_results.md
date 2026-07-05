@@ -81,11 +81,13 @@ one uninterrupted invocation each; ST-off both sides per the runbook):
    holding-period effect can only be monetized where the REBALANCE RULE
    changes, not the label alone. The 阶段7 design should treat
    "label horizon × rebalance cadence" as a JOINT variable.
-3. Fold-level detail: the 5d arm is not uniformly worse — it wins 12/23
-   folds on IR and improves several drawdown-heavy quarters (2023Q3
-   −24.1%→−8.7%), but loses big in 2021Q1 (+3.8%→−19.5%) and 2024Q4
-   (+14.7%→−7.8%). High per-fold variance, zero pooled edge — consistent
-   with the SE≈2.6pp noise floor the runbook warned about.
+3. Fold-level detail: the 5d arm is not uniformly worse — it wins **14/23
+   folds on IR** (12/23 on ic_1d, 13/23 on fold return; counts verified
+   programmatically from the fold reports) and improves several
+   drawdown-heavy quarters (2023Q3 −24.1%→−8.7%), but loses big in 2021Q1
+   (+3.8%→−19.5%) and 2024Q4 (+14.7%→−7.8%). A majority of small fold-level
+   wins wiped out by a few large losses, zero pooled edge — consistent with
+   the SE≈2.6pp noise floor the runbook warned about.
 4. Deeper drawdown on 5d (−15.85% vs −13.50%) — staler information holds
    losers longer under daily rebalance.
 
