@@ -122,6 +122,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             lo_d, hi_d = rng
             mask = np.array([not (lo_d <= d <= hi_d) for d in dates])
+            if int(mask.sum()) == len(dates):
+                # A no-op exclusion (codex P2 #326 r3): zero shared dates
+                # matched — a typo'd/out-of-window range would silently emit
+                # the FULL comparison under the slice's name, skipping a
+                # pre-registered sensitivity check instead of failing loud.
+                raise SystemExit(
+                    f"FAIL (slice {name!r}): the exclusion range "
+                    f"{lo_d}..{hi_d} matches ZERO shared dates — the row "
+                    "would just duplicate FULL under a slice name. Fix the "
+                    "range (stale window? non-ISO/zero-padded date?)."
+                )
         if int(mask.sum()) < DEFAULT_MIN_PAIRED_DAYS:
             # The ruler's min-paired-days guard, mirrored: a handful of days
             # gives a ~zero-width CI — fail loud (mistyped/over-broad slice),
