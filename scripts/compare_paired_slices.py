@@ -101,7 +101,11 @@ def main(argv: list[str] | None = None) -> int:
           "paired GROSS diff [95% CI] | state |")
     print("|---|---|---|---|---|---|")
 
-    def state(point: float, lo: float, hi: float, *, label: str) -> str:
+    def state(lo: float, hi: float, *, label: str) -> str:
+        # Verdict SIDE from the CI, never the point estimate — the ruler's
+        # rule verbatim (codex P2 #326 r6: a skewed percentile CI can put
+        # the point on the other side of zero; a directional label must
+        # never contradict its own reported CI).
         if lo <= 0.0 <= hi:
             return "indistinguishable"
         # The ruler's degenerate-CI backstop, verbatim semantics: a
@@ -114,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
                 "— (near-)constant paired difference or too few days. "
                 "Refusing to emit evidence."
             )
-        return "treatment_better" if point > 0 else "treatment_worse"
+        return "treatment_better" if lo > 0 else "treatment_worse"
 
     rows = [("FULL", None)] + [(n, (s, e)) for n, s, e in slices]
     for name, rng in rows:
@@ -189,9 +193,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"| {name} | {int(mask.sum())} "
             f"| {pn:+.4f} [{lon:+.4f}, {hin:+.4f}] "
-            f"| {state(pn, lon, hin, label=f'{name} net')} "
+            f"| {state(lon, hin, label=f'{name} net')} "
             f"| {pg:+.4f} [{log_:+.4f}, {hig:+.4f}] "
-            f"| {state(pg, log_, hig, label=f'{name} gross')} |"
+            f"| {state(log_, hig, label=f'{name} gross')} |"
         )
     return 0
 
