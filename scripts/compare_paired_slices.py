@@ -45,7 +45,13 @@ def main(argv: list[str] | None = None) -> int:
 
     import numpy as np
 
+    # _MIN_CI_WIDTH is module-private but this script must enforce the SAME
+    # degenerate-CI rule as the ruler (codex P2 #326: bypassing the guards
+    # could commit a fabricated slice verdict) — importing the constant keeps
+    # the two enforcement points from drifting.
     from src.core.comparison import (
+        _MIN_CI_WIDTH,
+        DEFAULT_MIN_PAIRED_DAYS,
         estimate_block_length,
         load_run_daily_series,
         paired_block_bootstrap,
@@ -80,9 +86,19 @@ def main(argv: list[str] | None = None) -> int:
           "paired GROSS diff [95% CI] | state |")
     print("|---|---|---|---|---|---|")
 
-    def state(point: float, lo: float, hi: float) -> str:
+    def state(point: float, lo: float, hi: float, *, label: str) -> str:
         if lo <= 0.0 <= hi:
             return "indistinguishable"
+        # The ruler's degenerate-CI backstop, verbatim semantics: a
+        # DIRECTIONAL state may not rest on a CI narrower than the reporting
+        # resolution — refuse loud, never commit a fabricated slice verdict.
+        if (hi - lo) <= _MIN_CI_WIDTH:
+            raise SystemExit(
+                f"FAIL ({label}): directional state would rest on a "
+                f"degenerate CI (width {hi - lo:.2e} <= {_MIN_CI_WIDTH:.0e}) "
+                "— (near-)constant paired difference or too few days. "
+                "Refusing to emit evidence."
+            )
         return "treatment_better" if point > 0 else "treatment_worse"
 
     rows = [("FULL", None)] + [(n, (s, e)) for n, s, e in slices]
@@ -92,14 +108,25 @@ def main(argv: list[str] | None = None) -> int:
         else:
             lo_d, hi_d = rng
             mask = np.array([not (lo_d <= d <= hi_d) for d in dates])
+        if int(mask.sum()) < DEFAULT_MIN_PAIRED_DAYS:
+            # The ruler's min-paired-days guard, mirrored: a handful of days
+            # gives a ~zero-width CI — fail loud (mistyped/over-broad slice),
+            # never a fabricated row in committed evidence.
+            raise SystemExit(
+                f"FAIL (slice {name!r}): only {int(mask.sum())} paired day(s) "
+                f"remain (< min_paired_days={DEFAULT_MIN_PAIRED_DAYS}) — the "
+                "exclusion range is mistyped or removes nearly everything."
+            )
         dn, dg = dn_all[mask], dg_all[mask]
         bl = estimate_block_length(dn)
         pn, _, lon, hin = paired_block_bootstrap(dn, bl)
         pg, _, log_, hig = paired_block_bootstrap(dg, bl)
         print(
             f"| {name} | {int(mask.sum())} "
-            f"| {pn:+.4f} [{lon:+.4f}, {hin:+.4f}] | {state(pn, lon, hin)} "
-            f"| {pg:+.4f} [{log_:+.4f}, {hig:+.4f}] | {state(pg, log_, hig)} |"
+            f"| {pn:+.4f} [{lon:+.4f}, {hin:+.4f}] "
+            f"| {state(pn, lon, hin, label=f'{name} net')} "
+            f"| {pg:+.4f} [{log_:+.4f}, {hig:+.4f}] "
+            f"| {state(pg, log_, hig, label=f'{name} gross')} |"
         )
     return 0
 
