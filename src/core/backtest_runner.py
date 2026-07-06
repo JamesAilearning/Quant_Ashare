@@ -938,7 +938,16 @@ class BacktestRunner:
         # either timing regime.)
         close_unstacked = close.unstack(level="instrument")["$close"]
         close_unstacked = close_unstacked.sort_index()
-        ret_matrix = close_unstacked.pct_change().shift(-2)
+        # fill_method=None is LOAD-BEARING (codex P2 #329 follow-through):
+        # pandas<3 defaults pct_change to fill_method='pad', which forward-
+        # fills a NaN close BEFORE differencing — a PIT-masked (or bins-NaN)
+        # delisted constituent then reports a fake 0.0 return and silently
+        # pollutes the equal-weight mean, which is exactly the forward-fill
+        # class §4.3.2 exists to prevent (and pandas 3.0 flips the default,
+        # so the implicit behavior is version-unstable on top of wrong).
+        # With None, a masked close yields a NaN return handled explicitly
+        # below.
+        ret_matrix = close_unstacked.pct_change(fill_method=None).shift(-2)
         # The last two rows have no fill-day→next-day return; drop them.
         ret_matrix = ret_matrix.iloc[:-2].dropna(how="all")
 
@@ -948,6 +957,26 @@ class BacktestRunner:
                 continue
             row = ret_matrix.loc[dt]
             valid = [row.get(inst) for inst in instruments if inst in row]
+            if pit_provider is not None:
+                # §4.3.2 semantics (the docstring's stated intent, now real):
+                # a masked post-delist constituent is excluded from the DAY'S
+                # mean — not padded into a fake 0.0, and not allowed to drop
+                # the whole date (a sparse/biased baseline exactly on
+                # configured PIT runs; codex P2 #329). A day with no valid
+                # member is skipped: nothing to average.
+                finite = [
+                    v for v in valid
+                    if v is not None
+                    and not (isinstance(v, float) and np.isnan(v))
+                ]
+                if not finite:
+                    continue
+                result[str(dt.date())] = float(np.mean(finite))
+                continue
+            # Legacy provider-less path: conservative whole-day skip on any
+            # NaN member (the historical guard — which fill_method=None
+            # finally makes effective; under the old implicit pad it could
+            # never see the NaN it was written to catch).
             if not valid or any(
                 v is None or (isinstance(v, float) and np.isnan(v))
                 for v in valid
