@@ -295,9 +295,19 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
         return None
     if not isinstance(payload, dict):
         return None
+    # Version pin on the RAW value, before any coercion: int(...) would
+    # normalize 1.9 -> 1 and True -> 1 (bool is an int subclass, True == 1),
+    # letting a non-v1 row through the version check (codex P2 on #330).
+    raw_version = payload.get("journal_version")
+    if (
+        not isinstance(raw_version, int)
+        or isinstance(raw_version, bool)
+        or raw_version != JOURNAL_VERSION
+    ):
+        return None
     try:
         entry = DecisionEntry(
-            journal_version=int(payload["journal_version"]),
+            journal_version=raw_version,
             trade_date=str(payload["trade_date"]),
             code=str(payload["code"]),
             action=str(payload["action"]),
@@ -311,11 +321,6 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
             nonce=str(payload["nonce"]),
         )
     except (KeyError, TypeError, ValueError):
-        return None
-    # Version pin: a row from an incompatible future writer (or manual repair)
-    # must not be admitted — it could silently supersede a real v1 decision
-    # with malformed_count == 0 (codex P2 on #330).
-    if entry.journal_version != JOURNAL_VERSION:
         return None
     if entry.action not in ACTIONS:
         return None
