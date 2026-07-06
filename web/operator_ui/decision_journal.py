@@ -217,23 +217,33 @@ def append_decision(
         ):
             return False
     line = json.dumps(asdict(entry), ensure_ascii=False).encode("utf-8") + b"\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Quarantine a torn TAIL before appending: if a previous process died
-    # mid-write and left a final line WITHOUT its newline, appending directly
-    # would fuse the new entry onto the fragment — one combined malformed line,
-    # and the operator's NEW decision would silently vanish from history and
-    # the effective view (codex P1 on #330). A leading newline in the SAME
-    # single write isolates the fragment as its own counted-malformed line and
-    # lands the new entry on a clean line.
-    if path.is_file() and path.stat().st_size > 0:
-        with path.open("rb") as tail:
-            tail.seek(-1, os.SEEK_END)
-            if tail.read(1) != b"\n":
-                line = b"\n" + line
-    with path.open("ab") as fh:
-        fh.write(line)
-        fh.flush()
-        os.fsync(fh.fileno())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Quarantine a torn TAIL before appending: if a previous process died
+        # mid-write and left a final line WITHOUT its newline, appending
+        # directly would fuse the new entry onto the fragment — one combined
+        # malformed line, and the operator's NEW decision would silently
+        # vanish from history and the effective view (codex P1 on #330). A
+        # leading newline in the SAME single write isolates the fragment as
+        # its own counted-malformed line and lands the new entry cleanly.
+        if path.is_file() and path.stat().st_size > 0:
+            with path.open("rb") as tail:
+                tail.seek(-1, os.SEEK_END)
+                if tail.read(1) != b"\n":
+                    line = b"\n" + line
+        with path.open("ab") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError as exc:
+        # Translate I/O failures (read-only dir, permissions, full disk) into
+        # the journal's domain error so the page renders the intended error
+        # path instead of a raw Streamlit traceback (codex P2 on #330).
+        raise DecisionJournalError(
+            f"decision journal write failed at {path} "
+            f"({type(exc).__name__}: {exc}) — the decision was NOT recorded; "
+            "check the journal directory's permissions/disk."
+        ) from exc
     return True
 
 
@@ -247,7 +257,13 @@ def read_journal(*, journal_dir: str | Path | None = None) -> JournalReadResult:
     path = journal_path(journal_dir)
     if not path.is_file():
         return JournalReadResult(entries=(), effective={}, malformed_count=0)
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise DecisionJournalError(
+            f"decision journal read failed at {path} "
+            f"({type(exc).__name__}: {exc}) — check permissions/disk."
+        ) from exc
     entries: list[DecisionEntry] = []
     malformed = 0
     for line in raw.split(b"\n"):

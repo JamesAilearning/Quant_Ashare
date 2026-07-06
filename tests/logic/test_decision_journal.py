@@ -310,6 +310,26 @@ class FailLoudValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(DecisionJournalError, "disposable"):
                 journal_path()
 
+    def test_io_failures_translate_to_domain_error(self) -> None:
+        # codex P2 on #330: read-only dir / permissions / full disk raise raw
+        # OSError from open/write/mkdir — the journal API must translate them
+        # to DecisionJournalError so the page renders its error path instead
+        # of a Streamlit traceback.
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = Path(tmp) / "blocked"
+            blocked.write_text("a FILE where the journal dir should be")
+            with self.assertRaisesRegex(DecisionJournalError, "NOT recorded"):
+                append_decision(_entry(), journal_dir=blocked)
+        with tempfile.TemporaryDirectory() as tmp:
+            append_decision(_entry(), journal_dir=tmp)
+            with patch.object(
+                Path, "read_bytes", side_effect=OSError("disk unavailable"),
+            ):
+                with self.assertRaisesRegex(DecisionJournalError, "read failed"):
+                    read_journal(journal_dir=tmp)
+
     def test_env_var_resolution_and_missing_file_reads_empty(self) -> None:
         from unittest.mock import patch
 

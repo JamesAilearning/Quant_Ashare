@@ -233,7 +233,11 @@ else:
 # ---------------------------------------------------------------------------
 # 当日 effective 决策(更正后以 decided_at 最新为准;历史行永不删除)
 # ---------------------------------------------------------------------------
-_journal = read_journal()
+try:
+    _journal = read_journal()
+except DecisionJournalError as _read_exc:
+    st.error(f"⚠ 决策日志读取失败:{_read_exc}")
+    st.stop()
 if _journal.malformed_count:
     st.warning(
         f"⚠ 决策日志含 {_journal.malformed_count} 行坏行(已跳过未入账;"
