@@ -1018,6 +1018,57 @@ class MarketCapWeightsTests(unittest.TestCase):
                 ["SH600000"], cfg, pit_provider=None,
             )
 
+    def test_bench_weight_source_distinguishes_provenance(self) -> None:
+        # codex P2 #332: the same market_cap label covers caller-supplied
+        # weights AND the automatic PIT path — the result must say which.
+        src = PerformanceAttribution._bench_weight_source
+        self.assertEqual(
+            src(AttributionConfig(
+                bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP)),
+            "pit_circ_mv",
+        )
+        self.assertEqual(
+            src(AttributionConfig(
+                bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP,
+                benchmark_weights={"SH600000": 1.0})),
+            "explicit",
+        )
+        self.assertEqual(src(AttributionConfig()), "equal_proxy")
+
+    def test_print_report_names_pit_provenance(self) -> None:
+        # The report must not claim "caller-supplied" for the automatic
+        # PIT path (false provenance) — and must keep saying it for the
+        # genuinely caller-supplied variant.
+        from src.core.performance_attribution import AttributionResult
+
+        def notes_for(source: str) -> str:
+            result = AttributionResult(
+                sector_attribution=(),
+                total_allocation_effect=0.0,
+                total_selection_effect=0.0,
+                total_interaction_effect=0.0,
+                monthly_returns=(),
+                total_portfolio_return=0.0,
+                total_benchmark_return=0.0,
+                total_excess_return=0.0,
+                bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP,
+                bench_weight_source=source,
+            )
+            lines: list[str] = []
+            with patch(
+                "src.core.performance_attribution._logger.info",
+                side_effect=lambda msg, *a: lines.append(
+                    msg % a if a else msg),
+            ):
+                PerformanceAttribution.print_report(result)
+            return "\n".join(lines)
+
+        pit_notes = notes_for("pit_circ_mv")
+        self.assertIn("PIT $circ_mv", pit_notes)
+        self.assertNotIn("caller-supplied", pit_notes)
+        explicit_notes = notes_for("explicit")
+        self.assertIn("caller-supplied", explicit_notes)
+
     def test_effective_label_is_market_cap(self) -> None:
         # the result label must match the weights actually used — the
         # misnomer discipline the P6 plan demanded be preserved.

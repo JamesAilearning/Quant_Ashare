@@ -242,6 +242,14 @@ class AttributionResult:
     # config object to know whether the bench-weighting was the simple
     # equal split or a real cap-weighted scheme.
     bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL_PROXY
+    # WHERE the weights came from (audit P6, codex P2 #332): the same
+    # ``market_cap`` label can be satisfied by caller-supplied weights OR by
+    # the automatic PIT ``$circ_mv`` path — conflating them in reports is
+    # false provenance. One of ``"explicit"`` (caller-supplied mapping),
+    # ``"pit_circ_mv"`` (automatic, read through the run-level
+    # PITDataProvider), or ``"equal_proxy"`` (the 1/n construction).
+    # Empty only on legacy results built before this field existed.
+    bench_weight_source: str = ""
 
 
 class PerformanceAttribution:
@@ -355,6 +363,7 @@ class PerformanceAttribution:
             sector_effects_sum=sector_effects_sum,
             reconciliation_residual=reconciliation_residual,
             bench_weight_method=cls._effective_bench_weight_method(config),
+            bench_weight_source=cls._bench_weight_source(config),
             sector_taxonomy=sector_taxonomy,
         )
 
@@ -803,6 +812,22 @@ class PerformanceAttribution:
         return results
 
     @staticmethod
+    def _bench_weight_source(config: AttributionConfig) -> str:
+        """WHERE the benchmark weights came from (audit P6, codex P2 #332).
+
+        Pure function of the config: explicit caller weights always win
+        (mirroring ``_resolve_benchmark_weights``); ``market_cap`` without
+        explicit weights is the automatic PIT ``$circ_mv`` path (the
+        provider requirement is enforced by ``_validate`` before any result
+        can exist); everything else is the 1/n equal proxy.
+        """
+        if config.benchmark_weights is not None:
+            return "explicit"
+        if config.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
+            return "pit_circ_mv"
+        return "equal_proxy"
+
+    @staticmethod
     def _effective_bench_weight_method(config: AttributionConfig) -> str:
         """Return the result label that matches the weights actually used."""
         if config.benchmark_weights is not None:
@@ -1150,7 +1175,17 @@ class PerformanceAttribution:
         elif result.bench_weight_method == BENCH_WEIGHT_METHOD_EXPLICIT:
             log("    NOTE: explicit caller-supplied benchmark weights.")
         elif result.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
-            log("    NOTE: caller-supplied market-cap benchmark weights.")
+            # Provenance must not be conflated (codex P2 #332): the same
+            # label covers caller-supplied weights AND the automatic PIT
+            # path — say which one actually produced this result.
+            if result.bench_weight_source == "pit_circ_mv":
+                log(
+                    "    NOTE: market-cap benchmark weights derived from "
+                    "PIT $circ_mv as-of the period start (approximates the "
+                    "official tiered free-float methodology)."
+                )
+            else:
+                log("    NOTE: caller-supplied market-cap benchmark weights.")
         log("  Allocation effect: %+.4f", result.total_allocation_effect)
         log("  Selection effect:  %+.4f", result.total_selection_effect)
         log("  Interaction effect:%+.4f", result.total_interaction_effect)
