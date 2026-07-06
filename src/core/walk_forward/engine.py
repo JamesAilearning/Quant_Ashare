@@ -799,6 +799,12 @@ class WalkForwardEngine:
             predictions=predictions,
             topk=config.topk,
             n_drop=config.n_drop,
+            # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
+            # provider into the backtest so the microstructure mask and the
+            # equal-weight baseline route their raw-field fetches through
+            # the §4.3.2 layer instead of the WARN fallback. None (empty
+            # delisted_registry_path) preserves the legacy path bit-for-bit.
+            pit_provider=pit_provider,
             namechange_path=config.namechange_path,
             # Official walk-forward path: ST exclusion is mandatory (audit
             # E1 / PR-F) — config_walk.yaml sets namechange_path; a missing

@@ -93,6 +93,13 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # backtest consumes it for excess-return. The post-delist mask is
     # irrelevant for an index (an index does not delist), so PITDataProvider
     # would add nothing; WARN log at the call site makes the bypass observable.
+    # Audit P2 tail (P0-6 follow-up CLOSED): the CANONICAL callers of
+    # ``BacktestRunner.run`` — walk-forward fold, single-fold pipeline,
+    # REGEN-2 replay — now thread the run-level provider, so production
+    # backtests route the microstructure-mask and equal-weight-baseline
+    # fetches through the §4.3.2 layer. The 3 direct calls survive as the
+    # WARN-logged fallback for provider-less research callers plus the
+    # benchmark-INDEX fetch (an index does not delist).
     "src/core/backtest_runner.py": 3,
 
     # Same pattern as ``backtest_runner``: ``pit_provider`` opt-in
@@ -121,7 +128,9 @@ PIT_FEATURES_BYPASS_ALLOWLIST: dict[str, int] = {
     # direct ``D.features`` call only fires when the caller did
     # NOT pass a provider; the ``compute_unavailable_mask``
     # function carries the ``pit-bypass-ok`` marker in its
-    # docstring.
+    # docstring. Audit P2 tail: the canonical BacktestRunner.run
+    # callers now supply the provider, so this fallback fires only
+    # for provider-less research callers.
     "src/core/microstructure_mask.py": 1,
 }
 

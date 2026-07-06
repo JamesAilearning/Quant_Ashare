@@ -392,6 +392,124 @@ class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
         self.assertEqual(sorted(instruments_arg),
                          ["SH600087", "SH600519"])
 
+    @staticmethod
+    def _delist_panel():
+        """5 trading days; ticker B's closes go NaN from d4 (delisted after
+        d3). ret_matrix rows (pct_change(fill_method=None).shift(-2),
+        iloc[:-2]) keyed d1..d3: d1 -> (A d2->d3, B d2->d3) both finite;
+        d2 -> (A d3->d4, B NaN); d3 -> (A d4->d5, B NaN)."""
+        import numpy as np
+        import pandas as pd
+
+        dates = pd.to_datetime([
+            "2025-10-01", "2025-10-02", "2025-10-03",
+            "2025-10-06", "2025-10-07",
+        ])
+        pred_idx = pd.MultiIndex.from_product(
+            [dates[:3], ["SH600519", "SH600087"]],
+            names=["datetime", "instrument"],
+        )
+        predictions = pd.Series([3.0, 2.0] * 3, index=pred_idx)
+        close_idx = pd.MultiIndex.from_product(
+            [["SH600519", "SH600087"], dates],
+            names=["instrument", "datetime"],
+        )
+        close = pd.DataFrame(
+            {"$close": [10.0, 11.0, 12.0, 13.0, 14.0,      # A: alive
+                        20.0, 21.0, 22.0, np.nan, np.nan]},  # B: delists
+            index=close_idx,
+        )
+        return predictions, close
+
+    def test_pit_path_excludes_masked_ticker_not_the_day(self) -> None:
+        # codex P2 #329: a PIT-masked (post-delist) constituent must be
+        # excluded from the DAY'S equal-weight mean — the day itself stays
+        # (dropping it would make the baseline sparse/biased exactly on
+        # configured PIT runs). And the masked ticker must NOT be padded
+        # into a fake 0.0 return (pandas pct_change's implicit pad).
+        from unittest.mock import MagicMock
+
+        predictions, close = self._delist_panel()
+        pit = MagicMock()
+        pit.get_features.return_value = close
+        result = BacktestRunner._compute_equalweight_baseline(
+            predictions=predictions, topk=2,
+            evaluation_start="2025-10-01", evaluation_end="2025-10-07",
+            pit_provider=pit,
+        )
+        self.assertEqual(
+            sorted(result), ["2025-10-01", "2025-10-02", "2025-10-03"],
+        )
+        # d1: both alive -> mean of (12/11-1, 22/21-1)
+        self.assertAlmostEqual(
+            result["2025-10-01"], ((12 / 11 - 1) + (22 / 21 - 1)) / 2,
+        )
+        # d2/d3: B masked -> A's return ALONE (a padded fake-0.0 for B would
+        # halve these values instead).
+        self.assertAlmostEqual(result["2025-10-02"], 13 / 12 - 1)
+        self.assertAlmostEqual(result["2025-10-03"], 14 / 13 - 1)
+
+    def test_pit_path_handles_float32_nan(self) -> None:
+        # codex P2 #329 r3: qlib bin panels are float32, and a numpy scalar
+        # NaN is NOT a python float — an isinstance(float) check misses it
+        # and np.mean would leak NaN into the series. The finiteness check
+        # must be dtype-agnostic.
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        predictions, close = self._delist_panel()
+        close = close.astype({"$close": "float32"})
+        pit = MagicMock()
+        pit.get_features.return_value = close
+        result = BacktestRunner._compute_equalweight_baseline(
+            predictions=predictions, topk=2,
+            evaluation_start="2025-10-01", evaluation_end="2025-10-07",
+            pit_provider=pit,
+        )
+        self.assertEqual(
+            sorted(result), ["2025-10-01", "2025-10-02", "2025-10-03"],
+        )
+        for day, v in result.items():
+            self.assertTrue(np.isfinite(v), f"{day} leaked a non-finite value")
+        # masked days = survivor-only returns (float32 precision)
+        self.assertAlmostEqual(result["2025-10-02"], 13 / 12 - 1, places=5)
+        self.assertAlmostEqual(result["2025-10-03"], 14 / 13 - 1, places=5)
+
+    def test_legacy_path_is_bit_identical_to_the_historical_pad(self) -> None:
+        # codex P2 #329 round 2: the provider-less DEFAULT path must stay
+        # bit-identical to the pre-change behavior (the spec's identity
+        # promise) — the historical implicit pct_change pad turns B's masked
+        # NaN closes into fake 0.0 returns that HALVE the masked days' means.
+        # That economics is exactly why the PIT path exists; here it is
+        # preserved deliberately (a legacy re-baseline must be explicit,
+        # never a side effect).
+        import pytest
+
+        pytest.importorskip("qlib")
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mpatch
+
+        predictions, close = self._delist_panel()
+        mock_D = MagicMock()
+        mock_D.features.return_value = close
+        with mpatch("qlib.data.D", mock_D):
+            result = BacktestRunner._compute_equalweight_baseline(
+                predictions=predictions, topk=2,
+                evaluation_start="2025-10-01", evaluation_end="2025-10-07",
+                pit_provider=None,
+            )
+        self.assertEqual(
+            sorted(result), ["2025-10-01", "2025-10-02", "2025-10-03"],
+        )
+        self.assertAlmostEqual(
+            result["2025-10-01"], ((12 / 11 - 1) + (22 / 21 - 1)) / 2,
+        )
+        # padded fake-0.0 for B halves the masked days (the PIT path returns
+        # the survivor-only value instead — see the test above).
+        self.assertAlmostEqual(result["2025-10-02"], (13 / 12 - 1) / 2)
+        self.assertAlmostEqual(result["2025-10-03"], (14 / 13 - 1) / 2)
+
     def test_legacy_path_when_no_pit_provider(self) -> None:
         """``pit_provider=None`` (default) falls through to direct
         qlib.D.features — the existing legacy behaviour.
