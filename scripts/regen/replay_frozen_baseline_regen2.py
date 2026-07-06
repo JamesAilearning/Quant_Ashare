@@ -181,6 +181,13 @@ def _replay_fold(
         topk=TOPK,
         n_drop=N_DROP,
         compute_baselines=False,
+        # Audit P2 tail (P0-6 follow-up): the anchor replays CANONICAL
+        # semantics — the microstructure mask's raw-field fetches route
+        # through the §4.3.2 layer exactly like production. Raw fields carry
+        # no window operators, so the mask is expected to be a NO-OP on the
+        # Phase-B.2 bundle (same verdict class as PR-2); the CI REGEN-2 leg
+        # is the judge, and any drift goes through the re-sign channel.
+        pit_provider=pit_provider,
         namechange_path=namechange_path,
         require_st_mask=True,
     )

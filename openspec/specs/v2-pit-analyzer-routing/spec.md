@@ -39,11 +39,15 @@ the same way the existing `backtest_runner` opt-in does (no new mechanism).
 
 `WalkForwardConfig` and `PipelineConfig` SHALL carry
 `delisted_registry_path: str = ""`. When non-empty, the engine SHALL construct
-ONE `PITDataProvider` at run start and pass it to both analyzers; when empty,
-no provider is constructed and the WARN path runs (the pre-change behavior, so
-the default is identity-preserving). A non-empty path that does not exist
-SHALL fail loud at provider construction (never silently degrade to the WARN
-path).
+ONE `PITDataProvider` at run start and pass it to both analyzers AND to
+`BacktestRunner.run` (whose internal opt-in — alignment validation →
+microstructure mask → equal-weight baseline — has existed since Phase
+D.3/P0-3; the audit-P2 tail closed the P0-6 follow-up by threading the three
+official call sites: walk-forward fold, single-fold pipeline, REGEN-2
+replay). When empty, no provider is constructed and the WARN path runs (the
+pre-change behavior, so the default is identity-preserving). A non-empty path
+that does not exist SHALL fail loud at provider construction (never silently
+degrade to the WARN path).
 
 #### Scenario: default is identity-preserving
 - **WHEN** a run executes with the default empty `delisted_registry_path`
@@ -54,6 +58,16 @@ path).
 - **WHEN** `delisted_registry_path` is non-empty but unreadable/missing
 - **THEN** the run refuses at provider construction with an actionable error,
   rather than silently running the WARN path
+
+#### Scenario: the backtest receives the same provider on official paths
+- **WHEN** a canonical run executes with a configured registry
+- **THEN** every official `BacktestRunner.run` invocation (walk-forward
+  fold, single-fold pipeline, REGEN-2 replay) receives the run-level
+  provider, so the microstructure mask and equal-weight baseline raw-field
+  fetches route through the §4.3.2 layer instead of the WARN fallback (raw
+  fields carry no window operators, so the mask is expected to be a no-op
+  on NaN-correct bundles — the CI anchor leg judges, and any drift goes
+  through the re-sign channel)
 
 ### Requirement: The REGEN-2 replay SHALL follow canonical semantics and the baseline SHALL be re-signed deliberately
 

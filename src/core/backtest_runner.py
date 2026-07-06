@@ -896,10 +896,11 @@ class BacktestRunner:
                 # past delist_date — see ``src/pit/query.py``
                 # docstring §4.3.2). When you want the §4.3.2 mask,
                 # pass a configured ``PITDataProvider`` instance.
-                # TODO(P0-6 follow-up): thread pit_provider through
-                # ``Pipeline`` / ``WalkForwardEngine`` so this legacy
-                # branch can be removed once all production callers
-                # opt in.
+                # P0-6 follow-up CLOSED (audit P2 tail): the canonical
+                # callers — walk-forward fold, single-fold pipeline,
+                # REGEN-2 replay — now thread the run-level provider, so
+                # this branch fires only for provider-less research
+                # callers (deliberate, WARN-logged, allow-listed).
                 _logger.warning(
                     "BacktestRunner._compute_equalweight_baseline: "
                     "pit_provider is None — falling back to direct "
