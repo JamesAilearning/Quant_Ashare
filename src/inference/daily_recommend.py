@@ -25,11 +25,13 @@ them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,12 +53,18 @@ from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot
 from src.data.pit._common import qlib_to_ts_code
 from src.data.pit.bundle_integrity import (
     INTEGRITY_FILENAME,
+    BundleIntegrity,
     BundleIntegrityError,
     read_bundle_integrity,
 )
 from src.data.st_status import current_st_codes
 
 _logger = get_logger(__name__)
+
+# Operator-facing timestamps use fixed +08:00, mirroring the repo convention
+# (web/operator_ui/formatting.py ``_CN_TZ``). Asia/Shanghai has no DST, so the
+# fixed offset is exact and avoids a zoneinfo/tzdata dependency on Windows.
+_CN_TZ = timezone(timedelta(hours=8))
 
 
 class DailyRecommendationError(RuntimeError):
@@ -146,6 +154,13 @@ class DailyRecommendationResult:
     n_masked: int         # dropped by the microstructure tradability mask
     n_st_excluded: int    # dropped because currently ST/*ST
     scored_frame: pd.DataFrame  # full audit frame (incl. masked names)
+    # Generation context (artifact contract v2 — add-daily-decision-page A1):
+    # who/when/what produced this list. REQUIRED (no default) so every
+    # constructor supplies it explicitly — an artifact without provenance is
+    # the suspended-guard failure class this exists to prevent. Assembled by
+    # ``_assemble_run_meta``; serialized by ``write_outputs`` as the JSON
+    # ``meta`` block.
+    run_meta: Mapping[str, Any]
 
 
 # --------------------------------------------------------------------------
@@ -357,9 +372,14 @@ def _assert_st_snapshot_consistent_with_bundle(
 
 def _assert_bundle_fetch_complete(
     provider_uri: str, *, allow_holey_recommend: bool,
-) -> None:
+) -> BundleIntegrity | None:
     """Fail-loud guard (P3-4c Layer 2): refuse to recommend from a bundle built
     from a HOLEY tushare fetch, or one lacking a fetch-integrity stamp.
+
+    Returns the parsed stamp (or ``None`` when the bundle is unstamped and the
+    override accepted it) so ``recommend()`` can reuse the SAME read for the
+    artifact's provenance ``bundle_tag`` — one read, no second I/O (the #291
+    no-double-read discipline).
 
     The qlib bin builder stamps each bundle (``_fetch_integrity.json``) with whether
     it was built from a complete fetch. A holey bundle ranks on
@@ -387,7 +407,7 @@ def _assert_bundle_fetch_complete(
             "can be overridden with --allow-holey-recommend, a corrupt one cannot."
         ) from exc
     if allow_holey_recommend:
-        return
+        return integrity
     if integrity is None:
         raise DailyRecommendationError(
             f"Bundle {provider_uri} has no fetch-integrity stamp "
@@ -407,6 +427,7 @@ def _assert_bundle_fetch_complete(
             "SEPARATE decision from the build-side --allow-holey-fetch that produced "
             "the bundle — building partial data does not sanction trading on it."
         )
+    return integrity
 
 
 def _validate_st_snapshot(
@@ -487,7 +508,7 @@ def _validate_st_snapshot(
     return snapshot_date, df
 
 
-def _load_model(model_path: Path) -> Any:
+def _load_model(model_path: Path) -> tuple[Any, str]:
     """Load the pickled qlib model, failing closed with a domain error.
 
     A missing path, a corrupt / truncated pickle, or an unpickle that
@@ -495,13 +516,19 @@ def _load_model(model_path: Path) -> Any:
     rather than letting a raw ``UnpicklingError`` / ``EOFError`` /
     ``ModuleNotFoundError`` escape. The loaded object must expose
     ``.predict`` (qlib model contract).
+
+    Returns ``(model, pkl_sha256)``. The hash is computed from the SAME
+    byte buffer that is unpickled — a single ``read_bytes()`` feeds both —
+    so an atomic model swap (promotion replaces the file) between two
+    separate reads can never make the artifact's provenance hash disagree
+    with the pickle that actually produced the scores (codex P2 on #328).
     """
     if not model_path.exists():
         raise DailyRecommendationError(f"model artifact not found: {model_path}")
     import pickle
     try:
-        with model_path.open("rb") as f:
-            model = pickle.load(f)
+        raw = model_path.read_bytes()
+        model = pickle.loads(raw)
     except (pickle.UnpicklingError, EOFError, OSError, ValueError,
             AttributeError, ImportError) as exc:
         raise DailyRecommendationError(
@@ -513,7 +540,41 @@ def _load_model(model_path: Path) -> Any:
             f"loaded object {type(model).__name__} has no .predict; "
             "not a qlib model."
         )
-    return model
+    return model, hashlib.sha256(raw).hexdigest()
+
+
+def _assemble_run_meta(
+    config: RecommendationConfig,
+    *,
+    model_pkl_sha256: str,
+    bundle_tag: str | None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Build the artifact-contract-v2 generation context (pure; unit-testable).
+
+    ``generated_at`` is injectable for tests (value-injection, as elsewhere);
+    production default is now() in fixed +08:00. ``bundle_tag`` is the
+    ``_fetch_integrity`` identity tag or ``None`` when the bundle carries no
+    identity stamp — never a fabricated placeholder. ``fit_*_for_inference``
+    mirror the RESOLVED window the run actually used (config carries the
+    post-resolution values; the CLI-side resolution lives in
+    ``scripts/daily_recommend._resolve_inference_fit_window``).
+    """
+    return {
+        "generated_at": (
+            generated_at
+            if generated_at is not None
+            else datetime.now(tz=_CN_TZ).isoformat()
+        ),
+        "model_path": config.model_path,
+        "model_pkl_sha256": model_pkl_sha256,
+        "fit_start_for_inference": config.fit_start,
+        "fit_end_for_inference": config.fit_end,
+        "provider_uri": config.provider_uri,
+        "bundle_tag": bundle_tag,
+        "instruments": config.instruments,
+        "topk": config.topk,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -555,8 +616,9 @@ def recommend(
     )
     # P3-4c Layer 2: refuse a bundle built from a holey tushare fetch (or one
     # lacking a fetch-integrity stamp) unless explicitly allowed here — a decision
-    # SEPARATE from the build-side --allow-holey-fetch.
-    _assert_bundle_fetch_complete(
+    # SEPARATE from the build-side --allow-holey-fetch. The returned stamp is
+    # reused for the artifact's provenance bundle_tag (single read).
+    integrity = _assert_bundle_fetch_complete(
         config.provider_uri, allow_holey_recommend=config.allow_holey_recommend,
     )
 
@@ -565,8 +627,19 @@ def recommend(
         as_of_date, entry_date, config.instruments, config.topk,
     )
 
-    # 1. Load the trained model.
-    model = _load_model(Path(config.model_path))
+    # 1. Load the trained model. _load_model hashes the SAME byte buffer it
+    # unpickles (artifact contract v2), so provenance cannot disagree with the
+    # scores even if the model file is atomically swapped mid-run.
+    model, model_pkl_sha256 = _load_model(Path(config.model_path))
+    run_meta = _assemble_run_meta(
+        config,
+        model_pkl_sha256=model_pkl_sha256,
+        bundle_tag=(
+            integrity.identity.tag
+            if integrity is not None and integrity.identity is not None
+            else None
+        ),
+    )
 
     # 2. Build as-of-T features ONCE (dataset reused for predict below).
     dataset, feature_frame = _build_asof_dataset(config, as_of_date)
@@ -672,7 +745,7 @@ def recommend(
     return DailyRecommendationResult(
         as_of_date=as_of_date, entry_date=entry_date, picks=picks,
         n_scored=len(scored_frame) - n_excluded, n_masked=n_masked,
-        n_st_excluded=n_st, scored_frame=scored_frame,
+        n_st_excluded=n_st, scored_frame=scored_frame, run_meta=run_meta,
     )
 
 
@@ -919,12 +992,17 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         csv_path, index=False, encoding="utf-8-sig",
     )
     json_path.write_text(json.dumps({
+        # Artifact contract v2 (add-daily-decision-page A1): the version marker
+        # + meta block let readers DISTINGUISH a legacy v1 file (both absent)
+        # from a self-describing one — readers warn on absence, never default.
+        "artifact_schema_version": 2,
         "as_of_date": result.as_of_date,
         "entry_date": result.entry_date,
         "n_scored": result.n_scored,
         "n_masked": result.n_masked,
         "n_st_excluded": result.n_st_excluded,
         "picks": buy_rows,
+        "meta": dict(result.run_meta),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     result.scored_frame.to_csv(audit_path, index=False, encoding="utf-8-sig")
     return {"csv": str(csv_path), "json": str(json_path), "audit": str(audit_path)}
