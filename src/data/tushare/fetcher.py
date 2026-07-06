@@ -766,10 +766,158 @@ class TushareFetcher:
             )
             return None
 
+    def _scan_year_freshness(
+        self, *, path: Path, scan_year: bool, holiday_only_existing: bool,
+        expected_boundary: str | None,
+    ) -> tuple[str, str | None]:
+        """Freshness verdict for an EXISTING, non-force-retried year file
+        (P4 extraction — behavior-preserving; every branch/comment moved
+        verbatim from the ``_fetch_per_ticker_per_year`` loop).
+
+        Returns ``(verdict, recheck_boundary)`` with verdict one of:
+
+        * ``"skip_blind"``    — attested by the prior manifest's watermark;
+          a BLIND skip: proves nothing, establishes nothing.
+        * ``"skip_verified"`` — content POSITIVELY confirmed for this run's
+          range (fresh-enough file, clean window-miss placeholder, or a
+          preserved holiday-only slice) — establishes coverage.
+        * ``"refetch"``       — stale / dirty placeholder / unreadable:
+          re-pull the WHOLE year and overwrite. ``recheck_boundary`` is the
+          expected content boundary the re-pull is re-checked against
+          (``None`` for the dirty-placeholder case: there is no expected
+          date to compare against).
+        """
+        if not scan_year:
+            # Attested by the prior manifest's watermark — closed
+            # history this run cannot expect more from. A BLIND
+            # skip: proves nothing, establishes nothing.
+            return "skip_blind", None
+        if holiday_only_existing:
+            return "skip_verified", None
+        if expected_boundary is None:
+            # The ticker's listing window MISSES this year slice
+            # (the holiday-covers case is handled above) — no data
+            # can exist, so a readable EMPTY placeholder is the
+            # truthful content: POSITIVE knowledge → verified (codex
+            # P2: must establish coverage, unlike a blind resume
+            # skip). But VERIFY the placeholder before claiming it
+            # (codex P2 round 2): a corrupt blob or a file holding
+            # unexpected rows (external mutation / interrupted
+            # write) falls through to the re-pull, which overwrites
+            # it with a clean empty placeholder.
+            if self._placeholder_is_clean(path):
+                return "skip_verified", None
+            # Dirty placeholder → re-pull (no freshness compare:
+            # there is no expected date to compare against).
+            return "refetch", None
+        file_max = self._read_file_max_trade_date(path)
+        if file_max is not None and file_max >= expected_boundary:
+            # Content POSITIVELY confirmed complete for this
+            # run's range — verified, establishes coverage
+            # (codex P2).
+            return "skip_verified", None
+        # Stale (max < expected), empty-but-data-possible, or
+        # unreadable: re-pull the WHOLE year (one API call —
+        # same cost as fetching a single day) and overwrite. A
+        # failure below leaves the old file in place and
+        # records a hole; the file stays stale, so the next
+        # run re-attempts it (self-healing without any extra
+        # bookkeeping).
+        return "refetch", expected_boundary
+
+    def _fetch_ticker_year(
+        self, *, endpoint: str, ticker: str, year_start: str, year_end: str,
+        fields: str, path: Path, unit: str,
+    ) -> Any | None:
+        """One (ticker, year) pull + atomic write (P4 extraction —
+        behavior-preserving). Returns the written frame, or ``None`` when
+        nothing was written: a recorded hole (continue-on-error), or an
+        empty response with placeholder-writing disabled."""
+        try:
+            df = self._safe_call(
+                endpoint,
+                ts_code=ticker,
+                start_date=year_start,
+                end_date=year_end,
+                fields=fields,
+            )
+        except FetchHoleError as hole:
+            self._record_hole(endpoint, unit, hole)
+            return None
+        if df.empty and not self._config.write_empty_placeholders:
+            return None
+        atomic_write_parquet(df, path)
+        return df
+
+    def _check_systemic_shortfall(
+        self, *, endpoint: str, still_short: list[str], rechecked: int,
+        short_by_year: dict[int, int], universe_by_year: dict[int, int],
+    ) -> None:
+        """Aggregate shortfall verdict after the fetch loop (P4 extraction —
+        behavior-preserving; the PR #271 systemic-vs-idiosyncratic gate)."""
+        if not still_short:
+            return
+        # SYSTEMIC decision (PR #271): a single year where the shortfall
+        # covers more than SYSTEMIC_SHORTFALL_UNIVERSE_RATIO of that year's
+        # in-window UNIVERSE — a PRE-CLOSE run (the current year is ~100%
+        # short of its latest bar) or a whole-year vendor truncation.
+        # Measured vs the universe (not the re-checked subset), so years of
+        # accumulated legitimate suspensions/delists on a backfill — and
+        # even a market-wide suspension wave — stay below the bar and remain
+        # the loud per-unit warning rather than a build-blocking hole.
+        systemic_years = sorted(
+            y for y, s in short_by_year.items()
+            if s >= SYSTEMIC_SHORTFALL_MIN_CHECKED
+            and s / universe_by_year[y] > SYSTEMIC_SHORTFALL_UNIVERSE_RATIO
+        )
+        if systemic_years:
+            # Record an ENDPOINT hole so the run exits 3 and the P3-4c build
+            # gate refuses the dump.
+            y0 = systemic_years[0]
+            self._add_hole(
+                endpoint,
+                "systemic-shortfall",
+                reason_class="systemic_shortfall",
+                attempts=1,
+                last_error=(
+                    f"year(s) {systemic_years} came back almost entirely "
+                    f"short ({short_by_year[y0]}/{universe_by_year[y0]} of "
+                    f"year {y0}'s in-window universe) — a pre-close run "
+                    f"(today's bars not yet published) or whole-year "
+                    f"vendor-side truncation."
+                )[:300],
+            )
+        else:
+            # Idiosyncratic: the vendor's complete answer for tickers
+            # suspended through a slice end or delisted before their delist
+            # date. On a multi-year backfill this is where the years of
+            # accumulated legitimate shorts land. Loud, never a
+            # build-blocking hole (so silent deep-history truncation of an
+            # already-attested year still leaves a visible signal — re-run
+            # with --verify-all-years to convert it into a checked hole).
+            _logger.warning(
+                "  %s: %d of %d re-checked re-pull(s) STILL end before "
+                "their expected boundary after a fresh full-year pull "
+                "(first: %s). No single year exceeds the systemic universe "
+                "threshold, so this is the vendor's complete answer — normal "
+                "for tickers suspended through a slice end or delisted before "
+                "their delist date; if neither applies, suspect silent vendor "
+                "truncation and re-run with --verify-all-years after checking "
+                "the source.",
+                endpoint, len(still_short), rechecked,
+                "; ".join(still_short[:3]),
+            )
+
     def _fetch_per_ticker_per_year(
         self, *, endpoint: str, subdir: str, fields: str,
     ) -> TushareFetchResult:
-        """Common loop for ``daily`` / ``adj_factor`` / ``daily_basic`` — per (year, ticker)."""
+        """Common loop for ``daily`` / ``adj_factor`` / ``daily_basic`` — per (year, ticker).
+
+        P4 split (behavior-preserving): the freshness verdict for existing
+        files lives in ``_scan_year_freshness``, the single-unit pull+write
+        in ``_fetch_ticker_year``, and the post-loop aggregate shortfall
+        verdict in ``_check_systemic_shortfall``.
+        """
         try:
             tickers = self._load_ticker_universe()
         except TushareFetcherError:
@@ -899,53 +1047,19 @@ class TushareFetcher:
                     is not None
                 )
                 if path.exists() and not force_retry:
-                    if not scan_year:
-                        # Attested by the prior manifest's watermark — closed
-                        # history this run cannot expect more from. A BLIND
-                        # skip: proves nothing, establishes nothing.
+                    verdict, recheck_boundary = self._scan_year_freshness(
+                        path=path, scan_year=scan_year,
+                        holiday_only_existing=holiday_only_existing,
+                        expected_boundary=expected_boundary,
+                    )
+                    if verdict == "skip_blind":
                         skipped += 1
                         continue
-                    if holiday_only_existing:
+                    if verdict == "skip_verified":
                         skipped += 1
                         verified += 1
                         continue
-                    expected = expected_boundary
-                    if expected is None:
-                        # The ticker's listing window MISSES this year slice
-                        # (the holiday-covers case is handled above) — no data
-                        # can exist, so a readable EMPTY placeholder is the
-                        # truthful content: POSITIVE knowledge → verified (codex
-                        # P2: must establish coverage, unlike a blind resume
-                        # skip). But VERIFY the placeholder before claiming it
-                        # (codex P2 round 2): a corrupt blob or a file holding
-                        # unexpected rows (external mutation / interrupted
-                        # write) falls through to the re-pull, which overwrites
-                        # it with a clean empty placeholder.
-                        if self._placeholder_is_clean(path):
-                            skipped += 1
-                            verified += 1
-                            continue
-                        # Dirty placeholder → re-pull (no freshness compare:
-                        # there is no expected date to compare against).
-                        stale_refetched += 1
-                    else:
-                        file_max = self._read_file_max_trade_date(path)
-                        if file_max is not None and file_max >= expected:
-                            # Content POSITIVELY confirmed complete for this
-                            # run's range — verified, establishes coverage
-                            # (codex P2).
-                            skipped += 1
-                            verified += 1
-                            continue
-                        # Stale (max < expected), empty-but-data-possible, or
-                        # unreadable: re-pull the WHOLE year (one API call —
-                        # same cost as fetching a single day) and overwrite. A
-                        # failure below leaves the old file in place and
-                        # records a hole; the file stays stale, so the next
-                        # run re-attempts it (self-healing without any extra
-                        # bookkeeping).
-                        stale_refetched += 1
-                        recheck_boundary = expected
+                    stale_refetched += 1  # verdict == "refetch"
                 else:
                     # MISSING file (first run / new ticker / new year) OR a
                     # force-retried existing file: both fetch below and both
@@ -974,20 +1088,13 @@ class TushareFetcher:
                             endpoint, len(tickers), year,
                         )
                     continue
-                try:
-                    df = self._safe_call(
-                        endpoint,
-                        ts_code=ticker,
-                        start_date=year_start,
-                        end_date=year_end,
-                        fields=fields,
-                    )
-                except FetchHoleError as hole:
-                    self._record_hole(endpoint, f"ts_code={ticker} year={year}", hole)
+                df = self._fetch_ticker_year(
+                    endpoint=endpoint, ticker=ticker,
+                    year_start=year_start, year_end=year_end,
+                    fields=fields, path=path, unit=unit,
+                )
+                if df is None:
                     continue
-                if df.empty and not self._config.write_empty_placeholders:
-                    continue
-                atomic_write_parquet(df, path)
                 written += 1
                 rows += len(df)
                 # codex P1 round 3: re-check a freshness-rule re-pull against
@@ -1017,57 +1124,10 @@ class TushareFetcher:
                 "complete and re-pulled %d stale/incomplete one(s) (P3-7b).",
                 endpoint, verified, stale_refetched,
             )
-        if still_short:
-            # SYSTEMIC decision (PR #271): a single year where the shortfall
-            # covers more than SYSTEMIC_SHORTFALL_UNIVERSE_RATIO of that year's
-            # in-window UNIVERSE — a PRE-CLOSE run (the current year is ~100%
-            # short of its latest bar) or a whole-year vendor truncation.
-            # Measured vs the universe (not the re-checked subset), so years of
-            # accumulated legitimate suspensions/delists on a backfill — and
-            # even a market-wide suspension wave — stay below the bar and remain
-            # the loud per-unit warning rather than a build-blocking hole.
-            systemic_years = sorted(
-                y for y, s in short_by_year.items()
-                if s >= SYSTEMIC_SHORTFALL_MIN_CHECKED
-                and s / universe_by_year[y] > SYSTEMIC_SHORTFALL_UNIVERSE_RATIO
-            )
-            if systemic_years:
-                # Record an ENDPOINT hole so the run exits 3 and the P3-4c build
-                # gate refuses the dump.
-                y0 = systemic_years[0]
-                self._add_hole(
-                    endpoint,
-                    "systemic-shortfall",
-                    reason_class="systemic_shortfall",
-                    attempts=1,
-                    last_error=(
-                        f"year(s) {systemic_years} came back almost entirely "
-                        f"short ({short_by_year[y0]}/{universe_by_year[y0]} of "
-                        f"year {y0}'s in-window universe) — a pre-close run "
-                        f"(today's bars not yet published) or whole-year "
-                        f"vendor-side truncation."
-                    )[:300],
-                )
-            else:
-                # Idiosyncratic: the vendor's complete answer for tickers
-                # suspended through a slice end or delisted before their delist
-                # date. On a multi-year backfill this is where the years of
-                # accumulated legitimate shorts land. Loud, never a
-                # build-blocking hole (so silent deep-history truncation of an
-                # already-attested year still leaves a visible signal — re-run
-                # with --verify-all-years to convert it into a checked hole).
-                _logger.warning(
-                    "  %s: %d of %d re-checked re-pull(s) STILL end before "
-                    "their expected boundary after a fresh full-year pull "
-                    "(first: %s). No single year exceeds the systemic universe "
-                    "threshold, so this is the vendor's complete answer — normal "
-                    "for tickers suspended through a slice end or delisted before "
-                    "their delist date; if neither applies, suspect silent vendor "
-                    "truncation and re-run with --verify-all-years after checking "
-                    "the source.",
-                    endpoint, len(still_short), rechecked,
-                    "; ".join(still_short[:3]),
-                )
+        self._check_systemic_shortfall(
+            endpoint=endpoint, still_short=still_short, rechecked=rechecked,
+            short_by_year=short_by_year, universe_by_year=universe_by_year,
+        )
         return TushareFetchResult(
             endpoint, written, rows, skipped, units_verified=verified,
         )
