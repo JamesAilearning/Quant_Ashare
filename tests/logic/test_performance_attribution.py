@@ -549,23 +549,33 @@ class BenchWeightMethodTests(unittest.TestCase):
             BENCH_WEIGHT_METHOD_EQUAL_PROXY,
         )
 
-    def test_validate_rejects_market_cap_without_weights(self) -> None:
-        """``'market_cap'`` is reserved but not implemented — must raise.
-
-        This protects against the misnomer trap: if validation silently
-        accepted ``'market_cap'`` while the engine still computed equal
-        weights, the result would be published under the wrong
-        ``bench_weight_method`` label.
+    def test_validate_rejects_market_cap_without_weights_or_provider(self) -> None:
+        """``'market_cap'`` with NEITHER explicit weights NOR a PIT provider
+        must raise (audit P6). The misnomer trap stays closed: equal weights
+        are never published under the market_cap label.
         """
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
             with self.assertRaisesRegex(
-                PerformanceAttributionError, "requires.*benchmark_weights"
+                PerformanceAttributionError, "PITDataProvider"
             ):
                 PerformanceAttribution._validate(
                     config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP),
                     return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
                     positions=None,
                 )
+
+    def test_validate_accepts_market_cap_with_provider(self) -> None:
+        # audit P6: a run-level provider is the approved automatic source —
+        # validation passes; the weights themselves are built later.
+        from unittest.mock import MagicMock
+
+        with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
+            PerformanceAttribution._validate(
+                config=AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP),
+                return_series={"return": {"2025-10-01": 0.01}, "bench": {"2025-10-01": 0.005}},
+                positions=None,
+                pit_provider=MagicMock(),
+            )
 
     def test_validate_rejects_explicit_without_weights(self) -> None:
         with patch("src.core.performance_attribution.is_canonical_qlib_initialized", return_value=True):
@@ -899,6 +909,123 @@ class MonthlyBenchmarkGapTests(unittest.TestCase):
         jan = [r for r in result if r.year == 2025 and r.month == 1]
         self.assertEqual(len(jan), 1)
         self.assertFalse(math.isnan(jan[0].benchmark_return))
+
+
+class MarketCapWeightsTests(unittest.TestCase):
+    """Audit P6: free-float-cap benchmark weights from PIT $circ_mv, as-of
+    the attribution period start — correctness, as-of no-lookahead, and the
+    fail-loud contract (never a silent equal fallback / partial drop)."""
+
+    @staticmethod
+    def _panel(rows: dict[tuple[str, str], float]):
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [(inst, pd.Timestamp(d)) for (inst, d) in rows],
+            names=["instrument", "datetime"],
+        )
+        return pd.DataFrame({"$circ_mv": list(rows.values())}, index=idx)
+
+    def _weights(self, panel, instruments=("SH600000", "SH600001"),
+                 start="2021-04-01"):
+        from unittest.mock import MagicMock
+
+        pit = MagicMock()
+        pit.get_features.return_value = panel
+        cfg = AttributionConfig(
+            bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP,
+            start_date=start, end_date="2021-06-30",
+        )
+        weights = PerformanceAttribution._resolve_benchmark_weights(
+            list(instruments), cfg, pit_provider=pit,
+        )
+        return weights, pit
+
+    def test_weights_proportional_to_asof_circ_mv(self) -> None:
+        panel = self._panel({
+            ("SH600000", "2021-03-30"): 300.0,
+            ("SH600001", "2021-03-30"): 100.0,
+        })
+        weights, pit = self._weights(panel)
+        self.assertAlmostEqual(weights["SH600000"], 0.75)
+        self.assertAlmostEqual(weights["SH600001"], 0.25)
+        self.assertAlmostEqual(float(weights.sum()), 1.0)
+        # the fetch is strictly bounded at T0 — the provider is never even
+        # ASKED for in-period values (as-of no-lookahead by construction)
+        args, kwargs = pit.get_features.call_args
+        self.assertEqual(args[0], ["$circ_mv"])
+        self.assertEqual(args[2], "2021-04-01")  # end == T0
+
+    def test_asof_takes_last_value_at_or_before_t0(self) -> None:
+        # a stale early value must lose to the freshest value <= T0 — and a
+        # LOOKAHEAD TRAP: even if a (mis-behaving) provider returned rows
+        # after T0, values beyond the fetch window play no role because the
+        # last row <= T0 is what the weights read. Here the trap value would
+        # flip the ordering if leaked.
+        panel = self._panel({
+            ("SH600000", "2021-03-15"): 50.0,
+            ("SH600000", "2021-03-31"): 300.0,   # freshest <= T0 -> wins
+            ("SH600001", "2021-03-31"): 100.0,
+        })
+        weights, _ = self._weights(panel)
+        self.assertAlmostEqual(weights["SH600000"], 0.75)
+
+    def test_missing_instrument_fails_loud(self) -> None:
+        panel = self._panel({("SH600000", "2021-03-30"): 300.0})
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "no as-of"
+        ):
+            self._weights(panel)
+
+    def test_all_nan_instrument_fails_loud(self) -> None:
+        import math as _math
+
+        panel = self._panel({
+            ("SH600000", "2021-03-30"): 300.0,
+            ("SH600001", "2021-03-30"): _math.nan,
+        })
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "no as-of"
+        ):
+            self._weights(panel)
+
+    def test_non_positive_cap_fails_loud(self) -> None:
+        panel = self._panel({
+            ("SH600000", "2021-03-30"): 300.0,
+            ("SH600001", "2021-03-30"): 0.0,
+        })
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "non-positive"
+        ):
+            self._weights(panel)
+
+    def test_empty_panel_fails_loud(self) -> None:
+        panel = self._panel({})
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "daily_basic"
+        ):
+            self._weights(panel)
+
+    def test_no_provider_fails_loud(self) -> None:
+        cfg = AttributionConfig(
+            bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP,
+            start_date="2021-04-01", end_date="2021-06-30",
+        )
+        with self.assertRaisesRegex(
+            PerformanceAttributionError, "PITDataProvider"
+        ):
+            PerformanceAttribution._resolve_benchmark_weights(
+                ["SH600000"], cfg, pit_provider=None,
+            )
+
+    def test_effective_label_is_market_cap(self) -> None:
+        # the result label must match the weights actually used — the
+        # misnomer discipline the P6 plan demanded be preserved.
+        cfg = AttributionConfig(bench_weight_method=BENCH_WEIGHT_METHOD_MARKET_CAP)
+        self.assertEqual(
+            PerformanceAttribution._effective_bench_weight_method(cfg),
+            BENCH_WEIGHT_METHOD_MARKET_CAP,
+        )
 
 
 if __name__ == "__main__":

@@ -86,10 +86,11 @@ BENCH_WEIGHT_METHOD_EQUAL_PROXY: str = "equal_weight_proxy"
 BENCH_WEIGHT_METHOD_EQUAL: str = "equal"
 BENCH_WEIGHT_METHOD_EXPLICIT: str = "explicit"
 
-# Sentinel for the not-yet-implemented market-cap-weighted variant.
-# Reserved here so callers passing this string get a deterministic
-# "not yet supported" error rather than a silent acceptance that would
-# return equal-weight numbers under the wrong label.
+# Free-float-cap weighting (audit P6, implemented): weights derive from the
+# PIT bundle's $circ_mv as-of the attribution period start, read through the
+# run-level PITDataProvider. Without a provider (and without explicit
+# benchmark_weights) the method FAILS LOUD — never a silent equal-weight
+# result under the market_cap label (the misnomer trap stays closed).
 BENCH_WEIGHT_METHOD_MARKET_CAP: str = "market_cap"
 
 _SUPPORTED_BENCH_WEIGHT_METHODS: frozenset[str] = frozenset(
@@ -118,11 +119,15 @@ class AttributionConfig:
     #   sector-level allocation/selection effects when the real index is
     #   concentrated in a subset of names.  :meth:`print_report` surfaces
     #   this caveat in the report header.
-    # * ``"market_cap"``: reserved for a future free-float-cap weighting.
-    #   Currently raises :class:`PerformanceAttributionError` with a
-    #   "not yet supported" message; this keeps the misnomer trap closed
-    #   (silently accepting the value while still using equal weights
-    #   would publish results under the wrong label).
+    # * ``"market_cap"`` (audit P6): free-float-cap weights from the PIT
+    #   bundle's ``$circ_mv``, as-of the attribution period's first day
+    #   (strictly ``<= T0``), read through the run-level
+    #   ``PITDataProvider``. Requires either explicit ``benchmark_weights``
+    #   or a ``pit_provider`` — with neither, attribution FAILS LOUD (the
+    #   misnomer trap stays closed: equal weights are never published
+    #   under the market_cap label). HONEST APPROXIMATION: ``circ_mv``
+    #   weighting approximates the official CSI 300 tiered free-float
+    #   methodology (分级靠档); the tiering steps are not reproduced.
     bench_weight_method: str = BENCH_WEIGHT_METHOD_EQUAL_PROXY
 
     # Optional static ``{instrument: weight}`` mapping for the Brinson
@@ -278,7 +283,7 @@ class PerformanceAttribution:
         if config is None:
             config = AttributionConfig()
 
-        cls._validate(config, return_series, positions)
+        cls._validate(config, return_series, positions, pit_provider=pit_provider)
         cls._validate_predictions(predictions)
         if pit_provider is not None:
             cls._validate_pit_provider_alignment(pit_provider)
@@ -378,6 +383,7 @@ class PerformanceAttribution:
         config: AttributionConfig,
         return_series: Mapping[str, Any],
         positions: Mapping[str, Mapping[str, float]] | None,
+        pit_provider: Any | None = None,
     ) -> None:
         if not is_canonical_qlib_initialized():
             raise PerformanceAttributionError(
@@ -462,14 +468,33 @@ class PerformanceAttribution:
                 "non-empty {instrument: weight} mapping."
             )
         if (
-            config.bench_weight_method
-            in {BENCH_WEIGHT_METHOD_EXPLICIT, BENCH_WEIGHT_METHOD_MARKET_CAP}
+            config.bench_weight_method == BENCH_WEIGHT_METHOD_EXPLICIT
             and config.benchmark_weights is None
         ):
             raise PerformanceAttributionError(
                 f"bench_weight_method={config.bench_weight_method!r} requires "
                 "AttributionConfig.benchmark_weights. This module does not "
                 "fetch or infer benchmark constituent weights implicitly."
+            )
+        # market_cap (audit P6): the approved source of truth is the PIT
+        # bundle's $circ_mv read through the run-level PITDataProvider —
+        # WITHOUT one (and without explicit weights) attribution refuses
+        # up front; an equal-weight fallback under the market_cap label is
+        # exactly the misnomer trap this fail-fast validation exists to
+        # close.
+        if (
+            config.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP
+            and config.benchmark_weights is None
+            and pit_provider is None
+        ):
+            raise PerformanceAttributionError(
+                "bench_weight_method='market_cap' without explicit "
+                "benchmark_weights requires the run-level PITDataProvider "
+                "(configure delisted_registry_path so the engine constructs "
+                "one, or pass pit_provider=...) — free-float caps are read "
+                "through the §4.3.2 layer, and silently falling back to "
+                "equal weights under the market_cap label is refused "
+                "(audit P6)."
             )
         # Industry override / taxonomy id pairing — both must be set
         # together, never just one. Without this guard a caller could
@@ -705,7 +730,9 @@ class PerformanceAttribution:
         else:
             port_weights = cls._predictions_to_weights(predictions)
 
-        bench_weights = cls._resolve_benchmark_weights(instruments, config)
+        bench_weights = cls._resolve_benchmark_weights(
+            instruments, config, pit_provider=pit_provider,
+        )
 
         # Get per-instrument returns over the period
         inst_returns = cls._get_instrument_returns(
@@ -786,11 +813,114 @@ class PerformanceAttribution:
             return BENCH_WEIGHT_METHOD_EQUAL_PROXY
         return config.bench_weight_method
 
+    # As-of lookback for the free-float cap fetch (audit P6): the attribution
+    # period's first day T0 can fall inside a suspension for individual names
+    # — the last published $circ_mv within this many CALENDAR days up to (and
+    # including) T0 is used. 30 days tolerates long suspensions without
+    # reaching into a materially different capitalization regime.
+    _MARKET_CAP_ASOF_LOOKBACK_DAYS: int = 30
+
+    @classmethod
+    def _market_cap_weights(
+        cls,
+        instruments: Sequence[str],
+        config: AttributionConfig,
+        pit_provider: Any,
+    ) -> Any:
+        """Free-float-cap benchmark weights, as-of the period start (audit P6).
+
+        Source of truth: the PIT bundle's ``$circ_mv`` (free-float market
+        cap from ``daily_basic``) read through the run-level
+        ``PITDataProvider`` — the single sanctioned §4.3.2 door; this module
+        deliberately opens NO new direct ``D.features`` bypass. As-of
+        semantics: for each analyzed instrument, the LAST published value at
+        or before the attribution period's first day (strictly ``<= T0``,
+        within a bounded lookback) — never a value from inside the period
+        (that would grade the benchmark with future capitalization).
+
+        HONEST APPROXIMATION (project convention): ``circ_mv`` weighting
+        approximates the official CSI 300 methodology, which applies TIERED
+        free-float ratios (分级靠档) on top of the free-float cap; the
+        tiering steps are not reproduced here. The analyzed universe is the
+        PREDICTIONS universe — for canonical ``csi300`` runs it is already
+        PIT-membered upstream (qlib instruments intervals), so membership is
+        not re-derived here.
+
+        FAIL-LOUD: a missing provider, an instrument with no as-of value in
+        the lookback, or a non-positive/non-finite cap refuses attribution —
+        never a silent equal-weight fallback under the ``market_cap`` label
+        and never a silent partial drop.
+        """
+        import pandas as pd
+
+        if pit_provider is None:
+            raise PerformanceAttributionError(
+                "bench_weight_method='market_cap' requires the run-level "
+                "PITDataProvider (configure delisted_registry_path so the "
+                "engine constructs one, or pass pit_provider=...) — "
+                "free-float caps are read through the §4.3.2 layer; "
+                "guessing weights is refused (audit P6)."
+            )
+        t0 = pd.Timestamp(config.start_date)
+        lookback_start = t0 - pd.Timedelta(days=cls._MARKET_CAP_ASOF_LOOKBACK_DAYS)
+        panel = pit_provider.get_features(
+            ["$circ_mv"],
+            lookback_start.strftime("%Y-%m-%d"),
+            t0.strftime("%Y-%m-%d"),
+            instruments=list(instruments),
+        )
+        if panel is None or len(panel) == 0:
+            raise PerformanceAttributionError(
+                "market_cap weights: no $circ_mv rows in "
+                f"[{lookback_start.date()}, {t0.date()}] for the analyzed "
+                "universe — the PIT bundle lacks daily_basic coverage for "
+                "this window. Rebuild the bundle with daily_basic, or use "
+                "explicit benchmark_weights / the equal-weight proxy."
+            )
+        col = panel["$circ_mv"]
+        caps: dict[str, float] = {}
+        missing: list[str] = []
+        for inst in instruments:
+            try:
+                series = col.xs(inst, level="instrument").sort_index().dropna()
+            except KeyError:
+                missing.append(inst)
+                continue
+            if series.empty:
+                missing.append(inst)
+                continue
+            # as-of value: last published <= T0 (the fetch window's end)
+            caps[inst] = float(series.iloc[-1])
+        if missing:
+            raise PerformanceAttributionError(
+                f"market_cap weights: {len(missing)} of {len(list(instruments))} "
+                "analyzed instrument(s) have no as-of $circ_mv within "
+                f"{cls._MARKET_CAP_ASOF_LOOKBACK_DAYS} calendar days up to "
+                f"{t0.date()} (first: {missing[:5]}). Refusing to guess or "
+                "silently drop them — fix daily_basic coverage or pass "
+                "explicit benchmark_weights (audit P6, no-silent-fallback)."
+            )
+        bad = sorted(
+            inst for inst, cap in caps.items()
+            if not math.isfinite(cap) or cap <= 0
+        )
+        if bad:
+            raise PerformanceAttributionError(
+                f"market_cap weights: non-positive/non-finite as-of $circ_mv "
+                f"for {bad[:5]} — corrupt daily_basic data; refusing to "
+                "weight the benchmark with it (audit P6)."
+            )
+        total = sum(caps.values())
+        return pd.Series(
+            {inst: caps[inst] / total for inst in instruments}, dtype=float,
+        )
+
     @classmethod
     def _resolve_benchmark_weights(
         cls,
         instruments: Sequence[str],
         config: AttributionConfig,
+        pit_provider: Any | None = None,
     ) -> Any:
         """Build the Brinson benchmark weight vector for ``instruments``."""
         import pandas as pd
@@ -802,10 +932,13 @@ class PerformanceAttribution:
             )
 
         if config.benchmark_weights is None:
-            if config.bench_weight_method in {
-                BENCH_WEIGHT_METHOD_EXPLICIT,
-                BENCH_WEIGHT_METHOD_MARKET_CAP,
-            }:
+            if config.bench_weight_method == BENCH_WEIGHT_METHOD_MARKET_CAP:
+                # Audit P6: the approved automatic source — PIT free-float
+                # caps as-of the period start (see _market_cap_weights).
+                return cls._market_cap_weights(
+                    instrument_list, config, pit_provider,
+                )
+            if config.bench_weight_method == BENCH_WEIGHT_METHOD_EXPLICIT:
                 raise PerformanceAttributionError(
                     f"bench_weight_method={config.bench_weight_method!r} requires "
                     "AttributionConfig.benchmark_weights."
