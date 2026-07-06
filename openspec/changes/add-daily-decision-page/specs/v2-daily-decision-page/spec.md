@@ -71,9 +71,13 @@ directory resolved from `QUANT_DECISION_JOURNAL_DIR` (default
 tree; the variable SHALL be registered in `docs/operations-env-vars.md`). Each
 line is a single JSON object:
 `{"journal_version": 1, "trade_date", "code", "action": "adopt|reject|watch",
-"reason", "rank", "score", "model_id", "decided_at"}` where `trade_date` SHALL
-be copied from the selected artifact's `as_of_date` (never the local clock) and
-`decided_at` SHALL be an Asia/Shanghai ISO8601 timestamp with explicit offset.
+"reason", "rank", "score", "model_id", "decided_at", "nonce"}` where
+`trade_date` SHALL be copied from the selected artifact's `as_of_date` (never
+the local clock), `decided_at` SHALL be an Asia/Shanghai ISO8601 timestamp with
+explicit offset, and `nonce` SHALL be the uuid4 minted when the submitting form
+rendered — PERSISTED so a rerun replay (same nonce) is distinguishable from a
+later intentional correction (fresh nonce); without it the idempotency check
+below could not tell the two apart (codex P2 on #328).
 The file SHALL be UTF-8 without BOM with `\n` line endings written in binary
 mode. Entries are never modified or deleted; a correction is a NEW appended
 entry, and the read function SHALL implement supersede semantics: for the same
@@ -96,7 +100,10 @@ Submission SHALL go through an explicit button; the form SHALL mint a uuid4
 nonce at render time (held in session state), and the append function SHALL
 refuse to append when an entry with the same `(trade_date, code, nonce)`
 already exists in the file — so a Streamlit rerun replaying the same submission
-cannot produce a duplicate line. Each append SHALL build the complete line
+cannot produce a duplicate line. The nonce is part of the persisted schema
+(above), which is what makes the dedupe SAFE: a deliberate correction renders a
+fresh form and therefore carries a NEW nonce, so it can never be suppressed by
+the replay check. Each append SHALL build the complete line
 (including the trailing `\n`) before a single write+flush on a binary append
 handle, so an interrupted process never leaves a torn line mid-file. The reader
 SHALL skip malformed lines without crashing, count them, and the page SHALL

@@ -82,7 +82,7 @@ instruments、topk),作为 `DailyRecommendationResult.run_meta` 必填字段(无
 
 | # | 威胁 | 拦截手段 | 单测 |
 |---|------|----------|------|
-| 1 | Streamlit rerun 双重追加 | 显式按钮提交;表单渲染时铸造 uuid4 nonce 存 session_state;`append_decision()` 落盘前扫描文件,`(trade_date, code, nonce)` 已存在则拒绝追加(幂等) | 同 nonce 连调两次 append → 文件恰 1 行 |
+| 1 | Streamlit rerun 双重追加 | 显式按钮提交;表单渲染时铸造 uuid4 nonce 存 session_state;**nonce 落盘进行内(schema 第 10 字段,codex P2)**;`append_decision()` 落盘前扫描文件,`(trade_date, code, nonce)` 已存在则拒绝追加——重放(同 nonce)可判别、有意更正(新表单=新 nonce)绝不被抑制 | 同 nonce 连调两次 append → 文件恰 1 行;新 nonce 同 (trade_date,code) → 正常追加 |
 | 2 | 部分写入留半行 | 先拼完整行字节(含行尾)再单次 write+flush(binary append);读取端逐行 json 解析,坏行跳过并计数,页面 WARN 显示坏行数,不崩 | fixture 含截断行 → 读取返回完好行 + issue 计数 |
 | 3 | Windows CRLF 污染 | binary 模式写 + 显式 `b"\n"`(#321 教训) | 字节级断言:文件无 `b"\r"`,行尾恰为 `b"}\n"` |
 | 4 | 时钟/时区错位 | `trade_date` 只取自所选推荐工件的 `as_of_date`(绝不取本机日期);`decided_at` = `zoneinfo("Asia/Shanghai")` 带偏移 ISO8601 | 断言 trade_date 与工件一致;decided_at 含 +08:00 偏移 |
@@ -91,7 +91,8 @@ instruments、topk),作为 `DailyRecommendationResult.run_meta` 必填字段(无
 ## 既定设计决定(不重开,原样落地)
 
 页面结构三区块、横幅缺字段 WARN 不降级、候选表只读附 30bps 成本参照、日志 schema
-(`journal_version:1` + 8 字段)、append-only + 同 `(trade_date,code)` 以 `decided_at`
+(`journal_version:1` + 8 字段,**另加 `nonce` 落盘字段**——调和工单 §2 schema 与 §3
+威胁-1 幂等键的必要一致解,codex P2 on #328)、append-only + 同 `(trade_date,code)` 以 `decided_at`
 最新者为准的 supersede 读取语义、UTF-8 无 BOM + `\n`、日志归 web/ 层所有——均按开工单
 §2 原样执行,本提案不重议。
 
