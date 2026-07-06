@@ -20,11 +20,30 @@
 - [x] Baseline spec requirement rewritten from "reserved, SHALL fail" to
       the implemented contract (delta in this change; baseline synced in
       the same PR per the #322/#326 archive lesson).
-- [ ] reconciliation_residual comparison (equal proxy vs market_cap) on real
-      fold data — ATTEMPTED locally (fold_05 of the stage-6 baseline run,
-      full universe AND a held-universe subset): the STANDALONE attribution
-      path on a cold process exceeds 8 minutes wall-clock per call on this
-      box, so the honest comparison is DEFERRED to the first engine-context
-      exercise of market_cap (in-process warm caches, seconds per fold) —
-      record the numbers then. Never fabricated from synthetic data.
+- [x] reconciliation_residual comparison (equal proxy vs market_cap) on REAL
+      fold data — measured on 4 folds of the stage-6 baseline run (full
+      300-instrument universe; the earlier "standalone attribution hangs
+      >8min" was diagnosed as qlib's multiprocessing pool failing Windows
+      handle duplication under a non-interactive shell — `C["kernels"]=1`
+      makes the whole comparison ~6s/fold):
+
+      | fold | quarter | eq residual | mc residual | mc/eq |
+      |---|---|---|---|---|
+      | 01 | 2020Q3 | −0.1111 | −0.1158 | 1.04 |
+      | 05 | 2021Q3 | +0.0941 | +0.0608 | 0.65 |
+      | 12 | 2023Q2 | +0.0338 | +0.0626 | 1.85 |
+      | 20 | 2025Q2 | +0.0486 | +0.0667 | 1.37 |
+
+      **HONEST FINDING: the plan's expectation ("market_cap 下残差应显著小于
+      等权代理") is NOT uniformly confirmed** — 1 fold markedly tighter, 1
+      flat, 2 wider. The residual bundles more than weight fidelity: the
+      Brinson bench leg (Σ w·rᵢ over the ANALYZED universe, price returns)
+      is reconciled against the OFFICIAL SH000300TR total-return index, so
+      universe coverage, dividends, and the untiered-vs-分级靠档 gap all
+      land in it. The feature's justification stands on methodology (the
+      cap-weighted bench leg is the correct benchmark model for a
+      cap-weighted index; the misnomer trap stays closed) — not on a
+      residual improvement this data does not show. All four folds exceed
+      the 50bps RECONCILIATION_WARN_THRESHOLD under BOTH methods (it is a
+      WARN, not a gate; unchanged by this change).
 - [ ] CI green (REGEN-2 leg = anchor unchanged proof); codex clean; merge.
