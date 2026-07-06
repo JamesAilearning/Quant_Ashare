@@ -177,8 +177,9 @@ def make_entry(
         parsed = _parse_decided_at(decided_at)
         if parsed is None:
             raise DecisionJournalError(
-                "decided_at must be a tz-aware ISO8601 timestamp; got "
-                f"{decided_at!r}."
+                "decided_at must be a tz-aware ISO8601 timestamp with the "
+                f"+08:00 offset (Asia/Shanghai, per the journal contract); "
+                f"got {decided_at!r}."
             )
     return DecisionEntry(
         journal_version=JOURNAL_VERSION,
@@ -275,14 +276,23 @@ def read_journal(*, journal_dir: str | Path | None = None) -> JournalReadResult:
 
 
 def _parse_decided_at(value: str) -> datetime | None:
-    """A tz-AWARE ISO8601 timestamp, or None. Naive timestamps are rejected —
-    comparing naive against aware raises, and a naive decided_at is exactly
-    the clock/timezone confusion the contract forbids."""
+    """An ISO8601 timestamp carrying EXACTLY the +08:00 offset, or None.
+
+    Naive timestamps are rejected (comparing naive against aware raises, and
+    a naive decided_at is exactly the clock/timezone confusion the contract
+    forbids). Other offsets are rejected too: the persisted schema pins
+    Asia/Shanghai +08:00 rows — admitting e.g. ``+00:00`` would let
+    valid-looking lines violate the contract and render operator-local times
+    inconsistently (codex P2 on #330). Shared by the writer (make_entry) and
+    the reader (_parse_line): one check point, symmetric boundaries.
+    """
     try:
         parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
     if parsed.tzinfo is None:
+        return None
+    if parsed.utcoffset() != timedelta(hours=8):
         return None
     return parsed
 

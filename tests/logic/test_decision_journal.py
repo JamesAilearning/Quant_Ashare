@@ -182,6 +182,32 @@ class T4ClockAndTimezoneTests(unittest.TestCase):
         with self.assertRaisesRegex(DecisionJournalError, "tz-aware"):
             _entry(decided_at="2026-07-03T18:30:00")  # naive -> refused
 
+    def test_non_cn_offset_rejected_write_and_read(self) -> None:
+        # codex P2 on #330: the contract pins +08:00 rows. Another offset must
+        # be refused by the writer AND counted malformed by the reader —
+        # otherwise valid-looking lines violate the persisted schema and
+        # render inconsistent operator-local times.
+        import json as _json
+
+        with self.assertRaisesRegex(DecisionJournalError, r"\+08:00"):
+            _entry(decided_at="2026-07-03T10:00:00+00:00")
+        with tempfile.TemporaryDirectory() as tmp:
+            append_decision(_entry(nonce="n1"), journal_dir=tmp)
+            utc_row = {
+                "journal_version": 1, "trade_date": "2026-07-03",
+                "code": "SH600000", "action": "reject", "reason": "utc",
+                "rank": 1, "score": 0.1, "model_id": "m",
+                "decided_at": "2026-07-03T23:00:00+00:00", "nonce": "n-utc",
+            }
+            with journal_path(tmp).open("ab") as fh:
+                fh.write(_json.dumps(utc_row).encode("utf-8") + b"\n")
+            result = read_journal(journal_dir=tmp)
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.malformed_count, 1)
+        self.assertEqual(
+            result.effective[("2026-07-03", "SH600000")].action, "adopt",
+        )
+
 
 class T5SrcBoundaryTests(unittest.TestCase):
     """T5 — the journal is web-layer state: zero references from src/ (it must
