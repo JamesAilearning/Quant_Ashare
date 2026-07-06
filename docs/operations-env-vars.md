@@ -1,15 +1,16 @@
 # Operations: environment variables
 
-The five environment variables an operator sets to run this system on a
+The environment variables an operator sets to run this system on a
 non-default layout. Each `QUANT_*` default equals the historical hardcoded
 path, so behaviour is unchanged where they are unset.
 
 | Variable | Consumed by | Default | Meaning |
 |---|---|---|---|
 | `QUANT_PROVIDER_URI` | `scripts/daily_recommend.py`, operator UI (`config.yaml` `${…}` expansion, bundle-health banner, 数据检视) | `D:/qlib_data/my_cn_data_pit` | The LIVE qlib provider bundle the system scores from. |
-| `QUANT_MODEL_PATH` | `scripts/daily_recommend.py` | `D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl` | The trained model artifact. |
+| `QUANT_MODEL_PATH` | `scripts/daily_recommend.py`, operator UI (今日推荐 model-meta banner) | `D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl` | The trained model artifact. |
 | `QUANT_DELISTED_REGISTRY` | `scripts/daily_recommend.py`, `config_walk.yaml` (`delisted_registry_path` — PIT-masked IC/attribution, audit P2) | `D:/qlib_data/tushare_raw/delisted_registry.parquet` | Delisted registry (PIT survivorship layer). |
 | `QUANT_NAME_SOURCE` | `scripts/daily_recommend.py`, `src/inference/daily_recommend.py` (`RecommendationConfig.name_source_parquet`) | `D:/qlib_data/tushare_raw/active_stocks.parquet` | Active-stocks snapshot: display names + the current-ST exclusion set (carries the embedded `snapshot_date`, P3-5). |
+| `QUANT_DECISION_JOURNAL_DIR` | `web/operator_ui/decision_journal.py` (今日推荐 decision journal) | `D:/stock/operator_journal` | Append-only operator decision journal (JSONL). Lives OUTSIDE the repo's disposable `output/` tree; web-layer state — NEVER an input to official metrics / backtests / training (src/ zero-reference is test-enforced). |
 | `TUSHARE_TOKEN` | `src/data/tushare/client.py` (`TushareClient.from_environment`) | — (required for any fetch) | Tushare API token. NEVER goes in a config file — secrets-in-config is prohibited. |
 
 CLI flags always take precedence over the env default

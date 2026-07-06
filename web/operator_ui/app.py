@@ -74,6 +74,7 @@ elif _completed:
 _ICON_MAP = {
     "作业": "\U0001f4cb",            # 📋
     "配置运行": "\U0001f680",        # 🚀
+    "今日推荐": "\U0001f4dd",        # 📝
     "结果": "\U0001f4c8",            # 📈
     "滚动验证": "\U0001f501",        # 🔁
     "设计系统": "\U0001f3a8",        # 🎨
@@ -163,6 +164,9 @@ _navigation: dict[str, list[Any]] = {
     "运行": [
         st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
         st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
+        # 每日决策页:只读渲染 daily_recommend 落盘工件 + 决策日志
+        # (openspec add-daily-decision-page A2)。不触发任何作业。
+        st.Page(str(_PAGES_DIR / "daily_decision.py"), title="今日推荐"),
     ],
     "分析": [
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
