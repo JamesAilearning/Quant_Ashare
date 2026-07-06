@@ -312,3 +312,21 @@ back onto the trading calendar.
   nominal dates (the embargo gap is taken from the segment tails, not by
   shifting the start anchors)
 
+#### Scenario: a fold without tail execution headroom is not emitted
+
+- **WHEN** a fold's last trading day is the calendar's final bar (the T+1
+  execution bar qlib's built-in shift consumes would not exist —
+  historically the "fold 22" crash, swallowed by per-fold error isolation
+  into a silent NaN placeholder fold)
+- **THEN** the fold generator does not emit that fold (or any later one),
+  logging a WARNING that names the skipped test window and the calendar
+  end — never a fold that can only produce a NaN placeholder
+- **AND** the requirement is one bar INDEPENDENT of
+  `signal_to_execution_lag` (the lag's external component restamps within
+  the fold's own prediction index, so the latest stamp never exceeds the
+  fold's last trading day — requiring `lag` bars would wrongly drop
+  runnable folds)
+- **AND** with ample calendar headroom past `overall_end`, the emitted
+  fold set is unchanged (earlier folds byte-identical when a tail fold is
+  dropped)
+
