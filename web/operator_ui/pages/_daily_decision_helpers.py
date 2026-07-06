@@ -26,7 +26,8 @@ _ARTIFACT_RE = re.compile(r"daily_recommendation_(\d{4}-\d{2}-\d{2})\.json")
 ENV_MODEL_PATH = "QUANT_MODEL_PATH"
 DEFAULT_MODEL_PATH = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
 
-# The four banner fields (工单 §2). Missing ANY of them renders a prominent
+# The banner contract fields (工单 §2 / spec v2-daily-decision-page: model
+# identity = model_path + model_type). Missing ANY of them renders a prominent
 # WARN — never a default, placeholder or inferred value (the suspended-guard
 # failure class this page exists to prevent).
 BANNER_FIELDS: tuple[str, ...] = (
@@ -34,6 +35,7 @@ BANNER_FIELDS: tuple[str, ...] = (
     "train_window",
     "promoted_at",
     "model_path",
+    "model_type",
 )
 
 # Display-only cost reference: 30 bps round-trip (工单 §2, James' decision).
@@ -109,9 +111,6 @@ def banner_status(
             missing.append(field_name)
         else:
             present[field_name] = value
-    # model_type is display-enrichment only (never a gate field).
-    if promo_meta.get("model_type"):
-        present["model_type"] = promo_meta["model_type"]
     return present, tuple(missing)
 
 

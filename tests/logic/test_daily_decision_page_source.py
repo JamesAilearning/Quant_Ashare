@@ -97,6 +97,10 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertIn("train_window", missing)  # empty list == missing
         self.assertIn("promoted_at", missing)
         self.assertNotIn("train_window", values)
+        # model_type is a CONTRACT field (spec: model identity = model_path +
+        # model_type) — its absence must be reported, not treated as optional
+        # display enrichment (codex P2 on #330).
+        self.assertIn("model_type", missing)
 
     def test_artifact_meta_status_v1_and_mismatch(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import (
