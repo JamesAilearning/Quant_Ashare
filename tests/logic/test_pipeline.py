@@ -560,16 +560,20 @@ class AttributionReportSerializationTests(unittest.TestCase):
             reconciliation_residual=0.0465,
             sector_taxonomy=BOARD_HEURISTIC_TAXONOMY_ID,
             bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+            bench_weight_source="equal_proxy",
         )
 
     def test_methodology_fields_persisted_in_json(self) -> None:
-        """All five methodology fields must appear in the JSON dict."""
+        """All methodology fields must appear in the JSON dict."""
         result = self._build_result()
         d = Pipeline._attribution_to_report_dict(result)
         for field in (
             "attribution_method",
             "sector_taxonomy",
             "bench_weight_method",
+            # codex P2 #332: provenance must persist — a report without the
+            # source conflates PIT-derived and caller-supplied market_cap.
+            "bench_weight_source",
             "sector_effects_sum",
             "reconciliation_residual",
         ):
@@ -583,6 +587,7 @@ class AttributionReportSerializationTests(unittest.TestCase):
         self.assertEqual(d["attribution_method"], result.attribution_method)
         self.assertEqual(d["sector_taxonomy"], result.sector_taxonomy)
         self.assertEqual(d["bench_weight_method"], result.bench_weight_method)
+        self.assertEqual(d["bench_weight_source"], result.bench_weight_source)
         self.assertAlmostEqual(d["sector_effects_sum"], result.sector_effects_sum)
         self.assertAlmostEqual(
             d["reconciliation_residual"], result.reconciliation_residual,
