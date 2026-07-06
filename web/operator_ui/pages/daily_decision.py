@@ -141,7 +141,13 @@ elif _meta_status.sha_mismatch is None:
 # ---------------------------------------------------------------------------
 # 候选表(只读透传 + 30bps 成本参照列)
 # ---------------------------------------------------------------------------
-_rows = picks_table_rows(_payload)
+try:
+    _rows = picks_table_rows(_payload)
+except ValueError as _shape_exc:
+    # Shape violation ≠ empty list: a corrupt/incompatible artifact must be
+    # SEEN, not rendered as a benign "no candidates" state (codex P2 on #330).
+    st.error(f"⚠ {_shape_exc}(文件:{_selected_path})")
+    st.stop()
 st.caption(
     f"as_of {_payload.get('as_of_date', '—')} → entry {_payload.get('entry_date', '—')} · "
     f"n_scored={_payload.get('n_scored', '—')} · n_masked={_payload.get('n_masked', '—')} · "
@@ -157,6 +163,15 @@ else:
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("记录决策")
+try:
+    # Resolves + validates the journal location ONCE for the whole section:
+    # a QUANT_DECISION_JOURNAL_DIR pointing under the disposable output/ tree
+    # fails loud here (rendered error, not a raw traceback) before any
+    # append/read is attempted.
+    _journal_file = journal_path()
+except DecisionJournalError as _journal_exc:
+    st.error(f"⚠ 决策日志不可用:{_journal_exc}")
+    st.stop()
 if "dd_nonce" not in st.session_state:
     st.session_state["dd_nonce"] = uuid4().hex
 
@@ -222,7 +237,7 @@ _journal = read_journal()
 if _journal.malformed_count:
     st.warning(
         f"⚠ 决策日志含 {_journal.malformed_count} 行坏行(已跳过未入账;"
-        f"文件:{journal_path()})。"
+        f"文件:{_journal_file})。"
     )
 _today_effective = [
     {
@@ -244,7 +259,7 @@ if _today_effective:
 else:
     st.caption("该交易日尚无决策记录。")
 st.caption(
-    f"日志:{journal_path()}(append-only;更正=追加新条目,同日同代码以 "
+    f"日志:{_journal_file}(append-only;更正=追加新条目,同日同代码以 "
     f"decided_at 最新者生效;共 {len(_journal.entries)} 行有效记录)。"
     "本日志永不作为官方指标输入。"
 )

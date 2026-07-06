@@ -140,6 +140,45 @@ class HelpersRuntimeTests(unittest.TestCase):
             found = list_recommendation_artifacts(root)
         self.assertEqual([d for d, _ in found], ["2026-07-03", "2026-07-01"])
 
+    def test_banner_meta_is_promotion_sidecar_only_no_fallthrough(self) -> None:
+        # codex P2 on #330: a trainer sidecar must NOT stand in for a missing
+        # promotion meta — the banner reports absence loudly instead.
+        import json
+        import tempfile
+
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_promotion_meta,
+            load_trainer_sidecar_sha,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "m.pkl"
+            # ONLY the trainer sidecar exists (no promotion meta).
+            (Path(tmp) / "m.pkl.meta.json").write_text(
+                json.dumps({"pkl_sha256": "ab" * 32, "model_type": "LGBModel"}),
+                encoding="utf-8",
+            )
+            self.assertIsNone(load_promotion_meta(str(model)))
+            self.assertEqual(load_trainer_sidecar_sha(str(model)), "ab" * 32)
+
+    def test_picks_shape_violation_raises_not_empty(self) -> None:
+        # codex P2 on #330: missing/non-list picks is a corrupt artifact —
+        # it must fail loud, never masquerade as the benign empty state.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            picks_table_rows,
+        )
+        with self.assertRaisesRegex(ValueError, "形状违约"):
+            picks_table_rows({})  # picks missing
+        with self.assertRaisesRegex(ValueError, "形状违约"):
+            picks_table_rows({"picks": "not-a-list"})
+        with self.assertRaisesRegex(ValueError, "形状违约"):
+            picks_table_rows({"picks": ["not-a-dict"]})
+        self.assertEqual(picks_table_rows({"picks": []}), [])  # legit empty
+
+    def test_page_renders_shape_violation_and_journal_misconfig(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("except ValueError", page)          # shape error branch
+        self.assertIn("决策日志不可用", page)              # journal misconfig branch
+
     def test_picks_rows_pass_through_only_plus_cost_column(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import (
             picks_table_rows,

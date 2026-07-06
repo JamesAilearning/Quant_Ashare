@@ -59,6 +59,10 @@ _CN_TZ = timezone(timedelta(hours=8))
 
 _TRADE_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# The repo's ``output/`` tree is DISPOSABLE (jobs cleanup / git clean); the
+# journal must never live under it — see the boundary in the module docstring.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class DecisionJournalError(ValueError):
     """Raised on an invalid entry or unusable journal input (fail-loud)."""
@@ -92,11 +96,28 @@ class JournalReadResult:
 
 
 def journal_path(journal_dir: str | Path | None = None) -> Path:
-    """Resolve the journal file path: explicit dir > env var > default."""
+    """Resolve the journal file path: explicit dir > env var > default.
+
+    Fails loud when the resolved directory sits under the repository's
+    DISPOSABLE ``output/`` tree — decisions placed there would become
+    eligible for jobs cleanup / ``git clean`` removal, contradicting the
+    append-only-precious boundary (codex P2 on #330).
+    """
     if journal_dir is not None:
         base = Path(journal_dir)
     else:
         base = Path(os.environ.get(ENV_JOURNAL_DIR, "").strip() or DEFAULT_JOURNAL_DIR)
+    resolved = base.resolve()
+    disposable = (_REPO_ROOT / "output").resolve()
+    if resolved == disposable or resolved.is_relative_to(disposable):
+        raise DecisionJournalError(
+            f"decision journal dir {base} resolves under the repository's "
+            f"disposable output/ tree ({disposable}) — cleanup tooling and "
+            "git clean treat that tree as discardable, but decisions are "
+            "append-only precious state. Point "
+            f"{ENV_JOURNAL_DIR} outside the repository (default: "
+            f"{DEFAULT_JOURNAL_DIR})."
+        )
     return base / JOURNAL_FILENAME
 
 
@@ -296,5 +317,15 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
     if not entry.nonce.strip():
         return None
     if _parse_decided_at(entry.decided_at) is None:
+        return None
+    # Same strict YYYY-MM-DD shape the writer enforces (make_entry): a compact
+    # "20260703" row (prior buggy build / manual edit) would otherwise enter
+    # history/effective with malformed_count == 0 and SPLIT the supersede key
+    # for that trading day (codex P2 on #330) — the reader is the boundary.
+    if not _TRADE_DATE_RE.fullmatch(entry.trade_date):
+        return None
+    try:
+        _date.fromisoformat(entry.trade_date)
+    except ValueError:
         return None
     return entry

@@ -218,6 +218,43 @@ class FailLoudValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(DecisionJournalError, "trade_date"):
             _entry(trade_date="20260703")
 
+    def test_reader_rejects_compact_trade_date_rows(self) -> None:
+        # codex P2 on #330: a valid-JSON row carrying a compact "20260703"
+        # (prior buggy build / manual edit) must be counted malformed, not
+        # admitted into history/effective where it splits the supersede key.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            append_decision(_entry(nonce="n1"), journal_dir=tmp)
+            bad = {
+                "journal_version": 1, "trade_date": "20260703",
+                "code": "SH600000", "action": "adopt", "reason": "x",
+                "rank": 1, "score": 0.1, "model_id": "m",
+                "decided_at": "2026-07-03T20:00:00+08:00", "nonce": "n-bad",
+            }
+            with journal_path(tmp).open("ab") as fh:
+                fh.write(_json.dumps(bad).encode("utf-8") + b"\n")
+            result = read_journal(journal_dir=tmp)
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.malformed_count, 1)
+        self.assertNotIn(("20260703", "SH600000"), result.effective)
+
+    def test_journal_dir_under_repo_output_fails_loud(self) -> None:
+        # codex P2 on #330: output/ is DISPOSABLE (cleanup / git clean); a
+        # journal there would make human decisions discardable. Refuse both
+        # the explicit arg and the env-var route.
+        from unittest.mock import patch
+
+        repo_output = Path(__file__).resolve().parents[2] / "output"
+        with self.assertRaisesRegex(DecisionJournalError, "disposable"):
+            journal_path(repo_output / "operator_journal")
+        with patch.dict(
+            "os.environ",
+            {"QUANT_DECISION_JOURNAL_DIR": str(repo_output / "j")},
+        ):
+            with self.assertRaisesRegex(DecisionJournalError, "disposable"):
+                journal_path()
+
     def test_env_var_resolution_and_missing_file_reads_empty(self) -> None:
         from unittest.mock import patch
 

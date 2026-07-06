@@ -71,16 +71,18 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 
 
 def load_promotion_meta(model_path: str) -> dict[str, Any] | None:
-    """The first readable meta sidecar in priority order, or None.
+    """The PROMOTION meta (``<stem>.meta.json``) — and ONLY that — or None.
 
-    The banner renders WHATEVER fields the found meta carries and WARNs on
-    the missing ones — it never substitutes defaults (工单 §2).
+    The banner's source of truth is the promotion sidecar (spec
+    v2-daily-decision-page). Deliberately NO fall-through to the trainer
+    sidecar: if the promotion meta is missing/unreadable, the banner must
+    report it missing loudly — a trainer sidecar that happens to carry some
+    banner-shaped keys must not mask the absent promotion record (codex P2 on
+    #330). The trainer sidecar is consumed separately, for the sha cross-check
+    only (:func:`load_trainer_sidecar_sha`).
     """
-    for candidate in model_meta_paths(model_path):
-        meta = _read_json_file(candidate)
-        if meta is not None:
-            return meta
-    return None
+    promotion_sidecar = model_meta_paths(model_path)[0]
+    return _read_json_file(promotion_sidecar)
 
 
 def load_trainer_sidecar_sha(model_path: str) -> str | None:
@@ -204,10 +206,21 @@ def picks_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     picks = payload.get("picks")
     if not isinstance(picks, list):
-        return rows
+        # The producer contract ALWAYS writes picks as a list (write_outputs);
+        # a missing/non-list value is a corrupt or incompatible artifact.
+        # Masquerading it as "empty buy list" would hide the corruption from
+        # the operator (codex P2 on #330) — fail loud instead. An EMPTY list
+        # remains the legitimate empty state.
+        raise ValueError(
+            "工件形状违约:picks 缺失或不是列表(生产端 write_outputs 恒写 "
+            f"list)。该文件可能损坏或非推荐工件;实际类型:{type(picks).__name__}。"
+        )
     for pick in picks:
         if not isinstance(pick, dict):
-            continue
+            raise ValueError(
+                "工件形状违约:picks 内含非 object 项"
+                f"(类型 {type(pick).__name__})——文件可能损坏。"
+            )
         score = pick.get("predicted_score")
         score_val = float(score) if isinstance(score, (int, float)) else None
         rows.append({
