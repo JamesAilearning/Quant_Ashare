@@ -113,6 +113,33 @@ class T2TornLineToleranceTests(unittest.TestCase):
             self.assertEqual(len(result.entries), 1)
             self.assertEqual(result.malformed_count, 1)
 
+    def test_append_after_unterminated_tail_quarantines_fragment(self) -> None:
+        # codex P1 on #330: appending directly after a newline-less torn tail
+        # would FUSE the new entry onto the fragment — one combined malformed
+        # line, and the operator's new decision silently vanishes. The writer
+        # must isolate the fragment (leading newline in the same single write)
+        # so the new entry survives as a clean line.
+        with tempfile.TemporaryDirectory() as tmp:
+            append_decision(_entry(nonce="n1"), journal_dir=tmp)
+            with journal_path(tmp).open("ab") as fh:
+                fh.write(b'{"half": ')  # torn tail, NO newline
+            new = _entry(
+                nonce="n2", code="SZ000001",
+                decided_at="2026-07-03T19:00:00+08:00",
+            )
+            self.assertTrue(append_decision(new, journal_dir=tmp))
+            result = read_journal(journal_dir=tmp)
+            # The NEW decision is not lost — present in history AND effective.
+            self.assertEqual(len(result.entries), 2)
+            self.assertEqual(result.malformed_count, 1)
+            self.assertEqual(
+                result.effective[("2026-07-03", "SZ000001")].nonce, "n2",
+            )
+            # Byte shape: fragment isolated on its own line, new line clean.
+            raw = journal_path(tmp).read_bytes()
+            self.assertIn(b'{"half": \n{"journal_version"', raw)
+            self.assertNotIn(b"\r", raw)
+
 
 class T3ByteLevelLineEndingTests(unittest.TestCase):
     """T3 — the writer must emit UTF-8 without BOM and pure LF endings on

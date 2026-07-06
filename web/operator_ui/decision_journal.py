@@ -196,6 +196,18 @@ def append_decision(
             return False
     line = json.dumps(asdict(entry), ensure_ascii=False).encode("utf-8") + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Quarantine a torn TAIL before appending: if a previous process died
+    # mid-write and left a final line WITHOUT its newline, appending directly
+    # would fuse the new entry onto the fragment — one combined malformed line,
+    # and the operator's NEW decision would silently vanish from history and
+    # the effective view (codex P1 on #330). A leading newline in the SAME
+    # single write isolates the fragment as its own counted-malformed line and
+    # lands the new entry on a clean line.
+    if path.is_file() and path.stat().st_size > 0:
+        with path.open("rb") as tail:
+            tail.seek(-1, os.SEEK_END)
+            if tail.read(1) != b"\n":
+                line = b"\n" + line
     with path.open("ab") as fh:
         fh.write(line)
         fh.flush()
