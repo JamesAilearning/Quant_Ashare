@@ -449,10 +449,14 @@ class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
         self.assertAlmostEqual(result["2025-10-02"], 13 / 12 - 1)
         self.assertAlmostEqual(result["2025-10-03"], 14 / 13 - 1)
 
-    def test_legacy_path_skips_the_day_on_nan(self) -> None:
-        # Provider-less path keeps the conservative whole-day skip — which
-        # fill_method=None finally makes effective (the implicit pad used to
-        # turn the masked NaN into 0.0 before the guard could see it).
+    def test_legacy_path_is_bit_identical_to_the_historical_pad(self) -> None:
+        # codex P2 #329 round 2: the provider-less DEFAULT path must stay
+        # bit-identical to the pre-change behavior (the spec's identity
+        # promise) — the historical implicit pct_change pad turns B's masked
+        # NaN closes into fake 0.0 returns that HALVE the masked days' means.
+        # That economics is exactly why the PIT path exists; here it is
+        # preserved deliberately (a legacy re-baseline must be explicit,
+        # never a side effect).
         import pytest
 
         pytest.importorskip("qlib")
@@ -468,7 +472,16 @@ class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
                 evaluation_start="2025-10-01", evaluation_end="2025-10-07",
                 pit_provider=None,
             )
-        self.assertEqual(sorted(result), ["2025-10-01"])
+        self.assertEqual(
+            sorted(result), ["2025-10-01", "2025-10-02", "2025-10-03"],
+        )
+        self.assertAlmostEqual(
+            result["2025-10-01"], ((12 / 11 - 1) + (22 / 21 - 1)) / 2,
+        )
+        # padded fake-0.0 for B halves the masked days (the PIT path returns
+        # the survivor-only value instead — see the test above).
+        self.assertAlmostEqual(result["2025-10-02"], (13 / 12 - 1) / 2)
+        self.assertAlmostEqual(result["2025-10-03"], (14 / 13 - 1) / 2)
 
     def test_legacy_path_when_no_pit_provider(self) -> None:
         """``pit_provider=None`` (default) falls through to direct

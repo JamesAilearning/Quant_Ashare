@@ -938,16 +938,31 @@ class BacktestRunner:
         # either timing regime.)
         close_unstacked = close.unstack(level="instrument")["$close"]
         close_unstacked = close_unstacked.sort_index()
-        # fill_method=None is LOAD-BEARING (codex P2 #329 follow-through):
-        # pandas<3 defaults pct_change to fill_method='pad', which forward-
-        # fills a NaN close BEFORE differencing — a PIT-masked (or bins-NaN)
-        # delisted constituent then reports a fake 0.0 return and silently
-        # pollutes the equal-weight mean, which is exactly the forward-fill
-        # class §4.3.2 exists to prevent (and pandas 3.0 flips the default,
-        # so the implicit behavior is version-unstable on top of wrong).
-        # With None, a masked close yields a NaN return handled explicitly
-        # below.
-        ret_matrix = close_unstacked.pct_change(fill_method=None).shift(-2)
+        if pit_provider is not None:
+            # fill_method=None is LOAD-BEARING (codex P2 #329): pandas<3
+            # defaults pct_change to fill_method='pad', which forward-fills
+            # a NaN close BEFORE differencing — a PIT-masked delisted
+            # constituent then reports a fake 0.0 return and silently
+            # pollutes the equal-weight mean, exactly the forward-fill class
+            # §4.3.2 exists to prevent (and pandas 3.0 flips the default, so
+            # the implicit behavior is version-unstable on top of wrong).
+            # With None, a masked close yields a NaN return handled
+            # explicitly below.
+            ret_matrix = close_unstacked.pct_change(fill_method=None).shift(-2)
+        else:
+            # Legacy provider-less path: BIT-IDENTICAL to the historical
+            # implicit-pad behavior (the spec's "default is
+            # identity-preserving" promise; codex P2 #329 round 2). The
+            # explicit ffill reproduces fill_method='pad' exactly (verified
+            # bit-identical incl. leading/trailing NaN) without the
+            # deprecated kwarg, stable across pandas 3.0's default flip.
+            # Economically this pads a NaN close into a fake 0.0 return —
+            # the very reason the PIT path exists — and is preserved here
+            # DELIBERATELY: the legacy contract changes only via an explicit
+            # re-baseline, never as a side effect.
+            ret_matrix = (
+                close_unstacked.ffill().pct_change(fill_method=None).shift(-2)
+            )
         # The last two rows have no fill-day→next-day return; drop them.
         ret_matrix = ret_matrix.iloc[:-2].dropna(how="all")
 
