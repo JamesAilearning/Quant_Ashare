@@ -312,6 +312,11 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+    # Version pin: a row from an incompatible future writer (or manual repair)
+    # must not be admitted — it could silently supersede a real v1 decision
+    # with malformed_count == 0 (codex P2 on #330).
+    if entry.journal_version != JOURNAL_VERSION:
+        return None
     if entry.action not in ACTIONS:
         return None
     if not entry.nonce.strip():

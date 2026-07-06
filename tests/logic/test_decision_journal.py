@@ -239,6 +239,30 @@ class FailLoudValidationTests(unittest.TestCase):
         self.assertEqual(result.malformed_count, 1)
         self.assertNotIn(("20260703", "SH600000"), result.effective)
 
+    def test_reader_rejects_unsupported_journal_version(self) -> None:
+        # codex P2 on #330: a valid-JSON row with journal_version != 1 (future
+        # writer / manual repair) must be counted malformed — it must never
+        # supersede a real v1 decision silently.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            append_decision(_entry(nonce="n1"), journal_dir=tmp)
+            v2_row = {
+                "journal_version": 2, "trade_date": "2026-07-03",
+                "code": "SH600000", "action": "reject", "reason": "future",
+                "rank": 1, "score": 0.1, "model_id": "m",
+                "decided_at": "2026-07-03T23:00:00+08:00", "nonce": "n-v2",
+            }
+            with journal_path(tmp).open("ab") as fh:
+                fh.write(_json.dumps(v2_row).encode("utf-8") + b"\n")
+            result = read_journal(journal_dir=tmp)
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.malformed_count, 1)
+        # The v1 decision still wins — the v2 row did not supersede it.
+        self.assertEqual(
+            result.effective[("2026-07-03", "SH600000")].action, "adopt",
+        )
+
     def test_journal_dir_under_repo_output_fails_loud(self) -> None:
         # codex P2 on #330: output/ is DISPOSABLE (cleanup / git clean); a
         # journal there would make human decisions discardable. Refuse both
