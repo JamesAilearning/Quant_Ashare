@@ -979,10 +979,14 @@ class BacktestRunner:
                 # the whole date (a sparse/biased baseline exactly on
                 # configured PIT runs; codex P2 #329). A day with no valid
                 # member is skipped: nothing to average.
+                # dtype-agnostic finiteness (codex P2 #329 r3): qlib bin
+                # panels are float32, and numpy scalar NaN is NOT a python
+                # float — an isinstance(float) check would let a masked
+                # np.float32 NaN through into np.mean and leak NaN into
+                # return_series["equalweight_topk"].
                 finite = [
-                    v for v in valid
-                    if v is not None
-                    and not (isinstance(v, float) and np.isnan(v))
+                    float(v) for v in valid
+                    if v is not None and np.isfinite(v)
                 ]
                 if not finite:
                     continue

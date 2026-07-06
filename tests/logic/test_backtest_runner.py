@@ -449,6 +449,33 @@ class BacktestRunnerEqualWeightBaselinePITTests(unittest.TestCase):
         self.assertAlmostEqual(result["2025-10-02"], 13 / 12 - 1)
         self.assertAlmostEqual(result["2025-10-03"], 14 / 13 - 1)
 
+    def test_pit_path_handles_float32_nan(self) -> None:
+        # codex P2 #329 r3: qlib bin panels are float32, and a numpy scalar
+        # NaN is NOT a python float — an isinstance(float) check misses it
+        # and np.mean would leak NaN into the series. The finiteness check
+        # must be dtype-agnostic.
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        predictions, close = self._delist_panel()
+        close = close.astype({"$close": "float32"})
+        pit = MagicMock()
+        pit.get_features.return_value = close
+        result = BacktestRunner._compute_equalweight_baseline(
+            predictions=predictions, topk=2,
+            evaluation_start="2025-10-01", evaluation_end="2025-10-07",
+            pit_provider=pit,
+        )
+        self.assertEqual(
+            sorted(result), ["2025-10-01", "2025-10-02", "2025-10-03"],
+        )
+        for day, v in result.items():
+            self.assertTrue(np.isfinite(v), f"{day} leaked a non-finite value")
+        # masked days = survivor-only returns (float32 precision)
+        self.assertAlmostEqual(result["2025-10-02"], 13 / 12 - 1, places=5)
+        self.assertAlmostEqual(result["2025-10-03"], 14 / 13 - 1, places=5)
+
     def test_legacy_path_is_bit_identical_to_the_historical_pad(self) -> None:
         # codex P2 #329 round 2: the provider-less DEFAULT path must stay
         # bit-identical to the pre-change behavior (the spec's identity
