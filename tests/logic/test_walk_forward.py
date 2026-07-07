@@ -1396,6 +1396,7 @@ class _AttributionSectionForFoldTests(unittest.TestCase):
             sector_effects_sum=0.0035, reconciliation_residual=0.0165,
             sector_taxonomy="tushare_sw_l2",
             bench_weight_method=BENCH_WEIGHT_METHOD_EQUAL,
+            bench_weight_source="equal_proxy",
         )
         block = attribution_section_for_fold(result, None)
 
@@ -1404,6 +1405,8 @@ class _AttributionSectionForFoldTests(unittest.TestCase):
         self.assertEqual(block["sector_taxonomy"], "tushare_sw_l2")
         self.assertEqual(block["attribution_method"], ATTRIBUTION_METHOD_SINGLE_PERIOD)
         self.assertEqual(block["bench_weight_method"], BENCH_WEIGHT_METHOD_EQUAL)
+        # codex P2 #332: provenance persists into the fold report
+        self.assertEqual(block["bench_weight_source"], "equal_proxy")
         self.assertAlmostEqual(block["total_excess_return"], 0.02)
         self.assertAlmostEqual(block["reconciliation_residual"], 0.0165)
         self.assertEqual(len(block["sector_attribution"]), 1)

@@ -1115,6 +1115,10 @@ class Pipeline:
             "attribution_method": attribution_result.attribution_method,
             "sector_taxonomy": attribution_result.sector_taxonomy,
             "bench_weight_method": attribution_result.bench_weight_method,
+            # WHERE the weights came from (codex P2 #332): without this,
+            # persisted reports conflate automatic PIT $circ_mv weights with
+            # caller-supplied ones under the same market_cap label.
+            "bench_weight_source": attribution_result.bench_weight_source,
             "sector_effects_sum": attribution_result.sector_effects_sum,
             "reconciliation_residual": attribution_result.reconciliation_residual,
             "sector_attribution": [

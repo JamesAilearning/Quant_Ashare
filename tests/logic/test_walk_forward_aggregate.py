@@ -262,6 +262,7 @@ class AttributionSectionTests(unittest.TestCase):
             sector_taxonomy="GICS",
             attribution_method="brinson",
             bench_weight_method="cap_weighted",
+            bench_weight_source="explicit",  # persisted since codex P2 #332
             total_portfolio_return=0.10,
             total_benchmark_return=0.07,
             total_excess_return=0.03,
