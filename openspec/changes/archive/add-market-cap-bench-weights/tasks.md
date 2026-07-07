@@ -46,4 +46,8 @@
       residual improvement this data does not show. All four folds exceed
       the 50bps RECONCILIATION_WARN_THRESHOLD under BOTH methods (it is a
       WARN, not a gate; unchanged by this change).
-- [ ] CI green (REGEN-2 leg = anchor unchanged proof); codex clean; merge.
+- [x] CI green (REGEN-2 leg = anchor unchanged proof) + codex clean —
+      **MERGED #332** (2026-07-07). Four codex rounds en route: provenance
+      labeling (bench_weight_source on the result), source persisted in both
+      report serializers, and the aggregate fold-fixture repair (with the
+      process lesson: full logic suite before every push, not a file subset).
