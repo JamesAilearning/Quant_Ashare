@@ -44,6 +44,16 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("模型元信息缺失", self.page)
         self.assertIn("绝不用默认值", self.page)
 
+    def test_banner_renders_present_fields_only_no_placeholder(self) -> None:
+        # codex P2 on #330: a missing banner field lives ONLY in the WARN —
+        # the value row is built by membership checks and shows no "—"
+        # placeholder that would disguise the absence as a benign blank.
+        self.assertIn('if "fit_end_for_inference" in _banner_values', self.page)
+        self.assertIn('if "promoted_at" in _banner_values', self.page)
+        self.assertIn("st.columns(len(_banner_items))", self.page)
+        self.assertNotIn('_banner_values.get("fit_end_for_inference", "—")', self.page)
+        self.assertNotIn('_banner_values.get("promoted_at", "—")', self.page)
+
     def test_stale_artifact_cross_check_present(self) -> None:
         self.assertIn("其他模型", self.page)      # sha mismatch WARN
         self.assertIn("旧版工件", self.page)      # v1 WARN

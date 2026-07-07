@@ -65,28 +65,36 @@ if _banner_missing:
         + f"**。数据源:`{_model_path}` 旁的晋升 meta(`<stem>.meta.json`)。"
         "请核查晋升流程产物;字段齐全前,请勿把下方候选当作生产建议。"
     )
-if _banner_values:
-    _cols = st.columns(4)
-    _train_window = _banner_values.get("train_window")
-    _banner_items: tuple[tuple[str, str], ...] = (
-        ("推断归一窗截止 fit_end", str(_banner_values.get("fit_end_for_inference", "—"))),
-        (
-            "训练窗口",
-            " ~ ".join(str(x) for x in _train_window)
-            if isinstance(_train_window, (list, tuple)) and _train_window
-            else str(_train_window if _train_window is not None else "—"),
-        ),
-        ("晋升于 promoted_at", str(_banner_values.get("promoted_at", "—"))),
-        (
-            "模型",
-            Path(str(_banner_values.get("model_path", "—"))).name
-            + (
-                f"({_banner_values['model_type']})"
-                if _banner_values.get("model_type")
-                else ""
-            ),
-        ),
+# Render PRESENT fields only — a missing field lives EXCLUSIVELY in the WARN
+# above. Any placeholder ("—") in the value row would make the absence look
+# like a benign blank, which the spec forbids (codex P2 on #330).
+_banner_items: list[tuple[str, str]] = []
+if "fit_end_for_inference" in _banner_values:
+    _banner_items.append(
+        ("推断归一窗截止 fit_end", str(_banner_values["fit_end_for_inference"]))
     )
+if "train_window" in _banner_values:
+    _train_window = _banner_values["train_window"]
+    _banner_items.append((
+        "训练窗口",
+        " ~ ".join(str(x) for x in _train_window)
+        if isinstance(_train_window, (list, tuple))
+        else str(_train_window),
+    ))
+if "promoted_at" in _banner_values:
+    _banner_items.append(("晋升于 promoted_at", str(_banner_values["promoted_at"])))
+if "model_path" in _banner_values or "model_type" in _banner_values:
+    _model_name = (
+        Path(str(_banner_values["model_path"])).name
+        if "model_path" in _banner_values else ""
+    )
+    _model_suffix = (
+        f"({_banner_values['model_type']})"
+        if "model_type" in _banner_values else ""
+    )
+    _banner_items.append(("模型", f"{_model_name}{_model_suffix}"))
+if _banner_items:
+    _cols = st.columns(len(_banner_items))
     for _col, (_label, _value) in zip(_cols, _banner_items, strict=True):
         with _col:
             st.caption(_label)
