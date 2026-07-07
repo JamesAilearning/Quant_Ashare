@@ -33,7 +33,7 @@
       导入、无训练/作业触发调用
 - [x] 2.8 本机 streamlit 渲染验证 + 两张截图(正常页 / 篡改 meta 缺字段后的 WARN 页)
       存 PR;`pytest tests/logic -q` 绿;ruff + mypy(CI 口径)干净
-- [ ] 2.9 推 PR(描述含对抗自审结论 + 截图)→ codex 修净 P0–P2 → CI 6 legs 绿 →
+- [x] 2.9 推 PR(描述含对抗自审结论 + 截图)→ codex 修净 P0–P2 → CI 6 legs 绿 →
       通知合并;progress.md 更新
 
 ## 验收(对开工单 §5)
