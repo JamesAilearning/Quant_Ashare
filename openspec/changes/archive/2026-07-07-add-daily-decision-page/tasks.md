@@ -38,5 +38,5 @@
 
 ## 验收(对开工单 §5)
 
-- [ ] 3.1 本 tasks 全勾;威胁五条各有对应单测且全绿;`openspec validate
+- [x] 3.1 本 tasks 全勾;威胁五条各有对应单测且全绿;`openspec validate
       add-daily-decision-page --strict` 通过;A1/A2 均按上述流程合并
