@@ -127,6 +127,20 @@ if _read.issue is not None or not isinstance(_read.value, dict):
     st.stop()
 _payload: dict[str, Any] = _read.value
 
+# Filename ↔ payload date consistency: a renamed/copied artifact whose payload
+# as_of_date disagrees with the filename date would record the decision under
+# the payload date while the page filters by the filename date — the fresh
+# decision "disappears" from the selected day's table (codex P2 on #330).
+# Treat the mismatch as a corrupt artifact BEFORE any journal write is offered.
+_payload_as_of = str(_payload.get("as_of_date", ""))
+if _payload_as_of != _selected_date:
+    st.error(
+        "⚠ 工件形状违约:文件名日期与 payload 的 as_of_date 不一致"
+        f"(文件名 {_selected_date} vs payload {_payload_as_of!r})。"
+        f"该文件可能被改名/拷贝或已损坏:{_selected_path}"
+    )
+    st.stop()
+
 _current_sha = load_trainer_sidecar_sha(_model_path)
 _meta_status = artifact_meta_status(_payload, _current_sha)
 if _meta_status.artifact_is_corrupt_v2:

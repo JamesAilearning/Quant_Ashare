@@ -218,6 +218,15 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertIn("except ValueError", page)          # shape error branch
         self.assertIn("决策日志不可用", page)              # journal misconfig branch
 
+    def test_page_stops_on_filename_payload_date_mismatch(self) -> None:
+        # codex P2 on #330: a renamed/copied artifact (filename date != payload
+        # as_of_date) must be treated as corrupt BEFORE any journal write —
+        # otherwise the decision records under the payload date and vanishes
+        # from the selected day's table.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("_payload_as_of != _selected_date", page)
+        self.assertIn("as_of_date 不一致", page)
+
     def test_picks_rows_pass_through_only_plus_cost_column(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import (
             picks_table_rows,

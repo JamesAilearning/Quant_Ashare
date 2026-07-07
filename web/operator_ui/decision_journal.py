@@ -107,14 +107,26 @@ def journal_path(journal_dir: str | Path | None = None) -> Path:
         base = Path(journal_dir)
     else:
         base = Path(os.environ.get(ENV_JOURNAL_DIR, "").strip() or DEFAULT_JOURNAL_DIR)
-    resolved = base.resolve()
-    disposable = (_REPO_ROOT / "output").resolve()
-    if resolved == disposable or resolved.is_relative_to(disposable):
+    # Absolute-only: on POSIX/WSL the Windows-style default "D:/stock/..." is
+    # NOT absolute, so an unset env var would silently create the journal
+    # INSIDE the checkout (git-clean territory) relative to the cwd
+    # (codex P2 on #330). Fail loud and instruct instead.
+    if not base.is_absolute():
         raise DecisionJournalError(
-            f"decision journal dir {base} resolves under the repository's "
-            f"disposable output/ tree ({disposable}) — cleanup tooling and "
-            "git clean treat that tree as discardable, but decisions are "
-            "append-only precious state. Point "
+            f"decision journal dir {base} is not an absolute path (on this "
+            "platform). Decisions are append-only precious state and must "
+            f"live at a fixed absolute location — set {ENV_JOURNAL_DIR} to an "
+            "absolute directory outside the repository."
+        )
+    resolved = base.resolve()
+    # The WHOLE checkout is git-clean territory (its output/ tree is
+    # explicitly disposable) — never place decisions anywhere under it.
+    if resolved == _REPO_ROOT or resolved.is_relative_to(_REPO_ROOT):
+        raise DecisionJournalError(
+            f"decision journal dir {base} resolves inside the repository "
+            f"checkout ({_REPO_ROOT}) — the checkout (including its "
+            "disposable output/ tree) is cleanup / git-clean territory, but "
+            "decisions are append-only precious state. Point "
             f"{ENV_JOURNAL_DIR} outside the repository (default: "
             f"{DEFAULT_JOURNAL_DIR})."
         )

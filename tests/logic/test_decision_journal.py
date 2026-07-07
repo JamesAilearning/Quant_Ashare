@@ -310,6 +310,17 @@ class FailLoudValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(DecisionJournalError, "disposable"):
                 journal_path()
 
+    def test_journal_dir_relative_or_anywhere_in_checkout_refused(self) -> None:
+        # codex P2 on #330 round 2: on POSIX the Windows-style default is NOT
+        # absolute and would land the journal INSIDE the checkout relative to
+        # the cwd — require an absolute path, and refuse the whole checkout
+        # (git-clean territory), not just output/.
+        with self.assertRaisesRegex(DecisionJournalError, "absolute"):
+            journal_path("relative/journal_dir")
+        repo_root = Path(__file__).resolve().parents[2]
+        with self.assertRaisesRegex(DecisionJournalError, "checkout"):
+            journal_path(repo_root / "journal_data")
+
     def test_io_failures_translate_to_domain_error(self) -> None:
         # codex P2 on #330: read-only dir / permissions / full disk raise raw
         # OSError from open/write/mkdir — the journal API must translate them
