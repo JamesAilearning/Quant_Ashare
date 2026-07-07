@@ -121,6 +121,15 @@ _payload: dict[str, Any] = _read.value
 
 _current_sha = load_trainer_sidecar_sha(_model_path)
 _meta_status = artifact_meta_status(_payload, _current_sha)
+if _meta_status.artifact_is_corrupt_v2:
+    # A v2-marked file whose meta block is missing/non-dict is CORRUPT (the
+    # producer always writes a dict meta for v2) — same failure class as a
+    # picks shape violation, not a benign legacy file (codex P2 on #330).
+    st.error(
+        "⚠ 损坏的 v2 工件:带 artifact_schema_version 标记但 meta 块缺失/"
+        f"非 object。文件可能损坏或非本系统产物:{_selected_path}"
+    )
+    st.stop()
 if _meta_status.artifact_is_v1:
     st.warning(
         "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"
@@ -228,6 +237,11 @@ else:
                     f"{_ACTION_LABELS.get(str(_action), str(_action))}"
                 )
             else:
+                # Rotate on the DUPLICATE branch too: a stale already-persisted
+                # nonce (e.g. session state outliving a raced success-rotation)
+                # would otherwise suppress every future legitimate correction
+                # for this (trade_date, code) as a "replay" (codex P2 on #330).
+                st.session_state["dd_nonce"] = uuid4().hex
                 st.info("该提交已记录过(幂等拦截:同 nonce 重放不会重复入账)。")
 
 # ---------------------------------------------------------------------------

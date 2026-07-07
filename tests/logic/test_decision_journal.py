@@ -318,10 +318,11 @@ class FailLoudValidationTests(unittest.TestCase):
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmp:
-            blocked = Path(tmp) / "blocked"
-            blocked.write_text("a FILE where the journal dir should be")
-            with self.assertRaisesRegex(DecisionJournalError, "NOT recorded"):
-                append_decision(_entry(), journal_dir=blocked)
+            with patch.object(
+                Path, "open", side_effect=OSError("read-only filesystem"),
+            ):
+                with self.assertRaisesRegex(DecisionJournalError, "NOT recorded"):
+                    append_decision(_entry(), journal_dir=tmp)
         with tempfile.TemporaryDirectory() as tmp:
             append_decision(_entry(), journal_dir=tmp)
             with patch.object(
@@ -329,6 +330,21 @@ class FailLoudValidationTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(DecisionJournalError, "read failed"):
                     read_journal(journal_dir=tmp)
+
+    def test_journal_dir_existing_as_file_fails_loud_read_and_append(self) -> None:
+        # codex P2 on #330: a base that EXISTS as a FILE previously read as an
+        # "empty journal" (is_file() False on <file>/decision_journal.jsonl),
+        # silently hiding the misconfiguration until the first append. The
+        # single resolution point now refuses it for BOTH directions.
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = Path(tmp) / "blocked"
+            blocked.write_text("a FILE where the journal dir should be")
+            with self.assertRaisesRegex(DecisionJournalError, "not a directory"):
+                journal_path(blocked)
+            with self.assertRaisesRegex(DecisionJournalError, "not a directory"):
+                read_journal(journal_dir=blocked)
+            with self.assertRaisesRegex(DecisionJournalError, "not a directory"):
+                append_decision(_entry(), journal_dir=blocked)
 
     def test_env_var_resolution_and_missing_file_reads_empty(self) -> None:
         from unittest.mock import patch

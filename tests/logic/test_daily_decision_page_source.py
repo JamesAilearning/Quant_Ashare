@@ -108,11 +108,36 @@ class HelpersRuntimeTests(unittest.TestCase):
         )
         v1 = artifact_meta_status({"picks": []}, current_model_sha="ab")
         self.assertTrue(v1.artifact_is_v1)
+        self.assertFalse(v1.artifact_is_corrupt_v2)
         self.assertIsNone(v1.sha_mismatch)
         v2 = {"meta": {"model_pkl_sha256": "aa"}}
         self.assertTrue(artifact_meta_status(v2, "bb").sha_mismatch)
         self.assertFalse(artifact_meta_status(v2, "aa").sha_mismatch)
         self.assertIsNone(artifact_meta_status(v2, None).sha_mismatch)
+
+    def test_v2_marker_without_meta_is_corrupt_not_legacy(self) -> None:
+        # codex P2 on #330: the producer ALWAYS writes a dict meta for v2 —
+        # a v2-marked file with missing/non-dict meta is corrupt and must not
+        # be soft-labelled as an expected legacy v1 artifact.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            artifact_meta_status,
+        )
+        for bad in ({"artifact_schema_version": 2},
+                    {"artifact_schema_version": 2, "meta": "not-a-dict"}):
+            status = artifact_meta_status(bad, current_model_sha="ab")
+            self.assertTrue(status.artifact_is_corrupt_v2, bad)
+            self.assertFalse(status.artifact_is_v1, bad)
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("损坏的 v2 工件", page)
+
+    def test_nonce_rotates_on_success_and_duplicate(self) -> None:
+        # codex P2 on #330: a stale already-persisted nonce must not pin the
+        # form — BOTH the success and the duplicate-intercept branches mint a
+        # fresh nonce (plus the initial mint = 3 sites).
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertEqual(
+            page.count('st.session_state["dd_nonce"] = uuid4().hex'), 3,
+        )
 
     def test_journal_model_id_prefers_sha_then_honest_sentinel(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import (

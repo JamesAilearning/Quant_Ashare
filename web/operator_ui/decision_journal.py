@@ -118,6 +118,16 @@ def journal_path(journal_dir: str | Path | None = None) -> Path:
             f"{ENV_JOURNAL_DIR} outside the repository (default: "
             f"{DEFAULT_JOURNAL_DIR})."
         )
+    # A configured base that EXISTS as a non-directory is a misconfiguration,
+    # not an empty journal: ``<file>/decision_journal.jsonl`` would make the
+    # reader's is_file() False and silently render zero decisions until the
+    # first append blew up (codex P2 on #330). Fail loud at the single
+    # resolution point so read, append and the page all surface it.
+    if resolved.exists() and not resolved.is_dir():
+        raise DecisionJournalError(
+            f"decision journal dir {base} exists but is not a directory — "
+            f"check {ENV_JOURNAL_DIR}."
+        )
     return base / JOURNAL_FILENAME
 
 
