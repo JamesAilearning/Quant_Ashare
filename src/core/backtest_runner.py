@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Any
@@ -116,6 +116,9 @@ class BacktestRunner:
         namechange_path: str | None = None,
         st_audit_path: str | None = None,
         require_st_mask: bool = False,
+        rebalance_cadence_days: int = 1,
+        rebalance_phase: int = 0,
+        rebalance_anchor: str = "fold_phase",
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -367,6 +370,23 @@ class BacktestRunner:
         # P1 on PR #241). Before PR-C the full lag was restamped ON TOP of
         # qlib's built-in shift, so every official backtest filled on T+2
         # and traded a one-day-stale signal.
+        # 阶段7 (add-rebalance-cadence, Route A): thin the SIGNAL-STAMP days
+        # to the rebalance-day set BEFORE the lag restamp — the rebalance day
+        # is the signal-stamp day and the fill still happens at
+        # T+signal_to_execution_lag. Placed here so EVERY downstream stamp
+        # consumer (ST-mask pairs, the exchange code universe, the
+        # equal-weight baseline's daily top-k) derives from the thinned
+        # stamps. qlib holds the portfolio on no-signal days (zero orders;
+        # contract-tested against the committed mini-bundle). The default
+        # (N=1, fold_phase) returns the SAME OBJECT — no filter constructed,
+        # byte-identical path.
+        predictions = cls._thin_predictions(
+            predictions,
+            cadence_days=rebalance_cadence_days,
+            phase=rebalance_phase,
+            anchor=rebalance_anchor,
+        )
+
         shifted_predictions = cls._apply_lag(
             predictions, request.signal_to_execution_lag - 1,
         )
@@ -802,7 +822,25 @@ class BacktestRunner:
             "positions_days": len(positions_map),
         }
 
-        provenance = cls._build_provenance(request, topk, n_drop, st_mask_provenance)
+        # Cadence joins the provenance/fingerprint ONLY when non-default
+        # (the #318 include-when-non-default pattern): default runs keep a
+        # byte-identical fingerprint, while a thinned run can never share
+        # one with a daily run of the same request.
+        rebalance_provenance: dict[str, Any] | None = None
+        if (
+            rebalance_cadence_days != 1
+            or rebalance_phase != 0
+            or rebalance_anchor != "fold_phase"
+        ):
+            rebalance_provenance = {
+                "cadence_days": rebalance_cadence_days,
+                "phase": rebalance_phase,
+                "anchor": rebalance_anchor,
+            }
+        provenance = cls._build_provenance(
+            request, topk, n_drop, st_mask_provenance,
+            rebalance=rebalance_provenance,
+        )
 
         return CanonicalBacktestOutput(
             metric_status=OFFICIAL_METRIC_STATUS,
@@ -1184,6 +1222,69 @@ class BacktestRunner:
             )
 
     @staticmethod
+    def _rebalance_stamp_dates(
+        dates: Sequence[Any], *, cadence_days: int, phase: int, anchor: str,
+    ) -> list[Any]:
+        """Rebalance-day selection over a fold's SORTED unique signal-stamp
+        days (阶段7 Route A; pure — tested without qlib).
+
+        * ``fold_phase``: every ``cadence_days``-th entry starting at index
+          ``phase`` — the per-fold-phase MECHANISM semantics (each fold
+          starts from cash, so the phase resets with the fold).
+        * ``iso_week``: the FIRST entry of each ISO (year, week) — the
+          deployable calendar semantics; a week's trading-day count (3-5
+          under holidays) plays no role, only its first trading day does.
+        """
+        if anchor == "iso_week":
+            import pandas as pd
+
+            seen: set[tuple[int, int]] = set()
+            out: list[Any] = []
+            for d in dates:
+                iso = pd.Timestamp(d).isocalendar()
+                key = (int(iso[0]), int(iso[1]))
+                if key not in seen:
+                    seen.add(key)
+                    out.append(d)
+            return out
+        return list(dates)[phase::cadence_days]
+
+    @classmethod
+    def _thin_predictions(
+        cls, predictions: Any, *, cadence_days: int, phase: int, anchor: str,
+    ) -> Any:
+        """Thin prediction SIGNAL-STAMP days to the rebalance-day set
+        (阶段7 Route A). The default (``cadence_days=1``, ``fold_phase``)
+        returns ``predictions`` UNCHANGED — the very same object, no filter
+        constructed — keeping the daily path byte-identical. A thinning that
+        would leave no signal days FAILS LOUD (a backtest over an all-hold
+        window would publish empty metrics as official)."""
+        if cadence_days == 1 and anchor == "fold_phase":
+            return predictions
+        stamp_dates = sorted(predictions.index.get_level_values(0).unique())
+        keep = set(cls._rebalance_stamp_dates(
+            stamp_dates, cadence_days=cadence_days, phase=phase, anchor=anchor,
+        ))
+        if not keep:
+            raise BacktestRunnerError(
+                f"rebalance cadence (N={cadence_days}, phase={phase}, "
+                f"anchor={anchor!r}) keeps ZERO of the {len(stamp_dates)} "
+                "signal days — the evaluation window is shorter than the "
+                "cadence/phase. Refusing to run an all-hold backtest as "
+                "official metrics."
+            )
+        thinned = predictions[
+            predictions.index.get_level_values(0).isin(keep)
+        ]
+        _logger.info(
+            "BacktestRunner: rebalance cadence N=%d phase=%d anchor=%s — "
+            "kept %d of %d signal day(s); the portfolio HOLDS on the "
+            "remaining days (zero orders; fills stay at T+lag).",
+            cadence_days, phase, anchor, len(keep), len(stamp_dates),
+        )
+        return thinned
+
+    @staticmethod
     def _apply_lag(predictions: Any, rows: int) -> Any:
         """Restamp prediction dates by ``rows`` trading rows — the EXTERNAL
         component of the signal→execution delay.
@@ -1284,6 +1385,7 @@ class BacktestRunner:
         topk: int,
         n_drop: int,
         st_mask: Mapping[str, Any] | None = None,
+        rebalance: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -1311,6 +1413,11 @@ class BacktestRunner:
             "n_drop": n_drop,
             "st_mask": dict(st_mask) if st_mask is not None else {"namechange_path": None},
         }
+        # Rebalance cadence (阶段7): include-when-non-default so default
+        # fingerprints stay byte-identical while a thinned run can never
+        # share a fingerprint with a daily run of the same request.
+        if rebalance is not None:
+            strategy_dict["rebalance"] = dict(rebalance)
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)

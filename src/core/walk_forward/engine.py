@@ -50,6 +50,7 @@ from src.core.walk_forward._resume import (
     ResumeMode,
     compute_config_fingerprint,
     decide_fold,
+    rebalance_cadence_repr,
 )
 from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.aggregate import (
@@ -190,6 +191,7 @@ class WalkForwardEngine:
                 discovered=discovered_manifests,
                 resume_mode=effective_resume_mode,
                 label_horizon_days=config.label_horizon_days,  # names the re-run cause
+                rebalance_cadence=rebalance_cadence_repr(config),
             )
 
             if decision.skip and decision.manifest is not None:
@@ -817,6 +819,12 @@ class WalkForwardEngine:
             # config — never a silent opt-out.
             require_st_mask=config.requires_st_mask,
             st_audit_path=str(output_dir / f"fold_{fold_index:02d}_st_mask_audit.csv"),
+            # 阶段7 (add-rebalance-cadence): rebalance day = signal-stamp
+            # day, fill stays T+lag; N=1 default is the byte-identical
+            # no-filter path (see BacktestRunner._thin_predictions).
+            rebalance_cadence_days=config.rebalance_cadence_days,
+            rebalance_phase=config.rebalance_phase,
+            rebalance_anchor=config.rebalance_anchor,
         )
 
         ann_ret, max_dd, ir = extract_cost_metrics(backtest_output.risk_analysis, fold_index)

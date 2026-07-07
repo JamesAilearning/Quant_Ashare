@@ -248,6 +248,12 @@ class FoldManifest:
     # ("label_horizon_days changed: manifest=1, config=5") instead of a bare
     # unexplained fingerprint mismatch (operator review on add-label-horizon-config).
     label_horizon_days: int | None = None
+    # The rebalance cadence this fold RAN under, as one canonical string
+    # "N=<n>,phase=<p>,anchor=<a>" (additive; None on manifests written
+    # before cadence stamping). Same rationale as label_horizon_days: the
+    # fingerprint already invalidates a cadence change; this field lets the
+    # re-run NAME its cause (阶段7 add-rebalance-cadence).
+    rebalance_cadence: str | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -294,6 +300,7 @@ class FoldManifest:
             git_commit=(git_provenance or {}).get("commit"),
             git_dirty=(git_provenance or {}).get("dirty"),
             label_horizon_days=getattr(config, "label_horizon_days", None),
+            rebalance_cadence=rebalance_cadence_repr(config),
         )
 
     # ------------------------------------------------------------------
@@ -362,6 +369,7 @@ class FoldManifest:
             "git_commit": self.git_commit,
             "git_dirty": self.git_dirty,
             "label_horizon_days": self.label_horizon_days,
+            "rebalance_cadence": self.rebalance_cadence,
         }
 
     @classmethod
@@ -402,6 +410,11 @@ class FoldManifest:
             label_horizon_days=(
                 int(payload["label_horizon_days"])
                 if payload.get("label_horizon_days") is not None
+                else None
+            ),
+            rebalance_cadence=(
+                str(payload["rebalance_cadence"])
+                if payload.get("rebalance_cadence") is not None
                 else None
             ),
         )
@@ -547,6 +560,19 @@ class ResumeDecision:
     """Human-readable label for logging."""
 
 
+def rebalance_cadence_repr(config: Any) -> str | None:
+    """Canonical one-string cadence identity for manifests / cause naming
+    (阶段7): "N=<n>,phase=<p>,anchor=<a>". None when the config predates
+    the cadence fields (getattr-tolerant for stubs)."""
+    n = getattr(config, "rebalance_cadence_days", None)
+    if n is None:
+        return None
+    return (
+        f"N={n},phase={getattr(config, 'rebalance_phase', 0)},"
+        f"anchor={getattr(config, 'rebalance_anchor', 'fold_phase')}"
+    )
+
+
 def decide_fold(
     *,
     fold_index: int,
@@ -557,6 +583,7 @@ def decide_fold(
     resume_mode: ResumeMode,
     valid_period: str | None = None,
     label_horizon_days: int | None = None,
+    rebalance_cadence: str | None = None,
 ) -> ResumeDecision:
     """Apply the resume policy to one fold.
 
@@ -608,6 +635,23 @@ def decide_fold(
                     f"{manifest.label_horizon_days}, config="
                     f"{label_horizon_days} — re-running is expected for a "
                     "horizon change)"
+                )
+        if not cause and rebalance_cadence is not None:
+            # Same naming discipline for the cadence (阶段7): a changed
+            # cadence names both values; a pre-upgrade manifest (no
+            # recorded cadence) is named as such.
+            if manifest.rebalance_cadence is None:
+                cause = (
+                    " (manifest predates rebalance-cadence stamping — "
+                    "one-time invalidation after the add-rebalance-cadence "
+                    "upgrade; re-running is expected)"
+                )
+            elif manifest.rebalance_cadence != rebalance_cadence:
+                cause = (
+                    f" (rebalance cadence changed: manifest="
+                    f"{manifest.rebalance_cadence}, config="
+                    f"{rebalance_cadence} — re-running is expected for a "
+                    "cadence change)"
                 )
         return ResumeDecision(
             fold_index=fold_index, skip=False, manifest=None,
