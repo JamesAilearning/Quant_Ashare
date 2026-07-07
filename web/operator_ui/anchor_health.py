@@ -36,7 +36,23 @@ BASELINE_PATH = (
     _REPO_ROOT / "tests" / "regression" / "fixtures"
     / "walk_forward_baseline_metrics.json"
 )
-EVIDENCE_PATH = BASELINE_PATH.with_name(BASELINE_PATH.name + ".evidence.json")
+
+
+def evidence_sidecar_for(baseline: Path) -> Path:
+    """The mandatory evidence sidecar path for a baseline file.
+
+    Replaces the ``.json`` suffix with ``.evidence.json`` (stem-based) so the
+    result is byte-identical to the canonical regression guard's
+    ``EVIDENCE_SIDECAR`` (``walk_forward_baseline_metrics.evidence.json`` — see
+    ``tests/regression/test_walk_forward_replay_baseline_regen2.py``). The
+    earlier form appended to the full name, yielding
+    ``…metrics.json.evidence.json``, which never matches the committed sidecar
+    so the badge would report ``缺(legacy)`` forever (codex #335 P2).
+    """
+    return baseline.with_name(baseline.stem + ".evidence.json")
+
+
+EVIDENCE_PATH = evidence_sidecar_for(BASELINE_PATH)
 # The CI leg that actually replays the anchor (see .github/workflows/test.yml:
 # the REGEN-2 replay runs ONCE, on the dedicated ubuntu-3.12 matrix cell).
 ANCHOR_JOB_NAME = "test (ubuntu-latest, 3.12)"
@@ -134,9 +150,7 @@ def baseline_identity(
         sha8=sha8,
         signed_at=signed_at,
         signed_commit=signed_commit,
-        evidence_present=(
-            path.with_name(path.name + ".evidence.json").is_file()
-        ),
+        evidence_present=evidence_sidecar_for(path).is_file(),
     )
 
 

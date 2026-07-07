@@ -18,6 +18,7 @@ from web.operator_ui.anchor_health import (
     _ProbeFailure,
     baseline_identity,
     ci_leg_status,
+    evidence_sidecar_for,
     normalized_sha256,
 )
 
@@ -78,12 +79,35 @@ class BaselineIdentityTests(unittest.TestCase):
                     baseline_path=base, run=lambda cmd: "",
                 ).evidence_present
             )
+            # The WRONG (appended) name must NOT be mistaken for the sidecar —
+            # this is exactly the drift codex #335 flagged.
             (Path(tmp) / "b.json.evidence.json").write_text("{}", encoding="utf-8")
+            self.assertFalse(
+                baseline_identity(
+                    baseline_path=base, run=lambda cmd: "",
+                ).evidence_present
+            )
+            # The canonical stem-based name is what counts.
+            (Path(tmp) / "b.evidence.json").write_text("{}", encoding="utf-8")
             self.assertTrue(
                 baseline_identity(
                     baseline_path=base, run=lambda cmd: "",
                 ).evidence_present
             )
+
+    def test_sidecar_name_matches_regression_guard_literal(self) -> None:
+        # Cross-reference: the badge's sidecar name MUST equal the canonical
+        # guard's committed literal, or the badge and the anchor test would
+        # disagree about whether a re-signed baseline shipped its evidence.
+        guard = (_ROOT / "tests/regression"
+                 / "test_walk_forward_replay_baseline_regen2.py").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("walk_forward_baseline_metrics.evidence.json", guard)
+        self.assertEqual(
+            evidence_sidecar_for(BASELINE_PATH).name,
+            "walk_forward_baseline_metrics.evidence.json",
+        )
 
 
 class CiLegStatusTests(unittest.TestCase):
