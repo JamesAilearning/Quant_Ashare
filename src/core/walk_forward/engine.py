@@ -50,6 +50,7 @@ from src.core.walk_forward._resume import (
     ResumeMode,
     compute_config_fingerprint,
     decide_fold,
+    rebalance_cadence_repr,
 )
 from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.aggregate import (
@@ -190,6 +191,7 @@ class WalkForwardEngine:
                 discovered=discovered_manifests,
                 resume_mode=effective_resume_mode,
                 label_horizon_days=config.label_horizon_days,  # names the re-run cause
+                rebalance_cadence=rebalance_cadence_repr(config),
             )
 
             if decision.skip and decision.manifest is not None:
@@ -641,6 +643,43 @@ class WalkForwardEngine:
         return read_bundle_tag(bundle_uri)
 
     @classmethod
+    def _traded_predictions_for_fold(
+        cls, config: WalkForwardConfig, predictions: Any,
+        test_start: str, test_end: str,
+    ) -> Any:
+        """The signal set ACTUALLY TRADED this fold — the input for the
+        analyzer-side consumers that must agree with the backtest's traded
+        universe (阶段7, codex P2 #336): the fold IC and the per-fold
+        attribution.
+
+        For the default daily cadence this is ``predictions`` UNCHANGED (the
+        same object — IC/attribution byte-identical). For a non-daily cadence
+        it is the predictions THINNED to the rebalance schedule over the
+        fold's test-window trading calendar — the SAME schedule the backtest
+        thins with (``BacktestRunner._thin_predictions`` + the same calendar
+        slice), so the descriptive IC describes the traded stamps and the
+        Brinson universe (prediction instruments ∪ held) excludes names that
+        only appear on skipped no-signal days. Kept as a small classmethod so
+        the behavior is unit-testable without the full fold machinery."""
+        if (
+            config.rebalance_cadence_days == 1
+            and config.rebalance_anchor == "fold_phase"
+        ):
+            return predictions
+        ts = date.fromisoformat(test_start)
+        te = date.fromisoformat(test_end)
+        fold_calendar = [
+            d for d in cls._load_trading_calendar() if ts <= d <= te
+        ]
+        return BacktestRunner._thin_predictions(
+            predictions,
+            cadence_days=config.rebalance_cadence_days,
+            phase=config.rebalance_phase,
+            anchor=config.rebalance_anchor,
+            trading_calendar=fold_calendar,
+        )
+
+    @classmethod
     def _run_single_fold(
         cls,
         config: WalkForwardConfig,
@@ -746,9 +785,21 @@ class WalkForwardEngine:
             "prediction_artifact_sha256": prediction_artifact_sha,
         }
 
+        # Cadence (阶段7, codex P2 #336): the analyzer-side consumers (fold
+        # IC AND per-fold attribution) must see the SIGNAL SET ACTUALLY
+        # TRADED, not the dense daily scores — otherwise weekly and daily
+        # arms report identical descriptive IC, and attribution's Brinson
+        # universe includes names that only appear on skipped no-signal days
+        # and could never trade. The backtest thins internally (AFTER this),
+        # so thin the analyzer input to the same rebalance schedule here.
+        # Default (N=1) is a no-op — the same object, byte-identical.
+        traded_predictions = cls._traded_predictions_for_fold(
+            config, predictions, test_start, test_end,
+        )
+
         # Signal analysis
         signal_result = SignalAnalyzer.analyze(
-            predictions=predictions,
+            predictions=traded_predictions,
             config=SignalAnalysisConfig(forward_periods=(1, 5), topk=config.topk),
             pit_provider=pit_provider,
         )
@@ -817,6 +868,12 @@ class WalkForwardEngine:
             # config — never a silent opt-out.
             require_st_mask=config.requires_st_mask,
             st_audit_path=str(output_dir / f"fold_{fold_index:02d}_st_mask_audit.csv"),
+            # 阶段7 (add-rebalance-cadence): rebalance day = signal-stamp
+            # day, fill stays T+lag; N=1 default is the byte-identical
+            # no-filter path (see BacktestRunner._thin_predictions).
+            rebalance_cadence_days=config.rebalance_cadence_days,
+            rebalance_phase=config.rebalance_phase,
+            rebalance_anchor=config.rebalance_anchor,
         )
 
         ann_ret, max_dd, ir = extract_cost_metrics(backtest_output.risk_analysis, fold_index)
@@ -848,7 +905,10 @@ class WalkForwardEngine:
                 config=config,
                 fold_index=fold_index,
                 test_start=test_start, test_end=test_end,
-                predictions=predictions,
+                # The TRADED (thinned) signal — so the Brinson universe
+                # agrees with the backtest's traded universe on a non-daily
+                # cadence (codex P2 #336); default N=1 is the dense series.
+                predictions=traded_predictions,
                 backtest_output=backtest_output,
                 pit_provider=pit_provider,
             )

@@ -126,6 +126,36 @@ class WalkForwardConfig:
     #     namechange_path is contradictory and rejected at construction.
     st_mask_mode: str = "required"
 
+    # 阶段7 (add-rebalance-cadence, Route A signal thinning): portfolio
+    # rebalance cadence. THE REBALANCE DAY IS THE SIGNAL-STAMP DAY; THE
+    # FILL STILL HAPPENS AT T+signal_to_execution_lag (thinning changes
+    # WHICH days carry a signal, never the execution timing) — but ONLY at
+    # signal_to_execution_lag=1: N>1 with lag>1 is refused (the thinning
+    # precedes the position-based lag restamp, which is calendar-correct
+    # only on a dense daily series; see __post_init__ and codex P1 on #336).
+    # On days
+    # without a signal stamp, qlib's TopkDropoutStrategy emits zero orders
+    # and the portfolio holds while still accruing market-value returns —
+    # third-party behavior pinned by the cadence CONTRACT test against the
+    # committed mini-bundle, never merely trusted.
+    #   * rebalance_cadence_days=1 (default): today's daily rebalance,
+    #     byte-identical — no filter is constructed at all.
+    #   * N>1 with rebalance_anchor="fold_phase": signals kept on every Nth
+    #     trading day of the evaluation window, starting at day
+    #     `rebalance_phase` (0 <= phase < N). Per-fold phase reset is the
+    #     MECHANISM-experiment semantics (each fold starts from cash; 23
+    #     folds' phase heterogeneity dilutes weekday effects).
+    #   * rebalance_anchor="iso_week": signals kept on the FIRST trading
+    #     day of each ISO week — the deployable calendar semantics (the 7b
+    #     escalation form pre-commits the winning arm's ST-on re-verify to
+    #     this anchor). Requires the nominal N=5 and phase=0: a real week
+    #     carries 3-5 trading days, so N/phase have no derivational meaning
+    #     under this anchor and any other value would be a silently-ignored
+    #     lie.
+    rebalance_cadence_days: int = 1
+    rebalance_phase: int = 0
+    rebalance_anchor: str = "fold_phase"
+
     # Cross-fold model ensemble.
     #
     # When >1, each fold's prediction is the equal-weighted mean of:
@@ -256,6 +286,65 @@ class WalkForwardConfig:
                 "— one variable at a time (docs/run-comparison-runbook.md). "
                 "Drop/blank namechange_path for the experiment, or use "
                 "st_mask_mode='required' for official semantics."
+            )
+
+        n_cad = self.rebalance_cadence_days
+        if not isinstance(n_cad, int) or isinstance(n_cad, bool) or n_cad < 1:
+            raise WalkForwardError(
+                f"rebalance_cadence_days must be a positive integer (trading "
+                f"days between rebalances; 1 = daily); got {n_cad!r}."
+            )
+        p_cad = self.rebalance_phase
+        if (
+            not isinstance(p_cad, int)
+            or isinstance(p_cad, bool)
+            or not 0 <= p_cad < n_cad
+        ):
+            raise WalkForwardError(
+                f"rebalance_phase must be an integer in [0, "
+                f"rebalance_cadence_days); got phase={p_cad!r} with "
+                f"N={n_cad}. In particular N=1 requires phase=0 — a phase "
+                "under daily cadence is a meaningless combination and must "
+                "never pass silently."
+            )
+        if self.rebalance_anchor not in ("fold_phase", "iso_week"):
+            raise WalkForwardError(
+                f"rebalance_anchor must be 'fold_phase' or 'iso_week'; got "
+                f"{self.rebalance_anchor!r}."
+            )
+        if self.rebalance_anchor == "iso_week" and (n_cad != 5 or p_cad != 0):
+            raise WalkForwardError(
+                "rebalance_anchor='iso_week' requires the nominal "
+                "rebalance_cadence_days=5 and rebalance_phase=0: the ISO-week "
+                "anchor derives rebalance days from the week structure (a "
+                "real week carries 3-5 trading days), so N/phase have no "
+                f"derivational meaning under it — got N={n_cad}, "
+                f"phase={p_cad}; any other value would be a silently-ignored "
+                "lie."
+            )
+        # The lag interaction (codex P1 on #336): thinning happens before the
+        # position-based _apply_lag restamp, which equals a trading-day shift
+        # only on a dense daily calendar. N>1 with lag>1 would restamp a
+        # signal ~N days out instead of T+lag — refused rather than silently
+        # producing wrong fills. lag=1 (no restamp) is the canonical path and
+        # the only one the cadence campaign uses.
+        # The isinstance guard (codex P2 on #336) keeps a MALFORMED lag (a
+        # quoted string / None from YAML) on the dedicated lag validator
+        # below — which raises WalkForwardError — instead of a raw TypeError
+        # from the ``> 1`` comparison here.
+        if (
+            n_cad > 1
+            and isinstance(self.signal_to_execution_lag, int)
+            and not isinstance(self.signal_to_execution_lag, bool)
+            and self.signal_to_execution_lag > 1
+        ):
+            raise WalkForwardError(
+                f"rebalance_cadence_days={n_cad} (>1) with "
+                f"signal_to_execution_lag={self.signal_to_execution_lag} (>1) "
+                "is not jointly supported: the thinning-before-lag restamp "
+                "would land the fill ~N trading days out instead of at "
+                "T+lag. Use signal_to_execution_lag=1 with a non-daily "
+                "cadence (the canonical path)."
             )
 
         h = self.label_horizon_days

@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Any
@@ -116,10 +116,24 @@ class BacktestRunner:
         namechange_path: str | None = None,
         st_audit_path: str | None = None,
         require_st_mask: bool = False,
+        rebalance_cadence_days: int = 1,
+        rebalance_phase: int = 0,
+        rebalance_anchor: str = "fold_phase",
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
         CanonicalBacktestContract.validate_input(request)
+
+        # Cadence validation at the OFFICIAL-METRICS BOUNDARY (codex P2 on
+        # #336): direct callers (tests, replay scripts, single-fold) bypass
+        # WalkForwardConfig.__post_init__, so an invalid cadence must be
+        # refused HERE too — never silently accepted while provenance records
+        # a non-default value. This also enforces the lag interaction (codex
+        # P1 on #336; see the helper).
+        cls._validate_cadence(
+            rebalance_cadence_days, rebalance_phase, rebalance_anchor,
+            request.signal_to_execution_lag,
+        )
 
         if predictions is None or (hasattr(predictions, "empty") and predictions.empty):
             raise BacktestRunnerError("predictions must be non-empty.")
@@ -367,6 +381,31 @@ class BacktestRunner:
         # P1 on PR #241). Before PR-C the full lag was restamped ON TOP of
         # qlib's built-in shift, so every official backtest filled on T+2
         # and traded a one-day-stale signal.
+        # 阶段7 (add-rebalance-cadence, Route A): thin the SIGNAL-STAMP days
+        # to the rebalance-day set BEFORE the lag restamp — the rebalance day
+        # is the signal-stamp day and the fill still happens at
+        # T+signal_to_execution_lag. Placed here so the downstream stamp
+        # consumers (ST-mask pairs, the exchange code universe) derive from
+        # the thinned stamps; the equal-weight baseline is instead OMITTED
+        # for a non-daily cadence (its one-day-hold shape can't represent a
+        # held-across-days arm — codex P2 #336, see the compute_baselines
+        # branch). qlib holds the portfolio on no-signal days (zero orders;
+        # contract-tested against the committed mini-bundle). The default
+        # (N=1, fold_phase) returns the SAME OBJECT — no filter constructed,
+        # byte-identical path.
+        predictions = cls._thin_predictions(
+            predictions,
+            cadence_days=rebalance_cadence_days,
+            phase=rebalance_phase,
+            anchor=rebalance_anchor,
+            # The rebalance schedule is defined over the evaluation window's
+            # TRADING CALENDAR, not the dates that happen to appear in the
+            # prediction index (codex P2 on #336): a scheduled day missing
+            # from predictions must HOLD until the next scheduled rebalance,
+            # never silently shift the cadence to the first available signal.
+            trading_calendar=trading_calendar,
+        )
+
         shifted_predictions = cls._apply_lag(
             predictions, request.signal_to_execution_lag - 1,
         )
@@ -726,7 +765,23 @@ class BacktestRunner:
         # Compute equal-weight top-k baseline post-hoc from predictions +
         # qlib close prices. Avoids a second full backtest run (~50%
         # overhead) by using the same position set with 1/topk weights.
-        if compute_baselines:
+        if compute_baselines and rebalance_cadence_days != 1:
+            # The equal-weight baseline (codex P2 on #336): its helper emits
+            # a ONE-DAY-hold return per signal day and does not carry the
+            # top-k across no-signal days, so on a thinned (N>1) arm it would
+            # drop the intervening HOLD-day P&L the real strategy earns —
+            # a misleading sparse diagnostic. Omit it rather than publish an
+            # inconsistent one (equalweight_topk is a non-anchor diagnostic;
+            # a cadence-aware baseline that holds across days is a future
+            # enhancement if the comparator is wanted for thinned arms).
+            _logger.warning(
+                "BacktestRunner: equal-weight baseline OMITTED for a "
+                "non-daily rebalance cadence (N=%d) — the one-day-hold "
+                "baseline would drop hold-day P&L and misrepresent the "
+                "held strategy. Strategy metrics are unaffected.",
+                rebalance_cadence_days,
+            )
+        elif compute_baselines:
             try:
                 eqw_returns = cls._compute_equalweight_baseline(
                     predictions=shifted_predictions,
@@ -802,7 +857,25 @@ class BacktestRunner:
             "positions_days": len(positions_map),
         }
 
-        provenance = cls._build_provenance(request, topk, n_drop, st_mask_provenance)
+        # Cadence joins the provenance/fingerprint ONLY when non-default
+        # (the #318 include-when-non-default pattern): default runs keep a
+        # byte-identical fingerprint, while a thinned run can never share
+        # one with a daily run of the same request.
+        rebalance_provenance: dict[str, Any] | None = None
+        if (
+            rebalance_cadence_days != 1
+            or rebalance_phase != 0
+            or rebalance_anchor != "fold_phase"
+        ):
+            rebalance_provenance = {
+                "cadence_days": rebalance_cadence_days,
+                "phase": rebalance_phase,
+                "anchor": rebalance_anchor,
+            }
+        provenance = cls._build_provenance(
+            request, topk, n_drop, st_mask_provenance,
+            rebalance=rebalance_provenance,
+        )
 
         return CanonicalBacktestOutput(
             metric_status=OFFICIAL_METRIC_STATUS,
@@ -1184,6 +1257,160 @@ class BacktestRunner:
             )
 
     @staticmethod
+    def _validate_cadence(
+        cadence_days: int, phase: int, anchor: str, lag: int,
+    ) -> None:
+        """Fail-loud cadence validation at the official-metrics boundary
+        (codex P1+P2 on #336). Mirrors WalkForwardConfig.__post_init__ so
+        direct BacktestRunner.run callers cannot bypass it, and adds the lag
+        interaction the config alone cannot fully own."""
+        if (
+            not isinstance(cadence_days, int)
+            or isinstance(cadence_days, bool)
+            or cadence_days < 1
+        ):
+            raise BacktestRunnerError(
+                f"rebalance_cadence_days must be a positive integer; got "
+                f"{cadence_days!r}."
+            )
+        if (
+            not isinstance(phase, int)
+            or isinstance(phase, bool)
+            or not 0 <= phase < cadence_days
+        ):
+            raise BacktestRunnerError(
+                f"rebalance_phase must be an integer in [0, "
+                f"rebalance_cadence_days); got phase={phase!r} with "
+                f"N={cadence_days}. N=1 requires phase=0 (a phase under daily "
+                "cadence is a meaningless combination)."
+            )
+        if anchor not in ("fold_phase", "iso_week"):
+            raise BacktestRunnerError(
+                f"rebalance_anchor must be 'fold_phase' or 'iso_week'; got "
+                f"{anchor!r}."
+            )
+        if anchor == "iso_week" and (cadence_days != 5 or phase != 0):
+            raise BacktestRunnerError(
+                "rebalance_anchor='iso_week' requires the nominal "
+                f"rebalance_cadence_days=5 and rebalance_phase=0; got "
+                f"N={cadence_days}, phase={phase}."
+            )
+        # THE LAG INTERACTION (codex P1 on #336): _apply_lag restamps by
+        # POSITION within the prediction series' own remaining date rows,
+        # which equals a trading-day shift ONLY on a dense daily calendar.
+        # Thinning removes the intervening days, so with N>1 AND lag>1 a
+        # signal would be restamped to the NEXT rebalance stamp (~N days
+        # later) instead of T+lag — corrupting official metrics. lag=1
+        # (rows=0, no restamp) is the canonical path and the only one the
+        # cadence campaign uses; the two are REFUSED together rather than
+        # silently producing wrong fills. A calendar-aware restamp is the
+        # future fix if lag>1 cadence is ever needed.
+        if cadence_days > 1 and lag > 1:
+            raise BacktestRunnerError(
+                f"rebalance_cadence_days={cadence_days} (>1) with "
+                f"signal_to_execution_lag={lag} (>1) is not jointly "
+                "supported: _apply_lag restamps by row position within the "
+                "thinned signal, so the fill would land ~N trading days out "
+                "instead of at T+lag. Use signal_to_execution_lag=1 (the "
+                "canonical path) with a non-daily cadence."
+            )
+
+    @staticmethod
+    def _rebalance_stamp_dates(
+        dates: Sequence[Any], *, cadence_days: int, phase: int, anchor: str,
+    ) -> list[Any]:
+        """Rebalance-day selection over a fold's SORTED unique signal-stamp
+        days (阶段7 Route A; pure — tested without qlib).
+
+        * ``fold_phase``: every ``cadence_days``-th entry starting at index
+          ``phase`` — the per-fold-phase MECHANISM semantics (each fold
+          starts from cash, so the phase resets with the fold).
+        * ``iso_week``: the FIRST entry of each ISO (year, week) — the
+          deployable calendar semantics; a week's trading-day count (3-5
+          under holidays) plays no role, only its first trading day does.
+        """
+        if anchor == "iso_week":
+            import pandas as pd
+
+            seen: set[tuple[int, int]] = set()
+            out: list[Any] = []
+            for d in dates:
+                iso = pd.Timestamp(d).isocalendar()
+                key = (int(iso[0]), int(iso[1]))
+                if key not in seen:
+                    seen.add(key)
+                    out.append(d)
+            return out
+        return list(dates)[phase::cadence_days]
+
+    @classmethod
+    def _thin_predictions(
+        cls, predictions: Any, *, cadence_days: int, phase: int, anchor: str,
+        trading_calendar: Sequence[Any],
+    ) -> Any:
+        """Thin prediction SIGNAL-STAMP days to the rebalance-day set
+        (阶段7 Route A). The default (``cadence_days=1``, ``fold_phase``)
+        returns ``predictions`` UNCHANGED — the very same object, no filter
+        constructed — keeping the daily path byte-identical.
+
+        The rebalance schedule is derived from ``trading_calendar`` (the
+        evaluation window's trading days), NOT the prediction index, so a
+        scheduled day absent from predictions HOLDS until the next scheduled
+        rebalance instead of silently shifting the cadence to the first
+        available signal (codex P2 on #336). The final in-window trading day
+        is EXCLUDED from the schedule: under lag=1 a signal fills on the next
+        trading day, which does not exist in-window for the last day, so it
+        can never trade — counting it as traded would desync qlib (no fill)
+        from the IC/attribution/exchange universe (same tail-execution class
+        as #327 at fold generation). A schedule that keeps no fillable
+        prediction day FAILS LOUD (an all-hold window would publish empty
+        metrics as official)."""
+        if cadence_days == 1 and anchor == "fold_phase":
+            return predictions
+        import pandas as pd
+
+        schedule = cls._rebalance_stamp_dates(
+            list(trading_calendar),
+            cadence_days=cadence_days, phase=phase, anchor=anchor,
+        )
+        # Fillable stamps = every in-window trading day EXCEPT the last
+        # (its T+1 execution day is out of window; codex P2 #336). Normalize
+        # to a date key so a python-``date`` calendar and pd.Timestamp
+        # prediction stamps compare cleanly.
+        fillable = {
+            pd.Timestamp(d).normalize() for d in list(trading_calendar)[:-1]
+        }
+        keep_keys = {
+            pd.Timestamp(d).normalize() for d in schedule
+        } & fillable
+        stamp_level = predictions.index.get_level_values(0)
+        stamp_keys = stamp_level.normalize() if hasattr(
+            stamp_level, "normalize") else pd.DatetimeIndex(stamp_level).normalize()
+        mask = stamp_keys.isin(keep_keys)
+        thinned = predictions[mask]
+        if thinned.empty:
+            n_stamps = len(stamp_level.unique())
+            raise BacktestRunnerError(
+                f"rebalance cadence (N={cadence_days}, phase={phase}, "
+                f"anchor={anchor!r}) keeps ZERO FILLABLE signal day(s) of "
+                f"{n_stamps} (schedule={len(schedule)} day(s) over the "
+                "window, minus the final in-window day whose T+1 execution "
+                "is out of window) — window shorter than the cadence/phase, "
+                "predictions disjoint from the schedule, or the only kept "
+                "stamp was the unfillable last day. Refusing to run an "
+                "all-hold backtest as official metrics."
+            )
+        _logger.info(
+            "BacktestRunner: rebalance cadence N=%d phase=%d anchor=%s — "
+            "%d scheduled rebalance day(s) over the window; kept %d signal "
+            "day(s); the portfolio HOLDS elsewhere (zero orders; fills stay "
+            "at T+lag).",
+            cadence_days, phase, anchor, len(schedule),
+            int(mask.sum()) if hasattr(mask, "sum") else len(thinned),
+        )
+        return thinned
+
+    @staticmethod
     def _apply_lag(predictions: Any, rows: int) -> Any:
         """Restamp prediction dates by ``rows`` trading rows — the EXTERNAL
         component of the signal→execution delay.
@@ -1284,6 +1511,7 @@ class BacktestRunner:
         topk: int,
         n_drop: int,
         st_mask: Mapping[str, Any] | None = None,
+        rebalance: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -1311,6 +1539,11 @@ class BacktestRunner:
             "n_drop": n_drop,
             "st_mask": dict(st_mask) if st_mask is not None else {"namechange_path": None},
         }
+        # Rebalance cadence (阶段7): include-when-non-default so default
+        # fingerprints stay byte-identical while a thinned run can never
+        # share a fingerprint with a daily run of the same request.
+        if rebalance is not None:
+            strategy_dict["rebalance"] = dict(rebalance)
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)
