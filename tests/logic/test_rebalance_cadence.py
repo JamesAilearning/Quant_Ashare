@@ -85,6 +85,18 @@ class CadenceConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(cfg.rebalance_cadence_days, 5)
 
+    def test_malformed_lag_with_cadence_raises_walkforward_error(self) -> None:
+        # codex P2 #336: a non-comparable lag (quoted string / None from
+        # YAML) must reach the dedicated lag validator and raise
+        # WalkForwardError, NOT a raw TypeError from the cadence-interaction
+        # comparison that now precedes it.
+        for bad_lag in ("2", None):
+            with self.assertRaises(WalkForwardError, msg=f"lag={bad_lag!r}"):
+                WalkForwardConfig(
+                    rebalance_cadence_days=5,
+                    signal_to_execution_lag=bad_lag,  # type: ignore[arg-type]
+                )
+
 
 class RunnerBoundaryValidationTests(unittest.TestCase):
     """codex P2 #336: BacktestRunner.run is a public official-metrics entry

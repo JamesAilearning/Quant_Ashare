@@ -328,7 +328,16 @@ class WalkForwardConfig:
         # signal ~N days out instead of T+lag — refused rather than silently
         # producing wrong fills. lag=1 (no restamp) is the canonical path and
         # the only one the cadence campaign uses.
-        if n_cad > 1 and self.signal_to_execution_lag > 1:
+        # The isinstance guard (codex P2 on #336) keeps a MALFORMED lag (a
+        # quoted string / None from YAML) on the dedicated lag validator
+        # below — which raises WalkForwardError — instead of a raw TypeError
+        # from the ``> 1`` comparison here.
+        if (
+            n_cad > 1
+            and isinstance(self.signal_to_execution_lag, int)
+            and not isinstance(self.signal_to_execution_lag, bool)
+            and self.signal_to_execution_lag > 1
+        ):
             raise WalkForwardError(
                 f"rebalance_cadence_days={n_cad} (>1) with "
                 f"signal_to_execution_lag={self.signal_to_execution_lag} (>1) "
