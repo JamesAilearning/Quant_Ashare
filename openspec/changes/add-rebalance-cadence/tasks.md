@@ -43,15 +43,16 @@
       via asdict (test: N=1 vs N=5 fingerprints differ); FoldManifest
       records them additively with named-cause re-run messaging; aggregate
       report carries them via the embedded config (test).
-- [x] Consistency deltas: all downstream stamp consumers read
-      `shifted_predictions`, which derives from the thinned `predictions`
-      via the single reassignment at the top of `run()` (thin → lag →
-      consumers) — so ST-mask pairs, the exchange code universe, and the
-      equal-weight baseline daily top-k are thinned by construction. The
-      contract probe PROVES the strategy + exchange-universe path is thinned
-      (positions change only on rebalance days); the other two share the
-      same `shifted_predictions` source (structural, not separately
-      asserted — honest scope note).
+- [x] Consistency deltas: the schedule is derived from the evaluation
+      window's TRADING CALENDAR (codex P2 #336), not the prediction index —
+      a scheduled day absent from predictions HOLDS (test pins it) rather
+      than sliding the cadence. ST-mask pairs and the exchange code universe
+      read `shifted_predictions` (thinned by construction; the contract
+      probe proves the strategy + exchange path via positions changing only
+      on rebalance days). The equal-weight baseline is OMITTED for a
+      non-daily cadence (codex P2 #336): its one-day-hold shape can't
+      represent a held-across-days arm, so it is dropped with a WARN rather
+      than published misleadingly — pinned by the contract probe.
 - [x] Whitelist/governance sweep untouched (no new qlib call sites) —
       verified by the existing counting tests.
 

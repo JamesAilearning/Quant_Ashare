@@ -68,22 +68,24 @@ _CLOSES: dict[str, list[float]] = {
     "000300.SH": [4000.0 + 1.0 * i for i in range(len(_CAL))],
 }
 
-# Signal stamps: daily scores on the first 8 trading days. A/B lead until
-# the stamp of 2025-01-09; from there C overtakes A. With cadence N=5 /
-# phase=0 the THINNED stamps are exactly {2025-01-02, 2025-01-09}:
-#   * 2025-01-02 (kept):  top2 = A, B  -> entry fills on 2025-01-03
-#   * 2025-01-09 (kept):  top2 = C, B  -> rotate A->C on 2025-01-10
-#   * every other stamp is thinned away -> qlib must HOLD those days
+# Signal stamps == the evaluation window's trading days (2025-01-03..14),
+# so the cadence schedule (derived from the TRADING CALENDAR — codex P2
+# #336) is unambiguous. Trading days in [01-03, 01-14]:
+#   01-03, 01-06, 01-07, 01-08, 01-09, 01-10, 01-13, 01-14
+# Cadence N=5 / phase=0 keeps calendar indices 0 and 5 -> {01-03, 01-10}:
+#   * 2025-01-03 (kept):  top2 = A, B  -> entry fills on 2025-01-06 (T+1)
+#   * 2025-01-10 (kept):  top2 = C, B  -> rotate A->C, fills on 2025-01-13
+#   * every other trading day is thinned away -> qlib must HOLD it
 _STAMPS = [
-    "2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07",
-    "2025-01-08", "2025-01-09", "2025-01-10", "2025-01-13",
+    "2025-01-03", "2025-01-06", "2025-01-07", "2025-01-08",
+    "2025-01-09", "2025-01-10", "2025-01-13", "2025-01-14",
 ]
-_FILL_DAYS = {"2025-01-03", "2025-01-10"}
-_HOLD_AB_DAYS = ["2025-01-06", "2025-01-07", "2025-01-08", "2025-01-09"]
+_FILL_DAYS = {"2025-01-06", "2025-01-13"}
+_HOLD_AB_DAYS = ["2025-01-07", "2025-01-08", "2025-01-09", "2025-01-10"]
 
 
 def _scores_for(stamp: str) -> dict[str, float]:
-    if stamp < "2025-01-09":
+    if stamp < "2025-01-10":
         return {"SH600010": 9.0, "SH600011": 8.0, "SH600012": 1.0}
     return {"SH600010": 1.0, "SH600011": 8.0, "SH600012": 9.0}
 
@@ -222,7 +224,10 @@ def _run_probe() -> dict:
             predictions=predictions,
             topk=2,
             n_drop=1,
-            compute_baselines=False,
+            # compute_baselines=True exercises the eqw-omission path
+            # (codex P2 #336): a one-day-hold baseline would misrepresent the
+            # held strategy on a thinned arm, so it must be OMITTED.
+            compute_baselines=True,
             rebalance_cadence_days=5,
             rebalance_phase=0,
             rebalance_anchor="fold_phase",
@@ -235,6 +240,7 @@ def _run_probe() -> dict:
             "cost": dict(output.return_series["cost"]),
             "ret": dict(output.return_series["return"]),
             "held": held_by_day,
+            "has_eqw": "equalweight_topk" in output.return_series,
         }
 
 
@@ -271,16 +277,16 @@ class RebalanceCadenceContractTests(unittest.TestCase):
         return float(self._verdict["cost"].get(day, 0.0))
 
     def test_zero_orders_on_no_signal_days(self) -> None:
-        # (a) trades are the only cost source: the two rebalance fills carry
-        # cost; EVERY other in-window day is cost-free — including
-        # 2025-01-14, whose stamp (01-13) was thinned away and would have
-        # traded daily.
+        # (a) trades are the only cost source: the two rebalance fills
+        # (01-06 entry, 01-13 rotation) carry cost; EVERY other in-window
+        # day is cost-free — including 2025-01-14, which would have traded
+        # under a daily cadence.
         for day in _FILL_DAYS:
             self.assertGreater(
                 self._cost(day), 0.0,
                 f"expected a REAL fill on {day} (positive control)",
             )
-        for day in [*_HOLD_AB_DAYS, "2025-01-13", "2025-01-14"]:
+        for day in [*_HOLD_AB_DAYS, "2025-01-14"]:
             self.assertEqual(
                 self._cost(day), 0.0,
                 f"orders were placed on the no-signal day {day} — the "
@@ -290,16 +296,26 @@ class RebalanceCadenceContractTests(unittest.TestCase):
 
     def test_positions_held_between_rebalances(self) -> None:
         # (b) the held SET is frozen between the two fills: A+B throughout
-        # the thinned stretch, then B+C after the 01-10 rotation.
+        # the thinned stretch (incl. the 01-10 rebalance stamp day, whose
+        # signal only fills on 01-13), then B+C after the 01-13 rotation.
         held = self._verdict["held"]
         for day in _HOLD_AB_DAYS:
             self.assertEqual(
                 held.get(day), ["SH600010", "SH600011"],
                 f"held set changed on no-signal day {day}: {held.get(day)}",
             )
-        self.assertEqual(held.get("2025-01-10"), ["SH600011", "SH600012"])
         for day in ("2025-01-13", "2025-01-14"):
             self.assertEqual(held.get(day), ["SH600011", "SH600012"])
+
+    def test_equal_weight_baseline_omitted_on_thinned_arm(self) -> None:
+        # codex P2 #336: the one-day-hold eqw baseline would drop hold-day
+        # P&L and misrepresent the held strategy — it must be OMITTED for a
+        # non-daily cadence, not published as a misleading sparse series.
+        self.assertFalse(
+            self._verdict["has_eqw"],
+            "equalweight_topk was published on a thinned (N=5) arm — the "
+            "one-day-hold baseline misrepresents the held strategy",
+        )
 
     def test_market_value_accrues_on_no_signal_days(self) -> None:
         # (c) holding is not freezing: every close moves daily by

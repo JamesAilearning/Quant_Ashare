@@ -384,10 +384,12 @@ class BacktestRunner:
         # 阶段7 (add-rebalance-cadence, Route A): thin the SIGNAL-STAMP days
         # to the rebalance-day set BEFORE the lag restamp — the rebalance day
         # is the signal-stamp day and the fill still happens at
-        # T+signal_to_execution_lag. Placed here so EVERY downstream stamp
-        # consumer (ST-mask pairs, the exchange code universe, the
-        # equal-weight baseline's daily top-k) derives from the thinned
-        # stamps. qlib holds the portfolio on no-signal days (zero orders;
+        # T+signal_to_execution_lag. Placed here so the downstream stamp
+        # consumers (ST-mask pairs, the exchange code universe) derive from
+        # the thinned stamps; the equal-weight baseline is instead OMITTED
+        # for a non-daily cadence (its one-day-hold shape can't represent a
+        # held-across-days arm — codex P2 #336, see the compute_baselines
+        # branch). qlib holds the portfolio on no-signal days (zero orders;
         # contract-tested against the committed mini-bundle). The default
         # (N=1, fold_phase) returns the SAME OBJECT — no filter constructed,
         # byte-identical path.
@@ -396,6 +398,12 @@ class BacktestRunner:
             cadence_days=rebalance_cadence_days,
             phase=rebalance_phase,
             anchor=rebalance_anchor,
+            # The rebalance schedule is defined over the evaluation window's
+            # TRADING CALENDAR, not the dates that happen to appear in the
+            # prediction index (codex P2 on #336): a scheduled day missing
+            # from predictions must HOLD until the next scheduled rebalance,
+            # never silently shift the cadence to the first available signal.
+            trading_calendar=trading_calendar,
         )
 
         shifted_predictions = cls._apply_lag(
@@ -757,7 +765,23 @@ class BacktestRunner:
         # Compute equal-weight top-k baseline post-hoc from predictions +
         # qlib close prices. Avoids a second full backtest run (~50%
         # overhead) by using the same position set with 1/topk weights.
-        if compute_baselines:
+        if compute_baselines and rebalance_cadence_days != 1:
+            # The equal-weight baseline (codex P2 on #336): its helper emits
+            # a ONE-DAY-hold return per signal day and does not carry the
+            # top-k across no-signal days, so on a thinned (N>1) arm it would
+            # drop the intervening HOLD-day P&L the real strategy earns —
+            # a misleading sparse diagnostic. Omit it rather than publish an
+            # inconsistent one (equalweight_topk is a non-anchor diagnostic;
+            # a cadence-aware baseline that holds across days is a future
+            # enhancement if the comparator is wanted for thinned arms).
+            _logger.warning(
+                "BacktestRunner: equal-weight baseline OMITTED for a "
+                "non-daily rebalance cadence (N=%d) — the one-day-hold "
+                "baseline would drop hold-day P&L and misrepresent the "
+                "held strategy. Strategy metrics are unaffected.",
+                rebalance_cadence_days,
+            )
+        elif compute_baselines:
             try:
                 eqw_returns = cls._compute_equalweight_baseline(
                     predictions=shifted_predictions,
@@ -1322,35 +1346,53 @@ class BacktestRunner:
     @classmethod
     def _thin_predictions(
         cls, predictions: Any, *, cadence_days: int, phase: int, anchor: str,
+        trading_calendar: Sequence[Any],
     ) -> Any:
         """Thin prediction SIGNAL-STAMP days to the rebalance-day set
         (阶段7 Route A). The default (``cadence_days=1``, ``fold_phase``)
         returns ``predictions`` UNCHANGED — the very same object, no filter
-        constructed — keeping the daily path byte-identical. A thinning that
-        would leave no signal days FAILS LOUD (a backtest over an all-hold
-        window would publish empty metrics as official)."""
+        constructed — keeping the daily path byte-identical.
+
+        The rebalance schedule is derived from ``trading_calendar`` (the
+        evaluation window's trading days), NOT the prediction index, so a
+        scheduled day absent from predictions HOLDS until the next scheduled
+        rebalance instead of silently shifting the cadence to the first
+        available signal (codex P2 on #336). A schedule that keeps no
+        prediction day FAILS LOUD (an all-hold window would publish empty
+        metrics as official)."""
         if cadence_days == 1 and anchor == "fold_phase":
             return predictions
-        stamp_dates = sorted(predictions.index.get_level_values(0).unique())
-        keep = set(cls._rebalance_stamp_dates(
-            stamp_dates, cadence_days=cadence_days, phase=phase, anchor=anchor,
-        ))
-        if not keep:
+        import pandas as pd
+
+        schedule = cls._rebalance_stamp_dates(
+            list(trading_calendar),
+            cadence_days=cadence_days, phase=phase, anchor=anchor,
+        )
+        # Normalize both sides to a date key so a python-``date`` calendar
+        # and pd.Timestamp prediction stamps compare cleanly.
+        keep_keys = {pd.Timestamp(d).normalize() for d in schedule}
+        stamp_level = predictions.index.get_level_values(0)
+        stamp_keys = stamp_level.normalize() if hasattr(
+            stamp_level, "normalize") else pd.DatetimeIndex(stamp_level).normalize()
+        mask = stamp_keys.isin(keep_keys)
+        thinned = predictions[mask]
+        if thinned.empty:
+            n_stamps = len(stamp_level.unique())
             raise BacktestRunnerError(
                 f"rebalance cadence (N={cadence_days}, phase={phase}, "
-                f"anchor={anchor!r}) keeps ZERO of the {len(stamp_dates)} "
-                "signal days — the evaluation window is shorter than the "
-                "cadence/phase. Refusing to run an all-hold backtest as "
-                "official metrics."
+                f"anchor={anchor!r}) keeps ZERO of the {n_stamps} signal "
+                f"day(s) against a {len(schedule)}-day schedule over the "
+                "evaluation window — window shorter than the cadence/phase, "
+                "or predictions disjoint from the schedule. Refusing to run "
+                "an all-hold backtest as official metrics."
             )
-        thinned = predictions[
-            predictions.index.get_level_values(0).isin(keep)
-        ]
         _logger.info(
             "BacktestRunner: rebalance cadence N=%d phase=%d anchor=%s — "
-            "kept %d of %d signal day(s); the portfolio HOLDS on the "
-            "remaining days (zero orders; fills stay at T+lag).",
-            cadence_days, phase, anchor, len(keep), len(stamp_dates),
+            "%d scheduled rebalance day(s) over the window; kept %d signal "
+            "day(s); the portfolio HOLDS elsewhere (zero orders; fills stay "
+            "at T+lag).",
+            cadence_days, phase, anchor, len(schedule),
+            int(mask.sum()) if hasattr(mask, "sum") else len(thinned),
         )
         return thinned
 

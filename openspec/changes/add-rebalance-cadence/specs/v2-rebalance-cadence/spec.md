@@ -56,6 +56,20 @@ lag>1.
   or the lag interaction)
 - **THEN** it raises `BacktestRunnerError` before producing official metrics
 
+#### Scenario: the schedule is calendar-defined, not stamp-defined
+- **WHEN** a scheduled rebalance trading day is absent from the prediction
+  index (a masked/missing cross-section)
+- **THEN** that day is HELD (nothing kept for it) — the cadence never
+  silently shifts to the first available signal date or an off-schedule
+  weekday; the schedule is derived from the evaluation window's trading
+  calendar
+
+#### Scenario: the equal-weight baseline is omitted on a thinned arm
+- **WHEN** a non-daily cadence runs with `compute_baselines=True`
+- **THEN** `equalweight_topk` is OMITTED (a WARN explains why) rather than
+  published as a one-day-hold series that would drop the held strategy's
+  hold-day P&L — the strategy metrics are unaffected
+
 #### Scenario: derived artifacts thin consistently
 - **WHEN** a thinned arm runs
 - **THEN** ST-mask pairs, the exchange code universe, and the equal-weight

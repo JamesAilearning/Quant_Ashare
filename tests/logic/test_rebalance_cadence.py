@@ -194,33 +194,65 @@ class ThinPredictionsTests(unittest.TestCase):
         )
         return pd.Series(range(len(idx)), index=idx, dtype=float)
 
+    @staticmethod
+    def _cal(days: list[str]):
+        import pandas as pd
+
+        return [pd.Timestamp(d) for d in days]
+
     def test_default_returns_the_same_object(self) -> None:
         # THE identity guarantee: N=1/fold_phase constructs no filter at all
         # — the byte-identical default path is the same object, not a copy.
         preds = self._preds(["2021-07-01", "2021-07-02"])
         out = BacktestRunner._thin_predictions(
             preds, cadence_days=1, phase=0, anchor="fold_phase",
+            trading_calendar=self._cal(["2021-07-01", "2021-07-02"]),
         )
         self.assertIs(out, preds)
 
     def test_thinning_keeps_only_rebalance_stamps(self) -> None:
-        preds = self._preds([
+        window = [
             "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
             "2021-07-07", "2021-07-08",
-        ])
+        ]
+        preds = self._preds(window)
         out = BacktestRunner._thin_predictions(
             preds, cadence_days=5, phase=0, anchor="fold_phase",
+            trading_calendar=self._cal(window),
         )
         kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
         self.assertEqual(kept, ["2021-07-01", "2021-07-08"])
         # per-day cross-sections survive intact
         self.assertEqual(len(out), 4)
 
+    def test_schedule_from_calendar_holds_a_missing_scheduled_day(self) -> None:
+        # codex P2 #336: the schedule is the TRADING CALENDAR's every-Nth
+        # day. If that scheduled day is absent from predictions, thinning
+        # keeps nothing for it (the strategy HOLDS) — it must NOT slide the
+        # cadence to the next available signal. Calendar day 0 (2021-07-01)
+        # is scheduled but has NO prediction; day 1 (2021-07-02) does.
+        window = [
+            "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
+            "2021-07-07", "2021-07-08",
+        ]
+        preds = self._preds(window[1:])  # 2021-07-01 missing from predictions
+        out = BacktestRunner._thin_predictions(
+            preds, cadence_days=5, phase=0, anchor="fold_phase",
+            trading_calendar=self._cal(window),
+        )
+        kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
+        # scheduled days are calendar {07-01, 07-08}; 07-01 has no signal ->
+        # held; only 07-08 kept — NOT 07-02 (which a stamp-derived schedule
+        # would have wrongly promoted to the phase-0 rebalance).
+        self.assertEqual(kept, ["2021-07-08"])
+
     def test_empty_thinning_fails_loud(self) -> None:
-        preds = self._preds(["2021-07-01", "2021-07-02"])
+        window = ["2021-07-01", "2021-07-02"]
+        preds = self._preds(window)
         with self.assertRaisesRegex(BacktestRunnerError, "ZERO"):
             BacktestRunner._thin_predictions(
                 preds, cadence_days=5, phase=3, anchor="fold_phase",
+                trading_calendar=self._cal(window),
             )
 
 
