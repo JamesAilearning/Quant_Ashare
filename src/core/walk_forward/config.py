@@ -129,7 +129,11 @@ class WalkForwardConfig:
     # 阶段7 (add-rebalance-cadence, Route A signal thinning): portfolio
     # rebalance cadence. THE REBALANCE DAY IS THE SIGNAL-STAMP DAY; THE
     # FILL STILL HAPPENS AT T+signal_to_execution_lag (thinning changes
-    # WHICH days carry a signal, never the execution timing). On days
+    # WHICH days carry a signal, never the execution timing) — but ONLY at
+    # signal_to_execution_lag=1: N>1 with lag>1 is refused (the thinning
+    # precedes the position-based lag restamp, which is calendar-correct
+    # only on a dense daily series; see __post_init__ and codex P1 on #336).
+    # On days
     # without a signal stamp, qlib's TopkDropoutStrategy emits zero orders
     # and the portfolio holds while still accruing market-value returns —
     # third-party behavior pinned by the cadence CONTRACT test against the
@@ -317,6 +321,21 @@ class WalkForwardConfig:
                 f"derivational meaning under it — got N={n_cad}, "
                 f"phase={p_cad}; any other value would be a silently-ignored "
                 "lie."
+            )
+        # The lag interaction (codex P1 on #336): thinning happens before the
+        # position-based _apply_lag restamp, which equals a trading-day shift
+        # only on a dense daily calendar. N>1 with lag>1 would restamp a
+        # signal ~N days out instead of T+lag — refused rather than silently
+        # producing wrong fills. lag=1 (no restamp) is the canonical path and
+        # the only one the cadence campaign uses.
+        if n_cad > 1 and self.signal_to_execution_lag > 1:
+            raise WalkForwardError(
+                f"rebalance_cadence_days={n_cad} (>1) with "
+                f"signal_to_execution_lag={self.signal_to_execution_lag} (>1) "
+                "is not jointly supported: the thinning-before-lag restamp "
+                "would land the fill ~N trading days out instead of at "
+                "T+lag. Use signal_to_execution_lag=1 with a non-daily "
+                "cadence (the canonical path)."
             )
 
         h = self.label_horizon_days

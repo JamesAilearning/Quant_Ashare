@@ -14,9 +14,16 @@ returns. `fold_phase` selects every Nth trading day of the evaluation
 window starting at day `phase`; `iso_week` selects the first trading day of
 each ISO week (the deployable calendar semantics). For N=1 the signal path
 SHALL be byte-identical to the pre-change behavior (no filter constructed).
-Validation SHALL reject fail-loud: non-positive or non-integer N, `phase`
-outside `[0, N)`, an unknown anchor, and N=1 combined with a non-zero
-phase (a meaningless combination must never pass silently).
+Thinning precedes the position-based execution-lag restamp, which is
+calendar-correct only on a dense daily series; therefore a non-daily
+cadence (N>1) SHALL be supported ONLY at `signal_to_execution_lag=1` — the
+combination of N>1 and lag>1 SHALL be refused rather than silently landing
+the fill ~N trading days out. Validation SHALL reject fail-loud, AT BOTH
+`WalkForwardConfig` construction AND the `BacktestRunner.run`
+official-metrics boundary (direct callers bypass the config): non-positive
+or non-integer N, `phase` outside `[0, N)`, an unknown anchor, N=1 combined
+with a non-zero phase, `iso_week` with non-nominal N/phase, and N>1 with
+lag>1.
 
 #### Scenario: default is identity-preserving
 - **WHEN** a run executes with `rebalance_cadence_days=1`
@@ -35,6 +42,19 @@ phase (a meaningless combination must never pass silently).
 - **WHEN** a config sets `rebalance_cadence_days=1` with
   `rebalance_phase != 0` (or any phase outside `[0, N)`)
 - **THEN** config construction raises with an actionable message
+
+#### Scenario: a non-daily cadence with lag>1 is refused
+- **WHEN** `rebalance_cadence_days > 1` is combined with
+  `signal_to_execution_lag > 1`
+- **THEN** both `WalkForwardConfig` construction and `BacktestRunner.run`
+  raise fail-loud, naming the thinning-before-restamp interaction — the
+  fill is never silently landed ~N trading days out
+
+#### Scenario: the runner boundary validates direct callers
+- **WHEN** `BacktestRunner.run` is called directly (bypassing
+  `WalkForwardConfig`) with an invalid cadence (bad phase, unknown anchor,
+  or the lag interaction)
+- **THEN** it raises `BacktestRunnerError` before producing official metrics
 
 #### Scenario: derived artifacts thin consistently
 - **WHEN** a thinned arm runs

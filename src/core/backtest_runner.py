@@ -124,6 +124,17 @@ class BacktestRunner:
         # contract level — no redundant check needed here.
         CanonicalBacktestContract.validate_input(request)
 
+        # Cadence validation at the OFFICIAL-METRICS BOUNDARY (codex P2 on
+        # #336): direct callers (tests, replay scripts, single-fold) bypass
+        # WalkForwardConfig.__post_init__, so an invalid cadence must be
+        # refused HERE too — never silently accepted while provenance records
+        # a non-default value. This also enforces the lag interaction (codex
+        # P1 on #336; see the helper).
+        cls._validate_cadence(
+            rebalance_cadence_days, rebalance_phase, rebalance_anchor,
+            request.signal_to_execution_lag,
+        )
+
         if predictions is None or (hasattr(predictions, "empty") and predictions.empty):
             raise BacktestRunnerError("predictions must be non-empty.")
 
@@ -1219,6 +1230,65 @@ class BacktestRunner:
                 f"pit_provider._provider_uri = {pit_norm!r}. "
                 "Re-init qlib with the PIT-corrected provider before "
                 "passing pit_provider to BacktestRunner.run()."
+            )
+
+    @staticmethod
+    def _validate_cadence(
+        cadence_days: int, phase: int, anchor: str, lag: int,
+    ) -> None:
+        """Fail-loud cadence validation at the official-metrics boundary
+        (codex P1+P2 on #336). Mirrors WalkForwardConfig.__post_init__ so
+        direct BacktestRunner.run callers cannot bypass it, and adds the lag
+        interaction the config alone cannot fully own."""
+        if (
+            not isinstance(cadence_days, int)
+            or isinstance(cadence_days, bool)
+            or cadence_days < 1
+        ):
+            raise BacktestRunnerError(
+                f"rebalance_cadence_days must be a positive integer; got "
+                f"{cadence_days!r}."
+            )
+        if (
+            not isinstance(phase, int)
+            or isinstance(phase, bool)
+            or not 0 <= phase < cadence_days
+        ):
+            raise BacktestRunnerError(
+                f"rebalance_phase must be an integer in [0, "
+                f"rebalance_cadence_days); got phase={phase!r} with "
+                f"N={cadence_days}. N=1 requires phase=0 (a phase under daily "
+                "cadence is a meaningless combination)."
+            )
+        if anchor not in ("fold_phase", "iso_week"):
+            raise BacktestRunnerError(
+                f"rebalance_anchor must be 'fold_phase' or 'iso_week'; got "
+                f"{anchor!r}."
+            )
+        if anchor == "iso_week" and (cadence_days != 5 or phase != 0):
+            raise BacktestRunnerError(
+                "rebalance_anchor='iso_week' requires the nominal "
+                f"rebalance_cadence_days=5 and rebalance_phase=0; got "
+                f"N={cadence_days}, phase={phase}."
+            )
+        # THE LAG INTERACTION (codex P1 on #336): _apply_lag restamps by
+        # POSITION within the prediction series' own remaining date rows,
+        # which equals a trading-day shift ONLY on a dense daily calendar.
+        # Thinning removes the intervening days, so with N>1 AND lag>1 a
+        # signal would be restamped to the NEXT rebalance stamp (~N days
+        # later) instead of T+lag — corrupting official metrics. lag=1
+        # (rows=0, no restamp) is the canonical path and the only one the
+        # cadence campaign uses; the two are REFUSED together rather than
+        # silently producing wrong fills. A calendar-aware restamp is the
+        # future fix if lag>1 cadence is ever needed.
+        if cadence_days > 1 and lag > 1:
+            raise BacktestRunnerError(
+                f"rebalance_cadence_days={cadence_days} (>1) with "
+                f"signal_to_execution_lag={lag} (>1) is not jointly "
+                "supported: _apply_lag restamps by row position within the "
+                "thinned signal, so the fill would land ~N trading days out "
+                "instead of at T+lag. Use signal_to_execution_lag=1 (the "
+                "canonical path) with a non-daily cadence."
             )
 
     @staticmethod

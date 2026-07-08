@@ -71,6 +71,54 @@ class CadenceConfigValidationTests(unittest.TestCase):
         )
         self.assertEqual(cfg.rebalance_anchor, "iso_week")
 
+    def test_non_daily_cadence_with_lag_gt1_refused(self) -> None:
+        # codex P1 #336: thinning precedes the position-based lag restamp,
+        # calendar-correct only on a dense daily series — N>1 with lag>1 is
+        # refused rather than landing the fill ~N days out.
+        with self.assertRaisesRegex(WalkForwardError, "not jointly supported"):
+            WalkForwardConfig(
+                rebalance_cadence_days=5, signal_to_execution_lag=2,
+            )
+        # lag=1 with a non-daily cadence is the supported canonical path.
+        cfg = WalkForwardConfig(
+            rebalance_cadence_days=5, signal_to_execution_lag=1,
+        )
+        self.assertEqual(cfg.rebalance_cadence_days, 5)
+
+
+class RunnerBoundaryValidationTests(unittest.TestCase):
+    """codex P2 #336: BacktestRunner.run is a public official-metrics entry
+    point; direct callers bypass WalkForwardConfig validation, so the runner
+    boundary must reject invalid cadence itself (via _validate_cadence)."""
+
+    def test_daily_with_phase_refused_at_boundary(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "meaningless"):
+            BacktestRunner._validate_cadence(1, 1, "fold_phase", 1)
+
+    def test_phase_out_of_range_refused(self) -> None:
+        with self.assertRaises(BacktestRunnerError):
+            BacktestRunner._validate_cadence(5, 5, "fold_phase", 1)
+
+    def test_unknown_anchor_refused(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "rebalance_anchor"):
+            BacktestRunner._validate_cadence(5, 0, "weekly", 1)
+
+    def test_iso_week_non_nominal_refused(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "iso_week"):
+            BacktestRunner._validate_cadence(3, 0, "iso_week", 1)
+
+    def test_lag_interaction_refused(self) -> None:
+        with self.assertRaisesRegex(
+            BacktestRunnerError, "not jointly supported",
+        ):
+            BacktestRunner._validate_cadence(5, 0, "fold_phase", 2)
+
+    def test_default_and_supported_combinations_pass(self) -> None:
+        # default daily, non-daily+lag1, iso_week nominal — all accepted.
+        BacktestRunner._validate_cadence(1, 0, "fold_phase", 1)
+        BacktestRunner._validate_cadence(5, 2, "fold_phase", 1)
+        BacktestRunner._validate_cadence(5, 0, "iso_week", 1)
+
 
 class RebalanceStampDerivationTests(unittest.TestCase):
     @staticmethod
