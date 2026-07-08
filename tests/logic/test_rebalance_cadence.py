@@ -132,6 +132,56 @@ class RunnerBoundaryValidationTests(unittest.TestCase):
         BacktestRunner._validate_cadence(5, 0, "iso_week", 1)
 
 
+class FoldICThinningTests(unittest.TestCase):
+    """codex P2 #336: the fold IC must describe the TRADED (thinned) signal
+    set, not the dense daily scores — else weekly and daily arms report
+    identical descriptive ic_1d/ic_5d. WalkForwardEngine._ic_predictions_for_fold
+    thins the analyzer input to the same schedule the backtest thins with."""
+
+    @staticmethod
+    def _preds(days: list[str]):
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_product(
+            [pd.to_datetime(days), ["SH600000", "SH600001"]],
+            names=["datetime", "instrument"],
+        )
+        return pd.Series(range(len(idx)), index=idx, dtype=float)
+
+    def test_default_cadence_returns_same_object(self) -> None:
+        from src.core.walk_forward.engine import WalkForwardEngine
+
+        preds = self._preds(["2021-07-01", "2021-07-02"])
+        out = WalkForwardEngine._ic_predictions_for_fold(
+            WalkForwardConfig(), preds, "2021-07-01", "2021-07-02",
+        )
+        self.assertIs(out, preds)
+
+    def test_non_daily_cadence_thins_the_ic_input(self) -> None:
+        from datetime import date
+        from unittest.mock import patch
+
+        from src.core.walk_forward.engine import WalkForwardEngine
+
+        window = [
+            "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
+            "2021-07-07", "2021-07-08",
+        ]
+        preds = self._preds(window)
+        cal = [date.fromisoformat(d) for d in window]
+        with patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=cal,
+        ):
+            out = WalkForwardEngine._ic_predictions_for_fold(
+                WalkForwardConfig(rebalance_cadence_days=5),
+                preds, "2021-07-01", "2021-07-08",
+            )
+        kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
+        # schedule over the test-window calendar = {07-01, 07-08}
+        self.assertEqual(kept, ["2021-07-01", "2021-07-08"])
+        self.assertLess(len(out), len(preds))  # genuinely fewer IC days
+
+
 class RebalanceStampDerivationTests(unittest.TestCase):
     @staticmethod
     def _days(spec: list[str]) -> list:

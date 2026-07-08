@@ -70,6 +70,14 @@ lag>1.
   published as a one-day-hold series that would drop the held strategy's
   hold-day P&L — the strategy metrics are unaffected
 
+#### Scenario: fold IC describes the traded (thinned) signal set
+- **WHEN** a non-daily cadence runs
+- **THEN** the fold `ic_1d`/`ic_5d` (and the aggregate `mean_ic_*`) are
+  computed over the predictions THINNED to the rebalance schedule — the
+  same schedule the backtest trades — so weekly and daily arms do not
+  report identical descriptive IC over dense daily scores; the default
+  daily cadence leaves the IC input unchanged (byte-identical)
+
 #### Scenario: derived artifacts thin consistently
 - **WHEN** a thinned arm runs
 - **THEN** ST-mask pairs, the exchange code universe, and the equal-weight
