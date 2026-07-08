@@ -11,4 +11,6 @@
       unknown;源码契约(模块零 streamlit;app.py 含 ttl 缓存与徽章)
 - [x] 1.4 本机验证:目标测试 + tests/logic 全量绿;ruff + mypy --strict 干净;
       `openspec validate --strict` 过;streamlit 一次起停截图(徽章可见)
-- [ ] 1.5 推 PR → codex 修净 P0–P2 → CI 6 legs 绿 → 通知合并(合并只能 James)
+- [x] 1.5 推 PR → codex 修净 P0–P2 → CI 6 legs 绿 → 通知合并(合并只能 James)
+      —— #335 已并入 main(codex 3 轮 P2 全修:evidence sidecar 名 / hop-2
+      探测失败降级 unknown / jobs 非列表降级 unknown;CI 6 legs 绿)
