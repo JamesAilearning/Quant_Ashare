@@ -8,6 +8,12 @@ from typing import Any
 
 import streamlit as st
 
+from web.operator_ui.anchor_health import (
+    AnchorIdentity,
+    CiLegStatus,
+    baseline_identity,
+    ci_leg_status,
+)
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.theme import (
     inject_theme,
@@ -151,6 +157,36 @@ with st.sidebar:
 """,
         width="content",
         unsafe_allow_javascript=False,
+    )
+
+    # -----------------------------------------------------------------------
+    # REGEN-2 anchor-health badge (PR-B, spec v2-operator-ui-console).
+    # Probes are pull-based behind a TTL cache — no background polling; every
+    # element degrades to an explicit 未知, the badge can never block the page.
+    # -----------------------------------------------------------------------
+    # ``untyped-decorator`` for CI (streamlit absent → st is Any under
+    # --ignore-missing-imports); ``unused-ignore`` keeps it clean locally.
+    @st.cache_data(ttl=600, show_spinner=False)  # type: ignore[untyped-decorator, unused-ignore]
+    def _anchor_badge_probe() -> tuple[AnchorIdentity, CiLegStatus]:
+        return baseline_identity(), ci_leg_status()
+
+    _anchor_id, _anchor_ci = _anchor_badge_probe()
+    _ci_dot = {"success": "\U0001f7e2", "failure": "\U0001f534"}.get(
+        _anchor_ci.conclusion, "⚪"
+    )
+    _sha_text = _anchor_id.sha8 or "未知"
+    _signed_text = (
+        f"{_anchor_id.signed_at[:10]} ({_anchor_id.signed_commit})"
+        if _anchor_id.signed_at and _anchor_id.signed_commit
+        else "未知"
+    )
+    _evidence_text = "有" if _anchor_id.evidence_present else "缺(legacy)"
+    _ci_text = _anchor_ci.conclusion + (
+        f"({_anchor_ci.detail})" if _anchor_ci.detail else ""
+    )
+    st.caption(
+        f"REGEN-2 锚 {_ci_dot} CI锚腿:{_ci_text}\n\n"
+        f"基线 {_sha_text} · 重签 {_signed_text} · evidence {_evidence_text}"
     )
 
     st.html(_ICON_SCRIPT, width="content", unsafe_allow_javascript=True)
