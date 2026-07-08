@@ -1357,7 +1357,12 @@ class BacktestRunner:
         evaluation window's trading days), NOT the prediction index, so a
         scheduled day absent from predictions HOLDS until the next scheduled
         rebalance instead of silently shifting the cadence to the first
-        available signal (codex P2 on #336). A schedule that keeps no
+        available signal (codex P2 on #336). The final in-window trading day
+        is EXCLUDED from the schedule: under lag=1 a signal fills on the next
+        trading day, which does not exist in-window for the last day, so it
+        can never trade — counting it as traded would desync qlib (no fill)
+        from the IC/attribution/exchange universe (same tail-execution class
+        as #327 at fold generation). A schedule that keeps no fillable
         prediction day FAILS LOUD (an all-hold window would publish empty
         metrics as official)."""
         if cadence_days == 1 and anchor == "fold_phase":
@@ -1368,9 +1373,16 @@ class BacktestRunner:
             list(trading_calendar),
             cadence_days=cadence_days, phase=phase, anchor=anchor,
         )
-        # Normalize both sides to a date key so a python-``date`` calendar
-        # and pd.Timestamp prediction stamps compare cleanly.
-        keep_keys = {pd.Timestamp(d).normalize() for d in schedule}
+        # Fillable stamps = every in-window trading day EXCEPT the last
+        # (its T+1 execution day is out of window; codex P2 #336). Normalize
+        # to a date key so a python-``date`` calendar and pd.Timestamp
+        # prediction stamps compare cleanly.
+        fillable = {
+            pd.Timestamp(d).normalize() for d in list(trading_calendar)[:-1]
+        }
+        keep_keys = {
+            pd.Timestamp(d).normalize() for d in schedule
+        } & fillable
         stamp_level = predictions.index.get_level_values(0)
         stamp_keys = stamp_level.normalize() if hasattr(
             stamp_level, "normalize") else pd.DatetimeIndex(stamp_level).normalize()
@@ -1380,11 +1392,13 @@ class BacktestRunner:
             n_stamps = len(stamp_level.unique())
             raise BacktestRunnerError(
                 f"rebalance cadence (N={cadence_days}, phase={phase}, "
-                f"anchor={anchor!r}) keeps ZERO of the {n_stamps} signal "
-                f"day(s) against a {len(schedule)}-day schedule over the "
-                "evaluation window — window shorter than the cadence/phase, "
-                "or predictions disjoint from the schedule. Refusing to run "
-                "an all-hold backtest as official metrics."
+                f"anchor={anchor!r}) keeps ZERO FILLABLE signal day(s) of "
+                f"{n_stamps} (schedule={len(schedule)} day(s) over the "
+                "window, minus the final in-window day whose T+1 execution "
+                "is out of window) — window shorter than the cadence/phase, "
+                "predictions disjoint from the schedule, or the only kept "
+                "stamp was the unfillable last day. Refusing to run an "
+                "all-hold backtest as official metrics."
             )
         _logger.info(
             "BacktestRunner: rebalance cadence N=%d phase=%d anchor=%s — "

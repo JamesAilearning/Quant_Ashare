@@ -163,9 +163,11 @@ class FoldICThinningTests(unittest.TestCase):
 
         from src.core.walk_forward.engine import WalkForwardEngine
 
+        # 7-day window so the schedule's second stamp (07-08) is not the
+        # final in-window day (07-09) and stays fillable.
         window = [
             "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
-            "2021-07-07", "2021-07-08",
+            "2021-07-07", "2021-07-08", "2021-07-09",
         ]
         preds = self._preds(window)
         cal = [date.fromisoformat(d) for d in window]
@@ -174,7 +176,7 @@ class FoldICThinningTests(unittest.TestCase):
         ):
             out = WalkForwardEngine._traded_predictions_for_fold(
                 WalkForwardConfig(rebalance_cadence_days=5),
-                preds, "2021-07-01", "2021-07-08",
+                preds, "2021-07-01", "2021-07-09",
             )
         kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
         # schedule over the test-window calendar = {07-01, 07-08}
@@ -272,15 +274,18 @@ class ThinPredictionsTests(unittest.TestCase):
         )
         self.assertIs(out, preds)
 
+    # 7-day window so the phase-0 schedule {day0, day5} lands neither stamp
+    # on the FINAL in-window day (day6) — both are fillable.
+    _WIN7 = [
+        "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
+        "2021-07-07", "2021-07-08", "2021-07-09",
+    ]
+
     def test_thinning_keeps_only_rebalance_stamps(self) -> None:
-        window = [
-            "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
-            "2021-07-07", "2021-07-08",
-        ]
-        preds = self._preds(window)
+        preds = self._preds(self._WIN7)
         out = BacktestRunner._thin_predictions(
             preds, cadence_days=5, phase=0, anchor="fold_phase",
-            trading_calendar=self._cal(window),
+            trading_calendar=self._cal(self._WIN7),
         )
         kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
         self.assertEqual(kept, ["2021-07-01", "2021-07-08"])
@@ -292,21 +297,44 @@ class ThinPredictionsTests(unittest.TestCase):
         # day. If that scheduled day is absent from predictions, thinning
         # keeps nothing for it (the strategy HOLDS) — it must NOT slide the
         # cadence to the next available signal. Calendar day 0 (2021-07-01)
-        # is scheduled but has NO prediction; day 1 (2021-07-02) does.
-        window = [
-            "2021-07-01", "2021-07-02", "2021-07-05", "2021-07-06",
-            "2021-07-07", "2021-07-08",
-        ]
-        preds = self._preds(window[1:])  # 2021-07-01 missing from predictions
+        # is scheduled but has NO prediction; day 5 (2021-07-08) does.
+        preds = self._preds(self._WIN7[1:])  # 07-01 missing from predictions
         out = BacktestRunner._thin_predictions(
             preds, cadence_days=5, phase=0, anchor="fold_phase",
-            trading_calendar=self._cal(window),
+            trading_calendar=self._cal(self._WIN7),
         )
         kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
-        # scheduled days are calendar {07-01, 07-08}; 07-01 has no signal ->
-        # held; only 07-08 kept — NOT 07-02 (which a stamp-derived schedule
-        # would have wrongly promoted to the phase-0 rebalance).
+        # scheduled days {07-01, 07-08}; 07-01 has no signal -> held; only
+        # 07-08 kept — NOT 07-02 (which a stamp-derived schedule would have
+        # wrongly promoted to the phase-0 rebalance).
         self.assertEqual(kept, ["2021-07-08"])
+
+    def test_final_in_window_day_excluded_from_schedule(self) -> None:
+        # codex P2 #336: a scheduled stamp on the LAST in-window trading day
+        # has no in-window T+1 execution, so qlib can't fill it — it must be
+        # dropped from the traded set (else IC/attribution/exchange desync
+        # from the backtest). 6-day window: schedule {day0=07-01, day5=07-08}
+        # where 07-08 IS the last day -> excluded, only 07-01 kept.
+        window6 = self._WIN7[:-1]  # 07-08 is now the final in-window day
+        preds = self._preds(window6)
+        out = BacktestRunner._thin_predictions(
+            preds, cadence_days=5, phase=0, anchor="fold_phase",
+            trading_calendar=self._cal(window6),
+        )
+        kept = sorted(out.index.get_level_values(0).unique().strftime("%Y-%m-%d"))
+        self.assertEqual(kept, ["2021-07-01"])
+
+    def test_only_kept_stamp_is_unfillable_last_day_fails_loud(self) -> None:
+        # A short window whose ONLY scheduled+present stamp is the unfillable
+        # last day -> the all-hold official run must be refused, not silently
+        # produced. Window of 6 days, phase=5 -> schedule {day5=last} only.
+        window6 = self._WIN7[:-1]
+        preds = self._preds(window6)
+        with self.assertRaisesRegex(BacktestRunnerError, "FILLABLE"):
+            BacktestRunner._thin_predictions(
+                preds, cadence_days=6, phase=5, anchor="fold_phase",
+                trading_calendar=self._cal(window6),
+            )
 
     def test_empty_thinning_fails_loud(self) -> None:
         window = ["2021-07-01", "2021-07-02"]

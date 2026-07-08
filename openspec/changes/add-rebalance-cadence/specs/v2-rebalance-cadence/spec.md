@@ -64,6 +64,14 @@ lag>1.
   weekday; the schedule is derived from the evaluation window's trading
   calendar
 
+#### Scenario: the unfillable final in-window day is excluded
+- **WHEN** the cadence schedule would select the LAST in-window trading day
+  (whose T+1 execution day is outside the window under lag=1)
+- **THEN** that stamp is excluded from the traded set (qlib cannot fill it,
+  so counting it would desync IC/attribution/exchange from the backtest);
+  if excluding it leaves no fillable rebalance day, the run FAILS LOUD
+  rather than publishing an all-hold official result
+
 #### Scenario: the equal-weight baseline is omitted on a thinned arm
 - **WHEN** a non-daily cadence runs with `compute_baselines=True`
 - **THEN** `equalweight_topk` is OMITTED (a WARN explains why) rather than
