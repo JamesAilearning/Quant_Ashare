@@ -643,20 +643,24 @@ class WalkForwardEngine:
         return read_bundle_tag(bundle_uri)
 
     @classmethod
-    def _ic_predictions_for_fold(
+    def _traded_predictions_for_fold(
         cls, config: WalkForwardConfig, predictions: Any,
         test_start: str, test_end: str,
     ) -> Any:
-        """Predictions the fold's IC is computed over (阶段7, codex P2 #336).
+        """The signal set ACTUALLY TRADED this fold — the input for the
+        analyzer-side consumers that must agree with the backtest's traded
+        universe (阶段7, codex P2 #336): the fold IC and the per-fold
+        attribution.
 
         For the default daily cadence this is ``predictions`` UNCHANGED (the
-        same object — IC byte-identical). For a non-daily cadence it is the
-        predictions THINNED to the rebalance schedule over the fold's
-        test-window trading calendar — the SAME schedule the backtest thins
-        with (``BacktestRunner._thin_predictions`` + the same calendar
-        slice), so the descriptive IC describes the traded stamps rather than
-        the dense daily scores. Kept as a small classmethod so the behavior
-        is unit-testable without the full fold machinery."""
+        same object — IC/attribution byte-identical). For a non-daily cadence
+        it is the predictions THINNED to the rebalance schedule over the
+        fold's test-window trading calendar — the SAME schedule the backtest
+        thins with (``BacktestRunner._thin_predictions`` + the same calendar
+        slice), so the descriptive IC describes the traded stamps and the
+        Brinson universe (prediction instruments ∪ held) excludes names that
+        only appear on skipped no-signal days. Kept as a small classmethod so
+        the behavior is unit-testable without the full fold machinery."""
         if (
             config.rebalance_cadence_days == 1
             and config.rebalance_anchor == "fold_phase"
@@ -781,20 +785,21 @@ class WalkForwardEngine:
             "prediction_artifact_sha256": prediction_artifact_sha,
         }
 
-        # Cadence (阶段7, codex P2 #336): the fold IC must describe the
-        # SIGNAL SET ACTUALLY TRADED, not the dense daily scores — otherwise
-        # weekly and daily arms report identical descriptive ic_1d/ic_5d
-        # (the backtest thins internally, AFTER this analyze call). Thinning
-        # the analyzer's input to the rebalance schedule makes the sparse
-        # arm's IC the ~N-fewer-days statistic the campaign demotes to
-        # descriptive (operator condition 2). Default (N=1) is a no-op.
-        ic_predictions = cls._ic_predictions_for_fold(
+        # Cadence (阶段7, codex P2 #336): the analyzer-side consumers (fold
+        # IC AND per-fold attribution) must see the SIGNAL SET ACTUALLY
+        # TRADED, not the dense daily scores — otherwise weekly and daily
+        # arms report identical descriptive IC, and attribution's Brinson
+        # universe includes names that only appear on skipped no-signal days
+        # and could never trade. The backtest thins internally (AFTER this),
+        # so thin the analyzer input to the same rebalance schedule here.
+        # Default (N=1) is a no-op — the same object, byte-identical.
+        traded_predictions = cls._traded_predictions_for_fold(
             config, predictions, test_start, test_end,
         )
 
         # Signal analysis
         signal_result = SignalAnalyzer.analyze(
-            predictions=ic_predictions,
+            predictions=traded_predictions,
             config=SignalAnalysisConfig(forward_periods=(1, 5), topk=config.topk),
             pit_provider=pit_provider,
         )
@@ -900,7 +905,10 @@ class WalkForwardEngine:
                 config=config,
                 fold_index=fold_index,
                 test_start=test_start, test_end=test_end,
-                predictions=predictions,
+                # The TRADED (thinned) signal — so the Brinson universe
+                # agrees with the backtest's traded universe on a non-daily
+                # cadence (codex P2 #336); default N=1 is the dense series.
+                predictions=traded_predictions,
                 backtest_output=backtest_output,
                 pit_provider=pit_provider,
             )

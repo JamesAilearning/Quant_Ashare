@@ -135,7 +135,7 @@ class RunnerBoundaryValidationTests(unittest.TestCase):
 class FoldICThinningTests(unittest.TestCase):
     """codex P2 #336: the fold IC must describe the TRADED (thinned) signal
     set, not the dense daily scores — else weekly and daily arms report
-    identical descriptive ic_1d/ic_5d. WalkForwardEngine._ic_predictions_for_fold
+    identical descriptive ic_1d/ic_5d. WalkForwardEngine._traded_predictions_for_fold
     thins the analyzer input to the same schedule the backtest thins with."""
 
     @staticmethod
@@ -152,7 +152,7 @@ class FoldICThinningTests(unittest.TestCase):
         from src.core.walk_forward.engine import WalkForwardEngine
 
         preds = self._preds(["2021-07-01", "2021-07-02"])
-        out = WalkForwardEngine._ic_predictions_for_fold(
+        out = WalkForwardEngine._traded_predictions_for_fold(
             WalkForwardConfig(), preds, "2021-07-01", "2021-07-02",
         )
         self.assertIs(out, preds)
@@ -172,7 +172,7 @@ class FoldICThinningTests(unittest.TestCase):
         with patch.object(
             WalkForwardEngine, "_load_trading_calendar", return_value=cal,
         ):
-            out = WalkForwardEngine._ic_predictions_for_fold(
+            out = WalkForwardEngine._traded_predictions_for_fold(
                 WalkForwardConfig(rebalance_cadence_days=5),
                 preds, "2021-07-01", "2021-07-08",
             )
