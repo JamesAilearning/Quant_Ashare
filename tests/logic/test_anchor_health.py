@@ -191,6 +191,28 @@ class CiLegStatusTests(unittest.TestCase):
         self.assertEqual(status.conclusion, "unknown")
         self.assertIn("未能核对锚腿", status.detail)
 
+    def test_non_object_run_entry_degrades_without_crashing(self) -> None:
+        # gh run list returns a JSON list whose first element isn't an object:
+        # head.get(...) would raise — the badge must degrade, never crash.
+        status = ci_leg_status(run=self._runner("[42]", "{}"))
+        self.assertEqual(status.conclusion, "unknown")
+        self.assertIn("结构异常", status.detail)
+
+    def test_non_list_jobs_payload_degrades_to_unknown(self) -> None:
+        # Valid JSON, but ``jobs`` is not a real list ({} / null / wrong shape):
+        # the anchor leg was never inspected, so unknown — NOT the whole-run
+        # conclusion (codex #335 r3).
+        list_out = json.dumps([
+            {"databaseId": 9, "conclusion": "success", "url": "u"},
+        ])
+        for bad_view in ("{}", json.dumps({"jobs": None}),
+                         json.dumps({"jobs": "nope"})):
+            with self.subTest(view=bad_view):
+                status = ci_leg_status(run=self._runner(list_out, bad_view))
+                self.assertEqual(status.conclusion, "unknown")
+                self.assertEqual(status.url, "u")  # run link preserved
+                self.assertIn("未能核对锚腿", status.detail)
+
     def test_missing_run_id_degrades_to_unknown(self) -> None:
         # A run without a databaseId can't be inspected → unknown, not the
         # whole-run conclusion.

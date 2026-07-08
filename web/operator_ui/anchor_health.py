@@ -178,6 +178,10 @@ def ci_leg_status(*, run: CommandRunner | None = None) -> CiLegStatus:
     if not isinstance(listed, list) or not listed:
         return CiLegStatus("unknown", None, "main 上无已完成的 test.yml run")
     head = listed[0]
+    if not isinstance(head, dict):
+        # Valid JSON list but the first element isn't an object — malformed;
+        # ``head.get(...)`` would raise, so guard it (the badge must never crash).
+        return CiLegStatus("unknown", None, "gh run list 结构异常(非对象)")
     run_url = str(head.get("url")) if head.get("url") else None
     run_conclusion = str(head.get("conclusion") or "unknown")
     run_id = head.get("databaseId")
@@ -202,13 +206,22 @@ def ci_leg_status(*, run: CommandRunner | None = None) -> CiLegStatus:
             f"取不到 job 明细({exc}),未能核对锚腿",
         )
     jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
-    if isinstance(jobs, list):
-        for job in jobs:
-            if isinstance(job, dict) and job.get("name") == ANCHOR_JOB_NAME:
-                return CiLegStatus(
-                    str(job.get("conclusion") or "unknown"), run_url, "",
-                )
-    # Jobs resolved but the anchor leg is not separately named — the only
+    if not isinstance(jobs, list):
+        # Valid JSON but the jobs field is not a real list ({}, {"jobs": null},
+        # any wrong shape): the anchor leg was never inspected, so this is
+        # unknown — NOT the whole-run conclusion. The run-conclusion fallback
+        # is reserved strictly for a resolved job list with the name absent
+        # (codex #335 P2 r3).
+        return CiLegStatus(
+            "unknown", run_url,
+            "job 明细结构异常(jobs 非列表),未能核对锚腿",
+        )
+    for job in jobs:
+        if isinstance(job, dict) and job.get("name") == ANCHOR_JOB_NAME:
+            return CiLegStatus(
+                str(job.get("conclusion") or "unknown"), run_url, "",
+            )
+    # A resolved job list with the anchor leg not separately named — the ONLY
     # sanctioned fall-through to the whole-run conclusion, and we say so.
     return CiLegStatus(
         run_conclusion, run_url,
