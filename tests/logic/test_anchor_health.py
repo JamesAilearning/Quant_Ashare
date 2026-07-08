@@ -164,7 +164,9 @@ class CiLegStatusTests(unittest.TestCase):
         self.assertEqual(status.conclusion, "unknown")
         self.assertIn("无已完成", status.detail)
 
-    def test_jobs_fetch_failure_falls_back_to_run_conclusion(self) -> None:
+    def test_jobs_fetch_failure_degrades_to_unknown(self) -> None:
+        # The second hop timed out — the anchor leg was NEVER inspected, so the
+        # whole-run conclusion must NOT be presented as the leg's (codex #335).
         list_out = json.dumps([
             {"databaseId": 42, "conclusion": "failure", "url": "u"},
         ])
@@ -175,8 +177,27 @@ class CiLegStatusTests(unittest.TestCase):
             raise _ProbeFailure("TimeoutExpired")
 
         status = ci_leg_status(run=run)
-        self.assertEqual(status.conclusion, "failure")
-        self.assertIn("已用整 run 结论", status.detail)
+        self.assertEqual(status.conclusion, "unknown")
+        self.assertNotEqual(status.conclusion, "failure")
+        self.assertIn("未能核对锚腿", status.detail)
+        self.assertEqual(status.url, "u")  # run link still preserved
+
+    def test_jobs_bad_json_degrades_to_unknown(self) -> None:
+        # Unparsable second-hop output is a probe failure, not a leg verdict.
+        list_out = json.dumps([
+            {"databaseId": 7, "conclusion": "success", "url": "u"},
+        ])
+        status = ci_leg_status(run=self._runner(list_out, "not json"))
+        self.assertEqual(status.conclusion, "unknown")
+        self.assertIn("未能核对锚腿", status.detail)
+
+    def test_missing_run_id_degrades_to_unknown(self) -> None:
+        # A run without a databaseId can't be inspected → unknown, not the
+        # whole-run conclusion.
+        list_out = json.dumps([{"conclusion": "success", "url": "u"}])
+        status = ci_leg_status(run=self._runner(list_out, "{}"))
+        self.assertEqual(status.conclusion, "unknown")
+        self.assertIn("run id 缺失", status.detail)
 
 
 class SourceContractTests(unittest.TestCase):

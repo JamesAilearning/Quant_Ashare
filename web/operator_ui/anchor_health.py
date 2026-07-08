@@ -182,14 +182,24 @@ def ci_leg_status(*, run: CommandRunner | None = None) -> CiLegStatus:
     run_conclusion = str(head.get("conclusion") or "unknown")
     run_id = head.get("databaseId")
     if run_id is None:
-        return CiLegStatus(run_conclusion, run_url, "run id 缺失,已用整 run 结论")
+        # No run id → the second hop is impossible, so the anchor leg was never
+        # inspected. Presenting the whole-run conclusion as the leg's would be a
+        # fabricated leg state (spec: degrade to explicit unknown). Keep the run
+        # url so the operator can still click through.
+        return CiLegStatus("unknown", run_url, "run id 缺失,未能核对锚腿")
     try:
         jobs_raw = runner(["gh", "run", "view", str(run_id), "--json", "jobs"])
         jobs_payload = json.loads(jobs_raw)
     except (_ProbeFailure, json.JSONDecodeError) as exc:
+        # A probe failure on the second hop (timeout / auth / bad JSON) means the
+        # anchor leg was never inspected — per spec this SHALL degrade the CI
+        # element to explicit unknown, NOT the whole-run conclusion labelled as
+        # the leg (codex #335 P2). The run-conclusion fallback below is reserved
+        # for the one case where the jobs list resolved cleanly but the anchor
+        # job name is genuinely absent.
         return CiLegStatus(
-            run_conclusion, run_url,
-            f"取不到 job 明细({exc}),已用整 run 结论",
+            "unknown", run_url,
+            f"取不到 job 明细({exc}),未能核对锚腿",
         )
     jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
     if isinstance(jobs, list):
@@ -198,6 +208,8 @@ def ci_leg_status(*, run: CommandRunner | None = None) -> CiLegStatus:
                 return CiLegStatus(
                     str(job.get("conclusion") or "unknown"), run_url, "",
                 )
+    # Jobs resolved but the anchor leg is not separately named — the only
+    # sanctioned fall-through to the whole-run conclusion, and we say so.
     return CiLegStatus(
         run_conclusion, run_url,
         f"未找到锚腿 job({ANCHOR_JOB_NAME}),已用整 run 结论",
