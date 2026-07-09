@@ -1,0 +1,30 @@
+# 阶段7b cadence×horizon campaign — arm: daily_h1
+#
+# Pre-registration: docs/prereg/cadence_horizon.yaml (commit the plan BEFORE
+# producing this run — the gate proves ancestry topologically).
+# Methodology: docs/run-comparison-runbook.md. ST is OFF on ALL FOUR arms
+# (isolated experiment; the winner re-verifies ST-on under iso_week — the
+# escalation form in the prereg). Cadence is a BACKTEST parameter: this arm
+# trains fresh at the campaign commit, then rebalances at N=1.
+#
+# 2x2 factorial {daily, weekly} x {H1, H5}. This arm = label_horizon_days=1,
+# rebalance_cadence_days=1 (anchor fold_phase). n_drop stays at config_walk's
+# 5 PER REBALANCE EVENT across every arm (prereg condition 5: cadence-only).
+#
+# Run discipline (gate REFUSES otherwise): clean checkout at/after the plan
+# commit, ONE uninterrupted invocation:
+#     python scripts/run_walk_forward.py config/presets/stage7_daily_h1.yaml
+extends: ../../config_walk.yaml
+
+label_horizon_days: 1
+
+# ST-off experiment opt-out (explicit; stamped into walk_forward_report.json).
+st_mask_mode: off_experiment
+namechange_path: ""
+
+# Rebalance cadence (阶段7a enabler). N=1 = daily (fold_phase default);
+# N=5 iso_week = first trading day of each ISO week (deployable weekly).
+rebalance_cadence_days: 1
+rebalance_anchor: fold_phase
+
+output_dir: "output/stage7/daily_h1"

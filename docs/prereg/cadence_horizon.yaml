@@ -1,0 +1,194 @@
+# =========================================================================
+# 阶段7b cadence × horizon campaign — PRE-REGISTRATION PLAN (git-provable gate)
+# =========================================================================
+# The four top-level keys (hypothesis / expected_direction / baseline /
+# treatments) are the machine-validated registration consumed by
+# scripts/compare_walk_forward_runs.py --prereg-plan (src/core/preregistration.py).
+# Everything else is the PRE-COMMITTED protocol: written and reviewed BEFORE
+# any run exists, so no rule can be invented after seeing numbers. Editing
+# this file after the runs moves its last-touched commit past their
+# git_commit and the ancestry gate REFUSES — that is the design.
+#
+# Methodology: docs/run-comparison-runbook.md.
+# Enabler: add-rebalance-cadence (#336, merged) — cadence via signal thinning.
+# Fold structure: UNCHANGED by cadence (a backtest param, not in
+#   _generate_windows), so 阶段6's preflight already covers it — H1 and H5
+#   each 23 folds; the daily and weekly arms of a horizon share fold windows
+#   EXACTLY (docs/prereg/label_horizon_preflight.md).
+
+hypothesis: >-
+  Weekly rebalancing monetizes the slower-decaying 5-day label signal that
+  阶段6 surfaced but could not convert (ic_5d +15%, 0.0288 -> 0.0330, CI low
+  up, yet net excess negative under daily rebalance because the horizon-blind
+  daily cadence did not cut turnover cost). At the same n_drop-per-event the
+  weekly arm trades ~1/5 the days, so if the 5d signal survives the longer
+  hold the (weekly, H5) cell should turn a positive net excess where
+  (daily, H1) — the current production cadence/horizon — sits at roughly
+  breakeven-to-negative net.
+
+expected_direction: treatment_better
+
+baseline: stage7-daily-h1        # config/presets/stage7_daily_h1.yaml
+treatments: ["weekly_h5", "weekly_h1", "daily_h5"]
+# The FULL registered variant set = the three non-baseline cells of the 2x2,
+# fixed NOW. The 2x2 is an EXHAUSTIVE test of the label x cadence plane, NOT
+# a search start: if it comes back flat, the conclusion is "this 2-D plane is
+# exhausted" — the exit rule below forbids adding H7 / bi-weekly / monthly
+# cells. Any variant outside this set is an unregistered multiple comparison
+# and the gate flags it.
+
+# -------------------------------------------------------------------------
+# The 2x2 factorial arms (all ST-off; four FRESH runs at the campaign commit)
+# -------------------------------------------------------------------------
+arms:
+  - {name: daily_h1,  preset: config/presets/stage7_daily_h1.yaml,  horizon: 1, cadence: daily,  role: "baseline (current cadence/horizon)"}
+  - {name: daily_h5,  preset: config/presets/stage7_daily_h5.yaml,  horizon: 5, cadence: daily,  role: "horizon main effect (== 阶段6 treatment, re-run fresh)"}
+  - {name: weekly_h1, preset: config/presets/stage7_weekly_h1.yaml, horizon: 1, cadence: weekly, role: "cadence main effect"}
+  - {name: weekly_h5, preset: config/presets/stage7_weekly_h5.yaml, horizon: 5, cadence: weekly, role: "PRIMARY cell — the 阶段6 handoff hypothesis"}
+
+# -------------------------------------------------------------------------
+# Design decisions PINNED before the runs (operator-reviewed; no post-hoc)
+# -------------------------------------------------------------------------
+design:
+  weekly_definition:
+    anchor: iso_week
+    means: "rebalance on the FIRST trading day of each ISO week"
+    why: >-
+      Pinned NOW, NOT optimized — the rebalance weekday is fixed by the
+      calendar, never chosen from the best-performing weekday (that would be
+      picking a winner out of noise). iso_week is holiday-robust (always the
+      week's first trading day) and is the DEPLOYABLE calendar semantics, so
+      the campaign's weekly arms and the winner's ST-on re-verify share the
+      SAME schedule (no fold_phase->iso_week shift between them).
+    alternative_considered: >-
+      fold_phase(N=5, phase=0) — every 5th trading day from the fold start.
+      Also un-optimized (phase fixed at 0), but drifts across weekdays under
+      holidays and is not calendar-deployable. Rejected in favor of iso_week
+      per the operator's "每周首个交易日" steer.
+  n_drop:
+    value: 5
+    unit: per rebalance EVENT (config_walk default, UNCHANGED on every arm)
+    why: >-
+      Prereg condition 5: this campaign moves CADENCE ONLY. n_drop stays at
+      5 rotations per rebalance, so weekly turnover is ~1/5 of daily — the
+      cost reduction is a pure consequence of the cadence, not a co-varied
+      n_drop. The prior n_drop sweep's conclusions stay uncontaminated.
+  retrain_economics:
+    note: >-
+      Cadence is a BACKTEST parameter (signal thinning), not a training one,
+      so the daily and weekly arms of a horizon would in principle share a
+      trained model. But per prereg condition 3 the four arms run FRESH at
+      one post-7a commit (阶段6 run reuse CLOSED — identity is the anchor's
+      job, comparisons never lean on it). Training is deterministic (seed 42),
+      so a horizon's daily and weekly arms train BYTE-IDENTICAL models and the
+      comparison is pure-cadence. Cost: 4 walk-forward runs, ~16 min each
+      (23 folds, CPU LGB) ≈ 1 hour — cheap; the ~2 redundant retrains are
+      accepted for provenance cleanliness.
+
+# -------------------------------------------------------------------------
+# Run sequencing
+# -------------------------------------------------------------------------
+# Order (each a clean checkout at/after the plan commit, ONE invocation):
+#   0. (optional) 1-fold smoke on stage7_weekly_h5 for wall-clock/VRAM.
+#   1. daily_h1  (baseline)     3. weekly_h1
+#   2. daily_h5                 4. weekly_h5 (primary)
+# No sanity band vs the REGEN-2 anchor is pre-registered here: unlike 阶段6
+# (whose ST-off H1 baseline was a near-neighbour of the ST-on anchor), 7b's
+# daily_h1 arm IS 阶段6's h1_st_off_baseline shape — its sane range is
+# already established (net ~+3.3% mean-of-folds). A CONSISTENCY CHECK is
+# recorded instead: daily_h1 net-of-folds should reproduce 阶段6's
+# h1_st_off run within noise (same config minus the fresh retrain); a gross
+# divergence aborts before the other three arms.
+consistency_check_daily_h1_vs_stage6:
+  reference: "output/stage6/h1_st_off_baseline mean_annualized_return = +0.0332"
+  tolerance: "|Δ| <= 3pp (fresh retrain + any post-阶段6 code drift); out-of-band ABORTS"
+
+# -------------------------------------------------------------------------
+# Adjudication (pre-committed; the ruler = paired daily net excess)
+# -------------------------------------------------------------------------
+adjudication:
+  primary_metric: paired daily NET excess (moving-block-bootstrap CI), per the ruler
+  primary_comparison: >-
+    (weekly_h5) vs (daily_h1) — the campaign's decision comparison.
+    python scripts/compare_walk_forward_runs.py output/stage7/daily_h1
+    output/stage7/weekly_h5 --prereg-plan docs/prereg/cadence_horizon.yaml
+    --variant weekly_h5
+  factorial_comparisons: >-
+    The other two registered cells vs the same baseline give the 2x2 main
+    effects / interaction (descriptive context, same ruler):
+    --variant weekly_h1 (cadence main effect at H1);
+    --variant daily_h5  (horizon main effect at daily == 阶段6 re-run).
+  per_arm_net_excess: >-
+    Each arm's OWN daily net excess (return - bench - cost, already in its
+    daily_series) vs zero — a one-sample moving-block bootstrap, same block
+    length / seed as the ruler. "净超额显著为正" = that arm's 95% CI excludes
+    zero on the positive side. Evidence generator: scripts/compare_paired_slices.py
+    is extended / a sibling one-sample script committed with the results.
+  sparse_arm_IC: >-
+    The weekly arms' ic_1d/ic_5d are computed over the ~1/5-fewer traded
+    stamps (阶段7a threads the thinned signal into the analyzer) and are
+    DESCRIPTIVE ONLY — NO adjudication standing, in BOTH directions (prereg
+    condition 2). The 15%-ic_5d finding is a hypothesis INPUT, not a verdict.
+  sensitivity_slices:
+    - {name: exclude-fold-0, why: "2020Q2 COVID-rebound + degenerate-topk A/B fold"}
+    - {name: exclude-2020H2, why: "the 2020 style regime dominated past sweeps"}
+    # No phase slice: iso_week is calendar-pinned, phase is not a variable.
+
+# -------------------------------------------------------------------------
+# Verdict rules (SUCCESS / DEAD-END) — the exit conditions, fixed NOW
+# -------------------------------------------------------------------------
+verdict_rules:
+  success_iff: >-
+    (weekly_h5)'s own net excess is SIGNIFICANTLY POSITIVE (95% CI excludes
+    zero, positive side) OR (weekly_h5) is SIGNIFICANTLY BETTER than
+    (daily_h1) on the paired ruler (CI of the diff excludes zero, positive).
+    -> a profitable low-frequency strategy exists; proceed to the ST-on
+    re-verify below.
+  dead_end_iff: >-
+    NOT success AND no arm's net excess is significantly positive (all four
+    cells flat-to-negative). -> the label x cadence plane is EXHAUSTED: the
+    current factor set cannot carry a positive post-cost excess even at the
+    turnover the 5d signal + weekly hold allow. Pivot to universe expansion /
+    阶段8 factor work — do NOT add cells (H7 / bi-weekly / monthly) to this
+    2-D plane. This negative is a CLEAN "existing factors are tapped out"
+    signal, not a campaign failure.
+  ambiguous_middle: >-
+    NOT success but SOME arm (not weekly_h5) is significantly positive — an
+    unregistered-direction partial. Report verbatim; escalate to operator
+    judgment, never auto-pivot and never auto-promote.
+
+# -------------------------------------------------------------------------
+# Winning-arm ST-on re-verify (prereg condition 4)
+# -------------------------------------------------------------------------
+st_on_reverify:
+  when: "only if success_iff holds for weekly_h5"
+  what: >-
+    Re-run the winning arm ST-ON under iso_week semantics (production
+    constraints) + a fresh ST-on daily_h1 rebaseline, and confirm the
+    positive net excess survives real ST exclusion and the replay anchor.
+    Bridges mechanism evidence to DEPLOYABLE-strategy evidence — the campaign
+    arms are ST-off, deployment is ST-on; iso_week is already the campaign's
+    weekly semantics so no schedule shift is introduced.
+
+# -------------------------------------------------------------------------
+# Honesty envelope (prereg condition 6)
+# -------------------------------------------------------------------------
+honesty_envelope:
+  - "The qlib exchange leg is NOT PIT-wired; weekly holding raises delist-during-hold exposure."
+  - "All four arms share this condition -> INTERNAL comparisons are valid; ABSOLUTE net-excess levels carry the caveat."
+  - "IC higher != backtest profit (阶段6 proved it: ic_5d +15% with negative net). The success condition is a CONJUNCTION (signal survives the hold AND turnover cost genuinely falls AND the difference clears the noise floor) — each conjunct can fail. A likely outcome is (weekly, H5) STILL not clearing positive because the +2.73% gross base is too thin; that negative is the clean 'existing factors tapped out' signal, not a failure."
+
+# -------------------------------------------------------------------------
+# Decisions record
+# -------------------------------------------------------------------------
+decisions_record:
+  - id: order-7b-before-pool-expansion
+    text: >-
+      7b runs BEFORE any universe expansion / 阶段8: it is cheap and fast and
+      it CLOSES the label×cadence line, so the later factor work carries one
+      fewer entangled variable. Operator decision 2026-07-08.
+  - id: exhaustive-not-search
+    text: >-
+      The 2x2 is an exhaustiveness test, not the first step of a cadence
+      search. The dead-end rule forbids widening the 2-D plane; a flat result
+      pivots to factors, not to more frequencies.
