@@ -56,25 +56,24 @@
 - [x] Whitelist/governance sweep untouched (no new qlib call sites) —
       verified by the existing counting tests.
 
-## 7b prereg commitments (NOT this change's code; recorded so the campaign
-## plan cannot drift from the signed conditions)
+## 7b prereg commitments — DELIVERED (campaign concluded 2026-07-09,
+## pre-reg docs/prereg/cadence_horizon.yaml; DEAD-END verdict)
 
-- [ ] 2×2 full factorial {N=1, N=5} × {H1, H5}; **four FRESH arms at one
-      post-7a commit — stage-6 run reuse CLOSED** (condition 3).
-- [ ] **Primary adjudication = paired daily net excess (full sample) +
-      gross-alpha collapse veto; sparse-arm ic_1d/ic_5d DEMOTED to
-      descriptive statistics with no adjudication standing, in BOTH
-      directions** (condition 2 — blocking for 7b).
-- [ ] Phase pre-committed (fold_phase, phase=0) + phase-shift sensitivity
-      slice; **escalation form pre-commits the winning arm's ST-on
-      re-verify under iso_week semantics** (condition 4 — the bridge from
-      mechanism evidence to deployable-strategy evidence).
-- [ ] **n_drop=5/event pinned as part of the treatment definition; this
-      campaign moves cadence ONLY** (condition 5 — the n_drop sweep's
-      conclusions stay clean).
-- [ ] Honesty envelope: qlib exchange leg non-PIT-wired; weekly holding
-      raises delist-during-hold exposure; four arms share it → internal
-      comparison valid, absolute levels carry the caveat (condition 6).
+- [x] 2×2 full factorial {N=1, N=5} × {H1, H5}; four FRESH arms at one
+      commit `74f2c50` (reuse CLOSED; daily_h1 reproduced 阶段6 h1_st_off
+      byte-for-byte, condition 3).
+- [x] **Primary adjudication = paired daily net excess + gross-collapse
+      diagnostics; sparse-arm ic_1d/ic_5d descriptive-only both directions**
+      (condition 2). Verdict: INDISTINGUISHABLE, no arm sig-positive → DEAD-END.
+- [x] Weekly = iso_week (operator-signed; the campaign uses the deployable
+      calendar directly, so the winner's ST-on re-verify would be the SAME
+      schedule — condition 4 bridge preserved without a fold_phase→iso_week
+      shift). fold-0 / 2020H2 slices ran (state stable); no phase slice
+      (iso_week is calendar-pinned).
+- [x] **n_drop=5/event pinned across all arms; cadence-ONLY** (condition 5).
+- [x] Honesty envelope recorded in the results doc; predicted outcome held
+      (mechanism works — net +1.33pp — but the +2.73% gross base is too thin
+      to clear the noise floor) (condition 6).
 
 ## Must-not-touch
 
