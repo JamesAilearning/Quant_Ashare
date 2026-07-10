@@ -90,8 +90,10 @@ lag>1.
 
 #### Scenario: derived artifacts thin consistently
 - **WHEN** a thinned arm runs
-- **THEN** ST-mask pairs, the exchange code universe, and the equal-weight
-  baseline's daily top-k derive from the THINNED stamps only
+- **THEN** ST-mask pairs and the exchange code universe derive from the
+  THINNED stamps only (the equal-weight baseline is not thinned — it is
+  OMITTED for a non-daily cadence per the scenario above, since its
+  one-day-hold shape cannot represent a held-across-days arm)
 
 ### Requirement: Cadence fields SHALL be resume- and audit-visible
 
