@@ -116,11 +116,23 @@ class FinancialViewIsolationTests(unittest.TestCase):
             ),
         )
 
-    def test_only_the_view_imports_lowlevel_store_within_research(self) -> None:
+    # Sanctioned importers of the raw store/contract — every OTHER src/ module
+    # must reach financial data through the view. The view is the sole research
+    # access path; the contract layer legitimately wraps the store constants.
+    _LOWLEVEL_IMPORT_ALLOWLIST = {
+        _VIEW_REL,                                   # sole research access path
+        "src/data/pit/financial_pit_contract.py",    # contract layer wraps the store
+    }
+
+    def test_only_sanctioned_modules_import_lowlevel_store(self) -> None:
+        # ALL of src/ (not just src/research): a future evaluator / feature /
+        # canonical module reading the raw store directly would bypass the view's
+        # original-first / exclusion / missingness semantics — a contract
+        # violation CI must catch (codex #342 r4).
         offenders = []
-        for py in sorted((_SRC / "research").rglob("*.py")):
+        for py in sorted(_SRC.rglob("*.py")):
             rel = py.relative_to(_ROOT).as_posix()
-            if rel == _VIEW_REL:
+            if rel in self._LOWLEVEL_IMPORT_ALLOWLIST:
                 continue
             text = py.read_text(encoding="utf-8")
             if any(_imports_prefix(text, m, _module_dotted(py)) for m in _LOWLEVEL):
@@ -128,10 +140,12 @@ class FinancialViewIsolationTests(unittest.TestCase):
         self.assertEqual(
             offenders, [],
             msg=(
-                "Research module(s) other than the view import the low-level "
-                "store/contract directly:\n  " + "\n  ".join(offenders)
-                + "\n\nFinancialPITDataView is the SOLE access path — reach "
-                "financial data through it, not by reading raw filings."
+                "Module(s) import the raw financial store/contract directly, "
+                "bypassing FinancialPITDataView:\n  " + "\n  ".join(offenders)
+                + "\n\nAll financial-data access must go through the view (its "
+                "original-first / exclusion / missingness semantics). If a new "
+                "data-layer module legitimately wraps the store, add it to "
+                "_LOWLEVEL_IMPORT_ALLOWLIST with a justification."
             ),
         )
 
