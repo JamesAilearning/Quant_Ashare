@@ -91,6 +91,26 @@ class StaticTradingCalendar:
         right = bisect_right(self._dates, end)
         return right - left
 
+    def next_trading_day_after(self, day: date) -> date | None:
+        """The first trading day STRICTLY AFTER ``day``.
+
+        Used by the financial-PIT contract to derive ``available_from_trade_
+        date`` from an announcement date (announcements are assumed post-close,
+        so a filing announced on trading day D is first usable on D+1's session).
+        Returns ``None`` when ``day`` is on or after the last known trading day —
+        the record is not yet available and MUST stay unavailable, never
+        back-dated (fail-loud is the caller's job).
+        """
+        if not isinstance(day, date):
+            raise TradingCalendarError(
+                "next_trading_day_after requires a datetime.date instance; "
+                f"got {type(day).__name__}."
+            )
+        idx = bisect_right(self._dates, day)
+        if idx >= len(self._dates):
+            return None
+        return self._dates[idx]
+
 
 class QlibTradingCalendar:
     """Adapter wrapping ``qlib.data.D.calendar``.
@@ -277,3 +297,38 @@ def _coerce_to_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def load_static_calendar_from_file(day_txt_path: Any) -> StaticTradingCalendar:
+    """Build a :class:`StaticTradingCalendar` from a qlib bundle's
+    ``calendars/day.txt`` (one ISO date per line), WITHOUT initialising qlib.
+
+    The financial-PIT contract reads the CANONICAL bundle's ``day.txt`` — the
+    SAME calendar the backtest uses — so ``available_from_trade_date`` is
+    identical to the backtest trading calendar and no second calendar is
+    introduced. This keeps the research contract isolated from the qlib runtime
+    (no ``qlib.init``) while sharing the one source of trading days.
+    """
+    from pathlib import Path
+
+    path = Path(day_txt_path)
+    if not path.is_file():
+        raise TradingCalendarError(
+            f"calendar file not found: {path} — pass the canonical bundle's "
+            "calendars/day.txt (the same calendar the backtest uses)."
+        )
+    dates: list[date] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        token = line.strip()
+        if not token:
+            continue
+        parsed = _coerce_to_date(token)
+        if parsed is None:
+            raise TradingCalendarError(
+                f"{path}: unparseable calendar line {token!r} (expected ISO "
+                "YYYY-MM-DD)."
+            )
+        dates.append(parsed)
+    if not dates:
+        raise TradingCalendarError(f"{path}: no trading days found.")
+    return StaticTradingCalendar(dates)

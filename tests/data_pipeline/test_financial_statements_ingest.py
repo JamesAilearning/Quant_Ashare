@@ -1,0 +1,101 @@
+"""Versioned financial-statement ingest (阶段8 Gate-2 PR-1).
+
+Governance: both update_flag versions retained, a CHANGED re-fetch is appended
+(never overwritten), an identical re-fetch is idempotent, content hashing is
+deterministic + NA-stable, and a frame missing a PIT column fails loud.
+"""
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from src.data.tushare.financial_statements import (
+    COL_FETCH_BATCH,
+    FinancialIngestError,
+    FinancialStatementIngestor,
+    content_hash,
+)
+
+
+class _FakeClient:
+    """Returns a queued frame per ``call`` (one call per ingest)."""
+
+    def __init__(self, frames: list[pd.DataFrame]) -> None:
+        self._frames = list(frames)
+
+    def call(self, api_name: str, **params: object) -> pd.DataFrame:
+        return self._frames.pop(0)
+
+
+def _income_row(end_date: str, update_flag: str, revenue: float) -> dict[str, object]:
+    return {
+        "ts_code": "000001.SZ", "end_date": end_date, "ann_date": "20220331",
+        "f_ann_date": "20220331", "update_flag": update_flag, "revenue": revenue,
+    }
+
+
+def test_both_update_flag_versions_retained(tmp_path) -> None:
+    frame = pd.DataFrame([
+        _income_row("20211231", "0", 100.0),
+        _income_row("20211231", "1", 100.0),
+    ])
+    ing = FinancialStatementIngestor(_FakeClient([frame]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 2
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert set(stored["update_flag"].astype(str)) == {"0", "1"}  # neither dropped
+
+
+def test_changed_refetch_appends_new_batch_never_overwrites(tmp_path) -> None:
+    b1 = pd.DataFrame([_income_row("20211231", "0", 100.0)])
+    b2 = pd.DataFrame([_income_row("20211231", "0", 200.0)])  # SAME key, changed value
+    ing = FinancialStatementIngestor(_FakeClient([b1, b2]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    res2 = ing.ingest("income", "000001.SZ", fetch_batch="b2")
+
+    assert res2.rows_new == 1 and res2.rows_changed == 1
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    # BOTH versions physically present — the original 100.0 is NOT overwritten.
+    assert len(stored) == 2
+    assert set(stored["revenue"]) == {100.0, 200.0}
+    assert set(stored[COL_FETCH_BATCH]) == {"b1", "b2"}
+
+
+def test_identical_refetch_is_idempotent(tmp_path) -> None:
+    frame = pd.DataFrame([_income_row("20211231", "0", 100.0)])
+    ing = FinancialStatementIngestor(_FakeClient([frame, frame.copy()]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    res2 = ing.ingest("income", "000001.SZ", fetch_batch="b2")
+    assert res2.rows_new == 0 and res2.rows_unchanged == 1
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 1  # no duplicate for identical content
+
+
+def test_content_hash_deterministic_and_na_stable() -> None:
+    a = pd.Series({"end_date": "20211231", "ann_date": "20220331",
+                   "f_ann_date": "20220331", "update_flag": "0", "revenue": 100.0,
+                   "oper_cost": pd.NA})
+    b = a.copy()
+    fields = ("revenue", "oper_cost")
+    assert content_hash(a, fields) == content_hash(b, fields)
+    c = a.copy()
+    c["revenue"] = 101.0
+    assert content_hash(a, fields) != content_hash(c, fields)
+    # NA hashes the same regardless of None vs pd.NA vs float nan
+    d = a.copy()
+    d["oper_cost"] = None
+    assert content_hash(a, fields) == content_hash(d, fields)
+
+
+def test_missing_pit_column_fails_loud(tmp_path) -> None:
+    bad = pd.DataFrame([{"ts_code": "000001.SZ", "ann_date": "20220331",
+                         "f_ann_date": "20220331", "revenue": 100.0}])  # no end_date/update_flag
+    ing = FinancialStatementIngestor(_FakeClient([bad]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="missing"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_unknown_endpoint_rejected(tmp_path) -> None:
+    ing = FinancialStatementIngestor(_FakeClient([]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="unknown financial endpoint"):
+        ing.fetch("balance_sheet_typo", "000001.SZ")
