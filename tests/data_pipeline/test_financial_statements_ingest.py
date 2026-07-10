@@ -178,6 +178,17 @@ def test_float_coerced_update_flag_normalized(tmp_path) -> None:
     assert set(stored["update_flag"].astype(str)) == {"0"}
 
 
+def test_ambiguous_duplicate_logical_key_fails_loud(tmp_path) -> None:
+    # two rows with the SAME (ts_code, end_date, update_flag) but different
+    # content (as a report_type/comp_type variant collision would produce) must
+    # fail loud, not collapse arbitrarily / break idempotence (codex #340 r8 P2).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 200.0)  # same logical key, different revenue
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
 def test_provider_none_fails_loud(tmp_path) -> None:
     # None = transport/quota failure, NOT an empty result — must not be recorded
     # as a successful empty fetch (codex #340 r3 P2).

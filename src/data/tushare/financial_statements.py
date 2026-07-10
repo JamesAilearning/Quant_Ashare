@@ -246,6 +246,26 @@ class FinancialStatementIngestor:
         fetched[COL_SOURCE_ENDPOINT] = endpoint
         fetched[COL_FETCH_BATCH] = fetch_batch
 
+        # A logical key must map to a SINGLE statement content within one batch
+        # (codex #340 r8): tushare's report_type / comp_type are statement
+        # dimensions the key does not carry, so a provider that returned two
+        # variants (e.g. 合并 vs 母公司) for one (ts_code, end_date, update_flag)
+        # would collapse arbitrarily and break idempotence. The default response
+        # holds these constant (report_type=1; comp_type is the per-issuer class),
+        # so this never false-trips on normal data; if it fires, the query must
+        # disambiguate (e.g. filter report_type) so each logical key is one
+        # statement.
+        per_key = fetched.groupby(list(LOGICAL_KEY))[COL_CONTENT_HASH].nunique()
+        ambiguous = per_key[per_key > 1]
+        if len(ambiguous):
+            raise FinancialIngestError(
+                f"{endpoint} for {ts_code}: logical key {ambiguous.index[0]} has "
+                f"{int(ambiguous.iloc[0])} DIFFERENT statement contents in one "
+                "fetch — a provider variant collision (report_type / comp_type "
+                "not carried in the logical key). Refusing an ambiguous collapse; "
+                "disambiguate the query so each logical key is a single statement."
+            )
+
         path = self._store_path(endpoint, ts_code)
         existing = pd.read_parquet(path) if path.is_file() else None
 
