@@ -207,6 +207,24 @@ def test_missing_data_column_fails_loud(tmp_path) -> None:
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
 
 
+def test_empty_frame_missing_columns_fails_loud(tmp_path) -> None:
+    # an empty frame that LACKS required columns (bad-fields query / schema
+    # regression) must fail loud, not pass as "no data" (codex #340 r9).
+    bad_empty = pd.DataFrame(columns=["ts_code", "end_date"])  # missing most cols
+    ing = FinancialStatementIngestor(_FakeClient([bad_empty]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="missing column"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_empty_frame_with_columns_is_legit_no_data(tmp_path) -> None:
+    # empty but carries all required columns -> legitimate no-data (0 rows),
+    # accepted (tushare returns the fields with 0 rows for a real empty result).
+    good_empty = pd.DataFrame(columns=list(_income_row("20211231", "0", 0.0).keys()))
+    ing = FinancialStatementIngestor(_FakeClient([good_empty]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_fetched == 0 and res.rows_new == 0
+
+
 def test_unknown_endpoint_rejected(tmp_path) -> None:
     ing = FinancialStatementIngestor(_FakeClient([]), tmp_path)
     with pytest.raises(FinancialIngestError, match="unknown financial endpoint"):

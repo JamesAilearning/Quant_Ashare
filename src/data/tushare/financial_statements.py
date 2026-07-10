@@ -167,25 +167,16 @@ class FinancialStatementIngestor:
         """Fetch + append-only merge into the store, preserving all versions."""
         fetched = self.fetch(endpoint, ts_code)
         n_fetched = len(fetched)
-        if n_fetched == 0:
-            return IngestResult(endpoint, ts_code, 0, 0, 0, 0)
 
-        # A provider frame missing a PIT COLUMN is non-contractible — refuse
-        # rather than store a record we cannot PIT-date (fail-loud). The
-        # announcement-date columns are REQUIRED here too (codex #340 P1): a
-        # per-row NA is legitimate missingness, but a missing COLUMN is a
-        # provider schema regression — without this guard the schema-stabilize
-        # loop below would invent ann_date/f_ann_date as NA and the contract
-        # layer would silently read every row as "no announcement / unavailable"
-        # instead of failing loud.
         data_fields = DATA_FIELDS[endpoint]
-        # Required COLUMNS = ts_code + PIT cols + every charter data field. A
-        # per-row NA is legitimate missingness (an issuer that doesn't report a
-        # line), but a missing COLUMN is a provider schema regression (a
-        # dropped/renamed field) — fail loud rather than invent it as all-NA,
-        # which would (a) leave rows unable to satisfy the logical key / PIT
-        # dating, or (b) hide the regression as ordinary missingness the PIT
-        # view / coverage checks cannot distinguish (codex #340 P1 + r3 P2).
+        # Required COLUMNS = ts_code + PIT cols + every charter data field.
+        # Validated even for an EMPTY frame (codex #340 r9): a bad-fields query
+        # or schema regression can come back as an empty DataFrame with missing
+        # columns, which must fail loud rather than pass as "no data". A
+        # genuinely empty result still carries the requested columns (tushare
+        # returns the fields with 0 rows — probe-confirmed), so real no-data is
+        # accepted just below. A per-row NA is legitimate missingness, but a
+        # missing COLUMN is a provider schema regression (codex #340 P1 + r3 P2).
         required_cols = ("ts_code", *_PIT_COLS, *data_fields)
         missing = [c for c in required_cols if c not in fetched.columns]
         if missing:
@@ -194,6 +185,8 @@ class FinancialStatementIngestor:
                 f"{missing} — a schema regression, not per-row NA; refusing to "
                 "store (would silently break the PIT / coverage contract)."
             )
+        if n_fetched == 0:
+            return IngestResult(endpoint, ts_code, 0, 0, 0, 0)
 
         # The logical-key VALUES must be non-null (codex #340 r6 P2): end_date
         # is the PIT report period, update_flag the original/revised flag,
