@@ -145,7 +145,15 @@ class FinancialStatementIngestor:
             endpoint, ts_code=ts_code, fields=_fields_arg(endpoint),
         )
         if df is None:
-            return pd.DataFrame()
+            # None = a transport / quota / rate-limit failure, NOT "no data".
+            # Recording it as an empty fetch would silently drop this issuer's
+            # statements and count no hole (codex #340 r3 P2). Fail loud so the
+            # CLI records it as a hole to re-fetch.
+            raise FinancialIngestError(
+                f"{endpoint} for {ts_code}: provider returned None — a "
+                "transport/quota failure, not an empty result; refusing to "
+                "record it as a successful empty fetch."
+            )
         if not isinstance(df, pd.DataFrame):
             raise FinancialIngestError(
                 f"{endpoint} for {ts_code}: provider returned "
@@ -170,26 +178,24 @@ class FinancialStatementIngestor:
         # loop below would invent ann_date/f_ann_date as NA and the contract
         # layer would silently read every row as "no announcement / unavailable"
         # instead of failing loud.
-        # ``ts_code`` is required too (codex #340 P2): without it the stored
-        # rows cannot satisfy the logical key ``(ts_code, end_date, update_flag)``
-        # or the contract layer's columns, corrupting the append-only store and
-        # failing only later on reads.
-        required_cols = ("ts_code", "end_date", "update_flag", "ann_date", "f_ann_date")
+        data_fields = DATA_FIELDS[endpoint]
+        # Required COLUMNS = ts_code + PIT cols + every charter data field. A
+        # per-row NA is legitimate missingness (an issuer that doesn't report a
+        # line), but a missing COLUMN is a provider schema regression (a
+        # dropped/renamed field) — fail loud rather than invent it as all-NA,
+        # which would (a) leave rows unable to satisfy the logical key / PIT
+        # dating, or (b) hide the regression as ordinary missingness the PIT
+        # view / coverage checks cannot distinguish (codex #340 P1 + r3 P2).
+        required_cols = ("ts_code", *_PIT_COLS, *data_fields)
         missing = [c for c in required_cols if c not in fetched.columns]
         if missing:
             raise FinancialIngestError(
                 f"{endpoint} for {ts_code}: provider frame missing column(s) "
                 f"{missing} — a schema regression, not per-row NA; refusing to "
-                "store (would silently break the PIT availability contract)."
+                "store (would silently break the PIT / coverage contract)."
             )
 
-        data_fields = DATA_FIELDS[endpoint]
         fetched = fetched.copy()
-        # Fill absent charter columns as NA so the frame is schema-stable
-        # (a field tushare omits for this issuer is a real NA, not an error).
-        for col in (*_PIT_COLS, *data_fields):
-            if col not in fetched.columns:
-                fetched[col] = pd.NA
         fetched[COL_CONTENT_HASH] = fetched.apply(
             lambda r: content_hash(r, data_fields), axis=1,
         )

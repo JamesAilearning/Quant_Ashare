@@ -18,20 +18,26 @@ from src.data.tushare.financial_statements import (
 
 
 class _FakeClient:
-    """Returns a queued frame per ``call`` (one call per ingest)."""
+    """Returns a queued frame (or None) per ``call`` (one call per ingest)."""
 
-    def __init__(self, frames: list[pd.DataFrame]) -> None:
+    def __init__(self, frames: list[pd.DataFrame | None]) -> None:
         self._frames = list(frames)
 
-    def call(self, api_name: str, **params: object) -> pd.DataFrame:
+    def call(self, api_name: str, **params: object) -> pd.DataFrame | None:
         return self._frames.pop(0)
 
 
 def _income_row(end_date: str, update_flag: str, revenue: float) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "ts_code": "000001.SZ", "end_date": end_date, "ann_date": "20220331",
         "f_ann_date": "20220331", "update_flag": update_flag, "revenue": revenue,
     }
+    # every charter income DATA column must be present (a missing column fails
+    # loud; per-row NA is legitimate missingness).
+    for col in ("total_revenue", "oper_cost", "sell_exp", "admin_exp",
+                "rd_exp", "int_exp", "fin_exp"):
+        row[col] = pd.NA
+    return row
 
 
 def test_both_update_flag_versions_retained(tmp_path) -> None:
@@ -116,6 +122,24 @@ def test_missing_ts_code_column_fails_loud(tmp_path) -> None:
                          "revenue": 100.0}])  # no ts_code column
     ing = FinancialStatementIngestor(_FakeClient([bad]), tmp_path)
     with pytest.raises(FinancialIngestError, match="ts_code"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_provider_none_fails_loud(tmp_path) -> None:
+    # None = transport/quota failure, NOT an empty result — must not be recorded
+    # as a successful empty fetch (codex #340 r3 P2).
+    ing = FinancialStatementIngestor(_FakeClient([None]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="None"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_missing_data_column_fails_loud(tmp_path) -> None:
+    # provider drops a charter DATA field (rd_exp) as a column (schema change) —
+    # must fail loud, not invent it as all-NA (codex #340 r3 P2).
+    row = _income_row("20211231", "0", 100.0)
+    del row["rd_exp"]
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="rd_exp"):
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
 
 
