@@ -30,25 +30,42 @@ _LOWLEVEL = (
 )
 
 
-def _imported_modules(text: str) -> set[str]:
-    """Every absolute module name imported by ``text`` (``import X`` and
-    ``from X import ...``; relative imports are resolved by the caller's package
-    so we only track absolute ones, which is what a cross-package leak uses)."""
+def _imported_modules(text: str, module_dotted: str) -> set[str]:
+    """Absolute module names imported by ``text``. RELATIVE imports are resolved
+    against ``module_dotted`` (the importing file's own dotted path), so a
+    package-relative bypass like ``from ..research.x import y`` in
+    ``src.core.foo`` resolves to ``src.research.x`` and is caught (codex #342)."""
     tree = ast.parse(text)
+    parts = module_dotted.split(".")
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            if node.module and node.level == 0:
-                names.add(node.module)
+            if node.level == 0:
+                if node.module:
+                    names.add(node.module)
+            else:
+                # level=L drops the last L path components of the importer's
+                # dotted path (the module name for L=1, its package for L=2, …).
+                base = parts[: len(parts) - node.level]
+                tail = node.module.split(".") if node.module else []
+                resolved = ".".join([*base, *tail])
+                if resolved:
+                    names.add(resolved)
     return names
 
 
-def _imports_prefix(text: str, prefix: str) -> bool:
+def _module_dotted(py: Path) -> str:
+    """``src/core/foo.py`` -> ``src.core.foo`` (its importer dotted path)."""
+    return py.relative_to(_ROOT).with_suffix("").as_posix().replace("/", ".")
+
+
+def _imports_prefix(text: str, prefix: str, module_dotted: str = "pkg.mod") -> bool:
     return any(
-        n == prefix or n.startswith(prefix + ".") for n in _imported_modules(text)
+        n == prefix or n.startswith(prefix + ".")
+        for n in _imported_modules(text, module_dotted)
     )
 
 
@@ -59,7 +76,9 @@ class FinancialViewIsolationTests(unittest.TestCase):
             rel = py.relative_to(_ROOT).as_posix()
             if rel.startswith("src/research/"):
                 continue
-            if _imports_prefix(py.read_text(encoding="utf-8"), _RESEARCH_PKG):
+            if _imports_prefix(
+                py.read_text(encoding="utf-8"), _RESEARCH_PKG, _module_dotted(py),
+            ):
                 offenders.append(rel)
         self.assertEqual(
             offenders, [],
@@ -77,7 +96,7 @@ class FinancialViewIsolationTests(unittest.TestCase):
         # NOT count) — the view must not IMPORT qlib or any canonical-runtime
         # module; it reaches data only through the PR-1 contract/store + calendar.
         src = (_SRC / "research" / "financial_pit_view.py").read_text(encoding="utf-8")
-        imported = _imported_modules(src)
+        imported = _imported_modules(src, "src.research.financial_pit_view")
         forbidden = (
             "qlib", "daily_recommend", "model_trainer", "feature_dataset_builder",
             "mined_factor_handler", "src.core.pipeline", "src.pit.query",
@@ -98,7 +117,7 @@ class FinancialViewIsolationTests(unittest.TestCase):
             if rel == _VIEW_REL:
                 continue
             text = py.read_text(encoding="utf-8")
-            if any(_imports_prefix(text, m) for m in _LOWLEVEL):
+            if any(_imports_prefix(text, m, _module_dotted(py)) for m in _LOWLEVEL):
                 offenders.append(rel)
         self.assertEqual(
             offenders, [],
@@ -126,6 +145,17 @@ class ImportScannerUnitTests(unittest.TestCase):
 
     def test_ignores_unrelated_import(self) -> None:
         self.assertFalse(_imports_prefix("import src.data.pit.query\n", _RESEARCH_PKG))
+
+    def test_detects_relative_import_bypass(self) -> None:
+        # a package-relative import of the research view from src/core must be
+        # caught (codex #342): from ..research.x in src.core.foo -> src.research.x
+        self.assertTrue(_imports_prefix(
+            "from ..research.financial_pit_view import FinancialPITDataView\n",
+            _RESEARCH_PKG, module_dotted="src.core.foo"))
+        # and from a deeper module: src.core.walk_forward.engine, level=2 -> src.core
+        self.assertFalse(_imports_prefix(
+            "from ..other.thing import X\n",
+            _RESEARCH_PKG, module_dotted="src.core.walk_forward"))
 
     def test_ignores_substring_prefix_collision(self) -> None:
         # "src.research_utils" must NOT match the "src.research" package prefix.

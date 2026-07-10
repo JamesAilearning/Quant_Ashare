@@ -142,6 +142,24 @@ def test_all_financial_universe_returns_empty_columned_frame(tmp_path):
     assert v.coverage("revenue", ["000001.SZ", "600000.SH"], "2022-04-01") == 0.0
 
 
+def test_absent_store_column_fails_loud(tmp_path):
+    # a store frame that EXISTS but lacks a charter column (old/bad ingest) is a
+    # schema corruption — fail loud, not serve NA (codex #342 P2). A per-row NA
+    # (column present, value absent) stays legitimate missingness (other tests).
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    pd.DataFrame([{
+        "ts_code": "000001.SZ", "end_date": "20211231", "ann_date": "20220331",
+        "f_ann_date": "20220331", "update_flag": "0", "revenue": 100.0,
+        "_content_hash": "h", "_fetch_batch": "b1",  # NOTE: no rd_exp column
+    }]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    v = FinancialPITDataView(tmp_path, _CAL)
+    with pytest.raises(FinancialPITViewError, match="missing charter column"):
+        v.as_of("2022-04-01", ["rd_exp"], ["000001.SZ"])
+    # a present column on the same partial store still serves fine
+    assert v.as_of("2022-04-01", ["revenue"], ["000001.SZ"]).loc["000001.SZ", "revenue"] == 100.0
+
+
 def test_unknown_field_fails_loud(tmp_path):
     v = _view(tmp_path)
     with pytest.raises(FinancialPITViewError, match="unknown charter field"):

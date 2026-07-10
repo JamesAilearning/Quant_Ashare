@@ -152,7 +152,7 @@ class FinancialPITDataView:
                 continue  # financial-sector issuer excluded from the universe
             row: dict[str, Any] = {}
             for endpoint, endpoint_fields in by_endpoint.items():
-                latest = self._latest_as_of(ts, endpoint, td)
+                latest = self._latest_as_of(ts, endpoint, td, endpoint_fields)
                 for f in endpoint_fields:
                     if latest is None:
                         row[f] = pd.NA
@@ -222,13 +222,27 @@ class FinancialPITDataView:
     # ---------------------------------------------------------------- internal
 
     def _latest_as_of(
-        self, ts_code: str, endpoint: str, td: date,
+        self, ts_code: str, endpoint: str, td: date, fields: Sequence[str],
     ) -> pd.Series | None:
         """The instrument's latest ALREADY-ANNOUNCED original statement as-of
-        ``td`` (as-of carry-forward), or None if none is available yet."""
+        ``td`` (as-of carry-forward), or None if the instrument has no store
+        file or nothing is available yet.
+
+        A store frame that EXISTS but lacks a requested charter column is a
+        schema/store corruption (an old or bad ingest) — fail loud rather than
+        serve it as ordinary per-row NA (codex #342 P2). A per-row NA (column
+        present, value absent) is still legitimate missingness."""
         original = self._original_frame(ts_code, endpoint)
         if original is None or original.empty:
             return None
+        missing_cols = [f for f in fields if f not in original.columns]
+        if missing_cols:
+            raise FinancialPITViewError(
+                f"{ts_code}/{endpoint}: store frame is missing charter column(s) "
+                f"{missing_cols} — a schema/store corruption, not per-row NA; "
+                "refusing to serve. Re-ingest this endpoint (the PR-1 ingest "
+                "keeps every charter column)."
+            )
         avail = original[
             original[AVAILABLE_FROM].map(
                 lambda d: d is not None and d <= td,
