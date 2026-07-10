@@ -1,4 +1,18 @@
-## ADDED Requirements
+# v2-rebalance-cadence Specification
+
+## Purpose
+
+Make the portfolio rebalance cadence configurable via signal thinning
+(阶段7 enabler, Route A): emitting predictions only on scheduled rebalance
+days holds the portfolio elsewhere (qlib's zero-order None branch), with an
+identity-preserving daily default and both a per-fold (fold_phase) and a
+deployable calendar (iso_week) anchor. Shipped by `add-rebalance-cadence`
+(#336); the 7b cadence×horizon campaign consumed it and concluded a
+pre-registered DEAD-END (docs/prereg/cadence_horizon_results.md — the
+label×cadence plane is exhausted; the enabler stays as a production opt-in,
+default N=1 byte-identical).
+
+## Requirements
 
 ### Requirement: Rebalance cadence SHALL be configurable via signal thinning with an identity-preserving default
 
@@ -90,8 +104,10 @@ lag>1.
 
 #### Scenario: derived artifacts thin consistently
 - **WHEN** a thinned arm runs
-- **THEN** ST-mask pairs, the exchange code universe, and the equal-weight
-  baseline's daily top-k derive from the THINNED stamps only
+- **THEN** ST-mask pairs and the exchange code universe derive from the
+  THINNED stamps only (the equal-weight baseline is not thinned — it is
+  OMITTED for a non-daily cadence per the scenario above, since its
+  one-day-hold shape cannot represent a held-across-days arm)
 
 ### Requirement: Cadence fields SHALL be resume- and audit-visible
 
