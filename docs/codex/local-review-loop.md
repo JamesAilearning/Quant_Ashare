@@ -23,9 +23,10 @@ introduce new findings from the previous round's fixes. Move the loop local.
 
 ## Convergence criterion
 
-Stop when a fresh local review of the FINAL diff returns no P0/P1 and no
-un-accepted P2. Record accepted P2/P3 in the PR body so the remote review
-does not re-litigate them.
+Stop when a fresh local review of the FINAL diff returns no P0/P1/P2 — only
+accepted P3 may remain (matching AGENTS.md's "clean or only accepted P3
+remain"). Record accepted P3 in the PR body so the remote review does not
+re-litigate them.
 
 ## This loop does NOT replace
 
