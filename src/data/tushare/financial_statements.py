@@ -195,6 +195,25 @@ class FinancialStatementIngestor:
                 "store (would silently break the PIT / coverage contract)."
             )
 
+        # The logical-key VALUES must be non-null (codex #340 r6 P2): end_date
+        # is the PIT report period, update_flag the original/revised flag,
+        # ts_code the identity. A blank here corrupts PIT dating and
+        # current-version resolution, so refuse the row rather than store it.
+        # (ann_date / f_ann_date MAY be per-row NA — a legitimately unavailable
+        # filing; those are handled by the contract layer, not refused here.)
+        _BLANKS = frozenset({"", "None", "nan", "NaT", "<NA>"})
+        for key_col in LOGICAL_KEY:
+            values = fetched[key_col]
+            blank = values.isna() | values.astype(str).str.strip().isin(_BLANKS)
+            n_blank = int(blank.sum())
+            if n_blank:
+                raise FinancialIngestError(
+                    f"{endpoint} for {ts_code}: {n_blank} row(s) have a blank/NA "
+                    f"logical-key value in {key_col!r} — it defines the PIT "
+                    "report period / identity / revision flag; refusing to store "
+                    "(would corrupt dating and current-version resolution)."
+                )
+
         fetched = fetched.copy()
         fetched[COL_CONTENT_HASH] = fetched.apply(
             lambda r: content_hash(r, data_fields), axis=1,

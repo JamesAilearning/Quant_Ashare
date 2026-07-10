@@ -144,6 +144,22 @@ def test_missing_ts_code_column_fails_loud(tmp_path) -> None:
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
 
 
+def test_blank_logical_key_value_fails_loud(tmp_path) -> None:
+    # column present but a row has NA in a logical-key field (end_date defines
+    # the PIT report period) — must fail loud, not enter the store (codex #340 r6).
+    row = _income_row("20211231", "0", 100.0)
+    row["end_date"] = pd.NA
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="end_date"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    # a blank update_flag is refused too
+    row2 = _income_row("20211231", "0", 100.0)
+    row2["update_flag"] = "  "
+    ing2 = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row2])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="update_flag"):
+        ing2.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
 def test_provider_none_fails_loud(tmp_path) -> None:
     # None = transport/quota failure, NOT an empty result — must not be recorded
     # as a successful empty fetch (codex #340 r3 P2).
