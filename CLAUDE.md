@@ -33,6 +33,9 @@ promotion → qlib handler bridge). See `docs/factor_mining/` and
     feature dataset, prediction signal).
   - `inference/` — production serving: daily stock recommendation
     (`daily_recommend.py`), run manually each morning.
+  - `research/` — research-side data views isolated from the canonical
+    runtime (`financial_pit_view.py` = the sole PIT accessor for financial
+    statements; machine-enforced isolation gate, D5-style).
 - `web/operator_ui/` — Streamlit UI (pages under `pages/`).
 - `tests/` — split by layer: `governance/`, `logic/`, `data_pipeline/`,
   `pit/`, `regression/`.

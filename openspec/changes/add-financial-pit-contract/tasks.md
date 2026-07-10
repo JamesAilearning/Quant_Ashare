@@ -32,13 +32,13 @@ _Split PR-1 (ingest + contract) / PR-2 (view + isolation), stacked._
       `load_static_calendar_from_file`, canonical `day.txt`);
       `tests/pit/test_financial_pit_contract.py`. CLI:
       `scripts/data_pipeline/08_fetch_financials.py`.
-- [ ] `FinancialPITDataView` (sole access path): as-of carry-forward (NOT
+- [x] **(PR-2)** `FinancialPITDataView` (sole access path): as-of carry-forward (NOT
       fillna); missing→NA; financial-sector exclusion via stable industry
       list + `oper_cost`-absence cross-check; expose charter input columns
       PIT-keyed incl. `adv_receipts`/`contract_liab` raw (reclassification
       documented); research-only, isolated from the canonical registry /
-      runtime.
-- [ ] Governance tests (BLOCKING): (a) value unreadable before
+      runtime. → `src/research/financial_pit_view.py` (new research namespace).
+- [x] **(PR-2)** Governance tests (BLOCKING): (a) value unreadable before
       `announcement_date`; (b) post-close announcement → next-trading-day
       effect; (c) original-disclosure-first (undatable restatement not
       backfilled); (d) missing field → fail-loud, never 0/median/latest/
@@ -46,10 +46,14 @@ _Split PR-1 (ingest + contract) / PR-2 (view + isolation), stacked._
       rejected (no view bypass); (f) delist/membership boundary reuses the
       existing PIT universe; (g) coverage acceptance floor per Gate-1 §4
       (n=627) table — a field below floor fails loud.
-- [ ] Isolation test: the view is not importable from / wired into the
+- [x] **(PR-2)** Isolation test: the view is not importable from / wired into the
       canonical feature registry, training, or `daily_recommend`.
-- [ ] Whitelist/governance sweep: no new canonical-runtime qlib call sites;
-      the research view stays outside the canonical import graph.
+      → `tests/governance/test_financial_pit_view_isolation.py` (AST reverse
+      scan: no non-research src/ imports `src.research.*`; forward + sole-path
+      checks); `src/research/` documented in CLAUDE.md layout.
+- [x] **(PR-2)** Whitelist/governance sweep: no new canonical-runtime qlib call sites;
+      the research view stays outside the canonical import graph (qlib-free at
+      import; the isolation reverse-scan is the sweep).
 
 ## Must-not-touch
 
