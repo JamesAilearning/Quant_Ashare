@@ -160,6 +160,24 @@ def test_blank_logical_key_value_fails_loud(tmp_path) -> None:
         ing2.ingest("income", "000001.SZ", fetch_batch="b1")
 
 
+def test_non_01_update_flag_fails_loud(tmp_path) -> None:
+    # a non-0/1 update_flag ("2") is neither original nor revised; must fail loud
+    # rather than form a stray current-version key (codex #340 r7 P2).
+    row = _income_row("20211231", "2", 100.0)
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="update_flag"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_float_coerced_update_flag_normalized(tmp_path) -> None:
+    # "0.0" from a float column normalizes to "0" — not rejected, not a 3rd flag.
+    row = _income_row("20211231", "0.0", 100.0)
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert set(stored["update_flag"].astype(str)) == {"0"}
+
+
 def test_provider_none_fails_loud(tmp_path) -> None:
     # None = transport/quota failure, NOT an empty result — must not be recorded
     # as a successful empty fetch (codex #340 r3 P2).

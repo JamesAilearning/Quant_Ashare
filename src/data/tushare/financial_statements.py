@@ -214,7 +214,32 @@ class FinancialStatementIngestor:
                     "(would corrupt dating and current-version resolution)."
                 )
 
+        # update_flag must normalize to EXACTLY "0"(original) / "1"(revised) —
+        # the contract distinguishes them by exact string match, so a stray
+        # "2"/"Y" would be neither yet still form a separate current-version key,
+        # and a float-coerced "0.0" would look like a third flag; both corrupt
+        # revision semantics. Canonicalize here (before hashing, so "0" and
+        # "0.0" hash identically) and fail loud on anything else (codex #340 r7).
+        def _canon_flag(value: Any) -> str:
+            token = str(value).strip()
+            if token in ("0", "1"):
+                return token
+            try:
+                as_float = float(token)
+            except (TypeError, ValueError):
+                as_float = float("nan")
+            if as_float == 0.0:
+                return "0"
+            if as_float == 1.0:
+                return "1"
+            raise FinancialIngestError(
+                f"{endpoint} for {ts_code}: update_flag has a non-0/1 value "
+                f"{value!r} — the contract recognizes only original(0)/revised(1); "
+                "refusing to store (would corrupt revision semantics)."
+            )
+
         fetched = fetched.copy()
+        fetched["update_flag"] = fetched["update_flag"].map(_canon_flag)
         fetched[COL_CONTENT_HASH] = fetched.apply(
             lambda r: content_hash(r, data_fields), axis=1,
         )
