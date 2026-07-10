@@ -67,7 +67,15 @@ def _parse_yyyymmdd(value: object) -> date | None:
     token = str(value).strip()
     if not token or token in {"None", "nan", "NaT", "<NA>"}:
         return None
-    digits = token.split(".")[0]  # tolerate "20220331.0" from float coercion
+    # Tolerate ONLY an exact ".0" float coercion ("20220331.0" from a pandas
+    # float column); a NON-ZERO fraction ("20220331.5") is a malformed token,
+    # not a date, and must NOT be truncated into a valid-looking date that would
+    # go PIT-visible on the wrong day (codex #340 r4 P2).
+    if "." in token:
+        int_part, _, frac = token.partition(".")
+        digits = int_part if frac.strip("0") == "" else ""
+    else:
+        digits = token
     if len(digits) == 8 and digits.isdigit():
         try:
             return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))

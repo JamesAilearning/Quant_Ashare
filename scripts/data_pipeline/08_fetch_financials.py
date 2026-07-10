@@ -23,6 +23,7 @@ import argparse
 import re
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -107,8 +108,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # fetch_batch stamps every row's provenance so a later re-fetch is a NEW
-    # batch, never an in-place overwrite (append-only store contract).
-    fetch_batch = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # batch, never an in-place overwrite (append-only store contract). Includes
+    # microseconds AND a random suffix so two runs started within the same
+    # second still get DISTINCT batch ids — otherwise latest-batch resolution
+    # would have equal sort keys for a changed re-fetch (codex #340 r4 P2).
+    fetch_batch = (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
+        + "_" + uuid.uuid4().hex[:8]
+    )
     ingestor = FinancialStatementIngestor(client, args.store_dir)
     sleep_s = max(0, args.rate_limit_sleep_ms) / 1000.0
     _logger.info("ingest batch=%s  universe=%d  endpoints=%s",

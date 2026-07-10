@@ -128,6 +128,26 @@ def test_resolve_current_fails_loud_without_provenance() -> None:
         resolve_current_versions(frame)
 
 
+def test_nonzero_fractional_date_raises_but_dot_zero_tolerated() -> None:
+    # "20220331.5" must NOT be truncated to a valid date (codex #340 r4 P2);
+    # an exact ".0" float coercion is still tolerated.
+    bad = pd.DataFrame([
+        {"ts_code": "A", "end_date": "20220331.5", "ann_date": "20220331",
+         "f_ann_date": "20220331", "update_flag": "0",
+         COL_CONTENT_HASH: "h", COL_FETCH_BATCH: "b1"},
+    ])
+    with pytest.raises(FinancialPITContractError, match="malformed"):
+        build_contract_frame(bad, _CAL)
+    ok = pd.DataFrame([
+        {"ts_code": "A", "end_date": "20211231.0", "ann_date": "20220331.0",
+         "f_ann_date": "20220331.0", "update_flag": "0",
+         COL_CONTENT_HASH: "h", COL_FETCH_BATCH: "b1"},
+    ])
+    out = build_contract_frame(ok, _CAL)
+    assert out.iloc[0][REPORT_PERIOD] == date(2021, 12, 31)
+    assert out.iloc[0][AVAILABLE_FROM] == date(2022, 4, 1)
+
+
 def test_calendar_next_trading_day_and_end_of_calendar() -> None:
     assert _CAL.next_trading_day_after(date(2022, 4, 1)) == date(2022, 4, 6)  # skips gap
     assert _CAL.next_trading_day_after(date(2022, 3, 30)) == date(2022, 3, 31)
