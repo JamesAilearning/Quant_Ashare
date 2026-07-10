@@ -153,7 +153,7 @@ def test_absent_store_column_fails_loud(tmp_path):
         "f_ann_date": "20220331", "update_flag": "0", "revenue": 100.0,
         "_content_hash": "h", "_fetch_batch": "b1",  # NOTE: no rd_exp column
     }]).to_parquet(inc / "000001.SZ.parquet", index=False)
-    v = FinancialPITDataView(tmp_path, _CAL)
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
     with pytest.raises(FinancialPITViewError, match="missing charter column"):
         v.as_of("2022-04-01", ["rd_exp"], ["000001.SZ"])
     # a present column on the same partial store still serves fine
@@ -164,6 +164,13 @@ def test_unknown_field_fails_loud(tmp_path):
     v = _view(tmp_path)
     with pytest.raises(FinancialPITViewError, match="unknown charter field"):
         v.as_of("2022-04-01", ["not_a_field"], ["000001.SZ"])
+
+
+def test_constructor_requires_financial_issuers(tmp_path):
+    # no default: a forgotten exclusion set must not silently include banks —
+    # the caller has to make the exclusion source explicit (codex #342 r3).
+    with pytest.raises(TypeError):
+        FinancialPITDataView(_make_store(tmp_path), _CAL)  # type: ignore[call-arg]
 
 
 def test_financial_issuers_from_industry():

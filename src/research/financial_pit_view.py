@@ -99,8 +99,11 @@ class FinancialPITDataView:
     """Sole research-side PIT accessor for financial statements.
 
     Injectable ``calendar`` + ``store_dir`` so tests run without real data.
-    ``financial_issuers`` is the exclusion set (ts_codes); derive it with
-    :func:`financial_issuers_from_industry` or pass an explicit list.
+    ``financial_issuers`` is REQUIRED (the signed financial-sector exclusion) —
+    there is NO default, so a forgotten list can never silently include
+    banks/brokers/insurers and violate the universe contract (codex #342 r3).
+    Derive it with :func:`financial_issuers_from_industry`, or pass an explicit
+    ``frozenset()`` to deliberately disable exclusion (a visible choice).
     """
 
     def __init__(
@@ -108,7 +111,7 @@ class FinancialPITDataView:
         store_dir: str | Path,
         calendar: StaticTradingCalendar,
         *,
-        financial_issuers: Iterable[str] = (),
+        financial_issuers: Iterable[str],
     ) -> None:
         self._store_dir = Path(store_dir)
         self._calendar = calendar
