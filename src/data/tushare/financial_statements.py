@@ -188,6 +188,18 @@ class FinancialStatementIngestor:
         if n_fetched == 0:
             return IngestResult(endpoint, ts_code, 0, 0, 0, 0)
 
+        # The returned ts_code must MATCH the requested one (codex #340 r10): a
+        # provider bug or query-param regression that returned another issuer's
+        # rows would otherwise be written under THIS issuer's store file
+        # (<store>/<endpoint>/<ts_code>.parquet), corrupting it.
+        returned_codes = set(fetched["ts_code"].astype(str).str.strip())
+        if returned_codes != {ts_code}:
+            raise FinancialIngestError(
+                f"{endpoint} for {ts_code}: provider returned ts_code(s) "
+                f"{sorted(returned_codes)} != requested {ts_code!r} — refusing to "
+                "write another issuer's data under this issuer's store."
+            )
+
         # The logical-key VALUES must be non-null (codex #340 r6 P2): end_date
         # is the PIT report period, update_flag the original/revised flag,
         # ts_code the identity. A blank here corrupts PIT dating and

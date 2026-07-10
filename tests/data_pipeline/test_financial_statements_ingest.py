@@ -225,6 +225,16 @@ def test_empty_frame_with_columns_is_legit_no_data(tmp_path) -> None:
     assert res.rows_fetched == 0 and res.rows_new == 0
 
 
+def test_mismatched_ts_code_fails_loud(tmp_path) -> None:
+    # provider returns another issuer's rows -> must not be written under the
+    # requested issuer's store file (codex #340 r10 P2).
+    row = _income_row("20211231", "0", 100.0)
+    row["ts_code"] = "600000.SH"  # != requested 000001.SZ
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="requested"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
 def test_unknown_endpoint_rejected(tmp_path) -> None:
     ing = FinancialStatementIngestor(_FakeClient([]), tmp_path)
     with pytest.raises(FinancialIngestError, match="unknown financial endpoint"):
