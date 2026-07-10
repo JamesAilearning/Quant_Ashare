@@ -236,8 +236,12 @@ class FinancialPITDataView:
         serve it as ordinary per-row NA (codex #342 P2). A per-row NA (column
         present, value absent) is still legitimate missingness."""
         original = self._original_frame(ts_code, endpoint)
-        if original is None or original.empty:
+        if original is None:
             return None
+        # Column corruption is checked BEFORE the empty-frame return (codex #342
+        # r6): a store with zero update_flag=0 rows (only revisions / a corrupt
+        # parquet) that is ALSO missing a charter column must fail loud, not be
+        # silently treated as "no data available yet".
         missing_cols = [f for f in fields if f not in original.columns]
         if missing_cols:
             raise FinancialPITViewError(
@@ -246,6 +250,8 @@ class FinancialPITDataView:
                 "refusing to serve. Re-ingest this endpoint (the PR-1 ingest "
                 "keeps every charter column)."
             )
+        if original.empty:
+            return None  # file exists with correct columns but no originals -> NA
         avail = original[
             original[AVAILABLE_FROM].map(
                 lambda d: d is not None and d <= td,
