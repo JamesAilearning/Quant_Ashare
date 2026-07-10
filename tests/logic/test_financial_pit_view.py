@@ -166,6 +166,21 @@ def test_unknown_field_fails_loud(tmp_path):
         v.as_of("2022-04-01", ["not_a_field"], ["000001.SZ"])
 
 
+def test_cross_check_absent_oper_cost_column_fails_loud(tmp_path):
+    # a store missing the oper_cost column is a schema corruption, not "never
+    # reports" — the exclusion cross-check must fail loud (codex #342 r5).
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    pd.DataFrame([{
+        "ts_code": "000001.SZ", "end_date": "20211231", "ann_date": "20220331",
+        "f_ann_date": "20220331", "update_flag": "0", "revenue": 100.0,
+        "_content_hash": "h", "_fetch_batch": "b1",  # NOTE: no oper_cost column
+    }]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+    with pytest.raises(FinancialPITViewError, match="missing charter column"):
+        v.cross_check_exclusion(["000001.SZ"])
+
+
 def test_constructor_requires_financial_issuers(tmp_path):
     # no default: a forgotten exclusion set must not silently include banks —
     # the caller has to make the exclusion source explicit (codex #342 r3).

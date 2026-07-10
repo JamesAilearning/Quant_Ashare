@@ -258,10 +258,21 @@ class FinancialPITDataView:
 
     def _ever_reports(self, ts_code: str, endpoint: str, field: str) -> bool | None:
         """True/False whether the instrument ever discloses ``field`` (any
-        original row non-NA); None when the instrument has no store file."""
+        original row non-NA); None when the instrument has no store file.
+
+        A store frame that EXISTS but lacks the ``field`` column is a schema/store
+        corruption — fail loud rather than report ``False`` ("never reports"),
+        which would silently mis-drive the exclusion cross-check (codex #342 r5)."""
         original = self._original_frame(ts_code, endpoint)
-        if original is None or original.empty or field not in original.columns:
-            return None if original is None else False
+        if original is None:
+            return None
+        if field not in original.columns:
+            raise FinancialPITViewError(
+                f"{ts_code}/{endpoint}: store frame is missing charter column "
+                f"{field!r} — a schema/store corruption; cannot run the exclusion "
+                "cross-check. Re-ingest this endpoint (the PR-1 ingest keeps "
+                "every charter column)."
+            )
         return bool(original[field].notna().any())
 
     def _original_frame(self, ts_code: str, endpoint: str) -> pd.DataFrame | None:
