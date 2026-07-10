@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from src.data.pit.financial_pit_contract import (
     ANNOUNCEMENT_DATE,
@@ -17,6 +18,7 @@ from src.data.pit.financial_pit_contract import (
     AVAILABLE_FROM,
     REPORT_PERIOD,
     REVISION_OF,
+    FinancialPITContractError,
     build_contract_frame,
     resolve_current_versions,
 )
@@ -100,6 +102,19 @@ def test_resolve_current_keeps_latest_batch() -> None:
     assert len(cur) == 1
     assert cur.iloc[0]["revenue"] == 200.0           # latest batch wins
     assert cur.iloc[0][COL_FETCH_BATCH] == "b2"
+
+
+def test_malformed_date_raises_not_hidden() -> None:
+    # a non-blank but impossible date (month 13) is corruption, not missingness —
+    # must fail loud, else report_period/availability silently go wrong (codex
+    # #340 P2). True blanks/NA still degrade to unavailable (other tests).
+    frame = pd.DataFrame([
+        {"ts_code": "A", "end_date": "20221301", "ann_date": "20220331",
+         "f_ann_date": "20220331", "update_flag": "0",
+         COL_CONTENT_HASH: "h", COL_FETCH_BATCH: "b1"},
+    ])
+    with pytest.raises(FinancialPITContractError, match="malformed"):
+        build_contract_frame(frame, _CAL)
 
 
 def test_calendar_next_trading_day_and_end_of_calendar() -> None:

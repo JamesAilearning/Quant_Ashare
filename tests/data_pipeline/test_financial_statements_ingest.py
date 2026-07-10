@@ -95,6 +95,18 @@ def test_missing_pit_column_fails_loud(tmp_path) -> None:
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
 
 
+def test_missing_announcement_column_fails_loud(tmp_path) -> None:
+    # provider drops the f_ann_date COLUMN (schema regression). A missing COLUMN
+    # must fail loud — NOT be invented as NA, which would silently read every
+    # row as "no announcement / unavailable" (codex #340 P1).
+    bad = pd.DataFrame([{"ts_code": "000001.SZ", "end_date": "20211231",
+                         "ann_date": "20220331", "update_flag": "0",
+                         "revenue": 100.0}])  # no f_ann_date column
+    ing = FinancialStatementIngestor(_FakeClient([bad]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="f_ann_date"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
 def test_unknown_endpoint_rejected(tmp_path) -> None:
     ing = FinancialStatementIngestor(_FakeClient([]), tmp_path)
     with pytest.raises(FinancialIngestError, match="unknown financial endpoint"):

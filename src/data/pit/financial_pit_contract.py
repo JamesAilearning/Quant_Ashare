@@ -49,8 +49,14 @@ class FinancialPITContractError(RuntimeError):
 
 
 def _parse_yyyymmdd(value: object) -> date | None:
-    """Parse a tushare ``YYYYMMDD`` value (str or int) to a date; None on
-    NA/blank/unparseable (the caller decides fail-loud vs unavailable)."""
+    """Parse a tushare ``YYYYMMDD`` value (str or int) to a date.
+
+    Returns ``None`` ONLY for a true blank / NA (legitimate missingness). A
+    NON-blank token that is not a valid ``YYYYMMDD`` (wrong length, non-digit,
+    or an impossible date like ``20221301``) RAISES
+    :class:`FinancialPITContractError` — malformed input is corruption, and
+    hiding it behind "missing" would silently drop a filing's availability or
+    fall back to a wrong announcement date (codex #340 P2)."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     try:
@@ -61,13 +67,25 @@ def _parse_yyyymmdd(value: object) -> date | None:
     token = str(value).strip()
     if not token or token in {"None", "nan", "NaT", "<NA>"}:
         return None
-    token = token.split(".")[0]  # tolerate "20220331.0" from float coercion
-    if len(token) != 8 or not token.isdigit():
-        return None
+    digits = token.split(".")[0]  # tolerate "20220331.0" from float coercion
+    if len(digits) == 8 and digits.isdigit():
+        try:
+            return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+        except ValueError:
+            pass  # right shape, impossible calendar date -> malformed, fall through
+    raise FinancialPITContractError(
+        f"malformed date token {value!r} (expected YYYYMMDD or a blank/NA) — "
+        "refusing to hide corruption behind 'missing'."
+    )
+
+
+def _parse_date_column(series: pd.Series, colname: str) -> pd.Series:
+    """Map ``_parse_yyyymmdd`` over a column, naming the column if a malformed
+    token raises (so the fail-loud message points at the corrupt input)."""
     try:
-        return date(int(token[:4]), int(token[4:6]), int(token[6:8]))
-    except ValueError:
-        return None
+        return series.map(_parse_yyyymmdd)
+    except FinancialPITContractError as exc:
+        raise FinancialPITContractError(f"column {colname!r}: {exc}") from exc
 
 
 def build_contract_frame(
@@ -88,9 +106,9 @@ def build_contract_frame(
             f"have {sorted(store.columns)}."
         )
     out = store.copy()
-    report_period = out["end_date"].map(_parse_yyyymmdd)
-    f_ann = out["f_ann_date"].map(_parse_yyyymmdd)
-    ann = out["ann_date"].map(_parse_yyyymmdd)
+    report_period = _parse_date_column(out["end_date"], "end_date")
+    f_ann = _parse_date_column(out["f_ann_date"], "f_ann_date")
+    ann = _parse_date_column(out["ann_date"], "ann_date")
 
     announcement: list[date | None] = []
     source: list[str] = []

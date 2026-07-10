@@ -162,13 +162,21 @@ class FinancialStatementIngestor:
         if n_fetched == 0:
             return IngestResult(endpoint, ts_code, 0, 0, 0, 0)
 
-        # A provider frame missing a PIT column is non-contractible — refuse
-        # rather than store a record we cannot PIT-date (fail-loud).
-        missing = [c for c in ("end_date", "update_flag") if c not in fetched.columns]
+        # A provider frame missing a PIT COLUMN is non-contractible — refuse
+        # rather than store a record we cannot PIT-date (fail-loud). The
+        # announcement-date columns are REQUIRED here too (codex #340 P1): a
+        # per-row NA is legitimate missingness, but a missing COLUMN is a
+        # provider schema regression — without this guard the schema-stabilize
+        # loop below would invent ann_date/f_ann_date as NA and the contract
+        # layer would silently read every row as "no announcement / unavailable"
+        # instead of failing loud.
+        required_cols = ("end_date", "update_flag", "ann_date", "f_ann_date")
+        missing = [c for c in required_cols if c not in fetched.columns]
         if missing:
             raise FinancialIngestError(
-                f"{endpoint} for {ts_code}: provider frame missing {missing} — "
-                "cannot version/PIT-key it; refusing to store."
+                f"{endpoint} for {ts_code}: provider frame missing column(s) "
+                f"{missing} — a schema regression, not per-row NA; refusing to "
+                "store (would silently break the PIT availability contract)."
             )
 
         data_fields = DATA_FIELDS[endpoint]
