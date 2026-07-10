@@ -68,6 +68,25 @@ def test_changed_refetch_appends_new_batch_never_overwrites(tmp_path) -> None:
     assert set(stored[COL_FETCH_BATCH]) == {"b1", "b2"}
 
 
+def test_revert_to_earlier_value_is_reappended(tmp_path) -> None:
+    # 100 -> 200 -> 100: the third fetch reverts to an earlier value. It must be
+    # re-appended (compared against the LATEST version, not any historical hash),
+    # so latest-batch resolution exposes 100, not the stale 200 (codex #340 r5 P1).
+    from src.data.pit.financial_pit_contract import resolve_current_versions
+    frames = [pd.DataFrame([_income_row("20211231", "0", v)]) for v in (100.0, 200.0, 100.0)]
+    ing = FinancialStatementIngestor(_FakeClient(frames), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    ing.ingest("income", "000001.SZ", fetch_batch="b2")
+    res3 = ing.ingest("income", "000001.SZ", fetch_batch="b3")
+    assert res3.rows_new == 1 and res3.rows_changed == 1   # revert re-appended
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 3                                # all three retained
+    current = resolve_current_versions(stored)
+    assert len(current) == 1
+    assert current.iloc[0]["revenue"] == 100.0             # reverted value, not 200
+    assert current.iloc[0][COL_FETCH_BATCH] == "b3"
+
+
 def test_identical_refetch_is_idempotent(tmp_path) -> None:
     frame = pd.DataFrame([_income_row("20211231", "0", 100.0)])
     ing = FinancialStatementIngestor(_FakeClient([frame, frame.copy()]), tmp_path)

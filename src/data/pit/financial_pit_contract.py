@@ -40,7 +40,14 @@ ANNOUNCEMENT_SOURCE = "announcement_date_source"  # "f_ann_date" | "ann_date" | 
 AVAILABLE_FROM = "available_from_trade_date"
 REVISION_OF = "revision_of_content_hash"          # set on update_flag=1 rows
 
-_REQUIRED = ("ts_code", "end_date", "ann_date", "f_ann_date", "update_flag")
+# Provenance columns (_content_hash / _fetch_batch) are REQUIRED too: revision
+# linkage + latest-batch resolution are part of the contract, so a
+# provenance-stripped frame must fail loud rather than silently drop restatement
+# lineage (codex #340 r5 P2).
+_REQUIRED = (
+    "ts_code", "end_date", "ann_date", "f_ann_date", "update_flag",
+    COL_CONTENT_HASH, COL_FETCH_BATCH,
+)
 
 
 class FinancialPITContractError(RuntimeError):
@@ -150,15 +157,14 @@ def _revision_linkage(frame: pd.DataFrame) -> pd.Series:
     """For each ``update_flag=1`` row, the content hash of the as-originally-
     reported (``update_flag=0``) row for the same ``(ts_code, report_period)``
     (latest batch if several). NA for original rows / when no original exists."""
+    # _content_hash / _fetch_batch are guaranteed present (build_contract_frame
+    # validates _REQUIRED first), so latest-batch resolution of the original is
+    # unconditional — no silent NA fallback on stripped provenance.
     link: dict[tuple[str, object], str] = {}
-    if COL_CONTENT_HASH in frame.columns:
-        originals = frame[frame["update_flag"].astype(str) == "0"]
-        # latest batch wins if the original was re-fetched
-        batch_col = COL_FETCH_BATCH if COL_FETCH_BATCH in frame.columns else None
-        for (ts, rp), grp in originals.groupby(["ts_code", REPORT_PERIOD], dropna=False):
-            if batch_col is not None:
-                grp = grp.sort_values(batch_col)
-            link[(str(ts), rp)] = str(grp.iloc[-1][COL_CONTENT_HASH])
+    originals = frame[frame["update_flag"].astype(str) == "0"]
+    for (ts, rp), grp in originals.groupby(["ts_code", REPORT_PERIOD], dropna=False):
+        grp = grp.sort_values(COL_FETCH_BATCH)  # latest batch wins if re-fetched
+        link[(str(ts), rp)] = str(grp.iloc[-1][COL_CONTENT_HASH])
     out: list[object] = []
     for _, row in frame.iterrows():
         if str(row["update_flag"]) == "1":

@@ -117,6 +117,17 @@ def test_malformed_date_raises_not_hidden() -> None:
         build_contract_frame(frame, _CAL)
 
 
+def test_build_contract_requires_provenance() -> None:
+    # a provenance-stripped frame (no _content_hash / _fetch_batch) must fail
+    # loud rather than silently drop restatement lineage (codex #340 r5 P2).
+    frame = pd.DataFrame([
+        {"ts_code": "A", "end_date": "20211231", "ann_date": "20220331",
+         "f_ann_date": "20220331", "update_flag": "0"},  # no provenance cols
+    ])
+    with pytest.raises(FinancialPITContractError, match="missing"):
+        build_contract_frame(frame, _CAL)
+
+
 def test_resolve_current_fails_loud_without_provenance() -> None:
     # a frame lacking _fetch_batch / logical-key columns cannot be resolved to a
     # single current version; returning it unresolved would expose superseded

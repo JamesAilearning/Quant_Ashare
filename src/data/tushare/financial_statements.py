@@ -211,26 +211,35 @@ class FinancialStatementIngestor:
             # "unchanged" (codex #340 P3 — rows_unchanged is 0 here).
             return IngestResult(endpoint, ts_code, n_fetched, n_fetched, 0, 0)
 
-        # A content_hash already present ANYWHERE in the store = identical
-        # content already retained → idempotent skip. A NEW content_hash for a
-        # logical key that already has rows = a CHANGED re-fetch → append.
-        stored_hashes = set(existing[COL_CONTENT_HASH].astype(str))
-        # logical keys already present (to classify new rows as changed vs first-seen)
-        stored_keys = {
-            tuple(str(v) for v in kv)
-            for kv in existing[list(LOGICAL_KEY)].itertuples(index=False, name=None)
-        } if set(LOGICAL_KEY) <= set(existing.columns) else set()
+        # Compare each re-fetched row against the LATEST stored version for its
+        # logical key (ts_code, end_date, update_flag) — NOT any historical hash
+        # (codex #340 r5 P1). A value that changes then reverts (100->200->100)
+        # must re-append the third fetch so latest-batch resolution stops
+        # exposing the stale 200; matching against all-history hashes would skip
+        # the revert and leave 200 current.
+        latest = existing.sort_values(COL_FETCH_BATCH).drop_duplicates(
+            subset=list(LOGICAL_KEY), keep="last",
+        )
+        stored_latest: dict[tuple[str, ...], str] = {
+            tuple(str(v) for v in row[:-1]): str(row[-1])
+            for row in latest[[*LOGICAL_KEY, COL_CONTENT_HASH]].itertuples(
+                index=False, name=None,
+            )
+        }
 
-        new_rows = fetched[~fetched[COL_CONTENT_HASH].astype(str).isin(stored_hashes)]
+        def _key(row: Any) -> tuple[str, ...]:
+            return tuple(str(row[c]) for c in LOGICAL_KEY)
+
+        is_new = fetched.apply(
+            lambda r: stored_latest.get(_key(r)) != str(r[COL_CONTENT_HASH]),
+            axis=1,
+        )
+        new_rows = fetched[is_new]
         n_new = len(new_rows)
         n_unchanged = n_fetched - n_new
-        n_changed = 0
-        if n_new and stored_keys:
-            keys_new = [
-                tuple(str(v) for v in kv)
-                for kv in new_rows[list(LOGICAL_KEY)].itertuples(index=False, name=None)
-            ]
-            n_changed = sum(1 for k in keys_new if k in stored_keys)
+        # a "changed" re-fetch = a new row whose logical key already existed
+        # (a true change OR a revert); a brand-new key is first-seen, not changed.
+        n_changed = sum(1 for _, r in new_rows.iterrows() if _key(r) in stored_latest)
 
         if n_new:
             merged = pd.concat([existing, new_rows], ignore_index=True)
