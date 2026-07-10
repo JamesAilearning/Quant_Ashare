@@ -9,7 +9,11 @@ innovation / universe expansion), NOT to add cells to this 2-D plane.**
 Registration: `docs/prereg/cadence_horizon.yaml` @ `74f2c50`.
 Verbatim gated verdict: `docs/prereg/cadence_horizon_verdict_20260709.txt`.
 Full adjudication evidence (per-arm vs zero, 2×2, slices):
-`docs/prereg/cadence_horizon_evidence_20260709.md`.
+`docs/prereg/cadence_horizon_evidence_20260709.md` — every row reproducible
+from COMMITTED tooling: per-arm net-vs-zero via
+`scripts/compare_arm_net_excess.py` (the one-sample generator the
+pre-registration required, tested in `tests/logic/test_compare_arm_net_excess.py`);
+the 2×2 and slices via `scripts/compare_paired_slices.py`.
 Runs: `output/stage7/{daily_h1,daily_h5,weekly_h1,weekly_h5}`, all at commit
 `74f2c50`, ST-off, 23 folds each, 1397 paired OOS days, one uninterrupted
 invocation each.
