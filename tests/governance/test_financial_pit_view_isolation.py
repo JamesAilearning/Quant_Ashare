@@ -44,16 +44,22 @@ def _imported_modules(text: str, module_dotted: str) -> set[str]:
                 names.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level == 0:
-                if node.module:
-                    names.add(node.module)
+                base_module = node.module
             else:
                 # level=L drops the last L path components of the importer's
                 # dotted path (the module name for L=1, its package for L=2, …).
                 base = parts[: len(parts) - node.level]
                 tail = node.module.split(".") if node.module else []
-                resolved = ".".join([*base, *tail])
-                if resolved:
-                    names.add(resolved)
+                base_module = ".".join([*base, *tail]) or None
+            if base_module:
+                names.add(base_module)
+                # ``from X import Y`` ALSO imports the submodule/package X.Y
+                # (e.g. ``from src import research`` / ``from .. import research``
+                # -> src.research) — record each imported name so a package-alias
+                # import cannot bypass the boundary (codex #342 r2).
+                for alias in node.names:
+                    if alias.name != "*":
+                        names.add(f"{base_module}.{alias.name}")
     return names
 
 
@@ -156,6 +162,17 @@ class ImportScannerUnitTests(unittest.TestCase):
         self.assertFalse(_imports_prefix(
             "from ..other.thing import X\n",
             _RESEARCH_PKG, module_dotted="src.core.walk_forward"))
+
+    def test_detects_from_import_alias_of_package(self) -> None:
+        # `from src import research` / `from .. import research` import the
+        # src.research PACKAGE bound as a name — must be caught (codex #342 r2).
+        self.assertTrue(_imports_prefix("from src import research\n", _RESEARCH_PKG,
+                                        module_dotted="src.core.foo"))
+        self.assertTrue(_imports_prefix("from .. import research\n", _RESEARCH_PKG,
+                                        module_dotted="src.core.foo"))
+        # a `research` submodule under a DIFFERENT package must NOT match
+        self.assertFalse(_imports_prefix("from src.data import research\n",
+                                         _RESEARCH_PKG, module_dotted="src.core.foo"))
 
     def test_ignores_substring_prefix_collision(self) -> None:
         # "src.research_utils" must NOT match the "src.research" package prefix.
