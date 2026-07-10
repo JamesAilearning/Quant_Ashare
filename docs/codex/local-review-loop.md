@@ -13,7 +13,9 @@ introduce new findings from the previous round's fixes. Move the loop local.
    findings for a diff / uncommitted changes (its declared scope). Suggested
    prompt (from `code-review.md`):
    > Review the current diff using docs/codex/code-review.md. Do not modify files.
-3. **Fix** P0/P1; triage P2/P3 (fix, or explicitly accept with a reason).
+3. **Fix** P0/P1/P2; triage P3 (fix, or explicitly accept with a reason). P2
+   acceptance here is only a temporary triage note — it must be resolved before
+   final convergence (which allows only accepted P3 to remain).
 4. **Re-review the new diff.** Fixes can introduce new findings — that is
    exactly what the remote rounds were catching. Iterate until the reviewed
    scope is clean or only accepted P3 remain.
