@@ -165,11 +165,23 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
 
     The physical store is append-only; this is the read-time resolution the
     spec mandates — the newest fetch of a logical record wins, but every prior
-    version stays in the store (a changed re-fetch is retained, not lost)."""
-    if COL_FETCH_BATCH not in frame.columns:
-        return frame
-    keys = [c for c in LOGICAL_KEY if c in frame.columns]
-    if len(keys) != len(LOGICAL_KEY):
-        return frame
+    version stays in the store (a changed re-fetch is retained, not lost).
+
+    Fail-loud (codex #340 P2): a frame missing ``_fetch_batch`` or any member of
+    the logical key cannot be resolved to a single current version. Returning it
+    unresolved would expose MULTIPLE physical versions as current and leak
+    superseded financial rows into PIT use — so this refuses rather than passing
+    an unresolvable frame through."""
+    required = (COL_FETCH_BATCH, *LOGICAL_KEY)
+    missing = [c for c in required if c not in frame.columns]
+    if missing:
+        raise FinancialPITContractError(
+            f"cannot resolve current versions: frame missing {missing} — "
+            "latest-batch resolution needs the fetch batch and the logical key "
+            f"{LOGICAL_KEY}; refusing to return an unresolved frame (it would "
+            "expose superseded versions as current)."
+        )
     ordered = frame.sort_values(COL_FETCH_BATCH)
-    return ordered.drop_duplicates(subset=keys, keep="last").reset_index(drop=True)
+    return ordered.drop_duplicates(
+        subset=list(LOGICAL_KEY), keep="last",
+    ).reset_index(drop=True)

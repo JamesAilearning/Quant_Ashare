@@ -117,6 +117,17 @@ def test_malformed_date_raises_not_hidden() -> None:
         build_contract_frame(frame, _CAL)
 
 
+def test_resolve_current_fails_loud_without_provenance() -> None:
+    # a frame lacking _fetch_batch / logical-key columns cannot be resolved to a
+    # single current version; returning it unresolved would expose superseded
+    # versions as current — must fail loud (codex #340 P2).
+    frame = pd.DataFrame([
+        {"ts_code": "A", "end_date": "20211231", "update_flag": "0", "revenue": 100.0},
+    ])  # no _fetch_batch
+    with pytest.raises(FinancialPITContractError, match="missing"):
+        resolve_current_versions(frame)
+
+
 def test_calendar_next_trading_day_and_end_of_calendar() -> None:
     assert _CAL.next_trading_day_after(date(2022, 4, 1)) == date(2022, 4, 6)  # skips gap
     assert _CAL.next_trading_day_after(date(2022, 3, 30)) == date(2022, 3, 31)

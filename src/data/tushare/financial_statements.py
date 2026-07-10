@@ -170,7 +170,11 @@ class FinancialStatementIngestor:
         # loop below would invent ann_date/f_ann_date as NA and the contract
         # layer would silently read every row as "no announcement / unavailable"
         # instead of failing loud.
-        required_cols = ("end_date", "update_flag", "ann_date", "f_ann_date")
+        # ``ts_code`` is required too (codex #340 P2): without it the stored
+        # rows cannot satisfy the logical key ``(ts_code, end_date, update_flag)``
+        # or the contract layer's columns, corrupting the append-only store and
+        # failing only later on reads.
+        required_cols = ("ts_code", "end_date", "update_flag", "ann_date", "f_ann_date")
         missing = [c for c in required_cols if c not in fetched.columns]
         if missing:
             raise FinancialIngestError(
@@ -197,7 +201,9 @@ class FinancialStatementIngestor:
 
         if existing is None or existing.empty:
             self._write(path, fetched)
-            return IngestResult(endpoint, ts_code, n_fetched, n_fetched, 0, n_fetched)
+            # First ingest: every row is new; nothing pre-existed to be
+            # "unchanged" (codex #340 P3 — rows_unchanged is 0 here).
+            return IngestResult(endpoint, ts_code, n_fetched, n_fetched, 0, 0)
 
         # A content_hash already present ANYWHERE in the store = identical
         # content already retained → idempotent skip. A NEW content_hash for a

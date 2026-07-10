@@ -42,6 +42,7 @@ def test_both_update_flag_versions_retained(tmp_path) -> None:
     ing = FinancialStatementIngestor(_FakeClient([frame]), tmp_path)
     res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
     assert res.rows_new == 2
+    assert res.rows_unchanged == 0  # first ingest: nothing pre-existed (codex #340 P3)
     stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
     assert set(stored["update_flag"].astype(str)) == {"0", "1"}  # neither dropped
 
@@ -104,6 +105,17 @@ def test_missing_announcement_column_fails_loud(tmp_path) -> None:
                          "revenue": 100.0}])  # no f_ann_date column
     ing = FinancialStatementIngestor(_FakeClient([bad]), tmp_path)
     with pytest.raises(FinancialIngestError, match="f_ann_date"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_missing_ts_code_column_fails_loud(tmp_path) -> None:
+    # provider omits ts_code -> stored rows can't satisfy the logical key;
+    # refuse before the append-only store is corrupted (codex #340 P2).
+    bad = pd.DataFrame([{"end_date": "20211231", "ann_date": "20220331",
+                         "f_ann_date": "20220331", "update_flag": "0",
+                         "revenue": 100.0}])  # no ts_code column
+    ing = FinancialStatementIngestor(_FakeClient([bad]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="ts_code"):
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
 
 
