@@ -160,6 +160,17 @@ def test_absent_store_column_fails_loud(tmp_path):
     assert v.as_of("2022-04-01", ["revenue"], ["000001.SZ"]).loc["000001.SZ", "revenue"] == 100.0
 
 
+def test_datetime_trade_date_normalized(tmp_path):
+    # a datetime / pandas Timestamp (common from qlib-style calendars) must be
+    # normalized to a date, not crash the date<=date comparison (codex #342 r8).
+    from datetime import datetime as _dt
+    v = _view(tmp_path)
+    assert v.as_of(_dt(2022, 4, 1, 15, 30), ["revenue"], ["000001.SZ"]).loc[
+        "000001.SZ", "revenue"] == 100.0
+    assert v.as_of(pd.Timestamp("2022-04-01 15:30"), ["revenue"], ["000001.SZ"]).loc[
+        "000001.SZ", "revenue"] == 100.0
+
+
 def test_unknown_field_fails_loud(tmp_path):
     v = _view(tmp_path)
     with pytest.raises(FinancialPITViewError, match="unknown charter field"):

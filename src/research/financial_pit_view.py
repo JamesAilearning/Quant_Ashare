@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -310,6 +310,11 @@ class FinancialPITDataView:
 
     @staticmethod
     def _to_date(value: str | date) -> date:
+        # datetime (incl. pandas Timestamp) subclasses date; normalize to a pure
+        # date so the `date <= date` availability comparison never hits a
+        # date-vs-datetime TypeError (codex #342 r8).
+        if isinstance(value, datetime):
+            return value.date()
         if isinstance(value, date):
             return value
         token = str(value).strip().replace("-", "")
