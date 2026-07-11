@@ -73,6 +73,8 @@ balancesheet.contract_liab           10%   16%   85%   91%   90%   93%   92%   9
 
 **方法局限(诚实标注):** 上表为一次性 API 探针的**行级 pooled** 非空率;探针对被限流/空帧/无 `end_date` 的调用采用 drop-from-denominator(跳过、不计入分母),故数字应读作"成功调用上的"覆盖率、可能略偏乐观(探针 NON-PRODUCTION、未入库)。**canonical 的、经 Gate-2 `FinancialPITDataView` fail-loud 的 as-of 横截面覆盖率由全量 ingest 产出,作 Gate-3 `coverage_acceptance_rule` 的依据 —— 不以本表为准。** as-of 口径通常 ≤ pooled,尤其 `rd_exp`(季报常不列)。
 
+> **审计与可复现(defer 到 Gate-3):** 生成本表的一次性探针**已弃**(有 drop-from-denominator 瑕疵),Gate-1 的 pooled 数字**不追求单独复现**、仅作初步可行性证据。**可审计的覆盖率证据 = Gate-3 由 `FinancialPITDataView` 全量 ingest 产出的、有 provenance 的 as-of coverage artifact**,届时与本表对照、如实记录出入,并据以设 `coverage_acceptance_rule` 的 floor(闭合 #343 codex 后半 + #344 codex 的可复现诉求)。
+
 ### 4b. 幸存者偏差检验（① active 606 vs delisted 21，2018–2025 pooled 非空率）
 
 **退市/退出名未系统性更差** —— 多数字段 delisted 覆盖 **≥** active,证明含退市名的 PIT
