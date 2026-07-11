@@ -197,6 +197,13 @@ def test_cross_check_absent_oper_cost_column_fails_loud(tmp_path):
         v.cross_check_exclusion(["000001.SZ"])
 
 
+def test_scalar_string_financial_issuers_rejected(tmp_path):
+    # a single str satisfies Iterable[str] but iterates into characters — reject
+    # it loudly so the exclusion set can't silently become chars (codex #342 r7).
+    with pytest.raises(FinancialPITViewError, match="not a single string"):
+        FinancialPITDataView(_make_store(tmp_path), _CAL, financial_issuers="000001.SZ")
+
+
 def test_constructor_requires_financial_issuers(tmp_path):
     # no default: a forgotten exclusion set must not silently include banks —
     # the caller has to make the exclusion source explicit (codex #342 r3).

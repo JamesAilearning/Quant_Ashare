@@ -115,6 +115,15 @@ class FinancialPITDataView:
     ) -> None:
         self._store_dir = Path(store_dir)
         self._calendar = calendar
+        # A single str satisfies Iterable[str] but would iterate into CHARACTERS
+        # ({'0','.','S',...}), silently emptying the exclusion of real ts_codes
+        # so banks slip in — reject it (codex #342 r7).
+        if isinstance(financial_issuers, str):
+            raise FinancialPITViewError(
+                "financial_issuers must be a COLLECTION of ts_codes, not a single "
+                f"string ({financial_issuers!r}) — a str iterates into characters. "
+                "Pass a list/set/frozenset (or frozenset() to disable exclusion)."
+            )
         self._financial = frozenset(str(t) for t in financial_issuers)
         # cache: (ts_code, endpoint) -> current-version ORIGINAL contract frame
         self._cache: dict[tuple[str, str], pd.DataFrame | None] = {}
