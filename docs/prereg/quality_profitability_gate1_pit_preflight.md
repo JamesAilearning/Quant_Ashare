@@ -1,6 +1,6 @@
 # Gate-1 · 财报 PIT 可行性只读勘察 — preflight memo（H8-Q1）
 
-> **Status:** 勘察完成，待用户复核。**只读证据，无实现、无 OpenSpec、无因子/模型改动。**
+> **Status:** ✅ Gate-1 已通过（**历史证据文档，勿重跑或覆盖**）。Gate-2 契约+数据桥 #340/#342 已据本 memo 实现并合并；Gate-1 memo passed 与四项契约默认的 operator sign-off（2026-07-10）记于 `add-financial-pit-contract/tasks.md`。**只读证据，无实现、无因子、无模型改动。**
 > **性质:** Step-0 可行性勘察，STOP-gated（brief `quality_profitability_gate1_pit_scout_brief.md`）。
 > **证据来源:** 一次性 API 探针（NON-PRODUCTION，脚本未入库——见 §4 方法局限）+ 补充探针，实测 tushare `income/balancesheet/cashflow/fina_indicator`（2026-07-10 tushare 恢复后跑通）。
 > **覆盖率样本:** CSI300-ever 全量 n=627（含 21 退市名），按年 2018–2025（① 全量重跑，含幸存者拆分；前期 n=60 抽样一致，差异 ≤3pp）。
