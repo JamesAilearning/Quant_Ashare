@@ -2,7 +2,7 @@
 
 > **Status:** 勘察完成，待用户复核。**只读证据，无实现、无 OpenSpec、无因子/模型改动。**
 > **性质:** Step-0 可行性勘察，STOP-gated（brief `quality_profitability_gate1_pit_scout_brief.md`）。
-> **证据来源:** 一次性探针 `scripts/oneshot_gate1_pit_scout.py`（NON-PRODUCTION，可弃）+ 补充探针，实测 tushare `income/balancesheet/cashflow/fina_indicator`（2026-07-10 tushare 恢复后跑通）。
+> **证据来源:** 一次性 API 探针（NON-PRODUCTION，脚本未入库——见 §4 方法局限）+ 补充探针，实测 tushare `income/balancesheet/cashflow/fina_indicator`（2026-07-10 tushare 恢复后跑通）。
 > **覆盖率样本:** CSI300-ever 全量 n=627（含 21 退市名），按年 2018–2025（① 全量重跑，含幸存者拆分；前期 n=60 抽样一致，差异 ≤3pp）。
 > **一句话结论:** C1/C2/C3 **charter 必需字段全部存在**，PIT 语义齐备（`f_ann_date`）→ **三候选均 feasible（排除金融股）**，各带明确 caveat；无 not-feasible。**这不授权任何回测**——Gate-3 冻结前不得进行。
 
@@ -70,6 +70,8 @@ balancesheet.contract_liab           10%   16%   85%   91%   90%   93%   92%   9
   → adv_receipts ∪ contract_liab     ~82   ~90   ~92   ~92   ~90   ~91   ~91   ~89
 ```
 注:行级非空率(含 update_flag 双行);缺失主体为**金融股**(无 oper_cost/营运资本口径)。
+
+**方法局限(诚实标注):** 上表为一次性 API 探针的**行级 pooled** 非空率;探针对被限流/空帧/无 `end_date` 的调用采用 drop-from-denominator(跳过、不计入分母),故数字应读作"成功调用上的"覆盖率、可能略偏乐观(探针 NON-PRODUCTION、未入库)。**canonical 的、经 Gate-2 `FinancialPITDataView` fail-loud 的 as-of 横截面覆盖率由全量 ingest 产出,作 Gate-3 `coverage_acceptance_rule` 的依据 —— 不以本表为准。** as-of 口径通常 ≤ pooled,尤其 `rd_exp`(季报常不列)。
 
 ### 4b. 幸存者偏差检验（① active 606 vs delisted 21，2018–2025 pooled 非空率）
 
