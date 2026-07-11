@@ -69,6 +69,17 @@ class FinancialPITViewError(RuntimeError):
     unreadable store). Fail-loud — never a defaulted or imputed value."""
 
 
+def _require_collection(value: object, name: str) -> None:
+    """Reject a scalar ``str`` for a sequence parameter (codex #342 r9): a str
+    satisfies ``Sequence[str]`` but iterates into CHARACTERS, so a caller who
+    passes one ticker/field would silently query per-character garbage."""
+    if isinstance(value, str):
+        raise FinancialPITViewError(
+            f"{name} must be a COLLECTION (list/tuple/…), not a single string "
+            f"({value!r}) — a str iterates into characters. Wrap it in a list."
+        )
+
+
 @dataclass(frozen=True)
 class ExclusionDisagreement:
     """A financial-exclusion cross-check mismatch, reported not resolved."""
@@ -146,6 +157,8 @@ class FinancialPITDataView:
         EXCLUDED), one column per requested charter field, each cell the value
         of that instrument's latest already-announced original statement, or NA.
         """
+        _require_collection(fields, "fields")
+        _require_collection(instruments, "instruments")
         td = self._to_date(trade_date)
         unknown = [f for f in fields if f not in _FIELD_ENDPOINT]
         if unknown:
@@ -188,6 +201,7 @@ class FinancialPITDataView:
         """Report financial-exclusion cross-check disagreements (never resolve
         them silently, per spec): a financial-listed issuer that DOES report
         ``oper_cost``, or a non-excluded issuer that NEVER reports it."""
+        _require_collection(instruments, "instruments")
         out: list[ExclusionDisagreement] = []
         for ts in instruments:
             ts = str(ts)

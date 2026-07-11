@@ -160,6 +160,18 @@ def test_absent_store_column_fails_loud(tmp_path):
     assert v.as_of("2022-04-01", ["revenue"], ["000001.SZ"]).loc["000001.SZ", "revenue"] == 100.0
 
 
+def test_scalar_string_instruments_and_fields_rejected(tmp_path):
+    # a scalar str for instruments/fields would iterate into characters — reject
+    # it on every sequence-param entry point (codex #342 r9).
+    v = _view(tmp_path)
+    with pytest.raises(FinancialPITViewError, match="instruments must be"):
+        v.as_of("2022-04-01", ["revenue"], "000001.SZ")
+    with pytest.raises(FinancialPITViewError, match="fields must be"):
+        v.as_of("2022-04-01", "revenue", ["000001.SZ"])
+    with pytest.raises(FinancialPITViewError, match="instruments must be"):
+        v.cross_check_exclusion("000001.SZ")
+
+
 def test_datetime_trade_date_normalized(tmp_path):
     # a datetime / pandas Timestamp (common from qlib-style calendars) must be
     # normalized to a date, not crash the date<=date comparison (codex #342 r8).
