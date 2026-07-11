@@ -75,6 +75,17 @@ def _imports_prefix(text: str, prefix: str, module_dotted: str = "pkg.mod") -> b
     )
 
 
+def _matches_forbidden(module: str, forbidden: str) -> bool:
+    """Whether an imported ``module`` is the ``forbidden`` target. A DOTTED entry
+    (``src.pit.query``) matches by module prefix; a BARE-TOKEN entry (``qlib``,
+    ``daily_recommend``) matches a whole path COMPONENT — so a helper whose name
+    merely CONTAINS the token (``qlib_to_ts_code``) is not a false hit and a real
+    ``import qlib`` / ``from qlib.data import D`` still is (codex #342 r10)."""
+    if "." in forbidden:
+        return module == forbidden or module.startswith(forbidden + ".")
+    return forbidden in module.split(".")
+
+
 class FinancialViewIsolationTests(unittest.TestCase):
     def test_no_canonical_src_imports_research(self) -> None:
         offenders = []
@@ -107,7 +118,7 @@ class FinancialViewIsolationTests(unittest.TestCase):
             "qlib", "daily_recommend", "model_trainer", "feature_dataset_builder",
             "mined_factor_handler", "src.core.pipeline", "src.pit.query",
         )
-        hits = sorted({m for m in imported for f in forbidden if f in m})
+        hits = sorted({m for m in imported for f in forbidden if _matches_forbidden(m, f)})
         self.assertEqual(
             hits, [],
             msg=(
@@ -196,6 +207,23 @@ class ImportScannerUnitTests(unittest.TestCase):
         self.assertFalse(_imports_prefix(
             '"""see src.research.financial_pit_view"""\n# import src.research.x\nx=1\n',
             _RESEARCH_PKG))
+
+    def test_forbidden_matches_component_not_substring(self) -> None:
+        # a bare-token forbidden entry matches a whole path COMPONENT: a real
+        # qlib / canonical-runtime import is still caught...
+        self.assertTrue(_matches_forbidden("qlib", "qlib"))
+        self.assertTrue(_matches_forbidden("qlib.data", "qlib"))
+        self.assertTrue(
+            _matches_forbidden("src.inference.daily_recommend", "daily_recommend"))
+        # ...but a helper whose NAME merely contains the token is NOT (the
+        # view imports src.data.pit._common.qlib_to_ts_code — pure stdlib).
+        self.assertFalse(
+            _matches_forbidden("src.data.pit._common.qlib_to_ts_code", "qlib"))
+        self.assertFalse(_matches_forbidden("src.data.pit._common", "qlib"))
+        # dotted forbidden entries match by module prefix, not substring.
+        self.assertTrue(_matches_forbidden("src.pit.query", "src.pit.query"))
+        self.assertTrue(_matches_forbidden("src.pit.query.foo", "src.pit.query"))
+        self.assertFalse(_matches_forbidden("src.pit.querytools", "src.pit.query"))
 
 
 if __name__ == "__main__":

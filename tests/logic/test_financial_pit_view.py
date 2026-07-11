@@ -172,6 +172,42 @@ def test_scalar_string_instruments_and_fields_rejected(tmp_path):
         v.cross_check_exclusion("000001.SZ")
 
 
+def test_qlib_style_instruments_normalized_to_ts_code(tmp_path):
+    # the canonical universe is qlib-style (SH600000); the store is ts_code-keyed
+    # (600000.SH.parquet). A qlib-style query must resolve, not silently NA, and
+    # the panel is indexed by the canonical ts_code (codex #342).
+    v = _view(tmp_path)
+    panel = v.as_of("2022-04-01", ["revenue"], ["SZ000001"])  # -> 000001.SZ
+    assert list(panel.index) == ["000001.SZ"]
+    assert panel.loc["000001.SZ", "revenue"] == 100.0
+    # mixed formats in one call both resolve to their ts_code rows
+    mixed = v.as_of("2022-04-01", ["revenue"], ["SZ000001", "600000.SH"])
+    assert set(mixed.index) == {"000001.SZ", "600000.SH"}
+
+
+def test_qlib_style_exclusion_matches_ts_code_issuer(tmp_path):
+    # financial_issuers given as ts_code; instrument queried qlib-style -> still
+    # excluded (both sides normalize to ts_code).
+    v = _view(tmp_path, financial=("000001.SZ",))
+    panel = v.as_of("2022-04-01", ["revenue"], ["SZ000001", "600000.SH"])
+    assert list(panel.index) == ["600000.SH"]  # SZ000001 excluded
+    # and the reverse: qlib-style exclusion list matches a ts_code instrument
+    v2 = FinancialPITDataView(_make_store(tmp_path / "b"), _CAL,
+                              financial_issuers=("SZ000001",))
+    panel2 = v2.as_of("2022-04-01", ["revenue"], ["000001.SZ", "600000.SH"])
+    assert list(panel2.index) == ["600000.SH"]
+
+
+def test_malformed_instrument_fails_loud(tmp_path):
+    # neither ts_code nor qlib-style -> fail loud, never a silent all-NA row.
+    v = _view(tmp_path)
+    for bad in ("FOOBAR", "12345", "600000", "600000.sh"):
+        with pytest.raises(FinancialPITViewError, match="neither a Tushare ts_code"):
+            v.as_of("2022-04-01", ["revenue"], [bad])
+    with pytest.raises(FinancialPITViewError, match="neither a Tushare ts_code"):
+        v.cross_check_exclusion(["FOOBAR"])
+
+
 def test_datetime_trade_date_normalized(tmp_path):
     # a datetime / pandas Timestamp (common from qlib-style calendars) must be
     # normalized to a date, not crash the date<=date comparison (codex #342 r8).

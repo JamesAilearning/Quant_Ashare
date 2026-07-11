@@ -30,6 +30,7 @@ Contract (spec ``v2-financial-pit-contract``)
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -38,6 +39,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.data.pit._common import qlib_to_ts_code
 from src.data.pit.financial_pit_contract import (
     AVAILABLE_FROM,
     REPORT_PERIOD,
@@ -46,6 +48,11 @@ from src.data.pit.financial_pit_contract import (
 )
 from src.data.trading_calendar import StaticTradingCalendar
 from src.data.tushare.financial_statements import DATA_FIELDS
+
+# Tushare ts_code — the financial store's native key (``600000.SH.parquet``).
+# The canonical universe is qlib-style (``SH600000``); we normalize inbound
+# instruments to this shape before any store lookup / exclusion (codex #342).
+_TS_CODE_RE = re.compile(r"^\d{6}\.[A-Z]{2}$")
 
 # field -> its endpoint (revenue -> income, total_assets -> balancesheet, ...).
 _FIELD_ENDPOINT: dict[str, str] = {
@@ -135,7 +142,11 @@ class FinancialPITDataView:
                 f"string ({financial_issuers!r}) — a str iterates into characters. "
                 "Pass a list/set/frozenset (or frozenset() to disable exclusion)."
             )
-        self._financial = frozenset(str(t) for t in financial_issuers)
+        # normalize the exclusion set to ts_code too, so a qlib-style OR ts_code
+        # exclusion list matches the ts_code-normalized instruments (codex #342).
+        self._financial = frozenset(
+            qlib_to_ts_code(str(t)) for t in financial_issuers
+        )
         # cache: (ts_code, endpoint) -> current-version ORIGINAL contract frame
         self._cache: dict[tuple[str, str], pd.DataFrame | None] = {}
 
@@ -153,9 +164,11 @@ class FinancialPITDataView:
     ) -> pd.DataFrame:
         """PIT-correct financial values as-of ``trade_date``.
 
-        Returns a DataFrame indexed by instrument (ts_code, financial issuers
-        EXCLUDED), one column per requested charter field, each cell the value
-        of that instrument's latest already-announced original statement, or NA.
+        ``instruments`` may be qlib-style (``SH600000``) or Tushare ts_code
+        (``600000.SH``); both normalize to ts_code (the store key). Returns a
+        DataFrame indexed by ts_code (financial issuers EXCLUDED), one column
+        per requested charter field, each cell the value of that instrument's
+        latest already-announced original statement, or NA.
         """
         _require_collection(fields, "fields")
         _require_collection(instruments, "instruments")
@@ -171,8 +184,8 @@ class FinancialPITDataView:
             by_endpoint.setdefault(_FIELD_ENDPOINT[f], []).append(f)
 
         rows: dict[str, dict[str, Any]] = {}
-        for ts in instruments:
-            ts = str(ts)
+        for raw_ts in instruments:
+            ts = self._to_ts_code(raw_ts)
             if ts in self._financial:
                 continue  # financial-sector issuer excluded from the universe
             row: dict[str, Any] = {}
@@ -203,8 +216,8 @@ class FinancialPITDataView:
         ``oper_cost``, or a non-excluded issuer that NEVER reports it."""
         _require_collection(instruments, "instruments")
         out: list[ExclusionDisagreement] = []
-        for ts in instruments:
-            ts = str(ts)
+        for raw_ts in instruments:
+            ts = self._to_ts_code(raw_ts)
             has_oper_cost = self._ever_reports(ts, "income", _CROSS_CHECK_FIELD)
             if ts in self._financial and has_oper_cost:
                 out.append(ExclusionDisagreement(ts, "financial_has_oper_cost"))
@@ -321,6 +334,27 @@ class FinancialPITDataView:
             frame = current[current["update_flag"].astype(str) == "0"].copy()
         self._cache[key] = frame
         return frame
+
+    @staticmethod
+    def _to_ts_code(instrument: str) -> str:
+        """Normalize an inbound instrument to the store's ts_code key.
+
+        The canonical universe is qlib-style (``SH600000``); the financial store
+        is keyed by Tushare ``ts_code`` (``600000.SH.parquet``). Passing a
+        qlib-style code straight through would probe a nonexistent file and
+        silently return all-NA + skip ts_code-keyed exclusions — a no-silent-
+        fallback violation (codex #342). Accept EITHER form, normalize to
+        ts_code, and fail loud on anything that is neither (``qlib_to_ts_code``
+        is lenient and would pass garbage through)."""
+        ts = qlib_to_ts_code(str(instrument).strip())
+        if not _TS_CODE_RE.match(ts):
+            raise FinancialPITViewError(
+                f"instrument {instrument!r} is neither a Tushare ts_code "
+                "('600000.SH') nor a qlib-style code ('SH600000'); the financial "
+                "store is ts_code-keyed and refuses to guess. Convert with "
+                "src.data.pit._common.qlib_to_ts_code first."
+            )
+        return ts
 
     @staticmethod
     def _to_date(value: str | date) -> date:
