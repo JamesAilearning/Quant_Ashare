@@ -73,7 +73,16 @@ if [ -n "$changed_src" ]; then
         | sed -e 's/\.py$//' -e 's|/__init__$||' -e 's|/|.|g' \
         | sort -u)
     echo "${YELLOW}pre-commit: import smoke on $(echo "$modules" | wc -l | tr -d ' ') module(s)${RESET}"
-    if ! PYTHONIOENCODING=utf-8 python -c "
+    # Import the STAGED content, not the worktree: under partial staging the
+    # two differ — a broken staged blob with a fixed-but-unstaged worktree
+    # would pass a worktree import (and a clean staged blob would fail on
+    # unrelated unstaged edits). Materializing the full index (~0.4s) also
+    # keeps SIBLING modules consistent: every import in the smoke resolves
+    # to exactly what this commit will contain.
+    index_tree=$(mktemp -d)
+    trap 'rm -rf "$index_tree"' EXIT
+    git checkout-index -a --prefix="$index_tree/"
+    if ! (cd "$index_tree" && PYTHONIOENCODING=utf-8 python -c "
 import importlib, sys
 failed = False
 for m in sys.argv[1:]:
@@ -83,12 +92,14 @@ for m in sys.argv[1:]:
         print(f'  import {m} FAILED: {type(e).__name__}: {e}')
         failed = True
 sys.exit(1 if failed else 0)
-" $modules; then
+" $modules); then
         echo "${RED}pre-commit: import smoke FAILED${RESET}"
         echo "${RED}a staged src/ module does not import cleanly (NameError /${RESET}"
-        echo "${RED}circular import / missing dependency) — fix before committing${RESET}"
+        echo "${RED}circular import / missing dependency) — fix and re-stage${RESET}"
         exit 1
     fi
+    rm -rf "$index_tree"
+    trap - EXIT
 fi
 
 # ────────────────────────────────────────────────────────────────────
