@@ -218,6 +218,24 @@ def _assert_resolved(frame: pd.DataFrame, where: str) -> None:
         )
 
 
+def _assert_binary_update_flag(frame: pd.DataFrame, where: str) -> None:
+    """Fail loud on any ``update_flag`` value that is not exactly ``0`` or ``1``.
+
+    The ingest only ever writes 0/1, but ``build_contract_frame`` does not
+    re-validate; a legacy/corrupt store row (``update_flag='2'`` or blank) would
+    be ranked exactly like a revision and could be served as the disclosure of
+    record when the period has no ``update_flag=0`` — a silent contract
+    violation. Refuse rather than rank an unknown flag (codex #345 r2)."""
+    flags = {str(u) for u in frame["update_flag"].unique()}
+    bad = sorted(flags - {"0", "1"})
+    if bad:
+        raise FinancialPITContractError(
+            f"{where}: update_flag has non-0/1 value(s) {bad} — the ingest only "
+            "writes 0/1; a legacy/corrupt store must be re-ingested, not silently "
+            "ranked as a revision."
+        )
+
+
 def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse each ``(ts_code, report_period)`` to its DISCLOSURE OF RECORD.
 
@@ -243,6 +261,7 @@ def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
                 f"cannot select disclosure-of-record: frame missing {col!r}."
             )
     _assert_resolved(frame, "select_disclosure_of_record")
+    _assert_binary_update_flag(frame, "select_disclosure_of_record")
     work = frame.copy()
     # prefer update_flag=0 (rank 0) over any revision (rank 1) within a period.
     work["_uf_rank"] = work["update_flag"].astype(str).map(
@@ -301,6 +320,7 @@ def version_collapse_residual(
                 f"version-collapse audit: frame missing {col!r}."
             )
     _assert_resolved(frame, "version-collapse audit")
+    _assert_binary_update_flag(frame, "version-collapse audit")
     n_both = 0
     for (ts, rp), grp in frame.groupby(["ts_code", REPORT_PERIOD], dropna=False):
         rows = {str(r["update_flag"]): r for _, r in grp.iterrows()}

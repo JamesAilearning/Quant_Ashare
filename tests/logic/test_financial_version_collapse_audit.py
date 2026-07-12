@@ -88,3 +88,16 @@ def test_fails_loud_on_unresolved_duplicate_batches():
         version_collapse_residual(dup, ["revenue"])
     with pytest.raises(FinancialPITContractError, match="duplicate logical versions"):
         select_disclosure_of_record(dup)
+
+
+def test_fails_loud_on_non_binary_update_flag():
+    # a legacy/corrupt row with update_flag not in {0,1} must NOT be silently
+    # ranked as a revision and served as disclosure of record — fail loud
+    # (codex #345 r2).
+    bad = _frame([
+        {"ts_code": "X", REPORT_PERIOD: _P1, "update_flag": "2", "revenue": 100.0},
+    ])
+    with pytest.raises(FinancialPITContractError, match="non-0/1 value"):
+        select_disclosure_of_record(bad)
+    with pytest.raises(FinancialPITContractError, match="non-0/1 value"):
+        version_collapse_residual(bad, ["revenue"])
