@@ -25,13 +25,15 @@ Outputs (all in ONE markdown report):
      rd_exp year×quarter drill-down (the C2 window question);
   4. full-universe version_collapse_residual per endpoint;
   5. canonical coverage-floor check (``COVERAGE_FLOORS``) — enforced against
-     the latest as-of snapshot when floors are populated.
+     EVERY yearly mean in the 2019-2025 floor window AND the latest as-of
+     snapshot when floors are populated (a historical regression fails loud).
 """
 from __future__ import annotations
 
 import argparse
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -43,6 +45,7 @@ import pandas as pd  # noqa: E402
 
 from src.data.pit._common import qlib_to_ts_code  # noqa: E402
 from src.data.pit.financial_pit_contract import (  # noqa: E402
+    VersionCollapseResidual,
     build_contract_frame,
     resolve_current_versions,
     version_collapse_residual,
@@ -241,17 +244,24 @@ def rd_exp_quarter_table(
     return out
 
 
+@dataclass(frozen=True)
+class EndpointResidual:
+    """Per-endpoint audit result + explicit hole accounting."""
+
+    residual: VersionCollapseResidual
+    missing_names: list[str]
+    instruments: int
+
+
 def residual_tables(store_dir: Path, cal: StaticTradingCalendar,
-                    universe: Sequence[str]) -> dict[str, dict[str, object]]:
-    out: dict[str, dict[str, object]] = {}
+                    universe: Sequence[str]) -> dict[str, EndpointResidual]:
+    out: dict[str, EndpointResidual] = {}
     for endpoint, fields in DATA_FIELDS.items():
         frames: list[pd.DataFrame] = []
-        missing = 0
         missing_names: list[str] = []
         for ts in universe:
             path = store_dir / endpoint / f"{ts}.parquet"
             if not path.is_file():
-                missing += 1
                 missing_names.append(ts)
                 continue
             cur = resolve_current_versions(
@@ -263,12 +273,11 @@ def residual_tables(store_dir: Path, cal: StaticTradingCalendar,
                               "run the full ingest first.")
         allcur = pd.concat(frames, ignore_index=True)
         res = version_collapse_residual(allcur, list(fields))
-        out[endpoint] = {
-            "residual": res,
-            "missing_files": missing,
-            "missing_names": missing_names,
-            "instruments": len(frames),
-        }
+        out[endpoint] = EndpointResidual(
+            residual=res,
+            missing_names=missing_names,
+            instruments=len(frames),
+        )
     return out
 
 
@@ -321,12 +330,35 @@ def build_report(args: argparse.Namespace) -> str:
     residuals = residual_tables(store_dir, cal, ever)
 
     # -- canonical floor check ---------------------------------------------
+    # Floors are defined over the 2019-2025 window (FLOOR_PROVENANCE), so they
+    # must be enforced against EVERY measured year in that window, not just the
+    # latest snapshot — otherwise a re-ingest that corrupts 2019-2024 history
+    # while the latest snapshot stays healthy would still print PASS
+    # (codex #347). The latest-snapshot assert_coverage_floor call additionally
+    # exercises the live enforcement mechanism itself.
     last_snap = date(YEARS[-1], 12, 31)
+    floor_years = [y for y in YEARS if y >= 2019]
     if COVERAGE_FLOORS:
+        violations: dict[str, list[tuple[int, float, float]]] = {}
+        for field, floor in COVERAGE_FLOORS.items():
+            if field not in cov_exfin:
+                raise ReportError(
+                    f"floor field {field!r} was not measured — floors and the "
+                    "measured field set have drifted apart.")
+            for y in floor_years:
+                got = cov_exfin[field][y]
+                if got < floor:
+                    violations.setdefault(field, []).append((y, got, floor))
+        if violations:
+            raise ReportError(
+                "coverage below the canonical floor in the measured window "
+                f"(field -> [(year, actual, floor)]): {violations} — a "
+                "historical regression must be investigated, never tolerated.")
         view_exfin.assert_coverage_floor(
             dict(COVERAGE_FLOORS), members_by_date[last_snap], last_snap)
-        floor_note = (f"PASS — enforced on the {last_snap} ex-financial member "
-                      f"snapshot ({FLOOR_PROVENANCE})")
+        floor_note = (f"PASS — enforced on EVERY {floor_years[0]}-"
+                      f"{floor_years[-1]} yearly mean AND the {last_snap} "
+                      f"ex-financial member snapshot ({FLOOR_PROVENANCE})")
     else:
         floor_note = ("NOT ENFORCED — COVERAGE_FLOORS is empty (fill it from "
                       "this report's measured minima, then re-run)")
@@ -371,11 +403,11 @@ def build_report(args: argparse.Namespace) -> str:
     a("| endpoint | instruments | missing files | both-version periods | differing fraction | n differ |")
     a("|---|---|---|---|---|---|")
     for endpoint, info in residuals.items():
-        res = info["residual"]
-        a(f"| {endpoint} | {info['instruments']} | {info['missing_files']} | "
-          f"{res.n_both_version_periods} | "  # type: ignore[union-attr]
-          f"{res.overall_differing_fraction():.4%} | "  # type: ignore[union-attr]
-          f"{len(res.differing)} |")  # type: ignore[union-attr]
+        res = info.residual
+        a(f"| {endpoint} | {info.instruments} | {len(info.missing_names)} | "
+          f"{res.n_both_version_periods} | "
+          f"{res.overall_differing_fraction():.4%} | "
+          f"{len(res.differing)} |")
     a("")
     a("## 5. 附表:Gate-1 可比口径(CSI300-ever 含金融,分母=当期 anchor 有披露的名字)+ Δ vs Gate-1 pooled")
     a("")
@@ -426,7 +458,7 @@ def build_report(args: argparse.Namespace) -> str:
     a("")
     a("## 7. 偏离 Gate-1 memo 的意外(如实记录)")
     a("")
-    total_holes = sum(len(info["missing_names"]) for info in residuals.values())  # type: ignore[arg-type]
+    total_holes = sum(len(info.missing_names) for info in residuals.values())
     a(f"1. **提供方歧义重复 → {total_holes} 个 ingest hole**(§8 名单)。同一 "
       "`(ts_code, end_date, update_flag)` 在一次 fetch 返回两行**不同内容**,"
       "`report_type`/`end_type` 均无法区分,仅 `f_ann_date` 不同(例: 五粮液 "
@@ -456,8 +488,7 @@ def build_report(args: argparse.Namespace) -> str:
       "(诚实方向:压低而非抬高覆盖率)。")
     a("")
     for endpoint, info in residuals.items():
-        names = info["missing_names"]
-        assert isinstance(names, list)
+        names = info.missing_names
         shown = ", ".join(names[:30]) + (" …" if len(names) > 30 else "")
         a(f"- **{endpoint}**: {len(names)} missing — {shown if names else '(none)'}")
     a("")
