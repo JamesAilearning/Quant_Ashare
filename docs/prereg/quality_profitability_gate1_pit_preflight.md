@@ -47,6 +47,7 @@
 - **但真实重述无独立公告日:** 三只蓝筹(茅台/格力/平安)**0 个 end_date 带多个不同 `ann_date`** → 0/1 双行**共享同一 `ann_date`**、值相同。
 - **PIT 限制(如实记录):** tushare 能区分"原始 vs 调整"(update_flag),但**不为重述打独立的重述公告日**。若某报告期日后被真实重述,只能拿到挂在**原始 ann_date** 下的(可能已被回填的)值。
 - **建议:** 严格 PIT 取 `update_flag` 原始披露值、键到 `f_ann_date`;并把"重述无法定到重述日"列为**已知 PIT 风险**(charter §7 falsifier 之一)。
+- **⚠ Gate-2 修正(2026-07-11,fix-financial-pit-asof-versioning):** 上条"严格取 uf0"经 Gate-2 view 小样冒烟**证伪** —— tushare 近 1–2 年报告期只留 uf1,严格丢弃它们会致 as-of 退回 1–2 年前的旧期(格力 stale 2年等)。已改为 **disclosure-of-record**:按 `report_period` 取 `available_from ≤ 交易日` 的**最新可见期**,同期优先 uf0、无则取唯一 uf1(=该期首披),双行永远 uf0(重述不盖原始)。PIT 安全是**结构性**的(只服务首/唯一披露),不依赖 uf0==uf1;残差由 version-collapse 审计量化(见 spec `v2-financial-pit-contract` + `FinancialPITDataView`)。
 
 ## 4. 覆盖率表（全量 CSI300-ever n=627，含 21 退市名，按年 × 字段，行级非空率）
 

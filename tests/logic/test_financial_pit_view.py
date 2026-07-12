@@ -52,6 +52,14 @@ def _make_store(tmp_path):
     pd.DataFrame([
         _row("600000.SH", "20211231", "0", "20220331", revenue=50.0, oper_cost=40.0),
     ]).to_parquet(inc / "600000.SH.parquet", index=False)
+    # 000002.SZ: OLDER period has an update_flag=0 original; the RECENT period has
+    # ONLY update_flag=1 (provider kept no original) — the view must serve the
+    # recent uf1 period (its disclosure of record), NOT stale-fall-back to the
+    # older uf0 (阶段8 Gate-2 correction). ann 20220429 -> available 20220505.
+    pd.DataFrame([
+        _row("000002.SZ", "20211231", "0", "20220331", revenue=200.0, oper_cost=120.0),
+        _row("000002.SZ", "20220331", "1", "20220429", revenue=210.0, oper_cost=130.0),
+    ]).to_parquet(inc / "000002.SZ.parquet", index=False)
     return tmp_path
 
 
@@ -226,9 +234,10 @@ def test_unknown_field_fails_loud(tmp_path):
 
 
 def test_empty_originals_missing_column_still_fails_loud(tmp_path):
-    # a store with only a revision (zero update_flag=0 originals) AND missing a
-    # charter column must still fail loud — the column check runs before the
-    # empty-frame "no data" return (codex #342 r6).
+    # a store whose only row is a revision (no update_flag=0 original) AND missing
+    # a charter column must still fail loud — the column check runs before any
+    # serve/return (codex #342 r6). Post Gate-2 fix the uf1 row IS the disclosure
+    # of record (served, not dropped), but a missing column still fails loud.
     inc = tmp_path / "income"
     inc.mkdir(parents=True)
     pd.DataFrame([{
@@ -277,3 +286,23 @@ def test_financial_issuers_from_industry():
     })
     got = financial_issuers_from_industry(sb)
     assert got == frozenset({"000001.SZ", "601318.SH"})  # bank + insurer, not 白酒
+
+
+# 阶段8 Gate-2 correction: uf1-only recent period served (no stale fall-back) --
+
+def test_uf1_only_recent_period_served_not_stale(tmp_path):
+    # 000002.SZ: the older 2021-Q4 period has an update_flag=0 original
+    # (revenue 200); the recent 2022-Q1 period exists ONLY as update_flag=1
+    # (revenue 210) — the provider kept no original for it. The view must serve
+    # the recent uf1 period once available (its disclosure of record), NOT
+    # stale-fall-back to the older uf0.
+    v = _view(tmp_path)
+    # before 2022-Q1 is available (avail 2022-05-05): only the older period shows
+    assert v.as_of("2022-04-30", ["revenue"], ["000002.SZ"]).loc[
+        "000002.SZ", "revenue"] == 200.0
+    # once available, the recent uf1 period is served (the fix) — not stale 200
+    assert v.as_of("2022-05-05", ["revenue"], ["000002.SZ"]).loc[
+        "000002.SZ", "revenue"] == 210.0
+    # and it is picked as the LATEST available period, over the older uf0 one
+    assert v.as_of("2022-05-05", ["oper_cost"], ["000002.SZ"]).loc[
+        "000002.SZ", "oper_cost"] == 130.0
