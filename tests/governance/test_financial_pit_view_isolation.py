@@ -28,6 +28,15 @@ _LOWLEVEL = (
     "src.data.tushare.financial_statements",
     "src.data.pit.financial_pit_contract",
 )
+# qlib / canonical-runtime import targets research code must stay out of.
+# Module-level so the generalized research gate
+# (test_factor_mining_import_isolation.py) enforces the SAME list — one
+# source of truth, no drift. Bare tokens match whole path components;
+# dotted entries match by module prefix (see _matches_forbidden).
+_CANONICAL_RUNTIME_FORBIDDEN = (
+    "qlib", "daily_recommend", "model_trainer", "feature_dataset_builder",
+    "mined_factor_handler", "src.core.pipeline", "src.pit.query",
+)
 
 
 def _imported_modules(text: str, module_dotted: str) -> set[str]:
@@ -114,10 +123,7 @@ class FinancialViewIsolationTests(unittest.TestCase):
         # module; it reaches data only through the PR-1 contract/store + calendar.
         src = (_SRC / "research" / "financial_pit_view.py").read_text(encoding="utf-8")
         imported = _imported_modules(src, "src.research.financial_pit_view")
-        forbidden = (
-            "qlib", "daily_recommend", "model_trainer", "feature_dataset_builder",
-            "mined_factor_handler", "src.core.pipeline", "src.pit.query",
-        )
+        forbidden = _CANONICAL_RUNTIME_FORBIDDEN
         hits = sorted({m for m in imported for f in forbidden if _matches_forbidden(m, f)})
         self.assertEqual(
             hits, [],
