@@ -29,9 +29,12 @@
       correction) as a known PIT limitation in the view + Gate-1 memo §3 pointer.
 - [x] Re-ran the Gate-2 smoke (`D:/qlib_data/financial_pit_smoke`): as-of
       2024-06-30 now serves 2024-Q1 for all 7 names (was 2022–2023; Moutai
-      revenue 69.6B→45.8B). Version-collapse residual over the 7-name store:
-      **0.0000% differing** across income (116 both-version periods) /
-      balancesheet (207) / cashflow (100), all charter fields.
+      revenue 69.6B→45.8B). Version-collapse residual over the 7-name store
+      (NA↔non-NA transitions counted, codex r4): income **0.27%** (2) /
+      balancesheet **0.30%** (4) / cashflow **0.00%** (0) of both-version
+      field-comparisons differ — a tiny real restatement residual (all NA↔non-NA
+      transitions; value-vs-value diffs are 0%). The serve-rule resolves every
+      differing period to `update_flag=0`, so it introduces NO look-ahead.
 - [ ] Local review loop to convergence before push (`docs/codex/local-review-loop.md`).
 
 ## Must-not-touch

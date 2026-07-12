@@ -333,10 +333,14 @@ def version_collapse_residual(
         r0, r1 = rows["0"], rows["1"]
         for f in fields:
             v0, v1 = r0[f], r1[f]
-            if pd.notna(v0) and pd.notna(v1):
-                compared, differ = per_field[f]
-                is_diff = bool(v0 != v1)
-                per_field[f] = (compared + 1, differ + (1 if is_diff else 0))
-                if is_diff:
-                    differing.append((str(ts), rp, f))
+            na0, na1 = pd.isna(v0), pd.isna(v1)
+            if na0 and na1:
+                continue  # neither version discloses the field -> no comparison
+            compared, differ = per_field[f]
+            # an NA<->non-NA transition IS a restatement (missing->populated or
+            # vice versa) — count it; else compare the two values (codex #345 r4).
+            is_diff = True if na0 != na1 else bool(v0 != v1)
+            per_field[f] = (compared + 1, differ + (1 if is_diff else 0))
+            if is_diff:
+                differing.append((str(ts), rp, f))
     return VersionCollapseResidual(n_both, per_field, differing)

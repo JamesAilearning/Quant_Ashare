@@ -54,30 +54,40 @@ and never a restatement over its original — and therefore does not depend on
 
 ## ADDED Requirements
 
-### Requirement: The version-collapse residual SHALL be audited across the universe and bounded
+### Requirement: The version-collapse residual SHALL be measurable and its serve-rule invariant enforced
 
-A governance test SHALL audit — across ALL charter financial fields, the full
-CSI300-ever universe, and every `report_period` that has BOTH `update_flag`
-rows — the fraction of both-version periods whose `update_flag=0` and
-`update_flag=1` values DIFFER (a genuine restatement) versus are EQUAL (a
-version marker only). The measured differing-fraction SHALL be recorded as
-the bounded restatement residual for the honesty envelope. Because the
-serve-rule always resolves a differing both-version period to `update_flag=0`,
-a non-zero differing-fraction SHALL NOT introduce look-ahead; the audit SIZES
-the residual and is not a safety precondition. The one residual the data
-cannot rule out — a recent `update_flag=1`-only period that is a silent
-correction of a first-announced value the provider no longer stores — SHALL
-be documented as an inherent provider limitation, bounded by the audited
-restatement rate.
+The contract layer SHALL provide an audit (`version_collapse_residual`) that,
+across every `report_period` with BOTH an `update_flag=0` and an
+`update_flag=1` row, measures — per charter field — the fraction of
+both-version periods whose values DIFFER (a genuine restatement, INCLUDING an
+NA↔non-NA transition) versus are EQUAL (a version marker only). A governance
+test SHALL enforce, on a deterministic fixture, the audit MECHANISM and the
+serve-rule INVARIANT: a differing both-version period ALWAYS resolves to
+`update_flag=0`, so a non-zero residual is a SIZE, never a look-ahead. Because
+the full universe is not ingested at contract time (a Gate-3 activity), the
+measured residual SHALL be recorded whenever the audit is run over an ingested
+store — sized on the Gate-2 smoke store, and produced over the full
+CSI300-ever universe by the SAME audit once that store is ingested — as the
+documented bound on the one residual the data cannot rule out: a recent
+`update_flag=1`-only period silently correcting a first-announced value the
+provider no longer stores.
 
-#### Scenario: the audit records the differing-version fraction
-- **WHEN** the version-collapse audit runs over the universe
-- **THEN** it reports the fraction of both-version `report_period`s whose
-  `update_flag=0` and `update_flag=1` field values differ, and that figure is
-  recorded as the documented restatement residual
+#### Scenario: the audit reports the differing-version fraction
+- **WHEN** the version-collapse audit runs over a set of both-version
+  `report_period`s
+- **THEN** it reports, per charter field, the fraction whose `update_flag=0`
+  and `update_flag=1` values differ — counting an NA↔non-NA transition as a
+  difference — and that figure is the recorded restatement residual
 
 #### Scenario: a differing both-version period still serves the original
 - **WHEN** a `report_period` has `update_flag=0` ≠ `update_flag=1` (a genuine
   restatement)
 - **THEN** the view serves the `update_flag=0` value (no look-ahead), and the
   occurrence is counted in the audited residual
+
+#### Scenario: the mechanism and invariant are enforced without the full store
+- **WHEN** CI runs without an ingested universe store
+- **THEN** the governance test enforces the audit mechanism and the
+  serve-rule-resolves-to-`update_flag=0` invariant on a deterministic fixture,
+  and the full-universe residual is produced by the same audit at ingest time
+  (it is not silently skipped)

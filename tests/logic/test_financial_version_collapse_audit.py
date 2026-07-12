@@ -54,6 +54,28 @@ def test_audit_records_differing_version_fraction():
     assert res.differing == [("X", _P2, "revenue")]  # the genuine restatement
 
 
+def test_audit_counts_na_transition_as_difference():
+    # a both-version period where a field goes NA -> populated (or vice versa) is
+    # a restatement and MUST be counted as differing, not skipped (codex #345 r4).
+    frame = _frame([
+        {"ts_code": "Y", REPORT_PERIOD: _P1, "update_flag": "0", "revenue": pd.NA},
+        {"ts_code": "Y", REPORT_PERIOD: _P1, "update_flag": "1", "revenue": 100.0},
+    ])
+    res = version_collapse_residual(frame, ["revenue"])
+    assert res.per_field["revenue"] == (1, 1)          # compared 1, differs 1
+    assert res.differing == [("Y", _P1, "revenue")]
+
+
+def test_audit_both_na_is_not_a_comparison():
+    # neither version discloses the field -> not a comparison, not a difference.
+    frame = _frame([
+        {"ts_code": "Z", REPORT_PERIOD: _P1, "update_flag": "0", "revenue": pd.NA},
+        {"ts_code": "Z", REPORT_PERIOD: _P1, "update_flag": "1", "revenue": pd.NA},
+    ])
+    res = version_collapse_residual(frame, ["revenue"])
+    assert res.per_field["revenue"] == (0, 0)
+
+
 def test_serve_rule_resolves_differing_period_to_uf0_no_lookahead():
     picked = select_disclosure_of_record(_current_versions())
     served = {row[REPORT_PERIOD]: row["revenue"] for _, row in picked.iterrows()}
