@@ -253,13 +253,13 @@ def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
     period's first/sole disclosure is ever kept), independent of whether
     ``update_flag=0`` and ``=1`` values coincide across the universe.
     """
-    if frame.empty:
-        return frame.copy()
     for col in ("ts_code", "update_flag", REPORT_PERIOD):
         if col not in frame.columns:
             raise FinancialPITContractError(
                 f"cannot select disclosure-of-record: frame missing {col!r}."
             )
+    if frame.empty:  # schema-valid empty (validated above) -> empty passthrough
+        return frame.copy()
     _assert_resolved(frame, "select_disclosure_of_record")
     _assert_binary_update_flag(frame, "select_disclosure_of_record")
     work = frame.copy()
@@ -307,8 +307,6 @@ def version_collapse_residual(
     audit requirement)."""
     per_field: dict[str, tuple[int, int]] = {f: (0, 0) for f in fields}
     differing: list[tuple[str, object, str]] = []
-    if frame.empty:
-        return VersionCollapseResidual(0, per_field, differing)
     missing = [f for f in fields if f not in frame.columns]
     if missing:
         raise FinancialPITContractError(
@@ -319,6 +317,11 @@ def version_collapse_residual(
             raise FinancialPITContractError(
                 f"version-collapse audit: frame missing {col!r}."
             )
+    if frame.empty:
+        # schema is validated ABOVE, so a SCHEMA-VALID empty frame is a legit
+        # zero residual; a schemaless pd.DataFrame() (a miswired full-universe
+        # audit) already failed loud and never silently records 0% (codex #345 r3).
+        return VersionCollapseResidual(0, per_field, differing)
     _assert_resolved(frame, "version-collapse audit")
     _assert_binary_update_flag(frame, "version-collapse audit")
     n_both = 0

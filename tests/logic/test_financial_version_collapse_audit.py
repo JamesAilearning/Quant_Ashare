@@ -69,10 +69,16 @@ def test_audit_fails_loud_on_absent_field():
         version_collapse_residual(_current_versions(), ["not_a_field"])
 
 
-def test_audit_empty_frame_is_zero_residual():
-    res = version_collapse_residual(_frame([]), ["revenue"])
+def test_audit_schema_valid_empty_frame_is_zero_residual():
+    # a SCHEMA-VALID empty frame (columns present, zero rows) is a legit zero
+    # residual; but a schemaless pd.DataFrame() (a miswired audit) must fail loud
+    # rather than silently report 0% (codex #345 r3).
+    empty = pd.DataFrame(columns=["ts_code", REPORT_PERIOD, "update_flag", "revenue"])
+    res = version_collapse_residual(empty, ["revenue"])
     assert res.n_both_version_periods == 0
     assert res.overall_differing_fraction() == 0.0
+    with pytest.raises(FinancialPITContractError, match="missing field column"):
+        version_collapse_residual(pd.DataFrame(), ["revenue"])
 
 
 def test_fails_loud_on_unresolved_duplicate_batches():
