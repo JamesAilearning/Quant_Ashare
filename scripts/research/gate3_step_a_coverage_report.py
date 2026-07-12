@@ -93,7 +93,11 @@ CANDIDATE_FIELDS: dict[str, tuple[str, ...]] = {
     "C1 GPA": ("revenue", "oper_cost", "total_assets"),
     "C2 PROF": ("revenue", "oper_cost", "sell_exp", "admin_exp", "rd_exp",
                 "fin_exp", "total_hldr_eqy_inc_min_int"),
-    "C3 cash-OP": ("revenue", "oper_cost", "sell_exp", "admin_exp",
+    # rd_exp included: the signed charter's C3 numerator ADDS BACK R&D
+    # (charter §2 C3 "…− 销售管理费用 + 研发…"; Gate-1 memo marks rd_exp as a
+    # C2/C3 field) — omitting it would hide the 2018 rd_exp cliff from the C3
+    # window (codex #347 r3).
+    "C3 cash-OP": ("revenue", "oper_cost", "sell_exp", "admin_exp", "rd_exp",
                    "accounts_receiv", "inventories", "prepayment",
                    "accounts_pay", "adv_receipts", "contract_liab",
                    "n_cashflow_act", "total_assets"),
