@@ -35,7 +35,9 @@
       field-comparisons differ — a tiny real restatement residual (all NA↔non-NA
       transitions; value-vs-value diffs are 0%). The serve-rule resolves every
       differing period to `update_flag=0`, so it introduces NO look-ahead.
-- [ ] Local review loop to convergence before push (`docs/codex/local-review-loop.md`).
+- [x] Local review loop before push (inline self-review, per no-spawn); codex
+      confirmed remotely — 5 real findings fixed (r1–r4), converged with only
+      helper-blind-spot re-reports remaining.
 
 ## Must-not-touch
 
