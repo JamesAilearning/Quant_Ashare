@@ -161,6 +161,31 @@ class GateScannerSelfTests(unittest.TestCase):
             "# import src.factor_mining.gp_engine\nx = 1\n",
             _FM_PKG, module_dotted="src.core.pipeline"))
 
+    def test_forbidden_list_covers_whole_canonical_packages(self) -> None:
+        # codex P2 #348: the forward gate must catch ANY src.core /
+        # src.inference / src.pit module, not just individually listed ones.
+        for module in (
+            "src.core.backtest_runner", "src.core.qlib_runtime",
+            "src.core.walk_forward.engine", "src.inference.daily_recommend",
+            "src.pit.cache", "src.pit.query",
+        ):
+            self.assertTrue(
+                any(_matches_forbidden(module, f)
+                    for f in _CANONICAL_RUNTIME_FORBIDDEN),
+                f"{module} escapes _CANONICAL_RUNTIME_FORBIDDEN",
+            )
+        # ...while the research view's legitimate src.data dependencies stay
+        # importable (a blanket src.data ban would break the view baseline).
+        for module in (
+            "src.data.pit._common", "src.data.pit.financial_pit_contract",
+            "src.data.trading_calendar",
+        ):
+            self.assertFalse(
+                any(_matches_forbidden(module, f)
+                    for f in _CANONICAL_RUNTIME_FORBIDDEN),
+                f"{module} wrongly banned for research code",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
