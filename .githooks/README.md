@@ -21,11 +21,13 @@ After that, the hooks in this directory run on every commit / push exactly as if
 
 ### `pre-commit`
 
-1. **AST syntax check** on every staged `.py` file. Catches the "claimed to move import to top but did not" regression class — the file fails to parse with a `NameError` at runtime even though `pytest` passes on unrelated paths.
+1. **AST syntax check** on every staged `.py` file. Catches the "claimed to move import to top but did not" regression class — the file fails to parse even though `pytest` passes on unrelated paths.
 
-2. **Targeted test run** on any matched `tests/logic/test_<basename>.py` for `src/core/<basename>.py` or `src/data/<basename>.py` files in the commit. Heavy E2E tests (gated by `RUN_E2E=1`) stay off; those require a qlib data bundle and run in CI only.
+2. **Real import smoke** on every staged `src/` module (`src/core/foo.py` → `import src.core.foo`; a package `__init__.py` imports as the package itself). The AST parse alone cannot see an import-time `NameError` from a removed-but-still-referenced symbol, or a circular import — those only surface when the module is actually imported (hardening backlog #5). All changed modules run in ONE interpreter so the heavy-dependency startup cost (pandas, lightgbm) is paid once. Scope is `src/` only: `scripts/` are one-shot probes not designed for bare import, and tests already import under pytest.
 
-If either step fails the commit is rejected. Bypass with `--no-verify` only when the user explicitly asked you to.
+3. **Targeted test run** on any matched `tests/logic/test_<basename>.py` for `src/core/<basename>.py` or `src/data/<basename>.py` files in the commit. Heavy E2E tests (gated by `RUN_E2E=1`) stay off; those require a qlib data bundle and run in CI only.
+
+If any step fails the commit is rejected. Bypass with `--no-verify` only when the user explicitly asked you to.
 
 ## Why a versioned hook + manual activation
 

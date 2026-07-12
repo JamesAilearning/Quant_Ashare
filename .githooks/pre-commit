@@ -4,8 +4,10 @@
 #
 # Catches the failure modes documented in AGENTS.md > Implementation
 # discipline. Specifically:
-#   1. Import-time NameError (a removed-but-still-referenced import)
-#   2. Targeted test failure on a touched src/core or src/data file
+#   1. SyntaxError in any staged .py (AST parse)
+#   2. Import-time NameError / circular import in staged src/ modules
+#      (REAL import — the AST parse alone cannot see these)
+#   3. Targeted test failure on a touched src/core or src/data file
 #
 # Bypass with --no-verify only when explicitly requested by the user.
 
@@ -20,7 +22,9 @@ RESET=$(tput sgr0 2>/dev/null || true)
 # ────────────────────────────────────────────────────────────────────
 # 1. Syntax + import smoke for every staged .py file
 # ────────────────────────────────────────────────────────────────────
-staged_py=$(git diff --cached --name-only --diff-filter=AM | grep '\.py$' || true)
+# A/M/R: renamed files list their NEW path — a renamed module must re-prove
+# it parses and imports under its new name just like an added one.
+staged_py=$(git diff --cached --name-only --diff-filter=AMR | grep '\.py$' || true)
 
 if [ -z "$staged_py" ]; then
     # No Python files changed — nothing to verify
@@ -49,7 +53,46 @@ except SyntaxError as e:
 done
 
 # ────────────────────────────────────────────────────────────────────
-# 2. Targeted test run for any src/core/*.py or src/data/*.py touched
+# 2. REAL import smoke for every staged src/ module
+#
+# The AST parse above only catches SyntaxError. The failure mode
+# AGENTS.md's discipline section documents — a removed-but-still-
+# referenced symbol — is an import-time NameError, and circular
+# imports are ImportError: both only surface when the module is
+# ACTUALLY imported (backlog #5). Scope: src/ modules only (scripts/
+# are one-shot probes not designed for bare import; tests import
+# under pytest). All changed modules run in ONE interpreter so the
+# heavy-dependency startup cost (pandas, lightgbm) is paid once.
+# ────────────────────────────────────────────────────────────────────
+changed_src=$(echo "$staged_py" | grep -E '^src/' || true)
+
+if [ -n "$changed_src" ]; then
+    # path -> import name: src/core/foo.py -> src.core.foo;
+    # a package __init__.py imports as the package itself.
+    modules=$(echo "$changed_src" \
+        | sed -e 's/\.py$//' -e 's|/__init__$||' -e 's|/|.|g' \
+        | sort -u)
+    echo "${YELLOW}pre-commit: import smoke on $(echo "$modules" | wc -l | tr -d ' ') module(s)${RESET}"
+    if ! PYTHONIOENCODING=utf-8 python -c "
+import importlib, sys
+failed = False
+for m in sys.argv[1:]:
+    try:
+        importlib.import_module(m)
+    except Exception as e:
+        print(f'  import {m} FAILED: {type(e).__name__}: {e}')
+        failed = True
+sys.exit(1 if failed else 0)
+" $modules; then
+        echo "${RED}pre-commit: import smoke FAILED${RESET}"
+        echo "${RED}a staged src/ module does not import cleanly (NameError /${RESET}"
+        echo "${RED}circular import / missing dependency) — fix before committing${RESET}"
+        exit 1
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# 3. Targeted test run for any src/core/*.py or src/data/*.py touched
 #
 # The matching test_<basename>.py runs IF it exists. Heavy E2E tests
 # (RUN_E2E=1) stay off — those need a qlib bundle and are CI-only.
