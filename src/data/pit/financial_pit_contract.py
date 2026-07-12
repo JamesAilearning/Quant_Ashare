@@ -22,6 +22,8 @@ Contract fields (spec ``v2-financial-pit-contract``)
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 
 import pandas as pd
@@ -199,3 +201,102 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
     return ordered.drop_duplicates(
         subset=list(LOGICAL_KEY), keep="last",
     ).reset_index(drop=True)
+
+
+def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
+    """Collapse each ``(ts_code, report_period)`` to its DISCLOSURE OF RECORD.
+
+    For each period, keep the ``update_flag=0`` (as-originally-reported) row when
+    the period has one; when the period has NO ``update_flag=0`` row, keep the
+    sole ``update_flag=1`` row — which IS that period's original disclosure of
+    record. The provider does not always retain an ``update_flag=0`` row for the
+    most recent 1–2 years of periods, and DISCARDING a ``update_flag=1``-only
+    period (the old ``update_flag=0`` FILTER did) staled the served value by 1–2
+    years — a correctness bug, not honest PIT (spec ``v2-financial-pit-contract``,
+    阶段8 Gate-2 correction).
+
+    A both-version period ALWAYS resolves to ``update_flag=0`` — a restated value
+    is never served over its original. PIT safety is therefore STRUCTURAL (only a
+    period's first/sole disclosure is ever kept), independent of whether
+    ``update_flag=0`` and ``=1`` values coincide across the universe.
+    """
+    if frame.empty:
+        return frame.copy()
+    for col in ("ts_code", "update_flag", REPORT_PERIOD):
+        if col not in frame.columns:
+            raise FinancialPITContractError(
+                f"cannot select disclosure-of-record: frame missing {col!r}."
+            )
+    work = frame.copy()
+    # prefer update_flag=0 (rank 0) over any revision (rank 1) within a period.
+    work["_uf_rank"] = work["update_flag"].astype(str).map(
+        lambda u: 0 if u == "0" else 1,
+    )
+    ordered = work.sort_values(["ts_code", REPORT_PERIOD, "_uf_rank"])
+    picked = ordered.drop_duplicates(
+        subset=["ts_code", REPORT_PERIOD], keep="first",
+    )
+    return picked.drop(columns=["_uf_rank"]).reset_index(drop=True)
+
+
+@dataclass(frozen=True)
+class VersionCollapseResidual:
+    """The audited restatement residual of the version-collapse honesty envelope.
+
+    ``per_field`` maps a charter field -> ``(n_compared, n_differ)`` over the
+    both-version periods where both rows have a non-NA value; ``differing`` lists
+    the ``(ts_code, report_period, field)`` genuine restatements."""
+
+    n_both_version_periods: int
+    per_field: dict[str, tuple[int, int]]
+    differing: list[tuple[str, object, str]]
+
+    def overall_differing_fraction(self) -> float:
+        tot = sum(compared for compared, _ in self.per_field.values())
+        dif = sum(differ for _, differ in self.per_field.values())
+        return (dif / tot) if tot else 0.0
+
+
+def version_collapse_residual(
+    frame: pd.DataFrame, fields: Sequence[str],
+) -> VersionCollapseResidual:
+    """Audit the version-collapse residual: across every ``(ts_code,
+    report_period)`` that has BOTH an ``update_flag=0`` and an ``update_flag=1``
+    row, measure the fraction whose value DIFFERS (a genuine restatement) versus
+    is EQUAL (a version marker only), per charter ``field``.
+
+    This SIZES the restatement residual for the honesty envelope; it is NOT a
+    safety precondition — :func:`select_disclosure_of_record` always resolves a
+    differing both-version period to ``update_flag=0``, so a non-zero residual
+    introduces NO look-ahead (spec ``v2-financial-pit-contract`` version-collapse
+    audit requirement)."""
+    per_field: dict[str, tuple[int, int]] = {f: (0, 0) for f in fields}
+    differing: list[tuple[str, object, str]] = []
+    if frame.empty:
+        return VersionCollapseResidual(0, per_field, differing)
+    missing = [f for f in fields if f not in frame.columns]
+    if missing:
+        raise FinancialPITContractError(
+            f"version-collapse audit: frame missing field column(s) {missing}."
+        )
+    for col in ("ts_code", "update_flag", REPORT_PERIOD):
+        if col not in frame.columns:
+            raise FinancialPITContractError(
+                f"version-collapse audit: frame missing {col!r}."
+            )
+    n_both = 0
+    for (ts, rp), grp in frame.groupby(["ts_code", REPORT_PERIOD], dropna=False):
+        rows = {str(r["update_flag"]): r for _, r in grp.iterrows()}
+        if "0" not in rows or "1" not in rows:
+            continue
+        n_both += 1
+        r0, r1 = rows["0"], rows["1"]
+        for f in fields:
+            v0, v1 = r0[f], r1[f]
+            if pd.notna(v0) and pd.notna(v1):
+                compared, differ = per_field[f]
+                is_diff = bool(v0 != v1)
+                per_field[f] = (compared + 1, differ + (1 if is_diff else 0))
+                if is_diff:
+                    differing.append((str(ts), rp, f))
+    return VersionCollapseResidual(n_both, per_field, differing)

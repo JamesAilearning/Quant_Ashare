@@ -15,8 +15,12 @@ Contract (spec ``v2-financial-pit-contract``)
 * **As-of carry-forward, not imputation** — for a query trade date, each
   instrument gets the value of its latest ALREADY-ANNOUNCED statement (held
   forward until a newer one is announced), NA where none has been announced.
-* **Original-disclosure-first** — the ``update_flag=0`` value keyed to its
-  announcement; undatable restatements are never back-applied (PR-1 contract).
+* **Disclosure-of-record, original-first** — per report_period the
+  ``update_flag=0`` value, or the sole ``update_flag=1`` when the provider kept
+  no original (阶段8 Gate-2 correction: a uf1-only recent period is genuine
+  data, not to be dropped); a both-version period ALWAYS resolves to
+  ``update_flag=0`` so a restatement never overrides its original; undatable
+  restatements are never back-applied (PR-1 contract).
 * **Availability** keys on ``available_from_trade_date`` (first trading day
   strictly after the announcement) — a filing is invisible before it.
 * **Missing stays missing** — NA, never 0 / cross-sectional median / latest /
@@ -27,6 +31,12 @@ Contract (spec ``v2-financial-pit-contract``)
 * Exposes the charter input columns raw, incl. BOTH ``adv_receipts`` AND
   ``contract_liab`` (the 2020 预收→合同负债 reclassification is documented; the
   coalesce is Gate-3 factor logic).
+* **Known PIT limitation** — the provider assigns NO independent date to a
+  restatement, and for recent periods retains only ``update_flag=1``. The one
+  residual the data cannot rule out is a recent uf1-only period that silently
+  corrects a first-announced value the provider no longer stores; it is bounded
+  by the version-collapse audit's measured restatement rate (Gate-1 memo §3;
+  ``financial_pit_contract.version_collapse_residual``).
 """
 from __future__ import annotations
 
@@ -45,6 +55,7 @@ from src.data.pit.financial_pit_contract import (
     REPORT_PERIOD,
     build_contract_frame,
     resolve_current_versions,
+    select_disclosure_of_record,
 )
 from src.data.trading_calendar import StaticTradingCalendar
 from src.data.tushare.financial_statements import DATA_FIELDS
@@ -167,8 +178,8 @@ class FinancialPITDataView:
         ``instruments`` may be qlib-style (``SH600000``) or Tushare ts_code
         (``600000.SH``); both normalize to ts_code (the store key). Returns a
         DataFrame indexed by ts_code (financial issuers EXCLUDED), one column
-        per requested charter field, each cell the value of that instrument's
-        latest already-announced original statement, or NA.
+        per requested charter field, each cell the disclosure-of-record value of
+        that instrument's latest already-available report period, or NA.
         """
         _require_collection(fields, "fields")
         _require_collection(instruments, "instruments")
@@ -263,22 +274,24 @@ class FinancialPITDataView:
     def _latest_as_of(
         self, ts_code: str, endpoint: str, td: date, fields: Sequence[str],
     ) -> pd.Series | None:
-        """The instrument's latest ALREADY-ANNOUNCED original statement as-of
-        ``td`` (as-of carry-forward), or None if the instrument has no store
-        file or nothing is available yet.
+        """The disclosure of record for the LATEST report_period already
+        AVAILABLE as-of ``td``, or None if the instrument has no store file or
+        nothing is available yet. Serves the latest already-announced period and
+        holds it forward — but NEVER a stale carry-forward from an older period
+        when a newer one is already announced (阶段8 Gate-2 correction).
 
         A store frame that EXISTS but lacks a requested charter column is a
         schema/store corruption (an old or bad ingest) — fail loud rather than
         serve it as ordinary per-row NA (codex #342 P2). A per-row NA (column
         present, value absent) is still legitimate missingness."""
-        original = self._original_frame(ts_code, endpoint)
-        if original is None:
+        disclosure = self._disclosure_frame(ts_code, endpoint)
+        if disclosure is None:
             return None
         # Column corruption is checked BEFORE the empty-frame return (codex #342
-        # r6): a store with zero update_flag=0 rows (only revisions / a corrupt
+        # r6): a store with no disclosure-of-record rows (an empty / corrupt
         # parquet) that is ALSO missing a charter column must fail loud, not be
         # silently treated as "no data available yet".
-        missing_cols = [f for f in fields if f not in original.columns]
+        missing_cols = [f for f in fields if f not in disclosure.columns]
         if missing_cols:
             raise FinancialPITViewError(
                 f"{ts_code}/{endpoint}: store frame is missing charter column(s) "
@@ -286,40 +299,46 @@ class FinancialPITDataView:
                 "refusing to serve. Re-ingest this endpoint (the PR-1 ingest "
                 "keeps every charter column)."
             )
-        if original.empty:
-            return None  # file exists with correct columns but no originals -> NA
-        avail = original[
-            original[AVAILABLE_FROM].map(
+        if disclosure.empty:
+            return None  # file exists with correct columns but no rows -> NA
+        avail = disclosure[
+            disclosure[AVAILABLE_FROM].map(
                 lambda d: d is not None and d <= td,
             )
         ]
         if avail.empty:
             return None
-        # carry-forward = the most recently announced period (NOT a fill).
+        # the LATEST already-available report period (its disclosure of record),
+        # held forward — not a fill, not a stale fall-back to an older period.
         return avail.sort_values(REPORT_PERIOD).iloc[-1]
 
     def _ever_reports(self, ts_code: str, endpoint: str, field: str) -> bool | None:
         """True/False whether the instrument ever discloses ``field`` (any
-        original row non-NA); None when the instrument has no store file.
+        disclosure-of-record row non-NA); None when the instrument has no store
+        file.
 
         A store frame that EXISTS but lacks the ``field`` column is a schema/store
         corruption — fail loud rather than report ``False`` ("never reports"),
         which would silently mis-drive the exclusion cross-check (codex #342 r5)."""
-        original = self._original_frame(ts_code, endpoint)
-        if original is None:
+        disclosure = self._disclosure_frame(ts_code, endpoint)
+        if disclosure is None:
             return None
-        if field not in original.columns:
+        if field not in disclosure.columns:
             raise FinancialPITViewError(
                 f"{ts_code}/{endpoint}: store frame is missing charter column "
                 f"{field!r} — a schema/store corruption; cannot run the exclusion "
                 "cross-check. Re-ingest this endpoint (the PR-1 ingest keeps "
                 "every charter column)."
             )
-        return bool(original[field].notna().any())
+        return bool(disclosure[field].notna().any())
 
-    def _original_frame(self, ts_code: str, endpoint: str) -> pd.DataFrame | None:
-        """Cached current-version ``update_flag=0`` contract frame for an
-        instrument/endpoint. None when the instrument has no store file."""
+    def _disclosure_frame(self, ts_code: str, endpoint: str) -> pd.DataFrame | None:
+        """Cached DISCLOSURE-OF-RECORD contract frame for an instrument/endpoint
+        (per report_period: the ``update_flag=0`` row, or the sole
+        ``update_flag=1`` row when the provider retained no original — 阶段8
+        Gate-2 correction; the old ``update_flag=0`` FILTER dropped uf1-only
+        recent periods and staled the served value 1–2 years). None when the
+        instrument has no store file."""
         key = (ts_code, endpoint)
         if key in self._cache:
             return self._cache[key]
@@ -331,7 +350,7 @@ class FinancialPITDataView:
             raw = pd.read_parquet(path)
             contract = build_contract_frame(raw, self._calendar)
             current = resolve_current_versions(contract)
-            frame = current[current["update_flag"].astype(str) == "0"].copy()
+            frame = select_disclosure_of_record(current)
         self._cache[key] = frame
         return frame
 
