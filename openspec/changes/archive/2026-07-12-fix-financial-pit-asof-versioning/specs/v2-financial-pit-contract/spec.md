@@ -58,9 +58,11 @@ and never a restatement over its original — and therefore does not depend on
 
 The contract layer SHALL provide an audit (`version_collapse_residual`) that,
 across every `report_period` with BOTH an `update_flag=0` and an
-`update_flag=1` row, measures — per charter field — the fraction of
-both-version periods whose values DIFFER (a genuine restatement, INCLUDING an
-NA↔non-NA transition) versus are EQUAL (a version marker only). A governance
+`update_flag=1` row, measures — per charter field, over the both-version
+periods where AT LEAST ONE version discloses the field (a both-NA period is
+NOT a comparison, matching the audit) — the fraction whose values DIFFER (a
+genuine restatement, INCLUDING an NA↔non-NA transition) versus are EQUAL (a
+version marker only). A governance
 test SHALL enforce, on a deterministic fixture, the audit MECHANISM and the
 serve-rule INVARIANT: a differing both-version period ALWAYS resolves to
 `update_flag=0`, so a non-zero residual is a SIZE, never a look-ahead. Because
@@ -77,7 +79,8 @@ provider no longer stores.
   `report_period`s
 - **THEN** it reports, per charter field, the fraction whose `update_flag=0`
   and `update_flag=1` values differ — counting an NA↔non-NA transition as a
-  difference — and that figure is the recorded restatement residual
+  difference, and NOT counting a both-NA period (it is no comparison) — and
+  that figure is the recorded restatement residual
 
 #### Scenario: a differing both-version period still serves the original
 - **WHEN** a `report_period` has `update_flag=0` ≠ `update_flag=1` (a genuine
