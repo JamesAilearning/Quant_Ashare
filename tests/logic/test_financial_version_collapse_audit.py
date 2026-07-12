@@ -73,3 +73,18 @@ def test_audit_empty_frame_is_zero_residual():
     res = version_collapse_residual(_frame([]), ["revenue"])
     assert res.n_both_version_periods == 0
     assert res.overall_differing_fraction() == 0.0
+
+
+def test_fails_loud_on_unresolved_duplicate_batches():
+    # an append-only frame with TWO physical rows for the SAME logical version
+    # (ts_code, report_period, update_flag) — a changed re-fetch — must go through
+    # resolve_current_versions first; the collapse / audit refuse rather than
+    # treat a superseded batch as current (codex #345 P2).
+    dup = _frame([
+        {"ts_code": "X", REPORT_PERIOD: _P1, "update_flag": "0", "revenue": 100.0},
+        {"ts_code": "X", REPORT_PERIOD: _P1, "update_flag": "0", "revenue": 111.0},
+    ])
+    with pytest.raises(FinancialPITContractError, match="duplicate logical versions"):
+        version_collapse_residual(dup, ["revenue"])
+    with pytest.raises(FinancialPITContractError, match="duplicate logical versions"):
+        select_disclosure_of_record(dup)

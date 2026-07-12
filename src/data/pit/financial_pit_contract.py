@@ -203,6 +203,21 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def _assert_resolved(frame: pd.DataFrame, where: str) -> None:
+    """Fail loud if ``frame`` still has MULTIPLE physical rows per logical version
+    ``(ts_code, report_period, update_flag)`` — it was not passed through
+    :func:`resolve_current_versions`, so the append-only store's superseded
+    batches would be treated as current and skew the collapse / residual audit
+    (codex #345 P2). Callers must resolve current versions first."""
+    key = ["ts_code", REPORT_PERIOD, "update_flag"]
+    if frame.duplicated(subset=key).any():
+        raise FinancialPITContractError(
+            f"{where}: frame has duplicate logical versions {key} — "
+            "resolve_current_versions() must run first so superseded append-only "
+            "batches are not treated as current."
+        )
+
+
 def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse each ``(ts_code, report_period)`` to its DISCLOSURE OF RECORD.
 
@@ -227,6 +242,7 @@ def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
             raise FinancialPITContractError(
                 f"cannot select disclosure-of-record: frame missing {col!r}."
             )
+    _assert_resolved(frame, "select_disclosure_of_record")
     work = frame.copy()
     # prefer update_flag=0 (rank 0) over any revision (rank 1) within a period.
     work["_uf_rank"] = work["update_flag"].astype(str).map(
@@ -284,6 +300,7 @@ def version_collapse_residual(
             raise FinancialPITContractError(
                 f"version-collapse audit: frame missing {col!r}."
             )
+    _assert_resolved(frame, "version-collapse audit")
     n_both = 0
     for (ts, rp), grp in frame.groupby(["ts_code", REPORT_PERIOD], dropna=False):
         rows = {str(r["update_flag"]): r for _, r in grp.iterrows()}
