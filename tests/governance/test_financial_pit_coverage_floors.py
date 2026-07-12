@@ -19,6 +19,7 @@ import unittest
 
 from src.data.tushare.financial_statements import DATA_FIELDS
 from src.research.financial_pit_coverage_floors import (
+    ADV_CONTRACT_COALESCE_FLOOR,
     COVERAGE_FLOORS,
     FLOOR_PROVENANCE,
 )
@@ -81,6 +82,17 @@ class CoverageFloorContractTests(unittest.TestCase):
     def test_provenance_recorded(self) -> None:
         self.assertIn("gate3_step_a_pit_coverage_report", FLOOR_PROVENANCE)
         self.assertIn("- 0.02", FLOOR_PROVENANCE)
+
+    def test_coalesce_floor_guards_the_c3_consumable_union(self) -> None:
+        # the C3-consumable quantity is adv_receipts∪contract_liab; its floor
+        # must exist as a sane fraction AND sit ABOVE both component tripwires
+        # (a collapsed union with healthy components must fail, codex #347).
+        self.assertTrue(0.0 < ADV_CONTRACT_COALESCE_FLOOR < 1.0)
+        if COVERAGE_FLOORS:
+            self.assertGreater(
+                ADV_CONTRACT_COALESCE_FLOOR, COVERAGE_FLOORS["adv_receipts"])
+            self.assertGreater(
+                ADV_CONTRACT_COALESCE_FLOOR, COVERAGE_FLOORS["contract_liab"])
 
 
 if __name__ == "__main__":

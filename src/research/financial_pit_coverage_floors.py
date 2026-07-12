@@ -28,11 +28,11 @@ from typing import Final
 # Values = round(min over 2019-2025 of yearly mean as-of coverage, 2) - 0.02,
 # from the Step-A report tables. adv_receipts / contract_liab floors are LOW by
 # regime (the 2020 预收→合同负债 reclassification splits disclosure between
-# them); the candidate-consumable quantity is their COALESCE (~98-99% every
-# year, table §1) — these two floors are corruption tripwires, and the coalesce
-# is guarded where it is computed (the Gate-3 evaluator). int_exp is floored at
-# its (known-sparse) observed minimum for completeness; the charter fixed the
-# C2 interest term to fin_exp.
+# them); the candidate-consumable quantity is their COALESCE, floored
+# separately below (codex #347: component tripwires alone would let a
+# collapsed union print PASS). int_exp is floored at its (known-sparse)
+# observed minimum for completeness; the charter fixed the C2 interest term to
+# fin_exp.
 COVERAGE_FLOORS: Final[dict[str, float]] = {
     "revenue": 0.95,
     "total_revenue": 0.95,
@@ -53,6 +53,13 @@ COVERAGE_FLOORS: Final[dict[str, float]] = {
     "contract_liab": 0.21,
     "n_cashflow_act": 0.97,
 }
+
+# The C3-consumable adv_receipts∪contract_liab COALESCE floor (same rule:
+# min 2019-2025 yearly mean 98.4% -> 0.98 - 0.02). Guarded explicitly because
+# the component floors are regime-level tripwires only: a future ingest that
+# collapses the union while both components stay above their (low) floors
+# would otherwise pass unnoticed (codex #347).
+ADV_CONTRACT_COALESCE_FLOOR: Final[float] = 0.96
 
 # Provenance of the measured floors (report path + measurement rule).
 FLOOR_PROVENANCE: Final[str] = (

@@ -57,6 +57,7 @@ from src.data.trading_calendar import (  # noqa: E402
 from src.data.tushare.client import TushareClient  # noqa: E402
 from src.data.tushare.financial_statements import DATA_FIELDS  # noqa: E402
 from src.research.financial_pit_coverage_floors import (  # noqa: E402
+    ADV_CONTRACT_COALESCE_FLOOR,
     COVERAGE_FLOORS,
     FLOOR_PROVENANCE,
 )
@@ -349,6 +350,13 @@ def build_report(args: argparse.Namespace) -> str:
                 got = cov_exfin[field][y]
                 if got < floor:
                     violations.setdefault(field, []).append((y, got, floor))
+        # the C3-consumable coalesce is floored SEPARATELY: its component
+        # floors are regime tripwires only, so a collapsed union with healthy
+        # components must still fail loud (codex #347).
+        for y in floor_years:
+            if coal_exfin[y] < ADV_CONTRACT_COALESCE_FLOOR:
+                violations.setdefault("adv∪contract (coalesce)", []).append(
+                    (y, coal_exfin[y], ADV_CONTRACT_COALESCE_FLOOR))
         if violations:
             raise ReportError(
                 "coverage below the canonical floor in the measured window "
@@ -356,9 +364,17 @@ def build_report(args: argparse.Namespace) -> str:
                 "historical regression must be investigated, never tolerated.")
         view_exfin.assert_coverage_floor(
             dict(COVERAGE_FLOORS), members_by_date[last_snap], last_snap)
+        snap_coalesce = coalesce_coverage(
+            view_exfin, members_by_date[last_snap], last_snap)
+        if snap_coalesce < ADV_CONTRACT_COALESCE_FLOOR:
+            raise ReportError(
+                f"adv∪contract coalesce {snap_coalesce:.4f} below its floor "
+                f"{ADV_CONTRACT_COALESCE_FLOOR} on the {last_snap} snapshot.")
         floor_note = (f"PASS — enforced on EVERY {floor_years[0]}-"
                       f"{floor_years[-1]} yearly mean AND the {last_snap} "
-                      f"ex-financial member snapshot ({FLOOR_PROVENANCE})")
+                      f"ex-financial member snapshot, incl. the adv∪contract "
+                      f"coalesce floor {ADV_CONTRACT_COALESCE_FLOOR} "
+                      f"({FLOOR_PROVENANCE})")
     else:
         floor_note = ("NOT ENFORCED — COVERAGE_FLOORS is empty (fill it from "
                       "this report's measured minima, then re-run)")
