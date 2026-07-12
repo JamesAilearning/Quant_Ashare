@@ -142,19 +142,34 @@ def fetch_financial_issuers(client: TushareClient) -> tuple[frozenset[str], str]
     """Derive the financial-sector exclusion set from a live stock_basic
     snapshot (the sanctioned rule). Delisted names (list_status=D) are fetched
     too — the CSI300-ever universe contains them. Fail loud on empty/missing."""
+    # L (listed) and D (delisted) are NEVER legitimately empty on the A-share
+    # market (thousands each) — an empty response is a transient/partial fetch
+    # and silently omitting it would shrink the financial exclusion (delisted
+    # banks would slip into the research universe unnoticed, codex #347 r4).
+    # P (暂停上市) IS legitimately empty today (the status was effectively
+    # abolished by the 2020 delisting reform — verified live) — allowed, but
+    # RECORDED in the provenance note, never silently dropped.
+    required = {"L", "D"}
     parts: list[pd.DataFrame] = []
+    empty_optional: list[str] = []
     for status in ("L", "D", "P"):
         frame = client.call(
             "stock_basic",
             fields="ts_code,name,industry,list_status",
             list_status=status,
         )
-        if frame is not None and not frame.empty:
-            parts.append(frame)
-    if not parts:
-        raise ReportError("stock_basic fetch empty for L/D/P — cannot derive "
-                          "the financial exclusion; refusing a no-exclusion report.")
+        if frame is None or frame.empty:
+            if status in required:
+                raise ReportError(
+                    f"stock_basic(list_status={status!r}) returned empty — "
+                    "never legitimately empty; a partial fetch would silently "
+                    "shrink the financial exclusion; refusing to continue.")
+            empty_optional.append(status)
+            continue
+        parts.append(frame)
     basic = pd.concat(parts, ignore_index=True)
+    empty_note = (f"; {'+'.join(empty_optional)} empty (recorded)"
+                  if empty_optional else "")
     if "industry" not in basic.columns:
         raise ReportError("stock_basic response lacks 'industry' — cannot "
                           "derive the financial exclusion.")
@@ -162,7 +177,7 @@ def fetch_financial_issuers(client: TushareClient) -> tuple[frozenset[str], str]
     if not issuers:
         raise ReportError("financial exclusion derived EMPTY from stock_basic — "
                           "implausible (banks/brokers/insurers exist); aborting.")
-    return issuers, f"stock_basic rows={len(basic)} (L+D+P)"
+    return issuers, f"stock_basic rows={len(basic)} (L+D+P{empty_note})"
 
 
 def coalesce_coverage(view: FinancialPITDataView, insts: Sequence[str],

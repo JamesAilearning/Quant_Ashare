@@ -1,7 +1,7 @@
 # Gate-3 Step-A · canonical as-of 覆盖率报告(全量 CSI300-ever 财报 PIT store)
 
 > 生成: `scripts/research/gate3_step_a_coverage_report.py`(fail-loud,可复现)。
-> Store: `D:\qlib_data\financial_pit_raw`;universe: CSI300-ever n=627;金融排除 n=120(stock_basic rows=5865 (L+D+P))。
+> Store: `D:\qlib_data\financial_pit_raw`;universe: CSI300-ever n=627;金融排除 n=120(stock_basic rows=5865 (L+D+P; P empty (recorded)))。
 > 口径: **view 实际服务值**(修正后 disclosure-of-record serve-rule 的 as-of 横截面),每年 4 个季度末快照取均值 —— 不是 ingest 行级非空率。
 > Coverage-floor 检查: PASS — enforced on EVERY 2019-2025 yearly mean AND the 2025-12-31 ex-financial member snapshot, incl. the adv∪contract coalesce floor 0.96 (docs/research/gate3_step_a_pit_coverage_report.md — floor = min(yearly mean as-of coverage, 2019-2025) - 0.02, ex-financial CSI300 members, quarterly snapshots, disclosure-of-record serve-rule)。
 
