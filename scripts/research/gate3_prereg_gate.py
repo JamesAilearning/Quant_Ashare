@@ -94,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
                        "(freeze commit required before any run).")
     freeze_ts: datetime | None = None
     for rel in FROZEN_ARTIFACTS:
+        if not (repo / rel).is_file():
+            # a DELETED artifact still has git history (the deletion commit),
+            # so the timestamp alone would treat it as frozen (codex #352 r2)
+            # — the whole package must EXIST at the gated checkout.
+            return _refuse(f"frozen artifact missing from checkout: {rel}")
         ts_raw = _git(repo, "log", "-1", "--format=%cI", "--", rel)
         if not ts_raw:
             return _refuse(f"frozen artifact not committed: {rel}")

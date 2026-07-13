@@ -86,6 +86,15 @@ def main(argv: list[str] | None = None) -> int:
             for m in mismatches[:20]:
                 print(" ", m)
             return 1
+        recorded_agg = recorded.get("aggregate_sha256")
+        if recorded_agg != agg:
+            # identical per-file hashes but a stale/corrupted aggregate would
+            # otherwise be echoed as the run's data-version identity
+            # (codex #352 r2) — the recorded aggregate must equal the
+            # recomputed one.
+            print("MANIFEST MISMATCH — REFUSE:")
+            print(f"  aggregate_sha256: recorded={recorded_agg} actual={agg}")
+            return 1
         print(f"MANIFEST OK: {len(files)} files, aggregate={agg[:16]}...")
         return 0
 
