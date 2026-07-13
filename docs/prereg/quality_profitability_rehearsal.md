@@ -59,4 +59,6 @@
 - gate 加固复跑(codex #352 r1: 移除 manifest override / freeze 覆盖全部 8 冻结件 /
   ACCEPT 回显 aggregate): commit b7b790a 后复跑 **6/6 PASS**(R1 回显
   manifest_aggregate_sha256=4560e853…;R4 消息升级为 frozen package 时间)。
+- gate 加固 v2 复跑(codex #352 r2: verify 校验 aggregate 本体 / 冻结件须在
+  checkout 真实存在): commit 6b5283e 后复跑 **6/6 PASS**。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
