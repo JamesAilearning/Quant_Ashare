@@ -259,8 +259,36 @@ class FinancialStatementIngestor:
                 "refusing to store (would corrupt revision semantics)."
             )
 
+        # The announcement-date KEY columns must be canonical strings before
+        # hashing/keying (codex #351 r3): a re-fetch spelling the SAME
+        # announcement differently (None vs '<NA>' vs 'nan', or a float-coerced
+        # '20220331.0' vs '20220331') would otherwise mint a DIFFERENT logical
+        # key — the same disclosure would duplicate across batches. Blank
+        # spellings normalize to pd.NA (announcement dates MAY legitimately be
+        # missing); an exact '.0' float coercion strips to the digits; any
+        # other shape passes through untouched — the CONTRACT layer fail-louds
+        # on malformed dates, ingest must not pre-judge them.
+        def _canon_date_token(value: Any) -> Any:
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return pd.NA
+            try:
+                if bool(pd.isna(value)):
+                    return pd.NA
+            except (TypeError, ValueError):
+                pass
+            token = str(value).strip()
+            if not token or token in _BLANKS:
+                return pd.NA
+            if "." in token:
+                int_part, _, frac = token.partition(".")
+                if int_part.isdigit() and frac.strip("0") == "":
+                    return int_part
+            return token
+
         fetched = fetched.copy()
         fetched["update_flag"] = fetched["update_flag"].map(_canon_flag)
+        fetched["f_ann_date"] = fetched["f_ann_date"].map(_canon_date_token)
+        fetched["ann_date"] = fetched["ann_date"].map(_canon_date_token)
         fetched[COL_CONTENT_HASH] = fetched.apply(
             lambda r: content_hash(r, data_fields), axis=1,
         )

@@ -237,6 +237,37 @@ def test_fallback_dated_pair_distinct_ann_dates_both_stored(tmp_path) -> None:
     assert len(stored) == 2
 
 
+def test_float_coerced_announcement_date_is_same_disclosure(tmp_path) -> None:
+    # a re-fetch spelling the SAME announcement as a float-coerced '20220331.0'
+    # (dtype drift) must be the SAME logical key + content — idempotent, not a
+    # duplicated disclosure (codex #351 r3).
+    b1 = pd.DataFrame([_income_row("20211231", "0", 100.0)])       # "20220331"
+    r2 = _income_row("20211231", "0", 100.0)
+    r2["f_ann_date"] = "20220331.0"
+    r2["ann_date"] = "20220331.0"
+    ing = FinancialStatementIngestor(_FakeClient([b1, pd.DataFrame([r2])]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    res2 = ing.ingest("income", "000001.SZ", fetch_batch="b2")
+    assert res2.rows_new == 0 and res2.rows_unchanged == 1
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 1                       # no phantom second disclosure
+
+
+def test_na_spelling_variants_share_one_key(tmp_path) -> None:
+    # 'None'/'nan'/'<NA>' spellings of a missing announcement date normalize to
+    # ONE NA key — a double-content pair under different NA spellings is still
+    # ambiguous (refused), not two "distinct" disclosures (codex #351 r3).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 200.0)
+    r1["f_ann_date"] = None
+    r2["f_ann_date"] = "nan"
+    r1["ann_date"] = None
+    r2["ann_date"] = "<NA>"
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
 def test_blank_f_ann_date_rows_still_ingest(tmp_path) -> None:
     # f_ann_date is part of the IDENTITY but NOT of the non-blank key columns:
     # a missing announcement date is legitimate (contract layer marks the row
