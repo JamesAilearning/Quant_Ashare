@@ -10,14 +10,14 @@
 
 ## 演练矩阵(六场景,每场景一行结果)
 
-| # | 场景 | 做法 | 期望 | 结果(冻结时填) |
+| # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
-| R1 | 正常接受 | clean checkout + 已冻结 plan + manifest 一致 + 合法候选 C1,干跑 gate 检查 | ACCEPT | <TO_RUN> |
-| R2 | 未注册候选被 flag | 伪造候选 id `C4_ROE` 请求评估 | REJECT: not in registered_candidates | <TO_RUN> |
-| R3 | dirty checkout 被拒 | 工作树留一个未提交改动再跑 | REJECT: dirty checkout | <TO_RUN> |
-| R4 | 计划晚于 run 被拒 | 用早于 plan-commit 时间戳的 run 元数据 | REJECT: plan committed after run | <TO_RUN> |
-| R5 | manifest 不一致被拒 | 篡改 store 任一 parquet 后对照 manifest | REJECT: content-hash mismatch | <TO_RUN> |
-| R6 | PIT 案例失败被拒 | 注入一个公告日前可见的伪造行,跑 PIT 案例断言 | REJECT: PIT case failed | <TO_RUN> |
+| R1 | 正常接受 | clean checkout + 已冻结 plan + manifest 一致 + 合法候选 C1,干跑 gate 检查 | ACCEPT | **PASS**(GATE ACCEPT,回显 plan_commit+manifest) |
+| R2 | 未注册候选被 flag | 伪造候选 id `C4_ROE` 请求评估 | REJECT: not in registered_candidates | **PASS**(REFUSE) |
+| R3 | dirty checkout 被拒 | 工作树注入临时 untracked 文件再跑 | REJECT: dirty checkout | **PASS**(REFUSE) |
+| R4 | 计划晚于 run 被拒 | 用早于 plan-commit 时间戳的 run 元数据 | REJECT: plan committed after run | **PASS**(REFUSE) |
+| R5 | manifest 不一致被拒 | 篡改临时 manifest 副本单文件 hash 对照真 store | REJECT: content-hash mismatch | **PASS**(REFUSE) |
+| R6 | PIT 案例失败被拒 | 注入前视探针(断言公告前可见,正确 view 使其失败) | REJECT: PIT case failed | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -48,10 +48,12 @@
   (机制已有: tests/logic/test_financial_pit_view.py 的 availability 断言 +
   tests/governance 隔离门;演练 = 在 gate 流程里真跑一遍这组断言。)
 
-## 执行记录(冻结时填)
+## 执行记录
 
-- 执行人: <操作人>
-- 执行时间: <UTC>
-- 冻结 commit: <hash>
-- manifest hash: <hash>
-- 六场景结果: <全 PASS 才可冻结;任何 FAIL 先修门>
+- 执行: Claude Code(操作人授权冻结序列,holdout(a) 已签)
+- 执行时间: 2026-07-13 ~15:00 UTC
+- 冻结 commit: f767dcd(prereg/gate3-freeze-quality-profitability 分支;ledger E010)
+- manifest aggregate: 4560e8536524e4a0…(1880 文件)
+- 驱动: `scripts/research/rehearse_gate3_prereg_gate.py --store-dir D:/qlib_data/financial_pit_raw`
+- 六场景结果: **6/6 PASS**(gate 无洞;R1 ACCEPT 回显 plan_commit,R2-R6 全部正确 REFUSE)
+- 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
