@@ -179,14 +179,43 @@ def test_float_coerced_update_flag_normalized(tmp_path) -> None:
 
 
 def test_ambiguous_duplicate_logical_key_fails_loud(tmp_path) -> None:
-    # two rows with the SAME (ts_code, end_date, update_flag) but different
-    # content (as a report_type/comp_type variant collision would produce) must
-    # fail loud, not collapse arbitrarily / break idempotence (codex #340 r8 P2).
+    # two rows with the SAME full versioned identity (ts_code, end_date,
+    # update_flag, f_ann_date) but different content (a report_type/comp_type
+    # variant collision) must fail loud, not collapse arbitrarily / break
+    # idempotence (codex #340 r8 P2).
     r1 = _income_row("20211231", "0", 100.0)
-    r2 = _income_row("20211231", "0", 200.0)  # same logical key, different revenue
+    r2 = _income_row("20211231", "0", 200.0)  # same identity, different revenue
     ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
     with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_same_triple_different_f_ann_date_both_stored(tmp_path) -> None:
+    # the provider emits, for a few (ts_code, end_date, update_flag) triples,
+    # TWO disclosures distinguishable only by f_ann_date (e.g. 五粮液 income
+    # 20250630/uf1). Each is a distinct dated disclosure event — BOTH stored,
+    # no hole (spec fix-financial-ingest-ambiguous-duplicates; this exact
+    # pattern holed 27 instrument/endpoints in the Step-A full ingest).
+    r1 = _income_row("20250630", "1", 527.7)
+    r2 = _income_row("20250630", "1", 235.1)
+    r2["f_ann_date"] = "20260430"  # late re-announcement, own date
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 2
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 2
+    assert set(stored["revenue"]) == {527.7, 235.1}
+
+
+def test_blank_f_ann_date_rows_still_ingest(tmp_path) -> None:
+    # f_ann_date is part of the IDENTITY but NOT of the non-blank key columns:
+    # a missing announcement date is legitimate (contract layer marks the row
+    # unavailable) — the row must still store, not be refused.
+    row = _income_row("20211231", "0", 100.0)
+    row["f_ann_date"] = None
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 1
 
 
 def test_provider_none_fails_loud(tmp_path) -> None:

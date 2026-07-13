@@ -73,7 +73,18 @@ PROVENANCE_COLS: tuple[str, ...] = (
 )
 
 # The logical current key: latest batch per this tuple wins at read time.
-LOGICAL_KEY: tuple[str, ...] = ("ts_code", "end_date", "update_flag")
+# ``f_ann_date`` is part of the versioned identity (spec
+# fix-financial-ingest-ambiguous-duplicates): the provider emits, for a few
+# (ts_code, end_date, update_flag) triples, TWO disclosures whose content
+# differs and that ONLY the announcement date distinguishes — each is a
+# distinct, dated disclosure event and both are preserved.
+LOGICAL_KEY: tuple[str, ...] = ("ts_code", "end_date", "update_flag", "f_ann_date")
+
+# The key columns that must be NON-BLANK on every row. ``f_ann_date`` is
+# deliberately NOT here — a missing announcement date is legitimate (the
+# contract layer marks such rows unavailable); blank rows simply share one
+# NA key value.
+NONBLANK_KEY_COLS: tuple[str, ...] = ("ts_code", "end_date", "update_flag")
 
 
 class FinancialIngestError(RuntimeError):
@@ -207,7 +218,7 @@ class FinancialStatementIngestor:
         # (ann_date / f_ann_date MAY be per-row NA — a legitimately unavailable
         # filing; those are handled by the contract layer, not refused here.)
         _BLANKS = frozenset({"", "None", "nan", "NaT", "<NA>"})
-        for key_col in LOGICAL_KEY:
+        for key_col in NONBLANK_KEY_COLS:
             values = fetched[key_col]
             blank = values.isna() | values.astype(str).str.strip().isin(_BLANKS)
             n_blank = int(blank.sum())
@@ -251,24 +262,28 @@ class FinancialStatementIngestor:
         fetched[COL_SOURCE_ENDPOINT] = endpoint
         fetched[COL_FETCH_BATCH] = fetch_batch
 
-        # A logical key must map to a SINGLE statement content within one batch
-        # (codex #340 r8): tushare's report_type / comp_type are statement
-        # dimensions the key does not carry, so a provider that returned two
-        # variants (e.g. 合并 vs 母公司) for one (ts_code, end_date, update_flag)
-        # would collapse arbitrarily and break idempotence. The default response
-        # holds these constant (report_type=1; comp_type is the per-issuer class),
-        # so this never false-trips on normal data; if it fires, the query must
-        # disambiguate (e.g. filter report_type) so each logical key is one
-        # statement.
-        per_key = fetched.groupby(list(LOGICAL_KEY))[COL_CONTENT_HASH].nunique()
+        # A FULL versioned identity (ts_code, end_date, update_flag, f_ann_date)
+        # must map to a SINGLE statement content within one batch (codex #340
+        # r8; spec fix-financial-ingest-ambiguous-duplicates). Two same-triple
+        # rows with DIFFERENT f_ann_date are distinct, dated disclosure events —
+        # both retained, NOT ambiguous (the Step-A ingest lost 27
+        # instrument/endpoints to that false ambiguity). Only a double content
+        # on the SAME announcement date is true ambiguity (an identity
+        # dimension the key does not carry, e.g. report_type / comp_type) and
+        # is refused. dropna=False: rows with a blank f_ann_date share one NA
+        # key value, so an undated double-content pair still trips the check.
+        per_key = fetched.groupby(
+            list(LOGICAL_KEY), dropna=False,
+        )[COL_CONTENT_HASH].nunique()
         ambiguous = per_key[per_key > 1]
         if len(ambiguous):
             raise FinancialIngestError(
-                f"{endpoint} for {ts_code}: logical key {ambiguous.index[0]} has "
-                f"{int(ambiguous.iloc[0])} DIFFERENT statement contents in one "
-                "fetch — a provider variant collision (report_type / comp_type "
-                "not carried in the logical key). Refusing an ambiguous collapse; "
-                "disambiguate the query so each logical key is a single statement."
+                f"{endpoint} for {ts_code}: versioned identity "
+                f"{ambiguous.index[0]} has {int(ambiguous.iloc[0])} DIFFERENT "
+                "statement contents in one fetch — a provider variant collision "
+                "(an identity dimension the key does not carry, e.g. "
+                "report_type / comp_type). Refusing an ambiguous collapse; "
+                "disambiguate the query so each identity is a single statement."
             )
 
         path = self._store_path(endpoint, ts_code)
