@@ -18,6 +18,7 @@
 | R4 | 计划晚于 run 被拒 | 用早于 plan-commit 时间戳的 run 元数据 | REJECT: plan committed after run | **PASS**(REFUSE) |
 | R5 | manifest 不一致被拒 | 最小篡改临时 store(每 endpoint 单文件)对照冻结 manifest(gate 无 override 可绕) | REJECT: content-hash mismatch | **PASS**(REFUSE) |
 | R6 | PIT 案例失败被拒 | 注入前视探针(断言公告前可见,正确 view 使其失败) | REJECT: PIT case failed | **PASS**(REFUSE) |
+| R7 | 未冻结 ledger 被拒(v3 增补) | 临时把 ledger status 降为 draft 再跑 | REJECT: ledger status not frozen | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -62,6 +63,9 @@
   ACCEPT 回显 aggregate): 复跑 **6/6 PASS**(R1 回显
   manifest_aggregate_sha256=4560e853…;R4 消息升级为 frozen package 时间)。
 - gate 加固 v2 复跑(codex #352 r2: verify 校验 aggregate 本体 / 冻结件须在
-  checkout 真实存在)与 v3(r3: ledger 冻结状态强制)后各复跑 **6/6 PASS**
-  (最终一轮输出以 PR #352 评论存档)。
+  checkout 真实存在)后复跑 **6/6 PASS**。
+- **诚实记录(r4)**: r3 轮声称加入的 ledger 冻结状态强制**实际未落进 gate**
+  (补丁静默失败,codex r4 抓出)。v3 补丁真实落地(带插入验证)并新增 R7 场景
+  钉死该检查 —— 演练矩阵扩为 **7 场景**,最终复跑 **7/7 PASS**(输出以 PR #352
+  评论存档)。教训: 声称的强制必须有演练场景盯着。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

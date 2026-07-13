@@ -131,13 +131,33 @@ def main(argv: list[str] | None = None) -> int:
                         rc == 1 and "PIT case battery FAILED" in out,
                         out.splitlines()[0] if out else ""))
 
+    # R7 REFUSE unfrozen ledger (codex #352 r4: the r3 patch CLAIMED this
+    # enforcement but silently failed to land — a rehearsal scenario now pins
+    # it so a claimed check can never again be absent). Temp-downgrade the
+    # ledger status in the worktree; the status check runs BEFORE the
+    # dirty-tree check, so the refusal reason must name the ledger.
+    ledger_path = repo / "docs/prereg/quality_profitability_ledger.yaml"
+    original = ledger_path.read_text(encoding="utf-8")
+    try:
+        ledger_path.write_text(
+            original.replace("status: frozen_with_this_package",
+                             "status: draft_pre_freeze"),
+            encoding="utf-8",
+        )
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R7 unfrozen ledger refused",
+                        rc == 1 and "ledger status" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        ledger_path.write_text(original, encoding="utf-8")
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/6")
-    return 0 if n_ok == 6 else 1
+    print(f"  => {n_ok}/7")
+    return 0 if n_ok == 7 else 1
 
 
 if __name__ == "__main__":

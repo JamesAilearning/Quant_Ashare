@@ -85,6 +85,14 @@ def main(argv: list[str] | None = None) -> int:
     if plan.get("protocol_id") != "quality_profitability_v1" \
             or ledger.get("protocol_id") != plan.get("protocol_id"):
         return _refuse("protocol_id mismatch between plan and ledger.")
+    if ledger.get("status") != "frozen_with_this_package":
+        # the trial-count ledger is part of the pre-registration boundary — a
+        # draft/downgraded ledger must never gate-ACCEPT (codex #352 r3/r4 P1;
+        # the r3 patch claimed this check but silently failed to land — caught
+        # by codex r4, now enforced AND covered by rehearsal R7).
+        return _refuse(f"ledger status {ledger.get('status')!r} is not "
+                       "'frozen_with_this_package' — the DSR/PBO ledger must "
+                       "be frozen before any decision-level run.")
 
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
