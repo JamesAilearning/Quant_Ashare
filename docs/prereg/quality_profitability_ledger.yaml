@@ -1,5 +1,5 @@
 # =========================================================================
-# 阶段8 · quality_profitability_v1 · RESEARCH LEDGER —— DRAFT / 未冻结
+# 阶段8 · quality_profitability_v1 · RESEARCH LEDGER —— FROZEN(随本冻结包 commit 生效)
 # =========================================================================
 # 目的: DSR/PBO 的有效试验数以本账本为唯一依据(charter §6 / 研究设计 §5)。
 #   凡对本家族做过的 候选/公式变体/敏感性/诊断/失败尝试/未注册探索,一律逐条
@@ -10,7 +10,7 @@
 
 protocol_id: quality_profitability_v1
 ledger_version: 1
-status: draft_pre_freeze
+status: frozen_with_this_package
 
 # ---- 有效试验计数规则(DSR/PBO 输入,冻结时锁死) --------------------------
 effective_trials_rule: >-

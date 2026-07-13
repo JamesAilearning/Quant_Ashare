@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— DRAFT / 未执行
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 6/6
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -52,13 +52,16 @@
 
 - 执行: Claude Code(操作人授权冻结序列,holdout(a) 已签)
 - 执行时间: 2026-07-13 ~15:00 UTC
-- 冻结 commit: f767dcd(prereg/gate3-freeze-quality-profitability 分支;ledger E010)
+- 冻结 commit: 本冻结包所在 commit(自证;squash 合并后以 main 上本 PR 的合并
+  commit 为准 —— gate 的 freeze 时间取全部 8 冻结件在所查 checkout 的最晚 commit,
+  与任何临时分支 hash 无关)
 - manifest aggregate: 4560e8536524e4a0…(1880 文件)
 - 驱动: `scripts/research/rehearse_gate3_prereg_gate.py --store-dir D:/qlib_data/financial_pit_raw`
 - 六场景结果: **6/6 PASS**(gate 无洞;R1 ACCEPT 回显 plan_commit,R2-R6 全部正确 REFUSE)
 - gate 加固复跑(codex #352 r1: 移除 manifest override / freeze 覆盖全部 8 冻结件 /
-  ACCEPT 回显 aggregate): commit b7b790a 后复跑 **6/6 PASS**(R1 回显
+  ACCEPT 回显 aggregate): 复跑 **6/6 PASS**(R1 回显
   manifest_aggregate_sha256=4560e853…;R4 消息升级为 frozen package 时间)。
 - gate 加固 v2 复跑(codex #352 r2: verify 校验 aggregate 本体 / 冻结件须在
-  checkout 真实存在): commit 6b5283e 后复跑 **6/6 PASS**。
+  checkout 真实存在)与 v3(r3: ledger 冻结状态强制)后各复跑 **6/6 PASS**
+  (最终一轮输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
