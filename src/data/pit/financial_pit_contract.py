@@ -32,7 +32,10 @@ from src.data.trading_calendar import StaticTradingCalendar
 from src.data.tushare.financial_statements import (
     COL_CONTENT_HASH,
     COL_FETCH_BATCH,
+    EFF_ANN_COL,
     LOGICAL_KEY,
+    canon_announcement_token,
+    effective_announcement_series,
 )
 
 # Contract output columns.
@@ -123,6 +126,12 @@ def build_contract_frame(
             f"have {sorted(store.columns)}."
         )
     out = store.copy()
+    # canonicalize the announcement KEY columns at read time (codex #351 r4):
+    # a legacy store spelling ('20220331.0', None vs '<NA>') must resolve to
+    # the SAME versioned identity as its canonical re-fetch, or
+    # resolve_current_versions would keep both as two "current" disclosures.
+    out["f_ann_date"] = out["f_ann_date"].map(canon_announcement_token)
+    out["ann_date"] = out["ann_date"].map(canon_announcement_token)
     report_period = _parse_date_column(out["end_date"], "end_date")
     f_ann = _parse_date_column(out["f_ann_date"], "f_ann_date")
     ann = _parse_date_column(out["ann_date"], "ann_date")
@@ -157,16 +166,23 @@ def build_contract_frame(
 
 def _revision_linkage(frame: pd.DataFrame) -> pd.Series:
     """For each ``update_flag=1`` row, the content hash of the as-originally-
-    reported (``update_flag=0``) row for the same ``(ts_code, report_period)``
-    (latest batch if several). NA for original rows / when no original exists."""
+    reported (``update_flag=0``) RECORD for the same ``(ts_code,
+    report_period)``: the EARLIEST-ANNOUNCED original (dated preferred over
+    undated — the same disclosure-of-record rule the serve path uses,
+    codex #351 r4), latest batch among re-fetches of that same announcement.
+    NA for original rows / when no original exists."""
     # _content_hash / _fetch_batch are guaranteed present (build_contract_frame
-    # validates _REQUIRED first), so latest-batch resolution of the original is
+    # validates _REQUIRED first), so record resolution of the original is
     # unconditional — no silent NA fallback on stripped provenance.
     link: dict[tuple[str, object], str] = {}
     originals = frame[frame["update_flag"].astype(str) == "0"]
     for (ts, rp), grp in originals.groupby(["ts_code", REPORT_PERIOD], dropna=False):
-        grp = grp.sort_values(COL_FETCH_BATCH)  # latest batch wins if re-fetched
-        link[(str(ts), rp)] = str(grp.iloc[-1][COL_CONTENT_HASH])
+        ann_ord = grp[ANNOUNCEMENT_DATE].map(
+            lambda d: d.toordinal() if isinstance(d, date) else 10**9,
+        )
+        record_day = grp[ann_ord == ann_ord.min()]
+        record_day = record_day.sort_values(COL_FETCH_BATCH)  # latest re-fetch
+        link[(str(ts), rp)] = str(record_day.iloc[-1][COL_CONTENT_HASH])
     out: list[object] = []
     for _, row in frame.iterrows():
         if str(row["update_flag"]) == "1":
@@ -177,7 +193,11 @@ def _revision_linkage(frame: pd.DataFrame) -> pd.Series:
 
 
 def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
-    """Keep the LATEST batch per logical key ``(ts_code, end_date, update_flag)``.
+    """Keep the LATEST batch per versioned identity — ``LOGICAL_KEY`` plus the
+    EFFECTIVE announcement token (``f_ann_date`` else ``ann_date``): two
+    same-version rows announced on different days are distinct disclosure
+    events, both current; an ``ann_date``-only correction under a present
+    ``f_ann_date`` is the SAME disclosure (latest batch wins, codex #351 r5).
 
     The physical store is append-only; this is the read-time resolution the
     spec mandates — the newest fetch of a logical record wins, but every prior
@@ -188,7 +208,7 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
     unresolved would expose MULTIPLE physical versions as current and leak
     superseded financial rows into PIT use — so this refuses rather than passing
     an unresolvable frame through."""
-    required = (COL_FETCH_BATCH, *LOGICAL_KEY)
+    required = (COL_FETCH_BATCH, *LOGICAL_KEY, "f_ann_date", "ann_date")
     missing = [c for c in required if c not in frame.columns]
     if missing:
         raise FinancialPITContractError(
@@ -197,20 +217,28 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
             f"{LOGICAL_KEY}; refusing to return an unresolved frame (it would "
             "expose superseded versions as current)."
         )
-    ordered = frame.sort_values(COL_FETCH_BATCH)
-    return ordered.drop_duplicates(
-        subset=list(LOGICAL_KEY), keep="last",
-    ).reset_index(drop=True)
+    work = frame.copy()
+    work[EFF_ANN_COL] = effective_announcement_series(work)
+    ordered = work.sort_values(COL_FETCH_BATCH)
+    picked = ordered.drop_duplicates(
+        subset=[*LOGICAL_KEY, EFF_ANN_COL], keep="last",
+    )
+    return picked.drop(columns=[EFF_ANN_COL]).reset_index(drop=True)
 
 
 def _assert_resolved(frame: pd.DataFrame, where: str) -> None:
-    """Fail loud if ``frame`` still has MULTIPLE physical rows per logical version
-    ``(ts_code, report_period, update_flag)`` — it was not passed through
-    :func:`resolve_current_versions`, so the append-only store's superseded
-    batches would be treated as current and skew the collapse / residual audit
-    (codex #345 P2). Callers must resolve current versions first."""
-    key = ["ts_code", REPORT_PERIOD, "update_flag"]
-    if frame.duplicated(subset=key).any():
+    """Fail loud if ``frame`` still has MULTIPLE physical rows per versioned
+    identity ``(ts_code, report_period, update_flag, f_ann_date)`` — it was not
+    passed through :func:`resolve_current_versions`, so the append-only store's
+    superseded batches would be treated as current and skew the collapse /
+    residual audit (codex #345 P2). Two same-version rows with DIFFERENT
+    ``f_ann_date`` are distinct dated disclosures — legal, not duplicates
+    (spec fix-financial-ingest-ambiguous-duplicates). Callers must resolve
+    current versions first."""
+    work = frame.copy()
+    work[EFF_ANN_COL] = effective_announcement_series(work)
+    key = ["ts_code", REPORT_PERIOD, "update_flag", EFF_ANN_COL]
+    if work.duplicated(subset=key).any():
         raise FinancialPITContractError(
             f"{where}: frame has duplicate logical versions {key} — "
             "resolve_current_versions() must run first so superseded append-only "
@@ -236,24 +264,66 @@ def _assert_binary_update_flag(frame: pd.DataFrame, where: str) -> None:
         )
 
 
+_RECORD_REQUIRED_COLS = ("ts_code", "update_flag", REPORT_PERIOD,
+                         "f_ann_date", "ann_date", ANNOUNCEMENT_DATE,
+                         AVAILABLE_FROM, COL_CONTENT_HASH)
+_UNDATED_ORD = 10**9  # sorts undated disclosures after any real date
+
+
+def _date_ord(value: object) -> int:
+    return value.toordinal() if isinstance(value, date) else _UNDATED_ORD
+
+
+def _per_version_records(frame: pd.DataFrame) -> pd.DataFrame:
+    """Collapse each ``(ts_code, report_period, update_flag)`` to that
+    VERSION's disclosure of record: the EARLIEST-ANNOUNCED row (by
+    ``announcement_date``, the resolved announcement day), dated rows
+    preferred over undated; availability is only the tiebreak (two distinct
+    announcement days can map to ONE ``available_from_trade_date`` across a
+    weekend/holiday, and ordering by availability alone would leave the
+    winner to provider row order — codex #351). A later same-version
+    re-announcement is a DATED restatement — recorded in the store, never
+    selected here (spec fix-financial-ingest-ambiguous-duplicates)."""
+    # NOTE: a same-announcement-day pair IS one versioned identity under the
+    # effective-announcement key (codex #351 r5) — an unresolved same-day
+    # double content already fails loud in _assert_resolved as duplicate
+    # versions, so no record-day tie can reach the ordering below.
+    work = frame.copy()
+    work["_ann_ord"] = work[ANNOUNCEMENT_DATE].map(_date_ord)
+    work["_avail_ord"] = work[AVAILABLE_FROM].map(_date_ord)
+    ordered = work.sort_values(
+        ["ts_code", REPORT_PERIOD, "update_flag", "_ann_ord", "_avail_ord"],
+        kind="mergesort",
+    )
+    picked = ordered.drop_duplicates(
+        subset=["ts_code", REPORT_PERIOD, "update_flag"], keep="first",
+    )
+    return picked.drop(columns=["_ann_ord", "_avail_ord"])
+
+
 def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse each ``(ts_code, report_period)`` to its DISCLOSURE OF RECORD.
 
     For each period, keep the ``update_flag=0`` (as-originally-reported) row when
     the period has one; when the period has NO ``update_flag=0`` row, keep the
-    sole ``update_flag=1`` row — which IS that period's original disclosure of
+    ``update_flag=1`` row — which IS that period's original disclosure of
     record. The provider does not always retain an ``update_flag=0`` row for the
     most recent 1–2 years of periods, and DISCARDING a ``update_flag=1``-only
     period (the old ``update_flag=0`` FILTER did) staled the served value by 1–2
     years — a correctness bug, not honest PIT (spec ``v2-financial-pit-contract``,
     阶段8 Gate-2 correction).
 
+    When one version has MULTIPLE dated disclosures (distinct ``f_ann_date``),
+    that version's record is the EARLIEST-announced row; a later same-version
+    re-announcement is a dated restatement — recorded, never served (spec
+    fix-financial-ingest-ambiguous-duplicates).
+
     A both-version period ALWAYS resolves to ``update_flag=0`` — a restated value
-    is never served over its original. PIT safety is therefore STRUCTURAL (only a
+    is never served over its record. PIT safety is therefore STRUCTURAL (only a
     period's first/sole disclosure is ever kept), independent of whether
     ``update_flag=0`` and ``=1`` values coincide across the universe.
     """
-    for col in ("ts_code", "update_flag", REPORT_PERIOD):
+    for col in _RECORD_REQUIRED_COLS:
         if col not in frame.columns:
             raise FinancialPITContractError(
                 f"cannot select disclosure-of-record: frame missing {col!r}."
@@ -262,12 +332,14 @@ def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:
         return frame.copy()
     _assert_resolved(frame, "select_disclosure_of_record")
     _assert_binary_update_flag(frame, "select_disclosure_of_record")
-    work = frame.copy()
+    work = _per_version_records(frame)
     # prefer update_flag=0 (rank 0) over any revision (rank 1) within a period.
     work["_uf_rank"] = work["update_flag"].astype(str).map(
         lambda u: 0 if u == "0" else 1,
     )
-    ordered = work.sort_values(["ts_code", REPORT_PERIOD, "_uf_rank"])
+    ordered = work.sort_values(
+        ["ts_code", REPORT_PERIOD, "_uf_rank"], kind="mergesort",
+    )
     picked = ordered.drop_duplicates(
         subset=["ts_code", REPORT_PERIOD], keep="first",
     )
@@ -312,7 +384,7 @@ def version_collapse_residual(
         raise FinancialPITContractError(
             f"version-collapse audit: frame missing field column(s) {missing}."
         )
-    for col in ("ts_code", "update_flag", REPORT_PERIOD):
+    for col in _RECORD_REQUIRED_COLS:
         if col not in frame.columns:
             raise FinancialPITContractError(
                 f"version-collapse audit: frame missing {col!r}."
@@ -324,8 +396,12 @@ def version_collapse_residual(
         return VersionCollapseResidual(0, per_field, differing)
     _assert_resolved(frame, "version-collapse audit")
     _assert_binary_update_flag(frame, "version-collapse audit")
+    # compare each version's RECORD row (earliest-announced) so a late
+    # same-version re-announcement does not swap which rows are compared
+    # (spec fix-financial-ingest-ambiguous-duplicates).
+    records = _per_version_records(frame)
     n_both = 0
-    for (ts, rp), grp in frame.groupby(["ts_code", REPORT_PERIOD], dropna=False):
+    for (ts, rp), grp in records.groupby(["ts_code", REPORT_PERIOD], dropna=False):
         rows = {str(r["update_flag"]): r for _, r in grp.iterrows()}
         if "0" not in rows or "1" not in rows:
             continue

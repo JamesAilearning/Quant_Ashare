@@ -33,25 +33,29 @@ from typing import Final
 # collapsed union print PASS). int_exp is floored at its (known-sparse)
 # observed minimum for completeness; the charter fixed the C2 interest term to
 # fin_exp.
+# Re-derived after fix-financial-ingest-ambiguous-duplicates closed 26 of the
+# 27 Step-A ingest holes (income 17->0, balancesheet 7->1, cashflow 3->0):
+# every floor TIGHTENED or held — none loosened (a loosening would have
+# signalled a regression, not a fix).
 COVERAGE_FLOORS: Final[dict[str, float]] = {
-    "revenue": 0.95,
-    "total_revenue": 0.95,
-    "oper_cost": 0.95,
-    "sell_exp": 0.94,
-    "admin_exp": 0.95,
-    "rd_exp": 0.88,
+    "revenue": 0.98,
+    "total_revenue": 0.98,
+    "oper_cost": 0.97,
+    "sell_exp": 0.96,
+    "admin_exp": 0.98,
+    "rd_exp": 0.90,
     "int_exp": 0.05,
-    "fin_exp": 0.95,
-    "total_assets": 0.97,
-    "total_hldr_eqy_inc_min_int": 0.97,
-    "total_hldr_eqy_exc_min_int": 0.97,
+    "fin_exp": 0.97,
+    "total_assets": 0.98,
+    "total_hldr_eqy_inc_min_int": 0.98,
+    "total_hldr_eqy_exc_min_int": 0.98,
     "accounts_receiv": 0.94,
     "inventories": 0.95,
     "prepayment": 0.96,
     "accounts_pay": 0.95,
     "adv_receipts": 0.31,
     "contract_liab": 0.21,
-    "n_cashflow_act": 0.97,
+    "n_cashflow_act": 0.98,
 }
 
 # The C3-consumable adv_receipts∪contract_liab COALESCE floor (same rule:

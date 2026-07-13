@@ -494,27 +494,36 @@ def build_report(args: argparse.Namespace) -> str:
     a("## 7. 偏离 Gate-1 memo 的意外(如实记录)")
     a("")
     total_holes = sum(len(info.missing_names) for info in residuals.values())
-    a(f"1. **提供方歧义重复 → {total_holes} 个 ingest hole**(§8 名单)。同一 "
-      "`(ts_code, end_date, update_flag)` 在一次 fetch 返回两行**不同内容**,"
-      "`report_type`/`end_type` 均无法区分,仅 `f_ann_date` 不同(例: 五粮液 "
-      "income 20250630/uf1 = f_ann 20250828 revenue 527.7亿 vs 迟到行 f_ann "
-      "20260430 revenue 235.1亿)。PR-1 ingest 按契约 fail-loud 拒收 → 该 "
-      "instrument/endpoint 留 hole,覆盖率计为未覆盖(诚实方向)。**follow-up**: "
-      "消歧需契约级改动(如 logical key 纳入 f_ann_date、按最早披露为 record),"
-      "应走独立 OpenSpec change,不在 Step-A 越权。")
+    a(f"1. **提供方歧义重复(已消歧)→ 现存 {total_holes} 个 ingest hole**"
+      "(§8 名单)。原 27 hole 的主因 —— 同一 `(ts_code, end_date, update_flag)` "
+      "两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec "
+      "`fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日"
+      "(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,"
+      "record = 最早披露。剩余 hole 为**真歧义**(同一有效公告日双内容,如 "
+      "000627.SZ 天茂同日双 comp_type 报表)—— 保留 fail-loud,覆盖率计为未覆盖"
+      "(诚实方向)。")
     a("2. **rd_exp 的 2018 年 as-of 断崖**: 行级 pooled 显示 2018=55%,但 as-of "
-      "横截面 2018 H1 仅 0.4%、Q3 18.4%、Q4 87.4% —— 单列研发费用自 2018 Q3 报告"
-      "才开始批量披露。**C2 最早可靠期 = 2019**(Gate-1 的『2018 早窗弱』在 as-of "
-      "口径下更硬)。2019+ 无季报缺失效应(各季度 88-97%,§3)。")
-    a("3. **int_exp as-of 覆盖(7-9%)显著低于 pooled(13-18%)** —— 财报中仅年报"
-      "披露居多。无影响: charter 已把 C2 利息项定为 fin_exp(as-of 96-98%)。")
-    a("4. **全宇宙重述残差非零但极小**(§4: income 0.27% / bs 0.40% / cf 0.08%,"
-      "含 NA↔非NA transition)。serve-rule 恒取 uf0 → 无前视;残差为诚信包络的"
-      "已量化界。")
+      f"横截面 2018 H1 仅 {pct(rd_quarters[2018][1])}、Q3 "
+      f"{pct(rd_quarters[2018][2])}、Q4 {pct(rd_quarters[2018][3])} —— 单列研发"
+      "费用自 2018 Q3 报告才开始批量披露。**C2 最早可靠期 = 2019**(Gate-1 的"
+      "『2018 早窗弱』在 as-of 口径下更硬)。2019+ 无季报缺失效应(§3)。")
+    int_rng = [cov_exfin["int_exp"][y] for y in YEARS]
+    fin_rng = [cov_exfin["fin_exp"][y] for y in YEARS]
+    a(f"3. **int_exp as-of 覆盖({pct(min(int_rng))}-{pct(max(int_rng))})显著低于 "
+      "pooled(13-18%)** —— 财报中仅年报披露居多。无影响: charter 已把 C2 利息项"
+      f"定为 fin_exp(as-of {pct(min(fin_rng))}-{pct(max(fin_rng))})。")
+    res_note = " / ".join(
+        f"{ep} {info.residual.overall_differing_fraction():.2%}"
+        for ep, info in residuals.items())
+    a(f"4. **全宇宙重述残差非零但极小**(§4: {res_note},"
+      "含 NA↔非NA transition)。serve-rule 恒取 uf0/最早披露 → 无前视;残差为"
+      "诚信包络的已量化界。")
     a("5. **其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
       "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
-    a("6. **金融排除规模**: 行业名单法(stock_basic)在 CSI300-ever 上排除 120 名,"
-      "逐年在册金融 46-61 名(§2)—— 高于早前 ~35-42 的粗估,以本表为准。")
+    fin_counts = [fin for _, _, fin, _ in breadth_rows]
+    a(f"6. **金融排除规模**: 行业名单法(stock_basic)在 CSI300-ever 上排除 "
+      f"{len(fin_issuers)} 名,逐年在册金融 {min(fin_counts)}-{max(fin_counts)} 名"
+      "(§2)—— 高于早前 ~35-42 的粗估,以本表为准。")
     a("")
     a("## 8. ingest holes(缺 store 文件的名字 — 显式列出,绝不静默)")
     a("")

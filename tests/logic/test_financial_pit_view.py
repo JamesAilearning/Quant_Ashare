@@ -290,6 +290,26 @@ def test_financial_issuers_from_industry():
 
 # 阶段8 Gate-2 correction: uf1-only recent period served (no stale fall-back) --
 
+def test_double_disclosure_serves_earliest_record_end_to_end(tmp_path):
+    # provider double disclosure (same period+uf, two f_ann dates, different
+    # values — the 五粮液 pattern): the view serves the EARLIEST-announced
+    # record; the late re-announcement never serves, at any as-of date
+    # (fix-financial-ingest-ambiguous-duplicates, end-to-end through the view).
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    r_early = _row("000003.SZ", "20211231", "1", "20220331", revenue=500.0)
+    r_late = _row("000003.SZ", "20211231", "1", "20220429", revenue=235.0)
+    r_late["_content_hash"] = "h_late"  # distinct content, own announcement
+    pd.DataFrame([r_early, r_late]).to_parquet(inc / "000003.SZ.parquet", index=False)
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+    # after the early availability (2022-04-01): early record serves
+    assert v.as_of("2022-04-01", ["revenue"], ["000003.SZ"]).loc[
+        "000003.SZ", "revenue"] == 500.0
+    # even after the late row's availability (2022-05-05): STILL the record
+    assert v.as_of("2022-05-05", ["revenue"], ["000003.SZ"]).loc[
+        "000003.SZ", "revenue"] == 500.0
+
+
 def test_uf1_only_recent_period_served_not_stale(tmp_path):
     # 000002.SZ: the older 2021-Q4 period has an update_flag=0 original
     # (revenue 200); the recent 2022-Q1 period exists ONLY as update_flag=1

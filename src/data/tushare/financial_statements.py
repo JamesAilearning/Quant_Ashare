@@ -72,13 +72,70 @@ PROVENANCE_COLS: tuple[str, ...] = (
     COL_SOURCE_ENDPOINT, COL_FETCH_BATCH, COL_CONTENT_HASH,
 )
 
-# The logical current key: latest batch per this tuple wins at read time.
+# The physical part of the logical current key. The FULL versioned identity is
+# (ts_code, end_date, update_flag, EFFECTIVE announcement) — the effective
+# announcement token (``f_ann_date``, falling back to ``ann_date`` when
+# ``f_ann_date`` is blank; see :func:`effective_announcement_series`) is the
+# fourth dimension (spec fix-financial-ingest-ambiguous-duplicates). Keying on
+# the EFFECTIVE day — not the raw column pair — means an ``ann_date``-only
+# provider correction under a present ``f_ann_date`` is a changed re-fetch of
+# the SAME disclosure (latest batch wins), never a phantom second disclosure
+# that would tie on the served announcement day (codex #351 r5).
 LOGICAL_KEY: tuple[str, ...] = ("ts_code", "end_date", "update_flag")
+
+# The key columns that must be NON-BLANK on every row. The announcement dates
+# are deliberately NOT here — a missing announcement date is legitimate (the
+# contract layer marks such rows unavailable); blank rows simply share one
+# NA effective-announcement value.
+NONBLANK_KEY_COLS: tuple[str, ...] = ("ts_code", "end_date", "update_flag")
+
+# Name of the DERIVED effective-announcement key column (in-memory only —
+# never written to the store; both layers re-derive it from the raw columns).
+EFF_ANN_COL = "_eff_ann_key"
+
+
+def effective_announcement_series(frame: pd.DataFrame) -> pd.Series:
+    """The canonical EFFECTIVE announcement token per row: ``f_ann_date`` when
+    non-blank, else ``ann_date`` (mirroring the contract's announcement
+    resolution), both via :func:`canon_announcement_token`."""
+    f_ann = frame["f_ann_date"].map(canon_announcement_token)
+    ann = frame["ann_date"].map(canon_announcement_token)
+    return f_ann.where(f_ann.notna(), ann)
 
 
 class FinancialIngestError(RuntimeError):
     """Raised when the ingest cannot proceed honestly (bad endpoint, malformed
     provider frame, store I/O failure). Fail-loud — never a silent partial."""
+
+
+def canon_announcement_token(value: Any) -> Any:
+    """Canonicalize an announcement-date KEY value (codex #351 r3/r4).
+
+    Blank spellings (None / NaN / 'nan' / '<NA>' / '') -> ``pd.NA``; an exact
+    ``.0`` float coercion ('20220331.0') strips to the digits; any other shape
+    passes through untouched — the CONTRACT layer fail-louds on malformed
+    dates, keying must not pre-judge them. Shared by the ingest (new fetches
+    AND the in-memory view of already-stored rows) and by
+    ``build_contract_frame`` (read-time), so a legacy store spelling can never
+    mint a phantom second disclosure of the same announcement."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return pd.NA
+    try:
+        if bool(pd.isna(value)):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    token = str(value).strip()
+    if not token or token in _BLANK_TOKENS:
+        return pd.NA
+    if "." in token:
+        int_part, _, frac = token.partition(".")
+        if int_part.isdigit() and frac.strip("0") == "":
+            return int_part
+    return token
+
+
+_BLANK_TOKENS = frozenset({"", "None", "nan", "NaT", "<NA>"})
 
 
 class _CallableClient(Protocol):
@@ -207,7 +264,7 @@ class FinancialStatementIngestor:
         # (ann_date / f_ann_date MAY be per-row NA — a legitimately unavailable
         # filing; those are handled by the contract layer, not refused here.)
         _BLANKS = frozenset({"", "None", "nan", "NaT", "<NA>"})
-        for key_col in LOGICAL_KEY:
+        for key_col in NONBLANK_KEY_COLS:
             values = fetched[key_col]
             blank = values.isna() | values.astype(str).str.strip().isin(_BLANKS)
             n_blank = int(blank.sum())
@@ -243,61 +300,84 @@ class FinancialStatementIngestor:
                 "refusing to store (would corrupt revision semantics)."
             )
 
+        # The announcement-date KEY columns must be canonical before
+        # hashing/keying (codex #351 r3): a re-fetch spelling the SAME
+        # announcement differently (None vs '<NA>' vs 'nan', or a float-coerced
+        # '20220331.0' vs '20220331') would otherwise mint a DIFFERENT logical
+        # key — the same disclosure would duplicate across batches.
         fetched = fetched.copy()
         fetched["update_flag"] = fetched["update_flag"].map(_canon_flag)
+        fetched["f_ann_date"] = fetched["f_ann_date"].map(canon_announcement_token)
+        fetched["ann_date"] = fetched["ann_date"].map(canon_announcement_token)
         fetched[COL_CONTENT_HASH] = fetched.apply(
             lambda r: content_hash(r, data_fields), axis=1,
         )
         fetched[COL_SOURCE_ENDPOINT] = endpoint
         fetched[COL_FETCH_BATCH] = fetch_batch
 
-        # A logical key must map to a SINGLE statement content within one batch
-        # (codex #340 r8): tushare's report_type / comp_type are statement
-        # dimensions the key does not carry, so a provider that returned two
-        # variants (e.g. 合并 vs 母公司) for one (ts_code, end_date, update_flag)
-        # would collapse arbitrarily and break idempotence. The default response
-        # holds these constant (report_type=1; comp_type is the per-issuer class),
-        # so this never false-trips on normal data; if it fires, the query must
-        # disambiguate (e.g. filter report_type) so each logical key is one
-        # statement.
-        per_key = fetched.groupby(list(LOGICAL_KEY))[COL_CONTENT_HASH].nunique()
+        # Ambiguity is judged on the EFFECTIVE announcement day — f_ann_date,
+        # falling back to ann_date when f_ann_date is blank (mirroring the
+        # contract's announcement resolution). Two same-triple rows announced
+        # on DIFFERENT days are distinct, dated disclosure events — both
+        # retained, NOT ambiguous (the Step-A ingest lost 27
+        # instrument/endpoints to that false ambiguity). A double content on
+        # ONE effective announcement day is true ambiguity — the announcement
+        # day cannot order them into a record (an identity dimension the key
+        # does not carry, e.g. report_type / comp_type; codex #340 r8 +
+        # codex #351 r2: a same-f_ann_date pair differing only in ann_date
+        # must NOT slip through the raw-column key). dropna=False: fully
+        # undated rows share one NA key, so an undated double-content pair
+        # still trips the check.
+        fetched[EFF_ANN_COL] = effective_announcement_series(fetched)
+        per_key = fetched.groupby(
+            [*LOGICAL_KEY, EFF_ANN_COL], dropna=False,
+        )[COL_CONTENT_HASH].nunique()
         ambiguous = per_key[per_key > 1]
         if len(ambiguous):
             raise FinancialIngestError(
-                f"{endpoint} for {ts_code}: logical key {ambiguous.index[0]} has "
-                f"{int(ambiguous.iloc[0])} DIFFERENT statement contents in one "
-                "fetch — a provider variant collision (report_type / comp_type "
-                "not carried in the logical key). Refusing an ambiguous collapse; "
-                "disambiguate the query so each logical key is a single statement."
+                f"{endpoint} for {ts_code}: effective announcement identity "
+                f"{ambiguous.index[0]} has {int(ambiguous.iloc[0])} DIFFERENT "
+                "statement contents in one fetch — a provider variant collision "
+                "(an identity dimension the announcement day cannot order, e.g. "
+                "report_type / comp_type). Refusing an ambiguous collapse; "
+                "disambiguate the query so each identity is a single statement."
             )
 
         path = self._store_path(endpoint, ts_code)
         existing = pd.read_parquet(path) if path.is_file() else None
 
         if existing is None or existing.empty:
-            self._write(path, fetched)
+            self._write(path, fetched.drop(columns=[EFF_ANN_COL]))
             # First ingest: every row is new; nothing pre-existed to be
             # "unchanged" (codex #340 P3 — rows_unchanged is 0 here).
             return IngestResult(endpoint, ts_code, n_fetched, n_fetched, 0, 0)
 
         # Compare each re-fetched row against the LATEST stored version for its
-        # logical key (ts_code, end_date, update_flag) — NOT any historical hash
-        # (codex #340 r5 P1). A value that changes then reverts (100->200->100)
-        # must re-append the third fetch so latest-batch resolution stops
-        # exposing the stale 200; matching against all-history hashes would skip
-        # the revert and leave 200 current.
-        latest = existing.sort_values(COL_FETCH_BATCH).drop_duplicates(
-            subset=list(LOGICAL_KEY), keep="last",
+        # logical key — NOT any historical hash (codex #340 r5 P1). A value
+        # that changes then reverts (100->200->100) must re-append the third
+        # fetch so latest-batch resolution stops exposing the stale 200;
+        # matching against all-history hashes would skip the revert and leave
+        # 200 current. The STORED rows' announcement-key columns are
+        # canonicalized IN MEMORY for this matching (codex #351 r4): a legacy
+        # store spelling ('20220331.0', None) must key-match its canonical
+        # re-fetch, not mint a phantom second disclosure. The store bytes are
+        # not rewritten; read-time resolution canonicalizes the same way in
+        # build_contract_frame.
+        existing_keyed = existing.copy()
+        existing_keyed[EFF_ANN_COL] = effective_announcement_series(existing_keyed)
+        key_cols = [*LOGICAL_KEY, EFF_ANN_COL]
+        latest = existing_keyed.sort_values(COL_FETCH_BATCH).drop_duplicates(
+            subset=key_cols, keep="last",
         )
         stored_latest: dict[tuple[str, ...], str] = {
             tuple(str(v) for v in row[:-1]): str(row[-1])
-            for row in latest[[*LOGICAL_KEY, COL_CONTENT_HASH]].itertuples(
+            for row in latest[[*key_cols, COL_CONTENT_HASH]].itertuples(
                 index=False, name=None,
             )
         }
 
         def _key(row: Any) -> tuple[str, ...]:
-            return tuple(str(row[c]) for c in LOGICAL_KEY)
+            return tuple(str(row[c]) for c in key_cols)
 
         is_new = fetched.apply(
             lambda r: stored_latest.get(_key(r)) != str(r[COL_CONTENT_HASH]),
@@ -311,7 +391,10 @@ class FinancialStatementIngestor:
         n_changed = sum(1 for _, r in new_rows.iterrows() if _key(r) in stored_latest)
 
         if n_new:
-            merged = pd.concat([existing, new_rows], ignore_index=True)
+            merged = pd.concat(
+                [existing, new_rows.drop(columns=[EFF_ANN_COL])],
+                ignore_index=True,
+            )
             self._write(path, merged)
         return IngestResult(
             endpoint, ts_code, n_fetched, n_new, n_changed, n_unchanged,

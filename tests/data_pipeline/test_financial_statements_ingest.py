@@ -179,14 +179,164 @@ def test_float_coerced_update_flag_normalized(tmp_path) -> None:
 
 
 def test_ambiguous_duplicate_logical_key_fails_loud(tmp_path) -> None:
-    # two rows with the SAME (ts_code, end_date, update_flag) but different
-    # content (as a report_type/comp_type variant collision would produce) must
-    # fail loud, not collapse arbitrarily / break idempotence (codex #340 r8 P2).
+    # two rows with the SAME full versioned identity (ts_code, end_date,
+    # update_flag, f_ann_date) but different content (a report_type/comp_type
+    # variant collision) must fail loud, not collapse arbitrarily / break
+    # idempotence (codex #340 r8 P2).
     r1 = _income_row("20211231", "0", 100.0)
-    r2 = _income_row("20211231", "0", 200.0)  # same logical key, different revenue
+    r2 = _income_row("20211231", "0", 200.0)  # same identity, different revenue
     ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
     with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
         ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_same_triple_different_f_ann_date_both_stored(tmp_path) -> None:
+    # the provider emits, for a few (ts_code, end_date, update_flag) triples,
+    # TWO disclosures distinguishable only by f_ann_date (e.g. 五粮液 income
+    # 20250630/uf1). Each is a distinct dated disclosure event — BOTH stored,
+    # no hole (spec fix-financial-ingest-ambiguous-duplicates; this exact
+    # pattern holed 27 instrument/endpoints in the Step-A full ingest).
+    r1 = _income_row("20250630", "1", 527.7)
+    r2 = _income_row("20250630", "1", 235.1)
+    r2["f_ann_date"] = "20260430"  # late re-announcement, own date
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 2
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 2
+    assert set(stored["revenue"]) == {527.7, 235.1}
+
+
+def test_same_f_ann_different_ann_double_content_refused(tmp_path) -> None:
+    # same f_ann_date (the EFFECTIVE announcement day) with different ann_date
+    # and different content: the announcement day cannot order them into a
+    # record — must be refused as ambiguous, not slip through the raw-column
+    # key (codex #351 r2).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 200.0)
+    r2["ann_date"] = "20220430"  # f_ann_date identical on both
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_fallback_dated_pair_distinct_ann_dates_both_stored(tmp_path) -> None:
+    # blank f_ann_date on BOTH rows but DISTINCT ann_date (the fallback dating
+    # path): still two distinct dated disclosures — ann_date is in the identity
+    # too, so they must not share one NA key and be refused/collapsed
+    # (codex #351).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 150.0)
+    r1["f_ann_date"] = None
+    r2["f_ann_date"] = None
+    r2["ann_date"] = "20220430"  # r1 keeps 20220331
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 2
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 2
+
+
+def test_float_coerced_announcement_date_is_same_disclosure(tmp_path) -> None:
+    # a re-fetch spelling the SAME announcement as a float-coerced '20220331.0'
+    # (dtype drift) must be the SAME logical key + content — idempotent, not a
+    # duplicated disclosure (codex #351 r3).
+    b1 = pd.DataFrame([_income_row("20211231", "0", 100.0)])       # "20220331"
+    r2 = _income_row("20211231", "0", 100.0)
+    r2["f_ann_date"] = "20220331.0"
+    r2["ann_date"] = "20220331.0"
+    ing = FinancialStatementIngestor(_FakeClient([b1, pd.DataFrame([r2])]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    res2 = ing.ingest("income", "000001.SZ", fetch_batch="b2")
+    assert res2.rows_new == 0 and res2.rows_unchanged == 1
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 1                       # no phantom second disclosure
+
+
+def test_ann_only_correction_is_same_disclosure_not_new_identity(tmp_path) -> None:
+    # provider corrects ONLY ann_date while f_ann_date (the effective
+    # announcement) is present and unchanged: same disclosure identity — a
+    # changed re-fetch (latest batch wins), NEVER a phantom second disclosure
+    # that would tie on the served announcement day (codex #351 r5).
+    from datetime import date as _date
+
+    from src.data.pit.financial_pit_contract import (
+        build_contract_frame,
+        resolve_current_versions,
+    )
+    from src.data.trading_calendar import StaticTradingCalendar
+    b1 = pd.DataFrame([_income_row("20211231", "0", 100.0)])   # ann 20220331
+    r2 = _income_row("20211231", "0", 100.0)
+    r2["ann_date"] = "20220330"                                # ann-only fix
+    ing = FinancialStatementIngestor(_FakeClient([b1, pd.DataFrame([r2])]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    res2 = ing.ingest("income", "000001.SZ", fetch_batch="b2")
+    assert res2.rows_new == 1 and res2.rows_changed == 1       # same identity
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    cal = StaticTradingCalendar([_date(2022, 3, 31), _date(2022, 4, 1)])
+    current = resolve_current_versions(build_contract_frame(stored, cal))
+    assert len(current) == 1                                   # ONE disclosure
+    assert current.iloc[0]["ann_date"] == "20220330"           # correction wins
+
+
+def test_legacy_store_spelling_does_not_mint_phantom_disclosure(tmp_path) -> None:
+    # a store written BEFORE canonicalization may spell the announcement as a
+    # float-coerced '20220331.0'. A canonical re-fetch of the SAME disclosure
+    # must key-match it in memory (no phantom second disclosure), and read-time
+    # resolution must collapse to ONE current row (codex #351 r4).
+    from datetime import date as _date
+
+    from src.data.pit.financial_pit_contract import (
+        build_contract_frame,
+        resolve_current_versions,
+    )
+    from src.data.trading_calendar import StaticTradingCalendar
+    legacy = _income_row("20211231", "0", 100.0)
+    legacy["f_ann_date"] = "20220331.0"
+    legacy["ann_date"] = "20220331.0"
+    legacy_df = pd.DataFrame([legacy])
+    legacy_df["_content_hash"] = "legacy_hash_over_old_spelling"
+    legacy_df["_source_endpoint"] = "income"
+    legacy_df["_fetch_batch"] = "b0"
+    (tmp_path / "income").mkdir(parents=True)
+    legacy_df.to_parquet(tmp_path / "income" / "000001.SZ.parquet", index=False)
+
+    refetch = pd.DataFrame([_income_row("20211231", "0", 100.0)])  # canonical
+    ing = FinancialStatementIngestor(_FakeClient([refetch]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    # hash may differ (legacy spelling hashed differently) -> appended as a
+    # CHANGED re-fetch of the SAME identity, never a new disclosure key.
+    assert res.rows_new <= 1
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    cal = StaticTradingCalendar([_date(2022, 3, 31), _date(2022, 4, 1)])
+    current = resolve_current_versions(build_contract_frame(stored, cal))
+    assert len(current) == 1                      # ONE disclosure, not two
+
+
+def test_na_spelling_variants_share_one_key(tmp_path) -> None:
+    # 'None'/'nan'/'<NA>' spellings of a missing announcement date normalize to
+    # ONE NA key — a double-content pair under different NA spellings is still
+    # ambiguous (refused), not two "distinct" disclosures (codex #351 r3).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 200.0)
+    r1["f_ann_date"] = None
+    r2["f_ann_date"] = "nan"
+    r1["ann_date"] = None
+    r2["ann_date"] = "<NA>"
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
+def test_blank_f_ann_date_rows_still_ingest(tmp_path) -> None:
+    # f_ann_date is part of the IDENTITY but NOT of the non-blank key columns:
+    # a missing announcement date is legitimate (contract layer marks the row
+    # unavailable) — the row must still store, not be refused.
+    row = _income_row("20211231", "0", 100.0)
+    row["f_ann_date"] = None
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([row])]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 1
 
 
 def test_provider_none_fails_loud(tmp_path) -> None:
