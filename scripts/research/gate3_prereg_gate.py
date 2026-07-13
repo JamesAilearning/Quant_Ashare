@@ -121,7 +121,14 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         return _refuse(f"--test-window-end {args.test_window_end!r} is not "
                        "a YYYY-MM-DD date.")
-    holdout_window = sd["untouched_final_holdout"]["window"]
+    holdout_window = str(sd["untouched_final_holdout"]["window"])
+    try:
+        holdout_start_s, holdout_end_s = (t.strip() for t in
+                                          holdout_window.split("->"))
+        holdout_end = date.fromisoformat(holdout_end_s)
+    except (ValueError, AttributeError):
+        return _refuse(f"frozen holdout window {holdout_window!r} is not "
+                       "parseable as 'YYYY-MM-DD -> YYYY-MM-DD'.")
     if test_end > end_boundary:
         if not args.final_adjudication:
             return _refuse(
@@ -130,6 +137,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"would touch the untouched holdout ({holdout_window}). Dev "
                 "runs must end at the boundary; the ONE-TIME final verdict "
                 "run must pass --final-adjudication explicitly.")
+        if test_end > holdout_end:
+            # the verdict run is bounded by the SIGNED holdout — data past it
+            # (e.g. 2026H1) is outside the registered adjudication scope and
+            # can never be blessed, flag or no flag (codex #352 r6 P1).
+            return _refuse(
+                f"final-adjudication test window ends {test_end.isoformat()} "
+                f"which is BEYOND the signed holdout end "
+                f"{holdout_end.isoformat()} ({holdout_window}) — data outside "
+                "the registered adjudication scope cannot be blessed.")
         print("=" * 68)
         print("!! FINAL ADJUDICATION — HOLDOUT UNBLINDING !!")
         print(f"!! test window end {test_end.isoformat()} enters the frozen "
