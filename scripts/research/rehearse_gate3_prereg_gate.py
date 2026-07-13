@@ -136,20 +136,21 @@ def main(argv: list[str] | None = None) -> int:
     # it so a claimed check can never again be absent). Temp-downgrade the
     # ledger status in the worktree; the status check runs BEFORE the
     # dirty-tree check, so the refusal reason must name the ledger.
+    # BYTES I/O throughout: text-mode write_text would translate the file's
+    # LF to CRLF on Windows, leaving the ledger permanently dirty after the
+    # restore (this exact failure surfaced in the v4 re-run — R1 then refused
+    # on the leftover dirt).
     ledger_path = repo / "docs/prereg/quality_profitability_ledger.yaml"
-    original = ledger_path.read_text(encoding="utf-8")
+    original_bytes = ledger_path.read_bytes()
     try:
-        ledger_path.write_text(
-            original.replace("status: frozen_with_this_package",
-                             "status: draft_pre_freeze"),
-            encoding="utf-8",
-        )
+        ledger_path.write_bytes(original_bytes.replace(
+            b"status: frozen_with_this_package", b"status: draft_pre_freeze"))
         rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
         results.append(("R7 unfrozen ledger refused",
                         rc == 1 and "ledger status" in out,
                         out.splitlines()[0] if out else ""))
     finally:
-        ledger_path.write_text(original, encoding="utf-8")
+        ledger_path.write_bytes(original_bytes)
 
     # R8 REFUSE holdout-touching window (codex #352 r5): the default
     # config_walk grid ends 2025-12-31 — a dev run claiming that window must
