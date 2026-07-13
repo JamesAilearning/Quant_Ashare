@@ -207,6 +207,19 @@ def test_same_triple_different_f_ann_date_both_stored(tmp_path) -> None:
     assert set(stored["revenue"]) == {527.7, 235.1}
 
 
+def test_same_f_ann_different_ann_double_content_refused(tmp_path) -> None:
+    # same f_ann_date (the EFFECTIVE announcement day) with different ann_date
+    # and different content: the announcement day cannot order them into a
+    # record — must be refused as ambiguous, not slip through the raw-column
+    # key (codex #351 r2).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 200.0)
+    r2["ann_date"] = "20220430"  # f_ann_date identical on both
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    with pytest.raises(FinancialIngestError, match="DIFFERENT statement contents"):
+        ing.ingest("income", "000001.SZ", fetch_batch="b1")
+
+
 def test_fallback_dated_pair_distinct_ann_dates_both_stored(tmp_path) -> None:
     # blank f_ann_date on BOTH rows but DISTINCT ann_date (the fallback dating
     # path): still two distinct dated disclosures — ann_date is in the identity

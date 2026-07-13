@@ -244,7 +244,7 @@ def _assert_binary_update_flag(frame: pd.DataFrame, where: str) -> None:
 
 _RECORD_REQUIRED_COLS = ("ts_code", "update_flag", REPORT_PERIOD,
                          "f_ann_date", "ann_date", ANNOUNCEMENT_DATE,
-                         AVAILABLE_FROM)
+                         AVAILABLE_FROM, COL_CONTENT_HASH)
 _UNDATED_ORD = 10**9  # sorts undated disclosures after any real date
 
 
@@ -265,6 +265,25 @@ def _per_version_records(frame: pd.DataFrame) -> pd.DataFrame:
     work = frame.copy()
     work["_ann_ord"] = work[ANNOUNCEMENT_DATE].map(_date_ord)
     work["_avail_ord"] = work[AVAILABLE_FROM].map(_date_ord)
+    # a RECORD-DAY tie with more than one distinct content is unresolvable:
+    # two dated disclosures on the SAME announcement day cannot be ordered
+    # into a record — fail loud rather than let provider/parquet row order
+    # decide (codex #351 r2; can arise from cross-batch store assembly even
+    # though the ingest refuses the one-fetch case).
+    kcols = ["ts_code", REPORT_PERIOD, "update_flag"]
+    dated = work[work["_ann_ord"] != _UNDATED_ORD]
+    if not dated.empty:
+        win = dated.groupby(kcols, dropna=False)["_ann_ord"].transform("min")
+        tied = dated[dated["_ann_ord"] == win]
+        amb = tied.groupby(kcols, dropna=False)[COL_CONTENT_HASH].nunique()
+        offenders = amb[amb > 1]
+        if len(offenders):
+            raise FinancialPITContractError(
+                f"record-day tie with {int(offenders.iloc[0])} DIFFERENT "
+                f"contents for {offenders.index[0]} — two disclosures on one "
+                "announcement day cannot be ordered into a record; refusing "
+                "rather than letting row order decide."
+            )
     ordered = work.sort_values(
         ["ts_code", REPORT_PERIOD, "update_flag", "_ann_ord", "_avail_ord"],
         kind="mergesort",

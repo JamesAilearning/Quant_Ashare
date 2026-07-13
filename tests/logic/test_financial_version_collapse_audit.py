@@ -27,6 +27,7 @@ from src.data.pit.financial_pit_contract import (
     select_disclosure_of_record,
     version_collapse_residual,
 )
+from src.data.tushare.financial_statements import COL_CONTENT_HASH
 
 _P1, _P2, _P3 = date(2021, 12, 31), date(2022, 3, 31), date(2022, 6, 30)
 
@@ -43,12 +44,13 @@ _LATE_AVAIL = date(2023, 5, 4)
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     filled = []
-    for r in rows:
+    for i, r in enumerate(rows):
         r = dict(r)
         r.setdefault("f_ann_date", _DEFAULT_FANN)
         r.setdefault("ann_date", _DEFAULT_FANN)
         r.setdefault(ANNOUNCEMENT_DATE, _DEFAULT_ANN)
         r.setdefault(AVAILABLE_FROM, _DEFAULT_AVAIL)
+        r.setdefault(COL_CONTENT_HASH, f"h{i}")  # unique per row by default
         filled.append(r)
     return pd.DataFrame(filled)
 
@@ -117,7 +119,7 @@ def test_audit_schema_valid_empty_frame_is_zero_residual():
     # rather than silently report 0% (codex #345 r3).
     empty = pd.DataFrame(columns=[
         "ts_code", REPORT_PERIOD, "update_flag", "f_ann_date", "ann_date",
-        ANNOUNCEMENT_DATE, AVAILABLE_FROM, "revenue",
+        ANNOUNCEMENT_DATE, AVAILABLE_FROM, COL_CONTENT_HASH, "revenue",
     ])
     res = version_collapse_residual(empty, ["revenue"])
     assert res.n_both_version_periods == 0
@@ -194,6 +196,22 @@ def test_record_ordered_by_announcement_day_not_availability():
     picked = select_disclosure_of_record(frame)
     assert len(picked) == 1
     assert picked.iloc[0]["revenue"] == 60.0           # earlier ANNOUNCED wins
+
+
+def test_record_day_tie_with_different_content_fails_loud():
+    # two DATED disclosures on ONE announcement day with different content
+    # cannot be ordered into a record — fail loud, never row-order
+    # (codex #351 r2; cross-batch store assembly can produce this even though
+    # ingest refuses the one-fetch case).
+    frame = _frame([
+        {"ts_code": "V", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 60.0},
+        {"ts_code": "V", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 99.0,
+         "ann_date": "20220501"},  # distinct 5-col key, SAME announcement day
+    ])
+    with pytest.raises(FinancialPITContractError, match="record-day tie"):
+        select_disclosure_of_record(frame)
+    with pytest.raises(FinancialPITContractError, match="record-day tie"):
+        version_collapse_residual(frame, ["revenue"])
 
 
 def test_undated_disclosure_loses_to_dated_same_version():

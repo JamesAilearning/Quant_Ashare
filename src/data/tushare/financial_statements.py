@@ -267,26 +267,35 @@ class FinancialStatementIngestor:
         fetched[COL_SOURCE_ENDPOINT] = endpoint
         fetched[COL_FETCH_BATCH] = fetch_batch
 
-        # A FULL versioned identity (ts_code, end_date, update_flag, f_ann_date)
-        # must map to a SINGLE statement content within one batch (codex #340
-        # r8; spec fix-financial-ingest-ambiguous-duplicates). Two same-triple
-        # rows with DIFFERENT f_ann_date are distinct, dated disclosure events —
-        # both retained, NOT ambiguous (the Step-A ingest lost 27
-        # instrument/endpoints to that false ambiguity). Only a double content
-        # on the SAME announcement date is true ambiguity (an identity
-        # dimension the key does not carry, e.g. report_type / comp_type) and
-        # is refused. dropna=False: rows with a blank f_ann_date share one NA
-        # key value, so an undated double-content pair still trips the check.
+        # Ambiguity is judged on the EFFECTIVE announcement day — f_ann_date,
+        # falling back to ann_date when f_ann_date is blank (mirroring the
+        # contract's announcement resolution). Two same-triple rows announced
+        # on DIFFERENT days are distinct, dated disclosure events — both
+        # retained, NOT ambiguous (the Step-A ingest lost 27
+        # instrument/endpoints to that false ambiguity). A double content on
+        # ONE effective announcement day is true ambiguity — the announcement
+        # day cannot order them into a record (an identity dimension the key
+        # does not carry, e.g. report_type / comp_type; codex #340 r8 +
+        # codex #351 r2: a same-f_ann_date pair differing only in ann_date
+        # must NOT slip through the raw-column key). dropna=False: fully
+        # undated rows share one NA key, so an undated double-content pair
+        # still trips the check.
+        f_ann_tok = fetched["f_ann_date"].astype(str).str.strip()
+        eff_ann = fetched["f_ann_date"].where(
+            ~(fetched["f_ann_date"].isna() | f_ann_tok.isin(_BLANKS)),
+            fetched["ann_date"],
+        )
         per_key = fetched.groupby(
-            list(LOGICAL_KEY), dropna=False,
+            ["ts_code", "end_date", "update_flag", eff_ann.rename("_eff_ann")],
+            dropna=False,
         )[COL_CONTENT_HASH].nunique()
         ambiguous = per_key[per_key > 1]
         if len(ambiguous):
             raise FinancialIngestError(
-                f"{endpoint} for {ts_code}: versioned identity "
+                f"{endpoint} for {ts_code}: effective announcement identity "
                 f"{ambiguous.index[0]} has {int(ambiguous.iloc[0])} DIFFERENT "
                 "statement contents in one fetch — a provider variant collision "
-                "(an identity dimension the key does not carry, e.g. "
+                "(an identity dimension the announcement day cannot order, e.g. "
                 "report_type / comp_type). Refusing an ambiguous collapse; "
                 "disambiguate the query so each identity is a single statement."
             )
