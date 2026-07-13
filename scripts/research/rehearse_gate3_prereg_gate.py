@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — ten scenarios, 10/10 required.
+"""Gate-3 pre-registration gate REHEARSAL — eleven scenarios, 11/11 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -15,7 +15,7 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
               that assertion FAIL, so the gate must refuse).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 10/10, paste the printed block into the rehearsal
+before freezing). Exit 0 = 11/11, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -58,11 +58,15 @@ def test_lookahead_probe(tmp_path):
 '''
 
 
+_DEV_CONFIG: Path | None = None  # set in main(): temp config, overall_end=dev boundary
+
+
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
     argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
             "--store-dir", str(store), *extra]
-    if "--test-window-end" not in extra:
-        argv += ["--test-window-end", "2024-12-31"]   # frozen dev boundary
+    if "--run-config" not in extra:
+        assert _DEV_CONFIG is not None
+        argv += ["--run-config", str(_DEV_CONFIG)]   # dev window 2024-12-31
     out = subprocess.run(argv, capture_output=True, text=True)
     return out.returncode, out.stdout + out.stderr
 
@@ -75,6 +79,15 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     repo, store = args.repo_root, args.store_dir
     results: list[tuple[str, bool, str]] = []
+
+    global _DEV_CONFIG
+    cfg_dir = Path(tempfile.mkdtemp(prefix="g3_rehearsal_cfg_"))
+    _DEV_CONFIG = cfg_dir / "dev_2024.yaml"
+    _DEV_CONFIG.write_text('overall_end: "2024-12-31"\n', encoding="utf-8")
+    cfg_2026h1 = cfg_dir / "beyond_2026h1.yaml"
+    cfg_2026h1.write_text('overall_end: "2026-06-30"\n', encoding="utf-8")
+    cfg_2025h1 = cfg_dir / "partial_2025h1.yaml"
+    cfg_2025h1.write_text('overall_end: "2025-06-30"\n', encoding="utf-8")
 
     # R1 ACCEPT
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
@@ -152,11 +165,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         ledger_path.write_bytes(original_bytes)
 
-    # R8 REFUSE holdout-touching window (codex #352 r5): the default
-    # config_walk grid ends 2025-12-31 — a dev run claiming that window must
-    # be refused NAMING the holdout; only --final-adjudication may pass.
+    # R8 REFUSE holdout-touching window (codex #352 r5+r8): the REAL default
+    # config_walk.yaml runs through 2025-12-31 — gating THAT config (window
+    # derived from the config, not a claim) must refuse NAMING the holdout.
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                        "--test-window-end", "2025-12-31")
+                        "--run-config", str(repo / "config_walk.yaml"))
     results.append(("R8 holdout-touching window refused",
                     rc == 1 and "untouched holdout" in out,
                     out.splitlines()[0] if out else ""))
@@ -165,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     # the verdict run must cover the holdout EXACTLY — 2026H1 data is outside
     # the registered adjudication scope, flag or no flag.
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                        "--test-window-end", "2026-06-30",
+                        "--run-config", str(cfg_2026h1),
                         "--final-adjudication")
     results.append(("R9 adjudication-beyond-holdout refused",
                     rc == 1 and "EXACTLY" in out,
@@ -175,10 +188,20 @@ def main(argv: list[str] | None = None) -> int:
     # ending mid-holdout (2025-06-30) would be an interim PEEK at partial
     # holdout results before the one-time verdict — must refuse.
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                        "--test-window-end", "2025-06-30",
+                        "--run-config", str(cfg_2025h1),
                         "--final-adjudication")
     results.append(("R10 partial-holdout peek refused",
                     rc == 1 and "EXACTLY" in out and "no partial peek" in out,
+                    out.splitlines()[0] if out else ""))
+
+    # R11 REFUSE claim/config mismatch (codex #352 r8): a bare claim saying
+    # 2024-12-31 while the config derives 2025-12-31 must be refused — the
+    # gate validates the CONFIG, not the claim.
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--run-config", str(repo / "config_walk.yaml"),
+                        "--test-window-end", "2024-12-31")
+    results.append(("R11 claim/config mismatch refused",
+                    rc == 1 and "claim/config mismatch" in out,
                     out.splitlines()[0] if out else ""))
 
     print("\n=== GATE REHEARSAL RESULTS ===")
@@ -186,8 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/10")
-    return 0 if n_ok == 10 else 1
+    print(f"  => {n_ok}/11")
+    return 0 if n_ok == 11 else 1
 
 
 if __name__ == "__main__":

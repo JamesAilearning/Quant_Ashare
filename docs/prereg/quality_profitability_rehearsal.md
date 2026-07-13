@@ -21,7 +21,8 @@
 | R7 | 未冻结 ledger 被拒(v3 增补) | 临时把 ledger status 降为 draft 再跑 | REJECT: ledger status not frozen | **PASS**(REFUSE) |
 | R8 | 触碰 holdout 的窗口被拒(v4 增补) | --test-window-end 2025-12-31(默认 config_walk 末界)不带 --final-adjudication | REJECT: 点名 holdout;唯一次终裁须显式 flag | **PASS**(REFUSE) |
 | R9 | 终裁越过 holdout 上界被拒(v5 增补) | --final-adjudication --test-window-end 2026-06-30 | REJECT: 终裁须恰好=holdout 末端(2026H1 不在注册裁决范围) | **PASS**(REFUSE) |
-| R10 | 终裁只盖半个 holdout 被拒(v6 增补) | --final-adjudication --test-window-end 2025-06-30 | REJECT: no partial peek —— 一次性终裁须覆盖完整已签 holdout | **PASS**(REFUSE) |
+| R10 | 终裁只盖半个 holdout 被拒(v6 增补) | --final-adjudication + config(overall_end 2025-06-30) | REJECT: no partial peek —— 一次性终裁须覆盖完整已签 holdout | **PASS**(REFUSE) |
+| R11 | 自报窗与 config 不符被拒(v7 增补) | --test-window-end 2024-12-31 + 真 config_walk.yaml(2025-12-31) | REJECT: claim/config mismatch —— gate 只信 config | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -74,7 +75,10 @@
   (2024-12-31),dev run 触碰 2025 holdout 即拒;唯一次终裁须显式
   --final-adjudication(响亮 UNBLINDING 横幅)。新增 R8 场景。
 - **v5(codex r6)**: 终裁窗限定在已签 holdout 内(2026H1 带 flag 也拒);新增 R9。
-- **v6(codex r7)**: 终裁窗必须**恰好等于 holdout 末端**(2025-12-31)——
-  中途窗(如 2025-06-30)= 注册终裁前的部分偷看,同样拒;新增 R10。演练矩阵
-  **10 场景**,最终复跑 **10/10 PASS**(输出以 PR #352 评论存档)。
+- **v6(codex r7)**: 终裁窗必须恰好等于 holdout 末端 —— 中途窗=部分偷看,拒;R10。
+- **v7(codex r8)**: 被门的窗口**从 run config 推导**(overall_end,extends 链
+  解析),自报 --test-window-end 降级为交叉核对(不符即拒);ACCEPT 回显 config
+  sha256 供 run provenance 绑定;R8 改用**真 config_walk.yaml** 演练默认配置
+  攻击,新增 R11(claim/config mismatch)。演练矩阵 **11 场景**,最终复跑
+  **11/11 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

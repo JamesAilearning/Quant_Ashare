@@ -64,6 +64,29 @@ def _git(repo: Path, *args: str) -> str:
     return out.stdout.strip()
 
 
+def _resolve_overall_end(cfg_path: Path, depth: int = 0) -> object:
+    """``overall_end`` from a walk-forward config, resolving the ``extends``
+    chain (child overrides parent). Returns the raw value, or a string
+    starting with ``REFUSE:`` on any failure — the gate never guesses a
+    window it cannot derive."""
+    if depth > 5:
+        return "REFUSE:extends chain deeper than 5 — refusing to derive."
+    try:
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - any parse failure refuses
+        return f"REFUSE:run config unreadable ({cfg_path}): {exc}"
+    if not isinstance(data, dict):
+        return f"REFUSE:run config is not a mapping: {cfg_path}"
+    if "overall_end" in data:
+        return data["overall_end"]
+    ext = data.get("extends")
+    if ext:
+        return _resolve_overall_end((cfg_path.parent / str(ext)).resolve(),
+                                    depth + 1)
+    return (f"REFUSE:run config {cfg_path} has no overall_end anywhere in "
+            "its extends chain — the gated window cannot be derived.")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
@@ -73,12 +96,16 @@ def main(argv: list[str] | None = None) -> int:
                    help="ISO timestamp of the run being gated (default: now UTC).")
     p.add_argument("--pit-cases", default=DEFAULT_PIT_CASES,
                    help="pytest target(s) for the PIT battery.")
-    p.add_argument("--test-window-end", required=True,
-                   help="the run's LAST test-window date (YYYY-MM-DD) — "
-                        "validated against the frozen dev end_boundary so a "
-                        "dev run can never touch the 2025 holdout "
-                        "(codex #352 r5 P1). Run provenance must record the "
-                        "same value.")
+    p.add_argument("--run-config", type=Path, required=True,
+                   help="the walk-forward config the run will ACTUALLY use — "
+                        "the gated window is DERIVED from its overall_end "
+                        "(extends chain resolved), never from a bare claim "
+                        "(codex #352 r8 P1). ACCEPT echoes the config sha256 "
+                        "so run provenance ties the run to the gated config.")
+    p.add_argument("--test-window-end", default=None,
+                   help="optional cross-check: if supplied it must EQUAL the "
+                        "config-derived window end, else the gate refuses "
+                        "(claim/config mismatch).")
     p.add_argument("--final-adjudication", action="store_true",
                    help="ONE-TIME holdout unblinding for the final verdict "
                         "run only; prints a loud banner and still requires "
@@ -116,11 +143,34 @@ def main(argv: list[str] | None = None) -> int:
     end_boundary = sd["window"]["end_boundary"]
     if not isinstance(end_boundary, date):
         end_boundary = date.fromisoformat(str(end_boundary))
-    try:
-        test_end = date.fromisoformat(args.test_window_end)
-    except ValueError:
-        return _refuse(f"--test-window-end {args.test_window_end!r} is not "
-                       "a YYYY-MM-DD date.")
+    # the gated window is DERIVED from the run config the run will actually
+    # consume — a bare --test-window-end claim could say 2024-12-31 while the
+    # config still runs through 2025-12-31 (codex #352 r8 P1).
+    if not args.run_config.is_file():
+        return _refuse(f"run config not found: {args.run_config}")
+    overall_end = _resolve_overall_end(args.run_config)
+    if isinstance(overall_end, str) and overall_end.startswith("REFUSE:"):
+        return _refuse(overall_end[len("REFUSE:"):])
+    if isinstance(overall_end, date):
+        test_end = overall_end
+    else:
+        try:
+            test_end = date.fromisoformat(str(overall_end))
+        except ValueError:
+            return _refuse(f"run config overall_end {overall_end!r} is not "
+                           "a YYYY-MM-DD date.")
+    if args.test_window_end is not None:
+        try:
+            claimed = date.fromisoformat(args.test_window_end)
+        except ValueError:
+            return _refuse(f"--test-window-end {args.test_window_end!r} is "
+                           "not a YYYY-MM-DD date.")
+        if claimed != test_end:
+            return _refuse(
+                f"claim/config mismatch: --test-window-end says "
+                f"{claimed.isoformat()} but the run config derives "
+                f"{test_end.isoformat()} ({args.run_config}) — the gate "
+                "validates the CONFIG, not the claim.")
     holdout_window = str(sd["untouched_final_holdout"]["window"])
     try:
         holdout_start_s, holdout_end_s = (t.strip() for t in
@@ -226,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  plan_commit: {plan_commit}")
     print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")
     print(f"  candidate: {args.candidate}")
-    print(f"  test_window_end: {test_end.isoformat()}"
+    cfg_sha = __import__("hashlib").sha256(
+        args.run_config.read_bytes()).hexdigest()
+    print(f"  run_config: {args.run_config} sha256={cfg_sha[:16]}...")
+    print(f"  test_window_end(derived): {test_end.isoformat()}"
           + ("  [FINAL ADJUDICATION]" if args.final_adjudication else ""))
     print(f"  manifest_aggregate_sha256: {aggregate}")
     return 0
