@@ -14,9 +14,11 @@ with different content distinguishable ONLY by announcement date; each is a
 distinct, dated disclosure event and BOTH SHALL be preserved. BOTH the `update_flag=0`
 (as-originally-reported) and `update_flag=1` (revised) rows for a given
 `(instrument, report_period)` SHALL be preserved; the ingest SHALL NOT
-silently deduplicate, overwrite, or collapse versions. Two rows with the
-SAME full versioned identity but DIFFERENT content within one fetch SHALL be
-refused (true ambiguity — an identity dimension the key does not carry). A
+silently deduplicate, overwrite, or collapse versions. Two rows on the SAME
+EFFECTIVE announcement day (`f_ann_date`, or `ann_date` when `f_ann_date` is
+blank) for one `(instrument, report_period, update_flag)` but with DIFFERENT
+content SHALL be refused within one fetch (true ambiguity — the announcement
+day cannot order them; an identity dimension the key does not carry). A
 re-fetch whose content hash differs from the stored record SHALL be detected
 and recorded, never silently replacing the prior version in place.
 
@@ -32,9 +34,10 @@ and recorded, never silently replacing the prior version in place.
 - **THEN** both rows are stored as distinct disclosure events (neither is
   dropped, and the fetch is NOT refused as ambiguous)
 
-#### Scenario: a same-identity double content is refused as truly ambiguous
-- **WHEN** the provider returns two rows with the SAME `(instrument,
-  report_period, update_flag, f_ann_date)` but different content in one fetch
+#### Scenario: a same-announcement-day double content is refused as truly ambiguous
+- **WHEN** the provider returns, in one fetch, two rows for one `(instrument,
+  report_period, update_flag)` on the SAME effective announcement day but
+  with different content
 - **THEN** the ingest refuses that instrument/endpoint loudly rather than
   collapse arbitrarily
 
@@ -58,7 +61,9 @@ MULTIPLE dated disclosures, the disclosure of record for that version SHALL
 be the EARLIEST-ANNOUNCED row — ordered by `announcement_date` (the resolved
 announcement day), NOT by `available_from_trade_date` alone (two distinct
 announcement days can share one availability day across a weekend/holiday) —
-with dated disclosures preferred over undated ones; a LATER same-version
+with dated disclosures preferred over undated ones; a record-day TIE with
+more than one distinct content SHALL fail loud (the announcement day cannot
+order them into a record — row order never decides); a LATER same-version
 re-announcement is a DATED restatement — recorded with its own announcement
 date, NEVER served in place of the record. As of a query trade date, the view SHALL serve the LATEST
 `report_period` whose `available_from_trade_date` is on or before that
