@@ -198,19 +198,20 @@ def test_record_ordered_by_announcement_day_not_availability():
     assert picked.iloc[0]["revenue"] == 60.0           # earlier ANNOUNCED wins
 
 
-def test_record_day_tie_with_different_content_fails_loud():
-    # two DATED disclosures on ONE announcement day with different content
-    # cannot be ordered into a record — fail loud, never row-order
-    # (codex #351 r2; cross-batch store assembly can produce this even though
-    # ingest refuses the one-fetch case).
+def test_same_effective_day_pair_is_duplicate_identity():
+    # two disclosures on ONE effective announcement day are ONE versioned
+    # identity (effective-announcement key, codex #351 r5): an unresolved
+    # same-day double content fails loud as duplicate versions — never
+    # ordered by row order (an ann_date-only difference under a present
+    # f_ann_date does NOT mint a second identity).
     frame = _frame([
         {"ts_code": "V", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 60.0},
         {"ts_code": "V", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 99.0,
-         "ann_date": "20220501"},  # distinct 5-col key, SAME announcement day
+         "ann_date": "20220501"},  # ann-only difference, SAME effective day
     ])
-    with pytest.raises(FinancialPITContractError, match="record-day tie"):
+    with pytest.raises(FinancialPITContractError, match="duplicate logical versions"):
         select_disclosure_of_record(frame)
-    with pytest.raises(FinancialPITContractError, match="record-day tie"):
+    with pytest.raises(FinancialPITContractError, match="duplicate logical versions"):
         version_collapse_residual(frame, ["revenue"])
 
 
@@ -219,7 +220,8 @@ def test_undated_disclosure_loses_to_dated_same_version():
     # row is the record (the undated one can never serve anyway).
     frame = _frame([
         {"ts_code": "W", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 70.0,
-         "f_ann_date": None, ANNOUNCEMENT_DATE: None, AVAILABLE_FROM: None},
+         "f_ann_date": None, "ann_date": None, ANNOUNCEMENT_DATE: None,
+         AVAILABLE_FROM: None},
         {"ts_code": "W", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 71.0},
     ])
     picked = select_disclosure_of_record(frame)

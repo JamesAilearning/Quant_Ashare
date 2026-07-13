@@ -494,14 +494,14 @@ def build_report(args: argparse.Namespace) -> str:
     a("## 7. 偏离 Gate-1 memo 的意外(如实记录)")
     a("")
     total_holes = sum(len(info.missing_names) for info in residuals.values())
-    a(f"1. **提供方歧义重复 → {total_holes} 个 ingest hole**(§8 名单)。同一 "
-      "`(ts_code, end_date, update_flag)` 在一次 fetch 返回两行**不同内容**,"
-      "`report_type`/`end_type` 均无法区分,仅 `f_ann_date` 不同(例: 五粮液 "
-      "income 20250630/uf1 = f_ann 20250828 revenue 527.7亿 vs 迟到行 f_ann "
-      "20260430 revenue 235.1亿)。PR-1 ingest 按契约 fail-loud 拒收 → 该 "
-      "instrument/endpoint 留 hole,覆盖率计为未覆盖(诚实方向)。**follow-up**: "
-      "消歧需契约级改动(如 logical key 纳入 f_ann_date、按最早披露为 record),"
-      "应走独立 OpenSpec change,不在 Step-A 越权。")
+    a(f"1. **提供方歧义重复(已消歧)→ 现存 {total_holes} 个 ingest hole**"
+      "(§8 名单)。原 27 hole 的主因 —— 同一 `(ts_code, end_date, update_flag)` "
+      "两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec "
+      "`fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日"
+      "(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,"
+      "record = 最早披露。剩余 hole 为**真歧义**(同一有效公告日双内容,如 "
+      "000627.SZ 天茂同日双 comp_type 报表)—— 保留 fail-loud,覆盖率计为未覆盖"
+      "(诚实方向)。")
     a("2. **rd_exp 的 2018 年 as-of 断崖**: 行级 pooled 显示 2018=55%,但 as-of "
       "横截面 2018 H1 仅 0.4%、Q3 18.4%、Q4 87.4% —— 单列研发费用自 2018 Q3 报告"
       "才开始批量披露。**C2 最早可靠期 = 2019**(Gate-1 的『2018 早窗弱』在 as-of "

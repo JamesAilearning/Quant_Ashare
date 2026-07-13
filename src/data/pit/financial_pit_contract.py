@@ -32,8 +32,10 @@ from src.data.trading_calendar import StaticTradingCalendar
 from src.data.tushare.financial_statements import (
     COL_CONTENT_HASH,
     COL_FETCH_BATCH,
+    EFF_ANN_COL,
     LOGICAL_KEY,
     canon_announcement_token,
+    effective_announcement_series,
 )
 
 # Contract output columns.
@@ -191,10 +193,11 @@ def _revision_linkage(frame: pd.DataFrame) -> pd.Series:
 
 
 def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
-    """Keep the LATEST batch per versioned identity ``LOGICAL_KEY``
-    (``ts_code, end_date, update_flag, f_ann_date, ann_date`` — the
-    announcement dates are part of the identity; two same-version rows
-    announced on different days are distinct disclosure events, both current).
+    """Keep the LATEST batch per versioned identity — ``LOGICAL_KEY`` plus the
+    EFFECTIVE announcement token (``f_ann_date`` else ``ann_date``): two
+    same-version rows announced on different days are distinct disclosure
+    events, both current; an ``ann_date``-only correction under a present
+    ``f_ann_date`` is the SAME disclosure (latest batch wins, codex #351 r5).
 
     The physical store is append-only; this is the read-time resolution the
     spec mandates — the newest fetch of a logical record wins, but every prior
@@ -205,7 +208,7 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
     unresolved would expose MULTIPLE physical versions as current and leak
     superseded financial rows into PIT use — so this refuses rather than passing
     an unresolvable frame through."""
-    required = (COL_FETCH_BATCH, *LOGICAL_KEY)
+    required = (COL_FETCH_BATCH, *LOGICAL_KEY, "f_ann_date", "ann_date")
     missing = [c for c in required if c not in frame.columns]
     if missing:
         raise FinancialPITContractError(
@@ -214,10 +217,13 @@ def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
             f"{LOGICAL_KEY}; refusing to return an unresolved frame (it would "
             "expose superseded versions as current)."
         )
-    ordered = frame.sort_values(COL_FETCH_BATCH)
-    return ordered.drop_duplicates(
-        subset=list(LOGICAL_KEY), keep="last",
-    ).reset_index(drop=True)
+    work = frame.copy()
+    work[EFF_ANN_COL] = effective_announcement_series(work)
+    ordered = work.sort_values(COL_FETCH_BATCH)
+    picked = ordered.drop_duplicates(
+        subset=[*LOGICAL_KEY, EFF_ANN_COL], keep="last",
+    )
+    return picked.drop(columns=[EFF_ANN_COL]).reset_index(drop=True)
 
 
 def _assert_resolved(frame: pd.DataFrame, where: str) -> None:
@@ -229,8 +235,10 @@ def _assert_resolved(frame: pd.DataFrame, where: str) -> None:
     ``f_ann_date`` are distinct dated disclosures — legal, not duplicates
     (spec fix-financial-ingest-ambiguous-duplicates). Callers must resolve
     current versions first."""
-    key = ["ts_code", REPORT_PERIOD, "update_flag", "f_ann_date", "ann_date"]
-    if frame.duplicated(subset=key).any():
+    work = frame.copy()
+    work[EFF_ANN_COL] = effective_announcement_series(work)
+    key = ["ts_code", REPORT_PERIOD, "update_flag", EFF_ANN_COL]
+    if work.duplicated(subset=key).any():
         raise FinancialPITContractError(
             f"{where}: frame has duplicate logical versions {key} — "
             "resolve_current_versions() must run first so superseded append-only "
@@ -276,28 +284,13 @@ def _per_version_records(frame: pd.DataFrame) -> pd.DataFrame:
     winner to provider row order — codex #351). A later same-version
     re-announcement is a DATED restatement — recorded in the store, never
     selected here (spec fix-financial-ingest-ambiguous-duplicates)."""
+    # NOTE: a same-announcement-day pair IS one versioned identity under the
+    # effective-announcement key (codex #351 r5) — an unresolved same-day
+    # double content already fails loud in _assert_resolved as duplicate
+    # versions, so no record-day tie can reach the ordering below.
     work = frame.copy()
     work["_ann_ord"] = work[ANNOUNCEMENT_DATE].map(_date_ord)
     work["_avail_ord"] = work[AVAILABLE_FROM].map(_date_ord)
-    # a RECORD-DAY tie with more than one distinct content is unresolvable:
-    # two dated disclosures on the SAME announcement day cannot be ordered
-    # into a record — fail loud rather than let provider/parquet row order
-    # decide (codex #351 r2; can arise from cross-batch store assembly even
-    # though the ingest refuses the one-fetch case).
-    kcols = ["ts_code", REPORT_PERIOD, "update_flag"]
-    dated = work[work["_ann_ord"] != _UNDATED_ORD]
-    if not dated.empty:
-        win = dated.groupby(kcols, dropna=False)["_ann_ord"].transform("min")
-        tied = dated[dated["_ann_ord"] == win]
-        amb = tied.groupby(kcols, dropna=False)[COL_CONTENT_HASH].nunique()
-        offenders = amb[amb > 1]
-        if len(offenders):
-            raise FinancialPITContractError(
-                f"record-day tie with {int(offenders.iloc[0])} DIFFERENT "
-                f"contents for {offenders.index[0]} — two disclosures on one "
-                "announcement day cannot be ordered into a record; refusing "
-                "rather than letting row order decide."
-            )
     ordered = work.sort_values(
         ["ts_code", REPORT_PERIOD, "update_flag", "_ann_ord", "_avail_ord"],
         kind="mergesort",

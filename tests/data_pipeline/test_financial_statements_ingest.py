@@ -253,6 +253,32 @@ def test_float_coerced_announcement_date_is_same_disclosure(tmp_path) -> None:
     assert len(stored) == 1                       # no phantom second disclosure
 
 
+def test_ann_only_correction_is_same_disclosure_not_new_identity(tmp_path) -> None:
+    # provider corrects ONLY ann_date while f_ann_date (the effective
+    # announcement) is present and unchanged: same disclosure identity — a
+    # changed re-fetch (latest batch wins), NEVER a phantom second disclosure
+    # that would tie on the served announcement day (codex #351 r5).
+    from datetime import date as _date
+
+    from src.data.pit.financial_pit_contract import (
+        build_contract_frame,
+        resolve_current_versions,
+    )
+    from src.data.trading_calendar import StaticTradingCalendar
+    b1 = pd.DataFrame([_income_row("20211231", "0", 100.0)])   # ann 20220331
+    r2 = _income_row("20211231", "0", 100.0)
+    r2["ann_date"] = "20220330"                                # ann-only fix
+    ing = FinancialStatementIngestor(_FakeClient([b1, pd.DataFrame([r2])]), tmp_path)
+    ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    res2 = ing.ingest("income", "000001.SZ", fetch_batch="b2")
+    assert res2.rows_new == 1 and res2.rows_changed == 1       # same identity
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    cal = StaticTradingCalendar([_date(2022, 3, 31), _date(2022, 4, 1)])
+    current = resolve_current_versions(build_contract_frame(stored, cal))
+    assert len(current) == 1                                   # ONE disclosure
+    assert current.iloc[0]["ann_date"] == "20220330"           # correction wins
+
+
 def test_legacy_store_spelling_does_not_mint_phantom_disclosure(tmp_path) -> None:
     # a store written BEFORE canonicalization may spell the announcement as a
     # float-coerced '20220331.0'. A canonical re-fetch of the SAME disclosure

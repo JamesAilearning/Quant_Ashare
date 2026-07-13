@@ -5,10 +5,12 @@
 The system SHALL ingest raw income-statement, balance-sheet, and cash-flow
 records from the data provider with per-record provenance: source endpoint,
 fetch batch identifier, content hash, and `update_flag`. The versioned
-identity of a record SHALL carry the announcement dates —
-`(instrument, report_period, update_flag, f_ann_date, ann_date)`; `ann_date`
-is included so a fallback-dated pair (blank `f_ann_date`, distinct
-`ann_date`) is also two disclosures, never one NA key. The provider emits,
+identity of a record SHALL be `(instrument, report_period, update_flag,
+EFFECTIVE announcement day)` — the effective announcement day is `f_ann_date`,
+falling back to `ann_date` when `f_ann_date` is blank (so a fallback-dated
+pair with distinct `ann_date` is two disclosures, never one NA key, while an
+`ann_date`-only correction under a present `f_ann_date` is the SAME
+disclosure — a changed re-fetch, latest batch current). The provider emits,
 for a few `(instrument, report_period, update_flag)` triples, TWO disclosures
 with different content distinguishable ONLY by announcement date; each is a
 distinct, dated disclosure event and BOTH SHALL be preserved. BOTH the `update_flag=0`
@@ -61,9 +63,10 @@ MULTIPLE dated disclosures, the disclosure of record for that version SHALL
 be the EARLIEST-ANNOUNCED row — ordered by `announcement_date` (the resolved
 announcement day), NOT by `available_from_trade_date` alone (two distinct
 announcement days can share one availability day across a weekend/holiday) —
-with dated disclosures preferred over undated ones; a record-day TIE with
-more than one distinct content SHALL fail loud (the announcement day cannot
-order them into a record — row order never decides); a LATER same-version
+with dated disclosures preferred over undated ones; two disclosures on ONE
+effective announcement day are ONE identity, so an unresolved same-day double
+content SHALL fail loud as duplicate versions (row order never decides); a
+LATER same-version
 re-announcement is a DATED restatement — recorded with its own announcement
 date, NEVER served in place of the record. As of a query trade date, the view SHALL serve the LATEST
 `report_period` whose `available_from_trade_date` is on or before that
