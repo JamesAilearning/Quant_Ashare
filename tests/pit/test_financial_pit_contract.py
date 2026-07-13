@@ -92,10 +92,15 @@ def test_revision_links_to_original() -> None:
 
 
 def test_resolve_current_keeps_latest_batch() -> None:
+    # the versioned identity includes the announcement dates
+    # (fix-financial-ingest-ambiguous-duplicates): SAME announcement here, so
+    # the two rows are one logical version and the latest batch wins.
     frame = pd.DataFrame([
         {"ts_code": "A", "end_date": "20211231", "update_flag": "0",
+         "f_ann_date": "20220331", "ann_date": "20220331",
          "revenue": 100.0, COL_CONTENT_HASH: "h1", COL_FETCH_BATCH: "b1"},
         {"ts_code": "A", "end_date": "20211231", "update_flag": "0",
+         "f_ann_date": "20220331", "ann_date": "20220331",
          "revenue": 200.0, COL_CONTENT_HASH: "h2", COL_FETCH_BATCH: "b2"},
     ])
     cur = resolve_current_versions(frame)

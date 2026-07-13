@@ -215,7 +215,7 @@ def _assert_resolved(frame: pd.DataFrame, where: str) -> None:
     ``f_ann_date`` are distinct dated disclosures — legal, not duplicates
     (spec fix-financial-ingest-ambiguous-duplicates). Callers must resolve
     current versions first."""
-    key = ["ts_code", REPORT_PERIOD, "update_flag", "f_ann_date"]
+    key = ["ts_code", REPORT_PERIOD, "update_flag", "f_ann_date", "ann_date"]
     if frame.duplicated(subset=key).any():
         raise FinancialPITContractError(
             f"{where}: frame has duplicate logical versions {key} — "
@@ -243,28 +243,36 @@ def _assert_binary_update_flag(frame: pd.DataFrame, where: str) -> None:
 
 
 _RECORD_REQUIRED_COLS = ("ts_code", "update_flag", REPORT_PERIOD,
-                         "f_ann_date", AVAILABLE_FROM)
+                         "f_ann_date", "ann_date", ANNOUNCEMENT_DATE,
+                         AVAILABLE_FROM)
 _UNDATED_ORD = 10**9  # sorts undated disclosures after any real date
+
+
+def _date_ord(value: object) -> int:
+    return value.toordinal() if isinstance(value, date) else _UNDATED_ORD
 
 
 def _per_version_records(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse each ``(ts_code, report_period, update_flag)`` to that
-    VERSION's disclosure of record: the EARLIEST-announced row, dated rows
-    preferred over undated (spec fix-financial-ingest-ambiguous-duplicates).
-    A later same-version re-announcement is a DATED restatement — recorded in
-    the store, never selected here."""
+    VERSION's disclosure of record: the EARLIEST-ANNOUNCED row (by
+    ``announcement_date``, the resolved announcement day), dated rows
+    preferred over undated; availability is only the tiebreak (two distinct
+    announcement days can map to ONE ``available_from_trade_date`` across a
+    weekend/holiday, and ordering by availability alone would leave the
+    winner to provider row order — codex #351). A later same-version
+    re-announcement is a DATED restatement — recorded in the store, never
+    selected here (spec fix-financial-ingest-ambiguous-duplicates)."""
     work = frame.copy()
-    work["_avail_ord"] = work[AVAILABLE_FROM].map(
-        lambda d: d.toordinal() if isinstance(d, date) else _UNDATED_ORD,
-    )
+    work["_ann_ord"] = work[ANNOUNCEMENT_DATE].map(_date_ord)
+    work["_avail_ord"] = work[AVAILABLE_FROM].map(_date_ord)
     ordered = work.sort_values(
-        ["ts_code", REPORT_PERIOD, "update_flag", "_avail_ord"],
+        ["ts_code", REPORT_PERIOD, "update_flag", "_ann_ord", "_avail_ord"],
         kind="mergesort",
     )
     picked = ordered.drop_duplicates(
         subset=["ts_code", REPORT_PERIOD, "update_flag"], keep="first",
     )
-    return picked.drop(columns=["_avail_ord"])
+    return picked.drop(columns=["_ann_ord", "_avail_ord"])
 
 
 def select_disclosure_of_record(frame: pd.DataFrame) -> pd.DataFrame:

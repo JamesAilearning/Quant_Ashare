@@ -5,11 +5,13 @@
 The system SHALL ingest raw income-statement, balance-sheet, and cash-flow
 records from the data provider with per-record provenance: source endpoint,
 fetch batch identifier, content hash, and `update_flag`. The versioned
-identity of a record SHALL be `(instrument, report_period, update_flag,
-announcement_date)` — the provider emits, for a few `(instrument,
-report_period, update_flag)` triples, TWO disclosures with different content
-distinguishable ONLY by `f_ann_date`; each is a distinct, dated disclosure
-event and BOTH SHALL be preserved. BOTH the `update_flag=0`
+identity of a record SHALL carry the announcement dates —
+`(instrument, report_period, update_flag, f_ann_date, ann_date)`; `ann_date`
+is included so a fallback-dated pair (blank `f_ann_date`, distinct
+`ann_date`) is also two disclosures, never one NA key. The provider emits,
+for a few `(instrument, report_period, update_flag)` triples, TWO disclosures
+with different content distinguishable ONLY by announcement date; each is a
+distinct, dated disclosure event and BOTH SHALL be preserved. BOTH the `update_flag=0`
 (as-originally-reported) and `update_flag=1` (revised) rows for a given
 `(instrument, report_period)` SHALL be preserved; the ingest SHALL NOT
 silently deduplicate, overwrite, or collapse versions. Two rows with the
@@ -52,11 +54,13 @@ disclosure of record. (The provider does not always retain an `update_flag=0`
 row for recent periods; discarding a period that exists only as
 `update_flag=1` would drop genuinely-available data and stale the served
 value by 1–2 years.) When ONE version (`update_flag` value) of a period has
-MULTIPLE dated disclosures (distinct `f_ann_date`), the disclosure of record
-for that version SHALL be the EARLIEST-announced row, with dated disclosures
-preferred over undated ones; a LATER same-version re-announcement is a DATED
-restatement — recorded with its own announcement date, NEVER served in place
-of the record. As of a query trade date, the view SHALL serve the LATEST
+MULTIPLE dated disclosures, the disclosure of record for that version SHALL
+be the EARLIEST-ANNOUNCED row — ordered by `announcement_date` (the resolved
+announcement day), NOT by `available_from_trade_date` alone (two distinct
+announcement days can share one availability day across a weekend/holiday) —
+with dated disclosures preferred over undated ones; a LATER same-version
+re-announcement is a DATED restatement — recorded with its own announcement
+date, NEVER served in place of the record. As of a query trade date, the view SHALL serve the LATEST
 `report_period` whose `available_from_trade_date` is on or before that
 date — it SHALL NOT carry forward from an older period when a newer period is
 already announced and available. The view SHALL NEVER serve a restated value

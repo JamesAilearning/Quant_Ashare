@@ -207,6 +207,23 @@ def test_same_triple_different_f_ann_date_both_stored(tmp_path) -> None:
     assert set(stored["revenue"]) == {527.7, 235.1}
 
 
+def test_fallback_dated_pair_distinct_ann_dates_both_stored(tmp_path) -> None:
+    # blank f_ann_date on BOTH rows but DISTINCT ann_date (the fallback dating
+    # path): still two distinct dated disclosures — ann_date is in the identity
+    # too, so they must not share one NA key and be refused/collapsed
+    # (codex #351).
+    r1 = _income_row("20211231", "0", 100.0)
+    r2 = _income_row("20211231", "0", 150.0)
+    r1["f_ann_date"] = None
+    r2["f_ann_date"] = None
+    r2["ann_date"] = "20220430"  # r1 keeps 20220331
+    ing = FinancialStatementIngestor(_FakeClient([pd.DataFrame([r1, r2])]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    assert res.rows_new == 2
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    assert len(stored) == 2
+
+
 def test_blank_f_ann_date_rows_still_ingest(tmp_path) -> None:
     # f_ann_date is part of the IDENTITY but NOT of the non-blank key columns:
     # a missing announcement date is legitimate (contract layer marks the row

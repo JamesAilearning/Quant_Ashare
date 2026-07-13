@@ -73,12 +73,17 @@ PROVENANCE_COLS: tuple[str, ...] = (
 )
 
 # The logical current key: latest batch per this tuple wins at read time.
-# ``f_ann_date`` is part of the versioned identity (spec
-# fix-financial-ingest-ambiguous-duplicates): the provider emits, for a few
-# (ts_code, end_date, update_flag) triples, TWO disclosures whose content
-# differs and that ONLY the announcement date distinguishes — each is a
-# distinct, dated disclosure event and both are preserved.
-LOGICAL_KEY: tuple[str, ...] = ("ts_code", "end_date", "update_flag", "f_ann_date")
+# The announcement dates (``f_ann_date`` AND ``ann_date``) are part of the
+# versioned identity (spec fix-financial-ingest-ambiguous-duplicates): the
+# provider emits, for a few (ts_code, end_date, update_flag) triples, TWO
+# disclosures whose content differs and that ONLY the announcement date
+# distinguishes — each is a distinct, dated disclosure event and both are
+# preserved. ``ann_date`` is in the key too so a fallback-dated pair (blank
+# f_ann_date, distinct ann_date) is also two disclosures, not one NA key
+# (codex #351).
+LOGICAL_KEY: tuple[str, ...] = (
+    "ts_code", "end_date", "update_flag", "f_ann_date", "ann_date",
+)
 
 # The key columns that must be NON-BLANK on every row. ``f_ann_date`` is
 # deliberately NOT here — a missing announcement date is legitimate (the

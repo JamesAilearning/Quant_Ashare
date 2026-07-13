@@ -20,6 +20,7 @@ import pandas as pd
 import pytest
 
 from src.data.pit.financial_pit_contract import (
+    ANNOUNCEMENT_DATE,
     AVAILABLE_FROM,
     REPORT_PERIOD,
     FinancialPITContractError,
@@ -30,10 +31,13 @@ from src.data.pit.financial_pit_contract import (
 _P1, _P2, _P3 = date(2021, 12, 31), date(2022, 3, 31), date(2022, 6, 30)
 
 # announcement identity defaults (spec fix-financial-ingest-ambiguous-duplicates:
-# f_ann_date + available_from are part of the record-selection contract).
+# the announcement dates + availability are part of the record-selection
+# contract; records order by announcement day, availability is the tiebreak).
 _DEFAULT_FANN = "20220430"
+_DEFAULT_ANN = date(2022, 4, 30)
 _DEFAULT_AVAIL = date(2022, 5, 5)
 _LATE_FANN = "20230430"
+_LATE_ANN = date(2023, 4, 30)
 _LATE_AVAIL = date(2023, 5, 4)
 
 
@@ -42,6 +46,8 @@ def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     for r in rows:
         r = dict(r)
         r.setdefault("f_ann_date", _DEFAULT_FANN)
+        r.setdefault("ann_date", _DEFAULT_FANN)
+        r.setdefault(ANNOUNCEMENT_DATE, _DEFAULT_ANN)
         r.setdefault(AVAILABLE_FROM, _DEFAULT_AVAIL)
         filled.append(r)
     return pd.DataFrame(filled)
@@ -110,8 +116,8 @@ def test_audit_schema_valid_empty_frame_is_zero_residual():
     # residual; but a schemaless pd.DataFrame() (a miswired audit) must fail loud
     # rather than silently report 0% (codex #345 r3).
     empty = pd.DataFrame(columns=[
-        "ts_code", REPORT_PERIOD, "update_flag", "f_ann_date", AVAILABLE_FROM,
-        "revenue",
+        "ts_code", REPORT_PERIOD, "update_flag", "f_ann_date", "ann_date",
+        ANNOUNCEMENT_DATE, AVAILABLE_FROM, "revenue",
     ])
     res = version_collapse_residual(empty, ["revenue"])
     assert res.n_both_version_periods == 0
@@ -144,7 +150,8 @@ def test_late_reannouncement_of_same_version_not_served():
     frame = _frame([
         {"ts_code": "W", REPORT_PERIOD: _P3, "update_flag": "1", "revenue": 60.0},
         {"ts_code": "W", REPORT_PERIOD: _P3, "update_flag": "1", "revenue": 99.0,
-         "f_ann_date": _LATE_FANN, AVAILABLE_FROM: _LATE_AVAIL},
+         "f_ann_date": _LATE_FANN, ANNOUNCEMENT_DATE: _LATE_ANN,
+         AVAILABLE_FROM: _LATE_AVAIL},
     ])
     picked = select_disclosure_of_record(frame)
     assert len(picked) == 1
@@ -159,7 +166,8 @@ def test_uf0_still_beats_late_and_early_uf1_disclosures():
         {"ts_code": "W", REPORT_PERIOD: _P1, "update_flag": "0", "revenue": 100.0},
         {"ts_code": "W", REPORT_PERIOD: _P1, "update_flag": "1", "revenue": 100.0},
         {"ts_code": "W", REPORT_PERIOD: _P1, "update_flag": "1", "revenue": 999.0,
-         "f_ann_date": _LATE_FANN, AVAILABLE_FROM: _LATE_AVAIL},
+         "f_ann_date": _LATE_FANN, ANNOUNCEMENT_DATE: _LATE_ANN,
+         AVAILABLE_FROM: _LATE_AVAIL},
     ])
     picked = select_disclosure_of_record(frame)
     assert len(picked) == 1
@@ -167,12 +175,33 @@ def test_uf0_still_beats_late_and_early_uf1_disclosures():
     assert picked.iloc[0]["revenue"] == 100.0
 
 
+def test_record_ordered_by_announcement_day_not_availability():
+    # two same-version disclosures on DIFFERENT announcement days that map to
+    # ONE available_from (Friday post-close + weekend re-announcement -> same
+    # Monday): the EARLIER-ANNOUNCED row must win regardless of provider row
+    # order — availability alone cannot order them (codex #351).
+    fri_ann, sat_ann = date(2022, 4, 29), date(2022, 4, 30)
+    monday = date(2022, 5, 5)
+    frame = _frame([
+        # provider order puts the LATER announcement FIRST on purpose
+        {"ts_code": "V", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 99.0,
+         "f_ann_date": "20220430", ANNOUNCEMENT_DATE: sat_ann,
+         AVAILABLE_FROM: monday},
+        {"ts_code": "V", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 60.0,
+         "f_ann_date": "20220429", ANNOUNCEMENT_DATE: fri_ann,
+         AVAILABLE_FROM: monday},
+    ])
+    picked = select_disclosure_of_record(frame)
+    assert len(picked) == 1
+    assert picked.iloc[0]["revenue"] == 60.0           # earlier ANNOUNCED wins
+
+
 def test_undated_disclosure_loses_to_dated_same_version():
     # a version with an UNDATED row (no availability) and a dated row: the dated
     # row is the record (the undated one can never serve anyway).
     frame = _frame([
         {"ts_code": "W", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 70.0,
-         "f_ann_date": None, AVAILABLE_FROM: None},
+         "f_ann_date": None, ANNOUNCEMENT_DATE: None, AVAILABLE_FROM: None},
         {"ts_code": "W", REPORT_PERIOD: _P2, "update_flag": "1", "revenue": 71.0},
     ])
     picked = select_disclosure_of_record(frame)
@@ -187,7 +216,8 @@ def test_audit_compares_records_not_late_reannouncements():
         {"ts_code": "W", REPORT_PERIOD: _P1, "update_flag": "0", "revenue": 100.0},
         {"ts_code": "W", REPORT_PERIOD: _P1, "update_flag": "1", "revenue": 100.0},
         {"ts_code": "W", REPORT_PERIOD: _P1, "update_flag": "1", "revenue": 999.0,
-         "f_ann_date": _LATE_FANN, AVAILABLE_FROM: _LATE_AVAIL},
+         "f_ann_date": _LATE_FANN, ANNOUNCEMENT_DATE: _LATE_ANN,
+         AVAILABLE_FROM: _LATE_AVAIL},
     ])
     res = version_collapse_residual(frame, ["revenue"])
     assert res.n_both_version_periods == 1
