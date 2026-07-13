@@ -137,15 +137,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"would touch the untouched holdout ({holdout_window}). Dev "
                 "runs must end at the boundary; the ONE-TIME final verdict "
                 "run must pass --final-adjudication explicitly.")
-        if test_end > holdout_end:
-            # the verdict run is bounded by the SIGNED holdout — data past it
-            # (e.g. 2026H1) is outside the registered adjudication scope and
-            # can never be blessed, flag or no flag (codex #352 r6 P1).
+        if test_end != holdout_end:
+            # the verdict run must cover the FULL signed holdout EXACTLY —
+            # beyond it (e.g. 2026H1) is outside the registered adjudication
+            # scope (codex #352 r6 P1), and SHORT of it (e.g. 2025-06-30)
+            # would be an interim PEEK at partial holdout results before the
+            # one-time verdict (codex #352 r7 P1). Either way: refuse.
             return _refuse(
                 f"final-adjudication test window ends {test_end.isoformat()} "
-                f"which is BEYOND the signed holdout end "
-                f"{holdout_end.isoformat()} ({holdout_window}) — data outside "
-                "the registered adjudication scope cannot be blessed.")
+                f"but the ONE-TIME verdict must cover the signed holdout "
+                f"EXACTLY (test_end == {holdout_end.isoformat()}, window "
+                f"{holdout_window}) — no partial peek, no out-of-scope data.")
         print("=" * 68)
         print("!! FINAL ADJUDICATION — HOLDOUT UNBLINDING !!")
         print(f"!! test window end {test_end.isoformat()} enters the frozen "

@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — nine scenarios, 9/9 required.
+"""Gate-3 pre-registration gate REHEARSAL — ten scenarios, 10/10 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -15,7 +15,7 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
               that assertion FAIL, so the gate must refuse).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 9/9, paste the printed block into the rehearsal
+before freezing). Exit 0 = 10/10, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -162,13 +162,23 @@ def main(argv: list[str] | None = None) -> int:
                     out.splitlines()[0] if out else ""))
 
     # R9 REFUSE final-adjudication beyond the signed holdout (codex #352 r6):
-    # the verdict run is bounded by the holdout END — 2026H1 data is outside
+    # the verdict run must cover the holdout EXACTLY — 2026H1 data is outside
     # the registered adjudication scope, flag or no flag.
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
                         "--test-window-end", "2026-06-30",
                         "--final-adjudication")
     results.append(("R9 adjudication-beyond-holdout refused",
-                    rc == 1 and "BEYOND the signed holdout" in out,
+                    rc == 1 and "EXACTLY" in out,
+                    out.splitlines()[0] if out else ""))
+
+    # R10 REFUSE partial-holdout adjudication (codex #352 r7): a verdict run
+    # ending mid-holdout (2025-06-30) would be an interim PEEK at partial
+    # holdout results before the one-time verdict — must refuse.
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--test-window-end", "2025-06-30",
+                        "--final-adjudication")
+    results.append(("R10 partial-holdout peek refused",
+                    rc == 1 and "EXACTLY" in out and "no partial peek" in out,
                     out.splitlines()[0] if out else ""))
 
     print("\n=== GATE REHEARSAL RESULTS ===")
@@ -176,8 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/9")
-    return 0 if n_ok == 9 else 1
+    print(f"  => {n_ok}/10")
+    return 0 if n_ok == 10 else 1
 
 
 if __name__ == "__main__":
