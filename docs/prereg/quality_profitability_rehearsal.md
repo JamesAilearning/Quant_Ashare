@@ -16,7 +16,7 @@
 | R2 | 未注册候选被 flag | 伪造候选 id `C4_ROE` 请求评估 | REJECT: not in registered_candidates | **PASS**(REFUSE) |
 | R3 | dirty checkout 被拒 | 工作树注入临时 untracked 文件再跑 | REJECT: dirty checkout | **PASS**(REFUSE) |
 | R4 | 计划晚于 run 被拒 | 用早于 plan-commit 时间戳的 run 元数据 | REJECT: plan committed after run | **PASS**(REFUSE) |
-| R5 | manifest 不一致被拒 | 篡改临时 manifest 副本单文件 hash 对照真 store | REJECT: content-hash mismatch | **PASS**(REFUSE) |
+| R5 | manifest 不一致被拒 | 最小篡改临时 store(每 endpoint 单文件)对照冻结 manifest(gate 无 override 可绕) | REJECT: content-hash mismatch | **PASS**(REFUSE) |
 | R6 | PIT 案例失败被拒 | 注入前视探针(断言公告前可见,正确 view 使其失败) | REJECT: PIT case failed | **PASS**(REFUSE) |
 
 ## 各场景断言细则
@@ -56,4 +56,7 @@
 - manifest aggregate: 4560e8536524e4a0…(1880 文件)
 - 驱动: `scripts/research/rehearse_gate3_prereg_gate.py --store-dir D:/qlib_data/financial_pit_raw`
 - 六场景结果: **6/6 PASS**(gate 无洞;R1 ACCEPT 回显 plan_commit,R2-R6 全部正确 REFUSE)
+- gate 加固复跑(codex #352 r1: 移除 manifest override / freeze 覆盖全部 8 冻结件 /
+  ACCEPT 回显 aggregate): commit b7b790a 后复跑 **6/6 PASS**(R1 回显
+  manifest_aggregate_sha256=4560e853…;R4 消息升级为 frozen package 时间)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
