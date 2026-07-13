@@ -7,7 +7,9 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R2 REFUSE   unregistered candidate (C4_ROE).
   R3 REFUSE   dirty checkout (temp untracked file injected, then removed).
   R4 REFUSE   run timestamped BEFORE the plan's freeze commit.
-  R5 REFUSE   manifest tampered (temp copy with one hash flipped).
+  R5 REFUSE   store/manifest mismatch (minimal temp store: one file per
+              endpoint — re-hash cannot match the frozen 1880-file manifest;
+              the gate has NO manifest override to bypass, codex #352 P1).
   R6 REFUSE   PIT battery fails (injected look-ahead probe: asserts a value
               IS visible before its announcement — the correct view makes
               that assertion FAIL, so the gate must refuse).
@@ -19,7 +21,6 @@ execution record.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 import tempfile
@@ -104,15 +105,18 @@ def main(argv: list[str] | None = None) -> int:
                     rc == 1 and "NOT" in out and "before the run" in out,
                     out.splitlines()[0] if out else ""))
 
-    # R5 REFUSE manifest mismatch (tampered temp copy)
-    manifest = json.loads((repo / MANIFEST_REL).read_text(encoding="utf-8"))
-    first_key = next(iter(manifest["files"]))
-    manifest["files"][first_key] = "0" * 64
+    # R5 REFUSE store/manifest mismatch: minimal temp store (one parquet per
+    # endpoint) re-hashes to something the FROZEN manifest cannot match; the
+    # gate has no manifest override to bypass (codex #352 P1).
     with tempfile.TemporaryDirectory() as td:
-        tampered = Path(td) / "tampered_manifest.json"
-        tampered.write_text(json.dumps(manifest), encoding="utf-8")
-        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                            "--manifest", str(tampered))
+        tampered_store = Path(td) / "store"
+        for ep in ("income", "balancesheet", "cashflow"):
+            src_dir = store / ep
+            first = sorted(src_dir.glob("*.parquet"))[0]
+            dst_dir = tampered_store / ep
+            dst_dir.mkdir(parents=True)
+            (dst_dir / first.name).write_bytes(first.read_bytes())
+        rc, out = _run_gate(repo, tampered_store, "--candidate", "C1_GPA")
         results.append(("R5 manifest mismatch refused",
                         rc == 1 and "manifest mismatch" in out,
                         out.splitlines()[0] if out else ""))

@@ -18,6 +18,7 @@ exit 1 = REFUSE with the reason. Rehearsed by
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -29,6 +30,21 @@ PLAN_REL = "docs/prereg/quality_profitability.yaml"
 LEDGER_REL = "docs/prereg/quality_profitability_ledger.yaml"
 MANIFEST_REL = "docs/prereg/quality_profitability_store_manifest.json"
 DEFAULT_PIT_CASES = "tests/logic/test_financial_pit_view.py"
+
+# EVERY frozen artifact counts toward the freeze timestamp (codex #352 P1):
+# a later clean commit touching ANY of these moves the freeze time forward,
+# so a run must postdate the LATEST change to the whole frozen package —
+# the ledger/manifest/gate cannot be silently swapped after the plan froze.
+FROZEN_ARTIFACTS = (
+    PLAN_REL,
+    LEDGER_REL,
+    MANIFEST_REL,
+    "docs/prereg/quality_profitability_rehearsal.md",
+    "docs/prereg/quality_profitability_pit_preflight_gate3.md",
+    "scripts/research/gate3_store_manifest.py",
+    "scripts/research/gate3_prereg_gate.py",
+    "scripts/research/rehearse_gate3_prereg_gate.py",
+)
 
 
 def _refuse(reason: str) -> int:
@@ -53,8 +69,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="ISO timestamp of the run being gated (default: now UTC).")
     p.add_argument("--pit-cases", default=DEFAULT_PIT_CASES,
                    help="pytest target(s) for the PIT battery.")
-    p.add_argument("--manifest", type=Path, default=None,
-                   help="manifest path override (default: frozen manifest).")
+    # NOTE: no manifest override — the gate verifies ONLY against the frozen
+    # manifest path (codex #352 P1: an override would let a re-ingested store
+    # pass with a matching temp manifest, bypassing the data-version lock).
     args = p.parse_args(argv)
     repo = args.repo_root
 
@@ -69,13 +86,22 @@ def main(argv: list[str] | None = None) -> int:
             or ledger.get("protocol_id") != plan.get("protocol_id"):
         return _refuse("protocol_id mismatch between plan and ledger.")
 
-    # 2. plan frozen (committed)
+    # 2. the WHOLE frozen package is committed; freeze time = the LATEST
+    # commit across all frozen artifacts (codex #352 P1).
     plan_commit = _git(repo, "log", "-1", "--format=%H", "--", PLAN_REL)
     if not plan_commit:
         return _refuse(f"plan not committed: {PLAN_REL} has no git history "
                        "(freeze commit required before any run).")
-    plan_ts_raw = _git(repo, "log", "-1", "--format=%cI", "--", PLAN_REL)
-    plan_ts = datetime.fromisoformat(plan_ts_raw)
+    freeze_ts: datetime | None = None
+    for rel in FROZEN_ARTIFACTS:
+        ts_raw = _git(repo, "log", "-1", "--format=%cI", "--", rel)
+        if not ts_raw:
+            return _refuse(f"frozen artifact not committed: {rel}")
+        ts = datetime.fromisoformat(ts_raw)
+        if freeze_ts is None or ts > freeze_ts:
+            freeze_ts = ts
+    assert freeze_ts is not None
+    plan_ts = freeze_ts
 
     # 3. clean tree
     dirty = _git(repo, "status", "--porcelain")
@@ -89,12 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     if run_ts.tzinfo is None:
         run_ts = run_ts.replace(tzinfo=timezone.utc)
     if plan_ts >= run_ts:
-        return _refuse(f"plan committed at {plan_ts.isoformat()} which is NOT "
-                       f"before the run at {run_ts.isoformat()} — "
+        return _refuse(f"frozen package last committed at {plan_ts.isoformat()} "
+                       f"which is NOT before the run at {run_ts.isoformat()} — "
                        "git-provable ordering violated.")
 
-    # 5. manifest verification (re-hash the store)
-    manifest_path = args.manifest or (repo / MANIFEST_REL)
+    # 5. manifest verification (re-hash the store against the FROZEN manifest)
+    manifest_path = repo / MANIFEST_REL
     verify = subprocess.run(
         [sys.executable, str(repo / "scripts/research/gate3_store_manifest.py"),
          "--store-dir", str(args.store_dir), "--verify", str(manifest_path)],
@@ -120,11 +146,13 @@ def main(argv: list[str] | None = None) -> int:
         tail = "\n".join(pit.stdout.strip().splitlines()[-5:])
         return _refuse(f"PIT case battery FAILED:\n{tail}")
 
+    aggregate = json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "aggregate_sha256"]
     print("GATE ACCEPT")
     print(f"  plan_commit: {plan_commit}")
-    print(f"  plan_committed_at: {plan_ts.isoformat()}")
+    print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")
     print(f"  candidate: {args.candidate}")
-    print(f"  manifest: {manifest_path}")
+    print(f"  manifest_aggregate_sha256: {aggregate}")
     return 0
 
 
