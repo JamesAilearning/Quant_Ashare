@@ -10,10 +10,14 @@ Checks (ALL must pass; any failure = REFUSE, no run):
   6. candidate    — the requested candidate id is in registered_candidates.
   7. PIT cases    — the PIT assertion battery passes (default: the view's
                     logic tests; rehearsal R6 injects a failing battery).
+  8. run window   — --test-window-end must not pass the frozen dev
+                    end_boundary; touching the holdout REFUSES unless the
+                    ONE-TIME --final-adjudication flag is set (loud banner).
+  9. ledger       — the DSR/PBO ledger status must be frozen_with_this_package.
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R6, 6/6 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R8, 8/8 required).
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -69,6 +73,16 @@ def main(argv: list[str] | None = None) -> int:
                    help="ISO timestamp of the run being gated (default: now UTC).")
     p.add_argument("--pit-cases", default=DEFAULT_PIT_CASES,
                    help="pytest target(s) for the PIT battery.")
+    p.add_argument("--test-window-end", required=True,
+                   help="the run's LAST test-window date (YYYY-MM-DD) — "
+                        "validated against the frozen dev end_boundary so a "
+                        "dev run can never touch the 2025 holdout "
+                        "(codex #352 r5 P1). Run provenance must record the "
+                        "same value.")
+    p.add_argument("--final-adjudication", action="store_true",
+                   help="ONE-TIME holdout unblinding for the final verdict "
+                        "run only; prints a loud banner and still requires "
+                        "every other check.")
     # NOTE: no manifest override — the gate verifies ONLY against the frozen
     # manifest path (codex #352 P1: an override would let a re-ingested store
     # pass with a matching temp manifest, bypassing the data-version lock).
@@ -93,6 +107,35 @@ def main(argv: list[str] | None = None) -> int:
         return _refuse(f"ledger status {ledger.get('status')!r} is not "
                        "'frozen_with_this_package' — the DSR/PBO ledger must "
                        "be frozen before any decision-level run.")
+
+    # 1b. the run's test window must respect the frozen dev boundary — the
+    # default config_walk.yaml runs through 2025-12-31 and would silently
+    # consume the 2025 holdout without this check (codex #352 r5 P1).
+    # Covered by rehearsal R8.
+    sd = plan["study_design"]
+    end_boundary = sd["window"]["end_boundary"]
+    if not isinstance(end_boundary, date):
+        end_boundary = date.fromisoformat(str(end_boundary))
+    try:
+        test_end = date.fromisoformat(args.test_window_end)
+    except ValueError:
+        return _refuse(f"--test-window-end {args.test_window_end!r} is not "
+                       "a YYYY-MM-DD date.")
+    holdout_window = sd["untouched_final_holdout"]["window"]
+    if test_end > end_boundary:
+        if not args.final_adjudication:
+            return _refuse(
+                f"run test window ends {test_end.isoformat()} which is AFTER "
+                f"the frozen dev end_boundary {end_boundary.isoformat()} — it "
+                f"would touch the untouched holdout ({holdout_window}). Dev "
+                "runs must end at the boundary; the ONE-TIME final verdict "
+                "run must pass --final-adjudication explicitly.")
+        print("=" * 68)
+        print("!! FINAL ADJUDICATION — HOLDOUT UNBLINDING !!")
+        print(f"!! test window end {test_end.isoformat()} enters the frozen "
+              f"holdout {holdout_window}.")
+        print("!! This is the ONE-TIME verdict run; record it in the ledger.")
+        print("=" * 68)
 
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
@@ -165,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  plan_commit: {plan_commit}")
     print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")
     print(f"  candidate: {args.candidate}")
+    print(f"  test_window_end: {test_end.isoformat()}"
+          + ("  [FINAL ADJUDICATION]" if args.final_adjudication else ""))
     print(f"  manifest_aggregate_sha256: {aggregate}")
     return 0
 

@@ -19,6 +19,7 @@
 | R5 | manifest 不一致被拒 | 最小篡改临时 store(每 endpoint 单文件)对照冻结 manifest(gate 无 override 可绕) | REJECT: content-hash mismatch | **PASS**(REFUSE) |
 | R6 | PIT 案例失败被拒 | 注入前视探针(断言公告前可见,正确 view 使其失败) | REJECT: PIT case failed | **PASS**(REFUSE) |
 | R7 | 未冻结 ledger 被拒(v3 增补) | 临时把 ledger status 降为 draft 再跑 | REJECT: ledger status not frozen | **PASS**(REFUSE) |
+| R8 | 触碰 holdout 的窗口被拒(v4 增补) | --test-window-end 2025-12-31(默认 config_walk 末界)不带 --final-adjudication | REJECT: 点名 holdout;唯一次终裁须显式 flag | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -66,6 +67,9 @@
   checkout 真实存在)后复跑 **6/6 PASS**。
 - **诚实记录(r4)**: r3 轮声称加入的 ledger 冻结状态强制**实际未落进 gate**
   (补丁静默失败,codex r4 抓出)。v3 补丁真实落地(带插入验证)并新增 R7 场景
-  钉死该检查 —— 演练矩阵扩为 **7 场景**,最终复跑 **7/7 PASS**(输出以 PR #352
-  评论存档)。教训: 声称的强制必须有演练场景盯着。
+  钉死该检查。教训: 声称的强制必须有演练场景盯着。
+- **v4(codex r5)**: gate 新增 --test-window-end 强制校验冻结 dev 末界
+  (2024-12-31),dev run 触碰 2025 holdout 即拒;唯一次终裁须显式
+  --final-adjudication(响亮 UNBLINDING 横幅)。新增 R8 场景 —— 演练矩阵
+  **8 场景**,最终复跑 **8/8 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — six scenarios, 6/6 required.
+"""Gate-3 pre-registration gate REHEARSAL — eight scenarios, 8/8 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -15,7 +15,7 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
               that assertion FAIL, so the gate must refuse).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 6/6, paste the printed block into the rehearsal
+before freezing). Exit 0 = 8/8, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -59,11 +59,11 @@ def test_lookahead_probe(tmp_path):
 
 
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
-    out = subprocess.run(
-        [sys.executable, str(repo / GATE), "--repo-root", str(repo),
-         "--store-dir", str(store), *extra],
-        capture_output=True, text=True,
-    )
+    argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
+            "--store-dir", str(store), *extra]
+    if "--test-window-end" not in extra:
+        argv += ["--test-window-end", "2024-12-31"]   # frozen dev boundary
+    out = subprocess.run(argv, capture_output=True, text=True)
     return out.returncode, out.stdout + out.stderr
 
 
@@ -151,13 +151,22 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         ledger_path.write_text(original, encoding="utf-8")
 
+    # R8 REFUSE holdout-touching window (codex #352 r5): the default
+    # config_walk grid ends 2025-12-31 — a dev run claiming that window must
+    # be refused NAMING the holdout; only --final-adjudication may pass.
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--test-window-end", "2025-12-31")
+    results.append(("R8 holdout-touching window refused",
+                    rc == 1 and "untouched holdout" in out,
+                    out.splitlines()[0] if out else ""))
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/7")
-    return 0 if n_ok == 7 else 1
+    print(f"  => {n_ok}/8")
+    return 0 if n_ok == 8 else 1
 
 
 if __name__ == "__main__":
