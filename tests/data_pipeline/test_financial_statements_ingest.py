@@ -253,6 +253,40 @@ def test_float_coerced_announcement_date_is_same_disclosure(tmp_path) -> None:
     assert len(stored) == 1                       # no phantom second disclosure
 
 
+def test_legacy_store_spelling_does_not_mint_phantom_disclosure(tmp_path) -> None:
+    # a store written BEFORE canonicalization may spell the announcement as a
+    # float-coerced '20220331.0'. A canonical re-fetch of the SAME disclosure
+    # must key-match it in memory (no phantom second disclosure), and read-time
+    # resolution must collapse to ONE current row (codex #351 r4).
+    from datetime import date as _date
+
+    from src.data.pit.financial_pit_contract import (
+        build_contract_frame,
+        resolve_current_versions,
+    )
+    from src.data.trading_calendar import StaticTradingCalendar
+    legacy = _income_row("20211231", "0", 100.0)
+    legacy["f_ann_date"] = "20220331.0"
+    legacy["ann_date"] = "20220331.0"
+    legacy_df = pd.DataFrame([legacy])
+    legacy_df["_content_hash"] = "legacy_hash_over_old_spelling"
+    legacy_df["_source_endpoint"] = "income"
+    legacy_df["_fetch_batch"] = "b0"
+    (tmp_path / "income").mkdir(parents=True)
+    legacy_df.to_parquet(tmp_path / "income" / "000001.SZ.parquet", index=False)
+
+    refetch = pd.DataFrame([_income_row("20211231", "0", 100.0)])  # canonical
+    ing = FinancialStatementIngestor(_FakeClient([refetch]), tmp_path)
+    res = ing.ingest("income", "000001.SZ", fetch_batch="b1")
+    # hash may differ (legacy spelling hashed differently) -> appended as a
+    # CHANGED re-fetch of the SAME identity, never a new disclosure key.
+    assert res.rows_new <= 1
+    stored = pd.read_parquet(tmp_path / "income" / "000001.SZ.parquet")
+    cal = StaticTradingCalendar([_date(2022, 3, 31), _date(2022, 4, 1)])
+    current = resolve_current_versions(build_contract_frame(stored, cal))
+    assert len(current) == 1                      # ONE disclosure, not two
+
+
 def test_na_spelling_variants_share_one_key(tmp_path) -> None:
     # 'None'/'nan'/'<NA>' spellings of a missing announcement date normalize to
     # ONE NA key — a double-content pair under different NA spellings is still

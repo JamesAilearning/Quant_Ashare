@@ -97,6 +97,36 @@ class FinancialIngestError(RuntimeError):
     provider frame, store I/O failure). Fail-loud — never a silent partial."""
 
 
+def canon_announcement_token(value: Any) -> Any:
+    """Canonicalize an announcement-date KEY value (codex #351 r3/r4).
+
+    Blank spellings (None / NaN / 'nan' / '<NA>' / '') -> ``pd.NA``; an exact
+    ``.0`` float coercion ('20220331.0') strips to the digits; any other shape
+    passes through untouched — the CONTRACT layer fail-louds on malformed
+    dates, keying must not pre-judge them. Shared by the ingest (new fetches
+    AND the in-memory view of already-stored rows) and by
+    ``build_contract_frame`` (read-time), so a legacy store spelling can never
+    mint a phantom second disclosure of the same announcement."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return pd.NA
+    try:
+        if bool(pd.isna(value)):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    token = str(value).strip()
+    if not token or token in _BLANK_TOKENS:
+        return pd.NA
+    if "." in token:
+        int_part, _, frac = token.partition(".")
+        if int_part.isdigit() and frac.strip("0") == "":
+            return int_part
+    return token
+
+
+_BLANK_TOKENS = frozenset({"", "None", "nan", "NaT", "<NA>"})
+
+
 class _CallableClient(Protocol):
     def call(self, api_name: str, **params: Any) -> Any: ...
 
@@ -259,36 +289,15 @@ class FinancialStatementIngestor:
                 "refusing to store (would corrupt revision semantics)."
             )
 
-        # The announcement-date KEY columns must be canonical strings before
+        # The announcement-date KEY columns must be canonical before
         # hashing/keying (codex #351 r3): a re-fetch spelling the SAME
         # announcement differently (None vs '<NA>' vs 'nan', or a float-coerced
         # '20220331.0' vs '20220331') would otherwise mint a DIFFERENT logical
-        # key — the same disclosure would duplicate across batches. Blank
-        # spellings normalize to pd.NA (announcement dates MAY legitimately be
-        # missing); an exact '.0' float coercion strips to the digits; any
-        # other shape passes through untouched — the CONTRACT layer fail-louds
-        # on malformed dates, ingest must not pre-judge them.
-        def _canon_date_token(value: Any) -> Any:
-            if value is None or (isinstance(value, float) and pd.isna(value)):
-                return pd.NA
-            try:
-                if bool(pd.isna(value)):
-                    return pd.NA
-            except (TypeError, ValueError):
-                pass
-            token = str(value).strip()
-            if not token or token in _BLANKS:
-                return pd.NA
-            if "." in token:
-                int_part, _, frac = token.partition(".")
-                if int_part.isdigit() and frac.strip("0") == "":
-                    return int_part
-            return token
-
+        # key — the same disclosure would duplicate across batches.
         fetched = fetched.copy()
         fetched["update_flag"] = fetched["update_flag"].map(_canon_flag)
-        fetched["f_ann_date"] = fetched["f_ann_date"].map(_canon_date_token)
-        fetched["ann_date"] = fetched["ann_date"].map(_canon_date_token)
+        fetched["f_ann_date"] = fetched["f_ann_date"].map(canon_announcement_token)
+        fetched["ann_date"] = fetched["ann_date"].map(canon_announcement_token)
         fetched[COL_CONTENT_HASH] = fetched.apply(
             lambda r: content_hash(r, data_fields), axis=1,
         )
@@ -338,12 +347,22 @@ class FinancialStatementIngestor:
             return IngestResult(endpoint, ts_code, n_fetched, n_fetched, 0, 0)
 
         # Compare each re-fetched row against the LATEST stored version for its
-        # logical key (ts_code, end_date, update_flag) — NOT any historical hash
-        # (codex #340 r5 P1). A value that changes then reverts (100->200->100)
-        # must re-append the third fetch so latest-batch resolution stops
-        # exposing the stale 200; matching against all-history hashes would skip
-        # the revert and leave 200 current.
-        latest = existing.sort_values(COL_FETCH_BATCH).drop_duplicates(
+        # logical key — NOT any historical hash (codex #340 r5 P1). A value
+        # that changes then reverts (100->200->100) must re-append the third
+        # fetch so latest-batch resolution stops exposing the stale 200;
+        # matching against all-history hashes would skip the revert and leave
+        # 200 current. The STORED rows' announcement-key columns are
+        # canonicalized IN MEMORY for this matching (codex #351 r4): a legacy
+        # store spelling ('20220331.0', None) must key-match its canonical
+        # re-fetch, not mint a phantom second disclosure. The store bytes are
+        # not rewritten; read-time resolution canonicalizes the same way in
+        # build_contract_frame.
+        existing_keyed = existing.copy()
+        existing_keyed["f_ann_date"] = existing_keyed["f_ann_date"].map(
+            canon_announcement_token)
+        existing_keyed["ann_date"] = existing_keyed["ann_date"].map(
+            canon_announcement_token)
+        latest = existing_keyed.sort_values(COL_FETCH_BATCH).drop_duplicates(
             subset=list(LOGICAL_KEY), keep="last",
         )
         stored_latest: dict[tuple[str, ...], str] = {

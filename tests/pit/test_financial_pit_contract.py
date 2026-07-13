@@ -91,6 +91,27 @@ def test_revision_links_to_original() -> None:
     assert pd.isna(a0[REVISION_OF])                  # original links to nothing
 
 
+def test_revision_links_to_the_record_original_not_late_reannouncement() -> None:
+    # a period with TWO update_flag=0 disclosures (an original + a late
+    # re-announcement) and one revision: revision_of must point at the RECORD
+    # original (earliest-announced), not whichever original has the latest
+    # fetch batch (codex #351 r4).
+    frame = pd.DataFrame([
+        {"ts_code": "D", "end_date": "20211231", "ann_date": "20220331",
+         "f_ann_date": "20220331", "update_flag": "0",
+         COL_CONTENT_HASH: "h_record", COL_FETCH_BATCH: "b1"},
+        {"ts_code": "D", "end_date": "20211231", "ann_date": "20220331",
+         "f_ann_date": "20220630", "update_flag": "0",   # late re-announcement
+         COL_CONTENT_HASH: "h_late", COL_FETCH_BATCH: "b2"},
+        {"ts_code": "D", "end_date": "20211231", "ann_date": "20220401",
+         "f_ann_date": "20220401", "update_flag": "1",
+         COL_CONTENT_HASH: "h_rev", COL_FETCH_BATCH: "b2"},
+    ])
+    out = build_contract_frame(frame, _CAL)
+    rev = out[out["update_flag"] == "1"].iloc[0]
+    assert rev[REVISION_OF] == "h_record"      # the RECORD original, not h_late
+
+
 def test_resolve_current_keeps_latest_batch() -> None:
     # the versioned identity includes the announcement dates
     # (fix-financial-ingest-ambiguous-duplicates): SAME announcement here, so

@@ -33,6 +33,7 @@ from src.data.tushare.financial_statements import (
     COL_CONTENT_HASH,
     COL_FETCH_BATCH,
     LOGICAL_KEY,
+    canon_announcement_token,
 )
 
 # Contract output columns.
@@ -123,6 +124,12 @@ def build_contract_frame(
             f"have {sorted(store.columns)}."
         )
     out = store.copy()
+    # canonicalize the announcement KEY columns at read time (codex #351 r4):
+    # a legacy store spelling ('20220331.0', None vs '<NA>') must resolve to
+    # the SAME versioned identity as its canonical re-fetch, or
+    # resolve_current_versions would keep both as two "current" disclosures.
+    out["f_ann_date"] = out["f_ann_date"].map(canon_announcement_token)
+    out["ann_date"] = out["ann_date"].map(canon_announcement_token)
     report_period = _parse_date_column(out["end_date"], "end_date")
     f_ann = _parse_date_column(out["f_ann_date"], "f_ann_date")
     ann = _parse_date_column(out["ann_date"], "ann_date")
@@ -157,16 +164,23 @@ def build_contract_frame(
 
 def _revision_linkage(frame: pd.DataFrame) -> pd.Series:
     """For each ``update_flag=1`` row, the content hash of the as-originally-
-    reported (``update_flag=0``) row for the same ``(ts_code, report_period)``
-    (latest batch if several). NA for original rows / when no original exists."""
+    reported (``update_flag=0``) RECORD for the same ``(ts_code,
+    report_period)``: the EARLIEST-ANNOUNCED original (dated preferred over
+    undated — the same disclosure-of-record rule the serve path uses,
+    codex #351 r4), latest batch among re-fetches of that same announcement.
+    NA for original rows / when no original exists."""
     # _content_hash / _fetch_batch are guaranteed present (build_contract_frame
-    # validates _REQUIRED first), so latest-batch resolution of the original is
+    # validates _REQUIRED first), so record resolution of the original is
     # unconditional — no silent NA fallback on stripped provenance.
     link: dict[tuple[str, object], str] = {}
     originals = frame[frame["update_flag"].astype(str) == "0"]
     for (ts, rp), grp in originals.groupby(["ts_code", REPORT_PERIOD], dropna=False):
-        grp = grp.sort_values(COL_FETCH_BATCH)  # latest batch wins if re-fetched
-        link[(str(ts), rp)] = str(grp.iloc[-1][COL_CONTENT_HASH])
+        ann_ord = grp[ANNOUNCEMENT_DATE].map(
+            lambda d: d.toordinal() if isinstance(d, date) else 10**9,
+        )
+        record_day = grp[ann_ord == ann_ord.min()]
+        record_day = record_day.sort_values(COL_FETCH_BATCH)  # latest re-fetch
+        link[(str(ts), rp)] = str(record_day.iloc[-1][COL_CONTENT_HASH])
     out: list[object] = []
     for _, row in frame.iterrows():
         if str(row["update_flag"]) == "1":
@@ -178,9 +192,9 @@ def _revision_linkage(frame: pd.DataFrame) -> pd.Series:
 
 def resolve_current_versions(frame: pd.DataFrame) -> pd.DataFrame:
     """Keep the LATEST batch per versioned identity ``LOGICAL_KEY``
-    (``ts_code, end_date, update_flag, f_ann_date`` — the announcement date is
-    part of the identity; two same-version rows with different ``f_ann_date``
-    are distinct, dated disclosure events, both current).
+    (``ts_code, end_date, update_flag, f_ann_date, ann_date`` — the
+    announcement dates are part of the identity; two same-version rows
+    announced on different days are distinct disclosure events, both current).
 
     The physical store is append-only; this is the read-time resolution the
     spec mandates — the newest fetch of a logical record wins, but every prior
