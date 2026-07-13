@@ -1,0 +1,132 @@
+"""Gate-3 pre-registration gate — run BEFORE every decision-level run.
+
+Checks (ALL must pass; any failure = REFUSE, no run):
+  1. plan parse   — quality_profitability.yaml + ledger load and carry the
+                    frozen protocol_id.
+  2. plan frozen  — the plan file is COMMITTED (git-provable timestamp).
+  3. clean tree   — `git status --porcelain` empty: no uncommitted drift.
+  4. plan < run   — the plan's last commit time is BEFORE the run timestamp.
+  5. manifest     — the raw store re-hashes EXACTLY to the frozen manifest.
+  6. candidate    — the requested candidate id is in registered_candidates.
+  7. PIT cases    — the PIT assertion battery passes (default: the view's
+                    logic tests; rehearsal R6 injects a failing battery).
+
+Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
+exit 1 = REFUSE with the reason. Rehearsed by
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R6, 6/6 required).
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+PLAN_REL = "docs/prereg/quality_profitability.yaml"
+LEDGER_REL = "docs/prereg/quality_profitability_ledger.yaml"
+MANIFEST_REL = "docs/prereg/quality_profitability_store_manifest.json"
+DEFAULT_PIT_CASES = "tests/logic/test_financial_pit_view.py"
+
+
+def _refuse(reason: str) -> int:
+    print(f"GATE REFUSE: {reason}")
+    return 1
+
+
+def _git(repo: Path, *args: str) -> str:
+    out = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, check=True,
+    )
+    return out.stdout.strip()
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
+    p.add_argument("--candidate", required=True)
+    p.add_argument("--store-dir", type=Path, required=True)
+    p.add_argument("--run-ts", default=None,
+                   help="ISO timestamp of the run being gated (default: now UTC).")
+    p.add_argument("--pit-cases", default=DEFAULT_PIT_CASES,
+                   help="pytest target(s) for the PIT battery.")
+    p.add_argument("--manifest", type=Path, default=None,
+                   help="manifest path override (default: frozen manifest).")
+    args = p.parse_args(argv)
+    repo = args.repo_root
+
+    # 1. plan parse
+    plan_path = repo / PLAN_REL
+    try:
+        plan = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+        ledger = yaml.safe_load((repo / LEDGER_REL).read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - any parse failure refuses
+        return _refuse(f"plan/ledger unreadable: {exc}")
+    if plan.get("protocol_id") != "quality_profitability_v1" \
+            or ledger.get("protocol_id") != plan.get("protocol_id"):
+        return _refuse("protocol_id mismatch between plan and ledger.")
+
+    # 2. plan frozen (committed)
+    plan_commit = _git(repo, "log", "-1", "--format=%H", "--", PLAN_REL)
+    if not plan_commit:
+        return _refuse(f"plan not committed: {PLAN_REL} has no git history "
+                       "(freeze commit required before any run).")
+    plan_ts_raw = _git(repo, "log", "-1", "--format=%cI", "--", PLAN_REL)
+    plan_ts = datetime.fromisoformat(plan_ts_raw)
+
+    # 3. clean tree
+    dirty = _git(repo, "status", "--porcelain")
+    if dirty:
+        return _refuse("dirty checkout — uncommitted changes present:\n  "
+                       + "\n  ".join(dirty.splitlines()[:10]))
+
+    # 4. plan committed BEFORE the run
+    run_ts = (datetime.fromisoformat(args.run_ts) if args.run_ts
+              else datetime.now(timezone.utc))
+    if run_ts.tzinfo is None:
+        run_ts = run_ts.replace(tzinfo=timezone.utc)
+    if plan_ts >= run_ts:
+        return _refuse(f"plan committed at {plan_ts.isoformat()} which is NOT "
+                       f"before the run at {run_ts.isoformat()} — "
+                       "git-provable ordering violated.")
+
+    # 5. manifest verification (re-hash the store)
+    manifest_path = args.manifest or (repo / MANIFEST_REL)
+    verify = subprocess.run(
+        [sys.executable, str(repo / "scripts/research/gate3_store_manifest.py"),
+         "--store-dir", str(args.store_dir), "--verify", str(manifest_path)],
+        capture_output=True, text=True,
+    )
+    if verify.returncode != 0:
+        return _refuse("store manifest mismatch:\n" + verify.stdout.strip())
+
+    # 6. candidate registered
+    registered = {c["id"] for c in plan["candidate_family"]["registered_candidates"]}
+    if args.candidate not in registered:
+        return _refuse(f"candidate {args.candidate!r} NOT in registered_candidates "
+                       f"{sorted(registered)} — a new candidate means a NEW plan "
+                       "+ a NEW untouched window (prohibited_variants).")
+
+    # 7. PIT battery
+    pit = subprocess.run(
+        [sys.executable, "-m", "pytest", *args.pit_cases.split(), "-q",
+         "--no-header", "-x"],
+        capture_output=True, text=True, cwd=str(repo),
+    )
+    if pit.returncode != 0:
+        tail = "\n".join(pit.stdout.strip().splitlines()[-5:])
+        return _refuse(f"PIT case battery FAILED:\n{tail}")
+
+    print("GATE ACCEPT")
+    print(f"  plan_commit: {plan_commit}")
+    print(f"  plan_committed_at: {plan_ts.isoformat()}")
+    print(f"  candidate: {args.candidate}")
+    print(f"  manifest: {manifest_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

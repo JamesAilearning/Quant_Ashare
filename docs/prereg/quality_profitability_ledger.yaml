@@ -1,0 +1,107 @@
+# =========================================================================
+# 阶段8 · quality_profitability_v1 · RESEARCH LEDGER —— DRAFT / 未冻结
+# =========================================================================
+# 目的: DSR/PBO 的有效试验数以本账本为唯一依据(charter §6 / 研究设计 §5)。
+#   凡对本家族做过的 候选/公式变体/敏感性/诊断/失败尝试/未注册探索,一律逐条
+#   记录 —— 无完整记录不得声称已校正选择偏差。
+# 追加纪律: append-only;每个决策级 run 前后各一条;条目一旦写入不改不删,
+#   更正用新条目引用旧 id。冻结时与 quality_profitability.yaml 一并 committed。
+# =========================================================================
+
+protocol_id: quality_profitability_v1
+ledger_version: 1
+status: draft_pre_freeze
+
+# ---- 有效试验计数规则(DSR/PBO 输入,冻结时锁死) --------------------------
+effective_trials_rule: >-
+  有效试验数 N = registered_candidates(3) + 预注册敏感性切片中改变"因子定义或
+  主判窗口"者(C1_from_2018 计 1;持有期/ST/分档切片为同一因子的稳健性观测,
+  按 Harvey-Liu 保守惯例仍全部计入) + 任何冻结后新增条目。当前冻结时点
+  N = 3 候选 + 6 切片 = 9;若 Gate-4 过程产生任何未注册探索,先记账再跑。
+
+# ---- 条目 ----------------------------------------------------------------
+entries:
+
+  - id: E001
+    date: 2026-07-10
+    type: registered_candidate
+    ref: C1_GPA
+    status: registered
+    note: charter §2 注册;公式见 quality_profitability.yaml。
+
+  - id: E002
+    date: 2026-07-10
+    type: registered_candidate
+    ref: C2_PROF
+    status: registered
+    note: charter §2 注册;利息项 fin_exp(Gate-1 坐实 int_exp 不可用)。
+
+  - id: E003
+    date: 2026-07-10
+    type: registered_candidate
+    ref: C3_cash_based_OP
+    status: registered
+    note: charter §2 注册;应计集按 Gate-1 §6 固定(含 adv∪contract coalesce)。
+
+  - id: E004
+    date: 2026-07-13
+    type: formula_correction_pre_freeze
+    ref: [C2_PROF, C3_cash_based_OP]
+    status: recorded
+    note: >-
+      决策⑤ erratum: charter 直译式 "−(sell+admin−rd)" 在 A 股 2018 单列制下
+      构成双重加回 → 冻结 OMIT 式(rd_exp 退出输入)。发生于任何回测之前
+      (clean-of-results),不计为试验;级联: 决策① moot、决策② 理由升级为
+      regime 一致性。实证记录于 quality_profitability.yaml 决策记录。
+
+  - id: E005
+    date: 2026-07-13
+    type: preregistered_sensitivity
+    ref: [C1_from_2018, exclude_fold_0, holding_semiannual, holding_annual,
+          st_off, size_decile_variants]
+    status: registered
+    note: 六切片预注册(quality_profitability.yaml adjudication.sensitivity_slices);
+      全部计入有效试验数(保守)。
+
+  - id: E006
+    date: 2026-07-13
+    type: confirmatory_diagnostic
+    ref: accrual_quality_C2_vs_C3
+    status: registered
+    note: descriptive_only,不进裁决、不据此调整任何候选。
+
+  - id: E007
+    date: 2026-07-13
+    type: data_manifest
+    ref: docs/prereg/quality_profitability_store_manifest.json
+    status: recorded
+    note: 1880 文件(income 627/bs 626/cf 627), aggregate sha256=4560e8536524e4a0…;
+      生成/校验 scripts/research/gate3_store_manifest.py;决策级 run 前 --verify 必 OK。
+
+  - id: E008
+    date: 2026-07-13
+    type: folds_definition
+    ref: canonical_config_walk_23fold
+    status: recorded
+    note: 镜像 config_walk.yaml(24m+3m+3m 步3m, anchor 2018-01-01);
+      dev=fold_0..fold_18(test 2020Q2→2024Q4);两臂共享;2026H1 不入研究。
+
+  - id: E009
+    date: 2026-07-13
+    type: holdout_signature
+    ref: "2025-01-01 -> 2025-12-31"
+    status: signed
+    note: 操作人签候选(a)(preflight §3 三候选,clean-of-results 划定);
+      4 次季度再平衡;冻结后至终裁绝不触碰。
+
+  - id: E010
+    date: 2026-07-13
+    type: freeze
+    ref: quality_profitability_v1
+    status: frozen_at_this_commit
+    note: 本条目所在 commit 即冻结 commit(git 时间戳自证,早于任何决策级 run);
+      rehearsal 六场景执行结果记于 companion commit 的 _rehearsal.md。
+
+# ---- Gate-4 起的追加纪律 ---------------------------------------------------
+#   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
+#   含阴性),绝不漏报失败者。

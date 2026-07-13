@@ -1,0 +1,266 @@
+# =========================================================================
+# 阶段8 Gate-3 · 质量因子(盈利能力家族)confirmatory 预注册 —— DRAFT / 未冻结
+# =========================================================================
+# 状态: 修订稿 v2(操作人已裁决决策①-⑤,见下"决策记录");待最终复核 → 冻结。
+# 冻结条件: (a) ✅ 消歧 #351 已合并 + Step-A 报告已刷新;
+#           (b) ✅ 操作人裁决 5 项决策(2026-07-13,记录于下);
+#           (c) holdout 已签(a: 2025 整年,2026-07-13);本文件 + ledger +
+#               rehearsal + preflight + manifest committed 盖 git 时间戳
+#               (git-provable gate, 早于任何 run)—— 本 commit 即冻结 commit。
+# 冻结前不得进行任何回测。research_only。
+# 参考: docs/prereg/quality_profitability_charter.md (Gate-0),
+#       quality_profitability_gate1_pit_preflight.md (Gate-1),
+#       docs/research/gate3_step_a_pit_coverage_report.md (Step-A canonical),
+#       openspec/specs/v2-financial-pit-contract/spec.md (数据契约),
+#       docs/prereg/cadence_horizon.yaml (git-provable + 三态裁决先例)。
+#
+# ---------------------------- 决策记录(操作人签,2026-07-13) ----------------
+# ⑤ rd_exp 口径 = OMIT 式(单列不扣除)。charter §2 的 "−(销售+管理−研发)" 是
+#    美股口径直译(US GAAP R&D 含在 SG&A 内,加回须显式扣出);A 股 2018 准则起
+#    研发费用单列、admin_exp 不含研发 → 直译式等于凭空加回一个从未被扣的
+#    rd_exp(双重加回),研发密集股被系统性高估。OMIT 式(revenue − oper_cost −
+#    sell_exp − admin_exp)下研发单列自然不被扣 —— A 股版"不惩罚 R&D"。
+#    实证(本地 store,年报 admin/rev%): 恒瑞 2017=21.3%→2018=9.3%(rd 15.3% 同年
+#    出现);海康 2017=10.0%→2018=2.8%(rd 9.0%);中兴 2016 即单列(早披露)→
+#    2018 前为混合 regime。charter 为已签归档件不改,本 erratum 为准。
+# ① 缺 rd_exp 处理 → MOOT: OMIT 式下 rd_exp 不再是任何候选的输入;§4b 幸存者
+#    偏差(rd_exp delisted 59% vs active 80%, −21pp)与因子无关(少一个 bias)。
+#    通用缺失策略对真实输入(sell/admin/fin/营运资本)照旧: NA 即 NA,绝不填。
+# ② 主检验窗口统一 2019 起。首要理由 = 会计口径 regime 一致性: 2018 前多数名
+#    admin_exp 内含研发(混合 regime),OMIT 式在旧准则下反而惩罚 R&D(研发埋在
+#    被减的 admin 里),与 2019+ 定义不一致 → C2/C3 主窗必须留在单列制(2019+)。
+#    次要理由 = rd_exp 覆盖(现仅作 regime 转折的观测指标)。C1/GPA 只用
+#    revenue−oper_cost,口径不受 R&D 准则影响 → 2018 起干净 → C1-2018 作敏感性。
+# ③ 主持有期 = 季度再平衡(对齐财报公告节奏 + 低换手);半年/年作敏感性。
+# ④ 消歧 → 已由 #351 解决(版本身份=有效公告日;record=最早披露;27→1 hole)。
+# C3 coalesce 例外(bug 修): coalesce(adv_receipts, contract_liab) 计为单一
+#    逻辑输入,仅两列同 NA 才算缺 —— 否则 2021+ ~65% 的 adv_receipts NA 会把
+#    C3 打死,毁掉 union 覆盖(98-99%)。
+# -------------------------------------------------------------------------
+
+protocol_id: quality_profitability_v1
+status: confirmatory
+decision_scope: research_only
+
+# -------------------------------------------------------------------------
+theory:
+  investor_thesis: >-
+    真实、以现金为基础、可持续的经营盈利能力,在散户主导、偏题材与账面盈利的
+    A 股可能被系统性低估;这类公司在预注册的较长持有期内应有更好的风险调整
+    横截面预期收益,或对现有 Alpha158 研究特征带来可检验增量。
+  economic_mechanism:
+    C1_GPA: 毛利最少受会计政策污染,是经济生产率最干净的度量 (Novy-Marx 2013)。
+    C2_PROF: 不惩罚 R&D 的经营盈利,捕捉含未来投入的真实经营效率
+             (Medhat & Novy-Marx 2025:该定义实证吸收 F-score/O-score/ROE/低波)。
+             A 股实现 = OMIT 式(研发单列自然不扣除,决策⑤)。
+    C3_cash_based_OP: 剔除应计的"现金真盈利"更持久、更难粉饰
+             (Ball-Gerakos-Linnainmaa-Nikolaev 2016);直接检验命题的"利润真实"。
+  citations: [NovyMarx2013, MedhatNovyMarx2025, BallEtAl2016, HarveyLiu2021,
+              FengGiglioXiu2020, BaileyLopezDePrado2014, JansenSwinkelsZhou2021,
+              HouQiaoZhang2024, LiuStambaughYuan2019, LeippoldWangZhou2022]
+  factor_expected_sign: 全部 (+) —— 盈利能力越高,横截面预期收益越高。
+  falsifier: >-
+    任一即有效阴性: 数据无法证明公告日/首披/修订 PIT; 覆盖不足/符号不稳/暴露
+    主要来自规模-行业-壳价值; 冻结后 OOS 无增量或扣成本撑不起低换手长持;
+    整批未过预注册多重检验门。诚实先验: A 股质量整体偏弱,首轮很可能阴性 —— 有效结果。
+
+# -------------------------------------------------------------------------
+candidate_family:
+  multiplicity_family_id: quality_profitability_v1   # 三候选 = 同一 FWER 批次
+  # 通用缺失策略: 任一必需输入 NA → 该候选在该名/该期为 NA(保留在宇宙内、
+  #   报 coverage-conditional),绝不填 0/中位/最新/未来。
+  #   例外(C3): coalesce(adv_receipts, contract_liab) 为单一逻辑输入,仅双 NA 才缺。
+  #   (决策① moot: rd_exp 已非任何候选输入 —— OMIT 式,见决策记录⑤。)
+  registered_candidates:
+
+    - id: C1_GPA
+      exact_formula: "(income.revenue - income.oper_cost) / balancesheet.total_assets"
+      input_fields: [revenue, oper_cost, total_assets]
+      rank_direction: descending          # 高者做多
+      permitted_transformations: [cross_sectional_rank, within_size_decile]  # 见 study_design
+      fixed_parameters: {}
+      update_frequency: as_of_disclosure_of_record   # 有效公告日 + 下一交易日, as-of carry-forward
+      missing_policy: any_input_na_then_factor_na
+
+    - id: C2_PROF
+      # OMIT 式(决策⑤): 研发费用单列(2019+ regime)自然不被扣除 = 不惩罚 R&D;
+      #   利息项用 fin_exp(int_exp 覆盖仅 ~8% as-of;fin_exp ~99% 为 A 股可用
+      #   融资成本代理,预注册显式采用)。
+      exact_formula: >-
+        (income.revenue - income.oper_cost - income.sell_exp - income.admin_exp
+         - income.fin_exp) / balancesheet.total_hldr_eqy_inc_min_int
+      input_fields: [revenue, oper_cost, sell_exp, admin_exp, fin_exp,
+                     total_hldr_eqy_inc_min_int]
+      rank_direction: descending
+      permitted_transformations: [cross_sectional_rank, within_size_decile]
+      fixed_parameters: {interest_term: fin_exp, rd_treatment: omit_single_line_regime}
+      update_frequency: as_of_disclosure_of_record
+      missing_policy: any_input_na_then_factor_na
+
+    - id: C3_cash_based_OP
+      # OMIT 式经营盈利分子(税前/融资前,R&D 单列不扣) 减 营运资本应计, / 总资产。
+      #   Δx = 相邻 report_period 之差;coalesce(adv_receipts, contract_liab)
+      #   须每期先合并再差分(跨 2020 预收→合同负债重分类)。
+      exact_formula: >-
+        ((income.revenue - income.oper_cost - income.sell_exp - income.admin_exp)
+         - d(balancesheet.accounts_receiv) - d(balancesheet.inventories)
+         - d(balancesheet.prepayment) + d(balancesheet.accounts_pay)
+         + d(coalesce(balancesheet.adv_receipts, balancesheet.contract_liab)))
+        / balancesheet.total_assets
+      input_fields: [revenue, oper_cost, sell_exp, admin_exp,
+                     accounts_receiv, inventories, prepayment, accounts_pay,
+                     adv_receipts, contract_liab, total_assets]
+      rank_direction: descending
+      permitted_transformations: [cross_sectional_rank, within_size_decile]
+      fixed_parameters: {delta: consecutive_report_periods,
+                         coalesce_order: coalesce_then_difference,
+                         rd_treatment: omit_single_line_regime}
+      update_frequency: as_of_disclosure_of_record
+      # coalesce 例外显式化: adv_receipts/contract_liab 作为一个逻辑输入参与
+      #   缺失判定(双 NA 才缺,含差分所需的两期);其余输入照通用策略。
+      missing_policy: any_input_or_prior_period_na_then_factor_na_coalesce_pair_counts_as_one
+
+  # 预注册确认性诊断(非可调旋钮): C2(含应计经营盈利) vs C3(现金经营盈利)。
+  #   若"利润真实"成立,C3 应 ≥ C2 预测力(rank 层比较),且高应计组更弱。
+  #   caveat(操作人注): C2 与 C3 的 denominator(权益 vs 资产)、fin_exp
+  #   (C2 减/C3 不减)均不同 → 此诊断非纯应计隔离,松读;descriptive_only、
+  #   不进裁决。n_cashflow_act 作现金侧交叉观测。看到结果后不得据此
+  #   调权/加减项/合成赢家。
+  confirmatory_diagnostic: {name: accrual_quality_C2_vs_C3, adjudication_standing: descriptive_only}
+
+  prohibited_variants: >-
+    看到任何回测后不得: 改公式/加减项、改公告滞后或生效时点、改窗口/持有期、
+    挑最优持有期作主结果、把候选合成组合、用 OOS 反修计划。任何此类改动 = 新计划 + 新未触碰窗。
+
+# -------------------------------------------------------------------------
+pit_data_contract:
+  source_snapshot_manifest: docs/prereg/quality_profitability_store_manifest.json
+  #   1880 文件(income 627 / balancesheet 626 / cashflow 627),
+  #   aggregate sha256 = 4560e8536524e4a0…(生成/校验: scripts/research/
+  #   gate3_store_manifest.py;每个决策级 run 前 --verify 必须 OK)。
+  report_period_field: end_date
+  announcement_date_field: f_ann_date   # 缺则 ann_date fallback(已记录)
+  effective_trade_time_rule: first_trading_day_strictly_after_announcement   # 盘后保守
+  restatement_revision_policy: disclosure_of_record
+  #   版本身份 = (ts_code, end_date, update_flag, 有效公告日 f_ann 缺则 ann)(#351);
+  #   record = 该期最早披露(dated 优先于 undated),同期双 update_flag 恒取 uf0(#345);
+  #   迟到重披露 = 有日期的重述,记录在店、永不服务;ann-only 更正 = 同一披露。
+  carry_forward_and_staleness_rule: as_of_latest_announced_report_period   # 非 fillna
+  missingness_policy: keep_missing_fail_loud_never_fill
+  version_collapse_residual:   # record 口径,全宇宙 627,消歧后实测(Step-A 报告 §4)
+    income: 0.2987%            # 172/8761 both-version 比较
+    balancesheet: 0.4178%      # 540/17323
+    cashflow: 0.1084%          # 10/9223
+  coverage_acceptance_rule:
+    canonical_floors: src/research/financial_pit_coverage_floors.py
+    #   COVERAGE_FLOORS(消歧后收紧: revenue/total_revenue .98, oper_cost/fin_exp .97,
+    #   sell_exp .96, admin_exp .98, total_assets/权益/n_cashflow_act .98 等)+
+    #   ADV_CONTRACT_COALESCE_FLOOR = 0.96;规则 = min(2019-2025 年均 as-of) − 0.02;
+    #   治理测试钉结构,报告脚本全窗口+快照强制 —— 引用 canonical,不在此复制数字。
+    provenance: docs/research/gate3_step_a_pit_coverage_report.md
+
+# -------------------------------------------------------------------------
+study_design:
+  universe: csi300_pit_ex_financials
+  financial_exclusion: stable_industry_list_cross_checked_oper_cost_absence   # 银行/证券/保险
+  universe_membership_artifact: "<现有 PIT index_membership; CSI300-ever 含退市名>"
+  ranking: within_size_decile   # A 股壳价值使无条件排序混入规模押注(Liu-Stambaugh-Yuan)
+  neutralization: none_reported_only   # 无 PIT 行业/国企数据 → 只报暴露,不伪称已中性化
+  benchmark: SH000300TR
+  execution_timing: {signal_to_execution_lag: 1}
+  cost_model: canonical   # commission 5bps + 印花税表 + 滑点 5bps + min 5(与现役一致)
+  st_handling: st_on   # 生产约束 faithful;ST-off 作敏感性
+
+  # 决策②(已签): 主检验窗口统一 2019 起。首要理由 = 会计 regime 一致性
+  #   (2018 前 admin_exp 多含研发、混合 regime,OMIT 式在旧准则下反而惩罚 R&D);
+  #   C1 口径不受影响 → C1-2018 作预注册敏感性,不进主判。
+  window:
+    primary_start: 2019-01-01
+    end_boundary: 2024-12-31   # holdout(2025-01-01)起点前一交易日;dev 折 test 至 2024Q4
+  fold_windows_and_embargo:
+    scheme: walk_forward
+    embargo_gap: canonical   # 复用 #212 embargo 纪律,避免标签泄漏
+    folds: canonical_config_walk_23fold   # 镜像 config_walk.yaml: anchor 2018-01-01,
+    #   24m train + 3m valid + 3m test 步进 3m;fold_0 test=2020Q2,末折 2025Q4。
+    #   dev = fold_0..fold_18(test 2020Q2→2024Q4);test 窗入 2025 的折属 holdout。
+    #   两臂共享,2026H1 不入研究。详见 quality_profitability_pit_preflight_gate3.md §2。
+  untouched_final_holdout:
+    window: 2025-01-01 -> 2025-12-31   # 候选(a),操作人签 2026-07-13(preflight §3)
+    #   4 次季度再平衡;冻结后至最终裁决前绝不触碰,4A/4B 全程不看,终裁揭盲。
+  permitted_config_diff: [quality_factor_only]   # 4B: Alpha158 vs Alpha158+quality, 仅此一变量
+
+# -------------------------------------------------------------------------
+# 决策③(已签): 主持有期 = 季度再平衡(对齐财报公告节奏 + 低换手);
+#   质量是慢信号、本为长持(与阶段7 价量高频结论相反,呼应 JFE 持有期特征)。
+holding:
+  primary: quarterly_rebalance
+  sensitivities: [semiannual, annual]
+
+# -------------------------------------------------------------------------
+adjudication:   # 判据点火前锁死;冻结后不得改
+  # 4A —— 因子本体(每个候选 PIT 正确/符号/覆盖/稳定)
+  gate_4A:
+    primary_factor_metric: [rank_ic_mean, ic_ir]   # OOS 折上
+    fwer_multiple_testing_rule: >-
+      全批(C1/C2/C3 + 所有注册变体) block-bootstrap + min-统计量 FWER
+      (Lucky-Factors, Harvey-Liu 2021);门槛校准到 A 股 t≈2.85
+      (Hou-Qiao-Zhang 2024),不逐候选套 p<0.05。
+    also_report: [temporal_stability, coverage, cross_sectional_monotonicity,
+                  input_perturbation_robustness, na_conditional_coverage]
+    standardization_rule: as_of_or_earlier_only   # 禁全样本 z-score
+    ic_forward_horizon: primary_holding_period   # 季度;因子本体 IC 与其隐含策略同尺
+  # 4B —— 相对 Alpha158 增量(冻结 4A 通过公式后)
+  gate_4B:
+    primary_strategy_metric: paired_daily_net_excess   # Alpha158 vs Alpha158+quality
+    augmentation_mechanism: >-
+      质量因子以 FinancialPITDataView 的 as-of 日频序列(disclosure-of-record
+      carry-forward)作为特征列并入 Alpha158 的 LightGBM 特征集;两臂
+      (Alpha158 / Alpha158+quality)共享同一模型超参 / cadence / topk / 折窗 /
+      PIT 数据版本 —— 唯一差异 = 是否含该质量特征列。
+    ruler: moving_block_bootstrap_CI   # 与现役 ruler 同 block 长/seed
+    incremental_spanning_rule: >-
+      质量因子对已采纳池(市场/规模/价值/PROF-analog/动量)做残差化 + spanning
+      (参考 Feng-Giglio-Xiu 2020 / Harvey-Liu 2021);相关-聚类仅初筛。
+    shared_between_arms: [pit_data_version, universe_membership, folds, embargo,
+                          benchmark, cost, st_handling, execution_timing, model, topk, cadence]
+  # 4C —— 低换手策略形态(4B 成功后另注册,引入 topk/换手/成本)
+  gate_4C:
+    when: only_if_4B_success
+    form: "~20 只, 低换手, 较长持有"
+    note: 单独预注册;成功≠自动生产化,仅供操作人决定是否申请晋升健康验证。
+  multiple_testing_accounting:
+    dsr_pbo: {effective_trials_source: research_ledger}   # 见 ledger
+  sensitivity_slices:
+    - {name: C1_from_2018, why: "C1 口径不受 R&D 准则影响且 2018 数据达标(决策②);主判仍 2019 统一批"}
+    - {name: exclude_fold_0, why: "2020Q2 COVID"}
+    - {name: holding_semiannual}
+    - {name: holding_annual}
+    - {name: st_off}
+    - {name: size_decile_variants}
+
+# -------------------------------------------------------------------------
+verdict_rules:   # 三态,点火前固定
+  success_iff: >-
+    某候选通过 4A 全批 FWER,且 4B 配对净超额显著为正(CI 排除 0、正侧),
+    且 4C 撑得起低换手形态 → 值得由操作人决定是否申请晋升。
+  reject_iff: >-
+    干净阴性: 无候选过 4A,或无净超额增量。→ "质量原料"方向被排除(有效结果,
+    如同 降频/阶段6/7b 排除机制方向),不扩搜索、不改公式。
+  inconclusive_iff: >-
+    非 success 但某项模糊(边界显著/单切片正) → 逐字上报,交操作人判断,
+    绝不 auto-pivot / auto-promote。
+
+# -------------------------------------------------------------------------
+promotion: {manual_only: true}
+
+honesty_envelope: >-
+  质量因子多为美股发现、盈利类论文作者多与 Dimensional 关联(商业动机);A 股能否
+  兑现是开放问题,大概率经历多次阴性。本预注册给"更严的闸门 + 更聪明的起点",
+  不保证 alpha。所有候选/变体/失败试验必进 research ledger;无记录不得声称已校正选择偏差。
+
+# -------------------------------------------------------------------------
+# companion artifacts(与本 yaml 一并 committed 冻结):
+#   docs/prereg/quality_profitability_ledger.yaml     —— research ledger(本次起草)
+#   docs/prereg/quality_profitability_rehearsal.md    —— gate rehearsal(本次起草)
+#   docs/prereg/quality_profitability_pit_preflight_gate3.md —— 折结构/日历/holdout
+#       preflight 证据(冻结时产出,含 manifest + folds + holdout 待签项)

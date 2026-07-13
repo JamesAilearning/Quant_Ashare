@@ -1,0 +1,57 @@
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— DRAFT / 未执行
+
+> **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
+> "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
+> 晚于 run 被拒、数据 manifest 不一致被拒、PIT 案例失败被拒")。
+> **性质:** 本文档 = 演练脚本 + 结果记录表。冻结时执行一遍,全 PASS 后填入
+> 结果与 commit hash;任何 FAIL = 闸门本身有洞,先修门再谈冻结。
+> **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
+> (plan-commit 早于 run + clean checkout + manifest 一致)。
+
+## 演练矩阵(六场景,每场景一行结果)
+
+| # | 场景 | 做法 | 期望 | 结果(冻结时填) |
+|---|---|---|---|---|
+| R1 | 正常接受 | clean checkout + 已冻结 plan + manifest 一致 + 合法候选 C1,干跑 gate 检查 | ACCEPT | <TO_RUN> |
+| R2 | 未注册候选被 flag | 伪造候选 id `C4_ROE` 请求评估 | REJECT: not in registered_candidates | <TO_RUN> |
+| R3 | dirty checkout 被拒 | 工作树留一个未提交改动再跑 | REJECT: dirty checkout | <TO_RUN> |
+| R4 | 计划晚于 run 被拒 | 用早于 plan-commit 时间戳的 run 元数据 | REJECT: plan committed after run | <TO_RUN> |
+| R5 | manifest 不一致被拒 | 篡改 store 任一 parquet 后对照 manifest | REJECT: content-hash mismatch | <TO_RUN> |
+| R6 | PIT 案例失败被拒 | 注入一个公告日前可见的伪造行,跑 PIT 案例断言 | REJECT: PIT case failed | <TO_RUN> |
+
+## 各场景断言细则
+
+### R1 正常接受
+- 前置: `quality_profitability.yaml` + ledger + 本文件已 committed(冻结 commit);
+  `git status --porcelain` 空;manifest 与 `D:/qlib_data/financial_pit_raw` 全量
+  content-hash 一致。
+- 断言: gate 输出 ACCEPT,并回显 plan commit hash + manifest hash 到 run 元数据。
+
+### R2 未注册候选
+- 断言: 以 `C4_ROE`(或任何不在 registered_candidates 的 id)请求 → 拒绝并要求
+  先走"新计划 + 新未触碰窗"(prohibited_variants 条款);ledger 强制先记账。
+
+### R3 dirty checkout
+- 断言: 任何未提交改动(含 untracked 的 src/ 文件)→ 拒绝;错误信息给出
+  `git status` 摘要。复用 cadence_horizon 的 clean-checkout 检查。
+
+### R4 计划晚于 run
+- 断言: run 元数据时间戳 < plan 最后一次 commit 时间戳 → 拒绝(git-provable:
+  计划必须早于一切决策级 run)。
+
+### R5 manifest 不一致
+- 断言: store 任一文件 hash ≠ manifest 记录 → 拒绝并列出差异文件;演练后恢复
+  原文件并复核 hash 归位。
+
+### R6 PIT 案例失败
+- 断言: 伪造"公告日前可见"行进入合成 store → view 层 PIT 案例断言失败 → 拒绝。
+  (机制已有: tests/logic/test_financial_pit_view.py 的 availability 断言 +
+  tests/governance 隔离门;演练 = 在 gate 流程里真跑一遍这组断言。)
+
+## 执行记录(冻结时填)
+
+- 执行人: <操作人>
+- 执行时间: <UTC>
+- 冻结 commit: <hash>
+- manifest hash: <hash>
+- 六场景结果: <全 PASS 才可冻结;任何 FAIL 先修门>
