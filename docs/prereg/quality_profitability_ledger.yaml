@@ -12,6 +12,14 @@ protocol_id: quality_profitability_v1
 ledger_version: 1
 status: frozen_with_this_package
 
+# ---- 一次性终裁状态(machine-checked, codex #352 r10 P1) --------------------
+#   终裁 run 点火后立即: 本字段翻为 true + 追加 unblinding 条目(E011+) +
+#   commit。gate 对任何后续 --final-adjudication 见 true 即永拒 —— 重复终裁
+#   = 在已签 holdout 上迭代,选择偏差直接回灌"未触碰窗"。一次裁决,永不重来;
+#   本家族此后任何工作 = 新计划 + 新未触碰窗。字段缺失/非布尔 = 账本畸形,
+#   gate 一律拒(fail-loud)。
+holdout_unblinded: false
+
 # ---- 有效试验计数规则(DSR/PBO 输入,冻结时锁死) --------------------------
 effective_trials_rule: >-
   有效试验数 N = registered_candidates(3) + 预注册敏感性切片中改变"因子定义或

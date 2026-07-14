@@ -10,18 +10,27 @@ Checks (ALL must pass; any failure = REFUSE, no run):
   6. candidate    — the requested candidate id is in registered_candidates.
   7. PIT cases    — the PIT assertion battery passes (default: the view's
                     logic tests; rehearsal R6 injects a failing battery).
-  8. run window   — --test-window-end must not pass the frozen dev
+  8. run window   — the window is DERIVED from the run config (extends
+                    chain resolved) and must not pass the frozen dev
                     end_boundary; touching the holdout REFUSES unless the
-                    ONE-TIME --final-adjudication flag is set (loud banner).
+                    ONE-TIME --final-adjudication flag is set (loud banner),
+                    and the verdict window must equal the holdout EXACTLY.
   9. ledger       — the DSR/PBO ledger status must be frozen_with_this_package.
+ 10. config chain — the run config must be repo-tracked and every file in
+                    its resolved extends chain must itself be a frozen
+                    artifact (self-contained frozen presets; no drift via
+                    an unfrozen parent).
+ 11. one verdict  — ledger holdout_unblinded must be a boolean; once true,
+                    any further --final-adjudication is refused permanently.
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R8, 8/8 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R14, 14/14 required).
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -66,25 +75,34 @@ def _git(repo: Path, *args: str) -> str:
     return out.stdout.strip()
 
 
-def _resolve_overall_end(cfg_path: Path, depth: int = 0) -> object:
-    """``overall_end`` from a walk-forward config, resolving the ``extends``
-    chain (child overrides parent). Returns the raw value, or a string
+def _resolve_run_config(cfg_path: Path) -> str | tuple[object, list[Path]]:
+    """Resolve the FULL ``extends`` chain (child-first) and derive
+    ``overall_end``. Returns ``(overall_end_raw, chain_paths)`` or a string
     starting with ``REFUSE:`` on any failure — the gate never guesses a
-    window it cannot derive."""
-    if depth > 5:
+    window it cannot derive. The WHOLE chain is returned because every file
+    in it shapes the run (model/universe/cost/fold parameters), not just
+    the one holding ``overall_end`` (codex #352 r10 P1)."""
+    chain: list[Path] = []
+    datas: list[dict[str, object]] = []
+    cur = cfg_path
+    for _ in range(6):
+        try:
+            data = yaml.safe_load(cur.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - any parse failure refuses
+            return f"REFUSE:run config unreadable ({cur}): {exc}"
+        if not isinstance(data, dict):
+            return f"REFUSE:run config is not a mapping: {cur}"
+        chain.append(cur)
+        datas.append(data)
+        ext = data.get("extends")
+        if not ext:
+            break
+        cur = (cur.parent / str(ext)).resolve()
+    else:
         return "REFUSE:extends chain deeper than 5 — refusing to derive."
-    try:
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - any parse failure refuses
-        return f"REFUSE:run config unreadable ({cfg_path}): {exc}"
-    if not isinstance(data, dict):
-        return f"REFUSE:run config is not a mapping: {cfg_path}"
-    if "overall_end" in data:
-        return data["overall_end"]
-    ext = data.get("extends")
-    if ext:
-        return _resolve_overall_end((cfg_path.parent / str(ext)).resolve(),
-                                    depth + 1)
+    for data in datas:  # child overrides parent
+        if "overall_end" in data:
+            return data["overall_end"], chain
     return (f"REFUSE:run config {cfg_path} has no overall_end anywhere in "
             "its extends chain — the gated window cannot be derived.")
 
@@ -139,6 +157,14 @@ def main(argv: list[str] | None = None) -> int:
         return _refuse(f"ledger status {ledger.get('status')!r} is not "
                        "'frozen_with_this_package' — the DSR/PBO ledger must "
                        "be frozen before any decision-level run.")
+    unblinded = ledger.get("holdout_unblinded")
+    if unblinded not in (True, False):
+        # the one-time adjudication state must be machine-checkable — a
+        # missing/non-boolean flag means the frozen ledger is malformed
+        # (codex #352 r10 P1).
+        return _refuse("ledger holdout_unblinded flag missing or non-boolean "
+                       f"({unblinded!r}) — cannot prove the ONE-TIME verdict "
+                       "has not already been consumed.")
 
     # 1b. the run's test window must respect the frozen dev boundary — the
     # default config_walk.yaml runs through 2025-12-31 and would silently
@@ -168,9 +194,10 @@ def main(argv: list[str] | None = None) -> int:
         return _refuse(f"run config {cfg_rel} is not git-tracked — an "
                        "untracked config is not git-provable; commit it "
                        "(the clean-tree check then pins its content).")
-    overall_end = _resolve_overall_end(cfg_resolved)
-    if isinstance(overall_end, str) and overall_end.startswith("REFUSE:"):
-        return _refuse(overall_end[len("REFUSE:"):])
+    resolved = _resolve_run_config(cfg_resolved)
+    if isinstance(resolved, str):
+        return _refuse(resolved[len("REFUSE:"):])
+    overall_end, cfg_chain = resolved
     if isinstance(overall_end, date):
         test_end = overall_end
     else:
@@ -207,6 +234,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"would touch the untouched holdout ({holdout_window}). Dev "
                 "runs must end at the boundary; the ONE-TIME final verdict "
                 "run must pass --final-adjudication explicitly.")
+        if unblinded:
+            # one verdict, EVER: after the first final-adjudication fires,
+            # the ledger flips holdout_unblinded -> true, and any repeat
+            # would be iteration on the signed holdout — selection bias fed
+            # straight back into the "untouched" window (codex #352 r10 P1).
+            return _refuse(
+                "holdout ALREADY UNBLINDED (ledger holdout_unblinded: true) "
+                "— the ONE-TIME verdict has been consumed; a repeat "
+                "--final-adjudication is refused PERMANENTLY. Any further "
+                "work on this family = new plan + new untouched window.")
         if test_end != holdout_end:
             # the verdict run must cover the FULL signed holdout EXACTLY —
             # beyond it (e.g. 2026H1) is outside the registered adjudication
@@ -222,8 +259,27 @@ def main(argv: list[str] | None = None) -> int:
         print("!! FINAL ADJUDICATION — HOLDOUT UNBLINDING !!")
         print(f"!! test window end {test_end.isoformat()} enters the frozen "
               f"holdout {holdout_window}.")
-        print("!! This is the ONE-TIME verdict run; record it in the ledger.")
+        print("!! This is the ONE-TIME verdict run. IMMEDIATELY after it")
+        print("!! fires: flip ledger holdout_unblinded -> true, append the")
+        print("!! unblinding entry, commit. The gate then refuses ANY")
+        print("!! further --final-adjudication (one verdict, ever).")
         print("=" * 68)
+
+    # 1c. the run config's FULL resolved chain must be frozen — a preset
+    # that merely `extends` an unfrozen parent (e.g. config_walk.yaml)
+    # would let a later clean commit to that parent silently change
+    # model/universe/cost/fold parameters after freeze while the preset's
+    # own hash stays identical (codex #352 r10 P1). Placed AFTER the
+    # window checks so holdout-touching configs keep their specific
+    # refusal reason; ACCEPT always requires BOTH.
+    frozen_paths = {(repo_resolved / rel).resolve() for rel in FROZEN_ARTIFACTS}
+    for link in cfg_chain:
+        if link not in frozen_paths:
+            return _refuse(
+                f"run config resolves through {link} which is NOT part of "
+                "the frozen package — every file in the extends chain "
+                "shapes the run, so the FULL resolved config must be "
+                "frozen (use the self-contained frozen presets).")
 
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
@@ -299,9 +355,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  plan_commit: {plan_commit}")
     print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")
     print(f"  candidate: {args.candidate}")
-    cfg_sha = __import__("hashlib").sha256(
-        args.run_config.read_bytes()).hexdigest()
-    print(f"  run_config: {args.run_config} sha256={cfg_sha[:16]}...")
+    for link in cfg_chain:
+        link_sha = hashlib.sha256(link.read_bytes()).hexdigest()
+        print(f"  run_config: {link} sha256={link_sha[:16]}...")
     print(f"  test_window_end(derived): {test_end.isoformat()}"
           + ("  [FINAL ADJUDICATION]" if args.final_adjudication else ""))
     print(f"  manifest_aggregate_sha256: {aggregate}")

@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 12/12
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 14/14
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(十二场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R12=codex 对抗加固增补)
+## 演练矩阵(十四场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R14=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -24,6 +24,8 @@
 | R10 | 终裁只盖半个 holdout 被拒(v6 增补) | --final-adjudication + config(overall_end 2025-06-30) | REJECT: no partial peek —— 一次性终裁须覆盖完整已签 holdout | **PASS**(REFUSE) |
 | R11 | 自报窗与 config 不符被拒(v7 增补) | --test-window-end 2024-12-31 + 真 config_walk.yaml(2025-12-31) | REJECT: claim/config mismatch —— gate 只信 config | **PASS**(REFUSE) |
 | R12 | 库外 run config 被拒(v8 增补) | 临时目录 config(overall_end 2024-12-31,窗口本身合法)传入 --run-config | REJECT: NOT under the repository —— 边界必须 git-provable(tracked) | **PASS**(REFUSE) |
+| R13 | extends 链出冻结包被拒(v9 增补) | 临时给自包含 dev preset 追加 extends: config_walk.yaml(未冻结父)再跑 | REJECT: NOT part of the frozen package —— 全解析链必须冻结,防参数漂移 | **PASS**(REFUSE) |
+| R14 | 重复终裁被拒(v9 增补) | 临时把 ledger holdout_unblinded 翻 true,再跑 --final-adjudication(窗口精确合法) | REJECT: ALREADY UNBLINDED —— 一次裁决被消费后永拒 | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -90,6 +92,14 @@
   `--pit-cases`(替换语义)改为 `--extra-pit-case`(仅追加,canonical
   `tests/logic/test_financial_pit_view.py` 永远强制)。R1/R9/R10 演练改走
   tracked preset(R9/R10 以 bytes I/O 临时改写终裁 preset 的 overall_end 再
-  还原),新增 R12(库外 config 拒收)。演练矩阵 **12 场景**,最终复跑
-  **12/12 PASS**(输出以 PR #352 评论存档)。
+  还原),新增 R12(库外 config 拒收)。演练矩阵扩至 12 场景,复跑 12/12 PASS。
+- **v9(codex r10)**: ① 两个 preset **物化为自包含快照**(不再 extends
+  config_walk.yaml —— 未冻结父文件的后续 commit 会在 preset hash 不变的情况下
+  漂移 模型/宇宙/成本/折 参数);gate 新增全链检查:run config 解析出的
+  **extends 链上每个文件都必须是冻结件**,否则拒;ACCEPT 逐链回显 sha256。
+  ② 一次性终裁机器化:ledger 新增 `holdout_unblinded` 布尔字段(冻结时
+  false;终裁点火后立即翻 true+追加条目+commit),gate 见 true 即**永拒**任何
+  后续 --final-adjudication(缺失/非布尔=账本畸形,亦拒);UNBLINDING 横幅
+  写明点火后的强制账本动作。新增 R13(extends 出包拒)/R14(重复终裁拒)。
+  演练矩阵 **14 场景**,最终复跑 **14/14 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

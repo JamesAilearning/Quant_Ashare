@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — twelve scenarios, 12/12 required.
+"""Gate-3 pre-registration gate REHEARSAL — fourteen scenarios, 14/14 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -18,9 +18,11 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
             frozen / holdout-touching window / beyond-holdout adjudication /
             partial-holdout peek / claim-config mismatch).
   R12 REFUSE out-of-repo run config (not git-provable, codex #352 r9).
+  R13 REFUSE extends chain leaving the frozen package (codex #352 r10).
+  R14 REFUSE repeat final adjudication after holdout unblinding (r10).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 12/12, paste the printed block into the rehearsal
+before freezing). Exit 0 = 14/14, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -229,13 +231,47 @@ def main(argv: list[str] | None = None) -> int:
                     rc == 1 and "NOT under the repository" in out,
                     out.splitlines()[0] if out else ""))
 
+    # R13 REFUSE extends chain leaving the frozen package (codex #352 r10):
+    # temp-append an `extends` link from the (self-contained) dev preset to
+    # the unfrozen config_walk.yaml — later commits to that parent could
+    # silently drift model/universe/cost/fold params after freeze, so the
+    # gate must refuse. Bytes I/O; chain check runs before the dirty check.
+    dev_cfg_path = repo / DEV_CONFIG_REL
+    dev_cfg_bytes = dev_cfg_path.read_bytes()
+    try:
+        dev_cfg_path.write_bytes(
+            dev_cfg_bytes + b"\nextends: ../../config_walk.yaml\n")
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R13 unfrozen extends chain refused",
+                        rc == 1 and "NOT part of the frozen package" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        dev_cfg_path.write_bytes(dev_cfg_bytes)
+
+    # R14 REFUSE repeat final adjudication (codex #352 r10): once the ledger
+    # records holdout_unblinded: true, the ONE-TIME verdict is consumed —
+    # a second --final-adjudication (same clean checkout, exact holdout
+    # window) must be refused permanently. Bytes I/O flip + restore.
+    ledger_bytes2 = ledger_path.read_bytes()
+    try:
+        ledger_path.write_bytes(ledger_bytes2.replace(
+            b"holdout_unblinded: false", b"holdout_unblinded: true"))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                            "--run-config", str(final_cfg_path),
+                            "--final-adjudication")
+        results.append(("R14 repeat adjudication refused",
+                        rc == 1 and "ALREADY UNBLINDED" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        ledger_path.write_bytes(ledger_bytes2)
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/12")
-    return 0 if n_ok == 12 else 1
+    print(f"  => {n_ok}/14")
+    return 0 if n_ok == 14 else 1
 
 
 if __name__ == "__main__":
