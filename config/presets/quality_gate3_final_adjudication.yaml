@@ -1,0 +1,6 @@
+# 阶段8 Gate-4 FINAL-ADJUDICATION run config — FROZEN with the prereg
+# package (#352). overall_end == the signed holdout end (2025-12-31): the
+# ONE-TIME verdict run must cover the holdout EXACTLY, and the gate only
+# accepts it with an explicit --final-adjudication (loud unblinding banner).
+extends: ../../config_walk.yaml
+overall_end: "2025-12-31"

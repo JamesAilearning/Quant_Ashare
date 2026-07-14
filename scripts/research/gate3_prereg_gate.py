@@ -48,6 +48,8 @@ FROZEN_ARTIFACTS = (
     "scripts/research/gate3_store_manifest.py",
     "scripts/research/gate3_prereg_gate.py",
     "scripts/research/rehearse_gate3_prereg_gate.py",
+    "config/presets/quality_gate3_dev.yaml",
+    "config/presets/quality_gate3_final_adjudication.yaml",
 )
 
 
@@ -94,8 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store-dir", type=Path, required=True)
     p.add_argument("--run-ts", default=None,
                    help="ISO timestamp of the run being gated (default: now UTC).")
-    p.add_argument("--pit-cases", default=DEFAULT_PIT_CASES,
-                   help="pytest target(s) for the PIT battery.")
+    p.add_argument("--extra-pit-case", default=None,
+                   help="OPTIONAL extra pytest target APPENDED to the "
+                        "canonical PIT battery (rehearsal R6 injects a "
+                        "failing probe). The canonical battery ALWAYS runs "
+                        "and cannot be replaced (codex #352 r9 P1).")
     p.add_argument("--run-config", type=Path, required=True,
                    help="the walk-forward config the run will ACTUALLY use — "
                         "the gated window is DERIVED from its overall_end "
@@ -148,7 +153,22 @@ def main(argv: list[str] | None = None) -> int:
     # config still runs through 2025-12-31 (codex #352 r8 P1).
     if not args.run_config.is_file():
         return _refuse(f"run config not found: {args.run_config}")
-    overall_end = _resolve_overall_end(args.run_config)
+    cfg_resolved = args.run_config.resolve()
+    repo_resolved = repo.resolve()
+    if not cfg_resolved.is_relative_to(repo_resolved):
+        # an out-of-repo config is not covered by the clean-tree / frozen
+        # checks — a /tmp config could claim a dev window while the real run
+        # uses another file (codex #352 r9 P1).
+        return _refuse(f"run config {cfg_resolved} is NOT under the "
+                       f"repository {repo_resolved} — the gated config must "
+                       "be repo-tracked and git-provable.")
+    cfg_rel = cfg_resolved.relative_to(repo_resolved).as_posix()
+    tracked = _git(repo, "ls-files", "--", cfg_rel)
+    if not tracked:
+        return _refuse(f"run config {cfg_rel} is not git-tracked — an "
+                       "untracked config is not git-provable; commit it "
+                       "(the clean-tree check then pins its content).")
+    overall_end = _resolve_overall_end(cfg_resolved)
     if isinstance(overall_end, str) and overall_end.startswith("REFUSE:"):
         return _refuse(overall_end[len("REFUSE:"):])
     if isinstance(overall_end, date):
@@ -261,8 +281,11 @@ def main(argv: list[str] | None = None) -> int:
                        "+ a NEW untouched window (prohibited_variants).")
 
     # 7. PIT battery
+    pit_targets = [DEFAULT_PIT_CASES]
+    if args.extra_pit_case:
+        pit_targets.append(args.extra_pit_case)
     pit = subprocess.run(
-        [sys.executable, "-m", "pytest", *args.pit_cases.split(), "-q",
+        [sys.executable, "-m", "pytest", *pit_targets, "-q",
          "--no-header", "-x"],
         capture_output=True, text=True, cwd=str(repo),
     )

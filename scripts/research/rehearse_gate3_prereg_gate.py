@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — eleven scenarios, 11/11 required.
+"""Gate-3 pre-registration gate REHEARSAL — twelve scenarios, 12/12 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -14,8 +14,13 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
               IS visible before its announcement — the correct view makes
               that assertion FAIL, so the gate must refuse).
 
+  R7-R11    see docs/prereg/quality_profitability_rehearsal.md (ledger not
+            frozen / holdout-touching window / beyond-holdout adjudication /
+            partial-holdout peek / claim-config mismatch).
+  R12 REFUSE out-of-repo run config (not git-provable, codex #352 r9).
+
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 11/11, paste the printed block into the rehearsal
+before freezing). Exit 0 = 12/12, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -58,15 +63,15 @@ def test_lookahead_probe(tmp_path):
 '''
 
 
-_DEV_CONFIG: Path | None = None  # set in main(): temp config, overall_end=dev boundary
+DEV_CONFIG_REL = "config/presets/quality_gate3_dev.yaml"
+FINAL_CONFIG_REL = "config/presets/quality_gate3_final_adjudication.yaml"
 
 
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
     argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
             "--store-dir", str(store), *extra]
     if "--run-config" not in extra:
-        assert _DEV_CONFIG is not None
-        argv += ["--run-config", str(_DEV_CONFIG)]   # dev window 2024-12-31
+        argv += ["--run-config", str(repo / DEV_CONFIG_REL)]  # tracked, frozen
     out = subprocess.run(argv, capture_output=True, text=True)
     return out.returncode, out.stdout + out.stderr
 
@@ -80,14 +85,14 @@ def main(argv: list[str] | None = None) -> int:
     repo, store = args.repo_root, args.store_dir
     results: list[tuple[str, bool, str]] = []
 
-    global _DEV_CONFIG
+    # codex #352 r9: run configs must be repo-tracked — the default (R1) and
+    # both final-adjudication scenarios (R9/R10) now use the FROZEN presets;
+    # the only temp config left is R12's, which exists to be REFUSED.
     cfg_dir = Path(tempfile.mkdtemp(prefix="g3_rehearsal_cfg_"))
-    _DEV_CONFIG = cfg_dir / "dev_2024.yaml"
-    _DEV_CONFIG.write_text('overall_end: "2024-12-31"\n', encoding="utf-8")
-    cfg_2026h1 = cfg_dir / "beyond_2026h1.yaml"
-    cfg_2026h1.write_text('overall_end: "2026-06-30"\n', encoding="utf-8")
-    cfg_2025h1 = cfg_dir / "partial_2025h1.yaml"
-    cfg_2025h1.write_text('overall_end: "2025-06-30"\n', encoding="utf-8")
+    outside_cfg = cfg_dir / "outside_repo.yaml"
+    outside_cfg.write_text('overall_end: "2024-12-31"\n', encoding="utf-8")
+    final_cfg_path = repo / FINAL_CONFIG_REL
+    final_cfg_bytes = final_cfg_path.read_bytes()
 
     # R1 ACCEPT
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
@@ -139,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         probe_file = Path(td) / "test_rehearsal_lookahead_probe.py"
         probe_file.write_text(_FAILING_PIT_PROBE, encoding="utf-8")
         rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                            "--pit-cases", str(probe_file))
+                            "--extra-pit-case", str(probe_file))
         results.append(("R6 PIT-case failure refused",
                         rc == 1 and "PIT case battery FAILED" in out,
                         out.splitlines()[0] if out else ""))
@@ -177,9 +182,14 @@ def main(argv: list[str] | None = None) -> int:
     # R9 REFUSE final-adjudication beyond the signed holdout (codex #352 r6):
     # the verdict run must cover the holdout EXACTLY — 2026H1 data is outside
     # the registered adjudication scope, flag or no flag.
-    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                        "--run-config", str(cfg_2026h1),
-                        "--final-adjudication")
+    try:
+        final_cfg_path.write_bytes(final_cfg_bytes.replace(
+            b'"2025-12-31"', b'"2026-06-30"'))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                            "--run-config", str(final_cfg_path),
+                            "--final-adjudication")
+    finally:
+        final_cfg_path.write_bytes(final_cfg_bytes)
     results.append(("R9 adjudication-beyond-holdout refused",
                     rc == 1 and "EXACTLY" in out,
                     out.splitlines()[0] if out else ""))
@@ -187,9 +197,14 @@ def main(argv: list[str] | None = None) -> int:
     # R10 REFUSE partial-holdout adjudication (codex #352 r7): a verdict run
     # ending mid-holdout (2025-06-30) would be an interim PEEK at partial
     # holdout results before the one-time verdict — must refuse.
-    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                        "--run-config", str(cfg_2025h1),
-                        "--final-adjudication")
+    try:
+        final_cfg_path.write_bytes(final_cfg_bytes.replace(
+            b'"2025-12-31"', b'"2025-06-30"'))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                            "--run-config", str(final_cfg_path),
+                            "--final-adjudication")
+    finally:
+        final_cfg_path.write_bytes(final_cfg_bytes)
     results.append(("R10 partial-holdout peek refused",
                     rc == 1 and "EXACTLY" in out and "no partial peek" in out,
                     out.splitlines()[0] if out else ""))
@@ -204,13 +219,23 @@ def main(argv: list[str] | None = None) -> int:
                     rc == 1 and "claim/config mismatch" in out,
                     out.splitlines()[0] if out else ""))
 
+    # R12 REFUSE out-of-repo run config (codex #352 r9): a /tmp config is
+    # outside clean-tree/frozen-package coverage, so the boundary it declares
+    # is not git-provable — refuse even though its overall_end (2024-12-31)
+    # would pass the window check, proving the refusal is on tracked-ness.
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--run-config", str(outside_cfg))
+    results.append(("R12 out-of-repo config refused",
+                    rc == 1 and "NOT under the repository" in out,
+                    out.splitlines()[0] if out else ""))
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/11")
-    return 0 if n_ok == 11 else 1
+    print(f"  => {n_ok}/12")
+    return 0 if n_ok == 12 else 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+# 阶段8 Gate-4 DEV run config — FROZEN with the prereg package (#352).
+# The gated window derives from overall_end: dev runs end at the frozen
+# boundary; the signed 2025 holdout stays untouched (gate refuses anything
+# past 2024-12-31 without --final-adjudication).
+extends: ../../config_walk.yaml
+overall_end: "2024-12-31"

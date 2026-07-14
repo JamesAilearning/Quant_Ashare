@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 6/6
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 12/12
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(六场景,每场景一行结果)
+## 演练矩阵(十二场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R12=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -23,6 +23,7 @@
 | R9 | 终裁越过 holdout 上界被拒(v5 增补) | --final-adjudication --test-window-end 2026-06-30 | REJECT: 终裁须恰好=holdout 末端(2026H1 不在注册裁决范围) | **PASS**(REFUSE) |
 | R10 | 终裁只盖半个 holdout 被拒(v6 增补) | --final-adjudication + config(overall_end 2025-06-30) | REJECT: no partial peek —— 一次性终裁须覆盖完整已签 holdout | **PASS**(REFUSE) |
 | R11 | 自报窗与 config 不符被拒(v7 增补) | --test-window-end 2024-12-31 + 真 config_walk.yaml(2025-12-31) | REJECT: claim/config mismatch —— gate 只信 config | **PASS**(REFUSE) |
+| R12 | 库外 run config 被拒(v8 增补) | 临时目录 config(overall_end 2024-12-31,窗口本身合法)传入 --run-config | REJECT: NOT under the repository —— 边界必须 git-provable(tracked) | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -58,7 +59,8 @@
 - 执行: Claude Code(操作人授权冻结序列,holdout(a) 已签)
 - 执行时间: 2026-07-13 ~15:00 UTC
 - 冻结 commit: 本冻结包所在 commit(自证;squash 合并后以 main 上本 PR 的合并
-  commit 为准 —— gate 的 freeze 时间取全部 8 冻结件在所查 checkout 的最晚 commit,
+  commit 为准 —— gate 的 freeze 时间取全部冻结件(v8 起 10 件,含两个 run-config
+  preset)在所查 checkout 的最晚 commit,
   与任何临时分支 hash 无关)
 - manifest aggregate: 4560e8536524e4a0…(1880 文件)
 - 驱动: `scripts/research/rehearse_gate3_prereg_gate.py --store-dir D:/qlib_data/financial_pit_raw`
@@ -79,6 +81,15 @@
 - **v7(codex r8)**: 被门的窗口**从 run config 推导**(overall_end,extends 链
   解析),自报 --test-window-end 降级为交叉核对(不符即拒);ACCEPT 回显 config
   sha256 供 run provenance 绑定;R8 改用**真 config_walk.yaml** 演练默认配置
-  攻击,新增 R11(claim/config mismatch)。演练矩阵 **11 场景**,最终复跑
-  **11/11 PASS**(输出以 PR #352 评论存档)。
+  攻击,新增 R11(claim/config mismatch)。演练矩阵扩至 11 场景,复跑 11/11 PASS。
+- **v8(codex r9)**: ① run config 必须**位于 repo 内且 git-tracked**(库外
+  /tmp config 不受 clean-tree/冻结检查覆盖,边界不可证)—— 决策级窗口由此全部
+  锚定在两个随包冻结的 preset(`config/presets/quality_gate3_dev.yaml` 末界
+  2024-12-31 / `quality_gate3_final_adjudication.yaml` 末界 2025-12-31,冻结件
+  从 8 件扩为 **10 件**);② canonical PIT battery 不可被调用方替换 ——
+  `--pit-cases`(替换语义)改为 `--extra-pit-case`(仅追加,canonical
+  `tests/logic/test_financial_pit_view.py` 永远强制)。R1/R9/R10 演练改走
+  tracked preset(R9/R10 以 bytes I/O 临时改写终裁 preset 的 overall_end 再
+  还原),新增 R12(库外 config 拒收)。演练矩阵 **12 场景**,最终复跑
+  **12/12 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
