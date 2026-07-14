@@ -44,6 +44,7 @@ from scripts.research.gate4a_ic_evaluator import (  # noqa: E402
     masked_ts_codes_on,
     monotonicity,
     size_deciles_asof,
+    st_ts_codes_on,
     within_decile_rank,
 )
 from src.core.microstructure_mask import MicrostructureMaskResult  # noqa: E402
@@ -178,6 +179,26 @@ def test_forward_returns_no_post_entry_close_marks_flat_and_counts():
     assert ret["halt.SZ"] == pytest.approx(0.0)
     assert counts["return_flat_no_post_entry_close"] == 1
     assert counts["return_truncated_last_close"] == 0
+
+
+def test_st_ts_codes_on_flags_st_names_on_execution_day():
+    from src.data.st_history import build_st_lookup
+    nc = pd.DataFrame([
+        {"ts_code": "000001.SZ", "name": "ST平安", "start_date": "20200110",
+         "end_date": None, "ann_date": "20200110", "change_reason": ""},
+        {"ts_code": "000001.SZ", "name": "平安银行", "start_date": "20210110",
+         "end_date": None, "ann_date": "20210110", "change_reason": ""},
+        {"ts_code": "600000.SH", "name": "浦发银行", "start_date": "20000101",
+         "end_date": None, "ann_date": "20000101", "change_reason": ""},
+    ])
+    lookup = build_st_lookup(nc)
+    universe = ["000001.SZ", "600000.SH"]
+    assert st_ts_codes_on(lookup, universe, date(2020, 6, 1)) == \
+        frozenset({"000001.SZ"})          # ST in effect on that day
+    assert st_ts_codes_on(lookup, universe, date(2021, 6, 1)) == frozenset()
+    # 摘帽 later must NOT rewrite history (PIT no-look-ahead)
+    assert st_ts_codes_on(lookup, universe, date(2020, 12, 31)) == \
+        frozenset({"000001.SZ"})
 
 
 def test_masked_ts_codes_on_filters_by_day_and_converts_codes():

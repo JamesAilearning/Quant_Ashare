@@ -41,6 +41,17 @@ Pinned run semantics (decided at work-order level, echoed in the artifact):
   * Size deciles: total_mv as-of (last value <= t_i, staleness capped at
     MAX_MV_STALENESS_DAYS trading days — beyond that the name is DROPPED
     from that fold and counted, never silently ranked on stale size).
+  * ALL data roots derive from the GATED frozen config chain — the qlib
+    bundle (provider_uri), calendar, membership and the namechange
+    snapshot (namechange_path) are frozen literals; there is NO CLI
+    override, so an unregistered bundle can never ride a GATE ACCEPT
+    (codex #354 r2 P1).
+  * st_on (registered design, production-faithful): names that were
+    ST/*ST on the execution day per the PIT namechange reconstruction
+    (src/data/st_history.py) are excluded from the cross-section and
+    counted, exactly as the canonical backtest drops them
+    (codex #354 r2 P1). ST-off is a registered sensitivity slice, run
+    separately, never silently.
   * Execution-day tradeability reuses the CANONICAL microstructure mask
     (src/core/microstructure_mask.py, audit P0-3): names suspended with a
     carried close (volume<1 / NaN) or one-price locked (high==low) on the
@@ -101,6 +112,13 @@ from src.core.microstructure_mask import (  # noqa: E402
     compute_unavailable_mask,
 )
 from src.data.pit._common import qlib_to_ts_code  # noqa: E402
+from src.data.st_history import (  # noqa: E402
+    StLookup,
+    assert_covers,
+    build_st_lookup,
+    is_st_on,
+    load_namechange,
+)
 from src.data.trading_calendar import StaticTradingCalendar  # noqa: E402
 from src.data.tushare.client import TushareClient  # noqa: E402
 from src.research.financial_pit_view import FinancialPITDataView  # noqa: E402
@@ -229,6 +247,16 @@ def within_decile_rank(factor: pd.Series, deciles: pd.Series) -> pd.Series:
         return pd.Series(dtype=float)
     return joined.groupby("d")["f"].transform(
         lambda s: s.rank(method="average") / (len(s) + 1))
+
+
+def st_ts_codes_on(lookup: StLookup, universe: list[str],
+                   day: date) -> frozenset[str]:
+    """Names that were ST/*ST on ``day`` per the PIT namechange
+    reconstruction — the registered design is st_on (production-faithful:
+    the canonical backtest drops these on each execution day), so the
+    Gate-4A cross-section must drop them too (codex #354 r2 P1)."""
+    iso = day.isoformat()
+    return frozenset(ts for ts in universe if is_st_on(lookup, ts, iso))
 
 
 def masked_ts_codes_on(mask: MicrostructureMaskResult,
@@ -378,8 +406,11 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--candidate", required=True)
     p.add_argument("--store-dir", type=Path, required=True)
-    p.add_argument("--provider-root", type=Path,
-                   default=Path("D:/qlib_data/my_cn_data_pit"))
+    # NOTE: no --provider-root override. The qlib bundle, calendar,
+    # membership and namechange snapshot all derive from the GATED frozen
+    # config chain (provider_uri / namechange_path are frozen literals) —
+    # a caller-supplied path could evaluate an unregistered bundle while
+    # archiving GATE ACCEPT (codex #354 r2 P1).
     p.add_argument("--out", type=Path, default=Path("output/gate4a"))
     p.add_argument("--repo-root", type=Path, default=_REPO)
     args = p.parse_args(argv)
@@ -403,25 +434,48 @@ def main(argv: list[str] | None = None) -> int:
     folds = dev_fold_windows(cfg)
     end_boundary = date.fromisoformat(str(cfg["overall_end"]))
 
-    # 2. calendar + membership + financial exclusion
-    cal_path = args.provider_root / "calendars" / "day.txt"
+    # 2. data roots DERIVED from the gated frozen config chain — never a
+    # caller-supplied path (codex #354 r2 P1): provider_uri and
+    # namechange_path are frozen literals in the self-contained parent
+    # snapshot (the gate refuses ${...} placeholders and unfrozen chains).
+    provider_uri = cfg.get("provider_uri")
+    if not provider_uri:
+        raise EvaluatorError("gated config chain carries no provider_uri — "
+                             "cannot bind the qlib bundle.")
+    provider_root = Path(str(provider_uri))
+    if not provider_root.is_dir():
+        raise EvaluatorError(f"frozen provider_uri {provider_root} is not a "
+                             "directory on this machine — refusing to "
+                             "substitute another bundle.")
+    namechange_raw = cfg.get("namechange_path")
+    if not namechange_raw:
+        raise EvaluatorError("gated config chain carries no namechange_path — "
+                             "the registered design is st_on; refusing to "
+                             "run without the PIT ST mask.")
+    namechange = load_namechange(Path(str(namechange_raw)))
+
+    # 3. calendar + membership + financial exclusion + ST lookup
+    cal_path = provider_root / "calendars" / "day.txt"
     cal_days = [date.fromisoformat(t.strip()) for t in
                 cal_path.read_text(encoding="utf-8").split() if t.strip()]
-    membership_path = args.provider_root / "instruments" / "csi300.txt"
+    membership_path = provider_root / "instruments" / "csi300.txt"
     intervals = parse_membership(membership_path)
     client = TushareClient.from_environment()
     issuers, issuers_note = fetch_financial_issuers(client)
+
+    assert_covers(namechange, end_boundary.isoformat())
+    st_lookup = build_st_lookup(namechange)
 
     calendar = StaticTradingCalendar(cal_days)
     view = FinancialPITDataView(args.store_dir, calendar,
                                 financial_issuers=issuers)
     formula, fields = CANDIDATE_FORMULAS[args.candidate]
 
-    # 3. price/size panel over the dev span (one qlib load)
+    # 4. price/size panel over the dev span (one qlib load)
     span_start = min(f.test_start for f in folds)
     ever = sorted({ts for ts, _, _ in intervals})
     code_map = {ts: ts[-2:].upper() + ts[:6] for ts in ever}  # ts -> qlib
-    close, mv = load_qlib_frames(args.provider_root,
+    close, mv = load_qlib_frames(provider_root,
                                  sorted(code_map.values()),
                                  _add_months(span_start, -3), end_boundary)
     # canonical microstructure mask over the dev span (codex #354 r1 P1):
@@ -442,6 +496,9 @@ def main(argv: list[str] | None = None) -> int:
                        if fw.test_start <= d <= min(fw.test_end, end_boundary))
         members = members_on(intervals, t_i)
         universe = [ts for ts in members if ts not in issuers]
+        st_names = st_ts_codes_on(st_lookup, universe, exec_i)
+        n_st = len(st_names)
+        universe = [ts for ts in universe if ts not in st_names]
         untradeable = masked_ts_codes_on(micro_mask, exec_i)
         n_untradeable = sum(1 for ts in universe if ts in untradeable)
         universe = [ts for ts in universe if ts not in untradeable]
@@ -457,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
             "execution_day": exec_i.isoformat(),
             "horizon_end": fold_end.isoformat(),
             "n_members": len(members),
+            "exec_day_st_masked": n_st,
             "exec_day_untradeable_masked": n_untradeable,
             "n_universe_exfin_tradeable": len(universe),
             "n_factor_nonna": int(factor.notna().sum()),
@@ -497,7 +555,13 @@ def main(argv: list[str] | None = None) -> int:
             "execution_day_tradeability": "canonical microstructure mask "
                                           "(suspended w/ carried close, "
                                           "one-price lock) excluded + counted",
+            "st_handling": "st_on — PIT namechange reconstruction, ST/*ST "
+                           "on the execution day excluded + counted",
+            "data_roots": "provider_uri / namechange_path from the gated "
+                          "frozen config chain (no CLI override)",
         },
+        "data_roots": {"provider_uri": str(provider_root),
+                       "namechange_path": str(namechange_raw)},
         "financial_exclusion": {"n": len(issuers), "provenance": issuers_note},
         "microstructure_mask_span_counts": {
             "n_suspended": micro_mask.n_suspended,
