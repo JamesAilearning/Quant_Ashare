@@ -43,6 +43,7 @@ from scripts.research.gate4a_ic_evaluator import (  # noqa: E402
     load_config_chain,
     masked_ts_codes_on,
     monotonicity,
+    rebalance_stamps,
     size_deciles_asof,
     st_ts_codes_on,
     within_decile_rank,
@@ -179,6 +180,39 @@ def test_forward_returns_no_post_entry_close_marks_flat_and_counts():
     assert ret["halt.SZ"] == pytest.approx(0.0)
     assert counts["return_flat_no_post_entry_close"] == 1
     assert counts["return_truncated_last_close"] == 0
+
+
+def test_rebalance_stamps_mirror_canonical_schedule():
+    # 63-day quarter: schedule positions {0} -> one primary stamp holding
+    # to the fold's last day.
+    days63 = _calendar(63)
+    stamps, n_zero = rebalance_stamps(days63, 63, 0)
+    assert n_zero == 0 and len(stamps) == 1
+    t, ex, end = stamps[0]
+    assert (t, ex, end) == (days63[0], days63[1], days63[62])
+    # 64-day quarter: position 63 IS the last in-window day -> excluded by
+    # the fillable rule (lag-1 exec would leave the window) -> one stamp.
+    days64 = _calendar(64)
+    stamps, n_zero = rebalance_stamps(days64, 63, 0)
+    assert n_zero == 0 and len(stamps) == 1
+    # 65-day quarter: position 63 executes on the LAST day -> zero-length
+    # horizon -> dropped + counted; primary survives.
+    days65 = _calendar(65)
+    stamps, n_zero = rebalance_stamps(days65, 63, 0)
+    assert n_zero == 1 and len(stamps) == 1
+    # 66-day quarter: tail stamp gets a real 1-day horizon -> kept.
+    days66 = _calendar(66)
+    stamps, n_zero = rebalance_stamps(days66, 63, 0)
+    assert n_zero == 0 and len(stamps) == 2
+    t2, ex2, end2 = stamps[1]
+    assert (t2, ex2, end2) == (days66[63], days66[64], days66[65])
+    # primary horizon ends at the TAIL's execution day (position turnover)
+    assert stamps[0][2] == days66[64]
+
+
+def test_rebalance_stamps_refuses_tiny_fold():
+    with pytest.raises(EvaluatorError, match="trading days"):
+        rebalance_stamps(_calendar(2), 63, 0)
 
 
 def test_st_ts_codes_on_flags_st_names_on_execution_day():

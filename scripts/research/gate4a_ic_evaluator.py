@@ -29,15 +29,25 @@ Implements the FROZEN pre-registration ``docs/prereg/quality_profitability.yaml`
 
 Pinned run semantics (decided at work-order level, echoed in the artifact):
 
-  * Rebalance/signal day t_i = FIRST trading day of dev fold i's 3-month
-    test window (cadence 63 + anchor fold_phase + phase 0 == one rebalance
-    per fold at its start; the rebalance day is the signal-stamp day).
-  * Execution day = t_i + signal_to_execution_lag(=1) trading days.
-  * Forward return = close[execution day] -> close[LAST trading day of the
-    SAME fold's test window]. Fold-contained by construction: no dev fold
-    ever consumes a price after the frozen end_boundary (2024-12-31), so
-    the signed 2025 holdout stays untouched; windows never overlap, so the
-    fold IC series is overlap-free for t-stats.
+  * Rebalance stamps mirror the CANONICAL fold_phase schedule (codex #354
+    r5 P1): in-window trading days ``[phase::cadence]`` (cadence/phase
+    from the gated frozen chain, 63/0) with the last in-window day
+    excluded (its lag-1 execution day is out of window — the runner's
+    fillable rule, backtest_runner._thin_predictions). Quarters longer
+    than 63 trading days therefore carry a short TAIL stamp exactly where
+    the 4B strategy will actually re-trade.
+  * Execution day = stamp + signal_to_execution_lag(=1) trading days;
+    forward return = close[execution day] -> close[next stamp's execution
+    day, or the fold's LAST trading day for the final stamp]. Zero-length
+    horizons (tail executing on the fold's last day) are dropped +
+    counted. Fold-contained by construction: no dev fold ever consumes a
+    price after the frozen end_boundary (2024-12-31) — the 2025 holdout
+    stays untouched; primary windows never overlap.
+  * The REGISTERED metric (rank_ic_mean / ic_ir, ic_forward_horizon =
+    primary_holding_period) aggregates the PRIMARY stamps only (one per
+    fold, quarterly horizon). Tail-stamp ICs (1-3 day horizons — a
+    DIFFERENT horizon than the frozen metric) are reported as
+    diagnostics, never mixed into the primary series.
   * Size deciles: total_mv as-of (last value <= t_i, staleness capped at
     MAX_MV_STALENESS_DAYS trading days — beyond that the name is DROPPED
     from that fold and counted, never silently ranked on stale size).
@@ -257,6 +267,39 @@ def within_decile_rank(factor: pd.Series, deciles: pd.Series) -> pd.Series:
         return pd.Series(dtype=float)
     return joined.groupby("d")["f"].transform(
         lambda s: s.rank(method="average") / (len(s) + 1))
+
+
+def rebalance_stamps(days: list[date], cadence: int, phase: int
+                     ) -> tuple[list[tuple[date, date, date]], int]:
+    """Canonical-mirrored rebalance stamps for ONE fold's in-window
+    trading days (codex #354 r5 P1): schedule = ``days[phase::cadence]``
+    (fold_phase, per-fold reset) with the LAST in-window day excluded
+    (its lag-1 execution day is out of window — the runner's fillable
+    rule). Returns ``([(signal_day, execution_day, horizon_end)], n_zero)``
+    where horizon_end = the NEXT stamp's execution day (position turns
+    over there) or the fold's last trading day for the final stamp.
+    Stamps whose horizon has ZERO trading days (execution day == horizon
+    end — only possible for a tail stamp executing on the fold's last
+    day) carry no measurable return and are dropped + counted."""
+    if len(days) < 3:
+        raise EvaluatorError(f"fold has only {len(days)} trading days — "
+                             "cannot schedule a rebalance.")
+    sched = [d for d in days[phase::cadence] if d != days[-1]]
+    if not sched:
+        raise EvaluatorError("fold schedule kept no fillable stamp — "
+                             "cadence/phase geometry wrong.")
+    execs = [days[days.index(d) + 1] for d in sched]
+    out: list[tuple[date, date, date]] = []
+    n_zero = 0
+    for j, (t_j, exec_j) in enumerate(zip(sched, execs, strict=True)):
+        end_j = execs[j + 1] if j + 1 < len(sched) else days[-1]
+        if end_j <= exec_j:
+            n_zero += 1
+            continue
+        out.append((t_j, exec_j, end_j))
+    if not out:
+        raise EvaluatorError("all stamps degenerate — fold horizon empty.")
+    return out, n_zero
 
 
 def st_ts_codes_on(lookup: StLookup, universe: list[str],
@@ -532,44 +575,64 @@ def main(argv: list[str] | None = None) -> int:
     # 4. per-fold evaluation
     fold_rows: list[dict[str, object]] = []
     ic_rows: list[dict[str, float | int]] = []
+    cadence = int(str(cfg.get("rebalance_cadence_days", "")) or 0)
+    phase = int(str(cfg.get("rebalance_phase", "")) or 0)
+    if cadence <= 0:
+        raise EvaluatorError("gated config chain carries no "
+                             "rebalance_cadence_days — cannot mirror the "
+                             "canonical schedule.")
+    tail_rows: list[dict[str, float | int]] = []
+    n_zero_horizon_total = 0
     for fw in folds:
-        t_i = next(d for d in cal_days if d >= fw.test_start)
-        exec_i = next(d for d in cal_days if d > t_i)
-        fold_end = max(d for d in cal_days
-                       if fw.test_start <= d <= min(fw.test_end, end_boundary))
-        members = members_on(intervals, t_i)
-        universe = [ts for ts in members if ts not in issuers]
-        st_names = st_ts_codes_on(st_lookup, universe, exec_i)
-        n_st = len(st_names)
-        universe = [ts for ts in universe if ts not in st_names]
-        untradeable = masked_ts_codes_on(micro_mask, exec_i)
-        n_untradeable = sum(1 for ts in universe if ts in untradeable)
-        universe = [ts for ts in universe if ts not in untradeable]
-        asof = view.as_of(t_i.isoformat(), list(fields), universe)
-        factor = formula(asof)
-        deciles, size_counts = size_deciles_asof(mv, t_i, universe, cal_days)
-        signal = within_decile_rank(factor, deciles)
-        fwd, ret_counts = forward_returns(close, exec_i, fold_end, universe)
-        ics = fold_ic(signal, fwd)
-        ic_rows.append(ics)
-        row: dict[str, object] = {
-            "fold": fw.index, "signal_day": t_i.isoformat(),
-            "execution_day": exec_i.isoformat(),
-            "horizon_end": fold_end.isoformat(),
-            "n_members": len(members),
-            "exec_day_st_masked": n_st,
-            "exec_day_untradeable_masked": n_untradeable,
-            "n_universe_exfin_tradeable": len(universe),
-            "n_factor_nonna": int(factor.notna().sum()),
-            **size_counts, **ret_counts, **ics,
-            "monotonicity_decile_means": monotonicity(signal, fwd),
-        }
-        # na_conditional_coverage: does factor-NA select a return regime?
-        na_names = factor[factor.isna()].index
-        both = fwd.reindex(na_names).dropna()
-        row["na_names_mean_fwd_ret"] = (float(both.mean()) if len(both) else None)
-        fold_rows.append(row)
+        days = [d for d in cal_days
+                if fw.test_start <= d <= min(fw.test_end, end_boundary)]
+        stamps, n_zero = rebalance_stamps(days, cadence, phase)
+        n_zero_horizon_total += n_zero
+        for j, (t_i, exec_i, horizon_end) in enumerate(stamps):
+            kind = "primary" if j == 0 else "tail"
+            members = members_on(intervals, t_i)
+            universe = [ts for ts in members if ts not in issuers]
+            st_names = st_ts_codes_on(st_lookup, universe, exec_i)
+            n_st = len(st_names)
+            universe = [ts for ts in universe if ts not in st_names]
+            untradeable = masked_ts_codes_on(micro_mask, exec_i)
+            n_untradeable = sum(1 for ts in universe if ts in untradeable)
+            universe = [ts for ts in universe if ts not in untradeable]
+            asof = view.as_of(t_i.isoformat(), list(fields), universe)
+            factor = formula(asof)
+            deciles, size_counts = size_deciles_asof(mv, t_i, universe,
+                                                     cal_days)
+            signal = within_decile_rank(factor, deciles)
+            fwd, ret_counts = forward_returns(close, exec_i, horizon_end,
+                                              universe)
+            ics = fold_ic(signal, fwd)
+            if kind == "primary":
+                ic_rows.append(ics)
+            else:
+                tail_rows.append(ics)
+            row: dict[str, object] = {
+                "fold": fw.index, "stamp": j, "stamp_kind": kind,
+                "signal_day": t_i.isoformat(),
+                "execution_day": exec_i.isoformat(),
+                "horizon_end": horizon_end.isoformat(),
+                "n_members": len(members),
+                "exec_day_st_masked": n_st,
+                "exec_day_untradeable_masked": n_untradeable,
+                "n_universe_exfin_tradeable": len(universe),
+                "n_factor_nonna": int(factor.notna().sum()),
+                **size_counts, **ret_counts, **ics,
+                "monotonicity_decile_means": monotonicity(signal, fwd),
+            }
+            # na_conditional_coverage: does factor-NA select a return regime?
+            na_names = factor[factor.isna()].index
+            both = fwd.reindex(na_names).dropna()
+            row["na_names_mean_fwd_ret"] = (float(both.mean())
+                                            if len(both) else None)
+            fold_rows.append(row)
 
+    if len(ic_rows) != len(folds):
+        raise EvaluatorError(f"primary stamp count {len(ic_rows)} != fold "
+                             f"count {len(folds)} — schedule derivation bug.")
     agg = aggregate(ic_rows)
 
     # 5. artifact
@@ -584,12 +647,17 @@ def main(argv: list[str] | None = None) -> int:
         "run_config": run_config_rel, "run_config_sha256": cfg_sha,
         "generated_utc": stamp,
         "pinned_semantics": {
-            "rebalance": "first trading day of each dev fold test window "
-                         "(cadence 63 / fold_phase / phase 0)",
+            "rebalance": "canonical fold_phase schedule: in-window days"
+                         "[phase::cadence] (frozen 63/0), last in-window "
+                         "day excluded (fillable rule); tails in >63-td "
+                         "quarters evaluated as diagnostics",
             "execution_lag_days": 1,
-            "forward_return": "close[exec] -> close[last trading day of the "
-                              "same fold] (fold-contained; never touches the "
-                              "2025 holdout)",
+            "forward_return": "close[exec] -> close[next stamp's exec | "
+                              "fold's last trading day] (fold-contained; "
+                              "never touches the 2025 holdout)",
+            "primary_metric_scope": "PRIMARY stamps only (quarterly "
+                                    "horizon = frozen ic_forward_horizon); "
+                                    "tail ICs reported, never aggregated",
             "size_source": "$total_mv (canonical PIT bundle, operator-approved "
                            "2026-07-14)",
             "size_staleness_cap_trading_days": MAX_MV_STALENESS_DAYS,
@@ -612,6 +680,11 @@ def main(argv: list[str] | None = None) -> int:
             "n_one_price_days": micro_mask.n_one_price_days,
         },
         "aggregate": agg,
+        "tail_stamps": {
+            "n": len(tail_rows),
+            "n_zero_horizon_dropped": n_zero_horizon_total,
+            "rank_ics": [float(r["rank_ic"]) for r in tail_rows],
+        },
         "folds": fold_rows,
         "fwer_note": "batch-level FWER (block-bootstrap min-statistic, "
                      "t~=2.85) runs AFTER all candidates/variants — this "
@@ -629,6 +702,9 @@ def main(argv: list[str] | None = None) -> int:
         f"(std {agg['rank_ic_std']:.4f}, t {agg['rank_ic_t']:+.2f}, "
         f"positive folds {agg['rank_ic_positive_folds']}/{agg['n_folds']})",
         f"- ic_ir: {agg['ic_ir']:+.3f}   rank_ic_ir: {agg['rank_ic_ir']:+.3f}",
+        f"- tail stamps (diagnostic, non-quarterly horizon): "
+        f"{len(tail_rows)} evaluated, {n_zero_horizon_total} zero-horizon "
+        "dropped",
         f"- financial exclusion: {len(issuers)} names ({issuers_note})",
         "",
         "VERDICT INPUT ONLY — no per-candidate p-threshold; the frozen "
