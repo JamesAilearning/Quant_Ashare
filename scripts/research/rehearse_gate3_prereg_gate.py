@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — twenty scenarios, 20/20 required.
+"""Gate-3 pre-registration gate REHEARSAL — twenty-one scenarios, 21/21 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -26,9 +26,10 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R18 REFUSE --final-adjudication on a dev window (fake provenance, r13).
   R19 REFUSE holding-period drift vs the signed quarterly design (r14).
   R20 REFUSE universe stamp drift vs the frozen ex-financial design (r14).
+  R21 REFUSE dev runs after unblinding (plan consumed, r15).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 20/20, paste the printed block into the rehearsal
+before freezing). Exit 0 = 21/21, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -351,13 +352,28 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         dev_cfg_path.write_bytes(dev_cfg_bytes)
 
+    # R21 REFUSE dev runs after unblinding (codex #352 r15): once the
+    # verdict fired, the plan is CONSUMED — a post-verdict DEV-window
+    # "decision-level" run is iteration on a family whose holdout has been
+    # spent, and must refuse just like a repeat adjudication (R14).
+    try:
+        ledger_path.write_bytes(ledger_bytes2.replace(
+            b"holdout_unblinded: false", b"holdout_unblinded: true"))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R21 dev run after unblinding refused",
+                        rc == 1 and "ALREADY UNBLINDED" in out
+                        and "CONSUMED" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        ledger_path.write_bytes(ledger_bytes2)
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/20")
-    return 0 if n_ok == 20 else 1
+    print(f"  => {n_ok}/21")
+    return 0 if n_ok == 21 else 1
 
 
 if __name__ == "__main__":

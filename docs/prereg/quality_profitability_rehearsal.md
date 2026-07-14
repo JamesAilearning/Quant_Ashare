@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 20/20
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 21/21
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(二十场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R20=codex 对抗加固增补)
+## 演练矩阵(二十一场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R21=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -32,6 +32,7 @@
 | R18 | 终裁 flag 配 dev 窗被拒(v12 增补) | --final-adjudication + dev stub(2024-12-31) | REJECT: DEV window —— 终裁 flag 只对精确 holdout 窗有效,dev run 不得携带终裁 provenance | **PASS**(REFUSE) |
 | R19 | 持有期漂移被拒(v13 增补) | 临时把 dev parent 的 cadence 63 翻回 1(日频默认) | REJECT: holding-period mismatch —— 日频换手/成本指标不得冒充已签季度设计 | **PASS**(REFUSE) |
 | R20 | 宇宙章戳漂移被拒(v13 增补) | 临时把 gate3_universe 换成 csi300_full | REJECT: universe stamp mismatch —— 全 csi300 不得顶冻结 ex-金融宇宙之名 | **PASS**(REFUSE) |
+| R21 | 揭盲后 dev run 被拒(v14 增补) | 临时翻 holdout_unblinded=true 后跑 dev 窗默认 stub | REJECT: ALREADY UNBLINDED + CONSUMED —— 裁决后本计划下任何决策级 run 一律拒 | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -142,6 +143,12 @@
   gate3_universe=csi300_pit_ex_financials;runtime 今日无 ex-financial 排除
   机制,实施排除是 Gate-4B 接线硬义务 —— runner 守卫泛化为一切 gate3_* 键
   fail-loud(CI 测试同步覆盖 gate3_universe),gate 核对章戳==plan
-  study_design.universe。新增 R19(cadence 漂移拒)/R20(宇宙章戳漂移拒)。
-  演练矩阵 **20 场景**,最终复跑 **20/20 PASS**(输出以 PR #352 评论存档)。
+  study_design.universe。新增 R19(cadence 漂移拒)/R20(宇宙章戳漂移拒),
+  矩阵扩至 20。
+- **v14(codex r15, P2)**: unblinded 检查原只在触碰 holdout 的分支内 ——
+  裁决后的 dev 窗"决策级"run 会绕过它拿到 ACCEPT,即在 holdout 已花掉的
+  家族上继续迭代。现 unblinded=true 为**全局终态**(紧随 ledger 解析,先于
+  窗口分支):本计划即告 CONSUMED,任何决策级 run(dev 或终裁)一律永拒;
+  后续工作 = 新计划 + 新未触碰窗。新增 R21(揭盲后 dev run 拒)。演练矩阵
+  **21 场景**,最终复跑 **21/21 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

@@ -22,8 +22,9 @@ Checks (ALL must pass; any failure = REFUSE, no run):
                     its resolved extends chain must itself be a frozen
                     artifact (self-contained frozen presets; no drift via
                     an unfrozen parent).
- 11. one verdict  — ledger holdout_unblinded must be a boolean; once true,
-                    any further --final-adjudication is refused permanently.
+ 11. one verdict  — ledger holdout_unblinded must be a boolean; once true
+                    this plan is CONSUMED and EVERY decision-level run
+                    (dev or final) is refused permanently.
  12. literal data — no ${...} env placeholder in any chain VALUE: the same
                     config sha256 must not resolve to different data
                     bundles at runtime (frozen-literal paths).
@@ -38,7 +39,7 @@ Checks (ALL must pass; any failure = REFUSE, no run):
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R20, 20/20 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R21, 21/21 required).
 """
 from __future__ import annotations
 
@@ -200,6 +201,19 @@ def main(argv: list[str] | None = None) -> int:
         return _refuse("ledger holdout_unblinded flag missing or non-boolean "
                        f"({unblinded!r}) — cannot prove the ONE-TIME verdict "
                        "has not already been consumed.")
+    if unblinded:
+        # GLOBAL terminal state (codex #352 r15 P2): once the ONE-TIME
+        # verdict has fired, this pre-registration is CONSUMED — refusing
+        # only repeat final adjudications would still allow post-verdict
+        # dev-window "decision-level" runs, i.e. iteration on a family
+        # whose holdout has already been spent. Refuse EVERYTHING under
+        # this plan, ahead of the window branch.
+        return _refuse(
+            "holdout ALREADY UNBLINDED (ledger holdout_unblinded: true) — "
+            "this pre-registration is CONSUMED: the ONE-TIME verdict has "
+            "fired and no further decision-level run (dev or final) is "
+            "permitted under this plan; any further work on this family = "
+            "new plan + new untouched window (prohibited_variants).")
 
     # 1b. the run's test window must respect the frozen dev boundary — the
     # default config_walk.yaml runs through 2025-12-31 and would silently
@@ -282,16 +296,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"would touch the untouched holdout ({holdout_window}). Dev "
                 "runs must end at the boundary; the ONE-TIME final verdict "
                 "run must pass --final-adjudication explicitly.")
-        if unblinded:
-            # one verdict, EVER: after the first final-adjudication fires,
-            # the ledger flips holdout_unblinded -> true, and any repeat
-            # would be iteration on the signed holdout — selection bias fed
-            # straight back into the "untouched" window (codex #352 r10 P1).
-            return _refuse(
-                "holdout ALREADY UNBLINDED (ledger holdout_unblinded: true) "
-                "— the ONE-TIME verdict has been consumed; a repeat "
-                "--final-adjudication is refused PERMANENTLY. Any further "
-                "work on this family = new plan + new untouched window.")
+        # NOTE: the unblinded terminal state is enforced GLOBALLY right
+        # after the ledger parse (codex #352 r15: dev runs after the
+        # verdict must refuse too, not only repeat adjudications), so
+        # reaching this branch implies holdout_unblinded is false.
         if test_end != holdout_end:
             # the verdict run must cover the FULL signed holdout EXACTLY —
             # beyond it (e.g. 2026H1) is outside the registered adjudication
