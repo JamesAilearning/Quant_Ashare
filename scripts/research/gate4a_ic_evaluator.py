@@ -41,9 +41,18 @@ Pinned run semantics (decided at work-order level, echoed in the artifact):
   * Size deciles: total_mv as-of (last value <= t_i, staleness capped at
     MAX_MV_STALENESS_DAYS trading days — beyond that the name is DROPPED
     from that fold and counted, never silently ranked on stale size).
+  * Execution-day tradeability reuses the CANONICAL microstructure mask
+    (src/core/microstructure_mask.py, audit P0-3): names suspended with a
+    carried close (volume<1 / NaN) or one-price locked (high==low) on the
+    execution day cannot actually fill — they are excluded from that
+    fold's cross-section and counted, exactly as the canonical backtest
+    masks them (codex #354 r1 P1).
   * Names with no close on the execution day (suspended) are dropped from
     that fold and counted. Names delisting mid-fold use the last available
-    close <= fold end (realized, conservative) and are counted.
+    close <= fold end (realized, conservative) and are counted; a name
+    with NO post-entry close at all marks at its entry close (return 0.0,
+    the last available close <= fold end) and is counted separately —
+    never silently dropped (codex #354 r1 P2).
 
 Decision-level discipline (the script REFUSES to run otherwise):
 
@@ -86,6 +95,10 @@ from scripts.research.gate3_step_a_coverage_report import (  # noqa: E402
     fetch_financial_issuers,
     members_on,
     parse_membership,
+)
+from src.core.microstructure_mask import (  # noqa: E402
+    MicrostructureMaskResult,
+    compute_unavailable_mask,
 )
 from src.data.pit._common import qlib_to_ts_code  # noqa: E402
 from src.data.trading_calendar import StaticTradingCalendar  # noqa: E402
@@ -218,6 +231,16 @@ def within_decile_rank(factor: pd.Series, deciles: pd.Series) -> pd.Series:
         lambda s: s.rank(method="average") / (len(s) + 1))
 
 
+def masked_ts_codes_on(mask: MicrostructureMaskResult,
+                       day: date) -> frozenset[str]:
+    """ts_codes untradeable on ``day`` per the CANONICAL microstructure
+    mask (suspended-with-carried-close / one-price locked) — the same
+    states the canonical backtest refuses to fill (codex #354 r1 P1)."""
+    iso = day.isoformat()
+    return frozenset(qlib_to_ts_code(inst)
+                     for d, inst in mask.masked if d == iso)
+
+
 def forward_returns(close: pd.DataFrame, exec_day: date, fold_end_day: date,
                     codes: list[str]) -> tuple[pd.Series, dict[str, int]]:
     """close[exec_day] -> close[last available <= fold_end_day] per name.
@@ -234,13 +257,19 @@ def forward_returns(close: pd.DataFrame, exec_day: date, fold_end_day: date,
         raise EvaluatorError(f"no price rows in ({exec_day}, {fold_end_day}] — "
                              "fold horizon empty.")
     slab = window.reindex(columns=codes)
+    has_post = slab.notna().any()
     exit_px = slab.ffill().iloc[-1]
-    truncated = int((slab.iloc[-1].isna() & exit_px.notna()
-                     & entry.notna()).sum())
+    # rule: exit = last available close <= fold_end. With zero post-entry
+    # closes that IS the entry close (return 0.0) — counted, never
+    # silently dropped (codex #354 r1 P2).
+    exit_px = exit_px.where(has_post, entry)
+    flat_no_post = int((entry.notna() & ~has_post).sum())
+    truncated = int((slab.iloc[-1].isna() & has_post & entry.notna()).sum())
     dropped = int(entry.isna().sum())
     ret = (exit_px / entry) - 1.0
     counts = {"return_dropped_no_entry_close": dropped,
-              "return_truncated_last_close": truncated}
+              "return_truncated_last_close": truncated,
+              "return_flat_no_post_entry_close": flat_no_post}
     return ret.dropna(), counts
 
 
@@ -395,6 +424,13 @@ def main(argv: list[str] | None = None) -> int:
     close, mv = load_qlib_frames(args.provider_root,
                                  sorted(code_map.values()),
                                  _add_months(span_start, -3), end_boundary)
+    # canonical microstructure mask over the dev span (codex #354 r1 P1):
+    # execution-day untradeable names (suspension w/ carried close,
+    # one-price lock) must not enter the IC cross-section — the canonical
+    # backtest refuses these fills, so a decision-level IC must too.
+    micro_mask = compute_unavailable_mask(
+        sorted(code_map.values()),
+        span_start.isoformat(), end_boundary.isoformat())
 
     # 4. per-fold evaluation
     fold_rows: list[dict[str, object]] = []
@@ -406,6 +442,9 @@ def main(argv: list[str] | None = None) -> int:
                        if fw.test_start <= d <= min(fw.test_end, end_boundary))
         members = members_on(intervals, t_i)
         universe = [ts for ts in members if ts not in issuers]
+        untradeable = masked_ts_codes_on(micro_mask, exec_i)
+        n_untradeable = sum(1 for ts in universe if ts in untradeable)
+        universe = [ts for ts in universe if ts not in untradeable]
         asof = view.as_of(t_i.isoformat(), list(fields), universe)
         factor = formula(asof)
         deciles, size_counts = size_deciles_asof(mv, t_i, universe, cal_days)
@@ -417,7 +456,9 @@ def main(argv: list[str] | None = None) -> int:
             "fold": fw.index, "signal_day": t_i.isoformat(),
             "execution_day": exec_i.isoformat(),
             "horizon_end": fold_end.isoformat(),
-            "n_members": len(members), "n_universe_exfin": len(universe),
+            "n_members": len(members),
+            "exec_day_untradeable_masked": n_untradeable,
+            "n_universe_exfin_tradeable": len(universe),
             "n_factor_nonna": int(factor.notna().sum()),
             **size_counts, **ret_counts, **ics,
             "monotonicity_decile_means": monotonicity(signal, fwd),
@@ -453,8 +494,15 @@ def main(argv: list[str] | None = None) -> int:
             "size_staleness_cap_trading_days": MAX_MV_STALENESS_DAYS,
             "ranking": f"within_size_decile (n={N_SIZE_DECILES})",
             "standardization": "as_of_or_earlier_only",
+            "execution_day_tradeability": "canonical microstructure mask "
+                                          "(suspended w/ carried close, "
+                                          "one-price lock) excluded + counted",
         },
         "financial_exclusion": {"n": len(issuers), "provenance": issuers_note},
+        "microstructure_mask_span_counts": {
+            "n_suspended": micro_mask.n_suspended,
+            "n_one_price_days": micro_mask.n_one_price_days,
+        },
         "aggregate": agg,
         "folds": fold_rows,
         "fwer_note": "batch-level FWER (block-bootstrap min-statistic, "

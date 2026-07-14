@@ -41,10 +41,12 @@ from scripts.research.gate4a_ic_evaluator import (  # noqa: E402
     fold_ic,
     forward_returns,
     load_config_chain,
+    masked_ts_codes_on,
     monotonicity,
     size_deciles_asof,
     within_decile_rank,
 )
+from src.core.microstructure_mask import MicrostructureMaskResult  # noqa: E402
 
 _GEOMETRY = {
     "overall_start": "2018-01-01",
@@ -163,6 +165,30 @@ def test_forward_returns_missing_execution_day_fails_loud():
     close, cal = _close_frame()
     with pytest.raises(EvaluatorError, match="execution day"):
         forward_returns(close, date(1999, 1, 1), cal[9], ["up.SZ"])
+
+
+def test_forward_returns_no_post_entry_close_marks_flat_and_counts():
+    # entry close exists, ZERO closes afterwards -> exit = entry close
+    # (the last available close <= fold end), return 0.0, counted —
+    # never silently dropped (codex #354 r1 P2).
+    cal = _calendar(6)
+    close = pd.DataFrame(index=cal, columns=["halt.SZ"], dtype=float)
+    close.loc[cal[1], "halt.SZ"] = 42.0
+    ret, counts = forward_returns(close, cal[1], cal[5], ["halt.SZ"])
+    assert ret["halt.SZ"] == pytest.approx(0.0)
+    assert counts["return_flat_no_post_entry_close"] == 1
+    assert counts["return_truncated_last_close"] == 0
+
+
+def test_masked_ts_codes_on_filters_by_day_and_converts_codes():
+    mask = MicrostructureMaskResult(
+        masked=frozenset({("2024-01-02", "SH600000"),
+                          ("2024-01-02", "SZ000001"),
+                          ("2024-01-03", "SH600004")}),
+        n_suspended=2, n_one_price_days=1)
+    got = masked_ts_codes_on(mask, date(2024, 1, 2))
+    assert got == frozenset({"600000.SH", "000001.SZ"})
+    assert masked_ts_codes_on(mask, date(2024, 1, 4)) == frozenset()
 
 
 # ---------------------------------------------------------------------------
