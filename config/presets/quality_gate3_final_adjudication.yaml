@@ -43,6 +43,12 @@ region: "cn"
 
 # Universe & features
 instruments: "csi300"
+# 阶段8 预注册宇宙章戳(codex #352 r14 P1): 冻结研究宇宙 = csi300_pit_ex_
+# financials(银行/证券/保险剔除,plan study_design.universe)。runtime 今日
+# 无 ex-financial 排除机制 -- 实施该排除是 Gate-4B 接线的硬义务(runner 对
+# 一切 gate3_* 键 fail-loud 拒跑,直至接线消费);gate 交叉核对本章戳与 plan
+# 一致,防止接线落地后跑成全 csi300 却顶着冻结宇宙之名。
+gate3_universe: "csi300_pit_ex_financials"
 feature_handler: "Alpha158"
 
 # PIT historical ST/*ST exclusion (C2-d PR2). The backtest drops names that
@@ -135,6 +141,16 @@ commission_rate: 0.0005
 # the two segments per fold. Audit P0-4 / openspec/changes/
 # add-stamp-tax-schedule.
 slippage_bps: 5.0
+
+# 阶段8 决策③(已签)持有期章戳(codex #352 r14 P1): 主持有期 = 季度再平衡。
+# 63 = 21 交易日/月 x 3;anchor=fold_phase 每折相位重置 -> 3 个月 test 折
+# 恰好一次再平衡 = 2025 holdout 全年 4 次(plan untouched_final_holdout 注
+# "4 次季度再平衡")。不写则 WalkForwardConfig 默认 1(日频)-- 那会以日频
+# 换手/成本产出冒充已签季度设计的指标;gate 交叉核对本三元组与 plan
+# holding.primary 映射一致。半年/年敏感性切片届时各用自己的预注册 preset。
+rebalance_cadence_days: 63
+rebalance_phase: 0
+rebalance_anchor: "fold_phase"
 
 # Performance attribution per fold. Default ``True`` produces an
 # ``attribution`` block in every ``fold_NN_report.json`` (board-heuristic

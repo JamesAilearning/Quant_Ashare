@@ -129,6 +129,16 @@ def test_load_config_gate3_candidate_fails_loud_until_4b_wiring(tmp_path):
     ])
     with pytest.raises(ValueError, match="Gate-4B augmentation wiring"):
         _load_config(str(cfg))
+    # the guard covers EVERY gate3_* prereg key, not just the candidate —
+    # the universe stamp alone must also refuse (codex #352 r14: running
+    # it would be full-csi300 masquerading as the frozen ex-financial
+    # universe).
+    cfg2 = _write_yaml(tmp_path / "wf2.yaml", [
+        *_baseline_yaml_lines(),
+        'gate3_universe: "csi300_pit_ex_financials"',
+    ])
+    with pytest.raises(ValueError, match="Gate-4B augmentation wiring"):
+        _load_config(str(cfg2))
 
 
 # ---------------------------------------------------------------------------

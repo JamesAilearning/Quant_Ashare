@@ -30,10 +30,15 @@ Checks (ALL must pass; any failure = REFUSE, no run):
  13. binding      — the chain must declare gate3_candidate (child-first)
                     equal to --candidate: the gate accepts only the
                     candidate the run config actually evaluates.
+ 14. design stamp — the chain must carry the signed holding period
+                    (quarterly: rebalance_cadence_days=63, fold_phase) and
+                    the frozen universe stamp (gate3_universe ==
+                    plan study_design.universe); daily-default or bare
+                    csi300 must not masquerade as the signed design.
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R18, 18/18 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R20, 20/20 required).
 """
 from __future__ import annotations
 
@@ -369,6 +374,42 @@ def main(argv: list[str] | None = None) -> int:
             f"gate3_candidate {cfg_candidate!r} — the gate accepts only "
             "the candidate the run config actually evaluates.")
 
+    # 1f. the frozen STUDY-DESIGN stamps must match the plan (codex #352
+    # r14 P1): without these, an enabled Gate-4 run would silently produce
+    # daily-rebalance metrics on the FULL csi300 while claiming the signed
+    # quarterly ex-financial design.
+    def _chain_value(key: str) -> object | None:
+        for d in cfg_datas:  # child overrides parent
+            if key in d:
+                return d[key]
+        return None
+
+    holding_primary = str(plan["holding"]["primary"])
+    if holding_primary != "quarterly_rebalance":
+        return _refuse(f"plan holding.primary {holding_primary!r} has no "
+                       "registered cadence mapping in this gate — refusing "
+                       "rather than guessing the holding period.")
+    expected_cadence, expected_anchor = 63, "fold_phase"
+    got_cadence = _chain_value("rebalance_cadence_days")
+    got_anchor = _chain_value("rebalance_anchor")
+    if got_cadence != expected_cadence or got_anchor != expected_anchor:
+        return _refuse(
+            f"holding-period mismatch: plan freezes {holding_primary} "
+            f"(rebalance_cadence_days={expected_cadence}, "
+            f"rebalance_anchor={expected_anchor!r}) but the run config "
+            f"chain derives cadence={got_cadence!r}, anchor={got_anchor!r} "
+            "— an unset cadence defaults to DAILY rebalancing, producing "
+            "turnover/cost metrics that are not the signed design.")
+    plan_universe = str(sd["universe"])
+    got_universe = _chain_value("gate3_universe")
+    if got_universe != plan_universe:
+        return _refuse(
+            f"universe stamp mismatch: plan freezes {plan_universe!r} but "
+            f"the run config chain declares gate3_universe="
+            f"{got_universe!r} — the ex-financial exclusion is a Gate-4B "
+            "wiring obligation and the stamp is what pins it; a bare "
+            "csi300 run must not claim the frozen study universe.")
+
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
     plan_commit = _git(repo, "log", "-1", "--format=%H", "--", PLAN_REL)
@@ -440,6 +481,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  plan_commit: {plan_commit}")
     print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")
     print(f"  candidate: {args.candidate} (bound by run config chain)")
+    print(f"  universe: {plan_universe} (stamped; ex-financial exclusion = "
+          "Gate-4B wiring obligation)")
+    print(f"  holding: {holding_primary} (cadence {expected_cadence}, "
+          f"anchor {expected_anchor})")
     for link in cfg_chain:
         link_sha = hashlib.sha256(link.read_bytes()).hexdigest()
         print(f"  run_config: {link} sha256={link_sha[:16]}...")

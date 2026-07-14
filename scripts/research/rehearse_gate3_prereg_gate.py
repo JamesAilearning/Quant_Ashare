@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — eighteen scenarios, 18/18 required.
+"""Gate-3 pre-registration gate REHEARSAL — twenty scenarios, 20/20 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -24,9 +24,11 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R16 REFUSE candidate/config binding mismatch (r11).
   R17 REFUSE run config that binds no candidate (r11).
   R18 REFUSE --final-adjudication on a dev window (fake provenance, r13).
+  R19 REFUSE holding-period drift vs the signed quarterly design (r14).
+  R20 REFUSE universe stamp drift vs the frozen ex-financial design (r14).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 18/18, paste the printed block into the rehearsal
+before freezing). Exit 0 = 20/20, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -321,13 +323,41 @@ def main(argv: list[str] | None = None) -> int:
                     and "verdict provenance" in out,
                     out.splitlines()[0] if out else ""))
 
+    # R19 REFUSE holding-period drift (codex #352 r14): temp-flip the dev
+    # parent's quarterly cadence back to the daily default — metrics from a
+    # daily-rebalance run must not masquerade as the signed quarterly
+    # design. Bytes I/O + restore.
+    try:
+        dev_cfg_path.write_bytes(dev_cfg_bytes.replace(
+            b"rebalance_cadence_days: 63", b"rebalance_cadence_days: 1"))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R19 holding-period mismatch refused",
+                        rc == 1 and "holding-period mismatch" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        dev_cfg_path.write_bytes(dev_cfg_bytes)
+
+    # R20 REFUSE universe stamp drift (codex #352 r14): temp-swap the
+    # frozen ex-financial universe stamp for a full-csi300 claim — a bare
+    # csi300 run must not claim the frozen study universe.
+    try:
+        dev_cfg_path.write_bytes(dev_cfg_bytes.replace(
+            b'gate3_universe: "csi300_pit_ex_financials"',
+            b'gate3_universe: "csi300_full"'))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R20 universe stamp mismatch refused",
+                        rc == 1 and "universe stamp mismatch" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        dev_cfg_path.write_bytes(dev_cfg_bytes)
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/18")
-    return 0 if n_ok == 18 else 1
+    print(f"  => {n_ok}/20")
+    return 0 if n_ok == 20 else 1
 
 
 if __name__ == "__main__":

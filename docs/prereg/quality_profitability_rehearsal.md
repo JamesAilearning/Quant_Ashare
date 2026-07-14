@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 18/18
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 20/20
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(十八场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R18=codex 对抗加固增补)
+## 演练矩阵(二十场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R20=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -30,6 +30,8 @@
 | R16 | 候选/config 绑定不符被拒(v10 增补) | --candidate C2_PROF(已注册)配 C1 绑定 stub | REJECT: binding mismatch —— gate 只认 config 实际评估的候选 | **PASS**(REFUSE) |
 | R17 | 无绑定 config 被拒(v10 增补) | 直接用 parent 快照(无 gate3_candidate,窗口/链全合法)跑 | REJECT: declares no gate3_candidate —— 绑定是必须项 | **PASS**(REFUSE) |
 | R18 | 终裁 flag 配 dev 窗被拒(v12 增补) | --final-adjudication + dev stub(2024-12-31) | REJECT: DEV window —— 终裁 flag 只对精确 holdout 窗有效,dev run 不得携带终裁 provenance | **PASS**(REFUSE) |
+| R19 | 持有期漂移被拒(v13 增补) | 临时把 dev parent 的 cadence 63 翻回 1(日频默认) | REJECT: holding-period mismatch —— 日频换手/成本指标不得冒充已签季度设计 | **PASS**(REFUSE) |
+| R20 | 宇宙章戳漂移被拒(v13 增补) | 临时把 gate3_universe 换成 csi300_full | REJECT: universe stamp mismatch —— 全 csi300 不得顶冻结 ex-金融宇宙之名 | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -130,6 +132,16 @@
 - **v12(codex r13, P2)**: --final-adjudication 误配 dev config 时终裁分支
   整体被跳过 —— ACCEPT 会携带 [FINAL ADJUDICATION] provenance 却既不覆盖
   holdout 也不消费 unblinding 状态(dev run 冒充终裁)。现 flag 存在即强制
-  派生窗==holdout 精确窗,dev 窗直接拒。新增 R18。演练矩阵 **18 场景**,
-  最终复跑 **18/18 PASS**(输出以 PR #352 评论存档)。
+  派生窗==holdout 精确窗,dev 窗直接拒。新增 R18,矩阵扩至 18。
+- **v13(codex r14)**: preset 语义对齐预注册设计。① 持有期章戳:parent 快照
+  写入 rebalance_cadence_days=63 / rebalance_phase=0 / anchor=fold_phase
+  (决策③季度;63=21x3,每折相位重置 → 3 个月 test 折恰好一次再平衡 =
+  2025 holdout 全年 4 次,精确对齐 plan 注) —— 不写则引擎默认日频,指标会
+  冒充已签设计;gate 交叉核对三元组与 plan holding.primary 映射(非
+  quarterly_rebalance 即拒,不猜)。② 宇宙章戳:parent 写入声明性
+  gate3_universe=csi300_pit_ex_financials;runtime 今日无 ex-financial 排除
+  机制,实施排除是 Gate-4B 接线硬义务 —— runner 守卫泛化为一切 gate3_* 键
+  fail-loud(CI 测试同步覆盖 gate3_universe),gate 核对章戳==plan
+  study_design.universe。新增 R19(cadence 漂移拒)/R20(宇宙章戳漂移拒)。
+  演练矩阵 **20 场景**,最终复跑 **20/20 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
