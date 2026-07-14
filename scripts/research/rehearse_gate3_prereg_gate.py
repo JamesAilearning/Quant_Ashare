@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — seventeen scenarios, 17/17 required.
+"""Gate-3 pre-registration gate REHEARSAL — eighteen scenarios, 18/18 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -23,9 +23,10 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R15 REFUSE env placeholder in a chain value (data-version lock, r11).
   R16 REFUSE candidate/config binding mismatch (r11).
   R17 REFUSE run config that binds no candidate (r11).
+  R18 REFUSE --final-adjudication on a dev window (fake provenance, r13).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 17/17, paste the printed block into the rehearsal
+before freezing). Exit 0 = 18/18, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -308,13 +309,25 @@ def main(argv: list[str] | None = None) -> int:
                     rc == 1 and "declares no gate3_candidate" in out,
                     out.splitlines()[0] if out else ""))
 
+    # R18 REFUSE the verdict flag on a dev window (codex #352 r13): with
+    # --final-adjudication + the DEV stub the whole adjudication branch
+    # would otherwise be skipped — an ACCEPT carrying [FINAL ADJUDICATION]
+    # provenance without covering the holdout or consuming the unblinding
+    # state. The flag is valid ONLY for the exact holdout window.
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--final-adjudication")
+    results.append(("R18 verdict flag on dev window refused",
+                    rc == 1 and "DEV window" in out
+                    and "verdict provenance" in out,
+                    out.splitlines()[0] if out else ""))
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/17")
-    return 0 if n_ok == 17 else 1
+    print(f"  => {n_ok}/18")
+    return 0 if n_ok == 18 else 1
 
 
 if __name__ == "__main__":

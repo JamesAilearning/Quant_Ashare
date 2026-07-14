@@ -14,7 +14,9 @@ Checks (ALL must pass; any failure = REFUSE, no run):
                     chain resolved) and must not pass the frozen dev
                     end_boundary; touching the holdout REFUSES unless the
                     ONE-TIME --final-adjudication flag is set (loud banner),
-                    and the verdict window must equal the holdout EXACTLY.
+                    the verdict window must equal the holdout EXACTLY, and
+                    the flag itself is REFUSED on a dev window (no fake
+                    verdict provenance).
   9. ledger       — the DSR/PBO ledger status must be frozen_with_this_package.
  10. config chain — the run config must be repo-tracked and every file in
                     its resolved extends chain must itself be a frozen
@@ -31,7 +33,7 @@ Checks (ALL must pass; any failure = REFUSE, no run):
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R17, 17/17 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R18, 18/18 required).
 """
 from __future__ import annotations
 
@@ -254,6 +256,19 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, AttributeError):
         return _refuse(f"frozen holdout window {holdout_window!r} is not "
                        "parseable as 'YYYY-MM-DD -> YYYY-MM-DD'.")
+    if args.final_adjudication and test_end <= end_boundary:
+        # the ONE-TIME verdict flag on a dev-window config would emit an
+        # ACCEPT carrying [FINAL ADJUDICATION] provenance WITHOUT covering
+        # the signed holdout or consuming the unblinding state — a dev run
+        # masquerading as the verdict (codex #352 r13 P2). The flag is
+        # valid ONLY when the derived window IS the holdout verdict window.
+        return _refuse(
+            f"--final-adjudication supplied but the run config derives a "
+            f"DEV window (test end {test_end.isoformat()} <= frozen "
+            f"boundary {end_boundary.isoformat()}) — the one-time verdict "
+            f"flag is valid ONLY for the exact holdout window "
+            f"({holdout_window}); a dev run must not carry verdict "
+            "provenance.")
     if test_end > end_boundary:
         if not args.final_adjudication:
             return _refuse(

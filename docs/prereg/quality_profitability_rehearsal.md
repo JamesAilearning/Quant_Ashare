@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 17/17
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 18/18
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(十七场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R17=codex 对抗加固增补)
+## 演练矩阵(十八场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R18=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -29,6 +29,7 @@
 | R15 | 链值层 env 占位符被拒(v10 增补) | 临时把 dev parent 的 provider_uri 换回 ${QUANT_PROVIDER_URI:-…} 再跑 | REJECT: env placeholder —— 同一 sha256 不得在运行期解析到不同数据 bundle | **PASS**(REFUSE) |
 | R16 | 候选/config 绑定不符被拒(v10 增补) | --candidate C2_PROF(已注册)配 C1 绑定 stub | REJECT: binding mismatch —— gate 只认 config 实际评估的候选 | **PASS**(REFUSE) |
 | R17 | 无绑定 config 被拒(v10 增补) | 直接用 parent 快照(无 gate3_candidate,窗口/链全合法)跑 | REJECT: declares no gate3_candidate —— 绑定是必须项 | **PASS**(REFUSE) |
+| R18 | 终裁 flag 配 dev 窗被拒(v12 增补) | --final-adjudication + dev stub(2024-12-31) | REJECT: DEV window —— 终裁 flag 只对精确 holdout 窗有效,dev run 不得携带终裁 provenance | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -126,5 +127,9 @@
   CI 测试钉死(tests/logic/test_run_walk_forward_mined.py::
   test_load_config_gate3_candidate_fails_loud_until_4b_wiring —— 换守卫必须
   连测试一起换);runner 侧强制走 CI 测试而非 gate 演练场景,矩阵维持 17。
-  演练最终复跑 **17/17 PASS**(输出以 PR #352 评论存档)。
+- **v12(codex r13, P2)**: --final-adjudication 误配 dev config 时终裁分支
+  整体被跳过 —— ACCEPT 会携带 [FINAL ADJUDICATION] provenance 却既不覆盖
+  holdout 也不消费 unblinding 状态(dev run 冒充终裁)。现 flag 存在即强制
+  派生窗==holdout 精确窗,dev 窗直接拒。新增 R18。演练矩阵 **18 场景**,
+  最终复跑 **18/18 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
