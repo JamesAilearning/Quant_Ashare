@@ -39,7 +39,7 @@ Checks (ALL must pass; any failure = REFUSE, no run):
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R21, 21/21 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R23, 23/23 required).
 """
 from __future__ import annotations
 
@@ -311,15 +311,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"but the ONE-TIME verdict must cover the signed holdout "
                 f"EXACTLY (test_end == {holdout_end.isoformat()}, window "
                 f"{holdout_window}) — no partial peek, no out-of-scope data.")
-        print("=" * 68)
-        print("!! FINAL ADJUDICATION — HOLDOUT UNBLINDING !!")
-        print(f"!! test window end {test_end.isoformat()} enters the frozen "
-              f"holdout {holdout_window}.")
-        print("!! This is the ONE-TIME verdict run. IMMEDIATELY after it")
-        print("!! fires: flip ledger holdout_unblinded -> true, append the")
-        print("!! unblinding entry, commit. The gate then refuses ANY")
-        print("!! further --final-adjudication (one verdict, ever).")
-        print("=" * 68)
+        # NOTE: the UNBLINDING banner is deliberately NOT printed here —
+        # later checks (chain-frozen, dirty tree, ordering, manifest, PIT)
+        # can still refuse, and a banner before a REFUSE could mislead the
+        # operator into treating the holdout as fired / flipping the
+        # ledger for a rejected run (codex #352 r16 P2). It prints
+        # immediately before GATE ACCEPT, after ALL refusal paths passed.
 
     # 1c. the run config's FULL resolved chain must be frozen — a preset
     # that merely `extends` an unfrozen parent (e.g. config_walk.yaml)
@@ -485,6 +482,22 @@ def main(argv: list[str] | None = None) -> int:
 
     aggregate = json.loads(manifest_path.read_text(encoding="utf-8"))[
         "aggregate_sha256"]
+    if args.final_adjudication:
+        # every refusal path has passed — only now may the unblinding
+        # banner appear (codex #352 r16 P2: a banner before a REFUSE could
+        # mislead the operator into flipping the ledger for a rejected
+        # run). Reaching here with the flag implies test_end == holdout
+        # end (window branch) and holdout_unblinded == false (global
+        # terminal-state check).
+        print("=" * 68)
+        print("!! FINAL ADJUDICATION — HOLDOUT UNBLINDING !!")
+        print(f"!! test window end {test_end.isoformat()} enters the frozen "
+              f"holdout {holdout_window}.")
+        print("!! This is the ONE-TIME verdict run. IMMEDIATELY after it")
+        print("!! fires: flip ledger holdout_unblinded -> true, append the")
+        print("!! unblinding entry, commit. The gate then refuses ANY")
+        print("!! further decision-level run under this plan.")
+        print("=" * 68)
     print("GATE ACCEPT")
     print(f"  plan_commit: {plan_commit}")
     print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")

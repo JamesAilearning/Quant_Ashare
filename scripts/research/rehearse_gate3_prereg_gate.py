@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — twenty-one scenarios, 21/21 required.
+"""Gate-3 pre-registration gate REHEARSAL — twenty-three scenarios, 23/23 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -27,9 +27,12 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R19 REFUSE holding-period drift vs the signed quarterly design (r14).
   R20 REFUSE universe stamp drift vs the frozen ex-financial design (r14).
   R21 REFUSE dev runs after unblinding (plan consumed, r15).
+  R22 refused adjudication must print NO unblinding banner (r16).
+  R23 ACCEPT clean exact-holdout adjudication WITH banner (gate check
+      only — nothing runs, ledger untouched).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 21/21, paste the printed block into the rehearsal
+before freezing). Exit 0 = 23/23, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -367,13 +370,44 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         ledger_path.write_bytes(ledger_bytes2)
 
+    # R22 NO unblinding banner on a refused adjudication (codex #352 r16):
+    # a legit exact-holdout adjudication that fails a LATER check (dirty
+    # tree here) must refuse WITHOUT ever printing the UNBLINDING banner —
+    # a banner before REFUSE could mislead the operator into flipping the
+    # ledger for a rejected run.
+    probe2 = repo / "_rehearsal_dirty_probe.tmp"
+    probe2.write_text("dirty", encoding="utf-8")
+    try:
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                            "--run-config", str(final_stub_path),
+                            "--final-adjudication")
+        results.append(("R22 refused adjudication prints no banner",
+                        rc == 1 and "dirty checkout" in out
+                        and "HOLDOUT UNBLINDING" not in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        probe2.unlink()
+
+    # R23 ACCEPT of a clean exact-holdout adjudication DOES print the
+    # banner (immediately before GATE ACCEPT, after all refusal paths) —
+    # this is only the pre-run GATE check, not the verdict run itself:
+    # nothing executes and the ledger is untouched.
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--run-config", str(final_stub_path),
+                        "--final-adjudication")
+    results.append(("R23 clean adjudication accepts with banner",
+                    rc == 0 and "GATE ACCEPT" in out
+                    and "HOLDOUT UNBLINDING" in out
+                    and "[FINAL ADJUDICATION]" in out,
+                    out.splitlines()[-1] if out else ""))
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/21")
-    return 0 if n_ok == 21 else 1
+    print(f"  => {n_ok}/23")
+    return 0 if n_ok == 23 else 1
 
 
 if __name__ == "__main__":

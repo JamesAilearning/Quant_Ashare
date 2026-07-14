@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 21/21
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 23/23
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(二十一场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R21=codex 对抗加固增补)
+## 演练矩阵(二十三场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R23=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -33,6 +33,8 @@
 | R19 | 持有期漂移被拒(v13 增补) | 临时把 dev parent 的 cadence 63 翻回 1(日频默认) | REJECT: holding-period mismatch —— 日频换手/成本指标不得冒充已签季度设计 | **PASS**(REFUSE) |
 | R20 | 宇宙章戳漂移被拒(v13 增补) | 临时把 gate3_universe 换成 csi300_full | REJECT: universe stamp mismatch —— 全 csi300 不得顶冻结 ex-金融宇宙之名 | **PASS**(REFUSE) |
 | R21 | 揭盲后 dev run 被拒(v14 增补) | 临时翻 holdout_unblinded=true 后跑 dev 窗默认 stub | REJECT: ALREADY UNBLINDED + CONSUMED —— 裁决后本计划下任何决策级 run 一律拒 | **PASS**(REFUSE) |
+| R22 | 被拒终裁不得喊揭盲(v15 增补) | 终裁 stub + flag + dirty 树 | REJECT: dirty checkout 且输出**无** UNBLINDING 横幅 —— 拒绝路径不得误导操作人翻账本 | **PASS**(REFUSE,无横幅) |
+| R23 | 干净精确终裁 ACCEPT 带横幅(v15 增补) | 终裁 stub + flag,树净(仅 gate 检查,无 run、账本不动) | ACCEPT + 横幅紧贴 GATE ACCEPT 之前 + [FINAL ADJUDICATION] 标记 | **PASS**(ACCEPT) |
 
 ## 各场景断言细则
 
@@ -149,6 +151,11 @@
   裁决后的 dev 窗"决策级"run 会绕过它拿到 ACCEPT,即在 holdout 已花掉的
   家族上继续迭代。现 unblinded=true 为**全局终态**(紧随 ledger 解析,先于
   窗口分支):本计划即告 CONSUMED,任何决策级 run(dev 或终裁)一律永拒;
-  后续工作 = 新计划 + 新未触碰窗。新增 R21(揭盲后 dev run 拒)。演练矩阵
-  **21 场景**,最终复跑 **21/21 PASS**(输出以 PR #352 评论存档)。
+  后续工作 = 新计划 + 新未触碰窗。新增 R21(揭盲后 dev run 拒),矩阵扩至 21。
+- **v15(codex r16, P2)**: UNBLINDING 横幅原在窗口分支内打印 —— 后续检查
+  (链冻结/dirty/时序/manifest/PIT)仍可能拒,被拒的 run 先喊了"揭盲"会误导
+  操作人当作已点火、甚至去翻账本。现横幅**移到全部拒绝路径通过之后**、紧贴
+  GATE ACCEPT 之前打印。新增 R22(dirty 终裁拒且无横幅)/R23(干净精确终裁
+  ACCEPT 带横幅 —— 仅 gate 检查,无 run、账本不动)。演练矩阵 **23 场景**,
+  最终复跑 **23/23 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。
