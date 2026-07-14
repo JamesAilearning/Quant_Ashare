@@ -110,6 +110,21 @@ entries:
     note: 本条目所在 commit 即冻结 commit(git 时间戳自证,早于任何决策级 run);
       rehearsal 六场景执行结果记于 companion commit 的 _rehearsal.md。
 
+  - id: E011
+    date: 2026-07-14
+    type: decision_run_planned
+    ref: C1_GPA_gate4A_dev
+    status: registered_pre_run
+    note: Gate-4A dev 窗 IC 评估,C1_GPA 先行(操作人批准方案 A,2026-07-14)。
+      评估器 = scripts/research/gate4a_ic_evaluator.py(本条目所在 PR 引入)。
+      语义 pin:再平衡=各 dev 折 test 窗首个交易日(cadence 63/fold_phase/相位
+      0),lag 1,前向收益=执行日收盘→同折末交易日收盘(折内含,绝不触 2025
+      holdout);size=canonical bundle $total_mv(操作人批准来源,2026-07-14),
+      十分位内排名;标准化 as_of_or_earlier_only;输入=as-of 原值(冻结变换
+      白名单外无 TTM/年化)。产出=折级 rank_ic/ic 序列;FWER 留待全批
+      (C1/C2/C3+注册变体)min-统计量 bootstrap,本 run 不设逐候选门槛。
+      点火条件:PR 合并后 gate3_prereg_gate ACCEPT(clean tree+时序自证)。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。
