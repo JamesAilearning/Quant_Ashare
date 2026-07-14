@@ -42,10 +42,16 @@ Pinned run semantics (decided at work-order level, echoed in the artifact):
     MAX_MV_STALENESS_DAYS trading days — beyond that the name is DROPPED
     from that fold and counted, never silently ranked on stale size).
   * ALL data roots derive from the GATED frozen config chain — the qlib
-    bundle (provider_uri), calendar, membership and the namechange
-    snapshot (namechange_path) are frozen literals; there is NO CLI
-    override, so an unregistered bundle can never ride a GATE ACCEPT
-    (codex #354 r2 P1).
+    bundle (provider_uri), calendar, membership, the namechange snapshot
+    (namechange_path) and the delisted registry (delisted_registry_path)
+    are frozen literals; there is NO CLI override, so an unregistered
+    bundle can never ride a GATE ACCEPT (codex #354 r2 P1).
+  * Price/size loads route through PITDataProvider (post-delist mask):
+    a raw ``D.features`` read can absorb stale carried closes for
+    delisted tickers, silently un-truncating them; the provider NaNs
+    post-delist rows so the truncation counters see the truth
+    (codex #354 r4 P1). The microstructure mask fetch routes through
+    the SAME provider.
   * st_on (registered design, production-faithful): names that were
     ST/*ST on the execution day per the PIT namechange reconstruction
     (src/data/st_history.py) are excluded from the cross-section and
@@ -94,6 +100,10 @@ import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.pit.query import PITDataProvider
 
 import pandas as pd
 import yaml
@@ -384,19 +394,36 @@ def run_gate(repo: Path, candidate: str, store_dir: Path,
     return out
 
 
-def load_qlib_frames(provider_root: Path, qlib_codes: list[str],
-                     start: date, end: date) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(close, total_mv) frames indexed by date, columns ts_code."""
-    import qlib
+def build_pit_provider(provider_root: Path,
+                       delisted_registry: Path) -> "PITDataProvider":
+    """PITDataProvider bound to the FROZEN provider_uri + delisted
+    registry (codex #354 r4 P1: a raw ``D.features`` read can absorb
+    stale carried closes for delisted tickers; the provider's post-delist
+    mask NaNs them so truncation counting sees the truth)."""
+    from src.pit.query import PITDataProvider
+    provider = PITDataProvider(
+        provider_uri=provider_root,
+        delisted_registry_path=delisted_registry,
+    )
+    # Windows non-interactive shells: multiprocess D.features hangs; the
+    # canonical init does not pin kernels, so force single-kernel AFTER
+    # init (qlib reads C["kernels"] at call time).
     from qlib.config import C
-    from qlib.data import D
-    C["kernels"] = 1  # Windows non-interactive: multiproc D.features hangs
-    qlib.init(provider_uri=str(provider_root), region="cn", kernels=1)
-    raw = D.features(qlib_codes, ["$close", "$total_mv"],
-                     start_time=start.isoformat(), end_time=end.isoformat(),
-                     freq="day")
+    C["kernels"] = 1
+    return provider
+
+
+def load_price_frames(provider: "PITDataProvider", qlib_codes: list[str],
+                      start: date, end: date
+                      ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(close, total_mv) frames indexed by date, columns ts_code — routed
+    through the PIT provider (post-delist mask applied)."""
+    raw = provider.get_features(["$close", "$total_mv"],
+                                start.isoformat(), end.isoformat(),
+                                instruments=qlib_codes)
     if raw.empty:
-        raise EvaluatorError("qlib returned an EMPTY panel for the dev window.")
+        raise EvaluatorError("PIT provider returned an EMPTY panel for the "
+                             "dev window.")
     raw = raw.reset_index()
     raw.columns = ["qlib_code", "dt", "close", "total_mv"]
     raw["ts_code"] = [qlib_to_ts_code(str(c)) for c in raw["qlib_code"]]
@@ -459,6 +486,12 @@ def main(argv: list[str] | None = None) -> int:
                              "the registered design is st_on; refusing to "
                              "run without the PIT ST mask.")
     namechange = load_namechange(Path(str(namechange_raw)))
+    registry_raw = cfg.get("delisted_registry_path")
+    if not registry_raw:
+        raise EvaluatorError("gated config chain carries no "
+                             "delisted_registry_path — price loads must "
+                             "route through the PIT post-delist mask; "
+                             "refusing a raw qlib read.")
 
     # 3. calendar + membership + financial exclusion + ST lookup
     cal_path = provider_root / "calendars" / "day.txt"
@@ -477,20 +510,24 @@ def main(argv: list[str] | None = None) -> int:
                                 financial_issuers=issuers)
     formula, fields = CANDIDATE_FORMULAS[args.candidate]
 
-    # 4. price/size panel over the dev span (one qlib load)
+    # 4. price/size panel over the dev span — ONE load, routed through the
+    # PIT provider (post-delist mask; codex #354 r4 P1).
     span_start = min(f.test_start for f in folds)
     ever = sorted({ts for ts, _, _ in intervals})
     code_map = {ts: ts[-2:].upper() + ts[:6] for ts in ever}  # ts -> qlib
-    close, mv = load_qlib_frames(provider_root,
-                                 sorted(code_map.values()),
-                                 _add_months(span_start, -3), end_boundary)
+    pit_provider = build_pit_provider(provider_root, Path(str(registry_raw)))
+    close, mv = load_price_frames(pit_provider,
+                                  sorted(code_map.values()),
+                                  _add_months(span_start, -3), end_boundary)
     # canonical microstructure mask over the dev span (codex #354 r1 P1):
     # execution-day untradeable names (suspension w/ carried close,
     # one-price lock) must not enter the IC cross-section — the canonical
     # backtest refuses these fills, so a decision-level IC must too.
+    # Routed through the SAME PIT provider (post-delist mask, codex r4).
     micro_mask = compute_unavailable_mask(
         sorted(code_map.values()),
-        span_start.isoformat(), end_boundary.isoformat())
+        span_start.isoformat(), end_boundary.isoformat(),
+        pit_provider=pit_provider)
 
     # 4. per-fold evaluation
     fold_rows: list[dict[str, object]] = []
@@ -567,7 +604,8 @@ def main(argv: list[str] | None = None) -> int:
                           "frozen config chain (no CLI override)",
         },
         "data_roots": {"provider_uri": str(provider_root),
-                       "namechange_path": str(namechange_raw)},
+                       "namechange_path": str(namechange_raw),
+                       "delisted_registry_path": str(registry_raw)},
         "financial_exclusion": {"n": len(issuers), "provenance": issuers_note},
         "microstructure_mask_span_counts": {
             "n_suspended": micro_mask.n_suspended,
