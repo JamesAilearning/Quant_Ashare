@@ -78,7 +78,6 @@ Usage (C1 first — C2/C3 are registered but not yet implemented, fail-loud):
     python scripts/research/gate4a_ic_evaluator.py \\
         --candidate C1_GPA \\
         --store-dir D:/qlib_data/financial_pit_raw \\
-        --provider-root D:/qlib_data/my_cn_data_pit \\
         --out output/gate4a
 
 Outputs ``<out>/<candidate>_<runstamp>/report.md`` + ``result.json``
@@ -89,6 +88,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -307,11 +307,17 @@ def fold_ic(signal: pd.Series, fwd_ret: pd.Series) -> dict[str, float | int]:
     if n < 30:
         raise EvaluatorError(f"only {n} names carry both signal and forward "
                              "return — refusing a sliver IC.")
-    return {
-        "n": n,
-        "rank_ic": float(joined["s"].corr(joined["r"], method="spearman")),
-        "ic": float(joined["s"].corr(joined["r"], method="pearson")),
-    }
+    rank_ic = float(joined["s"].corr(joined["r"], method="spearman"))
+    ic = float(joined["s"].corr(joined["r"], method="pearson"))
+    if not (math.isfinite(rank_ic) and math.isfinite(ic)):
+        # a constant signal/return vector yields NaN correlations; pandas
+        # mean()/std() downstream would silently SKIP the fold while
+        # n_folds still counts it — a corrupted fold must abort the run,
+        # never vanish from the decision artifact (codex #354 r3 P2).
+        raise EvaluatorError(
+            f"non-finite IC on a fold (rank_ic={rank_ic!r}, ic={ic!r}, "
+            f"n={n}) — constant signal or corrupted price panel; refusing.")
+    return {"n": n, "rank_ic": rank_ic, "ic": ic}
 
 
 def monotonicity(signal: pd.Series, fwd_ret: pd.Series,

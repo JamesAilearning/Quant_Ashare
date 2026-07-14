@@ -232,6 +232,16 @@ def test_fold_ic_refuses_sliver():
         fold_ic(sig, sig * 2)
 
 
+def test_fold_ic_refuses_non_finite_correlation():
+    # constant forward-return vector -> NaN correlation: must abort the
+    # run, never vanish from the aggregate (codex #354 r3 P2).
+    n = 40
+    sig = pd.Series({f"s{i}": i / n for i in range(n)})
+    flat = pd.Series({f"s{i}": 0.0 for i in range(n)})
+    with pytest.raises(EvaluatorError, match="non-finite IC"):
+        fold_ic(sig, flat)
+
+
 def test_monotonicity_recovers_gradient():
     n = 100
     sig = pd.Series({f"s{i}": i / n for i in range(n)})
