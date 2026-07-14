@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 14/14
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 17/17
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(十四场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R14=codex 对抗加固增补)
+## 演练矩阵(十七场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R17=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -26,6 +26,9 @@
 | R12 | 库外 run config 被拒(v8 增补) | 临时目录 config(overall_end 2024-12-31,窗口本身合法)传入 --run-config | REJECT: NOT under the repository —— 边界必须 git-provable(tracked) | **PASS**(REFUSE) |
 | R13 | extends 链出冻结包被拒(v9 增补) | 临时给自包含 dev preset 追加 extends: config_walk.yaml(未冻结父)再跑 | REJECT: NOT part of the frozen package —— 全解析链必须冻结,防参数漂移 | **PASS**(REFUSE) |
 | R14 | 重复终裁被拒(v9 增补) | 临时把 ledger holdout_unblinded 翻 true,再跑 --final-adjudication(窗口精确合法) | REJECT: ALREADY UNBLINDED —— 一次裁决被消费后永拒 | **PASS**(REFUSE) |
+| R15 | 链值层 env 占位符被拒(v10 增补) | 临时把 dev parent 的 provider_uri 换回 ${QUANT_PROVIDER_URI:-…} 再跑 | REJECT: env placeholder —— 同一 sha256 不得在运行期解析到不同数据 bundle | **PASS**(REFUSE) |
+| R16 | 候选/config 绑定不符被拒(v10 增补) | --candidate C2_PROF(已注册)配 C1 绑定 stub | REJECT: binding mismatch —— gate 只认 config 实际评估的候选 | **PASS**(REFUSE) |
+| R17 | 无绑定 config 被拒(v10 增补) | 直接用 parent 快照(无 gate3_candidate,窗口/链全合法)跑 | REJECT: declares no gate3_candidate —— 绑定是必须项 | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -61,8 +64,8 @@
 - 执行: Claude Code(操作人授权冻结序列,holdout(a) 已签)
 - 执行时间: 2026-07-13 ~15:00 UTC
 - 冻结 commit: 本冻结包所在 commit(自证;squash 合并后以 main 上本 PR 的合并
-  commit 为准 —— gate 的 freeze 时间取全部冻结件(v8 起 10 件,含两个 run-config
-  preset)在所查 checkout 的最晚 commit,
+  commit 为准 —— gate 的 freeze 时间取全部冻结件(v10 起 16 件,含两个
+  run-config parent 快照与 6 个候选绑定 stub)在所查 checkout 的最晚 commit,
   与任何临时分支 hash 无关)
 - manifest aggregate: 4560e8536524e4a0…(1880 文件)
 - 驱动: `scripts/research/rehearse_gate3_prereg_gate.py --store-dir D:/qlib_data/financial_pit_raw`
@@ -101,5 +104,19 @@
   false;终裁点火后立即翻 true+追加条目+commit),gate 见 true 即**永拒**任何
   后续 --final-adjudication(缺失/非布尔=账本畸形,亦拒);UNBLINDING 横幅
   写明点火后的强制账本动作。新增 R13(extends 出包拒)/R14(重复终裁拒)。
-  演练矩阵 **14 场景**,最终复跑 **14/14 PASS**(输出以 PR #352 评论存档)。
+  演练矩阵扩至 14 场景,复跑 14/14 PASS。
+- **v10(codex r11)**: ① 数据路径冻结字面化:两个 parent 快照的三处
+  ${QUANT_*:-…} 全部解析为 canonical 字面路径(env 间接会让同一 config
+  sha256 在运行期解析到不同 qlib/ST/退市 bundle,数据版本锁失效);gate 对
+  链上任何**值层** ${...} 占位符即拒(注释提及豁免,与 loader 只展开字符串值
+  的语义一致)。CLAUDE.md 的 env-var 规则针对可移植 preset;冻结 prereg
+  config 有意用确定性换可移植性(preset 头注明)。② 候选绑定机器化:新增
+  6 个 3 行候选 stub(extends 冻结 parent + gate3_candidate,冻结件 10→16),
+  gate 从 config 链 child-first 派生 gate3_candidate,缺失或与 --candidate
+  不符即拒 —— 裸 CLI 声明不再能"gate C1 跑别的"。runner
+  (run_walk_forward.py)未知键 allowlist 加惰性键 gate3_candidate(引擎今日
+  不消费;Gate-4B 增列接线落地时必须消费并核对)。注册检查前移至绑定检查前
+  (R2 拒因语义不变)。新增 R15(值层占位符拒)/R16(绑定不符拒)/R17(无绑定
+  config 拒)。演练矩阵 **17 场景**,最终复跑 **17/17 PASS**(输出以 PR #352
+  评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

@@ -1,0 +1,8 @@
+# 阶段8 Gate-4 FINAL-ADJUDICATION run config for candidate C3_cash_based_OP — FROZEN (#352).
+# codex r11 P1: the gate binds --candidate to the config chain's
+# gate3_candidate (child-first), so an unbound CLI claim can no longer
+# gate one candidate and run another. The engine treats this key as
+# inert metadata today; the Gate-4B augmentation wiring MUST consume
+# and honour it when it lands. Parent = frozen self-contained snapshot.
+extends: quality_gate3_final_adjudication.yaml
+gate3_candidate: C3_cash_based_OP

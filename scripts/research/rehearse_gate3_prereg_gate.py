@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — fourteen scenarios, 14/14 required.
+"""Gate-3 pre-registration gate REHEARSAL — seventeen scenarios, 17/17 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -20,9 +20,12 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R12 REFUSE out-of-repo run config (not git-provable, codex #352 r9).
   R13 REFUSE extends chain leaving the frozen package (codex #352 r10).
   R14 REFUSE repeat final adjudication after holdout unblinding (r10).
+  R15 REFUSE env placeholder in a chain value (data-version lock, r11).
+  R16 REFUSE candidate/config binding mismatch (r11).
+  R17 REFUSE run config that binds no candidate (r11).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 14/14, paste the printed block into the rehearsal
+before freezing). Exit 0 = 17/17, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -65,15 +68,20 @@ def test_lookahead_probe(tmp_path):
 '''
 
 
-DEV_CONFIG_REL = "config/presets/quality_gate3_dev.yaml"
-FINAL_CONFIG_REL = "config/presets/quality_gate3_final_adjudication.yaml"
+# Default run config = the C1 dev STUB (binds gate3_candidate: C1_GPA and
+# extends the self-contained frozen parent). The PARENT paths are what
+# R9/R10/R13/R15 byte-modify — the stub chain picks the change up.
+DEV_STUB_REL = "config/presets/quality_gate3_dev_c1_gpa.yaml"
+DEV_PARENT_REL = "config/presets/quality_gate3_dev.yaml"
+FINAL_STUB_REL = "config/presets/quality_gate3_final_adjudication_c1_gpa.yaml"
+FINAL_PARENT_REL = "config/presets/quality_gate3_final_adjudication.yaml"
 
 
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
     argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
             "--store-dir", str(store), *extra]
     if "--run-config" not in extra:
-        argv += ["--run-config", str(repo / DEV_CONFIG_REL)]  # tracked, frozen
+        argv += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
     out = subprocess.run(argv, capture_output=True, text=True)
     return out.returncode, out.stdout + out.stderr
 
@@ -93,8 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg_dir = Path(tempfile.mkdtemp(prefix="g3_rehearsal_cfg_"))
     outside_cfg = cfg_dir / "outside_repo.yaml"
     outside_cfg.write_text('overall_end: "2024-12-31"\n', encoding="utf-8")
-    final_cfg_path = repo / FINAL_CONFIG_REL
+    final_cfg_path = repo / FINAL_PARENT_REL
     final_cfg_bytes = final_cfg_path.read_bytes()
+    final_stub_path = repo / FINAL_STUB_REL
 
     # R1 ACCEPT
     rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
@@ -188,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         final_cfg_path.write_bytes(final_cfg_bytes.replace(
             b'"2025-12-31"', b'"2026-06-30"'))
         rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                            "--run-config", str(final_cfg_path),
+                            "--run-config", str(final_stub_path),
                             "--final-adjudication")
     finally:
         final_cfg_path.write_bytes(final_cfg_bytes)
@@ -203,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         final_cfg_path.write_bytes(final_cfg_bytes.replace(
             b'"2025-12-31"', b'"2025-06-30"'))
         rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                            "--run-config", str(final_cfg_path),
+                            "--run-config", str(final_stub_path),
                             "--final-adjudication")
     finally:
         final_cfg_path.write_bytes(final_cfg_bytes)
@@ -236,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     # the unfrozen config_walk.yaml — later commits to that parent could
     # silently drift model/universe/cost/fold params after freeze, so the
     # gate must refuse. Bytes I/O; chain check runs before the dirty check.
-    dev_cfg_path = repo / DEV_CONFIG_REL
+    dev_cfg_path = repo / DEV_PARENT_REL
     dev_cfg_bytes = dev_cfg_path.read_bytes()
     try:
         dev_cfg_path.write_bytes(
@@ -257,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         ledger_path.write_bytes(ledger_bytes2.replace(
             b"holdout_unblinded: false", b"holdout_unblinded: true"))
         rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
-                            "--run-config", str(final_cfg_path),
+                            "--run-config", str(final_stub_path),
                             "--final-adjudication")
         results.append(("R14 repeat adjudication refused",
                         rc == 1 and "ALREADY UNBLINDED" in out,
@@ -265,13 +274,47 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         ledger_path.write_bytes(ledger_bytes2)
 
+    # R15 REFUSE env placeholder in a chain VALUE (codex #352 r11): temp
+    # re-introduce ${QUANT_PROVIDER_URI:-...} into the frozen dev parent —
+    # the same config sha256 must never resolve to different data bundles
+    # at runtime. Bytes I/O + restore; comments MENTIONING ${VAR} are inert
+    # (value-level scan only).
+    try:
+        dev_cfg_path.write_bytes(dev_cfg_bytes.replace(
+            b'provider_uri: "D:/qlib_data/my_cn_data_pit"',
+            b'provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"'))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R15 env placeholder refused",
+                        rc == 1 and "env placeholder" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        dev_cfg_path.write_bytes(dev_cfg_bytes)
+
+    # R16 REFUSE candidate/config binding mismatch (codex #352 r11): gate
+    # a REGISTERED candidate (C2_PROF) against the C1-bound stub — an
+    # unbound CLI claim must not collect ACCEPT for a config that
+    # evaluates a different candidate.
+    rc, out = _run_gate(repo, store, "--candidate", "C2_PROF")
+    results.append(("R16 candidate binding mismatch refused",
+                    rc == 1 and "binding mismatch" in out,
+                    out.splitlines()[0] if out else ""))
+
+    # R17 REFUSE unbound run config (codex #352 r11): the frozen PARENT
+    # snapshot alone declares no gate3_candidate — the binding is
+    # REQUIRED, not optional (its window/chain are otherwise fully legal).
+    rc, out = _run_gate(repo, store, "--candidate", "C1_GPA",
+                        "--run-config", str(dev_cfg_path))
+    results.append(("R17 unbound config refused",
+                    rc == 1 and "declares no gate3_candidate" in out,
+                    out.splitlines()[0] if out else ""))
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/14")
-    return 0 if n_ok == 14 else 1
+    print(f"  => {n_ok}/17")
+    return 0 if n_ok == 17 else 1
 
 
 if __name__ == "__main__":

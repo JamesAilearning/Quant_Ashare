@@ -125,7 +125,14 @@ def _load_config(
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}
     qlib_keys = {"provider_uri", "region"}
     mined_factor_keys = set(_MINED_FACTOR_YAML_KEYS)
-    unknown = sorted(set(raw) - valid_fields - qlib_keys - mined_factor_keys)
+    # Stage-8 Gate-3 prereg binding key (codex #352 r11): consumed by
+    # scripts/research/gate3_prereg_gate.py to bind a frozen decision-level
+    # run config to the registered candidate it evaluates. Inert for the
+    # engine today; the Gate-4B augmentation wiring must consume and honour
+    # it when it lands.
+    gate3_keys = {"gate3_candidate"}
+    unknown = sorted(
+        set(raw) - valid_fields - qlib_keys - mined_factor_keys - gate3_keys)
     if unknown:
         # Reject unknown keys hard. Previously we logged a WARNING and
         # silently dropped them, which masked typos like ``top_k`` /
@@ -136,7 +143,8 @@ def _load_config(
             f"Unknown config keys in {config_path}: {unknown}. "
             f"Valid WalkForwardConfig fields: {sorted(valid_fields)}; "
             f"plus qlib runtime keys: {sorted(qlib_keys)}; "
-            f"plus mined-factor keys: {sorted(mined_factor_keys)}. "
+            f"plus mined-factor keys: {sorted(mined_factor_keys)}; "
+            f"plus gate3 prereg keys: {sorted(gate3_keys)}. "
             "Refusing to run with potentially-typo'd keys."
         )
 

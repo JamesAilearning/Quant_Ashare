@@ -14,6 +14,15 @@
 # resolved config is frozen here, and the gate REFUSES any run config
 # whose extends chain leaves the frozen package.
 # -------------------------------------------------------------------------
+# --- FROZEN-LITERAL DATA PATHS (codex #352 r11 P1) -----------------------
+# All ${QUANT_*:-...} env placeholders from the canonical config are
+# resolved to their canonical literals here: env indirection would let two
+# runs share this file's sha256 while training/backtesting against
+# DIFFERENT qlib/ST/delist bundles, defeating the data-version lock. The
+# gate REFUSES any ${...} placeholder in a frozen run-config chain.
+# (CLAUDE.md's env-var rule is for PORTABLE presets; a frozen prereg
+# config trades portability for determinism, deliberately.)
+# -------------------------------------------------------------------------
 
 # Walk-forward configuration — "medium" preset.
 #
@@ -29,7 +38,7 @@
 # PIT bundle coverage: 2018-01-02 → 2025-12-31 (D:/qlib_data/my_cn_data_pit).
 
 # qlib runtime — read by scripts/run_walk_forward.py
-provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"
+provider_uri: "D:/qlib_data/my_cn_data_pit"
 region: "cn"
 
 # Universe & features
@@ -43,12 +52,12 @@ feature_handler: "Alpha158"
 # when unset), matching provider_uri's ${VAR:-default} style above. Enabling
 # this changes the WF aggregate vs the includes-ST C1 baseline — the baseline
 # MUST be regenerated in the same PR via RUN_E2E (tests/regression/fixtures/README.md).
-namechange_path: "${QUANT_NAMECHANGE_PATH:-D:/qlib_data/tushare_raw/all_namechanges.parquet}"
+namechange_path: "D:/qlib_data/tushare_raw/all_namechanges.parquet"
 # Audit P2 (add-pit-analyzer-routing PR-2): PIT post-delist mask for the
 # IC/attribution close fetches. Reuses the QUANT_DELISTED_REGISTRY env var
 # daily_recommend already consumes. Empty would fall back to the legacy
 # WARN path; canonical production runs PIT-masked.
-delisted_registry_path: "${QUANT_DELISTED_REGISTRY:-D:/qlib_data/tushare_raw/delisted_registry.parquet}"
+delisted_registry_path: "D:/qlib_data/tushare_raw/delisted_registry.parquet"
 
 # Overall walk-forward range. WalkForwardEngine._generate_windows adds
 # calendar months to overall_start, so the anchor must be the 1st of a

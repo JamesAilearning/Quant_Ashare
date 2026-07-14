@@ -22,10 +22,16 @@ Checks (ALL must pass; any failure = REFUSE, no run):
                     an unfrozen parent).
  11. one verdict  — ledger holdout_unblinded must be a boolean; once true,
                     any further --final-adjudication is refused permanently.
+ 12. literal data — no ${...} env placeholder in any chain VALUE: the same
+                    config sha256 must not resolve to different data
+                    bundles at runtime (frozen-literal paths).
+ 13. binding      — the chain must declare gate3_candidate (child-first)
+                    equal to --candidate: the gate accepts only the
+                    candidate the run config actually evaluates.
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R14, 14/14 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R17, 17/17 required).
 """
 from __future__ import annotations
 
@@ -59,6 +65,12 @@ FROZEN_ARTIFACTS = (
     "scripts/research/rehearse_gate3_prereg_gate.py",
     "config/presets/quality_gate3_dev.yaml",
     "config/presets/quality_gate3_final_adjudication.yaml",
+    "config/presets/quality_gate3_dev_c1_gpa.yaml",
+    "config/presets/quality_gate3_dev_c2_prof.yaml",
+    "config/presets/quality_gate3_dev_c3_cash_op.yaml",
+    "config/presets/quality_gate3_final_adjudication_c1_gpa.yaml",
+    "config/presets/quality_gate3_final_adjudication_c2_prof.yaml",
+    "config/presets/quality_gate3_final_adjudication_c3_cash_op.yaml",
 )
 
 
@@ -75,13 +87,16 @@ def _git(repo: Path, *args: str) -> str:
     return out.stdout.strip()
 
 
-def _resolve_run_config(cfg_path: Path) -> str | tuple[object, list[Path]]:
+def _resolve_run_config(
+    cfg_path: Path,
+) -> str | tuple[object, list[Path], list[dict[str, object]]]:
     """Resolve the FULL ``extends`` chain (child-first) and derive
-    ``overall_end``. Returns ``(overall_end_raw, chain_paths)`` or a string
-    starting with ``REFUSE:`` on any failure — the gate never guesses a
-    window it cannot derive. The WHOLE chain is returned because every file
-    in it shapes the run (model/universe/cost/fold parameters), not just
-    the one holding ``overall_end`` (codex #352 r10 P1)."""
+    ``overall_end``. Returns ``(overall_end_raw, chain_paths, chain_datas)``
+    or a string starting with ``REFUSE:`` on any failure — the gate never
+    guesses a window it cannot derive. The WHOLE chain (paths AND parsed
+    mappings, child-first) is returned because every file in it shapes the
+    run (model/universe/cost/fold parameters), not just the one holding
+    ``overall_end`` (codex #352 r10/r11 P1)."""
     chain: list[Path] = []
     datas: list[dict[str, object]] = []
     cur = cfg_path
@@ -102,9 +117,22 @@ def _resolve_run_config(cfg_path: Path) -> str | tuple[object, list[Path]]:
         return "REFUSE:extends chain deeper than 5 — refusing to derive."
     for data in datas:  # child overrides parent
         if "overall_end" in data:
-            return data["overall_end"], chain
+            return data["overall_end"], chain, datas
     return (f"REFUSE:run config {cfg_path} has no overall_end anywhere in "
             "its extends chain — the gated window cannot be derived.")
+
+
+def _values_contain_placeholder(obj: object) -> bool:
+    """True if any STRING VALUE in the parsed config carries a ``${``
+    env placeholder. Mirrors the runner loader's expansion semantics
+    (only string-typed values are expanded; comments are inert), so a
+    frozen config whose comments merely MENTION ``${VAR}`` passes while
+    any value-level indirection is caught (codex #352 r11 P1)."""
+    if isinstance(obj, dict):
+        return any(_values_contain_placeholder(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_values_contain_placeholder(v) for v in obj)
+    return isinstance(obj, str) and "${" in obj
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     resolved = _resolve_run_config(cfg_resolved)
     if isinstance(resolved, str):
         return _refuse(resolved[len("REFUSE:"):])
-    overall_end, cfg_chain = resolved
+    overall_end, cfg_chain, cfg_datas = resolved
     if isinstance(overall_end, date):
         test_end = overall_end
     else:
@@ -281,6 +309,51 @@ def main(argv: list[str] | None = None) -> int:
                 "shapes the run, so the FULL resolved config must be "
                 "frozen (use the self-contained frozen presets).")
 
+    # 1d. no env indirection in frozen run configs: the runner expands
+    # ${QUANT_*} placeholders at runtime, so two runs could share this
+    # chain's sha256 while training/backtesting against DIFFERENT
+    # qlib/ST/delist bundles — defeating the data-version lock. Frozen
+    # configs pin literal paths; any value-level ${...} refuses
+    # (codex #352 r11 P1).
+    for link, data in zip(cfg_chain, cfg_datas, strict=True):
+        if _values_contain_placeholder(data):
+            return _refuse(
+                f"run config {link} carries a ${{...}} env placeholder in "
+                "a value — env indirection lets the same config sha256 "
+                "resolve to different data bundles at runtime; frozen run "
+                "configs must pin literal paths.")
+
+    # 1e. the candidate must be REGISTERED and BOUND by the config chain —
+    # a bare --candidate flag is an unbound CLI claim: an operator could
+    # gate C1_GPA and then run a config evaluating a different candidate
+    # (or plain Alpha158) and still collect GATE ACCEPT (codex #352 r11
+    # P1). The frozen chain must declare gate3_candidate (child-first)
+    # and it must equal the claimed candidate.
+    registered = {str(c["id"])
+                  for c in plan["candidate_family"]["registered_candidates"]}
+    if args.candidate not in registered:
+        return _refuse(f"candidate {args.candidate!r} NOT in "
+                       f"registered_candidates {sorted(registered)} — a new "
+                       "candidate means a NEW plan + a NEW untouched window "
+                       "(prohibited_variants).")
+    cfg_candidate: str | None = None
+    for data in cfg_datas:  # child overrides parent
+        if "gate3_candidate" in data:
+            cfg_candidate = str(data["gate3_candidate"])
+            break
+    if cfg_candidate is None:
+        return _refuse(
+            "run config chain declares no gate3_candidate — the frozen run "
+            "config must BIND the candidate it evaluates (use the "
+            "per-candidate frozen stubs, e.g. "
+            "config/presets/quality_gate3_dev_c1_gpa.yaml).")
+    if cfg_candidate != args.candidate:
+        return _refuse(
+            f"candidate binding mismatch: --candidate says "
+            f"{args.candidate!r} but the run config chain binds "
+            f"gate3_candidate {cfg_candidate!r} — the gate accepts only "
+            "the candidate the run config actually evaluates.")
+
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
     plan_commit = _git(repo, "log", "-1", "--format=%H", "--", PLAN_REL)
@@ -329,12 +402,9 @@ def main(argv: list[str] | None = None) -> int:
     if verify.returncode != 0:
         return _refuse("store manifest mismatch:\n" + verify.stdout.strip())
 
-    # 6. candidate registered
-    registered = {c["id"] for c in plan["candidate_family"]["registered_candidates"]}
-    if args.candidate not in registered:
-        return _refuse(f"candidate {args.candidate!r} NOT in registered_candidates "
-                       f"{sorted(registered)} — a new candidate means a NEW plan "
-                       "+ a NEW untouched window (prohibited_variants).")
+    # 6. candidate registration + config binding — enforced above in 1e
+    # (before the freeze/dirty checks so binding rehearsals stay
+    # temp-modifiable).
 
     # 7. PIT battery
     pit_targets = [DEFAULT_PIT_CASES]
@@ -354,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     print("GATE ACCEPT")
     print(f"  plan_commit: {plan_commit}")
     print(f"  frozen_package_committed_at: {plan_ts.isoformat()}")
-    print(f"  candidate: {args.candidate}")
+    print(f"  candidate: {args.candidate} (bound by run config chain)")
     for link in cfg_chain:
         link_sha = hashlib.sha256(link.read_bytes()).hexdigest()
         print(f"  run_config: {link} sha256={link_sha[:16]}...")
