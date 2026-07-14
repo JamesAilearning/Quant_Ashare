@@ -395,7 +395,7 @@ def run_gate(repo: Path, candidate: str, store_dir: Path,
 
 
 def build_pit_provider(provider_root: Path,
-                       delisted_registry: Path) -> "PITDataProvider":
+                       delisted_registry: Path) -> PITDataProvider:
     """PITDataProvider bound to the FROZEN provider_uri + delisted
     registry (codex #354 r4 P1: a raw ``D.features`` read can absorb
     stale carried closes for delisted tickers; the provider's post-delist
@@ -413,7 +413,7 @@ def build_pit_provider(provider_root: Path,
     return provider
 
 
-def load_price_frames(provider: "PITDataProvider", qlib_codes: list[str],
+def load_price_frames(provider: PITDataProvider, qlib_codes: list[str],
                       start: date, end: date
                       ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(close, total_mv) frames indexed by date, columns ts_code — routed
