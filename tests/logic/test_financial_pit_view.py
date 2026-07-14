@@ -326,3 +326,52 @@ def test_uf1_only_recent_period_served_not_stale(tmp_path):
     # and it is picked as the LATEST available period, over the older uf0 one
     assert v.as_of("2022-05-05", ["oper_cost"], ["000002.SZ"]).loc[
         "000002.SZ", "oper_cost"] == 130.0
+
+
+def test_as_of_report_period_metadata_cross_endpoint(tmp_path):
+    """include_report_periods=True surfaces the SERVED end_date per queried
+    endpoint so cross-endpoint consumers can enforce report-period alignment
+    (codex #354 r6 P1): endpoints are served independently, and a lagging
+    balancesheet must be VISIBLE as a different period, never silently mixed
+    into an income/total_assets ratio. Default output stays unchanged."""
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    pd.DataFrame([
+        _row("000001.SZ", "20211231", "0", "20220331", revenue=100.0),
+        _row("000001.SZ", "20220331", "0", "20220429", revenue=30.0),
+    ]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    bs = tmp_path / "balancesheet"
+    bs.mkdir(parents=True)
+    bs_row = {
+        "ts_code": "000001.SZ", "end_date": "20211231", "ann_date": "20220331",
+        "f_ann_date": "20220331", "update_flag": "0", "_content_hash": "hb",
+        "_fetch_batch": "b1", "_source_endpoint": "balancesheet",
+        "total_assets": 500.0,
+    }
+    pd.DataFrame([bs_row]).to_parquet(bs / "000001.SZ.parquet", index=False)
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+
+    # 2022-05-05: income serves Q1-2022, balancesheet still FY-2021 —
+    # the metadata must expose the misalignment.
+    got = v.as_of("2022-05-05", ["revenue", "total_assets"], ["000001.SZ"],
+                  include_report_periods=True)
+    assert got.loc["000001.SZ", "_report_period__income"] == "20220331"
+    assert got.loc["000001.SZ", "_report_period__balancesheet"] == "20211231"
+    assert got.loc["000001.SZ", "revenue"] == 30.0
+    assert got.loc["000001.SZ", "total_assets"] == 500.0
+
+    # 2022-04-01: both endpoints serve FY-2021 — aligned.
+    got2 = v.as_of("2022-04-01", ["revenue", "total_assets"], ["000001.SZ"],
+                   include_report_periods=True)
+    assert (got2.loc["000001.SZ", "_report_period__income"]
+            == got2.loc["000001.SZ", "_report_period__balancesheet"]
+            == "20211231")
+
+    # an endpoint with NOTHING available yet -> NA period, fields NA
+    got3 = v.as_of("2022-03-31", ["revenue", "total_assets"], ["000001.SZ"],
+                   include_report_periods=True)
+    assert pd.isna(got3.loc["000001.SZ", "_report_period__income"])
+
+    # default call: NO metadata columns (byte-compatible output)
+    plain = v.as_of("2022-05-05", ["revenue", "total_assets"], ["000001.SZ"])
+    assert [c for c in plain.columns if c.startswith("_report_period")] == []

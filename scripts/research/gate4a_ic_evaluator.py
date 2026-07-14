@@ -62,6 +62,14 @@ Pinned run semantics (decided at work-order level, echoed in the artifact):
     post-delist rows so the truncation counters see the truth
     (codex #354 r4 P1). The microstructure mask fetch routes through
     the SAME provider.
+  * Cross-endpoint report-period ALIGNMENT (codex #354 r6 P1): the view
+    serves each endpoint's latest available period independently, so a
+    lagging endpoint (balancesheet a quarter behind income) would mix
+    quarters inside one ratio. The evaluator requests per-endpoint
+    report-period metadata and NAs any name whose queried endpoints
+    serve different periods (counted per stamp) — the frozen
+    any_input_na_then_factor_na discipline extended to "any input from
+    the wrong period is no input".
   * st_on (registered design, production-faithful): names that were
     ST/*ST on the execution day per the PIT namechange reconstruction
     (src/data/st_history.py) are excluded from the cross-section and
@@ -157,6 +165,7 @@ CANDIDATE_RUN_CONFIG = {
 # view fields per candidate (only C1 is implemented in this first pass —
 # requesting an unimplemented candidate fails loud, it never guesses).
 C1_FIELDS = ("revenue", "oper_cost", "total_assets")
+C1_ENDPOINTS = ("balancesheet", "income")  # cross-endpoint: must align
 
 N_SIZE_DECILES = 10
 MAX_MV_STALENESS_DAYS = 20  # trading days; beyond -> drop from fold, counted
@@ -267,6 +276,27 @@ def within_decile_rank(factor: pd.Series, deciles: pd.Series) -> pd.Series:
         return pd.Series(dtype=float)
     return joined.groupby("d")["f"].transform(
         lambda s: s.rank(method="average") / (len(s) + 1))
+
+
+def misaligned_periods(asof: pd.DataFrame,
+                       endpoints: tuple[str, ...]) -> pd.Series:
+    """Boolean per instrument: True where the queried endpoints served
+    DIFFERENT report periods (all present but unequal) — mixing quarters
+    across endpoints (e.g. Q2 revenue / Q1 total_assets) corrupts the
+    factor; per the frozen any_input_na_then_factor_na discipline those
+    names go NA + counted (codex #354 r6 P1). Rows with ANY endpoint
+    period missing are not flagged here: their fields are already NA and
+    the missing policy covers them."""
+    cols = [f"_report_period__{e}" for e in endpoints]
+    for c in cols:
+        if c not in asof.columns:
+            raise EvaluatorError(f"as-of frame lacks {c!r} — call as_of with "
+                                 "include_report_periods=True.")
+    sub = asof[cols]
+    present = sub.notna().all(axis=1)
+    same = sub.nunique(axis=1, dropna=True) <= 1
+    result: pd.Series = present & ~same
+    return result
 
 
 def rebalance_stamps(days: list[date], cadence: int, phase: int
@@ -413,7 +443,7 @@ def compute_c1_gpa(asof_frame: pd.DataFrame) -> pd.Series:
     return (f["revenue"] - f["oper_cost"]) / ta
 
 
-CANDIDATE_FORMULAS = {"C1_GPA": (compute_c1_gpa, C1_FIELDS)}
+CANDIDATE_FORMULAS = {"C1_GPA": (compute_c1_gpa, C1_FIELDS, C1_ENDPOINTS)}
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     calendar = StaticTradingCalendar(cal_days)
     view = FinancialPITDataView(args.store_dir, calendar,
                                 financial_issuers=issuers)
-    formula, fields = CANDIDATE_FORMULAS[args.candidate]
+    formula, fields, endpoints = CANDIDATE_FORMULAS[args.candidate]
 
     # 4. price/size panel over the dev span — ONE load, routed through the
     # PIT provider (post-delist mask; codex #354 r4 P1).
@@ -598,8 +628,15 @@ def main(argv: list[str] | None = None) -> int:
             untradeable = masked_ts_codes_on(micro_mask, exec_i)
             n_untradeable = sum(1 for ts in universe if ts in untradeable)
             universe = [ts for ts in universe if ts not in untradeable]
-            asof = view.as_of(t_i.isoformat(), list(fields), universe)
+            asof = view.as_of(t_i.isoformat(), list(fields), universe,
+                              include_report_periods=True)
             factor = formula(asof)
+            # report-period alignment across endpoints (codex #354 r6 P1):
+            # a lagging endpoint (e.g. balancesheet a quarter behind
+            # income) must NA the candidate, never mix quarters.
+            misaligned = misaligned_periods(asof, endpoints)
+            n_misaligned = int((misaligned & factor.notna()).sum())
+            factor = factor.where(~misaligned)
             deciles, size_counts = size_deciles_asof(mv, t_i, universe,
                                                      cal_days)
             signal = within_decile_rank(factor, deciles)
@@ -620,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
                 "exec_day_untradeable_masked": n_untradeable,
                 "n_universe_exfin_tradeable": len(universe),
                 "n_factor_nonna": int(factor.notna().sum()),
+                "period_misaligned_to_na": n_misaligned,
                 **size_counts, **ret_counts, **ics,
                 "monotonicity_decile_means": monotonicity(signal, fwd),
             }
@@ -668,6 +706,9 @@ def main(argv: list[str] | None = None) -> int:
                                           "one-price lock) excluded + counted",
             "st_handling": "st_on — PIT namechange reconstruction, ST/*ST "
                            "on the execution day excluded + counted",
+            "report_period_alignment": "queried endpoints must serve the "
+                                       "SAME period; misaligned names go "
+                                       "NA + counted",
             "data_roots": "provider_uri / namechange_path from the gated "
                           "frozen config chain (no CLI override)",
         },

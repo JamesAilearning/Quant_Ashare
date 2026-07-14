@@ -42,6 +42,7 @@ from scripts.research.gate4a_ic_evaluator import (  # noqa: E402
     forward_returns,
     load_config_chain,
     masked_ts_codes_on,
+    misaligned_periods,
     monotonicity,
     rebalance_stamps,
     size_deciles_asof,
@@ -180,6 +181,25 @@ def test_forward_returns_no_post_entry_close_marks_flat_and_counts():
     assert ret["halt.SZ"] == pytest.approx(0.0)
     assert counts["return_flat_no_post_entry_close"] == 1
     assert counts["return_truncated_last_close"] == 0
+
+
+def test_misaligned_periods_flags_cross_endpoint_quarter_mixing():
+    asof = pd.DataFrame({
+        "revenue": [30.0, 30.0, float("nan")],
+        "total_assets": [500.0, 500.0, 500.0],
+        "_report_period__income": ["20220331", "20220331", None],
+        "_report_period__balancesheet": ["20220331", "20211231", "20211231"],
+    }, index=["aligned", "mixed", "income_hole"])
+    flags = misaligned_periods(asof, ("balancesheet", "income"))
+    assert not flags["aligned"]
+    assert flags["mixed"]              # Q1 income vs FY balancesheet -> NA
+    assert not flags["income_hole"]    # missing period: missing_policy 管辖
+
+
+def test_misaligned_periods_requires_metadata_columns():
+    with pytest.raises(EvaluatorError, match="include_report_periods"):
+        misaligned_periods(pd.DataFrame({"revenue": [1.0]}),
+                           ("balancesheet", "income"))
 
 
 def test_rebalance_stamps_mirror_canonical_schedule():

@@ -172,6 +172,8 @@ class FinancialPITDataView:
         trade_date: str | date,
         fields: Sequence[str],
         instruments: Sequence[str],
+        *,
+        include_report_periods: bool = False,
     ) -> pd.DataFrame:
         """PIT-correct financial values as-of ``trade_date``.
 
@@ -180,6 +182,15 @@ class FinancialPITDataView:
         DataFrame indexed by ts_code (financial issuers EXCLUDED), one column
         per requested charter field, each cell the disclosure-of-record value of
         that instrument's latest already-available report period, or NA.
+
+        ``include_report_periods=True`` additionally emits one metadata
+        column per QUERIED endpoint — ``_report_period__<endpoint>`` — the
+        ``end_date`` of the record actually served (NA when nothing is
+        available). Endpoints are served independently, so a consumer that
+        combines fields ACROSS endpoints (e.g. income/total_assets ratios)
+        must check these to enforce report-period alignment instead of
+        silently mixing quarters (codex #354 r6 P1). The default (False)
+        output is unchanged.
         """
         _require_collection(fields, "fields")
         _require_collection(instruments, "instruments")
@@ -193,6 +204,9 @@ class FinancialPITDataView:
         by_endpoint: dict[str, list[str]] = {}
         for f in fields:
             by_endpoint.setdefault(_FIELD_ENDPOINT[f], []).append(f)
+        out_columns = list(fields)
+        if include_report_periods:
+            out_columns += [f"_report_period__{e}" for e in sorted(by_endpoint)]
 
         rows: dict[str, dict[str, Any]] = {}
         for raw_ts in instruments:
@@ -208,14 +222,21 @@ class FinancialPITDataView:
                     else:
                         v = latest.get(f)
                         row[f] = pd.NA if (v is None or pd.isna(v)) else v
+                if include_report_periods:
+                    period = None if latest is None else latest.get("end_date")
+                    row[f"_report_period__{endpoint}"] = (
+                        pd.NA if (period is None or pd.isna(period))
+                        else str(period)
+                    )
             rows[ts] = row
         if not rows:
             # every requested instrument was financial-excluded (or the list was
             # empty): return an empty, correctly-columned frame so downstream
             # ``panel[field]`` never KeyErrors.
-            out = pd.DataFrame(columns=list(fields))
+            out = pd.DataFrame(columns=out_columns)
         else:
-            out = pd.DataFrame.from_dict(rows, orient="index", columns=list(fields))
+            out = pd.DataFrame.from_dict(rows, orient="index",
+                                         columns=out_columns)
         out.index.name = "instrument"
         return out
 
