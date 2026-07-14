@@ -122,17 +122,28 @@ def _load_config(
             "openspec/changes/add-stamp-tax-schedule for the design."
         )
 
+    # Stage-8 Gate-3 prereg binding key (codex #352 r11+r12): the frozen
+    # decision-level presets bind the registered candidate they evaluate via
+    # ``gate3_candidate`` (checked by scripts/research/gate3_prereg_gate.py).
+    # Until the Gate-4B augmentation wiring actually CONSUMES the key, this
+    # runner must refuse such configs outright — silently dropping the key
+    # would execute the plain Alpha158 parent config and produce metrics
+    # masquerading as a candidate-specific run under a GATE ACCEPT.
+    if "gate3_candidate" in raw:
+        raise ValueError(
+            f"Config {config_path} binds gate3_candidate="
+            f"{raw['gate3_candidate']!r}, but the Gate-4B augmentation "
+            "wiring is not implemented yet — running this config today "
+            "would train/backtest plain Alpha158 while claiming a "
+            "candidate-specific run. Refusing (fail-loud guard, codex "
+            "#352 r12); the Gate-4B wiring must replace this guard by "
+            "actually consuming and honouring the key."
+        )
+
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}
     qlib_keys = {"provider_uri", "region"}
     mined_factor_keys = set(_MINED_FACTOR_YAML_KEYS)
-    # Stage-8 Gate-3 prereg binding key (codex #352 r11): consumed by
-    # scripts/research/gate3_prereg_gate.py to bind a frozen decision-level
-    # run config to the registered candidate it evaluates. Inert for the
-    # engine today; the Gate-4B augmentation wiring must consume and honour
-    # it when it lands.
-    gate3_keys = {"gate3_candidate"}
-    unknown = sorted(
-        set(raw) - valid_fields - qlib_keys - mined_factor_keys - gate3_keys)
+    unknown = sorted(set(raw) - valid_fields - qlib_keys - mined_factor_keys)
     if unknown:
         # Reject unknown keys hard. Previously we logged a WARNING and
         # silently dropped them, which masked typos like ``top_k`` /
@@ -143,8 +154,7 @@ def _load_config(
             f"Unknown config keys in {config_path}: {unknown}. "
             f"Valid WalkForwardConfig fields: {sorted(valid_fields)}; "
             f"plus qlib runtime keys: {sorted(qlib_keys)}; "
-            f"plus mined-factor keys: {sorted(mined_factor_keys)}; "
-            f"plus gate3 prereg keys: {sorted(gate3_keys)}. "
+            f"plus mined-factor keys: {sorted(mined_factor_keys)}. "
             "Refusing to run with potentially-typo'd keys."
         )
 

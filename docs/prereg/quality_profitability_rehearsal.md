@@ -117,6 +117,14 @@
   (run_walk_forward.py)未知键 allowlist 加惰性键 gate3_candidate(引擎今日
   不消费;Gate-4B 增列接线落地时必须消费并核对)。注册检查前移至绑定检查前
   (R2 拒因语义不变)。新增 R15(值层占位符拒)/R16(绑定不符拒)/R17(无绑定
-  config 拒)。演练矩阵 **17 场景**,最终复跑 **17/17 PASS**(输出以 PR #352
-  评论存档)。
+  config 拒)。演练矩阵扩至 17 场景,复跑 17/17 PASS。
+- **v11(codex r12)**: v10 的 runner 侧"惰性 allowlist"升级为 **fail-loud
+  拒跑** —— allowlist 只是不报错,runner 仍会丢弃该键、把 C1/C2/C3 stub 全部
+  跑成同一个裸 Alpha158 parent,GATE ACCEPT 就会给"无增列的裸跑"背书。现
+  run_walk_forward.py 见 `gate3_candidate` 即 ValueError(仿 stamp_tax_bps
+  前例,先于未知键检查),Gate-4B 接线落地时必须以真实消费替换该守卫。守卫由
+  CI 测试钉死(tests/logic/test_run_walk_forward_mined.py::
+  test_load_config_gate3_candidate_fails_loud_until_4b_wiring —— 换守卫必须
+  连测试一起换);runner 侧强制走 CI 测试而非 gate 演练场景,矩阵维持 17。
+  演练最终复跑 **17/17 PASS**(输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

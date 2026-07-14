@@ -113,6 +113,24 @@ def test_load_config_unknown_key_still_rejected(tmp_path):
         _load_config(str(cfg))
 
 
+def test_load_config_gate3_candidate_fails_loud_until_4b_wiring(tmp_path):
+    """A gate3_candidate-bound config must be REFUSED, not silently run.
+
+    The Stage-8 frozen presets bind the registered candidate via
+    ``gate3_candidate`` (codex #352 r11); until the Gate-4B augmentation
+    wiring consumes the key, running such a config would execute plain
+    Alpha158 while claiming a candidate-specific run under a GATE ACCEPT
+    (codex #352 r12). This test pins the fail-loud guard: whoever lands
+    the Gate-4B wiring must replace the guard AND this test together.
+    """
+    cfg = _write_yaml(tmp_path / "wf.yaml", [
+        *_baseline_yaml_lines(),
+        'gate3_candidate: "C1_GPA"',
+    ])
+    with pytest.raises(ValueError, match="Gate-4B augmentation wiring"):
+        _load_config(str(cfg))
+
+
 # ---------------------------------------------------------------------------
 # _maybe_build_mined_factor_bundle — required-when-MinedFactor contract
 # ---------------------------------------------------------------------------
