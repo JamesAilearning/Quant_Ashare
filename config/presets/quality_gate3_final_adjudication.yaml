@@ -1,0 +1,173 @@
+# ========================================================================
+# Stage-8 Gate-4 FINAL-ADJUDICATION run config - FROZEN with the prereg
+# package (#352). overall_end == the signed holdout end (2025-12-31):
+# the ONE-TIME verdict run must cover the holdout EXACTLY, the gate only
+# accepts it with an explicit --final-adjudication (loud unblinding
+# banner), and once the ledger records holdout_unblinded: true the gate
+# permanently refuses any repeat adjudication (codex #352 r10 P1).
+#
+# --- FROZEN SNAPSHOT NOTE (codex #352 r10 P1) ----------------------------
+# SELF-CONTAINED snapshot of config_walk.yaml taken at freeze. An
+# `extends` link to an unfrozen parent would let later commits to
+# config_walk.yaml silently change model/universe/cost/fold parameters
+# after freeze while this preset's hash stays identical - so the FULL
+# resolved config is frozen here, and the gate REFUSES any run config
+# whose extends chain leaves the frozen package.
+# -------------------------------------------------------------------------
+# --- FROZEN-LITERAL DATA PATHS (codex #352 r11 P1) -----------------------
+# All ${QUANT_*:-...} env placeholders from the canonical config are
+# resolved to their canonical literals here: env indirection would let two
+# runs share this file's sha256 while training/backtesting against
+# DIFFERENT qlib/ST/delist bundles, defeating the data-version lock. The
+# gate REFUSES any ${...} placeholder in a frozen run-config chain.
+# (CLAUDE.md's env-var rule is for PORTABLE presets; a frozen prereg
+# config trades portability for determinism, deliberately.)
+# -------------------------------------------------------------------------
+
+# Walk-forward configuration — "medium" preset.
+#
+# Why this preset
+# ---------------
+# Goals: see real out-of-sample IC / return / drawdown across multiple
+# 3-month test windows on a sensible time budget (~5-15 minutes on a
+# laptop). Trades raw model quality for runtime: 300 boosting rounds
+# with early stopping at 20 patience. In practice LGB on Alpha158 hits
+# its best valid loss in the first few rounds, so even 1000-round
+# budgets won't materially change the resulting IC.
+#
+# PIT bundle coverage: 2018-01-02 → 2025-12-31 (D:/qlib_data/my_cn_data_pit).
+
+# qlib runtime — read by scripts/run_walk_forward.py
+provider_uri: "D:/qlib_data/my_cn_data_pit"
+region: "cn"
+
+# Universe & features
+instruments: "csi300"
+# 阶段8 预注册宇宙章戳(codex #352 r14 P1): 冻结研究宇宙 = csi300_pit_ex_
+# financials(银行/证券/保险剔除,plan study_design.universe)。runtime 今日
+# 无 ex-financial 排除机制 -- 实施该排除是 Gate-4B 接线的硬义务(runner 对
+# 一切 gate3_* 键 fail-loud 拒跑,直至接线消费);gate 交叉核对本章戳与 plan
+# 一致,防止接线落地后跑成全 csi300 却顶着冻结宇宙之名。
+gate3_universe: "csi300_pit_ex_financials"
+feature_handler: "Alpha158"
+
+# PIT historical ST/*ST exclusion (C2-d PR2). The backtest drops names that
+# were ST/*ST on each execution day (reconstructed point-in-time from the
+# tushare namechange table; see src/data/st_history.py). Env-overridable via
+# QUANT_NAMECHANGE_PATH (default below = current path, so behaviour is unchanged
+# when unset), matching provider_uri's ${VAR:-default} style above. Enabling
+# this changes the WF aggregate vs the includes-ST C1 baseline — the baseline
+# MUST be regenerated in the same PR via RUN_E2E (tests/regression/fixtures/README.md).
+namechange_path: "D:/qlib_data/tushare_raw/all_namechanges.parquet"
+# Audit P2 (add-pit-analyzer-routing PR-2): PIT post-delist mask for the
+# IC/attribution close fetches. Reuses the QUANT_DELISTED_REGISTRY env var
+# daily_recommend already consumes. Empty would fall back to the legacy
+# WARN path; canonical production runs PIT-masked.
+delisted_registry_path: "D:/qlib_data/tushare_raw/delisted_registry.parquet"
+
+# Overall walk-forward range. WalkForwardEngine._generate_windows adds
+# calendar months to overall_start, so the anchor must be the 1st of a
+# month (NOT the bundle's first trading day 2018-01-02) to keep folds
+# month/quarter-aligned. With 24m train + 3m valid + 3m test stepping
+# every 3m, this yields the documented first test 2020-04→2020-06 and
+# last test 2025-10→2025-12 (matches docs/factor_mining/
+# empirical_results_b_std.md's 23-fold setup). qlib clips the non-trading
+# 2018-01-01 anchor to the first real trading day when loading data.
+overall_start: "2018-01-01"
+overall_end:   "2025-12-31"
+
+# Window sizes (months)
+train_months: 24
+valid_months: 3
+test_months: 3
+step_months: 3
+
+# Model — tuned for "let LGB actually train past best_iteration ≤ 6".
+#
+# What the first run showed
+# -------------------------
+# With learning_rate=0.0421, num_leaves=210, no L2, every fold's
+# best_iteration came in at 1-6. LGB drove valid loss to its local
+# optimum on the first split and early-stopping immediately fired.
+# A fold "trained" in 30 seconds end-to-end because the boosted-tree
+# budget was never used.
+#
+# What changed
+# ------------
+# - learning_rate 0.0421 → 0.005: ~8× smaller step lets the booster
+#   take many more rounds before plateauing on valid loss.
+# - num_leaves 210 → 64 + min_data_in_leaf 20 → 50: smaller / more
+#   regularised trees so each round adds less, encouraging more rounds.
+# - lambda_l2 0.0 → 1.0: explicit L2 regularisation; without it LGB
+#   over-fits the first split's residuals in one go.
+# - feature_fraction / bagging_fraction = 0.8 + bagging_freq=5:
+#   stochastic regularisation, classic recipe for tabular GBDT.
+# - num_boost_round 300 → 1000 + early_stopping_rounds 20 → 50:
+#   raise both ceilings now that best_iter is allowed to climb.
+model_type: "LGBModel"
+num_boost_round: 1000
+early_stopping_rounds: 50
+learning_rate: 0.005
+max_depth: 6
+num_leaves: 64
+lambda_l1: 0.0
+lambda_l2: 1.0
+min_data_in_leaf: 50
+feature_fraction: 0.8
+bagging_fraction: 0.8
+bagging_freq: 5
+
+# Cross-fold model ensemble — the default since the ensemble window
+# sweep (research/ensemble_window_sweep.md) showed N=3 has the best
+# point estimates across mean IC, IR, and annualized return, with
+# per-fold IC improvement vs N=1 significant under a paired sign test
+# (7/7 folds, p ≈ 0.008). Cost is +66% wall-clock vs N=1, which is
+# modest for batch training. Override per experiment via the
+# config_walk_n*.yaml sweep configs.
+ensemble_window: 3
+
+# Backtest
+# Canonical total-return benchmark SH000300TR (applied at REGEN-2). SH000300 is the
+# price-index REGEN-A control (audit E2).
+benchmark_code: "SH000300TR"
+init_cash: 100000000
+topk: 50
+n_drop: 5
+commission_rate: 0.0005
+# CN stamp tax: omit ``stamp_tax_schedule`` to inherit
+# CN_STAMP_TAX_SCHEDULE_DEFAULT (2008-09-19=10bps, 2023-08-28=5bps).
+# This walk-forward window (2018-2025) crosses 2023-08-28 — the
+# runtime will WARN and apply a trading-day-weighted scalar across
+# the two segments per fold. Audit P0-4 / openspec/changes/
+# add-stamp-tax-schedule.
+slippage_bps: 5.0
+
+# 阶段8 决策③(已签)持有期章戳(codex #352 r14 P1): 主持有期 = 季度再平衡。
+# 63 = 21 交易日/月 x 3;anchor=fold_phase 每折相位重置 -> 3 个月 test 折
+# 恰好一次再平衡 = 2025 holdout 全年 4 次(plan untouched_final_holdout 注
+# "4 次季度再平衡")。不写则 WalkForwardConfig 默认 1(日频)-- 那会以日频
+# 换手/成本产出冒充已签季度设计的指标;gate 交叉核对本三元组与 plan
+# holding.primary 映射一致。半年/年敏感性切片届时各用自己的预注册 preset。
+rebalance_cadence_days: 63
+rebalance_phase: 0
+rebalance_anchor: "fold_phase"
+
+# Performance attribution per fold. Default ``True`` produces an
+# ``attribution`` block in every ``fold_NN_report.json`` (board-heuristic
+# bucketing if no industry artifact is configured). Set to ``false`` to
+# skip the per-fold Brinson decomposition entirely.
+run_attribution: true
+
+# Optional real industry taxonomy for per-fold attribution. Mirrors the
+# three-field contract on ``PipelineConfig``: leave all three empty to
+# use the explicit board heuristic, or set the full triple to load the
+# Tushare-published Shenwan L2 artifact and render real Chinese
+# industry names ("白酒" / "银行") in fold reports instead of board
+# buckets ("board_SH_Main"). Same partial-config rejection as Pipeline
+# (any 1/3 or 2/3 combination raises at config construction time).
+# industry_artifact_path: "output/taxonomy/sw_l2.csv"
+# industry_manifest_path: "output/taxonomy/sw_l2.json"
+# industry_taxonomy_id: "tushare_sw_l2"
+
+# Output
+output_dir: "output/walk_forward"

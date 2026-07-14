@@ -122,6 +122,28 @@ def _load_config(
             "openspec/changes/add-stamp-tax-schedule for the design."
         )
 
+    # Stage-8 Gate-3 prereg binding keys (codex #352 r11+r12+r14): the
+    # frozen decision-level presets bind the registered candidate
+    # (``gate3_candidate``) and the frozen ex-financial study universe
+    # (``gate3_universe``) — both checked by
+    # scripts/research/gate3_prereg_gate.py. Until the Gate-4B augmentation
+    # wiring actually CONSUMES these keys (including implementing the
+    # ex-financial exclusion), this runner must refuse such configs
+    # outright — silently dropping them would execute the plain Alpha158
+    # parent config on the FULL csi300 and produce metrics masquerading as
+    # a candidate-specific ex-financial run under a GATE ACCEPT.
+    gate3_bound = sorted(k for k in raw if k.startswith("gate3_"))
+    if gate3_bound:
+        raise ValueError(
+            f"Config {config_path} carries Stage-8 prereg binding keys "
+            f"{gate3_bound}, but the Gate-4B augmentation wiring is not "
+            "implemented yet — running this config today would "
+            "train/backtest plain Alpha158 (full csi300) while claiming a "
+            "candidate-specific ex-financial run. Refusing (fail-loud "
+            "guard, codex #352 r12/r14); the Gate-4B wiring must replace "
+            "this guard by actually consuming and honouring these keys."
+        )
+
     valid_fields = {f.name for f in WalkForwardConfig.__dataclass_fields__.values()}
     qlib_keys = {"provider_uri", "region"}
     mined_factor_keys = set(_MINED_FACTOR_YAML_KEYS)
