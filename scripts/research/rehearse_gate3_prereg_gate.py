@@ -1,4 +1,4 @@
-"""Gate-3 pre-registration gate REHEARSAL — twenty-three scenarios, 23/23 required.
+"""Gate-3 pre-registration gate REHEARSAL — twenty-four scenarios, 24/24 required.
 
 Exercises ``gate3_prereg_gate.py`` for real (no mocks) against the freeze
 worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
@@ -30,9 +30,10 @@ worktree, per ``docs/prereg/quality_profitability_rehearsal.md``:
   R22 refused adjudication must print NO unblinding banner (r16).
   R23 ACCEPT clean exact-holdout adjudication WITH banner (gate check
       only — nothing runs, ledger untouched).
+  R24 REFUSE rebalance_phase drift (shifts traded days, r17).
 
 Any scenario deviating = the gate itself has a hole -> exit 1 (fix the gate
-before freezing). Exit 0 = 23/23, paste the printed block into the rehearsal
+before freezing). Exit 0 = 24/24, paste the printed block into the rehearsal
 execution record.
 """
 from __future__ import annotations
@@ -401,13 +402,28 @@ def main(argv: list[str] | None = None) -> int:
                     and "[FINAL ADJUDICATION]" in out,
                     out.splitlines()[-1] if out else ""))
 
+    # R24 REFUSE rebalance_phase drift (codex #352 r17): phase is the
+    # starting offset of the thinning schedule — cadence/anchor can look
+    # signed while a drifted phase silently SHIFTS the traded rebalance
+    # days. Bytes I/O + restore on the dev parent.
+    try:
+        dev_cfg_path.write_bytes(dev_cfg_bytes.replace(
+            b"rebalance_phase: 0", b"rebalance_phase: 7"))
+        rc, out = _run_gate(repo, store, "--candidate", "C1_GPA")
+        results.append(("R24 rebalance-phase drift refused",
+                        rc == 1 and "holding-period mismatch" in out
+                        and "phase=7" in out,
+                        out.splitlines()[0] if out else ""))
+    finally:
+        dev_cfg_path.write_bytes(dev_cfg_bytes)
+
     print("\n=== GATE REHEARSAL RESULTS ===")
     n_ok = 0
     for name, ok, detail in results:
         n_ok += ok
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}  | {detail[:90]}")
-    print(f"  => {n_ok}/23")
-    return 0 if n_ok == 23 else 1
+    print(f"  => {n_ok}/24")
+    return 0 if n_ok == 24 else 1
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 23/23
+# 阶段8 · quality_profitability_v1 · GATE REHEARSAL —— EXECUTED 24/24
 
 > **目的:** 在任何决策级 run 之前,演练预注册闸门本身会不会拦(研究设计 §5:
 > "演练至少应覆盖: 正常接受、未注册候选被 flag、dirty checkout 被拒、计划提交
@@ -8,7 +8,7 @@
 > **复用:** `docs/prereg/cadence_horizon.yaml` 先例的 git-provable gate 机制
 > (plan-commit 早于 run + clean checkout + manifest 一致)。
 
-## 演练矩阵(二十三场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R23=codex 对抗加固增补)
+## 演练矩阵(二十四场景,每场景一行结果;R1-R6=研究设计 §5 最低要求,R7-R24=codex 对抗加固增补)
 
 | # | 场景 | 做法 | 期望 | 结果(2026-07-13 执行) |
 |---|---|---|---|---|
@@ -35,6 +35,7 @@
 | R21 | 揭盲后 dev run 被拒(v14 增补) | 临时翻 holdout_unblinded=true 后跑 dev 窗默认 stub | REJECT: ALREADY UNBLINDED + CONSUMED —— 裁决后本计划下任何决策级 run 一律拒 | **PASS**(REFUSE) |
 | R22 | 被拒终裁不得喊揭盲(v15 增补) | 终裁 stub + flag + dirty 树 | REJECT: dirty checkout 且输出**无** UNBLINDING 横幅 —— 拒绝路径不得误导操作人翻账本 | **PASS**(REFUSE,无横幅) |
 | R23 | 干净精确终裁 ACCEPT 带横幅(v15 增补) | 终裁 stub + flag,树净(仅 gate 检查,无 run、账本不动) | ACCEPT + 横幅紧贴 GATE ACCEPT 之前 + [FINAL ADJUDICATION] 标记 | **PASS**(ACCEPT) |
+| R24 | rebalance_phase 漂移被拒(v16 增补) | 临时把 dev parent 的 phase 0 改 7(cadence/anchor 不动) | REJECT: holding-period mismatch(含 phase=7)—— phase 平移实际交易日,非装饰字段 | **PASS**(REFUSE) |
 
 ## 各场景断言细则
 
@@ -156,6 +157,11 @@
   (链冻结/dirty/时序/manifest/PIT)仍可能拒,被拒的 run 先喊了"揭盲"会误导
   操作人当作已点火、甚至去翻账本。现横幅**移到全部拒绝路径通过之后**、紧贴
   GATE ACCEPT 之前打印。新增 R22(dirty 终裁拒且无横幅)/R23(干净精确终裁
-  ACCEPT 带横幅 —— 仅 gate 检查,无 run、账本不动)。演练矩阵 **23 场景**,
-  最终复跑 **23/23 PASS**(输出以 PR #352 评论存档)。
+  ACCEPT 带横幅 —— 仅 gate 检查,无 run、账本不动),矩阵扩至 23。
+- **v16(codex r17, P1)**: 签名持有期检查补全 **rebalance_phase** —— phase
+  是 thinning schedule 的起始偏移(WalkForwardEngine 直接消费),cadence/
+  anchor 看着都对时,漂移的 phase 会平移实际交易的再平衡日。三元组
+  (cadence=63, phase=0, anchor=fold_phase)整体核对,任一不符即拒。新增
+  R24(phase 0→7 漂移拒)。演练矩阵 **24 场景**,最终复跑 **24/24 PASS**
+  (输出以 PR #352 评论存档)。
 - 纪律: 每个决策级 run 前必先跑 `gate3_prereg_gate.py --candidate <id>`,ACCEPT 才可点火。

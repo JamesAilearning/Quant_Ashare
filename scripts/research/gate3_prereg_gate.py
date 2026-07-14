@@ -39,7 +39,7 @@ Checks (ALL must pass; any failure = REFUSE, no run):
 
 Exit 0 = ACCEPT (prints plan commit + manifest aggregate for run metadata);
 exit 1 = REFUSE with the reason. Rehearsed by
-``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R23, 23/23 required).
+``scripts/research/rehearse_gate3_prereg_gate.py`` (R1-R24, 24/24 required).
 """
 from __future__ import annotations
 
@@ -394,17 +394,25 @@ def main(argv: list[str] | None = None) -> int:
         return _refuse(f"plan holding.primary {holding_primary!r} has no "
                        "registered cadence mapping in this gate — refusing "
                        "rather than guessing the holding period.")
-    expected_cadence, expected_anchor = 63, "fold_phase"
+    expected_cadence, expected_phase, expected_anchor = 63, 0, "fold_phase"
     got_cadence = _chain_value("rebalance_cadence_days")
+    got_phase = _chain_value("rebalance_phase")
     got_anchor = _chain_value("rebalance_anchor")
-    if got_cadence != expected_cadence or got_anchor != expected_anchor:
+    if (got_cadence != expected_cadence or got_phase != expected_phase
+            or got_anchor != expected_anchor):
+        # phase is NOT cosmetic (codex #352 r17 P1): WalkForwardEngine
+        # feeds rebalance_phase into the thinning schedule as the starting
+        # offset, so a drifted phase SHIFTS the traded rebalance days
+        # while cadence/anchor still look signed.
         return _refuse(
             f"holding-period mismatch: plan freezes {holding_primary} "
             f"(rebalance_cadence_days={expected_cadence}, "
+            f"rebalance_phase={expected_phase}, "
             f"rebalance_anchor={expected_anchor!r}) but the run config "
-            f"chain derives cadence={got_cadence!r}, anchor={got_anchor!r} "
-            "— an unset cadence defaults to DAILY rebalancing, producing "
-            "turnover/cost metrics that are not the signed design.")
+            f"chain derives cadence={got_cadence!r}, phase={got_phase!r}, "
+            f"anchor={got_anchor!r} — an unset cadence defaults to DAILY "
+            "rebalancing and a drifted phase shifts the traded rebalance "
+            "days; neither is the signed design.")
     plan_universe = str(sd["universe"])
     got_universe = _chain_value("gate3_universe")
     if got_universe != plan_universe:
