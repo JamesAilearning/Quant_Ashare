@@ -101,7 +101,9 @@ Decision-level discipline (the script REFUSES to run otherwise):
      gate's clean-tree + freeze-ordering checks enforce the commit part;
      registering the entry itself is the operator workflow.
 
-Usage (C1 first — C2/C3 are registered but not yet implemented, fail-loud):
+Usage (all three registered candidates implemented; C3's Δ-terms consume
+the view's include_prior_period service — adjacent-quarter records only,
+never a diff across a skipped period):
 
     python scripts/research/gate4a_ic_evaluator.py \\
         --candidate C1_GPA \\
@@ -166,10 +168,16 @@ CANDIDATE_RUN_CONFIG = {
     "C3_cash_based_OP": "config/presets/quality_gate3_dev_c3_cash_op.yaml",
 }
 
-# view fields per candidate (only C1 is implemented in this first pass —
-# requesting an unimplemented candidate fails loud, it never guesses).
+# view fields / statement endpoints per candidate (frozen formulas).
 C1_FIELDS = ("revenue", "oper_cost", "total_assets")
 C1_ENDPOINTS = ("balancesheet", "income")  # cross-endpoint: must align
+C2_FIELDS = ("revenue", "oper_cost", "sell_exp", "admin_exp", "fin_exp",
+             "total_hldr_eqy_inc_min_int")
+C2_ENDPOINTS = ("balancesheet", "income")
+C3_FIELDS = ("revenue", "oper_cost", "sell_exp", "admin_exp",
+             "accounts_receiv", "inventories", "prepayment", "accounts_pay",
+             "adv_receipts", "contract_liab", "total_assets")
+C3_ENDPOINTS = ("balancesheet", "income")
 
 N_SIZE_DECILES = 10
 MAX_MV_STALENESS_DAYS = 20  # trading days; beyond -> drop from fold, counted
@@ -489,7 +497,65 @@ def compute_c1_gpa(asof_frame: pd.DataFrame) -> pd.Series:
     return (f["revenue"] - f["oper_cost"]) / ta
 
 
-CANDIDATE_FORMULAS = {"C1_GPA": (compute_c1_gpa, C1_FIELDS, C1_ENDPOINTS)}
+def compute_c2_prof(asof_frame: pd.DataFrame) -> pd.Series:
+    """C2_PROF (OMIT form, decision (5)) = (revenue - oper_cost - sell_exp
+    - admin_exp - fin_exp) / total_hldr_eqy_inc_min_int. Any input NA ->
+    NA; non-positive equity -> NA (a negative-equity denominator flips
+    the factor's sign — never served)."""
+    for col in C2_FIELDS:
+        if col not in asof_frame.columns:
+            raise EvaluatorError(f"as-of frame lacks field {col!r}.")
+    f = asof_frame[list(C2_FIELDS)].apply(pd.to_numeric, errors="coerce")
+    eq = f["total_hldr_eqy_inc_min_int"].where(
+        f["total_hldr_eqy_inc_min_int"] > 0)
+    return (f["revenue"] - f["oper_cost"] - f["sell_exp"]
+            - f["admin_exp"] - f["fin_exp"]) / eq
+
+
+_C3_DELTA_FIELDS = ("accounts_receiv", "inventories", "prepayment",
+                    "accounts_pay")
+
+
+def compute_c3_cash_op(asof_frame: pd.DataFrame) -> pd.Series:
+    """C3_cash_based_OP = ((revenue - oper_cost - sell_exp - admin_exp)
+    - d(accounts_receiv) - d(inventories) - d(prepayment)
+    + d(accounts_pay) + d(coalesce(adv_receipts, contract_liab)))
+    / total_assets, where d(x) = current minus the CALENDAR-ADJACENT
+    previous report period (both as-of the signal day, prior served via
+    include_prior_period). The coalesce pair is merged PER PERIOD FIRST,
+    then differenced (2020 预收->合同负债 reclassification crosses the
+    pair inside one Δ) and counts as ONE logical input: only a both-NA
+    pair is missing (frozen exception). Any other input or prior-period
+    NA -> factor NA; non-positive total_assets -> NA."""
+    needed = list(C3_FIELDS) + [f"{c}__prior" for c in
+                                _C3_DELTA_FIELDS + ("adv_receipts",
+                                                    "contract_liab")]
+    for col in needed:
+        if col not in asof_frame.columns:
+            raise EvaluatorError(f"as-of frame lacks field {col!r} — C3 "
+                                 "needs include_prior_period=True.")
+    num = asof_frame[needed].apply(pd.to_numeric, errors="coerce")
+    op = (num["revenue"] - num["oper_cost"] - num["sell_exp"]
+          - num["admin_exp"])
+    accrual = op * 0.0
+    for c in _C3_DELTA_FIELDS:
+        sign = 1.0 if c == "accounts_pay" else -1.0
+        accrual = accrual + sign * (num[c] - num[f"{c}__prior"])
+    cur_co = num["adv_receipts"].where(num["adv_receipts"].notna(),
+                                       num["contract_liab"])
+    pri_co = num["adv_receipts__prior"].where(
+        num["adv_receipts__prior"].notna(), num["contract_liab__prior"])
+    accrual = accrual + (cur_co - pri_co)
+    ta = num["total_assets"].where(num["total_assets"] > 0)
+    return (op + accrual) / ta
+
+
+# (formula, view fields, statement endpoints, needs_prior_period)
+CANDIDATE_FORMULAS = {
+    "C1_GPA": (compute_c1_gpa, C1_FIELDS, C1_ENDPOINTS, False),
+    "C2_PROF": (compute_c2_prof, C2_FIELDS, C2_ENDPOINTS, False),
+    "C3_cash_based_OP": (compute_c3_cash_op, C3_FIELDS, C3_ENDPOINTS, True),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
     calendar = StaticTradingCalendar(cal_days)
     view = FinancialPITDataView(args.store_dir, calendar,
                                 financial_issuers=issuers)
-    formula, fields, endpoints = CANDIDATE_FORMULAS[args.candidate]
+    formula, fields, endpoints, needs_prior = CANDIDATE_FORMULAS[args.candidate]
 
     # 4. price/size panel over the dev span — ONE load, routed through the
     # PIT provider (post-delist mask; codex #354 r4 P1).
@@ -679,7 +745,8 @@ def main(argv: list[str] | None = None) -> int:
             n_untradeable = sum(1 for ts in universe if ts in untradeable)
             universe = [ts for ts in universe if ts not in untradeable]
             asof = view.as_of(t_i.isoformat(), list(fields), universe,
-                              include_report_periods=True)
+                              include_report_periods=True,
+                              include_prior_period=needs_prior)
             factor = formula(asof)
             # report-period alignment across endpoints (codex #354 r6 P1):
             # a lagging endpoint (e.g. balancesheet a quarter behind

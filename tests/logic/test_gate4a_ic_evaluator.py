@@ -378,3 +378,63 @@ def test_compute_c1_gpa_value_na_and_nonpositive_denominator():
 def test_compute_c1_gpa_missing_field_fails_loud():
     with pytest.raises(EvaluatorError, match="lacks field"):
         compute_c1_gpa(pd.DataFrame({"revenue": [1.0]}))
+
+
+def test_compute_c2_prof_value_na_and_nonpositive_equity():
+    from scripts.research.gate4a_ic_evaluator import compute_c2_prof
+    frame = pd.DataFrame({
+        "revenue": [100.0, 100.0, float("nan")],
+        "oper_cost": [50.0, 50.0, 50.0],
+        "sell_exp": [10.0, 10.0, 10.0],
+        "admin_exp": [10.0, 10.0, 10.0],
+        "fin_exp": [5.0, 5.0, 5.0],
+        "total_hldr_eqy_inc_min_int": [125.0, -3.0, 125.0],
+    }, index=["ok", "neg_eq", "na_rev"])
+    c2 = compute_c2_prof(frame)
+    assert c2["ok"] == pytest.approx(25.0 / 125.0)
+    assert pd.isna(c2["neg_eq"])   # negative equity never sign-flips
+    assert pd.isna(c2["na_rev"])   # any input NA -> NA
+
+
+def _c3_frame(**over):
+    base = {
+        "revenue": 100.0, "oper_cost": 50.0, "sell_exp": 10.0,
+        "admin_exp": 10.0, "total_assets": 200.0,
+        "accounts_receiv": 20.0, "accounts_receiv__prior": 15.0,
+        "inventories": 10.0, "inventories__prior": 12.0,
+        "prepayment": 3.0, "prepayment__prior": 1.0,
+        "accounts_pay": 8.0, "accounts_pay__prior": 5.0,
+        "adv_receipts": float("nan"), "adv_receipts__prior": 4.0,
+        "contract_liab": 7.0, "contract_liab__prior": float("nan"),
+    }
+    base.update(over)
+    return pd.DataFrame([base], index=["x"])
+
+
+def test_compute_c3_cash_op_value_with_reclass_coalesce():
+    from scripts.research.gate4a_ic_evaluator import compute_c3_cash_op
+    # OP=30; -d(AR)=-5, -d(INV)=+2, -d(PRE)=-2, +d(AP)=+3;
+    # coalesce: cur=contract 7, prior=adv 4 (预收->合同负债 reclass
+    # crosses the pair inside ONE delta) -> +3. total=(30+1)/200.
+    c3 = compute_c3_cash_op(_c3_frame())
+    assert c3["x"] == pytest.approx(31.0 / 200.0)
+
+
+def test_compute_c3_na_paths():
+    from scripts.research.gate4a_ic_evaluator import compute_c3_cash_op
+    # both-NA coalesce pair (current period) = the ONE logical input
+    # missing -> NA (frozen exception: only双 NA 才缺)
+    assert pd.isna(compute_c3_cash_op(
+        _c3_frame(contract_liab=float("nan")))["x"])
+    # a prior-period hole -> NA (prior_period_na_then_factor_na)
+    assert pd.isna(compute_c3_cash_op(
+        _c3_frame(accounts_receiv__prior=float("nan")))["x"])
+    # non-positive total_assets -> NA
+    assert pd.isna(compute_c3_cash_op(_c3_frame(total_assets=0.0))["x"])
+
+
+def test_compute_c3_missing_prior_columns_fail_loud():
+    from scripts.research.gate4a_ic_evaluator import compute_c3_cash_op
+    frame = _c3_frame().drop(columns=["accounts_receiv__prior"])
+    with pytest.raises(EvaluatorError, match="include_prior_period"):
+        compute_c3_cash_op(frame)

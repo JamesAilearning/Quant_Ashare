@@ -143,6 +143,30 @@ entries:
       届时按预注册跑,此处仅如实记录。详见
       docs/research/gate4a_c1_ic_report.md。
 
+  - id: E013
+    date: 2026-07-15
+    type: decision_run_planned
+    ref: C2_PROF_gate4A_dev
+    status: registered_pre_run
+    note: Gate-4A dev 窗 IC 评估,C2_PROF(OMIT 式,决策⑤;利息项 fin_exp)。
+      评估器公式随本条目所在 PR 实现;语义 pin 与 C1 run(E011)完全一致
+      (canonical stamp/lag 1/折内含收益/total_mv 十分位/四层过滤/期对齐/
+      as-of 原值)。点火条件:PR 合并后 gate ACCEPT(候选绑定
+      quality_gate3_dev_c2_prof.yaml)。产出=折级序列供全批 FWER。
+
+  - id: E014
+    date: 2026-07-15
+    type: decision_run_planned
+    ref: C3_cash_based_OP_gate4A_dev
+    status: registered_pre_run
+    note: Gate-4A dev 窗 IC 评估,C3_cash_based_OP。Δ 语义 pin:相邻
+      report_period=日历相邻季末(view include_prior_period 服务,prior
+      record 自身可得性 as-of 检查,期洞→NA 绝不跨期硬差分);coalesce
+      (adv_receipts, contract_liab) 每期先合并再差分,双 NA 才缺(冻结
+      例外);any_input_or_prior_period_na→NA;总资产≤0→NA。其余语义
+      与 E011/E013 一致。点火条件:PR 合并后 gate ACCEPT(候选绑定
+      quality_gate3_dev_c3_cash_op.yaml)。C2/C3 串行点火,绝不并发。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。
