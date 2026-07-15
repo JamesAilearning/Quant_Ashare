@@ -51,6 +51,10 @@ Pinned run semantics (decided at work-order level, echoed in the artifact):
   * Size deciles: total_mv as-of (last value <= t_i, staleness capped at
     MAX_MV_STALENESS_DAYS trading days — beyond that the name is DROPPED
     from that fold and counted, never silently ranked on stale size).
+    DP3 (operator-signed 2026-07-15): an ever-member whose membership
+    overlaps the dev span with ZERO total_mv observations in the panel is
+    a bundle/registry inconsistency -> the run ABORTS naming the members;
+    only transient per-stamp gaps are drop+count.
   * ALL data roots derive from the GATED frozen config chain — the qlib
     bundle (provider_uri), calendar, membership, the namechange snapshot
     (namechange_path) and the delisted registry (delisted_registry_path)
@@ -297,6 +301,48 @@ def misaligned_periods(asof: pd.DataFrame,
     same = sub.nunique(axis=1, dropna=True) <= 1
     result: pd.Series = present & ~same
     return result
+
+
+def assert_total_mv_span_coverage(
+    mv: pd.DataFrame,
+    intervals: list[tuple[str, str, str]],
+    span_start: date,
+    span_end: date,
+) -> None:
+    """DP3 hard-fail (operator-signed 2026-07-15): a CSI300-ever member
+    whose MEMBERSHIP interval overlaps the dev span but has ZERO
+    ``$total_mv`` observations in the loaded panel is a bundle/registry
+    inconsistency — abort the run naming the members, never silently
+    shrink the size cross-section. Members whose intervals end before the
+    span (or begin after it) legitimately have no panel data and are
+    exempt; TRANSIENT per-stamp missing/stale values stay drop+count
+    (unchanged)."""
+    s_iso, e_iso = span_start.isoformat(), span_end.isoformat()
+    holes: list[str] = []
+    for ts, m_start, m_end in intervals:
+        lo, hi = max(m_start, s_iso), min(m_end, e_iso)
+        if lo > hi:
+            continue  # membership never overlaps the dev span
+        col = mv.get(ts)
+        if col is None:
+            holes.append(ts)
+            continue
+        # count observations ONLY inside [membership ∩ dev span] — the
+        # loaded panel carries a pre-span lookback buffer, and a stale
+        # buffer-only value must not mask an in-span data hole (codex
+        # #355 r1 P1: that is exactly the silent-shrink case DP3 aborts).
+        lo_d, hi_d = date.fromisoformat(lo), date.fromisoformat(hi)
+        in_overlap = col.loc[(col.index >= lo_d) & (col.index <= hi_d)]
+        if int(in_overlap.notna().sum()) == 0:
+            holes.append(ts)
+    if holes:
+        shown = ", ".join(sorted(holes)[:10])
+        raise EvaluatorError(
+            f"{len(holes)} CSI300-ever member(s) overlap the dev span but "
+            f"carry ZERO total_mv observations in the bundle panel "
+            f"({shown}{', ...' if len(holes) > 10 else ''}) — "
+            "bundle/registry inconsistency; refusing to run with a "
+            "silently shrunken size cross-section (DP3).")
 
 
 def rebalance_stamps(days: list[date], cadence: int, phase: int
@@ -592,6 +638,10 @@ def main(argv: list[str] | None = None) -> int:
     close, mv = load_price_frames(pit_provider,
                                   sorted(code_map.values()),
                                   _add_months(span_start, -3), end_boundary)
+    # DP3 (operator-signed): span-level total_mv coverage is a hard gate —
+    # an ever-member overlapping the dev span with zero observations
+    # aborts; transient per-stamp gaps stay drop+count.
+    assert_total_mv_span_coverage(mv, intervals, span_start, end_boundary)
     # canonical microstructure mask over the dev span (codex #354 r1 P1):
     # execution-day untradeable names (suspension w/ carried close,
     # one-price lock) must not enter the IC cross-section — the canonical
