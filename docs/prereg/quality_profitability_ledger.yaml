@@ -125,6 +125,24 @@ entries:
       (C1/C2/C3+注册变体)min-统计量 bootstrap,本 run 不设逐候选门槛。
       点火条件:PR 合并后 gate3_prereg_gate ACCEPT(clean tree+时序自证)。
 
+  - id: E012
+    date: 2026-07-15
+    type: decision_run_result
+    ref: C1_GPA_gate4A_dev
+    status: recorded_verbatim
+    note: C1 4A dev run 已点火并完成(gate ACCEPT 于 clean main,plan_commit
+      4d9fab7,冻结包最晚 commit 2026-07-15T09:37:44+08,run 工件
+      output/gate4a/C1_GPA_20260715T140736Z,run_config sha e696b478/57808766)。
+      结果原样:19 dev 折 primary,rank_ic_mean=-0.0392(std 0.2081,
+      t=-0.82,正折 8/19),ic_mean=-0.0366,rank_ic_ir=-0.188,ic_ir=-0.193;
+      尾 stamp 1 个(2020Q3,rank_ic +0.0768)+1 个零视野剔除;截面 233-254
+      名/折;金融排除 120 名;ST 掩码 0/折,微结构掩码 0-1/折,期错位
+      0-2/折。面值阴性输入;逐候选不设门槛,裁决留待全批 FWER
+      (C1/C2/C3+注册变体 min-统计量 bootstrap,t≈2.85)。fold_0(2020Q2,
+      COVID 反弹)rank_ic +0.4131 为最大正折 — exclude_fold_0 属注册切片,
+      届时按预注册跑,此处仅如实记录。详见
+      docs/research/gate4a_c1_ic_report.md。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。

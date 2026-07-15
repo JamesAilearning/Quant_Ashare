@@ -34,19 +34,18 @@
 
 ## Follow-up once DP3 is signed
 
-- [ ] Full-span missing-total_mv hard-fail assertion (+ unit test):
-      lands as PR #355 (membership-overlap semantics, pre-span
-      delistings exempt) — codex r2 CLEAN there, awaiting operator
-      merge; check this box only after #355 is on main.
+- [x] Full-span missing-total_mv hard-fail assertion (+ unit test):
+      PR #355 merged to main (e470c72; membership-overlap semantics,
+      pre-span delistings exempt).
 
 ## Post-merge (run stage, per E011)
 
-- [ ] Gate ACCEPT on clean main with the ACTUAL invocation (codex #356
+- [x] Gate ACCEPT on clean main with the ACTUAL invocation (codex #356
       r1 P2 — `--store-dir` is required):
       `python scripts/research/gate3_prereg_gate.py --candidate C1_GPA
       --store-dir D:/qlib_data/financial_pit_raw
       --run-config config/presets/quality_gate3_dev_c1_gpa.yaml`
-- [ ] Fire the C1 4A dev run (single process, nothing concurrent);
-      archive artifacts.
-- [ ] Ledger E012 post-run entry (results verbatim) + results-doc PR
-      under docs/research/.
+- [x] Fire the C1 4A dev run (single process, nothing concurrent);
+      archive artifacts: output/gate4a/C1_GPA_20260715T140736Z.
+- [x] Ledger E012 post-run entry (results verbatim) + results-doc
+      docs/research/gate4a_c1_ic_report.md (this PR).
