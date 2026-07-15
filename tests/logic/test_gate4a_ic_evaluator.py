@@ -130,21 +130,34 @@ def test_total_mv_span_coverage_hard_fails_on_bins_less_member():
     from scripts.research.gate4a_ic_evaluator import (
         assert_total_mv_span_coverage,
     )
-    cal = _calendar(10, start=date(2020, 4, 1))
+    # panel includes a PRE-SPAN lookback buffer (2020-01..) before the
+    # span start 2020-04-01 — buffer-only values must not mask holes.
+    cal = _calendar(120, start=date(2020, 1, 1))
     mv = pd.DataFrame(index=cal)
     mv["alive.SZ"] = 100.0
     mv["hole.SZ"] = float("nan")          # column exists, all-NaN
+    mv["buffer_only.SZ"] = float("nan")   # ONLY a stale pre-span value:
+    mv.loc[date(2020, 1, 15), "buffer_only.SZ"] = 50.0
     intervals = [
         ("alive.SZ", "2016-01-01", "2099-12-31"),
         ("hole.SZ", "2019-01-01", "2099-12-31"),      # overlaps -> hard fail
         ("absent.SZ", "2020-01-01", "2099-12-31"),    # no column -> hard fail
+        ("buffer_only.SZ", "2016-01-01", "2099-12-31"),  # in-span ZERO -> fail
         ("gone.SZ", "2016-01-01", "2017-01-26"),      # pre-span delist: exempt
     ]
     with pytest.raises(EvaluatorError, match="ZERO total_mv") as ei:
         assert_total_mv_span_coverage(mv, intervals,
                                       date(2020, 4, 1), date(2024, 12, 31))
     assert "hole.SZ" in str(ei.value) and "absent.SZ" in str(ei.value)
+    assert "buffer_only.SZ" in str(ei.value)   # codex #355 r1 P1
     assert "gone.SZ" not in str(ei.value)
+    # a mid-span joiner with data only inside its own overlap window passes
+    mv2 = pd.DataFrame(index=cal)
+    mv2["late.SZ"] = float("nan")
+    mv2.loc[date(2020, 4, 20), "late.SZ"] = 70.0
+    assert_total_mv_span_coverage(
+        mv2, [("late.SZ", "2020-04-15", "2099-12-31")],
+        date(2020, 4, 1), date(2024, 12, 31))
     # healthy panel (exempt member removed of concern) passes
     assert_total_mv_span_coverage(
         mv, [("alive.SZ", "2016-01-01", "2099-12-31"),

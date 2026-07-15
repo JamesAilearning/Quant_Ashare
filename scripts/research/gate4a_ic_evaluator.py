@@ -320,10 +320,20 @@ def assert_total_mv_span_coverage(
     s_iso, e_iso = span_start.isoformat(), span_end.isoformat()
     holes: list[str] = []
     for ts, m_start, m_end in intervals:
-        if m_end < s_iso or m_start > e_iso:
+        lo, hi = max(m_start, s_iso), min(m_end, e_iso)
+        if lo > hi:
             continue  # membership never overlaps the dev span
         col = mv.get(ts)
-        if col is None or int(col.notna().sum()) == 0:
+        if col is None:
+            holes.append(ts)
+            continue
+        # count observations ONLY inside [membership ∩ dev span] — the
+        # loaded panel carries a pre-span lookback buffer, and a stale
+        # buffer-only value must not mask an in-span data hole (codex
+        # #355 r1 P1: that is exactly the silent-shrink case DP3 aborts).
+        lo_d, hi_d = date.fromisoformat(lo), date.fromisoformat(hi)
+        in_overlap = col.loc[(col.index >= lo_d) & (col.index <= hi_d)]
+        if int(in_overlap.notna().sum()) == 0:
             holes.append(ts)
     if holes:
         shown = ", ".join(sorted(holes)[:10])
