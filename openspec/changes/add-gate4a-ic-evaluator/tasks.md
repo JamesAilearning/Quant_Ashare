@@ -34,8 +34,10 @@
 
 ## Follow-up once DP3 is signed
 
-- [x] Full-span missing-total_mv hard-fail assertion (+ unit test):
-      PR #355 (membership-overlap semantics, pre-span delistings exempt).
+- [ ] Full-span missing-total_mv hard-fail assertion (+ unit test):
+      lands as PR #355 (membership-overlap semantics, pre-span
+      delistings exempt) — codex r2 CLEAN there, awaiting operator
+      merge; check this box only after #355 is on main.
 
 ## Post-merge (run stage, per E011)
 

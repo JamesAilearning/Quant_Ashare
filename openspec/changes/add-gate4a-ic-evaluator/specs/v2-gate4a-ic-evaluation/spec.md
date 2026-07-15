@@ -95,8 +95,11 @@ The size ranking SHALL use `$total_mv` from the canonical PIT bundle:
 the last available value at a trading date <= the signal day, no older
 than 20 trading days (DP1). Names beyond the cap or without a usable
 value SHALL be dropped from that stamp and counted. A CSI300-ever member
-with ZERO total_mv observations across the entire dev span SHALL abort
-the run (DP3 — bundle/registry inconsistency, never a silent shrink).
+whose MEMBERSHIP interval overlaps the dev span but which has ZERO
+total_mv observations inside that overlap SHALL abort the run (DP3 —
+bundle/registry inconsistency, never a silent shrink); members whose
+intervals never overlap the span (e.g. pre-span delistings) legitimately
+have no panel data and are exempt.
 The signal SHALL be the factor's rank within its size decile, using only
 data available on the signal day (as_of_or_earlier_only).
 
@@ -105,10 +108,15 @@ data available on the signal day (as_of_or_earlier_only).
   a signal day
 - **THEN** the name is dropped from that stamp's deciles and counted
 
-#### Scenario: a bins-less ever-member aborts
-- **WHEN** a CSI300-ever member has no total_mv observation anywhere in
-  the dev span panel
+#### Scenario: a bins-less overlapping member aborts
+- **WHEN** a CSI300-ever member's membership interval overlaps the dev
+  span but the panel has no total_mv observation inside that overlap
 - **THEN** the run fails loud naming the member
+
+#### Scenario: a pre-span delisting is exempt
+- **WHEN** an ever-member's membership interval ends before the dev span
+  begins
+- **THEN** its absence from the panel does not abort the run
 
 ### Requirement: All data roots SHALL derive from the gated frozen config chain
 
