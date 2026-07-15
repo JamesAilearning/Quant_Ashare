@@ -124,6 +124,34 @@ def test_size_deciles_refuses_sliver_cross_section():
         size_deciles_asof(mv, cal[-1], codes, cal)
 
 
+def test_total_mv_span_coverage_hard_fails_on_bins_less_member():
+    # DP3: membership overlaps the span but the panel has NO observation
+    # -> bundle/registry inconsistency, run must abort naming the member.
+    from scripts.research.gate4a_ic_evaluator import (
+        assert_total_mv_span_coverage,
+    )
+    cal = _calendar(10, start=date(2020, 4, 1))
+    mv = pd.DataFrame(index=cal)
+    mv["alive.SZ"] = 100.0
+    mv["hole.SZ"] = float("nan")          # column exists, all-NaN
+    intervals = [
+        ("alive.SZ", "2016-01-01", "2099-12-31"),
+        ("hole.SZ", "2019-01-01", "2099-12-31"),      # overlaps -> hard fail
+        ("absent.SZ", "2020-01-01", "2099-12-31"),    # no column -> hard fail
+        ("gone.SZ", "2016-01-01", "2017-01-26"),      # pre-span delist: exempt
+    ]
+    with pytest.raises(EvaluatorError, match="ZERO total_mv") as ei:
+        assert_total_mv_span_coverage(mv, intervals,
+                                      date(2020, 4, 1), date(2024, 12, 31))
+    assert "hole.SZ" in str(ei.value) and "absent.SZ" in str(ei.value)
+    assert "gone.SZ" not in str(ei.value)
+    # healthy panel (exempt member removed of concern) passes
+    assert_total_mv_span_coverage(
+        mv, [("alive.SZ", "2016-01-01", "2099-12-31"),
+             ("gone.SZ", "2016-01-01", "2017-01-26")],
+        date(2020, 4, 1), date(2024, 12, 31))
+
+
 def test_within_decile_rank_is_per_decile_and_unit_interval():
     factor = pd.Series({"a": 10.0, "b": 20.0, "c": 1.0, "d": 2.0,
                         "e": float("nan")})
