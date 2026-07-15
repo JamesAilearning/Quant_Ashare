@@ -167,6 +167,34 @@ entries:
       与 E011/E013 一致。点火条件:PR 合并后 gate ACCEPT(候选绑定
       quality_gate3_dev_c3_cash_op.yaml)。C2/C3 串行点火,绝不并发。
 
+  - id: E015
+    date: 2026-07-15
+    type: decision_run_result
+    ref: C2_PROF_gate4A_dev
+    status: recorded_verbatim
+    note: C2 4A dev run 完成(gate ACCEPT@clean main,冻结包最晚 commit
+      2026-07-15T23:12:39+08,工件 output/gate4a/C2_PROF_20260715T151441Z,
+      stub sha 4bb195a0)。结果原样:19 折 rank_ic_mean=-0.0414(std 0.1469,
+      t=-1.23,正折 6/19),ic_mean=-0.0392,rank_ic_ir=-0.281,ic_ir=-0.297;
+      尾 stamp 1(-0.0019)+1 零视野剔除;截面 230-251;期错位 0-2/折。
+      面值阴性输入,裁决留待全批 FWER。详见
+      docs/research/gate4a_c2_ic_report.md。
+
+  - id: E016
+    date: 2026-07-15
+    type: decision_run_result
+    ref: C3_cash_based_OP_gate4A_dev
+    status: recorded_verbatim
+    note: C3 4A dev run 完成(gate ACCEPT 同上,工件
+      output/gate4a/C3_cash_based_OP_20260715T151551Z,stub sha 1fa85aca)。
+      结果原样:19 折 rank_ic_mean=-0.0252(std 0.1757,t=-0.62,正折
+      7/19),ic_mean=-0.0256,rank_ic_ir=-0.143,ic_ir=-0.162;尾 stamp 1
+      (+0.0077)+1 零视野剔除;截面 222-247(相邻期要求仅损耗个位数名,
+      Δ 覆盖健康);期错位 0-2/折。面值阴性输入,裁决留待全批 FWER。
+      三候选折级符号高度同向(盈利质量族共性),fold_0(2020Q2)三者均
+      为最大正折(+0.41/+0.33/+0.38)— exclude_fold_0 注册切片届时按
+      预注册跑。详见 docs/research/gate4a_c3_ic_report.md。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。
