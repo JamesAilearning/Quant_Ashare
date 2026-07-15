@@ -375,3 +375,71 @@ def test_as_of_report_period_metadata_cross_endpoint(tmp_path):
     # default call: NO metadata columns (byte-compatible output)
     plain = v.as_of("2022-05-05", ["revenue", "total_assets"], ["000001.SZ"])
     assert [c for c in plain.columns if c.startswith("_report_period")] == []
+
+
+def test_previous_quarter_end_math_and_fail_loud():
+    from src.research.financial_pit_view import previous_quarter_end
+    assert previous_quarter_end(date(2022, 3, 31)) == date(2021, 12, 31)
+    assert previous_quarter_end(date(2022, 6, 30)) == date(2022, 3, 31)
+    assert previous_quarter_end(date(2022, 9, 30)) == date(2022, 6, 30)
+    assert previous_quarter_end(date(2022, 12, 31)) == date(2022, 9, 30)
+    with pytest.raises(FinancialPITViewError, match="quarter end"):
+        previous_quarter_end(date(2022, 5, 15))
+    with pytest.raises(FinancialPITViewError, match="not a date"):
+        previous_quarter_end("20220331")
+
+
+def test_as_of_prior_period_service(tmp_path):
+    """include_prior_period serves the CALENDAR-ADJACENT previous quarter's
+    record (its OWN availability respected); a hole or late-announced prior
+    yields NA — never a silent diff across a skipped quarter. Default output
+    unchanged."""
+    bs = tmp_path / "balancesheet"
+    bs.mkdir(parents=True)
+
+    def _bs(ts, end, ann, **vals):
+        return {"ts_code": ts, "end_date": end, "ann_date": ann,
+                "f_ann_date": ann, "update_flag": "0",
+                "_content_hash": f"h{ts}{end}", "_fetch_batch": "b1",
+                "_source_endpoint": "balancesheet",
+                "total_assets": vals.get("total_assets", pd.NA),
+                "accounts_receiv": vals.get("accounts_receiv", pd.NA)}
+
+    # normal: Q4-2021 + Q1-2022 both timely announced
+    pd.DataFrame([
+        _bs("000001.SZ", "20211231", "20220331", total_assets=500.0,
+            accounts_receiv=15.0),
+        _bs("000001.SZ", "20220331", "20220429", total_assets=520.0,
+            accounts_receiv=20.0),
+    ]).to_parquet(bs / "000001.SZ.parquet", index=False)
+    # hole: ONLY Q1-2022 (adjacent Q4-2021 missing entirely)
+    pd.DataFrame([
+        _bs("000004.SZ", "20220331", "20220429", total_assets=300.0),
+    ]).to_parquet(bs / "000004.SZ.parquet", index=False)
+    # late prior: Q4-2021 announced AFTER the query day (own availability!)
+    pd.DataFrame([
+        _bs("000005.SZ", "20211231", "20220601", total_assets=999.0),
+        _bs("000005.SZ", "20220331", "20220429", total_assets=310.0),
+    ]).to_parquet(bs / "000005.SZ.parquet", index=False)
+
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+    got = v.as_of("2022-05-05", ["total_assets", "accounts_receiv"],
+                  ["000001.SZ", "000004.SZ", "000005.SZ"],
+                  include_prior_period=True)
+    # normal: prior = the Q4-2021 record's values
+    assert got.loc["000001.SZ", "total_assets"] == 520.0
+    assert got.loc["000001.SZ", "total_assets__prior"] == 500.0
+    assert got.loc["000001.SZ", "accounts_receiv__prior"] == 15.0
+    assert got.loc["000001.SZ",
+                   "_report_period_prior__balancesheet"] == "20211231"
+    # hole at the adjacent period -> prior NA
+    assert pd.isna(got.loc["000004.SZ", "total_assets__prior"])
+    assert pd.isna(got.loc["000004.SZ",
+                           "_report_period_prior__balancesheet"])
+    # prior exists but its OWN availability is after the query day -> NA
+    assert got.loc["000005.SZ", "total_assets"] == 310.0
+    assert pd.isna(got.loc["000005.SZ", "total_assets__prior"])
+    # default call: no __prior columns (byte-compatible)
+    plain = v.as_of("2022-05-05", ["total_assets"], ["000001.SZ"])
+    assert [c for c in plain.columns if "__prior" in c or
+            c.startswith("_report_period_prior")] == []

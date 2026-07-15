@@ -124,6 +124,29 @@ def financial_issuers_from_industry(
     return frozenset(stock_basic.loc[mask, "ts_code"].astype(str))
 
 
+def previous_quarter_end(period: object) -> date:
+    """The CALENDAR-ADJACENT previous CN quarter end (Δ-formulas'
+    相邻 report_period): 03-31 -> prior-year 12-31; 06-30 -> 03-31;
+    09-30 -> 06-30; 12-31 -> 09-30. Anything that is not a quarter end
+    is store corruption — fail loud, never guess an adjacency."""
+    if not isinstance(period, date):
+        raise FinancialPITViewError(
+            f"report_period {period!r} is not a date — cannot derive the "
+            "adjacent previous quarter.")
+    md = (period.month, period.day)
+    if md == (3, 31):
+        return date(period.year - 1, 12, 31)
+    if md == (6, 30):
+        return date(period.year, 3, 31)
+    if md == (9, 30):
+        return date(period.year, 6, 30)
+    if md == (12, 31):
+        return date(period.year, 9, 30)
+    raise FinancialPITViewError(
+        f"report_period {period} is not a CN quarter end — refusing to "
+        "derive an adjacent period from a malformed period.")
+
+
 class FinancialPITDataView:
     """Sole research-side PIT accessor for financial statements.
 
@@ -174,6 +197,7 @@ class FinancialPITDataView:
         instruments: Sequence[str],
         *,
         include_report_periods: bool = False,
+        include_prior_period: bool = False,
     ) -> pd.DataFrame:
         """PIT-correct financial values as-of ``trade_date``.
 
@@ -191,6 +215,17 @@ class FinancialPITDataView:
         must check these to enforce report-period alignment instead of
         silently mixing quarters (codex #354 r6 P1). The default (False)
         output is unchanged.
+
+        ``include_prior_period=True`` additionally serves, per queried
+        endpoint, the disclosure-of-record of the CALENDAR-ADJACENT
+        previous quarter-end of the SERVED period (needed by Δ-formulas
+        like C3's accrual terms — 相邻 report_period 之差): one
+        ``<field>__prior`` column per requested field plus
+        ``_report_period_prior__<endpoint>`` metadata. PIT-correct: the
+        prior record is served only if ITS OWN availability day <= the
+        trade date; a hole at the adjacent period (or an unavailable
+        record) yields NA — never a silent diff across a skipped quarter.
+        The default (False) output is unchanged.
         """
         _require_collection(fields, "fields")
         _require_collection(instruments, "instruments")
@@ -207,6 +242,10 @@ class FinancialPITDataView:
         out_columns = list(fields)
         if include_report_periods:
             out_columns += [f"_report_period__{e}" for e in sorted(by_endpoint)]
+        if include_prior_period:
+            out_columns += [f"{f}__prior" for f in fields]
+            out_columns += [f"_report_period_prior__{e}"
+                            for e in sorted(by_endpoint)]
 
         rows: dict[str, dict[str, Any]] = {}
         for raw_ts in instruments:
@@ -228,6 +267,24 @@ class FinancialPITDataView:
                         pd.NA if (period is None or pd.isna(period))
                         else str(period)
                     )
+                if include_prior_period:
+                    prior: pd.Series | None = None
+                    prev_period: date | None = None
+                    if latest is not None:
+                        prev_period = previous_quarter_end(
+                            latest.get(REPORT_PERIOD))
+                        prior = self._record_for_period(
+                            ts, endpoint, prev_period, td)
+                    for f in endpoint_fields:
+                        if prior is None:
+                            row[f"{f}__prior"] = pd.NA
+                        else:
+                            v = prior.get(f)
+                            row[f"{f}__prior"] = (
+                                pd.NA if (v is None or pd.isna(v)) else v)
+                    row[f"_report_period_prior__{endpoint}"] = (
+                        pd.NA if (prior is None or prev_period is None)
+                        else prev_period.strftime("%Y%m%d"))
             rows[ts] = row
         if not rows:
             # every requested instrument was financial-excluded (or the list was
@@ -332,6 +389,29 @@ class FinancialPITDataView:
         # the LATEST already-available report period (its disclosure of record),
         # held forward — not a fill, not a stale fall-back to an older period.
         return avail.sort_values(REPORT_PERIOD).iloc[-1]
+
+    def _record_for_period(
+        self, ts_code: str, endpoint: str, period: date, td: date,
+    ) -> pd.Series | None:
+        """The disclosure of record for EXACTLY ``period`` if its own
+        availability day is <= ``td``, else None. Used by
+        ``include_prior_period``: a hole at the adjacent period yields NA
+        downstream — never a silent diff across a skipped quarter. Charter
+        column validation already ran on the current-period fetch in the
+        same ``as_of`` call (the prior fetch only happens when a current
+        record was served)."""
+        disclosure = self._disclosure_frame(ts_code, endpoint)
+        if disclosure is None or disclosure.empty:
+            return None
+        hit = disclosure[
+            (disclosure[REPORT_PERIOD] == period)
+            & disclosure[AVAILABLE_FROM].map(
+                lambda d: d is not None and d <= td,
+            )
+        ]
+        if hit.empty:
+            return None
+        return hit.iloc[0]
 
     def _ever_reports(self, ts_code: str, endpoint: str, field: str) -> bool | None:
         """True/False whether the instrument ever discloses ``field`` (any
