@@ -39,8 +39,11 @@
 
 ## Post-merge (run stage, per E011)
 
-- [ ] `gate3_prereg_gate --candidate C1_GPA --run-config
-      config/presets/quality_gate3_dev_c1_gpa.yaml` ACCEPT on clean main.
+- [ ] Gate ACCEPT on clean main with the ACTUAL invocation (codex #356
+      r1 P2 — `--store-dir` is required):
+      `python scripts/research/gate3_prereg_gate.py --candidate C1_GPA
+      --store-dir D:/qlib_data/financial_pit_raw
+      --run-config config/presets/quality_gate3_dev_c1_gpa.yaml`
 - [ ] Fire the C1 4A dev run (single process, nothing concurrent);
       archive artifacts.
 - [ ] Ledger E012 post-run entry (results verbatim) + results-doc PR
