@@ -9,6 +9,8 @@ class from AGENTS.md):
                    even in line-tolerant merge mode (codex #364 r5).
   rename+extract — R target + A helper reconstructed from the rename
                    residual and certified strict (codex #364 r5).
+  merge / mixed  — MODIFIED destination's own base subtracted; strict
+                   proof survives an A+M union (codex #364 r6).
   AST: except    — newly added broad `except Exception` flagged
                    (walk_forward _run_attribution_for_fold incident).
   AST: signature — dropped keyword-only marker / swapped params flagged.
@@ -77,17 +79,27 @@ def test_lost_frozen_dataclass_decorator_flagged():
     assert any("DECORATOR drift" in f and "Config" in f for f in findings)
 
 
-def test_added_decorator_flagged_even_in_merge_mode():
+def test_added_decorator_flagged():
     # codex #364 r5 P1: @cache added on a moved function is a behavior
-    # change; the AST layer must fail it even where merge mode tolerates
-    # ONLY-IN-NEW lines.
+    # change — AST DECORATOR drift, same severity as a lost decorator.
     from scripts.verify_mechanical_move import _verify_one
     new = _OLD.replace("def run(a, *, flag=False):",
                        "@cache\ndef run(a, *, flag=False):")
     findings = compare_module_texts(_OLD, new)
     assert any("DECORATOR drift" in f and "run" in f for f in findings)
-    assert _verify_one("merge-with-cache", _OLD, [new],
-                       fail_on_only_new=False) == 1
+    assert _verify_one("with-cache", _OLD, [(new, None)]) == 1
+
+
+def test_decorator_shuffle_caught_by_ast_when_line_layer_blind():
+    # the merge base already contains an identical `@cache` row that the
+    # destination moved onto the migrated function — the line-layer
+    # delta cancels exactly, so only the AST layer can catch the drift.
+    from scripts.verify_mechanical_move import _verify_one
+    base = "@cache\ndef preexisting(z):\n    return z * 2\n"
+    merged = (_OLD.replace("def run(a, *, flag=False):",
+                           "@cache\ndef run(a, *, flag=False):")
+              + "\n\ndef preexisting(z):\n    return z * 2\n")
+    assert _verify_one("cache-shuffle", _OLD, [(merged, base)]) == 1
 
 
 def test_new_broad_except_flagged():
@@ -141,8 +153,8 @@ def test_rename_plus_extract_residual_matches_helper():
         residual, {"helpers.py": helper_part,
                    "unrelated.py": "def other():\n    return 1\n"})
     assert dests == ["helpers.py"]
-    assert _verify_one("rename+extract", _OLD, [main_part, helper_part],
-                       fail_on_only_new=True) == 0
+    assert _verify_one("rename+extract", _OLD,
+                       [(main_part, None), (helper_part, None)]) == 0
 
 
 def test_find_split_destinations_genuine_deletion_matches_nothing():
@@ -164,19 +176,44 @@ def test_split_with_duplicate_future_imports_certifies_clean():
     assert cmt(old, [p1, p2]) == []
 
 
-def test_verify_one_merge_move_tolerates_preexisting_lines():
-    # codex #364 r4 P2: a merge destination is a MODIFIED existing module;
-    # its pre-existing lines are expected ONLY-IN-NEW, not drift — but
-    # lost lines / AST findings still fail.
+def test_merge_destination_base_subtracted():
+    # codex #364 r4+r6: a merge destination is a MODIFIED existing
+    # module; its OWN base lines are subtracted (never blanket-tolerated)
+    # — clean merge passes, lost lines still fail, and without the base
+    # the pre-existing lines correctly read as drift.
     from scripts.verify_mechanical_move import _verify_one
-    merged = _OLD + "\n\ndef preexisting(z):\n    return z * 2\n"
-    assert _verify_one("merge", _OLD, [merged],
-                       fail_on_only_new=False) == 0
-    assert _verify_one("rename", _OLD, [merged],
-                       fail_on_only_new=True) == 1
+    base = "def preexisting(z):\n    return z * 2\n"
+    merged = _OLD + "\n\n" + base
+    assert _verify_one("merge", _OLD, [(merged, base)]) == 0
+    assert _verify_one("rename", _OLD, [(merged, None)]) == 1
     lossy = merged.replace("def helper(x):\n    return x + 1\n", "")
-    assert _verify_one("lossy-merge", _OLD, [lossy],
-                       fail_on_only_new=False) == 1
+    assert _verify_one("lossy-merge", _OLD, [(lossy, base)]) == 1
+
+
+def test_mixed_merge_keeps_fresh_destination_strict():
+    # codex #364 r6 P1: union of a MODIFIED merge destination and a
+    # fresh ADDED file — a side effect smuggled into the FRESH file must
+    # still fail; only the modified file's own base is subtracted.
+    from scripts.verify_mechanical_move import _verify_one
+    base = "def preexisting(z):\n    return z * 2\n"
+    merged = base + "\n\ndef helper(x):\n    return x + 1\n"
+    clean_fresh = _OLD.replace("def helper(x):\n    return x + 1\n", "")
+    assert _verify_one("mixed-clean", _OLD,
+                       [(clean_fresh, None), (merged, base)]) == 0
+    sneaky = clean_fresh + "\nSNEAKY_SIDE_EFFECT = object()\n"
+    assert _verify_one("mixed-sneaky", _OLD,
+                       [(sneaky, None), (merged, base)]) == 1
+
+
+def test_merge_base_broad_except_not_counted_as_new():
+    # a merge destination whose BASE already had a broad handler must not
+    # read as a newly added one (base-delta accounting, codex #364 r6).
+    base = ("def legacy(q):\n    try:\n        return q\n"
+            "    except Exception:\n        return None\n")
+    merged = _OLD + "\n\n" + base
+    assert compare_module_texts(_OLD, [merged], base_texts=[base]) == []
+    assert any("NEW broad except" in f
+               for f in compare_module_texts(_OLD, [merged]))
 
 
 def test_unparsable_input_fails_loud():
