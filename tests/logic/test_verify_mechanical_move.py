@@ -230,6 +230,24 @@ def test_find_split_destinations_genuine_deletion_matches_nothing():
     assert find_split_destinations(_OLD, added) == []
 
 
+def test_genuine_deletion_probed_against_modified_delta_not_full_text():
+    # codex #364 r11 P2: an unrelated MODIFIED file whose BASE already
+    # shares two rows with a deleted 3-row helper — probing full text
+    # fakes split coverage (then base subtraction fails the "move");
+    # probing the base-subtracted delta reports a genuine deletion.
+    from scripts.verify_mechanical_move import (
+        filtered_lines,
+        find_split_destinations,
+    )
+    deleted = "def tiny(q):\n    setup()\n    log()\n"
+    base = "def other(w):\n    setup()\n    log()\n    return w\n"
+    modified = base + "\n\ndef added(v):\n    return v\n"
+    assert find_split_destinations(
+        deleted, {"mod.py": modified}) == ["mod.py"]   # the hazard
+    delta = filtered_lines(modified) - filtered_lines(base)
+    assert find_split_destinations(deleted, {"mod.py": delta}) == []
+
+
 def test_split_with_duplicate_future_imports_certifies_clean():
     # codex #364 r4 P2: each destination legally starts with
     # `from __future__ import annotations`; concatenation would be a

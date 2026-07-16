@@ -41,6 +41,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -223,13 +224,17 @@ SPLIT_COVERAGE_THRESHOLD = 0.5
 
 
 def find_split_destinations(old_text: str | Counter[str],
-                            added: dict[str, str],
+                            added: Mapping[str, str | Counter[str]],
                             min_coverage: float = SPLIT_COVERAGE_THRESHOLD,
                             ) -> list[str]:
-    """Added-file names whose filtered lines overlap the deleted module,
-    when their UNION covers >= ``min_coverage`` of it; else [] (genuine
-    deletion). Accepts either the module text or a precomputed filtered
-    Counter (the rename-RESIDUAL case, codex #364 r5 P1). Per-file noise
+    """Candidate-file names whose filtered lines overlap the deleted
+    module, when their UNION covers >= ``min_coverage`` of it; else []
+    (genuine deletion). Both sides accept raw text or a precomputed
+    filtered Counter: pass the rename RESIDUAL as ``old_text`` (codex
+    #364 r5 P1) and a MODIFIED destination's base-subtracted DELTA as its
+    candidate value — probing a modified file's FULL text lets its
+    pre-existing base lines fake split coverage and turn a genuine
+    deletion into a failing merge (codex #364 r11 P2). Per-file noise
     floor: >= 2 overlapping lines (a real extracted helper can be that
     small; under-matching is still LOUD — the missed destination's lines
     surface as ONLY-IN-OLD drift — but auto-matching verifies the split
@@ -239,16 +244,18 @@ def find_split_destinations(old_text: str | Counter[str],
     total = sum(old_lines.values())
     if total == 0:
         return []
+    cand_lines = {name: (v if isinstance(v, Counter) else filtered_lines(v))
+                  for name, v in added.items()}
     candidates: list[str] = []
-    for name, text in sorted(added.items()):
-        overlap = sum((old_lines & filtered_lines(text)).values())
+    for name in sorted(cand_lines):
+        overlap = sum((old_lines & cand_lines[name]).values())
         if overlap >= 2:
             candidates.append(name)
     if not candidates:
         return []
     union: Counter[str] = Counter()
     for name in candidates:
-        union.update(filtered_lines(added[name]))
+        union.update(cand_lines[name])
     coverage = sum((old_lines & union).values()) / total
     return candidates if coverage >= min_coverage else []
 
@@ -360,6 +367,14 @@ def main(argv: list[str] | None = None) -> int:
         # during verification (codex #364 r6 P1) — fresh files get None.
         base_of = {p: _git("show", f"{args.base}:{p}")
                    for p in modified if p in dest_texts}
+        # candidate PROBING uses a modified file's base-subtracted DELTA
+        # (full text for fresh files): pre-existing base lines must not
+        # fake split coverage and turn a genuine deletion into a failing
+        # merge (codex #364 r11 P2). Verification keeps full text + base.
+        probe_of: dict[str, str | Counter[str]] = {
+            p: (filtered_lines(t) - filtered_lines(base_of[p])
+                if p in base_of else t)
+            for p, t in dest_texts.items()}
         for old_path, new_path in pairs:
             if not new_path.endswith(".py"):
                 continue
@@ -379,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
             # (codex #364 r10).
             extras = (find_split_destinations(
                           residual,
-                          {k: v for k, v in dest_texts.items()
+                          {k: v for k, v in probe_of.items()
                            if k != new_path})
                       if residual else [])
             if extras:
@@ -406,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         # (codex #364 r6 P1).
         for old_path in deleted:
             old_text = _git("show", f"{args.base}:{old_path}")
-            dests = find_split_destinations(old_text, dest_texts)
+            dests = find_split_destinations(old_text, probe_of)
             if dests:
                 kind = ("split" if all(d in added_set for d in dests)
                         else "split/merge")
