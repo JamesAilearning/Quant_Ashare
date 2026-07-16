@@ -372,7 +372,15 @@ def main(argv: list[str] | None = None) -> int:
             # split fails as ONLY-IN-OLD (and never reaches the
             # deleted-file handling below).
             residual = filtered_lines(old_text) - filtered_lines(new_text)
-            extras = (find_split_destinations(residual, dest_texts)
+            # the rename target must never be its own residual candidate
+            # (self-double-count -> false ONLY-IN-NEW). R targets do not
+            # enter dest_texts today, but that invariant lived far away
+            # in _detect_renames' classification — enforce it locally
+            # (codex #364 r10).
+            extras = (find_split_destinations(
+                          residual,
+                          {k: v for k, v in dest_texts.items()
+                           if k != new_path})
                       if residual else [])
             if extras:
                 kind = ("rename+extract"

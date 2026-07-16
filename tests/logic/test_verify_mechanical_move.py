@@ -199,6 +199,31 @@ def test_rename_plus_extract_residual_matches_helper():
                        [(main_part, None), (helper_part, None)]) == 0
 
 
+def test_rename_target_excluded_from_residual_candidates():
+    # codex #364 r10: two functions sharing duplicate call rows — an
+    # UNFILTERED candidate map would pull the rename target itself in as
+    # an extra (self-double-count -> false ONLY-IN-NEW); the call site
+    # excludes new_path, and the reconstructed verify stays clean.
+    from scripts.verify_mechanical_move import (
+        _verify_one,
+        filtered_lines,
+        find_split_destinations,
+    )
+    fa = "def a():\n    setup()\n    log()\n    return 1\n"
+    fb = "def b():\n    setup()\n    log()\n    return 2\n"
+    old = fa + "\n\n" + fb
+    residual = filtered_lines(old) - filtered_lines(fa)
+    hazard = find_split_destinations(
+        residual, {"main.py": fa, "helpers.py": fb})
+    assert "main.py" in hazard   # the hazard is real when unfiltered
+    assert find_split_destinations(
+        residual, {"helpers.py": fb}) == ["helpers.py"]
+    assert _verify_one("rename+extract", old,
+                       [(fa, None), (fb, None)]) == 0
+    assert _verify_one("self-double-count", old,
+                       [(fa, None), (fb, None), (fa, None)]) == 1
+
+
 def test_find_split_destinations_genuine_deletion_matches_nothing():
     from scripts.verify_mechanical_move import find_split_destinations
     added = {"unrelated.py": "def totally_new():\n    return 'x'\n"}
