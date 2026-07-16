@@ -24,6 +24,12 @@
 （日历尾 2026-06-17）；两 run 串行、`Metric Status: official`、
 `qlib.backtest.backtest` 路径。
 
+**证据侧车**：[`csi800_probe_evidence.json`](csi800_probe_evidence.json)
+（随本简报入库）——两 run 的**解析后配置全量键**（独立证实"唯二变量"
+断言）、official_metrics / IC summary 原样、sleeve 分解数字、run 工件
+SHA256 锚定（run 目录本体在 gitignored `output/runs/`，以哈希与 run id
+可独立核对）、基准注册表与 PR-J 警告原文。
+
 ## 2. 头条底数（test 窗年化，超额对各自 canonical TR 基准）
 
 | 指标 | csi300（A） | csi800（B） |
@@ -77,8 +83,12 @@
 
 ## 5. 机制实证（顺带验证 Step 1-3 交付链）
 
-- Run B 消费 `SH000906TR` 且 LOAD-time 检查零警告（per-universe canonical
-  配对生效，#365）；价格兄弟缺席按 PR-J 语义降级为 skipped 交叉核对。
+- Run B 消费 `SH000906TR`，**canonical 配对维度零警告**（日志无
+  `MIS-PAIRED` / `NOT one of the canonical` 行——#365 的 universe-aware
+  配对检查静默通过）。值级校验的**两条预期警告**照常出现（面包屑
+  必响的 consume-time 检查 + 价格兄弟 `SH000906` 缺席的 "cross-check
+  skipped"，均为 PR-J 设计内行为，原文录 evidence 侧车）——机制证据
+  应区分这两层，配对静默 ≠ 全程无警告。
 - sleeve loader 真实 bundle 解析 300+500=800 零重叠、越界 as-of 拒绝
   （#366 双层守卫生效）。
 
