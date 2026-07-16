@@ -51,11 +51,20 @@ from src.data.tushare.client import TushareClient, TushareClientError  # noqa: E
 
 _logger = get_logger("src.scripts.data_pipeline.ingest_benchmark")
 
-# tushare index code -> qlib instrument name. The total-return index is the
-# canonical benchmark; the price index is kept for reference / comparison.
+# tushare index code -> qlib instrument name. Every PER-UNIVERSE canonical
+# total-return benchmark (src/core/backtest_runner.py
+# ``_CANONICAL_BENCHMARK_BY_UNIVERSE``) MUST be listed here: the orchestrated
+# daily rebuild invokes this stage with no --index-map into a FRESH staging
+# bundle, so a canonical code missing from this default silently vanishes at
+# the next atomic swap and every run consuming it fails at backtest time
+# (codex P1 on #365). Guarded by
+# tests/governance/test_canonical_benchmark_default_consistency.py.
+# The price index is kept for reference / REGEN-A control.
 DEFAULT_INDEX_MAP: tuple[tuple[str, str], ...] = (
-    ("000300.SH", "SH000300"),     # CSI 300 price index
-    ("H00300.CSI", "SH000300TR"),  # CSI 300 total-return index (canonical)
+    ("000300.SH", "SH000300"),     # CSI 300 price index (REGEN-A control)
+    ("H00300.CSI", "SH000300TR"),  # CSI 300 total-return (canonical: csi300/all)
+    ("H00906.CSI", "SH000906TR"),  # CSI 800 total-return (canonical: csi800)
+    ("H00905.CSI", "SH000905TR"),  # CSI 500 total-return (canonical: csi500)
 )
 
 _INDEX_DAILY_FIELDS = "ts_code,trade_date,open,high,low,close,vol"
@@ -136,14 +145,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              + ",".join(f"{a}:{b}" for a, b in DEFAULT_INDEX_MAP),
     )
     p.add_argument(
-        "--best-effort", default="H00300.CSI",
+        "--best-effort", default="H00300.CSI,H00906.CSI,H00905.CSI",
         help="Comma-separated tushare index codes whose fetch/permission "
              "failure DOWNGRADES to a warning+skip instead of failing the "
-             "run. Default: the total-return index H00300.CSI — its index "
-             "entitlement is often separate from the equity endpoints, and "
-             "the canonical benchmark is still SH000300 (price) until REGEN, "
-             "so a missing total-return index must not block the daily swap. "
-             "Pass an empty string to make every index mandatory.",
+             "run. Default: the H*.CSI total-return indices — their index "
+             "entitlement is often separate from the equity endpoints, so a "
+             "manual/standalone run should not hard-fail on a missing one. "
+             "The ORCHESTRATED daily rebuild passes an empty string instead: "
+             "every index (all per-universe canonical benchmarks included) "
+             "is mandatory there, because a fresh staging bundle missing a "
+             "canonical code fails every run that consumes it at backtest "
+             "time. Pass an empty string to make every index mandatory.",
     )
     return p
 

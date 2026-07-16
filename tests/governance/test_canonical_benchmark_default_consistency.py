@@ -7,7 +7,12 @@ does NOT hard-list the known flip sites:
 
 1. The canonical default benchmark — the in-code ``WalkForwardConfig`` / ``PipelineConfig``
    field defaults AND every TRACKED config YAML that declares ``benchmark_code`` — is
-   ``SH000300TR``. A new config with a price default, or a reverted flip, fails here.
+   drawn from the PER-UNIVERSE canonical total-return set (CSI800 expansion (b)
+   Step 2: ``_CANONICAL_BENCHMARK_BY_UNIVERSE``), and a config that declares a
+   universe in that map must pair with EXACTLY its universe's benchmark — a
+   csi800 config on the csi300 basis (or vice versa) fails here, as does a
+   csi800/csi500 config that omits ``benchmark_code`` and silently falls back to
+   the in-code SH000300TR default.
 2. The REGEN-A control path stays the SH000300 PRICE index: the price-replay generator
    constant + the preserved ``regen_a/`` control baseline. (REGEN-A is the price control,
    not deleted.)
@@ -43,7 +48,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 # LOAD-time check (PR-J) enforces. Importing it here pins the config defaults to the
 # SAME value the runtime treats as canonical, so a drift in EITHER fails this guard.
 # (backtest_runner has no top-level qlib import, so this stays a no-bundle test.)
-from src.core.backtest_runner import _CANONICAL_BENCHMARK_CODE as CANONICAL_TR  # noqa: E402
+from src.core.backtest_runner import (  # noqa: E402
+    _CANONICAL_BENCHMARK_BY_UNIVERSE as CANONICAL_BY_UNIVERSE,
+)
+from src.core.backtest_runner import (
+    _CANONICAL_BENCHMARK_CODE as CANONICAL_TR,
+)
 
 REGEN_A_PRICE = "SH000300"
 REGEN_A_CONTROL_FIXTURE = (
@@ -76,9 +86,59 @@ class CanonicalBenchmarkDefaultConsistencyTests(unittest.TestCase):
                 "index into every config that omits benchmark_code.",
             )
 
-    def test_every_tracked_config_yaml_default_is_total_return(self) -> None:
+    def test_per_universe_mapping_invariants(self) -> None:
+        # The mapping itself is load-bearing (runtime warning + this guard both
+        # consume it): every value is a TR-suffixed total-return code, and the
+        # csi300 / "all" entries stay pinned to the REGEN-2 canonical constant —
+        # re-pointing either is a basis change that needs its own REGEN, not a
+        # mapping edit.
+        for universe, bc in CANONICAL_BY_UNIVERSE.items():
+            self.assertTrue(
+                bc.endswith("TR"),
+                f"per-universe canonical benchmark for {universe!r} is {bc!r}, "
+                "not a total-return ('TR'-suffixed) code.",
+            )
+        for pinned in ("csi300", "all"):
+            self.assertEqual(
+                CANONICAL_TR, CANONICAL_BY_UNIVERSE.get(pinned),
+                f"the {pinned!r} universe must stay on the REGEN-2 canonical "
+                f"{CANONICAL_TR!r}; re-pointing it is a basis change requiring "
+                "its own REGEN, not a mapping edit.",
+            )
+
+    def test_canonical_map_codes_ride_the_daily_ingest_default(self) -> None:
+        # codex P1 on #365: the orchestrated daily rebuild invokes stage 07
+        # with NO --index-map into a FRESH staging bundle — a canonical code
+        # missing from DEFAULT_INDEX_MAP silently vanishes at the next atomic
+        # swap and every consuming run fails at backtest time. Pin:
+        # canonical-map values ⊆ default-ingest qlib names (+ price control).
+        import importlib.util
+        path = (_PROJECT_ROOT / "scripts" / "data_pipeline"
+                / "07_ingest_benchmark.py")
+        spec = importlib.util.spec_from_file_location("_ingest07_guard", path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        ingested = {qlib_name for _, qlib_name in mod.DEFAULT_INDEX_MAP}
+        missing = sorted(set(CANONICAL_BY_UNIVERSE.values()) - ingested)
+        self.assertEqual(
+            [], missing,
+            "per-universe canonical benchmark(s) missing from the daily "
+            f"ingest DEFAULT_INDEX_MAP {sorted(ingested)}: {missing} — the "
+            "next daily rebuild would drop them from the fresh staging "
+            "bundle and every consuming run would fail at backtest time.",
+        )
+        self.assertIn(
+            REGEN_A_PRICE, ingested,
+            "the REGEN-A price control must stay in the daily ingest default.",
+        )
+
+    def test_every_tracked_config_yaml_benchmark_in_canonical_set(self) -> None:
         # Scans ALL tracked config YAMLs (not a hard-list): a NEW config with a price
-        # benchmark, or a reverted flip in any existing one, is caught here.
+        # benchmark, or a reverted flip in any existing one, is caught here. The
+        # accepted set is the per-universe canonical total-return set ((b) Step 2)
+        # — universe<->benchmark PAIRING is the next test's job.
+        canonical_set = set(CANONICAL_BY_UNIVERSE.values())
         offenders: list[str] = []
         for path in _tracked_config_yamls():
             try:
@@ -86,13 +146,47 @@ class CanonicalBenchmarkDefaultConsistencyTests(unittest.TestCase):
             except yaml.YAMLError:
                 continue
             bc = data.get("benchmark_code") if isinstance(data, dict) else None
-            if bc is not None and bc != CANONICAL_TR:
+            if bc is not None and bc not in canonical_set:
                 offenders.append(f"{path.relative_to(_PROJECT_ROOT).as_posix()}={bc!r}")
         self.assertEqual(
             [], offenders,
-            "tracked config(s) declare a non-canonical benchmark_code (expected "
-            f"{CANONICAL_TR!r} — the SH000300 price index is the REGEN-A control only): "
-            + ", ".join(offenders),
+            "tracked config(s) declare a benchmark_code outside the per-universe "
+            f"canonical total-return set {sorted(canonical_set)} (the SH000300 "
+            "price index is the REGEN-A control only): " + ", ".join(offenders),
+        )
+
+    def test_tracked_config_universe_benchmark_pairing(self) -> None:
+        # (b) Step 2: a config that declares a universe in the canonical map must
+        # measure excess against EXACTLY that universe's benchmark. The EFFECTIVE
+        # benchmark is the declared one, or the in-code default when omitted — so
+        # a csi800/csi500 config that omits benchmark_code and silently falls
+        # back to SH000300TR is an offender too, not a pass-through.
+        offenders: list[str] = []
+        for path in _tracked_config_yamls():
+            try:
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            universe = data.get("instruments")
+            if not isinstance(universe, str):
+                continue
+            expected = CANONICAL_BY_UNIVERSE.get(universe)
+            if expected is None:
+                continue  # universe outside the map: set-membership test covers it
+            effective = data.get("benchmark_code") or CANONICAL_TR
+            if effective != expected:
+                offenders.append(
+                    f"{path.relative_to(_PROJECT_ROOT).as_posix()}: "
+                    f"instruments={universe!r} effective benchmark={effective!r} "
+                    f"(canonical for that universe: {expected!r})"
+                )
+        self.assertEqual(
+            [], offenders,
+            "tracked config(s) pair a universe with the WRONG canonical benchmark "
+            "— excess return measured against another universe's basket is a "
+            "category error, not a comparison: " + "; ".join(offenders),
         )
 
     def test_regen_a_price_control_preserved(self) -> None:

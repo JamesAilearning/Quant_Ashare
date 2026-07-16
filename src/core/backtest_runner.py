@@ -63,6 +63,23 @@ _logger = get_logger(__name__)
 # comparison, OR an operator mistake (e.g. an untracked preset left on the price index).
 _CANONICAL_BENCHMARK_CODE = "SH000300TR"
 
+# CSI800 expansion (b) Step 2: the canonical benchmark is PER UNIVERSE — a
+# csi800 run measured against the csi300 basket's return is a category error,
+# not a comparison. Every value is a TOTAL-RETURN index ingested into the
+# canonical bundle (SH000906TR / SH000905TR landed 2026-07-16, operator-signed
+# coverage 2018-01-02..calendar tail, zero NaN). "all" keeps the SH000300TR
+# basis (status quo for the production preset; revisit if a whole-market
+# canonical basis is ever promoted). The static pairing guard lives in
+# tests/governance/test_canonical_benchmark_default_consistency.py; the
+# LOAD-time warning below treats ANY value of this map as canonical-for-its-
+# universe (it does not receive the universe, so it checks set membership).
+_CANONICAL_BENCHMARK_BY_UNIVERSE = {
+    "csi300": _CANONICAL_BENCHMARK_CODE,
+    "csi800": "SH000906TR",
+    "csi500": "SH000905TR",
+    "all": _CANONICAL_BENCHMARK_CODE,
+}
+
 # PR-C (audit A1): version tag for the signal→execution timing semantics,
 # folded into backtest provenance fingerprints and the walk-forward resume
 # fingerprint. "lag_total_v2" = signal_to_execution_lag is the TOTAL
@@ -119,6 +136,7 @@ class BacktestRunner:
         rebalance_cadence_days: int = 1,
         rebalance_phase: int = 0,
         rebalance_anchor: str = "fold_phase",
+        universe_hint: str | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -319,6 +337,7 @@ class BacktestRunner:
             request.benchmark_code,
             request.evaluation_start,
             request.evaluation_end,
+            universe_hint=universe_hint,
         )
         # Price-limit enforcement (PR-D, audit A2): the contract's
         # ``limit_threshold`` float is translated into qlib's EXPRESSION-mode
@@ -1079,9 +1098,12 @@ class BacktestRunner:
         return result
 
     @staticmethod
-    def _warn_if_non_canonical_benchmark(benchmark_code: str) -> None:
+    def _warn_if_non_canonical_benchmark(
+        benchmark_code: str, universe_hint: str | None = None,
+    ) -> None:
         """LOAD-time canonical-benchmark check (PR-J): warn LOUD when this run
-        consumes a benchmark that is NOT the canonical total-return SH000300TR.
+        consumes a benchmark that is not canonical FOR ITS UNIVERSE
+        (``_CANONICAL_BENCHMARK_BY_UNIVERSE`` — CSI800 expansion Step 2).
 
         The static config guard (test_canonical_benchmark_default_consistency) only
         covers TRACKED config defaults; it cannot see an UNTRACKED personal preset
@@ -1090,20 +1112,45 @@ class BacktestRunner:
         silent. A non-canonical benchmark is NOT blocked — it is legitimate for the
         REGEN-A SH000300 price-index control or a deliberate comparison — only
         surfaced, so an accidental price-index run does not masquerade as canonical.
-        """
-        if benchmark_code != _CANONICAL_BENCHMARK_CODE:
+
+        ``universe_hint`` carries the run's universe from config-driven callers
+        (pipeline / walk-forward pass ``config.instruments``), so a MIS-PAIRED
+        canonical code — csi800 measured on the csi300 basket or vice versa —
+        is surfaced too, not silently accepted as "some canonical value"
+        (codex P1 on #365). Direct ``BacktestRunner.run`` callers that have no
+        universe fall back to set-membership (there is nothing to pair)."""
+        expected = (_CANONICAL_BENCHMARK_BY_UNIVERSE.get(universe_hint)
+                    if universe_hint is not None else None)
+        if expected is not None:
+            if benchmark_code != expected:
+                _logger.warning(
+                    "BacktestRunner: consuming benchmark %s for universe %r, "
+                    "whose canonical total-return benchmark is %s — excess "
+                    "return is measured against a MIS-PAIRED or NON-canonical "
+                    "basis (another universe's basket, or a price index). "
+                    "Expected only for the REGEN-A price-index control or a "
+                    "deliberate comparison; if an untracked preset paired "
+                    "them, fix it. (PR-J LOAD-time canonical-benchmark "
+                    "check, universe-aware.)",
+                    benchmark_code, universe_hint, expected,
+                )
+            return
+        canonical_set = set(_CANONICAL_BENCHMARK_BY_UNIVERSE.values())
+        if benchmark_code not in canonical_set:
             _logger.warning(
-                "BacktestRunner: consuming benchmark %s, NOT the canonical "
-                "total-return %s — excess return is measured against a NON-canonical "
-                "basis. Expected only for the REGEN-A price-index control or a "
-                "deliberate comparison; if an untracked preset left the default on the "
-                "price index, fix it. (PR-J LOAD-time canonical-benchmark check.)",
-                benchmark_code, _CANONICAL_BENCHMARK_CODE,
+                "BacktestRunner: consuming benchmark %s, NOT one of the canonical "
+                "per-universe total-return benchmarks %s — excess return is measured "
+                "against a NON-canonical basis. Expected only for the REGEN-A "
+                "price-index control or a deliberate comparison; if an untracked "
+                "preset left the default on the price index, fix it. (PR-J LOAD-time "
+                "canonical-benchmark check.)",
+                benchmark_code, sorted(canonical_set),
             )
 
     @staticmethod
     def _validate_consumed_benchmark(
         benchmark_code: str, start: str, end: str,
+        universe_hint: str | None = None,
     ) -> None:
         """PR-J: fail-loud VALUE-level validation of the benchmark series this
         backtest consumes for excess-return, BEFORE qlib reads it. Loads the
@@ -1118,7 +1165,9 @@ class BacktestRunner:
         tests/governance/test_pit_provider_is_sole_qlib_features_caller.py; the
         WARN log makes the bypass observable.
         """
-        BacktestRunner._warn_if_non_canonical_benchmark(benchmark_code)
+        BacktestRunner._warn_if_non_canonical_benchmark(
+            benchmark_code, universe_hint=universe_hint,
+        )
         import pandas as pd
         from qlib.data import D
 

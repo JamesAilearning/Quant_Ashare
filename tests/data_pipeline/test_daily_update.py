@@ -155,13 +155,20 @@ class HappyPathTests(unittest.TestCase):
             self.assertEqual(
                 plan.benchmark[plan.benchmark.index("--provider-dir") + 1], staging,
             )
-            # The canonical SH000300TR is MANDATORY in the orchestrated rebuild (codex
-            # P1): an empty best-effort list makes an H00300.CSI entitlement/fetch
-            # failure abort the update, not ship a TR-less bundle that fails every run.
+            # EVERY per-universe canonical TR benchmark is MANDATORY in the
+            # orchestrated rebuild (codex P1 on #243 + #365): an empty
+            # best-effort list makes any entitlement/fetch failure abort the
+            # update, not ship a bundle missing a canonical code that fails
+            # every consuming run at backtest time.
             self.assertIn("--best-effort", plan.benchmark)
             self.assertEqual(
                 plan.benchmark[plan.benchmark.index("--best-effort") + 1], "",
             )
+            # The plan must NOT override --index-map: DEFAULT_INDEX_MAP is the
+            # single source carrying the canonical codes (codex P1 on #365; the
+            # canonical-map ⊆ default-map pin lives in
+            # tests/governance/test_canonical_benchmark_default_consistency.py).
+            self.assertNotIn("--index-map", plan.benchmark)
             self.assertIn(staging, plan.validate)  # 06 validates the STAGED dir
 
     def test_fetch_holes_with_override_continues(self) -> None:

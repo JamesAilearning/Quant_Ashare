@@ -78,13 +78,23 @@ class IngestBenchmarkCliTests(unittest.TestCase):
             "open": [1.0] * 6, "high": [1.1] * 6, "low": [0.9] * 6,
             "close": [1.0, 1.1, 1.2, 1.3, 1.4, 1.5], "vol": [10.0] * 6,
         })
-        # Total-return: close only (OHLC/vol None) — the H00300 shape.
-        tr = pd.DataFrame({
-            "ts_code": ["H00300.CSI"] * 6, "trade_date": _yyyymmdd(),
-            "open": [None] * 6, "high": [None] * 6, "low": [None] * 6,
-            "close": [2.0, 2.1, 2.2, 2.3, 2.4, 2.5], "vol": [None] * 6,
+
+        # Total-return: close only (OHLC/vol None) — the H*.CSI shape.
+        def _tr(code: str, base: float) -> pd.DataFrame:
+            return pd.DataFrame({
+                "ts_code": [code] * 6, "trade_date": _yyyymmdd(),
+                "open": [None] * 6, "high": [None] * 6, "low": [None] * 6,
+                "close": [base + 0.1 * i for i in range(6)], "vol": [None] * 6,
+            })
+        client = self._fake_client({
+            "000300.SH": price,
+            "H00300.CSI": _tr("H00300.CSI", 2.0),
+            # codex P1 on #365: the per-universe canonical TR benchmarks ride
+            # the DEFAULT map — the orchestrated rebuild passes no --index-map,
+            # so a code absent here vanishes at the next atomic swap.
+            "H00906.CSI": _tr("H00906.CSI", 3.0),
+            "H00905.CSI": _tr("H00905.CSI", 4.0),
         })
-        client = self._fake_client({"000300.SH": price, "H00300.CSI": tr})
         with tempfile.TemporaryDirectory() as t:
             prov = _bundle(Path(t))
             with patch.object(mod.TushareClient, "from_environment", return_value=client):
@@ -93,8 +103,11 @@ class IngestBenchmarkCliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             # Benchmarks land in benchmark.txt, never the training all.txt.
             bench_txt = (prov / "instruments" / "benchmark.txt").read_text().splitlines()
-            self.assertTrue(any(ln.startswith("SH000300\t") for ln in bench_txt))
-            self.assertTrue(any(ln.startswith("SH000300TR\t") for ln in bench_txt))
+            for code in ("SH000300", "SH000300TR", "SH000906TR", "SH000905TR"):
+                self.assertTrue(
+                    any(ln.startswith(f"{code}\t") for ln in bench_txt),
+                    f"{code} missing from benchmark.txt: {bench_txt}",
+                )
             all_txt = (prov / "instruments" / "all.txt").read_text()
             self.assertNotIn("SH000300", all_txt)
             tr_close = np.fromfile(
