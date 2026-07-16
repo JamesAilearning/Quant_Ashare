@@ -276,6 +276,59 @@ def test_rebalance_stamps_refuses_tiny_fold():
         rebalance_stamps(_calendar(2), 63, 0)
 
 
+def _weekday_calendar(start: date, end: date) -> list[date]:
+    out, d = [], start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def test_build_stamp_plan_slice_shapes():
+    from scripts.research.gate4a_ic_evaluator import build_stamp_plan
+    folds = dev_fold_windows({**_GEOMETRY, "overall_end": "2024-12-31"})
+    cal = _weekday_calendar(date(2019, 1, 1), date(2024, 12, 31))
+    end = date(2024, 12, 31)
+
+    plan, _, exp = build_stamp_plan(folds, cal, end, 63, 0, None)
+    assert exp == 19
+    assert sum(1 for p in plan if p[1] == "primary") == 19
+
+    plan, _, exp = build_stamp_plan(folds, cal, end, 63, 0, "c1_from_2018")
+    assert exp == 23
+    prims = [p for p in plan if p[1] == "primary"]
+    assert len(prims) == 23
+    assert prims[0][0] == -4 and prims[0][2] == date(2019, 4, 1)
+    assert prims[4][0] == 0  # dev folds follow the 4 extrapolated quarters
+
+    plan, z, exp = build_stamp_plan(folds, cal, end, 63, 0,
+                                    "holding_semiannual")
+    assert (z, exp, len(plan)) == (0, 9, 9)
+    # horizon = the NEXT fold's last in-window trading day
+    assert plan[0][0] == 0 and plan[0][4] == date(2020, 9, 30)
+    assert plan[-1][0] == 16 and plan[-1][4] == date(2024, 9, 30)
+
+    plan, z, exp = build_stamp_plan(folds, cal, end, 63, 0, "holding_annual")
+    assert (z, exp, len(plan)) == (0, 4, 4)
+    assert [p[0] for p in plan] == [0, 4, 8, 12]
+    assert plan[0][4] == date(2021, 3, 31)
+
+    with pytest.raises(EvaluatorError, match="unknown slice"):
+        build_stamp_plan(folds, cal, end, 63, 0, "nope")
+
+
+def test_size_buckets_quintile_variant():
+    cal = _calendar(40)
+    codes = [f"s{i:02d}.SZ" for i in range(25)]
+    mv = pd.DataFrame(index=cal, columns=codes, dtype=float)
+    for i, c in enumerate(codes):
+        mv.loc[cal[34], c] = float((i + 1) * 100)
+    buckets, _ = size_deciles_asof(mv, cal[35], codes, cal, 5)
+    assert sorted(buckets.unique()) == list(range(5))
+    assert buckets["s00.SZ"] == 0 and buckets["s24.SZ"] == 4
+
+
 def test_st_ts_codes_on_flags_st_names_on_execution_day():
     from src.data.st_history import build_st_lookup
     nc = pd.DataFrame([

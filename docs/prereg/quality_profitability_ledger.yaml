@@ -195,6 +195,62 @@ entries:
       为最大正折(+0.41/+0.33/+0.38)— exclude_fold_0 注册切片届时按
       预注册跑。详见 docs/research/gate4a_c3_ic_report.md。
 
+  # ---- 六注册切片语义 pin(操作人全签,2026-07-16)。总则:全部切片锚定
+  #      C1_GPA(冻结 N=9 每切片计 1 trial,"同一因子"=族首席);C2/C3 对应
+  #      变体不跑(=新 trial,违冻结计数)。切片经 evaluator --slice 显式
+  #      声明,gate/preset 不动(设计章戳保护主设计,切片是账本预登记的
+  #      透明变体)。
+  - id: E017
+    date: 2026-07-16
+    type: sensitivity_run_planned
+    ref: C1_from_2018
+    status: registered_pre_run
+    note: C1 面板外推 4 个 dev 前季度 stamp(2019-04/07/10、2020-01 起始,
+      折内含视野同构,索引 -4..-1)+19 dev 折 = 23 primary 序列;前 4 期
+      消费 FY2018/2019H1(2018 会计 regime)申报。窗末仍 2024-12-31。
+  - id: E018
+    date: 2026-07-16
+    type: sensitivity_reaggregation_planned
+    ref: exclude_fold_0
+    status: registered_pre_run
+    note: 纯重聚合 — 已入库 C1 折序列(E012 工件)去 fold_0 重算
+      mean/std/t;零新数据零 run,在全批 FWER 脚本内实施。C2/C3 同算
+      仅作旁注诊断(不计 trial,明确标注)。
+  - id: E019
+    date: 2026-07-16
+    type: sensitivity_run_planned
+    ref: holding_semiannual
+    status: registered_pre_run
+    note: stamp=每隔 1 折的折首(2020Q2 起,i=0,2,…,16 共 9 个),视野=
+      至第 i+1 折末交易日(两季链,折链内含,绝不过 2024-12-31);无尾
+      stamp。C1 面板,其余四层过滤/期对齐/decile 同主 run。
+  - id: E020
+    date: 2026-07-16
+    type: sensitivity_run_planned
+    ref: holding_annual
+    status: registered_pre_run
+    note: 同构,i=0,4,8,12 共 4 个 stamp,视野至第 i+3 折末(四季链)。
+      样本极少(n=4),如实报,不夸大。
+  - id: E021
+    date: 2026-07-16
+    type: sensitivity_run_planned
+    ref: st_off
+    status: registered_pre_run
+    note: 唯一变化=跳过 ST 执行日过滤(would-mask 计数照记);其余与
+      C1 主 run 逐项一致。
+  - id: E022
+    date: 2026-07-16
+    type: sensitivity_run_planned
+    ref: size_decile_variants
+    status: registered_pre_run
+    note: 唯一注册变体=五分位(n=5;~240 名截面下 20 分位过薄,5 分位
+      ~48 名/桶);其余与 C1 主 run 一致。单变体保 N=9。
+  # ---- 全批 FWER 机制 pin(操作人签,2026-07-16) ---------------------------
+  #   trial 统计量=折级 rank_ic 序列 t;null=各序列去均值;联合 moving-block
+  #   bootstrap(按折索引整块重采,全部 trial 共享重采索引→保留族内相关);
+  #   block=4 折,B=10000,seed=20260716,单侧(正向);通过=max-t 超
+  #   bootstrap 95 分位 且 观测 t≥2.85(冻结 A 股校准作硬地板,取更严)。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。

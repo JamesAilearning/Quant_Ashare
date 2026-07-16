@@ -254,13 +254,17 @@ def dev_fold_windows(cfg: dict[str, object]) -> list[FoldWindow]:
 # ---------------------------------------------------------------------------
 
 def size_deciles_asof(total_mv: pd.DataFrame, day: date, codes: list[str],
-                      calendar_days: list[date]) -> tuple[pd.Series, dict[str, int]]:
-    """Decile (0..9) per ts_code from total_mv as-of ``day``.
+                      calendar_days: list[date],
+                      n_buckets: int = N_SIZE_DECILES,
+                      ) -> tuple[pd.Series, dict[str, int]]:
+    """Size bucket (0..n_buckets-1) per ts_code from total_mv as-of ``day``.
 
     ``total_mv``: DataFrame indexed by trading date (datetime.date), columns
     = ts_codes, values = total market cap. As-of = last non-NA value at a
     trading date <= day, no older than MAX_MV_STALENESS_DAYS trading days.
-    Returns (deciles, drop_counts).
+    ``n_buckets`` defaults to the primary 10; the registered
+    size_decile_variants slice runs quintiles (5). Returns
+    (buckets, drop_counts).
     """
     eligible = [d for d in calendar_days if d <= day]
     if not eligible:
@@ -271,11 +275,11 @@ def size_deciles_asof(total_mv: pd.DataFrame, day: date, codes: list[str],
     dropped_stale = asof[asof.isna()].index.tolist()
     live = asof.dropna()
     counts = {"size_dropped_stale_or_missing": len(dropped_stale)}
-    if len(live) < N_SIZE_DECILES * 2:
+    if len(live) < n_buckets * 2:
         raise EvaluatorError(
             f"only {len(live)} names carry usable total_mv on {day} — too few "
-            f"for {N_SIZE_DECILES} deciles; refusing to rank on a sliver.")
-    deciles = pd.qcut(live.rank(method="first"), N_SIZE_DECILES,
+            f"for {n_buckets} buckets; refusing to rank on a sliver.")
+    deciles = pd.qcut(live.rank(method="first"), n_buckets,
                       labels=False).astype(int)
     return deciles, counts
 
@@ -384,6 +388,84 @@ def rebalance_stamps(days: list[date], cadence: int, phase: int
     if not out:
         raise EvaluatorError("all stamps degenerate — fold horizon empty.")
     return out, n_zero
+
+
+# Registered sensitivity slices (operator-signed semantics, 2026-07-16;
+# ledger E017-E022). ALL slices anchor C1_GPA — the frozen N=9 counts each
+# slice as ONE trial, and the ledger's "同一因子的稳健性观测" wording pins
+# the anchor to the family lead. exclude_fold_0 is a pure re-aggregation of
+# recorded fold series (no run; lives in the FWER batch step).
+SLICES = ("c1_from_2018", "holding_semiannual", "holding_annual",
+          "st_off", "size_quintile")
+SLICE_ANCHOR = "C1_GPA"
+
+
+def build_stamp_plan(
+    folds: list[FoldWindow], cal_days: list[date], end_boundary: date,
+    cadence: int, phase: int, slice_name: str | None,
+) -> tuple[list[tuple[int, str, date, date, date]], int, int]:
+    """Slice-aware stamp plan: ``[(fold_index, kind, signal, exec, end)]``
+    plus (n_zero_horizon_dropped, expected_primary_count).
+
+    * default / st_off / size_quintile: canonical per-fold fold_phase
+      schedule (unchanged track).
+    * c1_from_2018: canonical schedule over 4 EXTRAPOLATED pre-dev
+      quarters (2019-04/07/10, 2020-01 starts; indices -4..-1 — their
+      cross-sections consume FY2018/2019H1-regime filings) plus the 19
+      dev folds -> 23 primary stamps.
+    * holding_semiannual: one stamp at every 2nd fold's start, horizon =
+      the NEXT fold's last in-window trading day (two-quarter chain,
+      fold-contained; folds without a following fold are excluded).
+    * holding_annual: one stamp at every 4th fold's start, horizon =
+      fold i+3's last in-window trading day (four-quarter chain).
+    """
+    def canonical(fold_list: list[FoldWindow]
+                  ) -> tuple[list[tuple[int, str, date, date, date]], int]:
+        out: list[tuple[int, str, date, date, date]] = []
+        zeros = 0
+        for fw in fold_list:
+            days = [d for d in cal_days
+                    if fw.test_start <= d <= min(fw.test_end, end_boundary)]
+            stamps, z = rebalance_stamps(days, cadence, phase)
+            zeros += z
+            for j, (t, e, h) in enumerate(stamps):
+                out.append((fw.index, "primary" if j == 0 else "tail",
+                            t, e, h))
+        return out, zeros
+
+    if slice_name in (None, "st_off", "size_quintile"):
+        plan, zeros = canonical(folds)
+        return plan, zeros, len(folds)
+    if slice_name == "c1_from_2018":
+        pre = [FoldWindow(-k,
+                          _add_months(folds[0].test_start, -3 * k),
+                          _add_months(folds[0].test_start, -3 * k + 3)
+                          - timedelta(days=1))
+               for k in range(4, 0, -1)]
+        plan, zeros = canonical(pre + folds)
+        return plan, zeros, len(folds) + 4
+    if slice_name in ("holding_semiannual", "holding_annual"):
+        span = 2 if slice_name == "holding_semiannual" else 4
+        plan2: list[tuple[int, str, date, date, date]] = []
+        for i in range(0, len(folds), span):
+            if i + span - 1 >= len(folds):
+                break  # no full chain left inside the dev window
+            start_fold, end_fold = folds[i], folds[i + span - 1]
+            t_i = next(d for d in cal_days if d >= start_fold.test_start)
+            exec_i = next(d for d in cal_days if d > t_i)
+            horizon_end = max(d for d in cal_days
+                              if d <= min(end_fold.test_end, end_boundary))
+            if horizon_end <= exec_i:
+                raise EvaluatorError(f"degenerate {slice_name} chain at "
+                                     f"fold {start_fold.index}.")
+            plan2.append((start_fold.index, "primary", t_i, exec_i,
+                          horizon_end))
+        if not plan2:
+            raise EvaluatorError(f"{slice_name}: no full chain fits the "
+                                 "dev window — geometry wrong.")
+        return plan2, 0, len(plan2)
+    raise EvaluatorError(f"unknown slice {slice_name!r}; registered: "
+                         f"{SLICES}")
 
 
 def st_ts_codes_on(lookup: StLookup, universe: list[str],
@@ -630,6 +712,11 @@ def main(argv: list[str] | None = None) -> int:
     # a caller-supplied path could evaluate an unregistered bundle while
     # archiving GATE ACCEPT (codex #354 r2 P1).
     p.add_argument("--out", type=Path, default=Path("output/gate4a"))
+    p.add_argument("--slice", default=None, choices=SLICES,
+                   help="registered sensitivity slice (operator-signed "
+                        "semantics, ledger E017-E022). ALL slices anchor "
+                        f"{SLICE_ANCHOR}; requesting a slice with any other "
+                        "candidate refuses (N=9 counts each slice ONCE).")
     p.add_argument("--repo-root", type=Path, default=_REPO)
     args = p.parse_args(argv)
     repo = args.repo_root
@@ -642,6 +729,13 @@ def main(argv: list[str] | None = None) -> int:
             f"candidate {args.candidate!r} is registered but its formula is "
             "NOT implemented in this evaluator yet — implement + review it; "
             "never run a guessed formula at decision level.")
+
+    if args.slice and args.candidate != SLICE_ANCHOR:
+        raise EvaluatorError(
+            f"slice {args.slice!r} anchors {SLICE_ANCHOR} (operator-signed "
+            "rule: each slice is ONE trial in the frozen N=9; a slice on "
+            f"{args.candidate!r} would be an UNREGISTERED extra trial — "
+            "register a new plan entry first, never run it casually).")
 
     # 0. pre-registration gate (fail-loud, output archived)
     run_config_rel = CANDIDATE_RUN_CONFIG[args.candidate]
@@ -718,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         span_start.isoformat(), end_boundary.isoformat(),
         pit_provider=pit_provider)
 
-    # 4. per-fold evaluation
+    # 4. per-stamp evaluation over the slice-aware plan
     fold_rows: list[dict[str, object]] = []
     ic_rows: list[dict[str, float | int]] = []
     cadence = int(str(cfg.get("rebalance_cadence_days", "")) or 0)
@@ -728,77 +822,77 @@ def main(argv: list[str] | None = None) -> int:
                              "rebalance_cadence_days — cannot mirror the "
                              "canonical schedule.")
     tail_rows: list[dict[str, float | int]] = []
-    n_zero_horizon_total = 0
-    for fw in folds:
-        days = [d for d in cal_days
-                if fw.test_start <= d <= min(fw.test_end, end_boundary)]
-        stamps, n_zero = rebalance_stamps(days, cadence, phase)
-        n_zero_horizon_total += n_zero
-        for j, (t_i, exec_i, horizon_end) in enumerate(stamps):
-            kind = "primary" if j == 0 else "tail"
-            members = members_on(intervals, t_i)
-            universe = [ts for ts in members if ts not in issuers]
-            st_names = st_ts_codes_on(st_lookup, universe, exec_i)
-            n_st = len(st_names)
+    plan, n_zero_horizon_total, expected_primary = build_stamp_plan(
+        folds, cal_days, end_boundary, cadence, phase, args.slice)
+    st_enabled = args.slice != "st_off"
+    n_size_buckets = 5 if args.slice == "size_quintile" else N_SIZE_DECILES
+    for stamp_no, (fold_index, kind, t_i, exec_i, horizon_end) in enumerate(plan):
+        members = members_on(intervals, t_i)
+        universe = [ts for ts in members if ts not in issuers]
+        st_names = st_ts_codes_on(st_lookup, universe, exec_i)
+        n_st = len(st_names)
+        if st_enabled:
             universe = [ts for ts in universe if ts not in st_names]
-            untradeable = masked_ts_codes_on(micro_mask, exec_i)
-            n_untradeable = sum(1 for ts in universe if ts in untradeable)
-            universe = [ts for ts in universe if ts not in untradeable]
-            asof = view.as_of(t_i.isoformat(), list(fields), universe,
-                              include_report_periods=True,
-                              include_prior_period=needs_prior)
-            factor = formula(asof)
-            # report-period alignment across endpoints (codex #354 r6 P1):
-            # a lagging endpoint (e.g. balancesheet a quarter behind
-            # income) must NA the candidate, never mix quarters.
-            misaligned = misaligned_periods(asof, endpoints)
-            n_misaligned = int((misaligned & factor.notna()).sum())
-            factor = factor.where(~misaligned)
-            deciles, size_counts = size_deciles_asof(mv, t_i, universe,
-                                                     cal_days)
-            signal = within_decile_rank(factor, deciles)
-            fwd, ret_counts = forward_returns(close, exec_i, horizon_end,
-                                              universe)
-            ics = fold_ic(signal, fwd)
-            if kind == "primary":
-                ic_rows.append(ics)
-            else:
-                tail_rows.append(ics)
-            row: dict[str, object] = {
-                "fold": fw.index, "stamp": j, "stamp_kind": kind,
-                "signal_day": t_i.isoformat(),
-                "execution_day": exec_i.isoformat(),
-                "horizon_end": horizon_end.isoformat(),
-                "n_members": len(members),
-                "exec_day_st_masked": n_st,
-                "exec_day_untradeable_masked": n_untradeable,
-                "n_universe_exfin_tradeable": len(universe),
-                "n_factor_nonna": int(factor.notna().sum()),
-                "period_misaligned_to_na": n_misaligned,
-                **size_counts, **ret_counts, **ics,
-                "monotonicity_decile_means": monotonicity(signal, fwd),
-            }
-            # na_conditional_coverage: does factor-NA select a return regime?
-            na_names = factor[factor.isna()].index
-            both = fwd.reindex(na_names).dropna()
-            row["na_names_mean_fwd_ret"] = (float(both.mean())
-                                            if len(both) else None)
-            fold_rows.append(row)
+        untradeable = masked_ts_codes_on(micro_mask, exec_i)
+        n_untradeable = sum(1 for ts in universe if ts in untradeable)
+        universe = [ts for ts in universe if ts not in untradeable]
+        asof = view.as_of(t_i.isoformat(), list(fields), universe,
+                          include_report_periods=True,
+                          include_prior_period=needs_prior)
+        factor = formula(asof)
+        # report-period alignment across endpoints (codex #354 r6 P1):
+        # a lagging endpoint (e.g. balancesheet a quarter behind
+        # income) must NA the candidate, never mix quarters.
+        misaligned = misaligned_periods(asof, endpoints)
+        n_misaligned = int((misaligned & factor.notna()).sum())
+        factor = factor.where(~misaligned)
+        deciles, size_counts = size_deciles_asof(mv, t_i, universe,
+                                                 cal_days, n_size_buckets)
+        signal = within_decile_rank(factor, deciles)
+        fwd, ret_counts = forward_returns(close, exec_i, horizon_end,
+                                          universe)
+        ics = fold_ic(signal, fwd)
+        if kind == "primary":
+            ic_rows.append(ics)
+        else:
+            tail_rows.append(ics)
+        row: dict[str, object] = {
+            "fold": fold_index, "stamp": stamp_no, "stamp_kind": kind,
+            "signal_day": t_i.isoformat(),
+            "execution_day": exec_i.isoformat(),
+            "horizon_end": horizon_end.isoformat(),
+            "n_members": len(members),
+            "exec_day_st_masked": n_st if st_enabled else 0,
+            "exec_day_st_off_would_mask": 0 if st_enabled else n_st,
+            "exec_day_untradeable_masked": n_untradeable,
+            "n_universe_exfin_tradeable": len(universe),
+            "n_factor_nonna": int(factor.notna().sum()),
+            "period_misaligned_to_na": n_misaligned,
+            **size_counts, **ret_counts, **ics,
+            "monotonicity_decile_means": monotonicity(signal, fwd),
+        }
+        # na_conditional_coverage: does factor-NA select a return regime?
+        na_names = factor[factor.isna()].index
+        both = fwd.reindex(na_names).dropna()
+        row["na_names_mean_fwd_ret"] = (float(both.mean())
+                                        if len(both) else None)
+        fold_rows.append(row)
 
-    if len(ic_rows) != len(folds):
-        raise EvaluatorError(f"primary stamp count {len(ic_rows)} != fold "
-                             f"count {len(folds)} — schedule derivation bug.")
+    if len(ic_rows) != expected_primary:
+        raise EvaluatorError(f"primary stamp count {len(ic_rows)} != expected "
+                             f"{expected_primary} — schedule derivation bug.")
     agg = aggregate(ic_rows)
 
     # 5. artifact
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = args.out / f"{args.candidate}_{stamp}"
+    out_dir = args.out / f"{args.candidate}_{args.slice or 'primary'}_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg_sha = hashlib.sha256(
         (repo / run_config_rel).read_bytes()).hexdigest()
     result = {
         "protocol_id": "quality_profitability_v1",
         "gate": "4A", "candidate": args.candidate,
+        "slice": args.slice or "primary",
         "run_config": run_config_rel, "run_config_sha256": cfg_sha,
         "generated_utc": stamp,
         "pinned_semantics": {
@@ -852,7 +946,9 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     (out_dir / "gate_accept.txt").write_text(gate_out, encoding="utf-8")
     lines = [
-        f"# Gate-4A IC report — {args.candidate} (quality_profitability_v1)",
+        f"# Gate-4A IC report — {args.candidate}"
+        f"{' / slice ' + args.slice if args.slice else ''} "
+        "(quality_profitability_v1)",
         "",
         f"- folds: {agg['n_folds']} dev folds "
         f"({fold_rows[0]['signal_day']} -> {fold_rows[-1]['horizon_end']})",
