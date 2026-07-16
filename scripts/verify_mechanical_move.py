@@ -387,6 +387,36 @@ def _verify_one(label: str, old_text: str,
     return 1
 
 
+def verify_split_with_evidence_grading(old_path: str, old_text: str,
+                                       dests: list[str],
+                                       dest_texts: Mapping[str, str],
+                                       base_of: Mapping[str, str],
+                                       kind: str) -> int:
+    """Evidence grading for LINE-OVERLAP-detected splits (codex #364 r15
+    P2, terminal shape): the verify always runs and prints its findings,
+    but a FAILING verdict hard-fails the gate only when an IDENTICAL new
+    def corroborates that a move actually happened — bare row overlap
+    (shared scaffolding lines in an unrelated added handler) degrades to
+    a loud WARNING with exit 0 instead of a mandatory-CI false positive.
+    Known accepted cost: a lossy split of a defs-free (constants-only)
+    module warns instead of failing."""
+    rc = _verify_one(f"{old_path} -> {dests} [{kind}]", old_text,
+                     [(dest_texts[d], base_of.get(d)) for d in dests])
+    if not rc:
+        return 0
+    hits, suspects = find_move_destinations_by_new_defs(
+        old_text, {d: dest_texts[d] for d in dests}, base_of,
+        context=old_path)
+    if hits:
+        return rc
+    extra = f" (name-only suspects: {suspects})" if suspects else ""
+    print(f"(WARNING: {old_path} -> {dests} matched by line overlap "
+          "only — no identical def corroborates a move; NOT failing "
+          f"the gate{extra}. If this WAS a move, prove it with "
+          "--old/--new; if a genuine deletion, ignore.)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--base", default="origin/main",
@@ -475,7 +505,8 @@ def main(argv: list[str] | None = None) -> int:
         # overlap = genuine deletion (reported, not a move, not failed).
         # The proof stays strict for every form — merge destinations get
         # their own base subtracted, never blanket line tolerance
-        # (codex #364 r6 P1).
+        # (codex #364 r6 P1). Line-overlap detections hard-fail only
+        # with def-identity corroboration (codex #364 r15 P2).
         for old_path in deleted:
             old_text = _git("show", f"{args.base}:{old_path}")
             dests = find_split_destinations(old_text, probe_of)
@@ -502,10 +533,16 @@ def main(argv: list[str] | None = None) -> int:
                         else "split/merge")
                 print(f"({kind} detected via {via}: "
                       f"{old_path} -> {dests})")
-                rc |= _verify_one(f"{old_path} -> {dests} [{kind}]",
-                                  old_text,
-                                  [(dest_texts[d], base_of.get(d))
-                                   for d in dests])
+                if via == "identical new defs":
+                    # corroborated by construction -> failures are hard
+                    rc |= _verify_one(f"{old_path} -> {dests} [{kind}]",
+                                      old_text,
+                                      [(dest_texts[d], base_of.get(d))
+                                       for d in dests])
+                else:
+                    rc |= verify_split_with_evidence_grading(
+                        old_path, old_text, dests, dest_texts, base_of,
+                        kind)
             else:
                 print(f"(deleted, no split destinations found: {old_path} "
                       "— genuine deletion, not verified as a move)")

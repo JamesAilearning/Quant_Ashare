@@ -375,6 +375,38 @@ def test_merge_base_broad_except_not_counted_as_new():
                for f in compare_module_texts(_OLD, [merged]))
 
 
+def test_line_overlap_without_def_identity_warns_not_fails(capsys):
+    # codex #364 r15 P2: genuine deletion + unrelated ADDED handler
+    # sharing scaffolding rows — the verify fails internally but the
+    # gate degrades to a loud WARNING (exit 0) because no identical def
+    # corroborates a move.
+    from scripts.verify_mechanical_move import (
+        verify_split_with_evidence_grading,
+    )
+    old = ("def deprecated(x):\n    warn()\n    metrics()\n"
+           "    raise RuntimeError\n")
+    unrelated = ("def newer(y):\n    warn()\n    metrics()\n"
+                 "    raise RuntimeError\n")
+    rc = verify_split_with_evidence_grading(
+        "old.py", old, ["new.py"], {"new.py": unrelated}, {}, "split")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "old.py" in out and "new.py" in out
+
+
+def test_line_overlap_with_identical_def_hard_fails():
+    # an identical def corroborates the move — a lossy verify stays red.
+    from scripts.verify_mechanical_move import (
+        verify_split_with_evidence_grading,
+    )
+    old = ("def helper(x):\n    validate()\n    return x\n\n\n"
+           "def gone(y):\n    return y - 1\n")
+    dest = "def helper(x):\n    validate()\n    return x\n"
+    rc = verify_split_with_evidence_grading(
+        "old.py", old, ["new.py"], {"new.py": dest}, {}, "split")
+    assert rc == 1   # `gone` was lost; identical `helper` proves a move
+
+
 def test_unparsable_input_fails_loud():
     from scripts.verify_mechanical_move import VerifyError
     with pytest.raises(VerifyError, match="cannot parse"):
