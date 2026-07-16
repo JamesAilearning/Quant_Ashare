@@ -247,8 +247,9 @@ def test_delete_and_merge_with_cancelling_rows_probed_by_def_names():
     new = "def helper(x):\n    validate()\n    return x\n"
     delta = filtered_lines(new) - filtered_lines(base)
     assert find_split_destinations(old, {"mod.py": delta}) == []  # blind
-    assert find_move_destinations_by_new_defs(
-        old, {"mod.py": new}, {"mod.py": base}) == ["mod.py"]
+    hits, suspects = find_move_destinations_by_new_defs(
+        old, {"mod.py": new}, {"mod.py": base})
+    assert hits == ["mod.py"] and suspects == []
     # dedup-merge is not line-provable: the verify runs and fails LOUD
     # (operator justifies via --old/--new or the PR body), never silent.
     assert _verify_one("dedup-merge", old, [(new, base)]) == 1
@@ -263,7 +264,26 @@ def test_def_name_fallback_ignores_preexisting_same_name_def():
     old = "def helper(x):\n    return x\n"
     unchanged = "def helper(y):\n    return y * 2\n\n\nDONE = True\n"
     assert find_move_destinations_by_new_defs(
-        old, {"mod.py": unchanged}, {"mod.py": unchanged}) == []
+        old, {"mod.py": unchanged}, {"mod.py": unchanged}) == ([], [])
+
+
+def test_same_name_different_body_is_suspect_not_move_evidence():
+    # codex #364 r13 P2: deleting a module with `def run` while an
+    # UNRELATED new module also defines `run` — a name-only match must
+    # not hard-fail the gate; it degrades to a printed suspect, while an
+    # identical def stays hard evidence.
+    from scripts.verify_mechanical_move import (
+        find_move_destinations_by_new_defs,
+    )
+    old = "def run(a):\n    return a + 1\n"
+    unrelated = "def run(q):\n    launch(q)\n    return None\n"
+    hits, suspects = find_move_destinations_by_new_defs(
+        old, {"new.py": unrelated}, {})
+    assert hits == [] and suspects == ["new.py"]
+    identical = "def run(a):\n    return a + 1\n\n\nEXTRA = 1\n"
+    hits, suspects = find_move_destinations_by_new_defs(
+        old, {"new.py": identical}, {})
+    assert hits == ["new.py"] and suspects == []
 
 
 def test_genuine_deletion_probed_against_modified_delta_not_full_text():

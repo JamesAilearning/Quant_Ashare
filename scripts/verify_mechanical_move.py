@@ -92,10 +92,10 @@ def _qualified_defs(tree: ast.AST) -> dict[str, ast.AST]:
     return out
 
 
-def _module_def_names(text: str, context: str) -> set[str]:
-    """Qualified def/class names in a module text (parse or die loud)."""
+def _module_defs(text: str, context: str) -> dict[str, ast.AST]:
+    """Qualified def/class nodes of a module text (parse or die loud)."""
     try:
-        return set(_qualified_defs(ast.parse(text)))
+        return _qualified_defs(ast.parse(text))
     except SyntaxError as exc:
         raise VerifyError(f"cannot parse {context}: {exc}") from exc
 
@@ -104,23 +104,36 @@ def find_move_destinations_by_new_defs(old_text: str,
                                        dest_texts: Mapping[str, str],
                                        base_of: Mapping[str, str],
                                        context: str = "<old>",
-                                       ) -> list[str]:
-    """AST fallback probe (codex #364 r12 P2): candidates whose NEW
-    def/class names (vs their own base) intersect the deleted module's
-    defs. Catches a delete-and-merge whose moved ROWS all pre-existed in
-    the destination's base — the multiset line delta cancels them and
-    the move would otherwise silently read as a genuine deletion. A
-    same-name def already present in the candidate's base is NOT move
-    evidence (that would re-open the r11 false-positive)."""
-    old_names = _module_def_names(old_text, context)
+                                       ) -> tuple[list[str], list[str]]:
+    """AST fallback probe (codex #364 r12 P2) -> ``(hits, suspects)``.
+
+    A candidate is a HIT when one of its NEW defs (vs its own base) is
+    IDENTICAL to a deleted-module def — same qualname AND same
+    ``ast.unparse`` — which is what a mechanical move produces even when
+    every moved ROW pre-existed in the destination's base and cancelled
+    out of the line delta. Name-only matches with DIFFERENT content are
+    returned as SUSPECTS instead: an unrelated new module defining a
+    common name like ``run`` is not move evidence and must not hard-fail
+    the gate (codex #364 r13 P2) — the caller prints them as a loud
+    warning pointing at --old/--new. A same-name def already present in
+    the candidate's base counts as neither (r11 false-positive guard)."""
+    old_defs = _module_defs(old_text, context)
     hits: list[str] = []
+    suspects: list[str] = []
     for p in sorted(dest_texts):
-        names = _module_def_names(dest_texts[p], p)
+        defs = _module_defs(dest_texts[p], p)
+        new_names = set(defs)
         if p in base_of:
-            names -= _module_def_names(base_of[p], f"{p} (base)")
-        if names & old_names:
+            new_names -= set(_module_defs(base_of[p], f"{p} (base)"))
+        common = new_names & set(old_defs)
+        if not common:
+            continue
+        if any(ast.unparse(defs[n]) == ast.unparse(old_defs[n])
+               for n in common):
             hits.append(p)
-    return hits
+        else:
+            suspects.append(p)
+    return hits, suspects
 
 
 def _decorators(node: ast.AST) -> list[str]:
@@ -457,14 +470,20 @@ def main(argv: list[str] | None = None) -> int:
             if not dests:
                 # AST fallback (codex #364 r12 P2): a delete-and-merge
                 # whose moved rows ALL pre-existed in the destination's
-                # base cancels out of the line delta — moved DEF NAMES
-                # appearing as new defs are still hard evidence. (The
-                # rename path needs no fallback: its pair is always
+                # base cancels out of the line delta — an IDENTICAL def
+                # reappearing as new is still hard evidence; name-only
+                # matches are warned, not failed (codex #364 r13 P2).
+                # (The rename path needs no fallback: its pair is always
                 # verified, so a missed extra fails loud as ONLY-IN-OLD,
                 # never silent.)
-                dests = find_move_destinations_by_new_defs(
+                dests, suspects = find_move_destinations_by_new_defs(
                     old_text, dest_texts, base_of, context=old_path)
-                via = "new def names"
+                via = "identical new defs"
+                if not dests and suspects:
+                    print(f"(WARNING: {old_path} deleted while {suspects} "
+                          "add same-NAMED defs with different content — "
+                          "not auto-verified as a move; if this WAS a "
+                          "move, prove it with --old/--new)")
             if dests:
                 kind = ("split" if all(d in added_set for d in dests)
                         else "split/merge")
