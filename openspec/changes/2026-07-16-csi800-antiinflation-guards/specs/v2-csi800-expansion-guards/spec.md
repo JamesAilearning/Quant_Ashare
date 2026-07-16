@@ -22,10 +22,23 @@ base = 5 bps 与 conservative = **20 bps**（全账本平铺，DP-2 签署值，
 变更）；per-instrument 分段滑点成本模型为已记录的 backlog（audit A4
 同族），不阻塞本契约。
 
+两档 SHALL 物化为**单一配对战役报告工件**（codex P1 on #368）：同时
+载有两档的官方指标、双方 run id，以及双方持久化配置的**全字段 diff
+证明**（除 ``slippage_bps`` 外 SHALL 零差异——配对性由工件自证，不靠
+口头声明）；缺任一侧（尤其 conservative 侧）的报告 SHALL 判无效而非
+"待补"。veto 勾验 SHALL 消费该配对工件，SHALL NOT 接受任一单侧 run
+报告作为替代——两个独立 run 报告无法证明输入匹配，也无法阻止不利的
+conservative 工件被省略。
+
 #### Scenario: 敏感带成对呈报
 - **WHEN** 一个 csi800 战役决策 run 完成
-- **THEN** 其报告同时载有 base 与 conservative 两档的净超额，且主判
-  结论引用 conservative 档
+- **THEN** 配对报告工件同时载有 base 与 conservative 两档的净超额与
+  双方 run id + 配置 diff 证明，且主判结论引用 conservative 档
+
+#### Scenario: 省略不利的 conservative 侧被拒
+- **WHEN** 只提交 base 档 run 报告（conservative 工件缺失或 config
+  diff 含 slippage_bps 之外的差异）请求进入晋升流程
+- **THEN** 该报告按本契约判无效，veto 勾验拒绝受理
 
 #### Scenario: conservative 幅度不可试后回调
 - **WHEN** conservative 档结果不利，有人提议把 20 bps 下调后重跑
@@ -66,8 +79,11 @@ SHALL 先于任何战役数据存在（本 change 合并即满足），跑后 SH
 3. **换手**：csi800 run 的年化单边换手 > 同配置 csi300 参照 run 的
    1.5 倍 → veto（breadth 不得靠制造换手兑现）。
 4. **单票/板块集中度**：run 必须以既有 `MinimalRiskConstraints` 默认值
-   执行（max_per_name = 0.05、max_per_board = 0.40，不得放宽）；任何
-   放宽即 run 无效。
+   在 **runtime 强制执行**（max_per_name = 0.05、max_per_board = 0.40，
+   不得放宽），且生效值 SHALL 记录进 run 工件供勾验。当前 pipeline /
+   walk-forward 调 `BacktestRunner.run` 时**不传 `risk_constraints`**
+   （缺省=无仓位级约束，codex P1 on #368）——战役实现 SHALL 补显式
+   接线；约束未接线、未记录或被放宽的 run 一律无效。
 5. **中盘集中度**：csi500 sleeve 的时均组合权重 > 75%，或 sleeve 报告
    `unknown` 桶时均权重 > 10% → veto（宇宙退化为中盘单边注 / 分组图
    失真，probe 实证基线 61.8% / 4.4%）。
@@ -81,6 +97,12 @@ SHALL 先于任何战役数据存在（本 change 合并即满足），跑后 SH
 - **WHEN** 第一个战役决策 run 点火之时
 - **THEN** 本 veto 表（含全部数字）已在 main 上（本 change 合并即满足），
   且战役报告逐条对照勾验
+
+#### Scenario: 风险约束未接线的 run 无效
+- **WHEN** 一个战役 run 在 pipeline/walk-forward 未显式传入
+  `MinimalRiskConstraints` 默认值（即 `BacktestRunner.run` 以
+  `risk_constraints=None` 执行）或其工件缺约束生效值记录
+- **THEN** 该 run 判无效，不得进入 veto 勾验与晋升流程
 
 ### Requirement: csi800 战役宇宙 SHALL 保留金融股（与现役一致）
 
