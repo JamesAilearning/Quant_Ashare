@@ -227,7 +227,8 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
                     "SH000300", "2026-06-10", "2026-06-16"
                 )
         self.assertTrue(
-            any("NOT the canonical" in line and "SH000300" in line for line in cm.output),
+            any("NOT one of the canonical" in line and "SH000300" in line
+                for line in cm.output),
             f"expected the LOAD-time canonical-benchmark warning, got: {cm.output}",
         )
 

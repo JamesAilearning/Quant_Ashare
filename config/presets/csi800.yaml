@@ -1,0 +1,21 @@
+# CSI800 expansion preset ((b) Step 2) — csi800 universe on its OWN
+# canonical total-return benchmark. A csi800 run measured against the
+# csi300 basket is a category error; the per-universe canonical mapping
+# lives in src/core/backtest_runner.py (_CANONICAL_BENCHMARK_BY_UNIVERSE)
+# and is guarded by tests/governance/test_canonical_benchmark_default_consistency.py.
+mode: pipeline
+instruments: csi800
+feature_handler: Alpha158
+model_type: LGBModel
+compute_device: cpu
+num_boost_round: 1000
+early_stopping_rounds: 50
+learning_rate: 0.005
+# Canonical csi800 benchmark = CSI800 TOTAL-RETURN index (H00906.CSI),
+# ingested 2026-07-16: coverage 2018-01-02..calendar tail, 0 NaN. The
+# price sibling SH000906 is not in the bundle; the runtime value check
+# emits a "cross-check skipped" warning for the absent sibling (PR-J).
+benchmark_code: SH000906TR
+topk: 50
+n_drop: 5
+signal_to_execution_lag: 1

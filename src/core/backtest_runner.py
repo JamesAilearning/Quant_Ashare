@@ -63,6 +63,23 @@ _logger = get_logger(__name__)
 # comparison, OR an operator mistake (e.g. an untracked preset left on the price index).
 _CANONICAL_BENCHMARK_CODE = "SH000300TR"
 
+# CSI800 expansion (b) Step 2: the canonical benchmark is PER UNIVERSE — a
+# csi800 run measured against the csi300 basket's return is a category error,
+# not a comparison. Every value is a TOTAL-RETURN index ingested into the
+# canonical bundle (SH000906TR / SH000905TR landed 2026-07-16, operator-signed
+# coverage 2018-01-02..calendar tail, zero NaN). "all" keeps the SH000300TR
+# basis (status quo for the production preset; revisit if a whole-market
+# canonical basis is ever promoted). The static pairing guard lives in
+# tests/governance/test_canonical_benchmark_default_consistency.py; the
+# LOAD-time warning below treats ANY value of this map as canonical-for-its-
+# universe (it does not receive the universe, so it checks set membership).
+_CANONICAL_BENCHMARK_BY_UNIVERSE = {
+    "csi300": _CANONICAL_BENCHMARK_CODE,
+    "csi800": "SH000906TR",
+    "csi500": "SH000905TR",
+    "all": _CANONICAL_BENCHMARK_CODE,
+}
+
 # PR-C (audit A1): version tag for the signal→execution timing semantics,
 # folded into backtest provenance fingerprints and the walk-forward resume
 # fingerprint. "lag_total_v2" = signal_to_execution_lag is the TOTAL
@@ -1081,7 +1098,8 @@ class BacktestRunner:
     @staticmethod
     def _warn_if_non_canonical_benchmark(benchmark_code: str) -> None:
         """LOAD-time canonical-benchmark check (PR-J): warn LOUD when this run
-        consumes a benchmark that is NOT the canonical total-return SH000300TR.
+        consumes a benchmark outside the per-universe canonical total-return
+        set (``_CANONICAL_BENCHMARK_BY_UNIVERSE`` — CSI800 expansion Step 2).
 
         The static config guard (test_canonical_benchmark_default_consistency) only
         covers TRACKED config defaults; it cannot see an UNTRACKED personal preset
@@ -1090,15 +1108,20 @@ class BacktestRunner:
         silent. A non-canonical benchmark is NOT blocked — it is legitimate for the
         REGEN-A SH000300 price-index control or a deliberate comparison — only
         surfaced, so an accidental price-index run does not masquerade as canonical.
+        This check does not receive the run's universe, so it validates SET
+        membership; the universe<->benchmark PAIRING on tracked configs is the
+        static guard's job.
         """
-        if benchmark_code != _CANONICAL_BENCHMARK_CODE:
+        canonical_set = set(_CANONICAL_BENCHMARK_BY_UNIVERSE.values())
+        if benchmark_code not in canonical_set:
             _logger.warning(
-                "BacktestRunner: consuming benchmark %s, NOT the canonical "
-                "total-return %s — excess return is measured against a NON-canonical "
-                "basis. Expected only for the REGEN-A price-index control or a "
-                "deliberate comparison; if an untracked preset left the default on the "
-                "price index, fix it. (PR-J LOAD-time canonical-benchmark check.)",
-                benchmark_code, _CANONICAL_BENCHMARK_CODE,
+                "BacktestRunner: consuming benchmark %s, NOT one of the canonical "
+                "per-universe total-return benchmarks %s — excess return is measured "
+                "against a NON-canonical basis. Expected only for the REGEN-A "
+                "price-index control or a deliberate comparison; if an untracked "
+                "preset left the default on the price index, fix it. (PR-J LOAD-time "
+                "canonical-benchmark check.)",
+                benchmark_code, sorted(canonical_set),
             )
 
     @staticmethod

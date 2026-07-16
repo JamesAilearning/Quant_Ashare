@@ -7,9 +7,12 @@ compute_device: cpu
 num_boost_round: 1000
 early_stopping_rounds: 50
 learning_rate: 0.005
-# Canonical total-return benchmark SH000300TR (applied at REGEN-2).
-# SH000300 is the price-index REGEN-A control (audit E2).
-benchmark_code: SH000300TR
+# Per-universe canonical benchmark ((b) Step 2): this preset trades the
+# csi800 universe, so excess return is measured against the CSI800
+# TOTAL-RETURN index — the previous SH000300TR here was a universe/basis
+# mismatch (csi300 basket as the basis for a csi800 run). SH000300TR
+# stays canonical for csi300/all universes (REGEN-2, audit E2).
+benchmark_code: SH000906TR
 topk: 50
 n_drop: 5
 signal_to_execution_lag: 1
