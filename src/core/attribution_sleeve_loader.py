@@ -28,6 +28,9 @@ Semantics
   derives a CONSERVATIVE coverage bound from the span data itself (the
   last date membership demonstrably changed: max over all span STARTs
   and all non-sentinel ENDs) and refuses any ``as_of`` beyond it. The
+  bound is PER SLEEVE and every sleeve must individually cover ``as_of``
+  (codex #366 r2: the files may be re-resolved separately via
+  ``--indices``, so a global max would let the staler sleeve pass). The
   bound deliberately under-approximates: a churn-free covered tail after
   the last change is also refused (fail-loud beats silently-stale;
   re-resolving membership snapshots extends the bound).
@@ -79,7 +82,7 @@ class SleeveResolution:
     sleeve_map: dict[str, str]
     taxonomy_id: str
     as_of: str
-    coverage_end: str  # last DEMONSTRATED membership change (see module doc)
+    coverage_end: str  # BINDING bound: min across per-sleeve last changes
     n_csi300: int
     n_csi500: int
 
@@ -158,20 +161,30 @@ def resolve_sleeve_map(provider_dir: Path | str,
     as_of_date = _parse_iso(as_of, "as_of")
     spans_by_label = {label: _parse_spans(root / filename)
                       for filename, label in _SLEEVE_FILES}
-    all_spans = [s for spans in spans_by_label.values() for s in spans]
-    coverage = _coverage_bound(all_spans)
-    if coverage is None or as_of_date > coverage:
+    # PER-SLEEVE coverage (codex #366 r2): the span files may be
+    # re-resolved SEPARATELY (03_resolve_index_membership --indices), so
+    # a global max would let the STALER sleeve silently resolve outdated
+    # composition. Every sleeve must individually cover as_of.
+    bounds = {label: _coverage_bound(spans)
+              for label, spans in spans_by_label.items()}
+    stale = sorted(label for label, b in bounds.items()
+                   if b is None or as_of_date > b)
+    if stale:
+        detail = ", ".join(
+            f"{label}: {b.isoformat() if b else 'none'}"
+            for label, b in sorted(bounds.items()))
         raise SleeveResolutionError(
-            f"as_of {as_of} is beyond the membership data's demonstrated "
-            f"coverage (last real membership change: "
-            f"{coverage.isoformat() if coverage else 'none'}) — the "
-            f"{QLIB_OPEN_END_DATE} end date is a synthetic 'active at the "
-            "last snapshot' marker, not knowledge of the future; resolving "
-            "past coverage would silently attribute with STALE composition. "
-            "Re-resolve membership snapshots (03_resolve_index_membership) "
-            "past this date first. The bound is deliberately conservative "
-            "(last CHANGE): a churn-free covered tail is refused too."
+            f"as_of {as_of} is beyond the demonstrated membership coverage "
+            f"of {', '.join(stale)} (last real change per sleeve: {detail}) "
+            f"— the {QLIB_OPEN_END_DATE} end date is a synthetic 'active at "
+            "the last snapshot' marker, not knowledge of the future; "
+            "resolving past a sleeve's coverage would silently attribute "
+            "with STALE composition. Re-resolve membership snapshots "
+            "(03_resolve_index_membership) for the stale sleeve(s) first. "
+            "The bound is deliberately conservative (last CHANGE): a "
+            "churn-free covered tail is refused too."
         )
+    coverage = min(b for b in bounds.values() if b is not None)
     sleeve_map: dict[str, str] = {}
     counts: dict[str, int] = {}
     seen: dict[str, str] = {}

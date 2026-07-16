@@ -71,16 +71,25 @@ def test_as_of_resolution_spans_and_reentry():
 def test_as_of_beyond_coverage_fails_loud_despite_open_ended_rows():
     # codex #366 r1 P1: 2099-12-31 is the resolver's synthetic "active at
     # the last snapshot" marker — an as_of past the last REAL membership
-    # change (here 2021-06-01) must be refused even though the open-ended
-    # rows would happily "match", not silently resolved from stale
-    # composition.
+    # change must be refused even though the open-ended rows would
+    # happily "match", not silently resolved from stale composition.
+    # codex #366 r2 P1: the bound is PER SLEEVE (files can be re-resolved
+    # separately via --indices) — csi300's last change here is
+    # 2021-06-01 but csi500's is 2020-12-31, so the STALER sleeve binds.
     with tempfile.TemporaryDirectory() as t:
         root = _bundle(Path(t), _CSI300, _CSI500)
+        # past every sleeve's bound:
         with pytest.raises(SleeveResolutionError, match="beyond"):
             resolve_sleeve_map(root, "2021-06-02")
-        # the bound itself still resolves, and is stamped as provenance.
-        r = resolve_sleeve_map(root, "2021-06-01")
-        assert r.coverage_end == "2021-06-01"
+        # within csi300's bound but past csi500's -> refused, NAMING the
+        # stale sleeve and both per-sleeve bounds.
+        with pytest.raises(SleeveResolutionError,
+                           match="csi500_sleeve.*2020-12-31"):
+            resolve_sleeve_map(root, "2021-05-01")
+        # the binding (min) bound itself still resolves, stamped as
+        # provenance.
+        r = resolve_sleeve_map(root, "2020-12-31")
+        assert r.coverage_end == "2020-12-31"
         assert r.sleeve_map["SH600000"] == SLEEVE_CSI300
         assert r.sleeve_map["SH600011"] == SLEEVE_CSI300  # open-ended span
 
