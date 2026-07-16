@@ -531,6 +531,11 @@ class Pipeline:
             predictions=model_result.predictions,
             topk=config.topk,
             n_drop=config.n_drop,
+            # (b) Step 2 (codex P1 on #365): carry the run's universe so the
+            # LOAD-time canonical-benchmark check can flag a MIS-PAIRED
+            # canonical code (csi800 on the csi300 basket or vice versa),
+            # not just out-of-set codes.
+            universe_hint=config.instruments,
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest (microstructure mask + equal-weight
             # baseline raw-field fetches take the §4.3.2 layer instead of

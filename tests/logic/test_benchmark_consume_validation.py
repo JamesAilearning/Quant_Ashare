@@ -232,6 +232,66 @@ class ConsumedBenchmarkWiringTests(unittest.TestCase):
             f"expected the LOAD-time canonical-benchmark warning, got: {cm.output}",
         )
 
+    def test_mispaired_canonical_benchmark_warns_with_universe_hint(self) -> None:
+        # codex P1 on #365: with a universe hint, a code that IS in the
+        # canonical map but belongs to ANOTHER universe (csi800 measured on
+        # the csi300 basket) must warn — set membership alone would pass it.
+        frame = _qlib_frame({
+            "SH000300": _series(_DATES, [100, 101, 102, 101, 103]),
+            "SH000300TR": _series(_DATES, [100, 101.5, 103.0, 102.5, 105.0]),
+        })
+        with self._patch_D(frame):
+            with self.assertLogs("src.core.backtest_runner", level="WARNING") as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300TR", "2026-06-10", "2026-06-16",
+                    universe_hint="csi800",
+                )
+        self.assertTrue(
+            any("MIS-PAIRED" in line and "csi800" in line
+                and "SH000906TR" in line for line in cm.output),
+            f"expected the universe-aware pairing warning, got: {cm.output}",
+        )
+
+    def test_correctly_paired_benchmark_no_canonical_warning(self) -> None:
+        # The correct pair under a hint must NOT trigger the canonical warning
+        # (the consume path emits other PR-J WARNs — value-check breadcrumbs —
+        # so assert specifically on the canonical-check phrasings).
+        frame = _qlib_frame({
+            "SH000300": _series(_DATES, [100, 101, 102, 101, 103]),
+            "SH000300TR": _series(_DATES, [100, 101.5, 103.0, 102.5, 105.0]),
+        })
+        with self._patch_D(frame):
+            with self.assertLogs("src.core.backtest_runner", level="WARNING") as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300TR", "2026-06-10", "2026-06-16",
+                    universe_hint="csi300",
+                )
+        self.assertFalse(
+            any("MIS-PAIRED" in line or "NOT one of the canonical" in line
+                for line in cm.output),
+            f"correct pair must not trigger the canonical warning: {cm.output}",
+        )
+
+    def test_unmapped_universe_hint_falls_back_to_set_membership(self) -> None:
+        # A hint outside the canonical map (e.g. a bespoke research universe)
+        # cannot be paired — the check falls back to set membership: canonical
+        # codes stay silent, out-of-set codes still warn.
+        frame = _qlib_frame({
+            "SH000300": _series(_DATES, [100, 101, 102, 101, 103]),
+            "SH000300TR": _series(_DATES, [100, 101.5, 103.0, 102.5, 105.0]),
+        })
+        with self._patch_D(frame):
+            with self.assertLogs("src.core.backtest_runner", level="WARNING") as cm:
+                BacktestRunner._validate_consumed_benchmark(
+                    "SH000300TR", "2026-06-10", "2026-06-16",
+                    universe_hint="my_custom_universe",
+                )
+        self.assertFalse(
+            any("MIS-PAIRED" in line or "NOT one of the canonical" in line
+                for line in cm.output),
+            f"unmapped hint + canonical code must not warn: {cm.output}",
+        )
+
     def test_nan_benchmark_raises(self) -> None:
         frame = _qlib_frame(
             {"SH000300": _series(_DATES, [100, np.nan, 102, 101, 103])}
