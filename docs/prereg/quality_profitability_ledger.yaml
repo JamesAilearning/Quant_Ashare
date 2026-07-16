@@ -251,6 +251,60 @@ entries:
   #   block=4 折,B=10000,seed=20260716,单侧(正向);通过=max-t 超
   #   bootstrap 95 分位 且 观测 t≥2.85(冻结 A 股校准作硬地板,取更严)。
 
+  - id: E023
+    date: 2026-07-16
+    type: sensitivity_run_result
+    ref: C1_from_2018
+    status: recorded_verbatim
+    note: 23 stamp(含 4 外推期):rank_ic_mean=-0.0081(std 0.2014,
+      t=-0.19,正 12/23)。工件 C1_GPA_C1_from_2018_20260716T010952Z。
+      九 trial 中最接近零 — 仍为负,不构成信号。
+  - id: E024
+    date: 2026-07-16
+    type: sensitivity_run_result
+    ref: holding_semiannual
+    status: recorded_verbatim
+    note: 9 stamp 两季链:rank_ic_mean=-0.0662(std 0.1842,t=-1.08,
+      正 3/9)。工件 C1_GPA_holding_semiannual_20260716T011020Z。
+  - id: E025
+    date: 2026-07-16
+    type: sensitivity_run_result
+    ref: holding_annual
+    status: recorded_verbatim
+    note: 4 stamp 四季链:rank_ic_mean=-0.0657(std 0.2208,t=-0.60,
+      正 2/4;n=4 极小样本,如实不夸大)。工件
+      C1_GPA_holding_annual_20260716T011047Z。
+  - id: E026
+    date: 2026-07-16
+    type: sensitivity_run_result
+    ref: st_off
+    status: recorded_verbatim
+    note: 与 C1 主 run 逐位一致(-0.0392/t-0.82/8/19)— ST 掩码在
+      csi300_pit_ex_financials 上全折零命中,本切片实证空转(宇宙本就
+      无 ST 名),如实记录。工件 C1_GPA_st_off_20260716T011116Z。
+  - id: E027
+    date: 2026-07-16
+    type: sensitivity_run_result
+    ref: size_decile_variants
+    status: recorded_verbatim
+    note: 五分位:rank_ic_mean=-0.0416(std 0.2097,t=-0.87,正 9/19)。
+      工件 C1_GPA_size_decile_variants_20260716T011145Z。
+  - id: E028
+    date: 2026-07-16
+    type: fwer_adjudication
+    ref: quality_profitability_v1_full_batch
+    status: recorded_verbatim
+    note: 全批 FWER(N=9,签署机制:联合 MBB 共享位置重采,block=4,
+      B=10000,seed=20260716,单侧正向,q95 bar 且 t≥2.85 硬地板)=
+      **CLEAN_NEGATIVE**。九 trial 观测 t 全负:C1 -0.82/C2 -1.23/
+      C3 -0.62/C1_from_2018 -0.19/semiannual -1.08/annual -0.60/
+      st_off -0.82/quintile -0.87/exclude_fold_0(E018 派生)-1.50;
+      max t=-0.19 远低于双门槛。bootstrap q95 bar=+14.485 显著偏高
+      (稀疏 trial 的块重采重复位置致 null 重尾 — 机制如实记录;
+      2.85 硬地板正是为此签作有效下界,本裁决不受影响:全负)。
+      工件 output/gate4a/fwer_20260716T011428Z。verdict 输入=干净
+      阴性,交操作人按冻结三态规则终裁;绝不 auto-pivot。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。
