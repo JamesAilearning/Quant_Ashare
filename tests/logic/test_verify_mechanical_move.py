@@ -109,6 +109,26 @@ def test_new_broad_except_flagged():
     assert any("NEW broad except" in f for f in findings)
 
 
+def test_broad_handler_relocation_between_functions_flagged():
+    # codex #364 r7 P2: alpha Exception->TypeError while beta goes the
+    # opposite way — filtered-line multiset, signatures and the AGGREGATE
+    # broad count are all unchanged; per-scope accounting must still flag
+    # beta's newly gained catch-all (and must NOT flag alpha).
+    old = ("def alpha(x):\n    try:\n        return x\n"
+           "    except Exception:\n        raise\n\n\n"
+           "def beta(y):\n    try:\n        return y\n"
+           "    except TypeError:\n        raise\n")
+    new = ("def alpha(x):\n    try:\n        return x\n"
+           "    except TypeError:\n        raise\n\n\n"
+           "def beta(y):\n    try:\n        return y\n"
+           "    except Exception:\n        raise\n")
+    only_old, only_new = content_diff(old, [new])
+    assert only_old == [] and only_new == []   # the line layer is blind
+    findings = compare_module_texts(old, new)
+    assert any("NEW broad except" in f and "beta" in f for f in findings)
+    assert not any("alpha" in f for f in findings)
+
+
 def test_signature_drift_flagged():
     # dropped keyword-only marker: flag becomes positional
     new = _OLD.replace("def run(a, *, flag=False):", "def run(a, flag=False):")

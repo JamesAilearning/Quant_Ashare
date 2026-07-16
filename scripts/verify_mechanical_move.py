@@ -16,7 +16,9 @@ verification deterministic and CI-gateable:
       function decorator drift (lost OR added — a new ``@cache`` is a
       behavior change too), changed signatures (incl. keyword-only
       markers and defaults), lost defs/classes, and NEWLY-ADDED broad
-      ``except`` handlers (bare / Exception / BaseException).
+      ``except`` handlers (bare / Exception / BaseException) — accounted
+      PER ENCLOSING SCOPE, so relocating a catch-all between functions
+      is drift, not a wash.
 
 Usage — auto mode (rename-detected files against a base ref):
 
@@ -99,16 +101,35 @@ def _signature(node: ast.AST) -> str | None:
     return None
 
 
-def _broad_except_count(tree: ast.AST) -> int:
-    n = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ExceptHandler):
-            if node.type is None:
-                n += 1
-            elif isinstance(node.type, ast.Name) and node.type.id in (
-                    "Exception", "BaseException"):
-                n += 1
-    return n
+def _is_broad_handler(node: ast.ExceptHandler) -> bool:
+    if node.type is None:
+        return True
+    return (isinstance(node.type, ast.Name)
+            and node.type.id in ("Exception", "BaseException"))
+
+
+def _broad_excepts_by_scope(tree: ast.AST) -> Counter[str]:
+    """{enclosing def/class qualname (or "<module>"): broad-handler
+    count}. Per-SCOPE accounting (codex #364 r7 P2): an aggregate count
+    certifies a swap — `alpha` Exception->TypeError while `beta` goes the
+    opposite way keeps the total constant even though `beta` gained a new
+    catch-all. Scope names mirror ``_qualified_defs`` qualnames."""
+    out: Counter[str] = Counter()
+
+    def walk(node: ast.AST, prefix: str, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.ClassDef)):
+                qual = f"{prefix}{child.name}"
+                walk(child, f"{qual}.", qual)
+            else:
+                if (isinstance(child, ast.ExceptHandler)
+                        and _is_broad_handler(child)):
+                    out[scope] += 1
+                walk(child, prefix, scope)
+
+    walk(tree, "", "<module>")
+    return out
 
 
 def compare_module_texts(old_text: str,
@@ -125,9 +146,9 @@ def compare_module_texts(old_text: str,
 
     ``base_texts`` aligns with ``new_texts``: the pre-move version of a
     MODIFIED merge destination (None for fresh files). Its broad-except
-    handlers are subtracted from that destination's count, so a merge
-    target's own pre-existing handlers do not read as newly added while
-    a genuinely new one still does (codex #364 r6). Empty list = clean."""
+    handlers are subtracted per enclosing scope, so a merge target's own
+    pre-existing handlers do not read as newly added while a genuinely
+    new one still does (codex #364 r6). Empty list = clean."""
     if isinstance(new_texts, str):
         new_texts = [new_texts]
     if base_texts is None:
@@ -163,14 +184,18 @@ def compare_module_texts(old_text: str,
         if old_sig is not None and new_sig is not None and old_sig != new_sig:
             findings.append(f"SIGNATURE changed on {qual}: "
                             f"{old_sig!r} -> {new_sig!r}")
-    old_broad = _broad_except_count(old_tree)
-    new_broad = sum(
-        _broad_except_count(t) - (_broad_except_count(b) if b is not None
-                                  else 0)
-        for t, b in zip(new_trees, base_trees, strict=True))
-    if new_broad > old_broad:
-        findings.append(f"NEW broad except handler(s): {old_broad} -> "
-                        f"{new_broad} (bare/Exception/BaseException)")
+    old_scoped = _broad_excepts_by_scope(old_tree)
+    new_scoped: Counter[str] = Counter()
+    for t, b in zip(new_trees, base_trees, strict=True):
+        new_scoped.update(_broad_excepts_by_scope(t))
+        if b is not None:
+            new_scoped.subtract(_broad_excepts_by_scope(b))
+    for scope in sorted(set(old_scoped) | set(new_scoped)):
+        if new_scoped[scope] > old_scoped[scope]:
+            findings.append(
+                f"NEW broad except handler(s) in {scope}: "
+                f"{old_scoped[scope]} -> {new_scoped[scope]} "
+                f"(bare/Exception/BaseException)")
     return findings
 
 
