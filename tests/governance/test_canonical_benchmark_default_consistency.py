@@ -106,6 +106,33 @@ class CanonicalBenchmarkDefaultConsistencyTests(unittest.TestCase):
                 "its own REGEN, not a mapping edit.",
             )
 
+    def test_canonical_map_codes_ride_the_daily_ingest_default(self) -> None:
+        # codex P1 on #365: the orchestrated daily rebuild invokes stage 07
+        # with NO --index-map into a FRESH staging bundle — a canonical code
+        # missing from DEFAULT_INDEX_MAP silently vanishes at the next atomic
+        # swap and every consuming run fails at backtest time. Pin:
+        # canonical-map values ⊆ default-ingest qlib names (+ price control).
+        import importlib.util
+        path = (_PROJECT_ROOT / "scripts" / "data_pipeline"
+                / "07_ingest_benchmark.py")
+        spec = importlib.util.spec_from_file_location("_ingest07_guard", path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        ingested = {qlib_name for _, qlib_name in mod.DEFAULT_INDEX_MAP}
+        missing = sorted(set(CANONICAL_BY_UNIVERSE.values()) - ingested)
+        self.assertEqual(
+            [], missing,
+            "per-universe canonical benchmark(s) missing from the daily "
+            f"ingest DEFAULT_INDEX_MAP {sorted(ingested)}: {missing} — the "
+            "next daily rebuild would drop them from the fresh staging "
+            "bundle and every consuming run would fail at backtest time.",
+        )
+        self.assertIn(
+            REGEN_A_PRICE, ingested,
+            "the REGEN-A price control must stay in the daily ingest default.",
+        )
+
     def test_every_tracked_config_yaml_benchmark_in_canonical_set(self) -> None:
         # Scans ALL tracked config YAMLs (not a hard-list): a NEW config with a price
         # benchmark, or a reverted flip in any existing one, is caught here. The
