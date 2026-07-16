@@ -92,6 +92,37 @@ def _qualified_defs(tree: ast.AST) -> dict[str, ast.AST]:
     return out
 
 
+def _module_def_names(text: str, context: str) -> set[str]:
+    """Qualified def/class names in a module text (parse or die loud)."""
+    try:
+        return set(_qualified_defs(ast.parse(text)))
+    except SyntaxError as exc:
+        raise VerifyError(f"cannot parse {context}: {exc}") from exc
+
+
+def find_move_destinations_by_new_defs(old_text: str,
+                                       dest_texts: Mapping[str, str],
+                                       base_of: Mapping[str, str],
+                                       context: str = "<old>",
+                                       ) -> list[str]:
+    """AST fallback probe (codex #364 r12 P2): candidates whose NEW
+    def/class names (vs their own base) intersect the deleted module's
+    defs. Catches a delete-and-merge whose moved ROWS all pre-existed in
+    the destination's base — the multiset line delta cancels them and
+    the move would otherwise silently read as a genuine deletion. A
+    same-name def already present in the candidate's base is NOT move
+    evidence (that would re-open the r11 false-positive)."""
+    old_names = _module_def_names(old_text, context)
+    hits: list[str] = []
+    for p in sorted(dest_texts):
+        names = _module_def_names(dest_texts[p], p)
+        if p in base_of:
+            names -= _module_def_names(base_of[p], f"{p} (base)")
+        if names & old_names:
+            hits.append(p)
+    return hits
+
+
 def _decorators(node: ast.AST) -> list[str]:
     return [ast.unparse(d) for d in getattr(node, "decorator_list", [])]
 
@@ -422,10 +453,23 @@ def main(argv: list[str] | None = None) -> int:
         for old_path in deleted:
             old_text = _git("show", f"{args.base}:{old_path}")
             dests = find_split_destinations(old_text, probe_of)
+            via = "line overlap"
+            if not dests:
+                # AST fallback (codex #364 r12 P2): a delete-and-merge
+                # whose moved rows ALL pre-existed in the destination's
+                # base cancels out of the line delta — moved DEF NAMES
+                # appearing as new defs are still hard evidence. (The
+                # rename path needs no fallback: its pair is always
+                # verified, so a missed extra fails loud as ONLY-IN-OLD,
+                # never silent.)
+                dests = find_move_destinations_by_new_defs(
+                    old_text, dest_texts, base_of, context=old_path)
+                via = "new def names"
             if dests:
                 kind = ("split" if all(d in added_set for d in dests)
                         else "split/merge")
-                print(f"({kind} detected: {old_path} -> {dests})")
+                print(f"({kind} detected via {via}: "
+                      f"{old_path} -> {dests})")
                 rc |= _verify_one(f"{old_path} -> {dests} [{kind}]",
                                   old_text,
                                   [(dest_texts[d], base_of.get(d))

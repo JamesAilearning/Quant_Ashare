@@ -230,6 +230,42 @@ def test_find_split_destinations_genuine_deletion_matches_nothing():
     assert find_split_destinations(_OLD, added) == []
 
 
+def test_delete_and_merge_with_cancelling_rows_probed_by_def_names():
+    # codex #364 r12 P2: every moved ROW already existed in the merge
+    # destination's base (dedup-merge: `other` replaced by the moved
+    # `helper`) — the line delta cancels to below the floor, so the
+    # def-name fallback must find the destination and verification must
+    # run LOUD instead of silently reporting a genuine deletion.
+    from scripts.verify_mechanical_move import (
+        _verify_one,
+        filtered_lines,
+        find_move_destinations_by_new_defs,
+        find_split_destinations,
+    )
+    old = "def helper(x):\n    validate()\n    return x\n"
+    base = "def other(w):\n    validate()\n    return x\n"
+    new = "def helper(x):\n    validate()\n    return x\n"
+    delta = filtered_lines(new) - filtered_lines(base)
+    assert find_split_destinations(old, {"mod.py": delta}) == []  # blind
+    assert find_move_destinations_by_new_defs(
+        old, {"mod.py": new}, {"mod.py": base}) == ["mod.py"]
+    # dedup-merge is not line-provable: the verify runs and fails LOUD
+    # (operator justifies via --old/--new or the PR body), never silent.
+    assert _verify_one("dedup-merge", old, [(new, base)]) == 1
+
+
+def test_def_name_fallback_ignores_preexisting_same_name_def():
+    # a same-name def already in the candidate's BASE is not move
+    # evidence — otherwise the r11 false-positive reopens.
+    from scripts.verify_mechanical_move import (
+        find_move_destinations_by_new_defs,
+    )
+    old = "def helper(x):\n    return x\n"
+    unchanged = "def helper(y):\n    return y * 2\n\n\nDONE = True\n"
+    assert find_move_destinations_by_new_defs(
+        old, {"mod.py": unchanged}, {"mod.py": unchanged}) == []
+
+
 def test_genuine_deletion_probed_against_modified_delta_not_full_text():
     # codex #364 r11 P2: an unrelated MODIFIED file whose BASE already
     # shares two rows with a deleted 3-row helper — probing full text
