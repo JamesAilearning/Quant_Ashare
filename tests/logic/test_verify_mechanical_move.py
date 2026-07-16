@@ -115,6 +115,34 @@ def test_find_split_destinations_genuine_deletion_matches_nothing():
     assert find_split_destinations(_OLD, added) == []
 
 
+def test_split_with_duplicate_future_imports_certifies_clean():
+    # codex #364 r4 P2: each destination legally starts with
+    # `from __future__ import annotations`; concatenation would be a
+    # SyntaxError — per-file parsing must certify the clean split.
+    old = ("from __future__ import annotations\n"
+           "def a(x):\n    return x\n\n"
+           "def b(y):\n    return y\n")
+    p1 = "from __future__ import annotations\ndef a(x):\n    return x\n"
+    p2 = "from __future__ import annotations\ndef b(y):\n    return y\n"
+    from scripts.verify_mechanical_move import compare_module_texts as cmt
+    assert cmt(old, [p1, p2]) == []
+
+
+def test_verify_one_merge_move_tolerates_preexisting_lines():
+    # codex #364 r4 P2: a merge destination is a MODIFIED existing module;
+    # its pre-existing lines are expected ONLY-IN-NEW, not drift — but
+    # lost lines / AST findings still fail.
+    from scripts.verify_mechanical_move import _verify_one
+    merged = _OLD + "\n\ndef preexisting(z):\n    return z * 2\n"
+    assert _verify_one("merge", _OLD, [merged],
+                       fail_on_only_new=False) == 0
+    assert _verify_one("rename", _OLD, [merged],
+                       fail_on_only_new=True) == 1
+    lossy = merged.replace("def helper(x):\n    return x + 1\n", "")
+    assert _verify_one("lossy-merge", _OLD, [lossy],
+                       fail_on_only_new=False) == 1
+
+
 def test_unparsable_input_fails_loud():
     from scripts.verify_mechanical_move import VerifyError
     with pytest.raises(VerifyError, match="cannot parse"):

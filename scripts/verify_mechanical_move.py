@@ -110,16 +110,27 @@ def _broad_except_count(tree: ast.AST) -> int:
     return n
 
 
-def compare_module_texts(old_text: str, new_concat: str) -> list[str]:
-    """AST drift findings between the pre-move module and the concatenated
-    new file(s). Empty list = mechanically clean at the AST level."""
+def compare_module_texts(old_text: str,
+                         new_texts: str | list[str]) -> list[str]:
+    """AST drift findings between the pre-move module and the new file(s).
+
+    Destinations are parsed INDEPENDENTLY and their definitions merged
+    (codex #364 r4 P2: concatenating them breaks on a second
+    ``from __future__ import annotations``, refusing a perfectly clean
+    split). Duplicate qualnames across destinations keep the first
+    occurrence (deterministic input order). Empty list = clean."""
+    if isinstance(new_texts, str):
+        new_texts = [new_texts]
     try:
         old_tree = ast.parse(old_text)
-        new_tree = ast.parse(new_concat)
+        new_trees = [ast.parse(t) for t in new_texts]
     except SyntaxError as exc:
         raise VerifyError(f"cannot parse for AST diff: {exc}") from exc
     old_defs = _qualified_defs(old_tree)
-    new_defs = _qualified_defs(new_tree)
+    new_defs: dict[str, ast.AST] = {}
+    for tree in new_trees:
+        for qual, n in _qualified_defs(tree).items():
+            new_defs.setdefault(qual, n)
     findings: list[str] = []
     for qual, old_node in sorted(old_defs.items()):
         new_node = new_defs.get(qual)
@@ -135,7 +146,7 @@ def compare_module_texts(old_text: str, new_concat: str) -> list[str]:
             findings.append(f"SIGNATURE changed on {qual}: "
                             f"{old_sig!r} -> {new_sig!r}")
     old_broad = _broad_except_count(old_tree)
-    new_broad = _broad_except_count(new_tree)
+    new_broad = sum(_broad_except_count(t) for t in new_trees)
     if new_broad > old_broad:
         findings.append(f"NEW broad except handler(s): {old_broad} -> "
                         f"{new_broad} (bare/Exception/BaseException)")
@@ -187,11 +198,15 @@ def _git(*args: str) -> str:
 
 def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
                                         list[str], list[str]]:
-    """(rename pairs, deleted .py paths, added .py paths) vs ``base``."""
+    """(rename pairs, deleted .py paths, split-destination candidate .py
+    paths) vs ``base``. Candidates include BOTH added and MODIFIED files:
+    an extract/merge move (``D old.py`` + ``M existing.py``) must be
+    matched too, or the gate certifies a move it never checked
+    (codex #364 r4 P2)."""
     raw = _git("diff", "--name-status", "-M50%", base, "HEAD")
     pairs: list[tuple[str, str]] = []
     deleted: list[str] = []
-    added: list[str] = []
+    candidates: list[str] = []
     for line in raw.splitlines():
         parts = line.split("\t")
         if not parts:
@@ -200,25 +215,34 @@ def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
             pairs.append((parts[1], parts[2]))
         elif parts[0] == "D" and len(parts) == 2 and parts[1].endswith(".py"):
             deleted.append(parts[1])
-        elif parts[0] == "A" and len(parts) == 2 and parts[1].endswith(".py"):
-            added.append(parts[1])
-    return pairs, deleted, added
+        elif (parts[0] in ("A", "M") and len(parts) == 2
+              and parts[1].endswith(".py")):
+            candidates.append(parts[1])
+    return pairs, deleted, candidates
 
 
-def _verify_one(label: str, old_text: str, new_texts: list[str]) -> int:
+def _verify_one(label: str, old_text: str, new_texts: list[str],
+                fail_on_only_new: bool = True) -> int:
+    """``fail_on_only_new=False`` for split/merge destinations that may be
+    MODIFIED pre-existing modules: their pre-existing lines are expected
+    ONLY-IN-NEW content, not drift — lost lines (ONLY-IN-OLD) and AST
+    findings still fail (codex #364 r4 P2)."""
     only_old, only_new = content_diff(old_text, new_texts)
-    ast_findings = compare_module_texts(old_text, "\n".join(new_texts))
+    ast_findings = compare_module_texts(old_text, new_texts)
     print(f"=== {label} ===")
     if not only_old and not only_new and not ast_findings:
         print("  no diff (mechanically clean)")
         return 0
     for line in only_old:
         print(f"  ONLY-IN-OLD: {line}")
+    prefix = "ONLY-IN-NEW" if fail_on_only_new else "ONLY-IN-NEW (info)"
     for line in only_new:
-        print(f"  ONLY-IN-NEW: {line}")
+        print(f"  {prefix}: {line}")
     for f in ast_findings:
         print(f"  AST: {f}")
-    return 1
+    if only_old or ast_findings:
+        return 1
+    return 1 if (only_new and fail_on_only_new) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -243,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                      for n in args.new]
         rc |= _verify_one(f"{args.old} -> {args.new}", old_text, new_texts)
     else:
-        pairs, deleted, added = _detect_renames(args.base)
+        pairs, deleted, dest_candidates = _detect_renames(args.base)
         if not pairs and not deleted:
             print(f"no rename-detected or deleted .py files vs {args.base}; "
                   "nothing to verify.")
@@ -256,19 +280,21 @@ def main(argv: list[str] | None = None) -> int:
             rc |= _verify_one(f"{old_path} -> {new_path}", old_text,
                               [new_text])
         # splits fall below -M50% per destination (codex #364 r3 P1):
-        # match each DELETED module's filtered lines against ADDED files
-        # and verify the reconstructed split; low overlap = genuine
-        # deletion (reported, not a move, not failed).
-        added_texts = {a: (_REPO / a).read_text(encoding="utf-8")
-                       for a in added if (_REPO / a).is_file()}
+        # match each DELETED module's filtered lines against ADDED and
+        # MODIFIED files (extract/merge moves land in existing modules —
+        # codex #364 r4 P2) and verify the reconstructed move; low
+        # overlap = genuine deletion (reported, not a move, not failed).
+        dest_texts = {a: (_REPO / a).read_text(encoding="utf-8")
+                      for a in dest_candidates if (_REPO / a).is_file()}
         for old_path in deleted:
             old_text = _git("show", f"{args.base}:{old_path}")
-            dests = find_split_destinations(old_text, added_texts)
+            dests = find_split_destinations(old_text, dest_texts)
             if dests:
-                print(f"(split detected: {old_path} -> {dests})")
+                print(f"(split/merge detected: {old_path} -> {dests})")
                 rc |= _verify_one(f"{old_path} -> {dests} [split]",
                                   old_text,
-                                  [added_texts[d] for d in dests])
+                                  [dest_texts[d] for d in dests],
+                                  fail_on_only_new=False)
             else:
                 print(f"(deleted, no split destinations found: {old_path} "
                       "— genuine deletion, not verified as a move)")
