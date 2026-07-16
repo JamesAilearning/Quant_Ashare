@@ -10,7 +10,7 @@ memory (or on an LLM re-finding it every time).
 
 Each item ships as its own small OpenSpec/PR. Ordered by (pain × automatability).
 
-## 1. [top ROI] Mechanical-move drift detector — DONE (scripts/verify_mechanical_move.py + tests/logic/test_verify_mechanical_move.py)
+## 1. [top ROI] Mechanical-move drift detector — DONE (scripts/verify_mechanical_move.py + tests/logic/test_verify_mechanical_move.py; CI gate = test.yml `mechanical-move` job on PRs)
 - **Recurs as:** lost `@dataclass(frozen=True)` / `@classmethod` / `@property`
   decorators, dropped WARNING logs, added `except Exception` catch-alls,
   swapped/dropped keyword-only markers, rewritten docstrings — all of which

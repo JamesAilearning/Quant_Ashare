@@ -219,3 +219,21 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
           retention-days: 30
+
+  # Hardening backlog #1 (codex #364): deterministic mechanical-move gate.
+  # Runs ONLY the drift detector over rename-detected .py files vs the PR
+  # base — a split/rename PR that lost a decorator, changed a signature,
+  # or added a broad except fails here even with a green test suite.
+  # No qlib / no project deps: the script is stdlib + git.
+  mechanical-move:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Mechanical-move drift gate
+        run: python scripts/verify_mechanical_move.py --base "origin/${{ github.base_ref }}"
