@@ -89,15 +89,24 @@ Gate-3 已冻结 → 现在主线是 **Gate-4A(因子验证)**。本工单排在
 
 实现 P1 时两条为 BLOCKING 约束，与 §3 红线同级：
 
-1. **override 模式的 exit 0 不等于"守卫全过"**：`--allow-holey-recommend`
-   下 `_assert_bundle_fetch_complete` 刻意放行缺失/带洞完整性戳
-   （`src/inference/daily_recommend.py:373-430`），且 run meta 目前
-   **不落盘该 override**（`_assemble_run_meta`）。UI 的二态渲染必须按
-   "override 是否启用"区分成功语义：override 成功 = 红色降级横幅 +
-   "清单仅供研究"标注，绝不能与全守卫成功同渲染；实现顺带把 override
-   标志写进工件 meta（否则查看器无从区分）。
+1. **任何非默认守卫放宽下的 exit 0 都不等于"守卫全过"**（r2 扩展：
+   不止 `--allow-holey-recommend`——`--bundle-max-age-days` /
+   `--st-max-age-days` 抬高同样会让默认守卫本应拒绝的输入通过）：
+   `_assert_bundle_fetch_complete` 在 override 下刻意放行缺失/带洞
+   完整性戳（`src/inference/daily_recommend.py:373-430`），且 run meta
+   目前**不落盘任何放宽标志/阈值**（`_assemble_run_meta`）。实现要求：
+   **全部非默认守卫放宽（开关+实际阈值）持久化进工件 meta**；UI 渲染
+   按 meta（而非表单瞬时态）区分——降级成功 = 红色横幅 + "清单仅供
+   研究"，页面重开/工件重读后该状态必须保持；回归测试覆盖"重开已
+   降级工件仍渲染为降级"。
 2. **同日重复触发必须串行化**：`write_outputs` 直接写三个确定性
    `daily_recommendation_<as_of>` 文件（`daily_recommend.py:966-1007`），
    两个操作员或重复点击同一 as-of 会交错/覆写。job mode 需按 as-of
    加锁（同日已有 run 在跑即拒绝新触发，或原子写+末次完整性校验），
    治理测试补对应断言。
+3. **out-dir 必须锁定 canonical 工件根**（r2）：查看器只枚举
+   `output/daily_recommend`（`list_recommendation_artifacts`），表单若
+   允许自定义 `out-dir`，成功产物会落在查看器视野之外——"自动选中
+   渲染"承诺失效、操作人停留在旧工件上。实现三选一：移除该表单字段 /
+   锁死为 canonical 根 / 为自定义位置定义受守卫的读取行为——默认推荐
+   移除。
