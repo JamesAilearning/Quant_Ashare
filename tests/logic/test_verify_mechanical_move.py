@@ -109,6 +109,19 @@ def test_new_broad_except_flagged():
     assert any("NEW broad except" in f for f in findings)
 
 
+def test_tuple_form_broad_except_flagged():
+    # codex #364 r8 P2: `except (ValueError, Exception):` is a catch-all
+    # too — tuple form (nested included) must count per scope.
+    new = _OLD.replace("    except ValueError:\n",
+                       "    except (ValueError, Exception):\n")
+    findings = compare_module_texts(_OLD, new)
+    assert any("NEW broad except" in f and "run" in f for f in findings)
+    nested = _OLD.replace("    except ValueError:\n",
+                          "    except ((ValueError, Exception),):\n")
+    assert any("NEW broad except" in f
+               for f in compare_module_texts(_OLD, nested))
+
+
 def test_broad_handler_relocation_between_functions_flagged():
     # codex #364 r7 P2: alpha Exception->TypeError while beta goes the
     # opposite way — filtered-line multiset, signatures and the AGGREGATE

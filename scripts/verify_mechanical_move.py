@@ -101,11 +101,19 @@ def _signature(node: ast.AST) -> str | None:
     return None
 
 
+def _is_broad_expr(expr: ast.expr) -> bool:
+    """Exception / BaseException, bare or ANYWHERE inside a (nested)
+    tuple — ``except (ValueError, Exception):`` is a catch-all too
+    (codex #364 r8 P2)."""
+    if isinstance(expr, ast.Name):
+        return expr.id in ("Exception", "BaseException")
+    if isinstance(expr, ast.Tuple):
+        return any(_is_broad_expr(e) for e in expr.elts)
+    return False
+
+
 def _is_broad_handler(node: ast.ExceptHandler) -> bool:
-    if node.type is None:
-        return True
-    return (isinstance(node.type, ast.Name)
-            and node.type.id in ("Exception", "BaseException"))
+    return node.type is None or _is_broad_expr(node.type)
 
 
 def _broad_excepts_by_scope(tree: ast.AST) -> Counter[str]:
