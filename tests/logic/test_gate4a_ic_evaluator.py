@@ -295,7 +295,7 @@ def test_build_stamp_plan_slice_shapes():
     assert exp == 19
     assert sum(1 for p in plan if p[1] == "primary") == 19
 
-    plan, _, exp = build_stamp_plan(folds, cal, end, 63, 0, "c1_from_2018")
+    plan, _, exp = build_stamp_plan(folds, cal, end, 63, 0, "C1_from_2018")
     assert exp == 23
     prims = [p for p in plan if p[1] == "primary"]
     assert len(prims) == 23

@@ -395,8 +395,8 @@ def rebalance_stamps(days: list[date], cadence: int, phase: int
 # slice as ONE trial, and the ledger's "同一因子的稳健性观测" wording pins
 # the anchor to the family lead. exclude_fold_0 is a pure re-aggregation of
 # recorded fold series (no run; lives in the FWER batch step).
-SLICES = ("c1_from_2018", "holding_semiannual", "holding_annual",
-          "st_off", "size_quintile")
+SLICES = ("C1_from_2018", "holding_semiannual", "holding_annual",
+          "st_off", "size_decile_variants")
 SLICE_ANCHOR = "C1_GPA"
 
 
@@ -407,9 +407,9 @@ def build_stamp_plan(
     """Slice-aware stamp plan: ``[(fold_index, kind, signal, exec, end)]``
     plus (n_zero_horizon_dropped, expected_primary_count).
 
-    * default / st_off / size_quintile: canonical per-fold fold_phase
+    * default / st_off / size_decile_variants: canonical per-fold fold_phase
       schedule (unchanged track).
-    * c1_from_2018: canonical schedule over 4 EXTRAPOLATED pre-dev
+    * C1_from_2018: canonical schedule over 4 EXTRAPOLATED pre-dev
       quarters (2019-04/07/10, 2020-01 starts; indices -4..-1 — their
       cross-sections consume FY2018/2019H1-regime filings) plus the 19
       dev folds -> 23 primary stamps.
@@ -433,10 +433,10 @@ def build_stamp_plan(
                             t, e, h))
         return out, zeros
 
-    if slice_name in (None, "st_off", "size_quintile"):
+    if slice_name in (None, "st_off", "size_decile_variants"):
         plan, zeros = canonical(folds)
         return plan, zeros, len(folds)
-    if slice_name == "c1_from_2018":
+    if slice_name == "C1_from_2018":
         pre = [FoldWindow(-k,
                           _add_months(folds[0].test_start, -3 * k),
                           _add_months(folds[0].test_start, -3 * k + 3)
@@ -790,7 +790,7 @@ def main(argv: list[str] | None = None) -> int:
     formula, fields, endpoints, needs_prior = CANDIDATE_FORMULAS[args.candidate]
 
     # 4a. slice-aware stamp plan FIRST — every data load below derives its
-    # span from the PLAN, not the dev folds: the c1_from_2018 slice starts
+    # span from the PLAN, not the dev folds: the C1_from_2018 slice starts
     # 2019-04-01 and a folds-derived span would leave its first four
     # stamps without price/size data (codex #360 r1 P1).
     cadence = int(str(cfg.get("rebalance_cadence_days", "")) or 0)
@@ -802,7 +802,7 @@ def main(argv: list[str] | None = None) -> int:
     plan, n_zero_horizon_total, expected_primary = build_stamp_plan(
         folds, cal_days, end_boundary, cadence, phase, args.slice)
     st_enabled = args.slice != "st_off"
-    n_size_buckets = 5 if args.slice == "size_quintile" else N_SIZE_DECILES
+    n_size_buckets = 5 if args.slice == "size_decile_variants" else N_SIZE_DECILES
 
     # 4b. price/size panel over the PLAN span — ONE load, routed through
     # the PIT provider (post-delist mask; codex #354 r4 P1).
@@ -890,7 +890,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. artifact
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = args.out / f"{args.candidate}_{args.slice or 'primary'}_{stamp}"
+    # DP2-signed primary layout unchanged: <candidate>_<UTC>; slices add
+    # their REGISTERED id as a middle component (codex #360 r2 P2).
+    dir_name = (f"{args.candidate}_{stamp}" if args.slice is None
+                else f"{args.candidate}_{args.slice}_{stamp}")
+    out_dir = args.out / dir_name
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg_sha = hashlib.sha256(
         (repo / run_config_rel).read_bytes()).hexdigest()
@@ -935,7 +939,7 @@ def main(argv: list[str] | None = None) -> int:
             "size_staleness_cap_trading_days": MAX_MV_STALENESS_DAYS,
             "ranking": f"within_size_decile (n={n_size_buckets})"
                        + (" — REGISTERED VARIANT quintiles (E022)"
-                          if args.slice == "size_quintile" else ""),
+                          if args.slice == "size_decile_variants" else ""),
             "standardization": "as_of_or_earlier_only",
             "execution_day_tradeability": "canonical microstructure mask "
                                           "(suspended w/ carried close, "
