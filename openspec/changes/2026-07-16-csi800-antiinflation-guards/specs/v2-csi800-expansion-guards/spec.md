@@ -23,12 +23,17 @@ base = 5 bps 与 conservative = **20 bps**（全账本平铺，DP-2 签署值，
 同族），不阻塞本契约。
 
 两档 SHALL 物化为**单一配对战役报告工件**（codex P1 on #368）：同时
-载有两档的官方指标、双方 run id，以及双方持久化配置的**全字段 diff
-证明**（除 ``slippage_bps`` 外 SHALL 零差异——配对性由工件自证，不靠
-口头声明）；缺任一侧（尤其 conservative 侧）的报告 SHALL 判无效而非
-"待补"。veto 勾验 SHALL 消费该配对工件，SHALL NOT 接受任一单侧 run
-报告作为替代——两个独立 run 报告无法证明输入匹配，也无法阻止不利的
-conservative 工件被省略。
+载有两档的官方指标、双方 run id，以及双方持久化配置的 **diff 证明**
+——配对性由工件自证，不靠口头声明。diff SHALL 按**显式比较投影**执行
+（codex P1 on #368 r2）：投影排除一个**显式枚举的 run-identity/输出
+位置字段白名单**（`output_dir` 及实现时确认的同类字段——walk-forward
+配对的两侧必然使用不同输出目录，全字段 diff 会自破），其余全部
+**执行语义字段**除 ``slippage_bps`` 外 SHALL 零差异；排除白名单本身
+SHALL 是受治理测试钉死的显式常量，SHALL NOT 借"run-identity"名义收纳
+任何执行语义字段。缺任一侧（尤其 conservative 侧）的报告 SHALL 判
+无效而非"待补"。veto 勾验 SHALL 消费该配对工件，SHALL NOT 接受任一
+单侧 run 报告作为替代——两个独立 run 报告无法证明输入匹配，也无法
+阻止不利的 conservative 工件被省略。
 
 #### Scenario: 敏感带成对呈报
 - **WHEN** 一个 csi800 战役决策 run 完成
@@ -36,9 +41,15 @@ conservative 工件被省略。
   双方 run id + 配置 diff 证明，且主判结论引用 conservative 档
 
 #### Scenario: 省略不利的 conservative 侧被拒
-- **WHEN** 只提交 base 档 run 报告（conservative 工件缺失或 config
-  diff 含 slippage_bps 之外的差异）请求进入晋升流程
+- **WHEN** 只提交 base 档 run 报告（conservative 工件缺失，或投影后
+  config diff 含 slippage_bps 之外的执行语义差异）请求进入晋升流程
 - **THEN** 该报告按本契约判无效，veto 勾验拒绝受理
+
+#### Scenario: run-identity 字段不误伤真实配对
+- **WHEN** 一对 walk-forward base/conservative run 仅在 `output_dir`
+  （白名单内的 run-identity 字段）与 `slippage_bps` 上不同
+- **THEN** 配对报告正常生成——投影排除白名单字段后 diff 恰为
+  slippage_bps 一处
 
 #### Scenario: conservative 幅度不可试后回调
 - **WHEN** conservative 档结果不利，有人提议把 20 bps 下调后重跑
