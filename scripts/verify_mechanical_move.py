@@ -12,8 +12,9 @@ verification deterministic and CI-gateable:
       pure-docstring-row / import lines removed, remaining lines compared
       as multisets) — decorator rows survive the filter, so a lost
       ``@dataclass`` shows up even though it sits above the class header;
-  (b) an AST diff of the pre-move blob vs the new file(s): lost class /
-      function decorators, changed signatures (incl. keyword-only
+  (b) an AST diff of the pre-move blob vs the new file(s): class /
+      function decorator drift (lost OR added — a new ``@cache`` is a
+      behavior change too), changed signatures (incl. keyword-only
       markers and defaults), lost defs/classes, and NEWLY-ADDED broad
       ``except`` handlers (bare / Exception / BaseException).
 
@@ -137,10 +138,13 @@ def compare_module_texts(old_text: str,
         if new_node is None:
             findings.append(f"LOST def/class: {qual}")
             continue
-        lost_dec = [d for d in _decorators(old_node)
-                    if d not in _decorators(new_node)]
-        if lost_dec:
-            findings.append(f"LOST decorator(s) on {qual}: {lost_dec}")
+        # exact-list match, order included (codex #364 r5 P1: an ADDED
+        # decorator such as @cache changes behavior just like a lost one,
+        # and decorator application order matters).
+        old_dec, new_dec = _decorators(old_node), _decorators(new_node)
+        if old_dec != new_dec:
+            findings.append(f"DECORATOR drift on {qual}: "
+                            f"{old_dec!r} -> {new_dec!r}")
         old_sig, new_sig = _signature(old_node), _signature(new_node)
         if old_sig is not None and new_sig is not None and old_sig != new_sig:
             findings.append(f"SIGNATURE changed on {qual}: "
@@ -163,16 +167,20 @@ def compare_module_texts(old_text: str,
 SPLIT_COVERAGE_THRESHOLD = 0.5
 
 
-def find_split_destinations(old_text: str, added: dict[str, str],
+def find_split_destinations(old_text: str | Counter[str],
+                            added: dict[str, str],
                             min_coverage: float = SPLIT_COVERAGE_THRESHOLD,
                             ) -> list[str]:
     """Added-file names whose filtered lines overlap the deleted module,
     when their UNION covers >= ``min_coverage`` of it; else [] (genuine
-    deletion). Per-file noise floor: >= 2 overlapping lines (a real
-    extracted helper can be that small; under-matching is still LOUD —
-    the missed destination's lines surface as ONLY-IN-OLD drift — but
-    auto-matching verifies the split without operator intervention)."""
-    old_lines = filtered_lines(old_text)
+    deletion). Accepts either the module text or a precomputed filtered
+    Counter (the rename-RESIDUAL case, codex #364 r5 P1). Per-file noise
+    floor: >= 2 overlapping lines (a real extracted helper can be that
+    small; under-matching is still LOUD — the missed destination's lines
+    surface as ONLY-IN-OLD drift — but auto-matching verifies the split
+    without operator intervention)."""
+    old_lines = (old_text if isinstance(old_text, Counter)
+                 else filtered_lines(old_text))
     total = sum(old_lines.values())
     if total == 0:
         return []
@@ -197,16 +205,19 @@ def _git(*args: str) -> str:
 
 
 def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
-                                        list[str], list[str]]:
-    """(rename pairs, deleted .py paths, split-destination candidate .py
-    paths) vs ``base``. Candidates include BOTH added and MODIFIED files:
-    an extract/merge move (``D old.py`` + ``M existing.py``) must be
-    matched too, or the gate certifies a move it never checked
-    (codex #364 r4 P2)."""
+                                        list[str], list[str], list[str]]:
+    """(rename pairs, deleted .py paths, ADDED .py paths, MODIFIED .py
+    paths) vs ``base``. Destination candidates cover both added and
+    modified files — an extract/merge move (``D old.py`` +
+    ``M existing.py``) must be matched too (codex #364 r4 P2) — but the
+    two kinds are kept apart: a destination set that is ALL fresh files
+    keeps the strict whole-file proof, only merge-into-existing tolerates
+    pre-existing lines (codex #364 r5 P1)."""
     raw = _git("diff", "--name-status", "-M50%", base, "HEAD")
     pairs: list[tuple[str, str]] = []
     deleted: list[str] = []
-    candidates: list[str] = []
+    added: list[str] = []
+    modified: list[str] = []
     for line in raw.splitlines():
         parts = line.split("\t")
         if not parts:
@@ -215,18 +226,22 @@ def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
             pairs.append((parts[1], parts[2]))
         elif parts[0] == "D" and len(parts) == 2 and parts[1].endswith(".py"):
             deleted.append(parts[1])
-        elif (parts[0] in ("A", "M") and len(parts) == 2
-              and parts[1].endswith(".py")):
-            candidates.append(parts[1])
-    return pairs, deleted, candidates
+        elif parts[0] == "A" and len(parts) == 2 and parts[1].endswith(".py"):
+            added.append(parts[1])
+        elif parts[0] == "M" and len(parts) == 2 and parts[1].endswith(".py"):
+            modified.append(parts[1])
+    return pairs, deleted, added, modified
 
 
 def _verify_one(label: str, old_text: str, new_texts: list[str],
                 fail_on_only_new: bool = True) -> int:
-    """``fail_on_only_new=False`` for split/merge destinations that may be
-    MODIFIED pre-existing modules: their pre-existing lines are expected
+    """``fail_on_only_new=False`` ONLY when a destination is a MODIFIED
+    pre-existing module (merge): its pre-existing lines are expected
     ONLY-IN-NEW content, not drift — lost lines (ONLY-IN-OLD) and AST
-    findings still fail (codex #364 r4 P2)."""
+    findings still fail (codex #364 r4 P2). Destinations that are all
+    FRESH files (pure split / rename+extract) stay strict: every
+    functional line must come from the old module, so a smuggled-in
+    addition fails loudly (codex #364 r5 P1)."""
     only_old, only_new = content_diff(old_text, new_texts)
     ast_findings = compare_module_texts(old_text, new_texts)
     print(f"=== {label} ===")
@@ -267,34 +282,59 @@ def main(argv: list[str] | None = None) -> int:
                      for n in args.new]
         rc |= _verify_one(f"{args.old} -> {args.new}", old_text, new_texts)
     else:
-        pairs, deleted, dest_candidates = _detect_renames(args.base)
+        pairs, deleted, added, modified = _detect_renames(args.base)
         if not pairs and not deleted:
             print(f"no rename-detected or deleted .py files vs {args.base}; "
                   "nothing to verify.")
             return 0
+        added_set = set(added)
+        dest_texts = {p: (_REPO / p).read_text(encoding="utf-8")
+                      for p in [*added, *modified] if (_REPO / p).is_file()}
         for old_path, new_path in pairs:
             if not new_path.endswith(".py"):
                 continue
             old_text = _git("show", f"{args.base}:{old_path}")
             new_text = (_REPO / new_path).read_text(encoding="utf-8")
-            rc |= _verify_one(f"{old_path} -> {new_path}", old_text,
-                              [new_text])
+            # rename+extract (codex #364 r5 P1): git emits `R old.py
+            # main.py` + `A helpers.py` when ONE destination clears the
+            # -M50% bar — the residual the rename target does not cover
+            # must be matched against the other destinations, or a clean
+            # split fails as ONLY-IN-OLD (and never reaches the
+            # deleted-file handling below).
+            residual = filtered_lines(old_text) - filtered_lines(new_text)
+            extras = (find_split_destinations(residual, dest_texts)
+                      if residual else [])
+            if extras:
+                strict = all(d in added_set for d in extras)
+                kind = "rename+extract" if strict else "rename+merge"
+                print(f"({kind} detected: {old_path} -> "
+                      f"{[new_path, *extras]})")
+                rc |= _verify_one(
+                    f"{old_path} -> {[new_path, *extras]} [{kind}]",
+                    old_text, [new_text, *(dest_texts[d] for d in extras)],
+                    fail_on_only_new=strict)
+            else:
+                rc |= _verify_one(f"{old_path} -> {new_path}", old_text,
+                                  [new_text])
         # splits fall below -M50% per destination (codex #364 r3 P1):
         # match each DELETED module's filtered lines against ADDED and
         # MODIFIED files (extract/merge moves land in existing modules —
         # codex #364 r4 P2) and verify the reconstructed move; low
         # overlap = genuine deletion (reported, not a move, not failed).
-        dest_texts = {a: (_REPO / a).read_text(encoding="utf-8")
-                      for a in dest_candidates if (_REPO / a).is_file()}
+        # Strictness (codex #364 r5 P1): all-fresh destinations keep the
+        # strict whole-file proof; only merge-into-MODIFIED tolerates
+        # pre-existing lines.
         for old_path in deleted:
             old_text = _git("show", f"{args.base}:{old_path}")
             dests = find_split_destinations(old_text, dest_texts)
             if dests:
-                print(f"(split/merge detected: {old_path} -> {dests})")
-                rc |= _verify_one(f"{old_path} -> {dests} [split]",
+                strict = all(d in added_set for d in dests)
+                kind = "split" if strict else "split/merge"
+                print(f"({kind} detected: {old_path} -> {dests})")
+                rc |= _verify_one(f"{old_path} -> {dests} [{kind}]",
                                   old_text,
                                   [dest_texts[d] for d in dests],
-                                  fail_on_only_new=False)
+                                  fail_on_only_new=strict)
             else:
                 print(f"(deleted, no split destinations found: {old_path} "
                       "— genuine deletion, not verified as a move)")

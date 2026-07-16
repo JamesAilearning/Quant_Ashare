@@ -5,7 +5,10 @@ class from AGENTS.md):
   content diff   — decorator row lost in the move shows up as ONLY-IN-OLD
                    (the awk-by-symbol blind spot); identical move = empty.
   AST: decorator — lost @dataclass(frozen=True) flagged (provider_bundle
-                   incident, 17 broken tests).
+                   incident, 17 broken tests); ADDED @cache flagged too,
+                   even in line-tolerant merge mode (codex #364 r5).
+  rename+extract — R target + A helper reconstructed from the rename
+                   residual and certified strict (codex #364 r5).
   AST: except    — newly added broad `except Exception` flagged
                    (walk_forward _run_attribution_for_fold incident).
   AST: signature — dropped keyword-only marker / swapped params flagged.
@@ -71,7 +74,20 @@ def test_lost_frozen_dataclass_decorator_flagged():
     only_old, _ = content_diff(_OLD, [new])
     assert any("@dataclass(frozen=True)" in line for line in only_old)
     findings = compare_module_texts(_OLD, new)
-    assert any("LOST decorator" in f and "Config" in f for f in findings)
+    assert any("DECORATOR drift" in f and "Config" in f for f in findings)
+
+
+def test_added_decorator_flagged_even_in_merge_mode():
+    # codex #364 r5 P1: @cache added on a moved function is a behavior
+    # change; the AST layer must fail it even where merge mode tolerates
+    # ONLY-IN-NEW lines.
+    from scripts.verify_mechanical_move import _verify_one
+    new = _OLD.replace("def run(a, *, flag=False):",
+                       "@cache\ndef run(a, *, flag=False):")
+    findings = compare_module_texts(_OLD, new)
+    assert any("DECORATOR drift" in f and "run" in f for f in findings)
+    assert _verify_one("merge-with-cache", _OLD, [new],
+                       fail_on_only_new=False) == 1
 
 
 def test_new_broad_except_flagged():
@@ -107,6 +123,26 @@ def test_find_split_destinations_matches_three_way_split():
              "unrelated.py": "def other():\n    return 42\n"}
     dests = find_split_destinations(_OLD, added)
     assert dests == ["a.py", "b.py", "c.py"]   # unrelated excluded
+
+
+def test_rename_plus_extract_residual_matches_helper():
+    # codex #364 r5 P1: `R old.py main.py` + `A helpers.py` — the residual
+    # the rename target does not cover must recover helpers.py, and the
+    # reconstructed strict verify must certify the clean split.
+    from scripts.verify_mechanical_move import (
+        _verify_one,
+        filtered_lines,
+        find_split_destinations,
+    )
+    main_part = _OLD.replace("def helper(x):\n    return x + 1\n", "")
+    helper_part = "def helper(x):\n    return x + 1\n"
+    residual = filtered_lines(_OLD) - filtered_lines(main_part)
+    dests = find_split_destinations(
+        residual, {"helpers.py": helper_part,
+                   "unrelated.py": "def other():\n    return 1\n"})
+    assert dests == ["helpers.py"]
+    assert _verify_one("rename+extract", _OLD, [main_part, helper_part],
+                       fail_on_only_new=True) == 0
 
 
 def test_find_split_destinations_genuine_deletion_matches_nothing():
