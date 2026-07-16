@@ -249,6 +249,16 @@ def main(argv: list[str] | None = None) -> int:
     mapping: dict[str, str] = {}
     for spec in args.trial:
         name, _, dirname = spec.partition("=")
+        if not name or not dirname:
+            raise FwerError(f"malformed --trial {spec!r}; expected NAME=DIR.")
+        if name in mapping:
+            # a duplicate mapping would silently overwrite the earlier
+            # directory and record only the later one — ambiguous
+            # provenance must fail loud (codex #361 r3 P2).
+            raise FwerError(
+                f"duplicate --trial mapping for {name!r} "
+                f"({mapping[name]!r} vs {dirname!r}) — ambiguous "
+                "provenance; refusing.")
         mapping[name] = dirname
     if sorted(mapping) != sorted(RUN_TRIALS):
         raise FwerError(f"trials must be exactly {sorted(RUN_TRIALS)}; "

@@ -90,6 +90,18 @@ def test_load_trial_series_rejects_non_finite(tmp_path):
         load_trial_series(p)
 
 
+def test_main_rejects_duplicate_trial_mapping(tmp_path):
+    # codex #361 r3: a repeated --trial name must fail loud, never
+    # silently overwrite the earlier directory (ambiguous provenance).
+    from scripts.research.gate4a_fwer_adjudication import main
+    args = ["--artifacts-root", str(tmp_path),
+            "--trial", "C1_GPA=dirA", "--trial", "C1_GPA=dirB"]
+    with pytest.raises(FwerError, match="duplicate --trial mapping"):
+        main(args)
+    with pytest.raises(FwerError, match="malformed --trial"):
+        main(["--artifacts-root", str(tmp_path), "--trial", "C1_GPA"])
+
+
 def test_validate_trial_geometry_matches_frozen_shapes():
     from scripts.research.gate4a_fwer_adjudication import (
         validate_trial_geometry,
