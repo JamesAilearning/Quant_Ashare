@@ -10,7 +10,7 @@ memory (or on an LLM re-finding it every time).
 
 Each item ships as its own small OpenSpec/PR. Ordered by (pain × automatability).
 
-## 1. [top ROI] Mechanical-move drift detector
+## 1. [top ROI] Mechanical-move drift detector — DONE (scripts/verify_mechanical_move.py + tests/logic/test_verify_mechanical_move.py; CI gate = test.yml `mechanical-move` job on PRs)
 - **Recurs as:** lost `@dataclass(frozen=True)` / `@classmethod` / `@property`
   decorators, dropped WARNING logs, added `except Exception` catch-alls,
   swapped/dropped keyword-only markers, rewritten docstrings — all of which
@@ -45,7 +45,7 @@ Each item ships as its own small OpenSpec/PR. Ordered by (pain × automatability
   `FinancialPITDataView`. Pre-commit + CI.
 - **Effort:** S–M. **Also discharges Gate-2's isolation requirement directly.**
 
-## 4. Silent-fallback scanner
+## 4. Silent-fallback scanner — DONE (tests/governance/test_no_silent_fallbacks.py; 20 处现存点已带理由 fallback-ok 注记)
 - **Recurs as:** `except …: return {}/None/[]` where the code must `raise`;
   warn-and-proceed on an unknown config key (`AGENTS.md` "No silent fallback").
 - **Deterministic check:** an AST lint over `src/core` + `src/data` flagging

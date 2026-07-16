@@ -181,7 +181,7 @@ def get_feature_handler_cache_identity(name: str) -> str | None:
     try:
         value = descriptor()
     except Exception:  # noqa: BLE001 — best-effort
-        return None
+        return None  # fallback-ok: best-effort provenance descriptor; None = omit from manifest
     if not isinstance(value, str) or not value.strip():
         return None
     return value
@@ -665,7 +665,7 @@ class FeatureDatasetBuilder:
             out = [pd.Timestamp(d).date() for d in cal]
             return out if out else None
         except Exception:  # noqa: BLE001
-            return None
+            return None  # fallback-ok: optional qlib calendar probe; None -> caller's fallback source
 
     @staticmethod
     def _build_handler(config: FeatureDatasetConfig) -> Any:

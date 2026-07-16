@@ -285,7 +285,7 @@ class TemporalArtifactLoaderBase:
         try:
             return date.fromisoformat(text)
         except ValueError:
-            return None
+            return None  # fallback-ok: lenient optional-metadata date; absent -> loader staleness policy
 
     @staticmethod
     def _read_manifest(manifest_file: Path) -> Mapping[str, Any]:
@@ -293,7 +293,7 @@ class TemporalArtifactLoaderBase:
             with manifest_file.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except (OSError, json.JSONDecodeError):
-            return {}
+            return {}  # fallback-ok: unreadable manifest = absent; required keys fail-loud downstream
         if not isinstance(payload, dict):
             return {}
         return payload

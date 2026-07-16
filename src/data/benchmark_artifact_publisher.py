@@ -275,7 +275,7 @@ class BenchmarkArtifactPublisher:
             # ValueError: index level conflict (duplicate level names).
             # AttributeError is intentionally NOT caught; it would mean
             # reset_index disappeared, which is a programmer error.
-            return []
+            return []  # fallback-ok: documented defensive catch (older pandas); empty rows fail publisher validation
 
         # Identify datetime column.
         datetime_col = None

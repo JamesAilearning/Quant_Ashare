@@ -337,7 +337,7 @@ class ModelTrainer:
         try:
             result = getter() if callable(getter) else None
         except Exception:
-            return {}
+            return {}  # fallback-ok: best-effort optional metrics enrichment; {} = none exposed
         if isinstance(result, Mapping):
             return result
         return {}
@@ -392,7 +392,7 @@ class ModelTrainer:
         try:
             return list(values)
         except TypeError:
-            return []
+            return []  # fallback-ok: lenient metric-value coercion; non-iterable = no values
 
     @staticmethod
     def _metric_index_for_best_iteration(

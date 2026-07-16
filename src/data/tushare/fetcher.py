@@ -764,7 +764,7 @@ class TushareFetcher:
                 "be needlessly re-pulled).",
                 exc,
             )
-            return None
+            return None  # fallback-ok: WARNED degradation to weekday floor (documented)
 
     def _scan_year_freshness(
         self, *, path: Path, scan_year: bool, holiday_only_existing: bool,
@@ -843,7 +843,7 @@ class TushareFetcher:
             )
         except FetchHoleError as hole:
             self._record_hole(endpoint, unit, hole)
-            return None
+            return None  # fallback-ok: hole RECORDED via _record_hole; None = skip-and-continue contract
         if df.empty and not self._config.write_empty_placeholders:
             return None
         atomic_write_parquet(df, path)
@@ -1145,7 +1145,7 @@ class TushareFetcher:
                 "  Could not read trade_date from %s (%s) — treating as stale "
                 "and re-pulling the year.", path, exc,
             )
-            return None
+            return None  # fallback-ok: WARNED; None marks year stale -> conservative re-pull
         if frame.empty:
             return None
         value = frame["trade_date"].max()
