@@ -103,7 +103,14 @@ Gate-3 已冻结 → 现在主线是 **Gate-4A(因子验证)**。本工单排在
    `daily_recommendation_<as_of>` 文件（`daily_recommend.py:966-1007`），
    两个操作员或重复点击同一 as-of 会交错/覆写。job mode 需按 as-of
    加锁（同日已有 run 在跑即拒绝新触发，或原子写+末次完整性校验），
-   治理测试补对应断言。
+   治理测试补对应断言。**锁键必须是解析后的输出日期，不是表单原值**
+   （r4）：表单允许 `--as-of` 留空，`resolve_dates(None)` 会把空值解析
+   到 bundle 日历倒数第二个 session——"默认留空"与"显式填该同一日期"
+   两次触发若按表单值比对会被当成不同 job，实际写的是同一组三个确定
+   性文件。锁键取解析后的 `result.as_of_date`（或一把全局
+   daily_recommend 锁——**默认推荐**：实现面最小，该 job 本就应串行，
+   不同 as-of 并发本身无正当场景）；治理测试必须含"默认空值 vs 显式
+   同日"混合并发用例。
 3. **out-dir 必须锁定 canonical 工件根**（r2）：查看器只枚举
    `output/daily_recommend`（`list_recommendation_artifacts`），表单若
    允许自定义 `out-dir`，成功产物会落在查看器视野之外——"自动选中
@@ -118,3 +125,13 @@ Gate-3 已冻结 → 现在主线是 **Gate-4A(因子验证)**。本工单排在
    (ii) **launcher 独立成页**（run 页产工件、决策页照旧只读消费——
    §4.2"run 与 view 仍分离"的精神即此）。默认推荐 (ii)：契约改动面最小，
    守卫测试原样保留。
+5. **meta schema 迁移是显式前置 scope，不是 web/ 顺手改**（r4）：
+   审注 1 要求的"放宽持久化进工件 meta"，落点在
+   `src/inference/daily_recommend.py::_assemble_run_meta` + `write_outputs`
+   ——这是 `src/` 侧工件契约变更，与本工单"全程 `web/` 层、不碰
+   runtime"（§6、§4.4）不可同时成立；照原文实现会诱导两种坏结局之一：
+   漏掉持久化（页面重开丢红色降级警告）或做出未申报的契约变更。
+   P1 起 OpenSpec 时必须拆两段：**前置 change 先做 meta schema 迁移**
+   （writer/reader/合约测试同步迁移；只增记录字段、守卫语义不动，
+   不违反 §4.4），UI change 显式声明依赖并只消费新契约；§6"全程
+   `web/` 层"以该前置 change 为唯一例外显式改写。
