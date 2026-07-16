@@ -122,6 +122,15 @@ def test_tuple_form_broad_except_flagged():
                for f in compare_module_texts(_OLD, nested))
 
 
+def test_qualified_broad_except_flagged():
+    # codex #364 r9 P2: `except builtins.Exception:` is a catch-all too —
+    # the attribute form must count in the per-scope accounting.
+    new = _OLD.replace("    except ValueError:\n",
+                       "    except builtins.Exception:\n")
+    findings = compare_module_texts(_OLD, new)
+    assert any("NEW broad except" in f and "run" in f for f in findings)
+
+
 def test_broad_handler_relocation_between_functions_flagged():
     # codex #364 r7 P2: alpha Exception->TypeError while beta goes the
     # opposite way — filtered-line multiset, signatures and the AGGREGATE

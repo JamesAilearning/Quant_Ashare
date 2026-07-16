@@ -104,9 +104,14 @@ def _signature(node: ast.AST) -> str | None:
 def _is_broad_expr(expr: ast.expr) -> bool:
     """Exception / BaseException, bare or ANYWHERE inside a (nested)
     tuple — ``except (ValueError, Exception):`` is a catch-all too
-    (codex #364 r8 P2)."""
+    (codex #364 r8 P2). Qualified forms count as well:
+    ``except builtins.Exception:`` (codex #364 r9 P2) — deliberately
+    over-approximated to ANY ``*.Exception`` / ``*.BaseException``
+    attribute (fail-loud; a custom class so named earns its red)."""
     if isinstance(expr, ast.Name):
         return expr.id in ("Exception", "BaseException")
+    if isinstance(expr, ast.Attribute):
+        return expr.attr in ("Exception", "BaseException")
     if isinstance(expr, ast.Tuple):
         return any(_is_broad_expr(e) for e in expr.elts)
     return False

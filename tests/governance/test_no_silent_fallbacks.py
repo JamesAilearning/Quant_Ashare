@@ -47,7 +47,13 @@ def _is_empty_literal(node: ast.expr | None) -> bool:
 
 
 def _line_has_marker(lines: list[str], lineno: int) -> bool:
-    return 0 < lineno <= len(lines) and _MARKER in lines[lineno - 1]
+    """The marker exempts only with a NONEMPTY rationale after the colon
+    — a bare '# fallback-ok:' is not a justification (codex #364 r9 P2)."""
+    if not (0 < lineno <= len(lines)):
+        return False
+    line = lines[lineno - 1]
+    idx = line.find(_MARKER)
+    return idx >= 0 and bool(line[idx + len(_MARKER):].strip())
 
 
 def find_silent_fallbacks(text: str, rel: str) -> list[str]:
@@ -153,6 +159,22 @@ class ScannerUnitTests(unittest.TestCase):
                 "    except KeyError:\n"
                 "        return []  # fallback-ok: absent = none found\n")
         self.assertEqual(find_silent_fallbacks(code, "x.py"), [])
+
+    def test_empty_marker_rationale_does_not_exempt(self) -> None:
+        # codex #364 r9 P2: '# fallback-ok:' with no reason text is not a
+        # justification — the rationale must be nonempty.
+        code = ("def f():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except KeyError:  # fallback-ok:\n"
+                "        return {}\n"
+                "def g():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except KeyError:\n"
+                "        return []  # fallback-ok:   \n")
+        hits = find_silent_fallbacks(code, "x.py")
+        self.assertEqual(len(hits), 2)
 
     def test_nested_handler_marker_is_honored(self) -> None:
         # codex #364 r2: the inner handler's own marker must suffice — the
