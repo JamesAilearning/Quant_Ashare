@@ -54,21 +54,26 @@ T_FLOOR = 2.85
 MIN_OBS = 2
 ALPHA_QUANTILE = 0.95
 
-# The eight artifact-backed trials (ledger refs) -> the (candidate, slice)
-# identity their artifact MUST carry (codex #361 r1 P1: a mis-mapped
-# directory would silently double-count one series and omit another,
-# recording a different family verdict). exclude_fold_0 derives.
-RUN_TRIALS: dict[str, tuple[str, str]] = {
-    "C1_GPA": ("C1_GPA", "primary"),
-    "C2_PROF": ("C2_PROF", "primary"),
-    "C3_cash_based_OP": ("C3_cash_based_OP", "primary"),
-    "C1_from_2018": ("C1_GPA", "C1_from_2018"),
-    "holding_semiannual": ("C1_GPA", "holding_semiannual"),
-    "holding_annual": ("C1_GPA", "holding_annual"),
-    "st_off": ("C1_GPA", "st_off"),
-    "size_decile_variants": ("C1_GPA", "size_decile_variants"),
+# The eight artifact-backed trials (ledger refs) -> the (candidate, slice,
+# FROZEN fold-index geometry) their artifact MUST carry. Identity guards a
+# mis-mapped directory (codex #361 r1 P1); geometry guards a stale or
+# truncated artifact whose arbitrary fold ids would silently reshape the
+# master bootstrap axis and every trial's draws (codex #361 r2 P1).
+# exclude_fold_0 derives (geometry = dev folds minus fold 0).
+_DEV = frozenset(range(19))
+RUN_TRIALS: dict[str, tuple[str, str, frozenset[int]]] = {
+    "C1_GPA": ("C1_GPA", "primary", _DEV),
+    "C2_PROF": ("C2_PROF", "primary", _DEV),
+    "C3_cash_based_OP": ("C3_cash_based_OP", "primary", _DEV),
+    "C1_from_2018": ("C1_GPA", "C1_from_2018", frozenset(range(-4, 19))),
+    "holding_semiannual": ("C1_GPA", "holding_semiannual",
+                           frozenset(range(0, 17, 2))),
+    "holding_annual": ("C1_GPA", "holding_annual", frozenset({0, 4, 8, 12})),
+    "st_off": ("C1_GPA", "st_off", _DEV),
+    "size_decile_variants": ("C1_GPA", "size_decile_variants", _DEV),
 }
 DERIVED_TRIAL = "exclude_fold_0"
+DERIVED_GEOMETRY = frozenset(range(1, 19))
 PROTOCOL_ID = "quality_profitability_v1"
 
 
@@ -116,6 +121,19 @@ def load_trial_series(result_json: Path,
     if not series:
         raise FwerError(f"{result_json}: no primary stamps found.")
     return series
+
+
+def validate_trial_geometry(name: str, series: dict[int, float]) -> None:
+    """The trial's fold-index set must equal its FROZEN design geometry —
+    a stale/truncated artifact would reshape the shared bootstrap axis
+    and every trial's draws (codex #361 r2 P1)."""
+    geometry = (DERIVED_GEOMETRY if name == DERIVED_TRIAL
+                else RUN_TRIALS[name][2])
+    if frozenset(series) != geometry:
+        raise FwerError(
+            f"{name}: fold geometry {sorted(series)} does not match the "
+            f"frozen design {sorted(geometry)} — refusing a reshaped "
+            "bootstrap axis.")
 
 
 def derive_exclude_fold0(c1: dict[int, float]) -> dict[int, float]:
@@ -220,6 +238,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="registered trial ref -> artifact dir name under "
                         "artifacts-root; exactly the eight run trials "
                         "(exclude_fold_0 is derived, never passed).")
+    p.add_argument("--evidence-out", type=Path, default=None,
+                   help="OPTIONAL committed-evidence sidecar: writes the "
+                        "nine consumed fold series + the full verdict as "
+                        "one JSON so the adjudication is reproducible from "
+                        "git alone (codex #361 r2 P2 — output/ is "
+                        "gitignored).")
     args = p.parse_args(argv)
 
     mapping: dict[str, str] = {}
@@ -232,11 +256,14 @@ def main(argv: list[str] | None = None) -> int:
 
     trials: dict[str, dict[int, float]] = {}
     for name, dirname in mapping.items():
-        expect_candidate, expect_slice = RUN_TRIALS[name]
-        trials[name] = load_trial_series(
+        expect_candidate, expect_slice, _geometry = RUN_TRIALS[name]
+        series = load_trial_series(
             args.artifacts_root / dirname / "result.json",
             expect_candidate=expect_candidate, expect_slice=expect_slice)
+        validate_trial_geometry(name, series)
+        trials[name] = series
     trials[DERIVED_TRIAL] = derive_exclude_fold0(trials["C1_GPA"])
+    validate_trial_geometry(DERIVED_TRIAL, trials[DERIVED_TRIAL])
 
     result = adjudicate(trials)
     result["artifact_dirs"] = mapping
@@ -263,6 +290,19 @@ def main(argv: list[str] | None = None) -> int:
     ]
     (out_dir / "verdict.md").write_text("\n".join(lines) + "\n",
                                         encoding="utf-8")
+    if args.evidence_out is not None:
+        evidence = {
+            "protocol_id": PROTOCOL_ID, "gate": "4A",
+            "consumed_fold_series": {
+                name: {str(k): v for k, v in sorted(s.items())}
+                for name, s in trials.items()},
+            "verdict": result,
+        }
+        args.evidence_out.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence_out.write_text(
+            json.dumps(evidence, indent=2, ensure_ascii=False),
+            encoding="utf-8")
+        print(f"evidence sidecar: {args.evidence_out}")
     print("\n".join(lines))
     print(f"\nartifacts: {out_dir}")
     return 0

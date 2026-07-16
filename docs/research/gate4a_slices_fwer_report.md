@@ -25,6 +25,9 @@ B=10000，seed=20260716，单侧正向；通过=t > q95 bar **且** t≥2.85 硬
   与 bootstrap bar（+14.485）双门槛皆远。
 - 工件：`output/gate4a/fwer_20260716T011428Z/`（verdict.json/md），
   五切片 run 工件见 ledger E023-E027（各自 gate ACCEPT 存档在内）。
+- **可复算证据入库**（codex #361 r2）：九条消费折序列 + 完整 verdict
+  = [gate4a_fwer_evidence.json](gate4a_fwer_evidence.json)——审阅者仅凭
+  git 即可复算 q95 bar 与 CLEAN_NEGATIVE（seed 20260716 确定性）。
 
 ## 如实观察
 

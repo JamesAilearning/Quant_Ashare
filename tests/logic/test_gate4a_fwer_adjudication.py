@@ -90,6 +90,30 @@ def test_load_trial_series_rejects_non_finite(tmp_path):
         load_trial_series(p)
 
 
+def test_validate_trial_geometry_matches_frozen_shapes():
+    from scripts.research.gate4a_fwer_adjudication import (
+        validate_trial_geometry,
+    )
+    # frozen shapes: 19 dev / 23 extrapolated / 9 semiannual / 4 annual /
+    # 18 derived — exact index sets, not just counts.
+    validate_trial_geometry("C1_GPA", {i: 0.01 * i for i in range(19)})
+    validate_trial_geometry("C1_from_2018",
+                            {i: 0.0 + i for i in range(-4, 19)})
+    validate_trial_geometry("holding_semiannual",
+                            {i: float(i) for i in range(0, 17, 2)})
+    validate_trial_geometry("holding_annual",
+                            {i: float(i) for i in (0, 4, 8, 12)})
+    validate_trial_geometry("exclude_fold_0",
+                            {i: float(i) for i in range(1, 19)})
+    # a truncated artifact (18 of 19 dev folds) must refuse
+    with pytest.raises(FwerError, match="fold geometry"):
+        validate_trial_geometry("C1_GPA", {i: 0.1 for i in range(18)})
+    # an extra/foreign fold id must refuse too
+    with pytest.raises(FwerError, match="fold geometry"):
+        validate_trial_geometry("holding_annual",
+                                {i: 0.1 for i in (0, 4, 8, 12, 16)})
+
+
 def test_derive_exclude_fold0():
     c1 = {0: 0.4, 1: 0.1, 2: -0.1}
     assert derive_exclude_fold0(c1) == {1: 0.1, 2: -0.1}
