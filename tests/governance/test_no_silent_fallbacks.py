@@ -60,16 +60,24 @@ def find_silent_fallbacks(text: str, rel: str) -> list[str]:
             continue
         if _line_has_marker(lines, node.lineno):
             continue  # the whole handler is justified
-        for sub in ast.walk(node):
-            if not isinstance(sub, ast.Return):
+        # Walk ONLY this handler's own scope: a NESTED ExceptHandler owns
+        # its own marker and is visited separately by the outer ast.walk —
+        # descending into it here would demand a duplicated marker on the
+        # return line (codex #364 r2 P2).
+        stack: list[ast.AST] = list(node.body)
+        while stack:
+            sub = stack.pop()
+            if isinstance(sub, ast.ExceptHandler):
+                continue  # nested handler: judged on its own
+            if isinstance(sub, ast.Return):
+                if (_is_empty_literal(sub.value)
+                        and not _line_has_marker(lines, sub.lineno)):
+                    snippet = (lines[sub.lineno - 1].strip()
+                               if sub.lineno <= len(lines)
+                               else "return <empty>")
+                    out.append(f"{rel}:{sub.lineno} {snippet}")
                 continue
-            if not _is_empty_literal(sub.value):
-                continue
-            if _line_has_marker(lines, sub.lineno):
-                continue
-            snippet = lines[sub.lineno - 1].strip() if sub.lineno <= len(
-                lines) else "return <empty>"
-            out.append(f"{rel}:{sub.lineno} {snippet}")
+            stack.extend(ast.iter_child_nodes(sub))
     return out
 
 
@@ -139,6 +147,34 @@ class ScannerUnitTests(unittest.TestCase):
                 "    except KeyError:\n"
                 "        return []  # fallback-ok: absent = none found\n")
         self.assertEqual(find_silent_fallbacks(code, "x.py"), [])
+
+    def test_nested_handler_marker_is_honored(self) -> None:
+        # codex #364 r2: the inner handler's own marker must suffice — the
+        # outer (unmarked) handler must not re-flag the inner return.
+        code = ("def f():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except ValueError:\n"
+                "        try:\n"
+                "            pass\n"
+                "        except KeyError:  # fallback-ok: cache miss\n"
+                "            return {}\n"
+                "        raise\n")
+        self.assertEqual(find_silent_fallbacks(code, "x.py"), [])
+
+    def test_nested_unmarked_handler_flagged_exactly_once(self) -> None:
+        code = ("def f():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except ValueError:\n"
+                "        try:\n"
+                "            pass\n"
+                "        except KeyError:\n"
+                "            return {}\n"
+                "        raise\n")
+        hits = find_silent_fallbacks(code, "x.py")
+        self.assertEqual(len(hits), 1)
+        self.assertIn("x.py:8", hits[0])
 
     def test_non_empty_return_in_except_is_fine(self) -> None:
         code = ("def f():\n"
