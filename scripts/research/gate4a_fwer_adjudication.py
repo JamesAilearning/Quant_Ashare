@@ -54,20 +54,53 @@ T_FLOOR = 2.85
 MIN_OBS = 2
 ALPHA_QUANTILE = 0.95
 
-# The eight artifact-backed trials (ledger refs); exclude_fold_0 derives.
-RUN_TRIALS = ("C1_GPA", "C2_PROF", "C3_cash_based_OP", "C1_from_2018",
-              "holding_semiannual", "holding_annual", "st_off",
-              "size_decile_variants")
+# The eight artifact-backed trials (ledger refs) -> the (candidate, slice)
+# identity their artifact MUST carry (codex #361 r1 P1: a mis-mapped
+# directory would silently double-count one series and omit another,
+# recording a different family verdict). exclude_fold_0 derives.
+RUN_TRIALS: dict[str, tuple[str, str]] = {
+    "C1_GPA": ("C1_GPA", "primary"),
+    "C2_PROF": ("C2_PROF", "primary"),
+    "C3_cash_based_OP": ("C3_cash_based_OP", "primary"),
+    "C1_from_2018": ("C1_GPA", "C1_from_2018"),
+    "holding_semiannual": ("C1_GPA", "holding_semiannual"),
+    "holding_annual": ("C1_GPA", "holding_annual"),
+    "st_off": ("C1_GPA", "st_off"),
+    "size_decile_variants": ("C1_GPA", "size_decile_variants"),
+}
 DERIVED_TRIAL = "exclude_fold_0"
+PROTOCOL_ID = "quality_profitability_v1"
 
 
 class FwerError(RuntimeError):
     """Fail-loud: the adjudication aborts rather than guess."""
 
 
-def load_trial_series(result_json: Path) -> dict[int, float]:
-    """{fold_index: rank_ic} over PRIMARY stamps from a run artifact."""
+def load_trial_series(result_json: Path,
+                      expect_candidate: str | None = None,
+                      expect_slice: str | None = None) -> dict[int, float]:
+    """{fold_index: rank_ic} over PRIMARY stamps from a run artifact.
+
+    Identity is VALIDATED before any value is used (codex #361 r1 P1):
+    protocol_id, gate, candidate and slice must match the trial the
+    caller maps this artifact to (pre-#360 primary artifacts carry no
+    ``slice`` field — treated as "primary"). Non-finite rank_ic values
+    fail loud (codex #361 r1 P1): a damaged artifact must abort the
+    adjudication, never launder into a CLEAN_NEGATIVE."""
     data = json.loads(result_json.read_text(encoding="utf-8"))
+    if data.get("protocol_id") != PROTOCOL_ID or data.get("gate") != "4A":
+        raise FwerError(f"{result_json}: not a {PROTOCOL_ID} Gate-4A "
+                        f"artifact (protocol_id={data.get('protocol_id')!r}, "
+                        f"gate={data.get('gate')!r}).")
+    if expect_candidate is not None:
+        got_cand = data.get("candidate")
+        got_slice = data.get("slice", "primary")
+        if (got_cand, got_slice) != (expect_candidate, expect_slice):
+            raise FwerError(
+                f"{result_json}: artifact identity (candidate={got_cand!r}, "
+                f"slice={got_slice!r}) does not match the mapped trial "
+                f"(expected candidate={expect_candidate!r}, "
+                f"slice={expect_slice!r}) — refusing a mis-mapped series.")
     series: dict[int, float] = {}
     for row in data["folds"]:
         if row.get("stamp_kind") != "primary":
@@ -75,7 +108,11 @@ def load_trial_series(result_json: Path) -> dict[int, float]:
         idx = int(row["fold"])
         if idx in series:
             raise FwerError(f"{result_json}: duplicate primary fold {idx}.")
-        series[idx] = float(row["rank_ic"])
+        val = float(row["rank_ic"])
+        if not np.isfinite(val):
+            raise FwerError(f"{result_json}: non-finite rank_ic at fold "
+                            f"{idx} — damaged artifact; refusing.")
+        series[idx] = val
     if not series:
         raise FwerError(f"{result_json}: no primary stamps found.")
     return series
@@ -195,8 +232,10 @@ def main(argv: list[str] | None = None) -> int:
 
     trials: dict[str, dict[int, float]] = {}
     for name, dirname in mapping.items():
+        expect_candidate, expect_slice = RUN_TRIALS[name]
         trials[name] = load_trial_series(
-            args.artifacts_root / dirname / "result.json")
+            args.artifacts_root / dirname / "result.json",
+            expect_candidate=expect_candidate, expect_slice=expect_slice)
     trials[DERIVED_TRIAL] = derive_exclude_fold0(trials["C1_GPA"])
 
     result = adjudicate(trials)

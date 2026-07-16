@@ -33,9 +33,12 @@ from scripts.research.gate4a_fwer_adjudication import (  # noqa: E402
     observed_t,
 )
 
+_HDR = {"protocol_id": "quality_profitability_v1", "gate": "4A",
+        "candidate": "C1_GPA"}
+
 
 def test_load_trial_series_primary_only_and_duplicate_guard(tmp_path):
-    good = {"folds": [
+    good = {**_HDR, "folds": [
         {"fold": 0, "stamp_kind": "primary", "rank_ic": 0.1},
         {"fold": 1, "stamp_kind": "tail", "rank_ic": 9.9},
         {"fold": 1, "stamp_kind": "primary", "rank_ic": -0.2},
@@ -43,7 +46,7 @@ def test_load_trial_series_primary_only_and_duplicate_guard(tmp_path):
     p = tmp_path / "result.json"
     p.write_text(json.dumps(good), encoding="utf-8")
     assert load_trial_series(p) == {0: 0.1, 1: -0.2}
-    dup = {"folds": [
+    dup = {**_HDR, "folds": [
         {"fold": 0, "stamp_kind": "primary", "rank_ic": 0.1},
         {"fold": 0, "stamp_kind": "primary", "rank_ic": 0.2},
     ]}
@@ -51,6 +54,40 @@ def test_load_trial_series_primary_only_and_duplicate_guard(tmp_path):
     p2.write_text(json.dumps(dup), encoding="utf-8")
     with pytest.raises(FwerError, match="duplicate primary fold"):
         load_trial_series(p2)
+
+
+def test_load_trial_series_identity_validation(tmp_path):
+    # codex #361 r1: a mis-mapped artifact (C2 dir fed as C1) must refuse;
+    # a pre-#360 artifact without a "slice" field counts as "primary".
+    art = {**_HDR, "candidate": "C2_PROF", "folds": [
+        {"fold": 0, "stamp_kind": "primary", "rank_ic": 0.1},
+        {"fold": 1, "stamp_kind": "primary", "rank_ic": 0.2},
+    ]}
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps(art), encoding="utf-8")
+    with pytest.raises(FwerError, match="does not match the mapped trial"):
+        load_trial_series(p, expect_candidate="C1_GPA",
+                          expect_slice="primary")
+    assert load_trial_series(p, expect_candidate="C2_PROF",
+                             expect_slice="primary") == {0: 0.1, 1: 0.2}
+    # wrong protocol refuses outright
+    bad = {**art, "protocol_id": "other_v9"}
+    p2 = tmp_path / "b.json"
+    p2.write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(FwerError, match="not a quality_profitability_v1"):
+        load_trial_series(p2)
+
+
+def test_load_trial_series_rejects_non_finite(tmp_path):
+    # codex #361 r1: NaN must abort, never launder into CLEAN_NEGATIVE.
+    art = {**_HDR, "folds": [
+        {"fold": 0, "stamp_kind": "primary", "rank_ic": 0.1},
+        {"fold": 1, "stamp_kind": "primary", "rank_ic": float("nan")},
+    ]}
+    p = tmp_path / "n.json"
+    p.write_text(json.dumps(art), encoding="utf-8")
+    with pytest.raises(FwerError, match="non-finite rank_ic"):
+        load_trial_series(p)
 
 
 def test_derive_exclude_fold0():
