@@ -69,6 +69,12 @@ def find_silent_fallbacks(text: str, rel: str) -> list[str]:
             sub = stack.pop()
             if isinstance(sub, ast.ExceptHandler):
                 continue  # nested handler: judged on its own
+            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                ast.ClassDef, ast.Lambda)):
+                # a helper DEFINED inside the handler has its own return
+                # semantics — its `return None` is not the handler's
+                # fallback (codex #364 r3 P2).
+                continue
             if isinstance(sub, ast.Return):
                 if (_is_empty_literal(sub.value)
                         and not _line_has_marker(lines, sub.lineno)):
@@ -175,6 +181,30 @@ class ScannerUnitTests(unittest.TestCase):
         hits = find_silent_fallbacks(code, "x.py")
         self.assertEqual(len(hits), 1)
         self.assertIn("x.py:8", hits[0])
+
+    def test_helper_defined_inside_handler_is_not_the_handlers_fallback(
+            self) -> None:
+        # codex #364 r3 P2: a nested def's own `return None` must not be
+        # attributed to the enclosing handler; the handler's OWN empty
+        # return is still flagged.
+        code = ("def f():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except ValueError:\n"
+                "        def cb(x):\n"
+                "            return None\n"
+                "        raise\n")
+        self.assertEqual(find_silent_fallbacks(code, "x.py"), [])
+        code2 = ("def f():\n"
+                 "    try:\n"
+                 "        pass\n"
+                 "    except ValueError:\n"
+                 "        def cb(x):\n"
+                 "            return None\n"
+                 "        return {}\n")
+        hits = find_silent_fallbacks(code2, "x.py")
+        self.assertEqual(len(hits), 1)
+        self.assertIn("x.py:7", hits[0])
 
     def test_non_empty_return_in_except_is_fine(self) -> None:
         code = ("def f():\n"

@@ -94,6 +94,27 @@ def test_lost_function_flagged():
     assert any("LOST def/class: helper" in f for f in findings)
 
 
+def test_find_split_destinations_matches_three_way_split():
+    # codex #364 r3 P1: a 1->3 split falls below -M50% per destination;
+    # the overlap matcher must recover all three from the added set.
+    from scripts.verify_mechanical_move import find_split_destinations
+    part1 = ("from dataclasses import dataclass\n\n\n"
+             "@dataclass(frozen=True)\nclass Config:\n    name: str\n")
+    part2 = ("def run(a, *, flag=False):\n    try:\n        return a\n"
+             "    except ValueError:\n        raise\n")
+    part3 = ("def helper(x):\n    return x + 1\n")
+    added = {"a.py": part1, "b.py": part2, "c.py": part3,
+             "unrelated.py": "def other():\n    return 42\n"}
+    dests = find_split_destinations(_OLD, added)
+    assert dests == ["a.py", "b.py", "c.py"]   # unrelated excluded
+
+
+def test_find_split_destinations_genuine_deletion_matches_nothing():
+    from scripts.verify_mechanical_move import find_split_destinations
+    added = {"unrelated.py": "def totally_new():\n    return 'x'\n"}
+    assert find_split_destinations(_OLD, added) == []
+
+
 def test_unparsable_input_fails_loud():
     from scripts.verify_mechanical_move import VerifyError
     with pytest.raises(VerifyError, match="cannot parse"):

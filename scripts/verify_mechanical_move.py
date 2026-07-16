@@ -142,21 +142,67 @@ def compare_module_texts(old_text: str, new_concat: str) -> list[str]:
     return findings
 
 
+# Split detection (codex #364 r3 P1): a 1->3+ split leaves every
+# destination below git's -M50% similarity, so rename detection alone
+# silently certifies exactly the scenario this gate exists for. A deleted
+# module whose filtered lines reappear across ADDED files (>= coverage
+# threshold) is treated as a split and VERIFIED against their union;
+# below the threshold it is a genuine deletion (not a move — reported,
+# not failed).
+SPLIT_COVERAGE_THRESHOLD = 0.5
+
+
+def find_split_destinations(old_text: str, added: dict[str, str],
+                            min_coverage: float = SPLIT_COVERAGE_THRESHOLD,
+                            ) -> list[str]:
+    """Added-file names whose filtered lines overlap the deleted module,
+    when their UNION covers >= ``min_coverage`` of it; else [] (genuine
+    deletion). Per-file noise floor: >= 2 overlapping lines (a real
+    extracted helper can be that small; under-matching is still LOUD —
+    the missed destination's lines surface as ONLY-IN-OLD drift — but
+    auto-matching verifies the split without operator intervention)."""
+    old_lines = filtered_lines(old_text)
+    total = sum(old_lines.values())
+    if total == 0:
+        return []
+    candidates: list[str] = []
+    for name, text in sorted(added.items()):
+        overlap = sum((old_lines & filtered_lines(text)).values())
+        if overlap >= 2:
+            candidates.append(name)
+    if not candidates:
+        return []
+    union: Counter[str] = Counter()
+    for name in candidates:
+        union.update(filtered_lines(added[name]))
+    coverage = sum((old_lines & union).values()) / total
+    return candidates if coverage >= min_coverage else []
+
+
 def _git(*args: str) -> str:
     out = subprocess.run(["git", "-C", str(_REPO), *args],
                          capture_output=True, text=True, check=True)
     return out.stdout
 
 
-def _detect_renames(base: str) -> list[tuple[str, str]]:
-    """[(old_path, new_path)] for rename-detected files vs ``base``."""
+def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
+                                        list[str], list[str]]:
+    """(rename pairs, deleted .py paths, added .py paths) vs ``base``."""
     raw = _git("diff", "--name-status", "-M50%", base, "HEAD")
     pairs: list[tuple[str, str]] = []
+    deleted: list[str] = []
+    added: list[str] = []
     for line in raw.splitlines():
         parts = line.split("\t")
-        if parts and parts[0].startswith("R") and len(parts) == 3:
+        if not parts:
+            continue
+        if parts[0].startswith("R") and len(parts) == 3:
             pairs.append((parts[1], parts[2]))
-    return pairs
+        elif parts[0] == "D" and len(parts) == 2 and parts[1].endswith(".py"):
+            deleted.append(parts[1])
+        elif parts[0] == "A" and len(parts) == 2 and parts[1].endswith(".py"):
+            added.append(parts[1])
+    return pairs, deleted, added
 
 
 def _verify_one(label: str, old_text: str, new_texts: list[str]) -> int:
@@ -197,10 +243,10 @@ def main(argv: list[str] | None = None) -> int:
                      for n in args.new]
         rc |= _verify_one(f"{args.old} -> {args.new}", old_text, new_texts)
     else:
-        pairs = _detect_renames(args.base)
-        if not pairs:
-            print(f"no rename-detected files vs {args.base}; nothing to "
-                  "verify (splits need --old/--new).")
+        pairs, deleted, added = _detect_renames(args.base)
+        if not pairs and not deleted:
+            print(f"no rename-detected or deleted .py files vs {args.base}; "
+                  "nothing to verify.")
             return 0
         for old_path, new_path in pairs:
             if not new_path.endswith(".py"):
@@ -209,6 +255,23 @@ def main(argv: list[str] | None = None) -> int:
             new_text = (_REPO / new_path).read_text(encoding="utf-8")
             rc |= _verify_one(f"{old_path} -> {new_path}", old_text,
                               [new_text])
+        # splits fall below -M50% per destination (codex #364 r3 P1):
+        # match each DELETED module's filtered lines against ADDED files
+        # and verify the reconstructed split; low overlap = genuine
+        # deletion (reported, not a move, not failed).
+        added_texts = {a: (_REPO / a).read_text(encoding="utf-8")
+                       for a in added if (_REPO / a).is_file()}
+        for old_path in deleted:
+            old_text = _git("show", f"{args.base}:{old_path}")
+            dests = find_split_destinations(old_text, added_texts)
+            if dests:
+                print(f"(split detected: {old_path} -> {dests})")
+                rc |= _verify_one(f"{old_path} -> {dests} [split]",
+                                  old_text,
+                                  [added_texts[d] for d in dests])
+            else:
+                print(f"(deleted, no split destinations found: {old_path} "
+                      "— genuine deletion, not verified as a move)")
     if rc:
         print("\nDRIFT FOUND: revert each line/finding to the pre-move form "
               "or justify it explicitly in the PR body (AGENTS.md).")
