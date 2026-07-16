@@ -789,9 +789,24 @@ def main(argv: list[str] | None = None) -> int:
                                 financial_issuers=issuers)
     formula, fields, endpoints, needs_prior = CANDIDATE_FORMULAS[args.candidate]
 
-    # 4. price/size panel over the dev span — ONE load, routed through the
-    # PIT provider (post-delist mask; codex #354 r4 P1).
-    span_start = min(f.test_start for f in folds)
+    # 4a. slice-aware stamp plan FIRST — every data load below derives its
+    # span from the PLAN, not the dev folds: the c1_from_2018 slice starts
+    # 2019-04-01 and a folds-derived span would leave its first four
+    # stamps without price/size data (codex #360 r1 P1).
+    cadence = int(str(cfg.get("rebalance_cadence_days", "")) or 0)
+    phase = int(str(cfg.get("rebalance_phase", "")) or 0)
+    if cadence <= 0:
+        raise EvaluatorError("gated config chain carries no "
+                             "rebalance_cadence_days — cannot mirror the "
+                             "canonical schedule.")
+    plan, n_zero_horizon_total, expected_primary = build_stamp_plan(
+        folds, cal_days, end_boundary, cadence, phase, args.slice)
+    st_enabled = args.slice != "st_off"
+    n_size_buckets = 5 if args.slice == "size_quintile" else N_SIZE_DECILES
+
+    # 4b. price/size panel over the PLAN span — ONE load, routed through
+    # the PIT provider (post-delist mask; codex #354 r4 P1).
+    span_start = min(t for _, _, t, _, _ in plan)
     ever = sorted({ts for ts, _, _ in intervals})
     code_map = {ts: ts[-2:].upper() + ts[:6] for ts in ever}  # ts -> qlib
     pit_provider = build_pit_provider(provider_root, Path(str(registry_raw)))
@@ -799,10 +814,10 @@ def main(argv: list[str] | None = None) -> int:
                                   sorted(code_map.values()),
                                   _add_months(span_start, -3), end_boundary)
     # DP3 (operator-signed): span-level total_mv coverage is a hard gate —
-    # an ever-member overlapping the dev span with zero observations
+    # an ever-member overlapping the evaluated span with zero observations
     # aborts; transient per-stamp gaps stay drop+count.
     assert_total_mv_span_coverage(mv, intervals, span_start, end_boundary)
-    # canonical microstructure mask over the dev span (codex #354 r1 P1):
+    # canonical microstructure mask over the plan span (codex #354 r1 P1):
     # execution-day untradeable names (suspension w/ carried close,
     # one-price lock) must not enter the IC cross-section — the canonical
     # backtest refuses these fills, so a decision-level IC must too.
@@ -812,20 +827,10 @@ def main(argv: list[str] | None = None) -> int:
         span_start.isoformat(), end_boundary.isoformat(),
         pit_provider=pit_provider)
 
-    # 4. per-stamp evaluation over the slice-aware plan
+    # 4c. per-stamp evaluation over the plan
     fold_rows: list[dict[str, object]] = []
     ic_rows: list[dict[str, float | int]] = []
-    cadence = int(str(cfg.get("rebalance_cadence_days", "")) or 0)
-    phase = int(str(cfg.get("rebalance_phase", "")) or 0)
-    if cadence <= 0:
-        raise EvaluatorError("gated config chain carries no "
-                             "rebalance_cadence_days — cannot mirror the "
-                             "canonical schedule.")
     tail_rows: list[dict[str, float | int]] = []
-    plan, n_zero_horizon_total, expected_primary = build_stamp_plan(
-        folds, cal_days, end_boundary, cadence, phase, args.slice)
-    st_enabled = args.slice != "st_off"
-    n_size_buckets = 5 if args.slice == "size_quintile" else N_SIZE_DECILES
     for stamp_no, (fold_index, kind, t_i, exec_i, horizon_end) in enumerate(plan):
         members = members_on(intervals, t_i)
         universe = [ts for ts in members if ts not in issuers]
@@ -895,28 +900,51 @@ def main(argv: list[str] | None = None) -> int:
         "slice": args.slice or "primary",
         "run_config": run_config_rel, "run_config_sha256": cfg_sha,
         "generated_utc": stamp,
+        # slice-aware pins (codex #360 r1 P1): the persisted artifact must
+        # describe the experiment that ACTUALLY ran — a holding/quintile/
+        # st_off slice asserting the primary design would misdescribe its
+        # own IC series to the FWER consumer.
         "pinned_semantics": {
-            "rebalance": "canonical fold_phase schedule: in-window days"
-                         "[phase::cadence] (frozen 63/0), last in-window "
-                         "day excluded (fillable rule); tails in >63-td "
-                         "quarters evaluated as diagnostics",
+            "rebalance": (
+                "canonical fold_phase schedule: in-window days"
+                "[phase::cadence] (frozen 63/0), last in-window day "
+                "excluded (fillable rule); tails in >63-td quarters "
+                "evaluated as diagnostics"
+                if args.slice not in ("holding_semiannual", "holding_annual")
+                else f"{args.slice} slice: one stamp per "
+                     f"{2 if args.slice == 'holding_semiannual' else 4}-fold "
+                     "chain start (E019/E020 semantics); no tail stamps"),
             "execution_lag_days": 1,
-            "forward_return": "close[exec] -> close[next stamp's exec | "
-                              "fold's last trading day] (fold-contained; "
-                              "never touches the 2025 holdout)",
-            "primary_metric_scope": "PRIMARY stamps only (quarterly "
-                                    "horizon = frozen ic_forward_horizon); "
-                                    "tail ICs reported, never aggregated",
+            "forward_return": (
+                "close[exec] -> close[next stamp's exec | fold's last "
+                "trading day] (fold-contained; never touches the 2025 "
+                "holdout)"
+                if args.slice not in ("holding_semiannual", "holding_annual")
+                else "close[exec] -> close[last trading day of the chain's "
+                     "final fold] (chain-contained; never touches the 2025 "
+                     "holdout)"),
+            "primary_metric_scope": (
+                "PRIMARY stamps only (quarterly horizon = frozen "
+                "ic_forward_horizon); tail ICs reported, never aggregated"
+                if args.slice not in ("holding_semiannual", "holding_annual")
+                else f"all {args.slice} chain stamps are primary "
+                     "(REGISTERED VARIANT horizon — not the frozen "
+                     "quarterly primary metric)"),
             "size_source": "$total_mv (canonical PIT bundle, operator-approved "
                            "2026-07-14)",
             "size_staleness_cap_trading_days": MAX_MV_STALENESS_DAYS,
-            "ranking": f"within_size_decile (n={N_SIZE_DECILES})",
+            "ranking": f"within_size_decile (n={n_size_buckets})"
+                       + (" — REGISTERED VARIANT quintiles (E022)"
+                          if args.slice == "size_quintile" else ""),
             "standardization": "as_of_or_earlier_only",
             "execution_day_tradeability": "canonical microstructure mask "
                                           "(suspended w/ carried close, "
                                           "one-price lock) excluded + counted",
-            "st_handling": "st_on — PIT namechange reconstruction, ST/*ST "
-                           "on the execution day excluded + counted",
+            "st_handling": ("st_on — PIT namechange reconstruction, ST/*ST "
+                            "on the execution day excluded + counted"
+                            if st_enabled else
+                            "st_off (REGISTERED SLICE E021): ST filter "
+                            "DISABLED; would-mask counts recorded"),
             "report_period_alignment": "queried endpoints must serve the "
                                        "SAME period; misaligned names go "
                                        "NA + counted",
