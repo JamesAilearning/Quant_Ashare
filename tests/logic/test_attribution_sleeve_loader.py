@@ -68,6 +68,23 @@ def test_as_of_resolution_spans_and_reentry():
         assert r2.sleeve_map["SH600011"] == SLEEVE_CSI300
 
 
+def test_as_of_beyond_coverage_fails_loud_despite_open_ended_rows():
+    # codex #366 r1 P1: 2099-12-31 is the resolver's synthetic "active at
+    # the last snapshot" marker — an as_of past the last REAL membership
+    # change (here 2021-06-01) must be refused even though the open-ended
+    # rows would happily "match", not silently resolved from stale
+    # composition.
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        with pytest.raises(SleeveResolutionError, match="beyond"):
+            resolve_sleeve_map(root, "2021-06-02")
+        # the bound itself still resolves, and is stamped as provenance.
+        r = resolve_sleeve_map(root, "2021-06-01")
+        assert r.coverage_end == "2021-06-01"
+        assert r.sleeve_map["SH600000"] == SLEEVE_CSI300
+        assert r.sleeve_map["SH600011"] == SLEEVE_CSI300  # open-ended span
+
+
 def test_both_sleeves_membership_fails_loud():
     overlap = _CSI500 + "SH600000\t2018-01-02\t2099-12-31\n"
     with tempfile.TemporaryDirectory() as t:
