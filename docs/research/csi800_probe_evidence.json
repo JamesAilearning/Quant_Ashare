@@ -1,0 +1,286 @@
+{
+  "purpose": "CSI800 扩池 (b) Step 4 只读 probe 的证据侧车:解析后配置、头条指标、sleeve 分解与工件哈希,使简报数字可独立核对。run 工件本体在 output/runs/(gitignored),以哈希锚定。",
+  "brief": "docs/research/csi800_probe_brief.md",
+  "main_commit_at_run": "e65ae6c",
+  "bundle": {
+    "provider": "D:/qlib_data/my_cn_data_pit",
+    "calendar_tail": "2026-06-17",
+    "benchmark_registry": [
+      "SH000300\t2018-01-02\t2026-06-17",
+      "SH000300TR\t2018-01-02\t2026-06-17",
+      "SH000906TR\t2018-01-02\t2026-06-17",
+      "SH000905TR\t2018-01-02\t2026-06-17"
+    ]
+  },
+  "runs": {
+    "csi300_run_a": {
+      "run_id": "20260716_214037_510776_523f7038_74983fea5b2a",
+      "resolved_config_full": {
+        "provider_uri": "D:/qlib_data/my_cn_data_pit",
+        "region": "cn",
+        "instruments": "csi300",
+        "feature_handler": "Alpha158",
+        "label_horizon_days": 1,
+        "delisted_registry_path": "",
+        "train_start": "2018-01-02",
+        "train_end": "2024-12-18",
+        "valid_start": "2025-01-02",
+        "valid_end": "2025-06-26",
+        "test_start": "2025-07-01",
+        "test_end": "2026-06-12",
+        "model_type": "LGBModel",
+        "num_boost_round": 1000,
+        "early_stopping_rounds": 50,
+        "learning_rate": 0.005,
+        "max_depth": 6,
+        "num_leaves": 64,
+        "lambda_l1": 0.0,
+        "lambda_l2": 1.0,
+        "min_data_in_leaf": 50,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 5,
+        "benchmark_code": "SH000300TR",
+        "init_cash": 100000000,
+        "commission_rate": 0.0005,
+        "stamp_tax_schedule": null,
+        "slippage_bps": 5.0,
+        "min_cost": 5.0,
+        "execution_price_kind": "close",
+        "adjust_mode": "pre_adjusted",
+        "signal_to_execution_lag": 1,
+        "topk": 50,
+        "n_drop": 5,
+        "namechange_path": "D:/qlib_data/tushare_raw/all_namechanges.parquet",
+        "limit_threshold": 0.095,
+        "seed": 42,
+        "compute_device": "gpu",
+        "run_factor_analysis": true,
+        "factor_forward_period": 5,
+        "factor_top_n": 20,
+        "factor_max_decay_lag": 20,
+        "run_attribution": true,
+        "industry_artifact_path": null,
+        "industry_manifest_path": null,
+        "industry_taxonomy_id": "",
+        "industry_temporal_mode": "static",
+        "output_dir": "output"
+      },
+      "metric_status": "official",
+      "official_backtest_path": "qlib.backtest.backtest",
+      "official_metrics": {
+        "excess_return_without_cost": {
+          "mean": 5.277583959978726e-05,
+          "std": 0.00534830074734883,
+          "annualized_return": 0.012560649824749368,
+          "information_ratio": 0.15223265054182542,
+          "max_drawdown": -0.07916584047323119
+        },
+        "excess_return_with_cost": {
+          "mean": -0.00018942539152387426,
+          "std": 0.005350862077008109,
+          "annualized_return": -0.04508324318268207,
+          "information_ratio": -0.546138653552478,
+          "max_drawdown": -0.09412340544804561
+        }
+      },
+      "ic_summary": {
+        "1": {
+          "mean_ic": 0.02225539715785943,
+          "std_ic": 0.14888625542134418,
+          "ir": 0.14947919198368742,
+          "ic_positive_ratio": 0.5670995670995671,
+          "num_days": 231,
+          "convention": "t1_entry_realized_return",
+          "mean_ic_stamp_day": 0.026918533390381305
+        },
+        "5": {
+          "mean_ic": 0.03987633053600204,
+          "std_ic": 0.14845538529282298,
+          "ir": 0.2686081778532142,
+          "ic_positive_ratio": 0.5745614035087719,
+          "num_days": 228,
+          "convention": "t1_entry_realized_return",
+          "mean_ic_stamp_day": 0.04160612835264337
+        }
+      },
+      "benchmark": {
+        "code": "SH000300TR",
+        "annual_return": null,
+        "max_drawdown": null,
+        "alpha_annualized": -0.04508324318268207,
+        "beta": null,
+        "correlation": null
+      },
+      "artifact_sha256": {
+        "config.yaml": "a4272a57326b37dabaebe8f2d5479e8159798de9baa3076c35210b73b29e257e",
+        "metrics.json": "636893d12535537c7d85ba58564f8f8dcf8d943ccec4c35d83107e870c9ff450",
+        "pipeline_report.json": "882bd3bd90de11dd93045d0b13753f99c82b9866422160a27395c8e23c76957d",
+        "nav.parquet": "fa7f71c3c4f37d131b0b75de8034e4cd8c3022ddc04f78c466b4b5b20d2b78be",
+        "predictions.parquet": "f060ea58db03c2992ea5ecca430ea4b38ebc27c58e425bec7d510d043f89537d",
+        "holdings.parquet": "1abe4db4a1eea077f48f08ba68c84630b65096d73b3713a13ea6d885fea9c169",
+        "metadata.json": "f1e4125db92a4c6befa775720a7e2ff3f8d55a01ad8a8b9c16bbea854bc4529e"
+      }
+    },
+    "csi800_run_b": {
+      "run_id": "20260716_214232_514735_0d7e6c8e_f7424166fc4e",
+      "resolved_config_full": {
+        "provider_uri": "D:/qlib_data/my_cn_data_pit",
+        "region": "cn",
+        "instruments": "csi800",
+        "feature_handler": "Alpha158",
+        "label_horizon_days": 1,
+        "delisted_registry_path": "",
+        "train_start": "2018-01-02",
+        "train_end": "2024-12-18",
+        "valid_start": "2025-01-02",
+        "valid_end": "2025-06-26",
+        "test_start": "2025-07-01",
+        "test_end": "2026-06-12",
+        "model_type": "LGBModel",
+        "num_boost_round": 1000,
+        "early_stopping_rounds": 50,
+        "learning_rate": 0.005,
+        "max_depth": 6,
+        "num_leaves": 64,
+        "lambda_l1": 0.0,
+        "lambda_l2": 1.0,
+        "min_data_in_leaf": 50,
+        "feature_fraction": 0.8,
+        "bagging_fraction": 0.8,
+        "bagging_freq": 5,
+        "benchmark_code": "SH000906TR",
+        "init_cash": 100000000,
+        "commission_rate": 0.0005,
+        "stamp_tax_schedule": null,
+        "slippage_bps": 5.0,
+        "min_cost": 5.0,
+        "execution_price_kind": "close",
+        "adjust_mode": "pre_adjusted",
+        "signal_to_execution_lag": 1,
+        "topk": 50,
+        "n_drop": 5,
+        "namechange_path": "D:/qlib_data/tushare_raw/all_namechanges.parquet",
+        "limit_threshold": 0.095,
+        "seed": 42,
+        "compute_device": "gpu",
+        "run_factor_analysis": true,
+        "factor_forward_period": 5,
+        "factor_top_n": 20,
+        "factor_max_decay_lag": 20,
+        "run_attribution": true,
+        "industry_artifact_path": null,
+        "industry_manifest_path": null,
+        "industry_taxonomy_id": "",
+        "industry_temporal_mode": "static",
+        "output_dir": "output"
+      },
+      "metric_status": "official",
+      "official_backtest_path": "qlib.backtest.backtest",
+      "official_metrics": {
+        "excess_return_without_cost": {
+          "mean": 0.000154540307187645,
+          "std": 0.0062452597427631595,
+          "annualized_return": 0.03678059311065951,
+          "information_ratio": 0.3817506139182323,
+          "max_drawdown": -0.060653580012481945
+        },
+        "excess_return_with_cost": {
+          "mean": -8.517084964474841e-05,
+          "std": 0.006246772401795719,
+          "annualized_return": -0.02027066221545012,
+          "information_ratio": -0.2103409229884188,
+          "max_drawdown": -0.0692255589343925
+        }
+      },
+      "ic_summary": {
+        "1": {
+          "mean_ic": 0.0161959547309388,
+          "std_ic": 0.09779572930907515,
+          "ir": 0.1656100409022244,
+          "ic_positive_ratio": 0.5844155844155844,
+          "num_days": 231,
+          "convention": "t1_entry_realized_return",
+          "mean_ic_stamp_day": 0.03145624353153342
+        },
+        "5": {
+          "mean_ic": 0.03210147080097423,
+          "std_ic": 0.09240504383514131,
+          "ir": 0.3473995516764871,
+          "ic_positive_ratio": 0.6140350877192983,
+          "num_days": 228,
+          "convention": "t1_entry_realized_return",
+          "mean_ic_stamp_day": 0.03894342748557758
+        }
+      },
+      "benchmark": {
+        "code": "SH000906TR",
+        "annual_return": null,
+        "max_drawdown": null,
+        "alpha_annualized": -0.02027066221545012,
+        "beta": null,
+        "correlation": null
+      },
+      "artifact_sha256": {
+        "config.yaml": "6f35a1494caf1ab9fb51e39cfbf76805591a04f2974aab4cab856c086f2722a9",
+        "metrics.json": "ead6d33b666575f8e858910a66307a9dabaef580d928e5738df0fa23b6b595bb",
+        "pipeline_report.json": "ca22202ec64b79d1cb130c33e746682df1717f244fc9c560b7da3cd482f94d28",
+        "nav.parquet": "12ac3f1c9d1b417ea6bb77b7ad3eb9dbfd6a09a26eefe29ee2d2c05d5174c146",
+        "predictions.parquet": "17c6b684fdcd654710d204caf8cf39798e1a242e2914d098a0ea611d338d731c",
+        "holdings.parquet": "2bbb60218657d6fd429a2418312579f9f4f0ff29272baf4d086c15b74d52396c",
+        "metadata.json": "e99f341e45a24720f5e666ffe1ee965130fb83b84ca5ae44f83c42a3d22a60ca"
+      }
+    }
+  },
+  "config_diff_run_a_vs_run_b": {
+    "benchmark_code": {
+      "run_a": "SH000300TR",
+      "run_b": "SH000906TR"
+    },
+    "instruments": {
+      "run_a": "csi300",
+      "run_b": "csi800"
+    }
+  },
+  "config_field_counts": {
+    "run_a": 49,
+    "run_b": 49,
+    "diff_fields": 2
+  },
+  "sleeve_posthoc_run_b": {
+    "taxonomy": "csi800_sleeve_v1",
+    "as_of": "2025-07-01",
+    "membership_coverage_end": "2025-12-31",
+    "benchmark_cap_split_csi300": 0.7832,
+    "brinson_reconciliation_residual": -0.3104,
+    "residual_note": "单期近似 vs 231 日复利超额不闭合(引擎自身响亮警告);权重与分腿收益为硬数,效应拆分仅作方向参考。post-hoc 未挂 PITDataProvider(引擎 WARN 在案)。",
+    "sectors": [
+      {
+        "sleeve": "csi500_sleeve",
+        "portfolio_weight": 0.618,
+        "benchmark_weight": 0.2168,
+        "portfolio_return": 0.5648,
+        "benchmark_return": 0.322
+      },
+      {
+        "sleeve": "csi300_sleeve",
+        "portfolio_weight": 0.338,
+        "benchmark_weight": 0.7832,
+        "portfolio_return": 0.4783,
+        "benchmark_return": 0.1733
+      },
+      {
+        "sleeve": "unknown",
+        "portfolio_weight": 0.044,
+        "benchmark_weight": 0.0,
+        "portfolio_return": 0.8542,
+        "benchmark_return": 0.0
+      }
+    ]
+  },
+  "run_b_prj_warnings_verbatim": [
+    "BacktestRunner: consume-time benchmark value-level check loads ['SH000906TR', 'SH000906'] over [2025-06-16, 2026-06-12] (start padded back from 2025-07-01 to cover the prior-day close qlib's return consumes) via direct qlib D.features (allow-listed — a benchmark index has no post-delist mask). PR-J.",
+    "BacktestRunner: benchmark value-level check: TR/price cross-check skipped: SH000906TR and/or SH000906 was not loaded"
+  ],
+  "canonical_pairing_check": "run B 日志无 'MIS-PAIRED' 与 'NOT one of the canonical' 行——universe-aware 配对检查静默通过;上列两条为值级校验的预期警告(面包屑必响 + 价格兄弟缺席跳过交叉核对),非配对异常。"
+}
