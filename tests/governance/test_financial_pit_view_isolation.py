@@ -144,21 +144,29 @@ class FinancialViewIsolationTests(unittest.TestCase):
             ),
         )
 
-    # Sanctioned importers of the raw store/contract — every OTHER src/ module
-    # must reach financial data through the view. The view is the sole research
-    # access path; the contract layer legitimately wraps the store constants.
+    # Sanctioned importers of the raw store/contract — every OTHER src/ AND
+    # scripts/ module must reach financial data through the view. The view is
+    # the sole research access path; the contract layer legitimately wraps the
+    # store constants; the ingest WRITES the store; Step-A audits the store
+    # at the storage level by design.
     _LOWLEVEL_IMPORT_ALLOWLIST = {
         _VIEW_REL,                                   # sole research access path
         "src/data/pit/financial_pit_contract.py",    # contract layer wraps the store
+        "scripts/data_pipeline/08_fetch_financials.py",   # the ingest writes the store
+        "scripts/research/gate3_step_a_coverage_report.py",  # store-level coverage auditor
     }
 
     def test_only_sanctioned_modules_import_lowlevel_store(self) -> None:
-        # ALL of src/ (not just src/research): a future evaluator / feature /
-        # canonical module reading the raw store directly would bypass the view's
-        # original-first / exclusion / missingness semantics — a contract
-        # violation CI must catch (codex #342 r4).
+        # ALL of src/ AND scripts/ (hardening backlog: the Gate-4A evaluator
+        # landed under scripts/research/ — decision-level tooling outside
+        # src/ must not bypass the view either): a future evaluator /
+        # feature / canonical module reading the raw store directly would
+        # bypass the view's original-first / exclusion / missingness
+        # semantics — a contract violation CI must catch (codex #342 r4).
         offenders = []
-        for py in sorted(_SRC.rglob("*.py")):
+        scan = list(sorted(_SRC.rglob("*.py"))) + list(
+            sorted((_ROOT / "scripts").rglob("*.py")))
+        for py in scan:
             rel = py.relative_to(_ROOT).as_posix()
             if rel in self._LOWLEVEL_IMPORT_ALLOWLIST:
                 continue

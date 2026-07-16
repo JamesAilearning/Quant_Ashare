@@ -288,14 +288,14 @@ def _coerce_to_date(value: object) -> date | None:
             # OverflowError — date value overflows Python's date range
             # Everything else (AttributeError, NameError, …) is a programmer
             # error and must propagate so it isn't silently swallowed.
-            return None
+            return None  # fallback-ok: documented lenient coercion; programmer errors DO propagate
         if isinstance(result, date):
             return result
     if isinstance(value, str):
         try:
             return date.fromisoformat(value[:10])
         except ValueError:
-            return None
+            return None  # fallback-ok: non-ISO string = not-a-date per coercion contract
     return None
 
 

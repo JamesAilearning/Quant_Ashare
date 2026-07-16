@@ -396,7 +396,7 @@ def _annualise_total_return(
         # finite float.
         return float(base ** (_TRADING_DAYS_PER_YEAR / float(n_trading_days)) - 1.0)
     except (ValueError, OverflowError):
-        return None
+        return None  # fallback-ok: overflow in annualization math; None = metric absent
 
 
 def _monthly_returns(nav_frame: Any) -> list[dict[str, Any]]:
@@ -665,7 +665,7 @@ def _qlib_version() -> str | None:
     try:
         import qlib
     except ImportError:
-        return None
+        return None  # fallback-ok: qlib absent -> version None (absent, never 'None' string; bug.md P1-7)
     version = getattr(qlib, "__version__", "")
     return version if version else None
 
@@ -675,5 +675,5 @@ def _duration_seconds(started_at: str, finished_at: str) -> int | None:
         start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
         finish = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
     except ValueError:
-        return None
+        return None  # fallback-ok: unparsable timestamps; None = duration metadata absent
     return max(0, int((finish - start).total_seconds()))

@@ -1776,7 +1776,7 @@ def _positions_to_weight_map(positions_normal: Any) -> dict[str, dict[str, float
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            return None
+            return None  # fallback-ok: lenient numeric coercion; None = not-a-finite-number
         return numeric if math.isfinite(numeric) else None
 
     for ts, pos in items:

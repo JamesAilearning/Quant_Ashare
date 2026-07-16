@@ -321,7 +321,7 @@ def cache_get(
             "(%s: %s); treating as cache miss and rebuilding.",
             path, type(exc).__name__, exc,
         )
-        return None
+        return None  # fallback-ok: WARNED cache-miss; caller rebuilds from source
 
     # Late import to avoid a circular import at module load.
     from src.data.feature_dataset_builder import FeatureDatasetResult  # noqa: PLC0415
@@ -373,7 +373,7 @@ def cache_put(
             Path(cache_dir, f"dataset_{key}.pkl.tmp").unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass
-        return None
+        return None  # fallback-ok: cache errors degrade to a MISS; caller recomputes
 
 
 __all__ = [
