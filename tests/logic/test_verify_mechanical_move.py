@@ -148,7 +148,25 @@ def test_broad_handler_relocation_between_functions_flagged():
     assert only_old == [] and only_new == []   # the line layer is blind
     findings = compare_module_texts(old, new)
     assert any("NEW broad except" in f and "beta" in f for f in findings)
-    assert not any("alpha" in f for f in findings)
+    # alpha LOST its catch-all — that must not read as a NEW broad
+    # handler (its body change is separately reported since r14).
+    assert not any("NEW broad except" in f and "alpha" in f
+                   for f in findings)
+
+
+def test_statement_reorder_within_function_flagged():
+    # codex #364 r14 P2: swapping validate()/write() preserves the line
+    # multiset, decorators and the signature — only the normalized
+    # function-body comparison can catch the reorder.
+    old = "def run(a):\n    validate(a)\n    write(a)\n"
+    new = "def run(a):\n    write(a)\n    validate(a)\n"
+    only_old, only_new = content_diff(old, [new])
+    assert only_old == [] and only_new == []      # line layer is blind
+    findings = compare_module_texts(old, new)
+    assert any("BODY changed" in f and "run" in f for f in findings)
+    # identical body (even reformatted) stays clean:
+    same = "def run(a):\n    validate(a)\n    write(a)\n"
+    assert compare_module_texts(old, same) == []
 
 
 def test_signature_drift_flagged():

@@ -15,10 +15,11 @@ verification deterministic and CI-gateable:
   (b) an AST diff of the pre-move blob vs the new file(s): class /
       function decorator drift (lost OR added — a new ``@cache`` is a
       behavior change too), changed signatures (incl. keyword-only
-      markers and defaults), lost defs/classes, and NEWLY-ADDED broad
-      ``except`` handlers (bare / Exception / BaseException) — accounted
-      PER ENCLOSING SCOPE, so relocating a catch-all between functions
-      is drift, not a wash.
+      markers and defaults), lost defs/classes, normalized FUNCTION-BODY
+      drift (statement reorder is invisible to a line multiset), and
+      NEWLY-ADDED broad ``except`` handlers (bare / Exception /
+      BaseException) — accounted PER ENCLOSING SCOPE, so relocating a
+      catch-all between functions is drift, not a wash.
 
 Usage — auto mode (rename-detected files against a base ref):
 
@@ -242,6 +243,18 @@ def compare_module_texts(old_text: str,
         if old_sig is not None and new_sig is not None and old_sig != new_sig:
             findings.append(f"SIGNATURE changed on {qual}: "
                             f"{old_sig!r} -> {new_sig!r}")
+        # function-body comparison (codex #364 r14 P2): statement
+        # REORDER preserves the line multiset, decorators and signature —
+        # only a normalized body diff catches it. Functions only: a
+        # class-body diff would re-report every method change.
+        if (isinstance(old_node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and isinstance(new_node, (ast.FunctionDef,
+                                          ast.AsyncFunctionDef))):
+            old_body = "\n".join(ast.unparse(s) for s in old_node.body)
+            new_body = "\n".join(ast.unparse(s) for s in new_node.body)
+            if old_body != new_body:
+                findings.append(f"BODY changed on {qual} "
+                                "(statement-level diff; reorder counts)")
     old_scoped = _broad_excepts_by_scope(old_tree)
     new_scoped: Counter[str] = Counter()
     for t, b in zip(new_trees, base_trees, strict=True):
