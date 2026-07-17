@@ -125,6 +125,27 @@ class CampaignWalkForwardPairPins(unittest.TestCase):
             self.assertEqual("../../config_walk.yaml", cfg.get("extends"),
                              name)
 
+    def test_csi300_reference_matches_base_except_universe(self) -> None:
+        # codex P1 on #371: veto-3's turnover baseline must be a MATCHED
+        # config — the reference differs from the base arm ONLY in the
+        # universe/benchmark pair, the (csi300-meaningless) sleeve switch,
+        # and its own output dir. risk_constraints stays ON for literal
+        # config symmetry (it is post-trade validation and does not alter
+        # official turnover; RAISE aborts rather than mutates).
+        base = _load("csi800_campaign_base.yaml")
+        ref = _load("csi300_campaign_reference.yaml")
+        diff = {k for k in set(base) | set(ref)
+                if base.get(k) != ref.get(k)}
+        self.assertEqual(
+            {"instruments", "benchmark_code", "attribution_sleeve_grouping",
+             "output_dir"},
+            diff,
+            f"csi300 reference drifted from the base arm: {sorted(diff)}",
+        )
+        self.assertIs(True, ref.get("risk_constraints_enabled"))
+        self.assertEqual(BASE_SLIPPAGE_BPS, ref.get("slippage_bps"))
+        self.assertNotEqual(base["output_dir"], ref["output_dir"])
+
 
 class VetoSheetNumberPins(unittest.TestCase):
     """The five DP-4 numbers, pinned as literal spec text — editing any
