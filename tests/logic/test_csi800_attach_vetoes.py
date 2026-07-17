@@ -122,6 +122,12 @@ def _mk_reference_run(root: Path, cfg_over: dict | None = None,
             folds.append({"fold_index": i, "annualized_return": None,
                           "report_path": None})
             continue
+        # completed reference folds must be DOCUMENTED by their own
+        # official fold report (codex #373 r2).
+        (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
+            "fold_index": i,
+            "backtest": {"metric_status": "official"},
+        }), encoding="utf-8")
         (d / f"fold_{i:02d}_positions.json").write_text(
             json.dumps(_positions()), encoding="utf-8")
         folds.append({"fold_index": i, "annualized_return": 0.01,
@@ -235,4 +241,53 @@ def test_reference_config_drift_refuses():
         pair_p, base, cons, ref = _mk_trio(Path(t),
                                            cfg_over={"topk": 60})
         with pytest.raises(SystemExit, match="expected exactly"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_injected_extra_fold_report_cannot_stand_in():
+    # codex #373 r2: fold evidence is enumerated through the certified
+    # aggregate's DECLARED report_path set — an injected extra report
+    # with favorable attribution must not repair coverage lost when a
+    # certified fold's attribution is non-ok.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        rep_p = cons / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        payload["attribution"] = {"status": "skipped_no_data"}
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+        # inject an undeclared extra fold report with ok attribution
+        extra = json.loads(
+            (cons / "fold_00_report.json").read_text(encoding="utf-8"))
+        extra["fold_index"] = 2
+        (cons / "fold_02_report.json").write_text(json.dumps(extra),
+                                                  encoding="utf-8")
+        r = attach(pair_p, base, cons, ref)
+        vc = r["veto_checklist"]
+        # only the DECLARED folds count: 1/2 ok -> fail closed.
+        assert vc["2_csi500_dependence"]["veto_triggered"] is True
+        assert vc["2_csi500_dependence"]["folds_used"] == 1
+        assert vc["5_midcap_concentration"]["veto_triggered"] is True
+        assert r["promotion_eligible"] is False
+
+
+def test_reference_nonofficial_fold_report_refuses():
+    # a completed reference fold whose own report is not official is not
+    # a documented reference run.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        rep_p = ref / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        payload["backtest"]["metric_status"] = "degraded"
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(SystemExit, match="not a documented"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_reference_missing_fold_report_refuses():
+    # config-shaped directory without the documented fold reports (the
+    # synthetic low-turnover baseline scenario) refuses.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        (ref / "fold_01_report.json").unlink()
+        with pytest.raises(Exception, match="unreadable"):
             attach(pair_p, base, cons, ref)

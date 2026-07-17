@@ -14,17 +14,25 @@ plus the evidence values, matching ``REQUIRED_VETO_CHECKS`` /
 ``evaluate_promotion_eligibility`` semantics: promotion eligibility flips
 only when ALL FIVE canonical checks are present and none triggered.
 
-Evidence binding (codex #373 r1 P1): the supplied ``--base-run`` /
+Evidence binding (codex #373 r1+r2 P1): the supplied ``--base-run`` /
 ``--conservative-run`` dirs are re-loaded with the SAME loader guard-1
 used (re-proving per-fold official status) and their ``run_id`` +
 ``config_sha256`` + ``report_sha256`` must MATCH the certified entries in
 the pair report — otherwise a caller could pair the certified official
 metrics with turnover/sleeve/constraint evidence borrowed from a different
-(favorable) run. The ``--reference-run`` is bound structurally: its
-embedded config's projected diff against the certified base config must be
-EXACTLY the #371-pinned reference fields
-(``instruments``/``benchmark_code``/``attribution_sleeve_grouping``), which
-also proves slippage parity — that is what "同配置 csi300 参照" means.
+(favorable) run. Fold evidence for checks (2) (4) (5) is enumerated
+through the certified aggregate's DECLARED ``folds[].report_path``
+entries (confined resolver + fold_index ownership, guard-1's own) — never
+by globbing the directory, so a stale/injected extra fold report can
+neither satisfy coverage counts nor substitute a certified fold's
+evidence. The ``--reference-run`` is bound structurally AND as a
+documented run: its embedded config's projected diff against the
+certified base config must be EXACTLY the #371-pinned reference fields
+(``instruments``/``benchmark_code``/``attribution_sleeve_grouping``),
+which also proves slippage parity — that is what "同配置 csi300 参照"
+means — and every fold its aggregate documents as completed must resolve
+to its own OFFICIAL fold report; a synthetic directory carrying only a
+copied config and fabricated low-turnover positions is refused.
 
 Fail-closed coverage (codex #373 r1 P1 x2): checks (2) and (5) require ok
 sleeve attribution on EVERY conservative fold — a partial diagnostic
@@ -77,8 +85,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -87,12 +95,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# _load_side/_projected_diff are guard-1's own loader/projection — reused
-# deliberately so binding and pairing can never drift apart.
+# _load_side/_projected_diff/_resolve_fold_report are guard-1's own
+# loader/projection/confined-resolver — reused deliberately so binding
+# and pairing can never drift apart.
 from scripts.research.csi800_campaign_pair_report import (  # noqa: E402
     BASE_SLIPPAGE_BPS,
     _load_side,
     _projected_diff,
+    _resolve_fold_report,
     evaluate_promotion_eligibility,
 )
 from src.core.attribution_sleeve_loader import sleeve_turnover  # noqa: E402
@@ -118,9 +128,6 @@ UNKNOWN_WEIGHT_THRESHOLD = 0.10
 # A-share trading-day annualization; cancels in the veto-3 ratio.
 ANNUALIZATION_DAYS = 238
 
-_FOLD_REPORT_RE = re.compile(r"^fold_(\d+)_report\.json$")
-
-
 class AttachError(SystemExit):
     """Loud refusal — evidence binding or artifact integrity failed."""
 
@@ -128,24 +135,47 @@ class AttachError(SystemExit):
         super().__init__(f"REFUSING: {message}")
 
 
-def _fold_reports(run_dir: Path) -> list[tuple[int, dict[str, Any]]]:
+def _certified_fold_reports(
+        run_dir: Path, aggregate: dict[str, Any],
+) -> list[tuple[int, dict[str, Any]]]:
+    """Fold evidence resolved through the certified aggregate's DECLARED
+    ``folds[].report_path`` entries — never by globbing the directory
+    (codex #373 r2 P1: a stale/injected extra ``fold_XX_report.json``
+    must not be able to satisfy count-based coverage while a certified
+    fold's evidence is absent or replaced). Every declared fold must
+    resolve (confined to the run dir, guard-1's resolver) and carry its
+    own ``fold_index``."""
     out: list[tuple[int, dict[str, Any]]] = []
-    for f in sorted(run_dir.iterdir()):
-        m = _FOLD_REPORT_RE.match(f.name)
-        if m:
-            out.append((int(m.group(1)),
-                        json.loads(f.read_text(encoding="utf-8"))))
+    for entry in aggregate.get("folds") or []:
+        idx = entry.get("fold_index")
+        rp = entry.get("report_path")
+        if rp is None:
+            raise AttachError(
+                f"{run_dir}: aggregate fold {idx!r} has no report_path — "
+                "a certified paired side has no failed folds; torn "
+                "aggregate, refusing.")
+        resolved = _resolve_fold_report(run_dir, str(rp))
+        payload: dict[str, Any] = json.loads(
+            resolved.read_text(encoding="utf-8"))
+        if payload.get("fold_index") != idx:
+            raise AttachError(
+                f"{resolved} carries fold_index="
+                f"{payload.get('fold_index')!r} but the aggregate entry "
+                f"claims {idx!r} — mismatched fold evidence, refusing.")
+        out.append((int(idx), payload))
     if not out:
-        raise AttachError(f"no fold reports under {run_dir}")
+        raise AttachError(f"no folds declared in aggregate under {run_dir}")
     return out
 
 
-def _bind_paired_side(label: str, run_dir: Path,
-                      pair_entry: dict[str, Any]) -> dict[str, Any]:
+def _bind_paired_side(
+        label: str, run_dir: Path, pair_entry: dict[str, Any],
+) -> tuple[dict[str, Any], list[tuple[int, dict[str, Any]]]]:
     """Re-load ``run_dir`` with guard-1's loader (re-proving per-fold
     official status) and require identity with the certified pair-report
     entry — checks 2-5 must be computed from THE certified runs, not from
-    whatever directory happens to be supplied."""
+    whatever directory happens to be supplied. Returns the bound side and
+    its certified fold-report payloads (aggregate-declared set)."""
     side = _load_side(run_dir)
     for key in ("run_id", "config_sha256", "report_sha256"):
         if side.get(key) != pair_entry.get(key):
@@ -160,15 +190,35 @@ def _bind_paired_side(label: str, run_dir: Path,
             f"--{label}-run {run_dir} is not a walk-forward campaign "
             "artifact (no num_folds) — the attach step only certifies "
             "the campaign shape.")
-    return side
+    # Parse the same bytes the certified hash covers, then enumerate the
+    # DECLARED fold set through it.
+    raw = (run_dir / "walk_forward_report.json").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != pair_entry.get("report_sha256"):
+        raise AttachError(
+            f"--{label}-run {run_dir} aggregate changed between binding "
+            "reads — refusing.")
+    aggregate: dict[str, Any] = json.loads(raw.decode("utf-8"))
+    folds = _certified_fold_reports(run_dir, aggregate)
+    if len(folds) != num_folds:
+        raise AttachError(
+            f"--{label}-run {run_dir} declares num_folds={num_folds} but "
+            f"{len(folds)} fold entries — torn aggregate, refusing.")
+    return side, folds
 
 
-def _bind_reference(ref_dir: Path,
-                    base_cfg: dict[str, Any]) -> dict[str, Any]:
-    """Bind the veto-3 baseline: the reference's embedded config must
-    differ from the certified base config by EXACTLY the #371-pinned
-    reference fields (projection already excludes run-identity), which
-    also proves slippage parity at 5 bps."""
+def _bind_reference(
+        ref_dir: Path, base_cfg: dict[str, Any],
+) -> tuple[dict[str, Any], set[int]]:
+    """Bind the veto-3 baseline. Structural binding: the reference's
+    embedded config must differ from the certified base config by EXACTLY
+    the #371-pinned reference fields (projection already excludes
+    run-identity), which also proves slippage parity at 5 bps. Documented
+    -run binding (codex #373 r2 P1): every fold the aggregate documents
+    as completed must resolve to its own OFFICIAL fold report (confined,
+    fold_index-owned) — a synthetic directory carrying only a copied
+    config and low-turnover positions is refused; folds with
+    ``report_path`` null are the documented failures and are returned
+    for disclosure."""
     wf_p = ref_dir / "walk_forward_report.json"
     if not wf_p.is_file():
         raise AttachError(f"reference aggregate missing: {wf_p}")
@@ -192,9 +242,33 @@ def _bind_reference(ref_dir: Path,
             f"{BASE_SLIPPAGE_BPS}bps, got "
             f"{cfg.get('instruments')!r}/{cfg.get('benchmark_code')!r}/"
             f"{cfg.get('slippage_bps')!r}.")
-    if not isinstance(report.get("num_folds"), int):
-        raise AttachError(f"{wf_p} has no num_folds.")
-    return report
+    folds = report.get("folds") or []
+    num_folds = report.get("num_folds")
+    if not isinstance(num_folds, int) or len(folds) != num_folds:
+        raise AttachError(
+            f"{wf_p}: num_folds={num_folds!r} but {len(folds)} fold "
+            "entries — torn aggregate, refusing.")
+    failed: set[int] = set()
+    for entry in folds:
+        idx = int(entry["fold_index"])
+        rp = entry.get("report_path")
+        if rp is None:
+            failed.add(idx)
+            continue
+        resolved = _resolve_fold_report(ref_dir, str(rp))
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        if payload.get("fold_index") != idx:
+            raise AttachError(
+                f"reference {resolved} carries fold_index="
+                f"{payload.get('fold_index')!r} but the aggregate entry "
+                f"claims {idx} — mismatched fold evidence, refusing.")
+        status = (payload.get("backtest") or {}).get("metric_status")
+        if status != "official":
+            raise AttachError(
+                f"reference fold {idx} metric_status={status!r} yet the "
+                "aggregate documents it as completed — not a documented "
+                "reference run, refusing.")
+    return report, failed
 
 
 def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -203,12 +277,13 @@ def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
     return {r["sector"]: r for r in rows}
 
 
-def compute_csi500_dependence(cons_dir: Path, cons_net_excess: float,
-                              expected_folds: int) -> dict[str, Any]:
+def compute_csi500_dependence(
+        cons_folds: list[tuple[int, dict[str, Any]]],
+        cons_net_excess: float, expected_folds: int) -> dict[str, Any]:
     effect_csi500 = 0.0
     effect_total = 0.0
     folds_used = 0
-    for _idx, rep in _fold_reports(cons_dir):
+    for _idx, rep in cons_folds:
         att = rep.get("attribution") or {}
         if att.get("status") != "ok":
             continue
@@ -281,27 +356,19 @@ def _run_positions_turnover(
              "valid_folds": float(folds)}, problems)
 
 
-def _ref_failed_fold_indices(ref_report: dict[str, Any]) -> set[int]:
-    """Folds the reference aggregate documents as FAILED (no official
-    fold report was produced — ``report_path`` null, NaN placeholder)."""
-    failed: set[int] = set()
-    for f in ref_report.get("folds") or []:
-        if f.get("report_path") is None:
-            failed.add(int(f["fold_index"]))
-    return failed
-
-
 def compute_turnover_check(cons_dir: Path, base_dir: Path, ref_dir: Path,
                            cons_folds: int, base_folds: int,
-                           ref_report: dict[str, Any]) -> dict[str, Any]:
+                           ref_report: dict[str, Any],
+                           documented_failed: set[int]) -> dict[str, Any]:
     cons, cons_problems = _run_positions_turnover(cons_dir, cons_folds)
     base, base_problems = _run_positions_turnover(base_dir, base_folds)
     ref_folds = int(ref_report["num_folds"])
     ref, ref_problems = _run_positions_turnover(ref_dir, ref_folds)
 
     # Reference folds may lack positions ONLY where the aggregate
-    # documents the fold as failed; anything else is a torn artifact.
-    documented_failed = _ref_failed_fold_indices(ref_report)
+    # documents the fold as failed (the binding step already verified
+    # every completed fold against its official report); anything else
+    # is a torn artifact.
     for problem in ref_problems:
         idx = int(problem.split(":", 1)[0].split()[1])
         if idx not in documented_failed:
@@ -334,25 +401,19 @@ def compute_turnover_check(cons_dir: Path, base_dir: Path, ref_dir: Path,
     }
 
 
-def compute_constraints_check(base_dir: Path, cons_dir: Path,
-                              base_folds: int,
-                              cons_folds: int) -> dict[str, Any]:
+def compute_constraints_check(
+        base_side_cfg: dict[str, Any], cons_side_cfg: dict[str, Any],
+        base_folds: list[tuple[int, dict[str, Any]]],
+        cons_folds: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
     problems: list[str] = []
     folds_checked = 0
-    for label, run_dir, expected in (("base", base_dir, base_folds),
-                                     ("conservative", cons_dir, cons_folds)):
-        agg = json.loads((run_dir / "walk_forward_report.json")
-                         .read_text(encoding="utf-8"))
-        cfg = agg.get("config") or {}
+    for label, cfg, folds in (("base", base_side_cfg, base_folds),
+                              ("conservative", cons_side_cfg, cons_folds)):
         if cfg.get("risk_constraints_enabled") is not True:
             problems.append(f"{label}: risk_constraints_enabled != true")
         if cfg.get("risk_constraints_calibration") != "campaign_v1":
             problems.append(f"{label}: calibration != campaign_v1")
-        reports = _fold_reports(run_dir)
-        if len(reports) != expected:
-            problems.append(
-                f"{label}: {len(reports)}/{expected} fold reports present")
-        for idx, rep in reports:
+        for idx, rep in folds:
             folds_checked += 1
             rc = ((rep.get("backtest") or {}).get("provenance") or {}) \
                 .get("config", {}).get("risk_constraints")
@@ -367,11 +428,12 @@ def compute_constraints_check(base_dir: Path, cons_dir: Path,
     }
 
 
-def compute_midcap_concentration(cons_dir: Path,
-                                 expected_folds: int) -> dict[str, Any]:
+def compute_midcap_concentration(
+        cons_folds: list[tuple[int, dict[str, Any]]],
+        expected_folds: int) -> dict[str, Any]:
     csi500_w: list[float] = []
     unknown_w: list[float] = []
-    for _idx, rep in _fold_reports(cons_dir):
+    for _idx, rep in cons_folds:
         att = rep.get("attribution") or {}
         if att.get("status") != "ok":
             continue
@@ -416,22 +478,25 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
             "csi800_campaign_pair_report.py first.")
     cons_net = float(check1["value_annualized"])
 
-    base_side = _bind_paired_side("base", base_run, report["base"])
-    cons_side = _bind_paired_side("conservative", conservative_run,
-                                  report["conservative"])
-    base_folds = int(base_side["num_folds"])
-    cons_folds = int(cons_side["num_folds"])
-    ref_report = _bind_reference(reference_run, base_side["config"])
+    base_side, base_fold_reports = _bind_paired_side(
+        "base", base_run, report["base"])
+    cons_side, cons_fold_reports = _bind_paired_side(
+        "conservative", conservative_run, report["conservative"])
+    base_n = int(base_side["num_folds"])
+    cons_n = int(cons_side["num_folds"])
+    ref_report, ref_failed = _bind_reference(reference_run,
+                                             base_side["config"])
 
     checklist["2_csi500_dependence"] = compute_csi500_dependence(
-        conservative_run, cons_net, cons_folds)
+        cons_fold_reports, cons_net, cons_n)
     checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(
         conservative_run, base_run, reference_run,
-        cons_folds, base_folds, ref_report)
+        cons_n, base_n, ref_report, ref_failed)
     checklist["4_risk_constraints_recorded"] = compute_constraints_check(
-        base_run, conservative_run, base_folds, cons_folds)
+        base_side["config"], cons_side["config"],
+        base_fold_reports, cons_fold_reports)
     checklist["5_midcap_concentration"] = compute_midcap_concentration(
-        conservative_run, cons_folds)
+        cons_fold_reports, cons_n)
 
     eligible, incomplete = evaluate_promotion_eligibility(checklist)
     report["promotion_eligible"] = eligible
