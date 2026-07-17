@@ -317,6 +317,18 @@ class WalkForwardEngine:
                             if (output_dir / f"fold_{i:02d}_positions.json").exists()
                             else None
                         ),
+                        # Attestation digest over the bytes on disk at
+                        # manifest time — same "stamp what was written"
+                        # convention as the fold report's field (schema
+                        # "4-positions-attestation").
+                        positions_sha256=(
+                            hashlib.sha256(
+                                (output_dir / f"fold_{i:02d}_positions.json")
+                                .read_bytes()
+                            ).hexdigest()
+                            if (output_dir / f"fold_{i:02d}_positions.json").exists()
+                            else None
+                        ),
                         bundle_identity=bundle_identity,
                         git_provenance=git_provenance,  # the code that produced THIS fold
                     )
@@ -915,9 +927,13 @@ class WalkForwardEngine:
         # tools cannot compare two runs from the in-memory ``WalkForwardFold``
         # alone — they need the file on disk.
         positions_path: Path | None = None
+        positions_sha256: str | None = None
         if backtest_output.positions:
             positions_path = output_dir / f"fold_{fold_index:02d}_positions.json"
-            write_positions(positions_path, backtest_output.positions)
+            # write_positions returns the sha256 of the PERSISTED bytes
+            # (attestation digest, schema "4-positions-attestation").
+            positions_sha256 = write_positions(
+                positions_path, backtest_output.positions)
 
         # Per-fold performance attribution. Runs after backtest so the
         # attribution engine sees the real positions / return series.
@@ -952,6 +968,7 @@ class WalkForwardEngine:
             signal_result=signal_result,
             backtest_output=backtest_output,
             positions_path=positions_path,
+            positions_sha256=positions_sha256,
             ic_1d=ic_1d, ic_5d=ic_5d,
             annualized_return=ann_ret,
             max_drawdown=max_dd,

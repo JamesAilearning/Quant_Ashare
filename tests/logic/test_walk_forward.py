@@ -863,11 +863,14 @@ class FoldReportSerialisationTests(unittest.TestCase):
             "metrics", "attribution", "ensemble", "positions_path", "generated_at",
         }
         # ``sleeve_turnover`` joined the schema with CSI800 guard-2
-        # (v2-csi800-expansion-guards; explicit null when grouping off).
+        # (v2-csi800-expansion-guards; explicit null when grouping off);
+        # ``positions_sha256`` with the attestation schema
+        # ("4-positions-attestation", cadence-campaign DP-5; explicit
+        # null when the fold produced no positions).
         self.assertEqual(
             set(d),
             preexisting | {"daily_series", "schema_version",
-                           "sleeve_turnover"},
+                           "sleeve_turnover", "positions_sha256"},
         )
         # signal_analysis is untouched (IC goes into daily_series, not here).
         self.assertEqual(

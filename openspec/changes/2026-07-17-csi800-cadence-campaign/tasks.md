@@ -4,19 +4,19 @@
 - [ ] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后数字冻结
 
 ## 1. PR-A — 生产者 attestation（runtime 唯一触点）
-- [ ] **前置归档（本 change 的依赖，codex #374 r17）**：归档两个已
+- [x] **前置归档（本 change 的依赖，codex #374 r17）**：归档两个已
       ship change `2026-07-16-csi800-antiinflation-guards`、
       `2026-07-16-per-universe-canonical-benchmark` →
       `openspec/changes/archive/`，使 `v2-csi800-expansion-guards`
       物化进 `openspec/specs/`——本 change 的 MODIFIED delta 依赖该
       canonical spec 存在，SHALL 在归档之后才应用/校验
-- [ ] wf engine 写盘每折后对已持久化 positions 字节计算 sha256，
+- [x] wf engine 写盘每折后对已持久化 positions 字节计算 sha256，
       写入 fold report 顶层 `positions_sha256` 与 manifest
-- [ ] **pipeline 引擎对称**（AGENTS.md 双引擎同名字段义务）：
+- [x] **pipeline 引擎对称**（AGENTS.md 双引擎同名字段义务）：
       pipeline_report 以同名 `positions_sha256` 盖其持久化
       positions.json；两引擎 schema parity 测试断言双侧在场
-- [ ] fold report schema 版本升级（`4-positions-attestation`）
-- [ ] 测试：摘要与盘面字节一致（两引擎）；失败折不携带；篡改
+- [x] fold report schema 版本升级（`4-positions-attestation`）
+- [x] 测试：摘要与盘面字节一致（两引擎）；失败折不携带；篡改
       positions 后重验失配
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 

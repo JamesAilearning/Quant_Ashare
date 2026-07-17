@@ -7,6 +7,7 @@ All steps are wired through V2's contract and governance system.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -661,6 +662,7 @@ class Pipeline:
         # output would be lost — even though the backtest itself
         # finished successfully. Persisting first means a hard failure
         # later still leaves positions on disk for inspection.
+        positions_sha256: str | None = None
         if backtest_output.positions:
             positions_path = output_dir / "positions.json"
             # No ``default=str`` fallback for the contract types: positions
@@ -680,6 +682,12 @@ class Pipeline:
             sanitised_positions = _sanitize_for_json(dict(backtest_output.positions))
             with open(positions_path, "w", encoding="utf-8") as f:
                 json.dump(sanitised_positions, f, indent=2, allow_nan=False)
+            # Attestation digest over the PERSISTED bytes — "stamp what
+            # was written". Same-name field as the walk-forward fold
+            # report (two-engine schema symmetry, AGENTS.md;
+            # 2026-07-17-csi800-cadence-campaign DP-5).
+            positions_sha256 = hashlib.sha256(
+                positions_path.read_bytes()).hexdigest()
             _logger.info(
                 "  Positions: %s (%d days)",
                 positions_path, len(backtest_output.positions),
@@ -795,6 +803,7 @@ class Pipeline:
                 factor_skipped_reason=factor_skipped_reason,
                 git_provenance=git_provenance,  # captured at run start, not write time
                 sleeve_turnover=sleeve_turnover_block,
+                positions_sha256=positions_sha256,
             )
             _logger.info("  Report: %s", report_path)
         except Exception as exc:  # noqa: BLE001
@@ -948,6 +957,7 @@ class Pipeline:
         factor_skipped_reason: str | None = None,
         git_provenance: Mapping[str, Any] | None = None,
         sleeve_turnover: Mapping[str, Mapping[str, float]] | None = None,
+        positions_sha256: str | None = None,
     ) -> None:
         # Two engines, one schema: pipeline_report.json and walk_forward_report.json
         # carry the SAME top-level git_commit / git_dirty provenance fields, so the
@@ -1034,6 +1044,10 @@ class Pipeline:
             {k: dict(v) for k, v in sleeve_turnover.items()}
             if sleeve_turnover is not None else None
         )
+        # Attestation digest of the persisted positions.json bytes —
+        # same-name field as the walk-forward fold report (two-engine
+        # schema symmetry; explicit None when no positions persisted).
+        report["positions_sha256"] = positions_sha256
         report["attribution"] = Pipeline._attribution_section(
             attribution_result, attribution_skipped_reason,
         )

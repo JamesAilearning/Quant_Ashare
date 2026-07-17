@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import warnings
@@ -127,13 +128,19 @@ def write_aggregate_report(
 def write_positions(
     path: Path,
     positions: Mapping[str, Mapping[str, float]],
-) -> None:
-    """Persist the per-day portfolio weights produced by the backtest.
+) -> str:
+    """Persist the per-day portfolio weights produced by the backtest
+    and return the sha256 of the PERSISTED bytes (attestation digest).
 
     Mirrors ``Pipeline.run`` step 7b: no ``default=str`` fallback —
     the contract is ``{date_str: {instrument: float}}`` and a leak of
     any other type should surface here at write-time, not weeks later
     in a dashboard.
+
+    The digest is computed by re-reading the file AFTER the write —
+    "stamp what was written" — so it is a content binding of the bytes
+    on disk, not of an in-memory serialization that could diverge from
+    them (2026-07-17-csi800-cadence-campaign DP-5).
     """
     # NaN-safe via ``_sanitize_for_json`` + ``allow_nan=False`` —
     # same convention as the per-fold and aggregate reports. A
@@ -147,6 +154,7 @@ def write_positions(
     sanitised = _sanitize_for_json(dict(positions))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(sanitised, f, indent=2, ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def compute_test_window_coverage(folds: list[WalkForwardFold]) -> dict[str, Any]:
@@ -245,8 +253,12 @@ def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
 # History: "2-daily-series" added the daily_series substrate;
 # "3-sleeve-turnover" added the explicit ``sleeve_turnover`` field
 # (CSI800 guard-2, codex P2 on #370 — pre-change folds must regenerate,
-# not coexist without the field).
-FOLD_REPORT_SCHEMA_VERSION = "3-sleeve-turnover"
+# not coexist without the field);
+# "4-positions-attestation" added ``positions_sha256`` — the producer
+# stamps a content digest of the PERSISTED positions bytes so downstream
+# certification can bind the series to the fold report
+# (2026-07-17-csi800-cadence-campaign DP-5, #373 codex r10 prerequisite).
+FOLD_REPORT_SCHEMA_VERSION = "4-positions-attestation"
 
 
 def _ic_series_to_map(series: Any) -> dict[str, float]:
@@ -320,6 +332,7 @@ def build_fold_report(
     signal_result: SignalAnalysisResult,
     backtest_output: CanonicalBacktestOutput,
     positions_path: Path | None,
+    positions_sha256: str | None = None,
     ic_1d: float, ic_5d: float,
     annualized_return: float, max_drawdown: float,
     information_ratio: float,
@@ -422,6 +435,10 @@ def build_fold_report(
             }
         ),
         "positions_path": str(positions_path) if positions_path else None,
+        # Attestation digest of the PERSISTED positions bytes (schema
+        # "4-positions-attestation"): explicit None when no positions
+        # were produced — absence-vs-null must be distinguishable.
+        "positions_sha256": positions_sha256,
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
     }
 

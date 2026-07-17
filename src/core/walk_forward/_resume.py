@@ -254,6 +254,12 @@ class FoldManifest:
     # fingerprint already invalidates a cadence change; this field lets the
     # re-run NAME its cause (阶段7 add-rebalance-cadence).
     rebalance_cadence: str | None = None
+    # Attestation digest of the persisted positions bytes (additive; None
+    # on manifests written before attestation stamping or when the fold
+    # produced no positions). Mirrors the fold report's field of the same
+    # name (schema "4-positions-attestation",
+    # 2026-07-17-csi800-cadence-campaign DP-5).
+    positions_sha256: str | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -269,6 +275,7 @@ class FoldManifest:
         report_path: str,
         predictions_path: str,
         positions_path: str | None,
+        positions_sha256: str | None = None,
         bundle_identity: str | None = None,
         git_provenance: Mapping[str, Any] | None = None,
     ) -> FoldManifest:
@@ -301,6 +308,7 @@ class FoldManifest:
             git_dirty=(git_provenance or {}).get("dirty"),
             label_horizon_days=getattr(config, "label_horizon_days", None),
             rebalance_cadence=rebalance_cadence_repr(config),
+            positions_sha256=positions_sha256,
         )
 
     # ------------------------------------------------------------------
@@ -370,6 +378,7 @@ class FoldManifest:
             "git_dirty": self.git_dirty,
             "label_horizon_days": self.label_horizon_days,
             "rebalance_cadence": self.rebalance_cadence,
+            "positions_sha256": self.positions_sha256,
         }
 
     @classmethod
@@ -415,6 +424,11 @@ class FoldManifest:
             rebalance_cadence=(
                 str(payload["rebalance_cadence"])
                 if payload.get("rebalance_cadence") is not None
+                else None
+            ),
+            positions_sha256=(
+                str(payload["positions_sha256"])
+                if payload.get("positions_sha256") is not None
                 else None
             ),
         )
