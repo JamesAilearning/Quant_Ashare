@@ -55,28 +55,35 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
    blocker——pair 工件内嵌资格字段 SHALL NOT 是晋升权威，任何下游
    SHALL NOT 据其放行；
 2. **certify（认证步骤，SHALL NOT 改写任何已锚工件）**：验证
-   (a) 所消费 pair v3 字节与 git 已提交版本（钉死 repo 路径@HEAD）
-   逐字节一致，(b) 全摘要链对盘面成立，(c) 五项 veto 与主判据——
-   全部通过时产出**独立 verdict 侧车**（钉死路径），载有被锚 pair
-   v3 的 sha256、锚验证时的 commit id、链验证结果与晋升判定。
+   (a) **主线锚**——所消费 pair v3 字节 SHALL 与某个**从受保护主线
+   （`origin/main`）可达的 commit** 上该钉死路径的字节逐字节一致
+   （`git show <anchor>:<path>` 口径；HEAD 一致不充分——feature
+   分支上先 commit pair、certify、再连侧车一并 merge 可绕过
+   "pair 先 merge 评审"门，codex #374 r6），锚 commit id 记入侧车；
+   (b) 全摘要链对盘面成立，(c) 五项 veto 与主判据——全部通过时产出
+   **独立 verdict 侧车**（钉死路径），载有被锚 pair v3 的 sha256、
+   主线锚 commit id、链验证结果与晋升判定。
    `promotion_eligible=true` SHALL 仅以"已提交的 verdict 侧车 + 其
-   记录的 pair digest 与已提交 pair v3 一致"这一组合形态存在。
+   记录的 pair digest 与主线锚上的 pair v3 一致"这一组合形态存在；
+   下游复核 SHALL 按侧车记录的锚 commit 重取 pair 字节比对。
 
 顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → certify →
 侧车提交评审 → 晋升。仅存在于工作树、未经提交评审的任一环 SHALL NOT
 达成晋升。实现与测试（含"certify 不改写已锚工件"“侧车 digest 断链
 拒绝"用例）在 PR-B。
 
-#### Scenario: 全链达标且过不可变锚晋升门开
+#### Scenario: 全链达标且过主线锚晋升门开
 - **WHEN** 三 run 全部由 attestation 生产者产出、盘面未被动过、pair
-  v3 已提交且字节与 HEAD 一致，certify 全链验证通过、五项 veto 全不
-  触发
-- **THEN** certify 产出 verdict 侧车（载被锚 pair digest + commit
-  id），侧车提交评审后晋升成立；pair 工件本体未被 certify 改写
+  v3 已并入受保护主线且字节与主线锚 commit 一致，certify 全链验证
+  通过、五项 veto 全不触发
+- **THEN** certify 产出 verdict 侧车（载被锚 pair digest + 主线锚
+  commit id），侧车提交评审后晋升成立；pair 工件本体未被 certify
+  改写
 
-#### Scenario: 工作树工件铸不出资格
-- **WHEN** 摘要链全链一致但所消费的 pair v3 仅存在于工作树（与
-  HEAD 已提交字节不一致或路径未纳管）
+#### Scenario: 工作树或未并主线的工件铸不出资格
+- **WHEN** 摘要链全链一致但所消费的 pair v3 仅存在于工作树或仅在
+  feature 分支 commit（不与任何 `origin/main` 可达 commit 上的字节
+  一致）
 - **THEN** certify 拒绝产出侧车；attach 回写的 pair 工件内嵌资格
   恒为 false 并携带 unauthenticated blocker
 

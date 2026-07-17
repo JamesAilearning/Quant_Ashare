@@ -26,7 +26,7 @@
       缺摘要维持 unauthenticated + block；失配拒绝
 - [ ] **不可变锚 + verdict 侧车（强制两件套）**（codex #374 r3+r4）：
       attach 内嵌资格恒 false（非权威）；certify 独立步骤——验证
-      pair v3 字节==HEAD 已提交、全摘要链、五 veto+主判据，全过则
+      pair v3 字节==主线锚(origin/main 可达 commit)、全摘要链、五 veto+主判据，全过则
       产出 verdict 侧车（被锚 pair digest+commit id+判定），certify
       不改写任何已锚工件；晋升仅以"已提交侧车+digest 与已提交 pair
       一致"形态成立；测试含 certify 不改写/侧车断链拒/工作树拒/
@@ -66,9 +66,10 @@
       签字 → **用户 merge（= pair v3 提交评审，锚成立）**
 - [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
       收束闭环，certify 不执行
-- [ ] 判定 WIN → **certify 步骤**：验证 pair v3 字节==HEAD + 全摘要
-      链 + 五 veto/主判据 → 产出 verdict 侧车（被锚 pair digest +
-      commit id + 判定）→ 侧车入库 PR → codex/CI → STOP → **用户
-      merge（侧车提交评审）** → 晋升成立，进入晋升流程
+- [ ] 判定 WIN → **certify 步骤**：验证 pair v3 字节==主线锚
+      （origin/main 可达 commit，`git show <anchor>:<path>` 口径）+
+      全摘要链 + 五 veto/主判据 → 产出 verdict 侧车（被锚 pair
+      digest + 主线锚 commit id + 判定）→ 侧车入库 PR → codex/CI →
+      STOP → **用户 merge（侧车提交评审）** → 晋升成立，进入晋升流程
 - [ ] 顺序不可倒置：run → attach → pair 提交 → certify → 侧车提交
       → 晋升；跳过任一环 = 晋升无效
