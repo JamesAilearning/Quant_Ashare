@@ -285,6 +285,14 @@ class WalkForwardConfig:
                 "are mutually exclusive — one Brinson run takes exactly "
                 "one grouping source (v2-csi800-expansion-guards)."
             )
+        if self.attribution_sleeve_grouping and not self.run_attribution:
+            raise WalkForwardError(
+                "attribution_sleeve_grouping=True requires "
+                "run_attribution=True — disabling attribution would skip "
+                "the sleeve resolution entirely and emit bare csi800 "
+                "metrics without the mandated decomposition "
+                "(v2-csi800-expansion-guards, codex P1 on #370)."
+            )
 
         if self.st_mask_mode not in ("required", "off_experiment"):
             raise WalkForwardError(

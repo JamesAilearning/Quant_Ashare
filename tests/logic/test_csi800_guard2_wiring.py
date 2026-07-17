@@ -66,6 +66,28 @@ class TestMutualExclusion:
                 industry_taxonomy_id="t",
             )
 
+    def test_sleeve_grouping_requires_attribution_enabled(self):
+        # codex #370 r2 P1: run_attribution=False would skip the sleeve
+        # branch entirely and emit bare csi800 metrics — refused at
+        # config construction in BOTH engines.
+        from src.core.pipeline import PipelineConfig, PipelineError
+        from src.core.walk_forward.config import (
+            WalkForwardConfig,
+            WalkForwardError,
+        )
+        with pytest.raises(PipelineError, match="requires\\s+run_attribution"):
+            PipelineConfig(
+                provider_uri="D:/fake",
+                attribution_sleeve_grouping=True,
+                run_attribution=False,
+            )
+        with pytest.raises(WalkForwardError,
+                           match="requires\\s+run_attribution"):
+            WalkForwardConfig(
+                attribution_sleeve_grouping=True,
+                run_attribution=False,
+            )
+
 
 class TestPipelineSleeveWiring:
     def test_build_attribution_config_uses_sleeve_map(self):
