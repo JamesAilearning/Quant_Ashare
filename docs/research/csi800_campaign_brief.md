@@ -67,7 +67,15 @@ run id + config/report sha256 双侧入档。
 勾验工装：`scripts/research/csi800_campaign_attach_vetoes.py`（消费
 guard-1 配对工件 + guard-2 sleeve/positions/provenance 工件，②③⑤
 的算子实现与注记见脚本 docstring；③ 双侧同一纯函数
-`sleeve_turnover` 重算，年化常数在比率中消去）。
+`sleeve_turnover` 重算，年化常数在比率中消去）。证据绑定与
+fail-closed（codex #373 r1）：base/conservative 证据目录以 guard-1
+同款 loader 重载并强制 `run_id/config_sha256/report_sha256` 与配对
+工件逐字段一致；参照以 #371 钉死差集
+（恰 `{instruments, benchmark_code, attribution_sleeve_grouping}`）
+结构绑定；②⑤ 要求全折归因覆盖、③ 要求 csi800 双档全折 positions
+完整（缺口即判触发），参照缺折仅当聚合已档失败
+（`report_path` null，即 fold 8）方可豁免并入 `ref_failed_folds`
+披露。
 
 ## 5. 诊断读数（非晋升论据）
 

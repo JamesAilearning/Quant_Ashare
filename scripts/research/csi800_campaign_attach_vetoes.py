@@ -14,6 +14,29 @@ plus the evidence values, matching ``REQUIRED_VETO_CHECKS`` /
 ``evaluate_promotion_eligibility`` semantics: promotion eligibility flips
 only when ALL FIVE canonical checks are present and none triggered.
 
+Evidence binding (codex #373 r1 P1): the supplied ``--base-run`` /
+``--conservative-run`` dirs are re-loaded with the SAME loader guard-1
+used (re-proving per-fold official status) and their ``run_id`` +
+``config_sha256`` + ``report_sha256`` must MATCH the certified entries in
+the pair report — otherwise a caller could pair the certified official
+metrics with turnover/sleeve/constraint evidence borrowed from a different
+(favorable) run. The ``--reference-run`` is bound structurally: its
+embedded config's projected diff against the certified base config must be
+EXACTLY the #371-pinned reference fields
+(``instruments``/``benchmark_code``/``attribution_sleeve_grouping``), which
+also proves slippage parity — that is what "同配置 csi300 参照" means.
+
+Fail-closed coverage (codex #373 r1 P1 x2): checks (2) and (5) require ok
+sleeve attribution on EVERY conservative fold — a partial diagnostic
+cannot certify a threshold was not crossed, so short coverage triggers the
+veto instead of passing it. Check (3) requires a complete positions series
+(>= 2 days) for EVERY fold of BOTH csi800 arms; a missing/empty/single-day
+positions artifact triggers the veto. Reference folds may lack positions
+ONLY where the aggregate documents the fold as failed (``report_path``
+null — e.g. a max_per_name RAISE abort); an official reference fold with
+missing positions refuses outright, and failed folds are disclosed via
+``ref_failed_folds``.
+
 Operationalization (numbers are spec-pinned, see
 openspec/changes/2026-07-16-csi800-antiinflation-guards/specs/):
 
@@ -21,7 +44,7 @@ openspec/changes/2026-07-16-csi800-antiinflation-guards/specs/):
   ``total_effect`` / sum over folds of ``sector_effects_sum`` from the
   CONSERVATIVE arm's fold attribution (gross, diagnostic layer). Trigger:
   share >= 0.80 AND conservative net excess <= 0 (the latter read from the
-  already-attached check 1).
+  already-attached check 1), OR incomplete attribution coverage.
 - (3) turnover vs csi300 reference: one-way turnover recomputed from the
   persisted per-fold positions of BOTH the csi800 arm and the csi300
   reference with the SAME pure function (``sleeve_turnover`` with an empty
@@ -29,8 +52,8 @@ openspec/changes/2026-07-16-csi800-antiinflation-guards/specs/):
   daily mean = total_oneway / n_transitions pooled across folds;
   annualized = daily mean * 238 (A-share trading days; the veto is a
   RATIO so the constant cancels). Trigger: conservative arm daily mean
-  > 1.5x reference daily mean. Reference folds that failed (no positions
-  artifact) are skipped and disclosed via ``ref_valid_folds``.
+  > 1.5x reference daily mean, OR incomplete csi800 positions coverage,
+  OR an unusable reference.
 - (4) risk constraints recorded: every fold report of BOTH arms must
   carry ``backtest.provenance.config.risk_constraints`` exactly equal to
   campaign_risk_constraints_v1 (max_per_name 0.05, max_per_board 1.0,
@@ -38,9 +61,9 @@ openspec/changes/2026-07-16-csi800-antiinflation-guards/specs/):
   reports must pin ``risk_constraints_enabled: true`` +
   ``risk_constraints_calibration: campaign_v1``. Trigger: any absence or
   mismatch (unrecorded/retuned constraints invalidate the run).
-- (5) midcap concentration: time-average (across folds) of the csi500
-  sleeve ``portfolio_weight`` > 0.75, or of the ``unknown`` bucket > 0.10,
-  in the conservative arm's sleeve attribution.
+- (5) midcap concentration: time-average (across ALL folds, coverage
+  required) of the csi500 sleeve ``portfolio_weight`` > 0.75, or of the
+  ``unknown`` bucket > 0.10, in the conservative arm's sleeve attribution.
 
 Usage::
 
@@ -64,7 +87,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# _load_side/_projected_diff are guard-1's own loader/projection — reused
+# deliberately so binding and pairing can never drift apart.
 from scripts.research.csi800_campaign_pair_report import (  # noqa: E402
+    BASE_SLIPPAGE_BPS,
+    _load_side,
+    _projected_diff,
     evaluate_promotion_eligibility,
 )
 from src.core.attribution_sleeve_loader import sleeve_turnover  # noqa: E402
@@ -77,6 +105,12 @@ CAMPAIGN_V1_EXPECTED: dict[str, Any] = {
     "max_leverage": 1.0,
     "mode": "raise",
 }
+# #371-pinned reference-vs-base projected config diff (exact key set) and
+# reference identity — binds the veto-3 baseline to "同配置 csi300 参照".
+REFERENCE_DIFF_FIELDS: frozenset[str] = frozenset(
+    {"instruments", "benchmark_code", "attribution_sleeve_grouping"})
+REFERENCE_UNIVERSE = "csi300"
+REFERENCE_BENCHMARK = "SH000300TR"
 CSI500_DEPENDENCE_THRESHOLD = 0.80
 TURNOVER_RATIO_THRESHOLD = 1.5
 CSI500_WEIGHT_THRESHOLD = 0.75
@@ -87,6 +121,13 @@ ANNUALIZATION_DAYS = 238
 _FOLD_REPORT_RE = re.compile(r"^fold_(\d+)_report\.json$")
 
 
+class AttachError(SystemExit):
+    """Loud refusal — evidence binding or artifact integrity failed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"REFUSING: {message}")
+
+
 def _fold_reports(run_dir: Path) -> list[tuple[int, dict[str, Any]]]:
     out: list[tuple[int, dict[str, Any]]] = []
     for f in sorted(run_dir.iterdir()):
@@ -95,8 +136,65 @@ def _fold_reports(run_dir: Path) -> list[tuple[int, dict[str, Any]]]:
             out.append((int(m.group(1)),
                         json.loads(f.read_text(encoding="utf-8"))))
     if not out:
-        raise SystemExit(f"no fold reports under {run_dir}")
+        raise AttachError(f"no fold reports under {run_dir}")
     return out
+
+
+def _bind_paired_side(label: str, run_dir: Path,
+                      pair_entry: dict[str, Any]) -> dict[str, Any]:
+    """Re-load ``run_dir`` with guard-1's loader (re-proving per-fold
+    official status) and require identity with the certified pair-report
+    entry — checks 2-5 must be computed from THE certified runs, not from
+    whatever directory happens to be supplied."""
+    side = _load_side(run_dir)
+    for key in ("run_id", "config_sha256", "report_sha256"):
+        if side.get(key) != pair_entry.get(key):
+            raise AttachError(
+                f"--{label}-run {run_dir} does not match the certified "
+                f"pair-report {label} entry: {key} "
+                f"{side.get(key)!r} != {pair_entry.get(key)!r} — veto "
+                "evidence must come from the paired runs themselves.")
+    num_folds = side.get("num_folds")
+    if not isinstance(num_folds, int) or num_folds <= 0:
+        raise AttachError(
+            f"--{label}-run {run_dir} is not a walk-forward campaign "
+            "artifact (no num_folds) — the attach step only certifies "
+            "the campaign shape.")
+    return side
+
+
+def _bind_reference(ref_dir: Path,
+                    base_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Bind the veto-3 baseline: the reference's embedded config must
+    differ from the certified base config by EXACTLY the #371-pinned
+    reference fields (projection already excludes run-identity), which
+    also proves slippage parity at 5 bps."""
+    wf_p = ref_dir / "walk_forward_report.json"
+    if not wf_p.is_file():
+        raise AttachError(f"reference aggregate missing: {wf_p}")
+    report: dict[str, Any] = json.loads(wf_p.read_text(encoding="utf-8"))
+    cfg = report.get("config")
+    if not isinstance(cfg, dict):
+        raise AttachError(f"{wf_p} carries no embedded config mapping.")
+    diff = _projected_diff(base_cfg, cfg)
+    if set(diff) != REFERENCE_DIFF_FIELDS:
+        raise AttachError(
+            f"reference config diff vs certified base is {sorted(diff)} — "
+            f"expected exactly {sorted(REFERENCE_DIFF_FIELDS)}; a "
+            "reference that is not 同配置 cannot serve as the veto-3 "
+            "turnover baseline.")
+    if (cfg.get("instruments") != REFERENCE_UNIVERSE
+            or cfg.get("benchmark_code") != REFERENCE_BENCHMARK
+            or cfg.get("slippage_bps") != BASE_SLIPPAGE_BPS):
+        raise AttachError(
+            "reference identity mismatch: expected "
+            f"{REFERENCE_UNIVERSE}/{REFERENCE_BENCHMARK}/"
+            f"{BASE_SLIPPAGE_BPS}bps, got "
+            f"{cfg.get('instruments')!r}/{cfg.get('benchmark_code')!r}/"
+            f"{cfg.get('slippage_bps')!r}.")
+    if not isinstance(report.get("num_folds"), int):
+        raise AttachError(f"{wf_p} has no num_folds.")
+    return report
 
 
 def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -105,8 +203,8 @@ def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
     return {r["sector"]: r for r in rows}
 
 
-def compute_csi500_dependence(cons_dir: Path,
-                              cons_net_excess: float) -> dict[str, Any]:
+def compute_csi500_dependence(cons_dir: Path, cons_net_excess: float,
+                              expected_folds: int) -> dict[str, Any]:
     effect_csi500 = 0.0
     effect_total = 0.0
     folds_used = 0
@@ -119,48 +217,101 @@ def compute_csi500_dependence(cons_dir: Path,
                                .get("total_effect", 0.0))
         effect_total += float(att.get("sector_effects_sum", 0.0))
         folds_used += 1
-    share = (effect_csi500 / effect_total) if effect_total > 0 else None
+    coverage_ok = folds_used == expected_folds
+    share = ((effect_csi500 / effect_total)
+             if coverage_ok and effect_total > 0 else None)
     dependent = share is not None and share >= CSI500_DEPENDENCE_THRESHOLD
+    if not coverage_ok:
+        note: str | None = (
+            f"only {folds_used}/{expected_folds} folds carry ok sleeve "
+            "attribution — partial diagnostics cannot certify the "
+            "threshold; fail closed")
+    elif share is None:
+        note = ("share undefined (gross effect sum <= 0); dependence "
+                "leg cannot trigger")
+    else:
+        note = None
     return {
         "csi500_effect_share_of_gross": share,
         "csi500_effect_sum": effect_csi500,
         "gross_effect_sum": effect_total,
         "folds_used": folds_used,
+        "expected_folds": expected_folds,
         "conservative_net_excess": cons_net_excess,
         "threshold_share": CSI500_DEPENDENCE_THRESHOLD,
-        "note": ("share undefined (gross effect sum <= 0); dependence "
-                 "leg cannot trigger" if share is None else None),
-        "veto_triggered": bool(dependent and cons_net_excess <= 0.0),
+        "note": note,
+        "veto_triggered": bool(
+            not coverage_ok or (dependent and cons_net_excess <= 0.0)),
     }
 
 
-def _run_turnover(run_dir: Path) -> dict[str, float]:
+def _run_positions_turnover(
+        run_dir: Path, expected_folds: int,
+) -> tuple[dict[str, float], list[str]]:
+    """One-way turnover pooled over fold indices 0..expected_folds-1.
+
+    Returns ``(stats, problems)`` — a fold whose positions artifact is
+    missing, non-mapping, or has < 2 dates is listed in ``problems`` and
+    excluded from the pooled stats; the CALLER decides whether problems
+    are fatal (csi800 arms) or must map to documented failures (ref)."""
     total = 0.0
     transitions = 0.0
     folds = 0
-    for f in sorted(run_dir.glob("fold_*_positions.json")):
+    problems: list[str] = []
+    for idx in range(expected_folds):
+        f = run_dir / f"fold_{idx:02d}_positions.json"
+        if not f.is_file():
+            problems.append(f"fold {idx}: positions artifact missing")
+            continue
         positions = json.loads(f.read_text(encoding="utf-8"))
-        if not positions:
+        if not isinstance(positions, dict) or len(positions) < 2:
+            problems.append(
+                f"fold {idx}: positions empty or single-day — no "
+                "transition to measure")
             continue
         block = sleeve_turnover(positions, {})  # single honest bucket
-        if not block:
-            continue
         total += sum(row["total_oneway"] for row in block.values())
         # n_transitions is identical across buckets of one fold
         transitions += next(iter(block.values()))["n_transitions"]
         folds += 1
     daily = (total / transitions) if transitions else 0.0
-    return {"total_oneway": total, "n_transitions": transitions,
-            "daily_mean_oneway": daily,
-            "annualized_oneway": daily * ANNUALIZATION_DAYS,
-            "valid_folds": float(folds)}
+    return ({"total_oneway": total, "n_transitions": transitions,
+             "daily_mean_oneway": daily,
+             "annualized_oneway": daily * ANNUALIZATION_DAYS,
+             "valid_folds": float(folds)}, problems)
 
 
-def compute_turnover_check(cons_dir: Path, base_dir: Path,
-                           ref_dir: Path) -> dict[str, Any]:
-    cons = _run_turnover(cons_dir)
-    base = _run_turnover(base_dir)
-    ref = _run_turnover(ref_dir)
+def _ref_failed_fold_indices(ref_report: dict[str, Any]) -> set[int]:
+    """Folds the reference aggregate documents as FAILED (no official
+    fold report was produced — ``report_path`` null, NaN placeholder)."""
+    failed: set[int] = set()
+    for f in ref_report.get("folds") or []:
+        if f.get("report_path") is None:
+            failed.add(int(f["fold_index"]))
+    return failed
+
+
+def compute_turnover_check(cons_dir: Path, base_dir: Path, ref_dir: Path,
+                           cons_folds: int, base_folds: int,
+                           ref_report: dict[str, Any]) -> dict[str, Any]:
+    cons, cons_problems = _run_positions_turnover(cons_dir, cons_folds)
+    base, base_problems = _run_positions_turnover(base_dir, base_folds)
+    ref_folds = int(ref_report["num_folds"])
+    ref, ref_problems = _run_positions_turnover(ref_dir, ref_folds)
+
+    # Reference folds may lack positions ONLY where the aggregate
+    # documents the fold as failed; anything else is a torn artifact.
+    documented_failed = _ref_failed_fold_indices(ref_report)
+    for problem in ref_problems:
+        idx = int(problem.split(":", 1)[0].split()[1])
+        if idx not in documented_failed:
+            raise AttachError(
+                f"reference {problem}, but the aggregate does NOT "
+                "document that fold as failed — torn positions evidence "
+                "cannot anchor the veto-3 baseline.")
+
+    coverage_problems = ([f"conservative: {p}" for p in cons_problems]
+                         + [f"base: {p}" for p in base_problems])
     ratio = (cons["daily_mean_oneway"] / ref["daily_mean_oneway"]
              if ref["daily_mean_oneway"] > 0 else None)
     base_ratio = (base["daily_mean_oneway"] / ref["daily_mean_oneway"]
@@ -174,16 +325,22 @@ def compute_turnover_check(cons_dir: Path, base_dir: Path,
         "threshold_ratio": TURNOVER_RATIO_THRESHOLD,
         "annualization_days": ANNUALIZATION_DAYS,
         "ref_valid_folds": ref["valid_folds"],
-        # fail-closed: an unusable reference cannot certify the check
-        "veto_triggered": (True if ratio is None
+        "ref_failed_folds": sorted(documented_failed),
+        # fail-closed: incomplete csi800 positions coverage or an
+        # unusable reference cannot certify the check.
+        "coverage_problems": coverage_problems,
+        "veto_triggered": (True if coverage_problems or ratio is None
                            else bool(ratio > TURNOVER_RATIO_THRESHOLD)),
     }
 
 
-def compute_constraints_check(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
+def compute_constraints_check(base_dir: Path, cons_dir: Path,
+                              base_folds: int,
+                              cons_folds: int) -> dict[str, Any]:
     problems: list[str] = []
     folds_checked = 0
-    for label, run_dir in (("base", base_dir), ("conservative", cons_dir)):
+    for label, run_dir, expected in (("base", base_dir, base_folds),
+                                     ("conservative", cons_dir, cons_folds)):
         agg = json.loads((run_dir / "walk_forward_report.json")
                          .read_text(encoding="utf-8"))
         cfg = agg.get("config") or {}
@@ -191,7 +348,11 @@ def compute_constraints_check(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
             problems.append(f"{label}: risk_constraints_enabled != true")
         if cfg.get("risk_constraints_calibration") != "campaign_v1":
             problems.append(f"{label}: calibration != campaign_v1")
-        for idx, rep in _fold_reports(run_dir):
+        reports = _fold_reports(run_dir)
+        if len(reports) != expected:
+            problems.append(
+                f"{label}: {len(reports)}/{expected} fold reports present")
+        for idx, rep in reports:
             folds_checked += 1
             rc = ((rep.get("backtest") or {}).get("provenance") or {}) \
                 .get("config", {}).get("risk_constraints")
@@ -206,7 +367,8 @@ def compute_constraints_check(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
     }
 
 
-def compute_midcap_concentration(cons_dir: Path) -> dict[str, Any]:
+def compute_midcap_concentration(cons_dir: Path,
+                                 expected_folds: int) -> dict[str, Any]:
     csi500_w: list[float] = []
     unknown_w: list[float] = []
     for _idx, rep in _fold_reports(cons_dir):
@@ -218,20 +380,70 @@ def compute_midcap_concentration(cons_dir: Path) -> dict[str, Any]:
                               .get("portfolio_weight", 0.0)))
         unknown_w.append(float(rows.get("unknown", {})
                                .get("portfolio_weight", 0.0)))
-    if not csi500_w:
-        return {"veto_triggered": True,
-                "note": "no attribution folds — fail closed"}
+    if len(csi500_w) != expected_folds:
+        return {
+            "folds_used": len(csi500_w),
+            "expected_folds": expected_folds,
+            "note": (f"only {len(csi500_w)}/{expected_folds} folds carry "
+                     "ok sleeve attribution — fail closed"),
+            "veto_triggered": True,
+        }
     avg500 = sum(csi500_w) / len(csi500_w)
     avg_unknown = sum(unknown_w) / len(unknown_w)
     return {
         "csi500_time_avg_weight": avg500,
         "unknown_time_avg_weight": avg_unknown,
         "folds_used": len(csi500_w),
+        "expected_folds": expected_folds,
         "thresholds": {"csi500": CSI500_WEIGHT_THRESHOLD,
                        "unknown": UNKNOWN_WEIGHT_THRESHOLD},
         "veto_triggered": bool(avg500 > CSI500_WEIGHT_THRESHOLD
                                or avg_unknown > UNKNOWN_WEIGHT_THRESHOLD),
     }
+
+
+def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
+           reference_run: Path) -> dict[str, Any]:
+    """Bind evidence dirs to the pair report, compute checks 2-5, and
+    rewrite the pair report in place. Returns the updated report."""
+    report: dict[str, Any] = json.loads(
+        pair_report_path.read_text(encoding="utf-8"))
+    checklist = report["veto_checklist"]
+    check1 = checklist.get("1_conservative_net_excess")
+    if not isinstance(check1, dict) or "veto_triggered" not in check1:
+        raise AttachError(
+            "pair report lacks computed check 1 — regenerate with "
+            "csi800_campaign_pair_report.py first.")
+    cons_net = float(check1["value_annualized"])
+
+    base_side = _bind_paired_side("base", base_run, report["base"])
+    cons_side = _bind_paired_side("conservative", conservative_run,
+                                  report["conservative"])
+    base_folds = int(base_side["num_folds"])
+    cons_folds = int(cons_side["num_folds"])
+    ref_report = _bind_reference(reference_run, base_side["config"])
+
+    checklist["2_csi500_dependence"] = compute_csi500_dependence(
+        conservative_run, cons_net, cons_folds)
+    checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(
+        conservative_run, base_run, reference_run,
+        cons_folds, base_folds, ref_report)
+    checklist["4_risk_constraints_recorded"] = compute_constraints_check(
+        base_run, conservative_run, base_folds, cons_folds)
+    checklist["5_midcap_concentration"] = compute_midcap_concentration(
+        conservative_run, cons_folds)
+
+    eligible, incomplete = evaluate_promotion_eligibility(checklist)
+    report["promotion_eligible"] = eligible
+    report["incomplete_checks"] = incomplete
+    report["veto_checklist_status"] = (
+        "COMPLETE" if not incomplete else
+        "INCOMPLETE — NOT promotion-eligible; checks "
+        + ", ".join(incomplete) + " must be attached and pass")
+    pair_report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    return report
 
 
 def main() -> int:
@@ -242,39 +454,15 @@ def main() -> int:
     ap.add_argument("--reference-run", required=True, type=Path)
     args = ap.parse_args()
 
-    report = json.loads(args.pair_report.read_text(encoding="utf-8"))
+    report = attach(args.pair_report, args.base_run,
+                    args.conservative_run, args.reference_run)
     checklist = report["veto_checklist"]
-    check1 = checklist.get("1_conservative_net_excess")
-    if not isinstance(check1, dict) or "veto_triggered" not in check1:
-        raise SystemExit("pair report lacks computed check 1 — regenerate "
-                         "with csi800_campaign_pair_report.py first")
-    cons_net = float(check1["value_annualized"])
-
-    checklist["2_csi500_dependence"] = compute_csi500_dependence(
-        args.conservative_run, cons_net)
-    checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(
-        args.conservative_run, args.base_run, args.reference_run)
-    checklist["4_risk_constraints_recorded"] = compute_constraints_check(
-        args.base_run, args.conservative_run)
-    checklist["5_midcap_concentration"] = compute_midcap_concentration(
-        args.conservative_run)
-
-    eligible, incomplete = evaluate_promotion_eligibility(checklist)
-    report["promotion_eligible"] = eligible
-    report["incomplete_checks"] = incomplete
-    report["veto_checklist_status"] = (
-        "COMPLETE" if not incomplete else
-        "INCOMPLETE — NOT promotion-eligible; checks "
-        + ", ".join(incomplete) + " must be attached and pass")
-    args.pair_report.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8")
-
     triggered = [name for name, entry in checklist.items()
                  if isinstance(entry, dict) and entry.get("veto_triggered")]
     print(f"attached checks 2-5 -> {args.pair_report}")
-    print(f"promotion_eligible={eligible} | triggered={triggered or 'none'}"
-          f" | incomplete={incomplete or 'none'}")
+    print(f"promotion_eligible={report['promotion_eligible']} | "
+          f"triggered={triggered or 'none'} | "
+          f"incomplete={report['incomplete_checks'] or 'none'}")
     return 0
 
 
