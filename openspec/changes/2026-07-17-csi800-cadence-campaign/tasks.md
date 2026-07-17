@@ -60,7 +60,15 @@
 
 ## 4. 点火（单独授权，PR-A/B/C 全并后）
 - [ ] 三发串行（参照 → base → conservative），日志入 scratchpad
-- [ ] pair v3 生成 + attach 全链勾验（veto 五项 + 主判据双条件）
-- [ ] 战役简报 + 证据工件入库 PR → codex/CI → 数字 STOP 签字
-- [ ] 判定入档：WIN → 晋升流程（仍须五 veto + attestation 门）；
-      LOSE → 方向 A 收束闭环
+- [ ] pair v3 生成 + attach 全链勾验（veto 五项 + 主判据双条件；
+      attach 内嵌资格恒 false，非权威）
+- [ ] 战役简报 + 证据工件（pair v3）入库 PR → codex/CI → 数字 STOP
+      签字 → **用户 merge（= pair v3 提交评审，锚成立）**
+- [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
+      收束闭环，certify 不执行
+- [ ] 判定 WIN → **certify 步骤**：验证 pair v3 字节==HEAD + 全摘要
+      链 + 五 veto/主判据 → 产出 verdict 侧车（被锚 pair digest +
+      commit id + 判定）→ 侧车入库 PR → codex/CI → STOP → **用户
+      merge（侧车提交评审）** → 晋升成立，进入晋升流程
+- [ ] 顺序不可倒置：run → attach → pair 提交 → certify → 侧车提交
+      → 晋升；跳过任一环 = 晋升无效
