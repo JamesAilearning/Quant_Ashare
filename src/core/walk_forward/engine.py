@@ -317,16 +317,20 @@ class WalkForwardEngine:
                             if (output_dir / f"fold_{i:02d}_positions.json").exists()
                             else None
                         ),
-                        # Attestation digest over the bytes on disk at
-                        # manifest time — same "stamp what was written"
-                        # convention as the fold report's field (schema
-                        # "4-positions-attestation").
+                        # Attestation digest MIRRORED from the already-
+                        # written fold report — the single stamping
+                        # authority. Re-hashing the artifact here would
+                        # mint a SECOND attestation: a mutation landing
+                        # between report write and manifest write would
+                        # yield two conflicting digests, and a consumer
+                        # checking the manifest could bless the mutated
+                        # bytes (codex P2 on #375 r2).
                         positions_sha256=(
-                            hashlib.sha256(
-                                (output_dir / f"fold_{i:02d}_positions.json")
-                                .read_bytes()
-                            ).hexdigest()
-                            if (output_dir / f"fold_{i:02d}_positions.json").exists()
+                            json.loads(
+                                (output_dir / f"fold_{i:02d}_report.json")
+                                .read_text(encoding="utf-8")
+                            ).get("positions_sha256")
+                            if (output_dir / f"fold_{i:02d}_report.json").exists()
                             else None
                         ),
                         bundle_identity=bundle_identity,
