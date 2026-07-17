@@ -31,11 +31,13 @@
       不改写任何已锚工件；晋升仅以"已提交侧车+digest 与已提交 pair
       一致"形态成立；测试含 certify 不改写/侧车断链拒/工作树拒/
       顺序不可倒置
-- [ ] **N1 工件 v3 重生成**（codex #374 r1）：从完好 run 目录重生成
-      `docs/research/csi800_campaign_pair_report.json` 至 v3（逐折
-      毛值入档），治理断言 v2 已钉哈希（双侧 run_id/config_sha256/
-      report_sha256/fold_report_sha256）逐字段不变；PR diff 供人工
-      复核。N1 run 目录保持完好直至战役收束（丢失=fail-closed）
+- [ ] **N1 毛值证据先行入库**（codex #374 r1+r7）：在仍持有 N1 run
+      目录的机器上以抽取工具产出 N1 毛值证据工件（钉死路径：逐折
+      毛超额双侧 23 折 + 抽取时逐折验证的 fold_report_sha256 + 源
+      pair v2 digest），抽取哈希失配即拒；治理测试断言证据工件与
+      已提交 v2 工件间哈希一致（无 run 目录的 CI 可执行）；PR diff
+      供人工复核（v3 重生成方案废止——单机 run 目录不可作为 CI/
+      fresh checkout 的依赖）
 - [ ] 既有防线（窗口绑定/内嵌换手交叉验证/去重/非有限值/质量闭合）
       全保留，测试断言不回退
 - [ ] 测试：全链达标晋升门开；positions 换后拒；参照 fold report
@@ -53,9 +55,12 @@
       preset diff 恰 {rebalance_cadence_days, rebalance_phase,
       rebalance_anchor, output_dir}（N1 preset 不动，diff 由显式
       写死值产生）；resolved 级 cadence pin（三发同值 5/0/fold_phase）
-- [ ] 主判据双条件数字 pin（>0 与 50%）入治理测试
-- [ ] 主判据比较工装：仅消费已提交 v3 工件（N1 与 N5 双侧），毛
-      塌缩比较 + 净判据 + 覆盖全折校验，缺失/失配拒绝
+- [ ] 主判据双条件数字 pin（>0 与 50%）+ 比较臂 pin
+      （conservative-to-conservative + 双臂毛发散 ≤5% fail-closed）
+      入治理测试
+- [ ] 主判据比较工装：仅消费已提交的 N1 毛值证据工件与 N5 pair v3，
+      毛塌缩比较（钉臂）+ 净判据 + 覆盖全折校验 + 双臂发散校验，
+      缺失/断链/失配拒绝
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 4. 点火（单独授权，PR-A/B/C 全并后）

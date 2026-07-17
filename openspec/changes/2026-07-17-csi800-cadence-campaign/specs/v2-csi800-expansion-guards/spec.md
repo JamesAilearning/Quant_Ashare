@@ -63,9 +63,16 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
    (b) 全摘要链对盘面成立，(c) 五项 veto 与主判据——全部通过时产出
    **独立 verdict 侧车**（钉死路径），载有被锚 pair v3 的 sha256、
    主线锚 commit id、链验证结果与晋升判定。
-   `promotion_eligible=true` SHALL 仅以"已提交的 verdict 侧车 + 其
-   记录的 pair digest 与主线锚上的 pair v3 一致"这一组合形态存在；
-   下游复核 SHALL 按侧车记录的锚 commit 重取 pair 字节比对。
+   `promotion_eligible=true` SHALL 仅以下列**全部**条件成立的组合
+   形态存在（codex #374 r7：侧车自身同样必须主线锚定，否则手写侧车
+   引用真锚 pair 即可伪造判定）：
+   - verdict 侧车字节 SHALL 与某个 `origin/main` 可达 commit 上其
+     钉死路径的字节一致（侧车自身主线锚）；
+   - 侧车记录的 pair digest SHALL 与其记录的主线锚 commit 上的
+     pair v3 字节哈希一致；
+   - 下游复核 SHALL NOT 仅信侧车断言——SHALL 以 certify 的验证模式
+     对侧车记录的锚与链**重算复验**（certify 是确定性计算，复验
+     失败即判定无效）。
 
 顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → certify →
 侧车提交评审 → 晋升。仅存在于工作树、未经提交评审的任一环 SHALL NOT
@@ -88,9 +95,15 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
   恒为 false 并携带 unauthenticated blocker
 
 #### Scenario: 侧车与已锚 pair 断链被拒
-- **WHEN** verdict 侧车记录的 pair digest 与已提交 pair v3 的字节
-  哈希不一致（任一侧被替换）
+- **WHEN** verdict 侧车记录的 pair digest 与其记录的主线锚 commit 上
+  pair v3 的字节哈希不一致（任一侧被替换）
 - **THEN** 下游按断链拒绝该晋升判定
+
+#### Scenario: 手写侧车引用真锚被拒
+- **WHEN** 一份未经 certify 产出的侧车（仅在 feature 分支或工作树，
+  或内容与 certify 复验重算不符）引用了真实主线锚 pair 的 digest 并
+  自称判定通过
+- **THEN** 下游因侧车自身无主线锚或复验失败而拒绝
 
 #### Scenario: positions 被换而摘要不可复现
 - **WHEN** 任一完成折的 positions 被替换（摘要链任一环失配）
@@ -115,30 +128,42 @@ N∈{1,5}，改 N 须新 OpenSpec 变更并作废既有结果）。N=1 对照臂
 两条同过 = WIN（进入晋升流程，仍须过五项 veto 与 attestation 晋升
 门）；任一不过 = 如实入档不晋升。五项 veto 数字沿用 #368/#372 原样。
 
-**N1 基线 SHALL 钉进认证链（codex #374 r1）**——50% 比较的 N1 毛值
-SHALL NOT 取自任何可编辑文档（简报/手抄数字）：
+**N1 基线 SHALL 钉进认证链（codex #374 r1，r7 修订为证据先行入库）**
+——50% 比较的 N1 毛值 SHALL NOT 取自任何可编辑文档（简报/手抄数字），
+且其提供方式 SHALL NOT 依赖仅存在于单机的 run 目录（fresh checkout/
+CI 无 `output/` 工件，"到时重生成"不可执行也不可验证）：
 
-- 已提交的 #373 配对工件（v2）钉有 N1 base run 身份（run_id
-  `csi800_campaign_base`、`report_sha256`、逐折 `fold_report_sha256`），
-  毛值本体在被这些哈希钉住的 fold report 内
+- 已提交的 #373 配对工件（v2）钉有 N1 双侧 run 身份（run_id、
+  `report_sha256`、逐折 `fold_report_sha256`），毛值本体在被这些
+  哈希钉住的 fold report 内
   （`backtest.risk_analysis.excess_return_without_cost`）；
-- PR-B SHALL 将 N1 配对工件以 v3 **重生成**：新增逐折毛超额记录，
-  且 v2 已钉的全部哈希（双侧 run_id/config_sha256/report_sha256/
-  fold_report_sha256）SHALL 逐字段不变（治理断言）——盘面 run 目录
-  不变则重生成不改变认证内容，只是把毛值抬进认证工件；
-- 主判据比较工装 SHALL 仅消费已提交的 v3 工件（N1 与 N5 两侧），
-  N1 逐折毛值缺失、哈希与盘面失配、或官方折覆盖不全（双侧各须
-  23/23）一律拒绝；
+- PR-B SHALL 在仍持有 N1 run 目录的机器上以**抽取工具**产出并提交
+  **N1 毛值证据工件**（钉死路径）：逐折毛超额（双侧各 23 折）+
+  抽取时逐折验证过的 `fold_report_sha256`（SHALL 与已提交 v2 工件
+  所钉逐字段一致，治理测试断言两个已提交工件间的哈希一致性——该
+  断言在无 run 目录的 CI 上可执行）+ 源 pair v2 digest；抽取过程
+  哈希失配即拒绝产出；
+- 主判据比较工装 SHALL 仅消费已提交的 N1 毛值证据工件与 N5 pair
+  v3（后者原生记录逐折毛值），任一缺失、哈希断链、或官方折覆盖
+  不全（各须 23/23）一律拒绝；
 - 折网格对齐由构造保证：N5 preset 与 N1 的 walk-forward 窗口/步长
   配置 SHALL 恰同（治理 diff pin 仅容 cadence 三字段 + output_dir
   差异），毛均值 = 各自全部官方折的跨折均值；
-- N1 run 目录 SHALL 保持完好直至战役收束——丢失即 fail-closed
-  （基线不可重建，战役判定无效），SHALL NOT 以文档数字替代。
+- **比较臂 SHALL 钉死（codex #374 r7 P2）**：50% 比较 = N5
+  conservative 臂毛均值 vs N1 conservative 臂毛均值
+  （conservative-to-conservative）；同时 SHALL 校验各自 pair 内
+  base 与 conservative 的毛均值相对差 ≤ 5%（毛口径成本无关、同种子
+  同预测，实测 N1 为 12.58 vs 12.59；超差 = 证据异常，fail-closed
+  拒绝判定）。
 
-#### Scenario: N1 基线被换或事后修改
-- **WHEN** 主判据比较时提供的 N1 工件哈希与 #373 已提交 v2 所钉
-  不一致，或其逐折毛值与盘面 hash 验证后的 fold report 不符
+#### Scenario: N1 基线证据断链
+- **WHEN** N1 毛值证据工件记录的 fold report 哈希与已提交 v2 工件
+  所钉不一致，或比较时其逐折毛值缺失/覆盖不全
 - **THEN** 比较工装拒绝，战役判定不产出
+
+#### Scenario: 双臂毛值异常发散
+- **WHEN** 任一 pair 内 base 与 conservative 的毛均值相对差超过 5%
+- **THEN** fail-closed 拒绝判定（毛口径与成本无关，发散即证据异常）
 
 #### Scenario: 省成本靠杀 alpha 被否
 - **WHEN** N5 conservative 净超额 +0.5% 但 N5 毛超额仅为 N1 的 40%
