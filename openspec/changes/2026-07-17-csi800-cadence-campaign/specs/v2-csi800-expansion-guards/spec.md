@@ -70,15 +70,24 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
      钉死路径的字节一致（侧车自身主线锚）；
    - 侧车记录的 pair digest SHALL 与其记录的主线锚 commit 上的
      pair v3 字节哈希一致；
-   - **N5 三 run 源证据 SHALL 已提交**（codex #374 r9：fresh
-     checkout 无 `output/` 工件，复验不能信断言）——WIN 路径 SHALL
-     将三 run 全部 fold reports 与 positions 文件本体（实测量级
-     ~10 MB，一次性、仅 WIN 时发生）以字节保真方式（`-text`）提交
-     至钉死证据目录，侧车 SHALL 记录该证据目录；
+   - **N5 三 run 源证据 SHALL 先行主线锚定**（codex #374 r9+r10：
+     fresh checkout 无 `output/` 工件，复验不能信断言；且证据目录
+     若只是路径无锚，certify 可对本地 untracked 内容认证而已提交
+     目录不完整/不一致）——WIN 路径 SHALL 将三 run 全部 fold
+     reports 与 positions 文件本体（实测量级 ~10 MB，一次性、仅
+     WIN 时发生）以字节保真方式（`-text`）提交至钉死证据目录并
+     **先并入主线**；certify SHALL 经该**证据锚**（`origin/main`
+     可达 commit）读取/验证每个证据文件的字节
+     （`git show <evidence-anchor>:<path>` 口径，或校验盘面字节与
+     锚上逐字节一致），并把证据锚 commit id 记入侧车；证据未主线
+     锚定时 certify SHALL 拒绝产出侧车；
    - 下游复核 SHALL NOT 仅信侧车断言——SHALL 以 certify 的验证模式
-     对侧车记录的锚与链**从已提交源证据端到端重算复验**（pair v3
-     哈希 → 已提交 fold reports → 内嵌 `positions_sha256` → 已提交
-     positions 字节；certify 是确定性计算，复验失败即判定无效）。
+     按侧车记录的各锚（pair 锚 + 证据锚）**从主线锚定字节端到端
+     重算复验**（pair v3 哈希 → 锚上 fold reports → 内嵌
+     `positions_sha256` → 锚上 positions 字节；certify 是确定性
+     计算，复验失败即判定无效）。
+   顺序据此为：pair v3 merge → 源证据 merge → certify → 侧车
+   merge → 晋升（前两步可同 PR）。
 
 顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → certify →
 侧车提交评审 → 晋升。仅存在于工作树、未经提交评审的任一环 SHALL NOT

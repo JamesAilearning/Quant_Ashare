@@ -71,15 +71,17 @@
       签字 → **用户 merge（= pair v3 提交评审，锚成立）**
 - [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
       收束闭环，certify 不执行
-- [ ] 判定 WIN → **N5 三 run 源证据入库**（codex r9）：全部 fold
-      reports + positions 本体（~10 MB，字节保真 `-text`）提交钉死
-      证据目录（可与侧车同 PR 或先行 PR）
-- [ ] 判定 WIN → **certify 步骤**：验证 pair v3 字节==主线锚
-      （origin/main 可达 commit，`git show <anchor>:<path>` 口径）+
-      全摘要链（从已提交源证据端到端）+ 五 veto/主判据 → 产出
-      verdict 侧车（被锚 pair digest + 主线锚 commit id + 证据目录
-      + 判定）→ 侧车入库 PR → codex/CI → STOP → **用户 merge（侧车
-      提交评审）** → 晋升成立，进入晋升流程；CI/下游复验从已提交
-      证据重算全链
-- [ ] 顺序不可倒置：run → attach → pair 提交 → certify → 侧车提交
-      → 晋升；跳过任一环 = 晋升无效
+- [ ] 判定 WIN → **N5 三 run 源证据入库并先并主线**（codex r9+r10）：
+      全部 fold reports + positions 本体（~10 MB，字节保真 `-text`）
+      提交钉死证据目录 → PR → **用户 merge（证据锚成立）**；可与
+      pair v3 同 PR
+- [ ] 判定 WIN → **certify 步骤**（证据锚成立后）：验证 pair v3
+      字节==主线锚 + 经证据锚（origin/main 可达 commit，
+      `git show <evidence-anchor>:<path>` 口径）读取全部证据字节
+      端到端重算全链 + 五 veto/主判据 → 产出 verdict 侧车（pair 锚
+      + 证据锚 commit id + 判定）→ 侧车入库 PR → codex/CI → STOP →
+      **用户 merge（侧车提交评审）** → 晋升成立；证据未主线锚定时
+      certify 拒绝
+- [ ] 顺序不可倒置：run → attach → pair 提交 → 源证据提交 →
+      certify → 侧车提交 → 晋升；跳过任一环 = 晋升无效；下游按侧车
+      记录的双锚重算复验
