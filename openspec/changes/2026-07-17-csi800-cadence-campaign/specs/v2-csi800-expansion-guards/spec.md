@@ -99,11 +99,11 @@ digest 断链拒绝"用例）在 PR-B。
 
 #### Scenario: 全链达标且过主线锚晋升门开
 - **WHEN** 三 run 全部由 attestation 生产者产出、盘面未被动过、pair
-  v3 已并入受保护主线且字节与主线锚 commit 一致，certify 全链验证
-  通过、五项 veto 全不触发
-- **THEN** certify 产出 verdict 侧车（载被锚 pair digest + 主线锚
-  commit id），侧车提交评审后晋升成立；pair 工件本体未被 certify
-  改写
+  v3 与 N5 源证据均已并入受保护主线、N1 基线主线锚可达，certify
+  全链验证通过、五项 veto 全不触发
+- **THEN** certify 产出 verdict 侧车（载被锚 pair digest + **三锚
+  commit id：pair + N5 证据 + N1**），侧车提交评审后晋升成立；pair
+  工件本体未被 certify 改写
 
 #### Scenario: 工作树或未并主线的工件铸不出资格
 - **WHEN** 摘要链全链一致但所消费的 pair v3 仅存在于工作树或仅在
