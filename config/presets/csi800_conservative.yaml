@@ -1,0 +1,26 @@
+# CSI800 战役 conservative 滑点档（v2-csi800-expansion-guards, DP-2）。
+# 与 csi800.yaml 除 slippage_bps 外逐字段一致 —— 该一致性由治理测试
+# tests/governance/test_csi800_expansion_guards.py 钉死；敏感带语义
+# （base 5bps + conservative 20bps 成对跑、主判 conservative、跑前写死
+# 不可回调）见 openspec `2026-07-16-csi800-antiinflation-guards`。
+mode: pipeline
+instruments: csi800
+feature_handler: Alpha158
+model_type: LGBModel
+compute_device: cpu
+num_boost_round: 1000
+early_stopping_rounds: 50
+learning_rate: 0.005
+# Canonical csi800 benchmark = CSI800 TOTAL-RETURN index (H00906.CSI),
+# ingested 2026-07-16: coverage 2018-01-02..calendar tail, 0 NaN. The
+# price sibling SH000906 is not in the bundle; the runtime value check
+# emits a "cross-check skipped" warning for the absent sibling (PR-J).
+benchmark_code: SH000906TR
+topk: 50
+n_drop: 5
+signal_to_execution_lag: 1
+# DP-2（2026-07-16 操作人签，全账本平铺，跑前写死）：A 股中盘单边
+# 冲击+价差对 topk=50 量级约 15-25bps；probe 实证 61.8% 权重在中盘腿，
+# 全书 20bps ≈ 中盘腿按 25bps+ 计而大盘腿被过罚 —— 过罚方向即保守
+# 方向。修改此值 = 作废既有战役结果并走新 OpenSpec 变更。
+slippage_bps: 20.0
