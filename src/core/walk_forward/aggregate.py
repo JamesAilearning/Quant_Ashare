@@ -239,11 +239,14 @@ def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
 
 
 # Bumped whenever the fold-report SCHEMA changes in a way that affects
-# comparability (here: the daily_series substrate is added). Written into every
-# fold report AND folded into the resume fingerprint (_resume.py), so a run
-# resumed across this boundary re-runs the stale folds instead of silently mixing
-# comparable (daily_series-carrying) and non-comparable folds in one aggregate.
-FOLD_REPORT_SCHEMA_VERSION = "2-daily-series"
+# comparability. Written into every fold report AND folded into the resume
+# fingerprint (_resume.py), so a run resumed across this boundary re-runs the
+# stale folds instead of silently mixing schemas in one aggregate.
+# History: "2-daily-series" added the daily_series substrate;
+# "3-sleeve-turnover" added the explicit ``sleeve_turnover`` field
+# (CSI800 guard-2, codex P2 on #370 — pre-change folds must regenerate,
+# not coexist without the field).
+FOLD_REPORT_SCHEMA_VERSION = "3-sleeve-turnover"
 
 
 def _ic_series_to_map(series: Any) -> dict[str, float]:
