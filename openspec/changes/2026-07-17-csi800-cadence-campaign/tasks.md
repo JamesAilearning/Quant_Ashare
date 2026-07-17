@@ -4,16 +4,20 @@
 - [ ] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后数字冻结
 
 ## 1. PR-A — 生产者 attestation（runtime 唯一触点）
-- [ ] engine 写盘每折后对已持久化 positions 字节计算 sha256，写入
-      fold report 顶层 `positions_sha256` 与 manifest
-- [ ] fold report schema 版本升级（`4-positions-attestation`），
-      两引擎 schema parity 测试相应更新（pipeline 侧口径按 parity
-      测试现行约定处理并注明理由）
-- [ ] 测试：摘要与盘面字节一致；失败折不携带；篡改 positions 后
-      重验失配
-- [ ] 顺带归档两个已 ship change：`2026-07-16-csi800-antiinflation-
-      guards`、`2026-07-16-per-universe-canonical-benchmark` →
-      `openspec/changes/archive/`
+- [ ] **前置归档（本 change 的依赖，codex #374 r17）**：归档两个已
+      ship change `2026-07-16-csi800-antiinflation-guards`、
+      `2026-07-16-per-universe-canonical-benchmark` →
+      `openspec/changes/archive/`，使 `v2-csi800-expansion-guards`
+      物化进 `openspec/specs/`——本 change 的 MODIFIED delta 依赖该
+      canonical spec 存在，SHALL 在归档之后才应用/校验
+- [ ] wf engine 写盘每折后对已持久化 positions 字节计算 sha256，
+      写入 fold report 顶层 `positions_sha256` 与 manifest
+- [ ] **pipeline 引擎对称**（AGENTS.md 双引擎同名字段义务）：
+      pipeline_report 以同名 `positions_sha256` 盖其持久化
+      positions.json；两引擎 schema parity 测试断言双侧在场
+- [ ] fold report schema 版本升级（`4-positions-attestation`）
+- [ ] 测试：摘要与盘面字节一致（两引擎）；失败折不携带；篡改
+      positions 后重验失配
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. PR-B — pair v3 三方认证 + attach 摘要链 + N1 基线抬进认证工件

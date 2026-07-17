@@ -1,18 +1,23 @@
 ## ADDED Requirements
 
-### Requirement: 生产者 SHALL 在 fold report 与 manifest 中对 positions 盖内容摘要
+### Requirement: 两引擎生产者 SHALL 对已持久化 positions 盖内容摘要
 
-walk-forward 引擎写盘每折时，SHALL 对**已持久化的** positions JSON
-字节计算 sha256，并以 `positions_sha256` 字段写入该折 fold report 与
-manifest（fold report schema 版本升级）。摘要 SHALL 在 positions 文件
-写盘之后、对同一字节流计算（写什么盖什么）；positions 未产出的失败折
-SHALL NOT 携带该字段。此为 #373 codex r10 预留晋升档位
+**walk-forward 引擎**写盘每折时，SHALL 对**已持久化的** positions
+JSON 字节计算 sha256，并以 `positions_sha256` 字段写入该折 fold
+report 与 manifest（fold report schema 版本升级）；**pipeline 引擎**
+（同样持久化 `positions.json`，`src/core/pipeline.py`）SHALL 以
+**同名字段** `positions_sha256` 写入 pipeline_report——两引擎工件
+schema 对称（AGENTS.md 双引擎同名字段义务，codex #374 r17），两引擎
+schema parity 测试相应断言双侧在场。摘要 SHALL 在 positions 文件
+写盘之后、对同一字节流计算（写什么盖什么）；positions 未产出的失败
+折 SHALL NOT 携带该字段。此为 #373 codex r10 预留晋升档位
 `producer_digest_certified` 的生产者侧前置。
 
-#### Scenario: 摘要与盘面字节一致
-- **WHEN** 一折完成且 positions 已写盘
-- **THEN** 该折 fold report 的 `positions_sha256` 等于对盘面
-  `fold_XX_positions.json` 字节重新计算的 sha256
+#### Scenario: 摘要与盘面字节一致（两引擎）
+- **WHEN** walk-forward 一折完成且 positions 已写盘 / pipeline run
+  完成且 positions.json 已写盘
+- **THEN** fold report / pipeline_report 的 `positions_sha256` 等于
+  对各自盘面 positions 文件字节重新计算的 sha256
 
 #### Scenario: 失败折不携带摘要
 - **WHEN** 一折被约束中止未产出 positions
