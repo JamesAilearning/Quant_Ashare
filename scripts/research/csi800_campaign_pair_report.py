@@ -237,6 +237,27 @@ def _projected_diff(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
             for k in sorted(keys) if a.get(k) != b.get(k)}
 
 
+def evaluate_promotion_eligibility(
+    veto_checklist: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    """``(promotion_eligible, incomplete_checks)`` for a veto checklist
+    (codex #369 r6 P1): a run is promotion-eligible ONLY when every one
+    of the five checks is PRESENT (a dict with ``veto_triggered``) and
+    NONE triggered. Any null/missing check → ineligible AND listed as
+    incomplete — an artifact with open checks can never read as a
+    completed checklist downstream."""
+    incomplete: list[str] = []
+    any_triggered = False
+    for name, entry in veto_checklist.items():
+        if not isinstance(entry, dict) or "veto_triggered" not in entry:
+            incomplete.append(name)
+            continue
+        if entry["veto_triggered"] is not False:
+            any_triggered = True
+    eligible = not incomplete and not any_triggered
+    return eligible, incomplete
+
+
 def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
     base, cons = _load_side(base_dir), _load_side(cons_dir)
     if base["artifact_shape"] != cons["artifact_shape"]:
@@ -308,6 +329,21 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
             "5_midcap_concentration": None,
         },
     }
+    # self-declared verdict (codex #369 r6 P1): with checks 2-5 pending
+    # guard-2/ignition tooling, this artifact must be UNMISTAKABLE as
+    # incomplete — promotion consumers key on ``promotion_eligible``,
+    # which only a fully-present, fully-untriggered checklist can set.
+    eligible, incomplete = evaluate_promotion_eligibility(
+        report["veto_checklist"])
+    report["promotion_eligible"] = eligible
+    report["incomplete_checks"] = incomplete
+    report["veto_checklist_status"] = (
+        "complete" if not incomplete else
+        "INCOMPLETE — NOT promotion-eligible; checks "
+        + ", ".join(incomplete)
+        + " must be attached (guard-2 / ignition tooling) and pass "
+        "before this pair can support promotion."
+    )
     return report
 
 
@@ -330,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"paired report written: {args.out} "
           f"(base={report['base']['run_id']}, "
           f"conservative={report['conservative']['run_id']})")
+    print(f"veto checklist: {report['veto_checklist_status']} | "
+          f"promotion_eligible={report['promotion_eligible']}")
     return 0
 
 

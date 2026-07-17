@@ -78,8 +78,13 @@ def test_clean_pair_builds_report_with_veto1():
         assert r["projection_whitelist"] == ["output_dir"]
         v1 = r["veto_checklist"]["1_conservative_net_excess"]
         assert v1["veto_triggered"] is True   # -0.02 <= 0
-        # the other checks are explicit nulls, never silently "passed".
+        # the other checks are explicit nulls, never silently "passed" —
+        # and the artifact self-declares as NOT promotion-eligible
+        # (codex #369 r6).
         assert r["veto_checklist"]["2_csi500_dependence"] is None
+        assert r["promotion_eligible"] is False
+        assert "INCOMPLETE" in r["veto_checklist_status"]
+        assert "2_csi500_dependence" in r["incomplete_checks"]
 
 
 def test_semantic_field_drift_refuses():
@@ -348,6 +353,23 @@ def test_mixed_artifact_shapes_refuse():
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError, match="mixed artifact shapes"):
             build_pair_report(a, b)
+
+
+def test_promotion_eligibility_semantics():
+    # codex #369 r6: eligibility only when ALL five checks are present
+    # and NONE triggered; any null/missing/triggered entry blocks it.
+    from scripts.research.csi800_campaign_pair_report import (
+        evaluate_promotion_eligibility,
+    )
+    ok = {f"{i}_check": {"veto_triggered": False} for i in range(1, 6)}
+    assert evaluate_promotion_eligibility(ok) == (True, [])
+    with_null = {**ok, "4_check": None}
+    eligible, incomplete = evaluate_promotion_eligibility(with_null)
+    assert eligible is False and incomplete == ["4_check"]
+    with_trigger = {**ok, "1_check": {"veto_triggered": True}}
+    assert evaluate_promotion_eligibility(with_trigger)[0] is False
+    with_none_state = {**ok, "2_check": {"veto_triggered": None}}
+    assert evaluate_promotion_eligibility(with_none_state)[0] is False
 
 
 def test_wrong_universe_or_status_refuses():
