@@ -110,6 +110,112 @@ def test_missing_conservative_side_refuses():
             build_pair_report(a, root / "nope")
 
 
+_WF_CFG = {
+    "instruments": "csi800",
+    "benchmark_code": "SH000906TR",
+    "topk": 50,
+    "n_drop": 5,
+    "slippage_bps": 5.0,
+    "output_dir": "output/walk_forward/csi800_base",
+}
+
+
+def _mk_wf_run(root: Path, name: str, cfg: dict,
+               fold_status: str = "official",
+               mean_net: float | None = -0.02) -> Path:
+    d = root / name
+    d.mkdir(parents=True)
+    fold_report = d / "fold_0_report.json"
+    fold_report.write_text(json.dumps({"metric_status": fold_status}),
+                           encoding="utf-8")
+    (d / "walk_forward_report.json").write_text(json.dumps({
+        "config": cfg,
+        "folds": [{
+            "fold_index": 0,
+            "annualized_return": mean_net,
+            "report_path": "fold_0_report.json",
+        }],
+        "aggregate_metrics": {
+            "mean_annualized_return": mean_net,
+            "mean_information_ratio": -0.2,
+            "worst_drawdown": -0.07,
+        },
+        "num_folds": 1,
+    }), encoding="utf-8")
+    return d
+
+
+def test_walk_forward_pair_builds_report():
+    # codex #369 r1 P1: the campaign shape is walk-forward — the tool
+    # must consume walk_forward_report.json (embedded config, per-fold
+    # official status via report_path).
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG, mean_net=0.011)
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"},
+            mean_net=-0.015)
+        r = build_pair_report(a, b)
+        assert r["base"]["artifact_shape"] == "walk_forward"
+        assert set(r["config_diff_projected"]) == {"slippage_bps"}
+        v1 = r["veto_checklist"]["1_conservative_net_excess"]
+        assert v1["value_annualized"] == -0.015
+        assert v1["veto_triggered"] is True
+        assert r["conservative"]["per_fold_net_annualized"] == [-0.015]
+
+
+def test_walk_forward_non_official_fold_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG, fold_status="research")
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"})
+        with pytest.raises(PairReportError, match="official"):
+            build_pair_report(a, b)
+
+
+def test_walk_forward_missing_fold_report_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG)
+        (root / "wf_a" / "fold_0_report.json").unlink()
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"})
+        with pytest.raises(PairReportError, match="unreadable"):
+            build_pair_report(a, b)
+
+
+def test_walk_forward_null_aggregate_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG)
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"},
+            mean_net=None)
+        with pytest.raises(PairReportError, match="mean_annualized_return"):
+            build_pair_report(a, b)
+
+
+def test_mixed_artifact_shapes_refuse():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG)
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"})
+        with pytest.raises(PairReportError, match="mixed artifact shapes"):
+            build_pair_report(a, b)
+
+
 def test_wrong_universe_or_status_refuses():
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)

@@ -53,11 +53,26 @@ class PairReportError(RuntimeError):
 
 
 def _load_side(run_dir: Path) -> dict[str, Any]:
+    """Load one side. Two artifact shapes (codex P1 on #369):
+
+    - WALK-FORWARD run dir (the campaign shape): ``walk_forward_report
+      .json`` embeds the full config; per-fold ``metric_status`` is read
+      from each fold's own report via ``report_path`` and ALL folds must
+      be official.
+    - pipeline run dir (probe shape): ``config.yaml`` + ``metrics.json``.
+    """
     if not run_dir.is_dir():
         raise PairReportError(
             f"run dir missing: {run_dir} — a pair with an absent side "
             "(especially the conservative one) is INVALID, not pending."
         )
+    wf_p = run_dir / "walk_forward_report.json"
+    if wf_p.is_file():
+        return _load_walk_forward_side(run_dir, wf_p)
+    return _load_pipeline_side(run_dir)
+
+
+def _load_pipeline_side(run_dir: Path) -> dict[str, Any]:
     cfg_p, met_p = run_dir / "config.yaml", run_dir / "metrics.json"
     for p in (cfg_p, met_p):
         if not p.is_file():
@@ -68,11 +83,79 @@ def _load_side(run_dir: Path) -> dict[str, Any]:
         raise PairReportError(f"{cfg_p} is not a mapping.")
     return {
         "run_id": run_dir.name,
+        "artifact_shape": "pipeline",
         "config": cfg,
         "config_sha256": hashlib.sha256(cfg_p.read_bytes()).hexdigest(),
         "metric_status": metrics.get("metric_status"),
         "official_metrics": metrics.get("official_metrics"),
         "benchmark": metrics.get("benchmark"),
+    }
+
+
+def _resolve_fold_report(run_dir: Path, report_path: str) -> Path:
+    rp = Path(report_path)
+    for candidate in ((rp,) if rp.is_absolute()
+                      else (run_dir / rp, _REPO / rp)):
+        if candidate.is_file():
+            return candidate
+    raise PairReportError(
+        f"fold report unreadable: {report_path!r} (tried under {run_dir} "
+        "and the repo root) — per-fold official status cannot be "
+        "verified, refusing to certify the pair."
+    )
+
+
+def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
+    report = json.loads(wf_p.read_text(encoding="utf-8"))
+    cfg = report.get("config")
+    if not isinstance(cfg, dict):
+        raise PairReportError(
+            f"{wf_p} carries no embedded config mapping — cannot prove "
+            "pairing without it."
+        )
+    folds = report.get("folds") or []
+    if not folds:
+        raise PairReportError(f"{wf_p} has no folds — nothing to certify.")
+    # Per-fold official status lives in each fold's own report
+    # (the aggregate deliberately keeps fold summaries compact).
+    for f in folds:
+        fold_report = _resolve_fold_report(run_dir, str(f["report_path"]))
+        status = json.loads(
+            fold_report.read_text(encoding="utf-8")).get("metric_status")
+        if status != "official":
+            raise PairReportError(
+                f"fold {f.get('fold_index')} metric_status={status!r} "
+                f"({fold_report}) — every campaign fold must ride the "
+                "official path."
+            )
+    agg = report.get("aggregate_metrics") or {}
+    net_ann = agg.get("mean_annualized_return")
+    if not isinstance(net_ann, (int, float)):
+        raise PairReportError(
+            f"{wf_p} aggregate_metrics.mean_annualized_return is "
+            f"{net_ann!r} — a campaign decision needs a valid cross-fold "
+            "NET excess (per-fold values come from "
+            "excess_return_with_cost via extract_cost_metrics)."
+        )
+    per_fold_net = [f.get("annualized_return") for f in folds]
+    return {
+        "run_id": run_dir.name,
+        "artifact_shape": "walk_forward",
+        "config": cfg,
+        "config_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
+        "metric_status": "official",   # proven per fold above
+        # normalized to the pipeline shape so the veto computation is
+        # shape-agnostic; fold headline metrics ARE the with-cost excess.
+        "official_metrics": {
+            "excess_return_with_cost": {
+                "annualized_return": net_ann,
+                "information_ratio": agg.get("mean_information_ratio"),
+                "max_drawdown": agg.get("worst_drawdown"),
+            },
+        },
+        "benchmark": {"code": cfg.get("benchmark_code")},
+        "num_folds": report.get("num_folds"),
+        "per_fold_net_annualized": per_fold_net,
     }
 
 
@@ -84,6 +167,13 @@ def _projected_diff(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
 
 def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
     base, cons = _load_side(base_dir), _load_side(cons_dir)
+    if base["artifact_shape"] != cons["artifact_shape"]:
+        raise PairReportError(
+            "pairing REFUSED: mixed artifact shapes "
+            f"({base['artifact_shape']} vs {cons['artifact_shape']}) — "
+            "both sides of a sensitivity band must come from the same "
+            "engine (the campaign shape is walk_forward)."
+        )
     diff = _projected_diff(base["config"], cons["config"])
     if set(diff) != {"slippage_bps"}:
         raise PairReportError(
@@ -123,16 +213,15 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
             "annualized_return")
 
     cons_net = _net_ann(cons)
+    side_keys = ("run_id", "artifact_shape", "config_sha256",
+                 "official_metrics", "benchmark", "num_folds",
+                 "per_fold_net_annualized")
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "projection_whitelist": sorted(RUN_IDENTITY_FIELDS),
         "config_diff_projected": diff,
-        "base": {k: base[k] for k in
-                 ("run_id", "config_sha256", "official_metrics",
-                  "benchmark")},
-        "conservative": {k: cons[k] for k in
-                         ("run_id", "config_sha256", "official_metrics",
-                          "benchmark")},
+        "base": {k: base[k] for k in side_keys if k in base},
+        "conservative": {k: cons[k] for k in side_keys if k in cons},
         # veto ① is directly computable from the pair; ②③⑤ need the
         # sleeve report / turnover / csi300 reference and are attached at
         # ignition time — explicit nulls, never silently "passed".
