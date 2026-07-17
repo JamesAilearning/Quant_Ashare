@@ -137,15 +137,18 @@ CI 无 `output/` 工件，"到时重生成"不可执行也不可验证）：
   `report_sha256`、逐折 `fold_report_sha256`），毛值本体在被这些
   哈希钉住的 fold report 内
   （`backtest.risk_analysis.excess_return_without_cost`）；
-- PR-B SHALL 在仍持有 N1 run 目录的机器上以**抽取工具**产出并提交
-  **N1 毛值证据工件**（钉死路径）：逐折毛超额（双侧各 23 折）+
-  抽取时逐折验证过的 `fold_report_sha256`（SHALL 与已提交 v2 工件
-  所钉逐字段一致，治理测试断言两个已提交工件间的哈希一致性——该
-  断言在无 run 目录的 CI 上可执行）+ 源 pair v2 digest；抽取过程
-  哈希失配即拒绝产出；
-- 主判据比较工装 SHALL 仅消费已提交的 N1 毛值证据工件与 N5 pair
-  v3（后者原生记录逐折毛值），任一缺失、哈希断链、或官方折覆盖
-  不全（各须 23/23）一律拒绝；
+- PR-B SHALL 将 N1 双侧全部 46 个 fold report **源文件本体**提交至
+  钉死证据目录（实测共 ~1.1 MB；目录以 `.gitattributes` 标记
+  `-text` 保证字节保真，防换行规范化破坏哈希）——已锚源工件自身
+  承载毛值（codex #374 r8：单独的"毛值证据工件"无法在 fresh
+  checkout 复验值的来源，哈希一致只证明抽取器验过哈希，不证明值
+  取自那些 report）；治理测试 SHALL 逐折断言已提交源文件的 sha256
+  == 已提交 v2 工件所钉 `fold_report_sha256`（两侧均为已提交文件，
+  CI 端到端可验）；
+- 主判据比较工装 SHALL 仅从**哈希验证通过的已提交源 fold report**
+  读取 N1 毛值，与 N5 pair v3（原生记录逐折毛值，其源 report 由
+  attestation 链锚定）比较；任一缺失、哈希断链、或官方折覆盖不全
+  （各须 23/23）一律拒绝；
 - 折网格对齐由构造保证：N5 preset 与 N1 的 walk-forward 窗口/步长
   配置 SHALL 恰同（治理 diff pin 仅容 cadence 三字段 + output_dir
   差异），毛均值 = 各自全部官方折的跨折均值；
@@ -157,9 +160,10 @@ CI 无 `output/` 工件，"到时重生成"不可执行也不可验证）：
   拒绝判定）。
 
 #### Scenario: N1 基线证据断链
-- **WHEN** N1 毛值证据工件记录的 fold report 哈希与已提交 v2 工件
-  所钉不一致，或比较时其逐折毛值缺失/覆盖不全
-- **THEN** 比较工装拒绝，战役判定不产出
+- **WHEN** 任一已提交 N1 源 fold report 的 sha256 与已提交 v2 工件
+  所钉不一致（含换行规范化等任何字节改动），或逐折毛值缺失/覆盖
+  不全
+- **THEN** 治理测试红 / 比较工装拒绝，战役判定不产出
 
 #### Scenario: 双臂毛值异常发散
 - **WHEN** 任一 pair 内 base 与 conservative 的毛均值相对差超过 5%
