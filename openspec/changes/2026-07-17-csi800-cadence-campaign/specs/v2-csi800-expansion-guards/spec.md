@@ -84,7 +84,7 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
      锚上逐字节一致），并把证据锚 commit id 记入侧车；证据未主线
      锚定时 certify SHALL 拒绝产出侧车；
    - 下游复核 SHALL NOT 仅信侧车断言——SHALL 以 certify 的验证模式
-     按侧车记录的各锚（pair 锚 + 证据锚）**从主线锚定字节端到端
+     按侧车记录的各锚（pair 锚 + 证据锚 + N1 锚）**从主线锚定字节端到端
      重算复验**（pair v3 哈希 → 锚上 fold reports → 内嵌
      `positions_sha256` → 锚上 positions 字节；certify 是确定性
      计算，复验失败即判定无效）。
@@ -167,6 +167,12 @@ CI 无 `output/` 工件，"到时重生成"不可执行也不可验证）：
   读取 N1 毛值，与 N5 pair v3（原生记录逐折毛值，其源 report 由
   attestation 链锚定）比较；任一缺失、哈希断链、或官方折覆盖不全
   （各须 23/23）一律拒绝；
+- **N1 侧同样主线锚定（codex #374 r14）**：certify SHALL 经某个
+  `origin/main` 可达 commit 读取 N1 v2 配对工件与 N1 源 fold
+  report 目录的字节（同 N5 证据锚口径——feature 分支/工作树上的
+  v2 工件+配套 report 替换件不可作基线），并把该 **N1 锚 commit
+  id** 与 pair/证据锚一同记入 verdict 侧车；下游复核按 N1 锚重建
+  50% 判定所用的精确基线；
 - 折网格对齐由构造保证：N5 preset 与 N1 的 walk-forward 窗口/步长
   配置 SHALL 恰同（治理 diff pin 仅容 cadence 三字段 + output_dir
   差异），毛均值 = 各自全部官方折的跨折均值；

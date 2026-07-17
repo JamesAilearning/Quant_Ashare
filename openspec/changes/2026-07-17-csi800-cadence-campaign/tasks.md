@@ -30,7 +30,7 @@
       commit）+ **经证据锚（origin/main 可达 commit）读取全部 N5
       源证据字节**（`git show <evidence-anchor>:<path>` 口径；证据
       未主线锚定即拒，绝不消费本地/untracked 工件）+ 全摘要链 +
-      五 veto/主判据，全过则产出 verdict 侧车（pair 锚 + 证据锚
+      五 veto/主判据（N1 侧经 N1 主线锚读取,codex r14），全过则产出 verdict 侧车（pair 锚 + 证据锚 + N1 锚
       commit id + 判定），certify 不改写任何已锚工件；晋升仅以
       "已提交侧车 + digest 与已提交 pair 一致"形态成立；测试含
       certify 不改写/侧车断链拒/工作树拒/**证据未锚定拒**/顺序不可
@@ -90,4 +90,4 @@
       certify 拒绝
 - [ ] 顺序不可倒置：run → attach → pair 提交 → 源证据提交 →
       certify → 侧车提交 → 晋升；跳过任一环 = 晋升无效；下游按侧车
-      记录的双锚重算复验
+      记录的三锚(pair/证据/N1)重算复验
