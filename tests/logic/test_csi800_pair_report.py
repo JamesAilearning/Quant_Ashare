@@ -180,6 +180,26 @@ def test_walk_forward_pair_builds_report():
         assert r["conservative"]["per_fold_net_annualized"] == [-0.015]
 
 
+def test_walk_forward_duplicate_fold_entry_refuses():
+    # codex #373 r7: a repeated fold_index would silently overwrite the
+    # pinned digest and let one favorable fold cover for several.
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG, mean_net=0.011)
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"},
+            mean_net=-0.015)
+        wf_p = b / "walk_forward_report.json"
+        payload = json.loads(wf_p.read_text(encoding="utf-8"))
+        payload["folds"] = payload["folds"] * 2
+        payload["num_folds"] = 2
+        wf_p.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(PairReportError, match="more than once"):
+            build_pair_report(a, b)
+
+
 def test_walk_forward_non_official_fold_refuses():
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)

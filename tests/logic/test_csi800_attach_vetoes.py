@@ -317,6 +317,28 @@ def test_reference_nonofficial_fold_report_refuses():
             attach(pair_p, base, cons, ref)
 
 
+def test_nonfinite_sleeve_weight_refuses():
+    # codex #373 r7: NaN weights make every threshold comparison False —
+    # veto 5 must refuse on corrupted evidence, never record a pass.
+    def poison(_b: Path, c: Path, _r: Path) -> None:
+        rep_p = c / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        payload["attribution"]["sector_attribution"] = [
+            {"sector": "csi500_sleeve", "portfolio_weight": float("nan"),
+             "total_effect": 0.010},
+            {"sector": "csi300_sleeve", "portfolio_weight": 0.55,
+             "total_effect": 0.008},
+            {"sector": "unknown", "portfolio_weight": 0.0,
+             "total_effect": -0.001},
+        ]
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), pre_pair=poison)
+        with pytest.raises(SystemExit, match="non-finite"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_edited_check1_in_pair_report_refuses():
     # codex #373 r6: veto 1 is re-derived from the bound conservative
     # side's official metrics — flipping the stored check-1 value/flag

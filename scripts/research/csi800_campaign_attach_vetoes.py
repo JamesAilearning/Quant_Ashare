@@ -156,6 +156,8 @@ def _certified_fold_reports(
     replaced post-pairing together with its positions in a
     self-consistent way)."""
     out: list[tuple[int, dict[str, Any]]] = []
+    seen_indices: set[int] = set()
+    seen_paths: set[Path] = set()
     for entry in aggregate.get("folds") or []:
         idx = entry.get("fold_index")
         rp = entry.get("report_path")
@@ -165,6 +167,14 @@ def _certified_fold_reports(
                 "a certified paired side has no failed folds; torn "
                 "aggregate, refusing.")
         resolved = _resolve_fold_report(run_dir, str(rp))
+        # defense-in-depth mirror of guard-1's duplicate rejection
+        # (codex #373 r7): one fold must not stand in for several.
+        if int(idx) in seen_indices or resolved in seen_paths:
+            raise AttachError(
+                f"{run_dir}: duplicate fold entry (index {idx!r} / "
+                f"{resolved}) in the aggregate — refusing.")
+        seen_indices.add(int(idx))
+        seen_paths.add(resolved)
         raw = resolved.read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
         pinned = expected_hashes.get(str(idx))
@@ -310,14 +320,24 @@ def compute_csi500_dependence(
     effect_csi500 = 0.0
     effect_total = 0.0
     folds_used = 0
-    for _idx, rep in cons_folds:
+    for idx, rep in cons_folds:
         att = rep.get("attribution") or {}
         if att.get("status") != "ok":
             continue
         rows = _sleeve_rows(rep)
-        effect_csi500 += float(rows.get("csi500_sleeve", {})
-                               .get("total_effect", 0.0))
-        effect_total += float(att.get("sector_effects_sum", 0.0))
+        # NaN/inf must refuse, not slide through comparisons (codex #373
+        # r7 P1: ``nan >= 0.80`` is False, so corrupted evidence would
+        # read as "not dependent").
+        fold_csi500 = float(rows.get("csi500_sleeve", {})
+                            .get("total_effect", 0.0))
+        fold_total = float(att.get("sector_effects_sum", 0.0))
+        if not (math.isfinite(fold_csi500) and math.isfinite(fold_total)):
+            raise AttachError(
+                f"fold {idx}: non-finite attribution effects "
+                f"(csi500={fold_csi500!r}, sum={fold_total!r}) — "
+                "corrupted dependence evidence, refusing.")
+        effect_csi500 += fold_csi500
+        effect_total += fold_total
         folds_used += 1
     coverage_ok = folds_used == expected_folds
     share = ((effect_csi500 / effect_total)
@@ -440,6 +460,12 @@ def _run_positions_turnover(
                 f"{start}..{end}) — torn/replaced evidence, refusing.")
         block = sleeve_turnover(positions, {})  # single honest bucket
         fold_total = sum(row["total_oneway"] for row in block.values())
+        if not math.isfinite(fold_total):
+            raise AttachError(
+                f"{run_dir}: fold {idx} recomputed turnover is "
+                f"{fold_total!r} — non-finite weights in the positions "
+                "series (``nan > threshold`` is always False, so this "
+                "must refuse, not pass); corrupted evidence.")
         if require_embedded_match:
             embedded = rep.get("sleeve_turnover")
             if not isinstance(embedded, dict) or not embedded:
@@ -558,15 +584,24 @@ def compute_midcap_concentration(
         expected_folds: int) -> dict[str, Any]:
     csi500_w: list[float] = []
     unknown_w: list[float] = []
-    for _idx, rep in cons_folds:
+    for idx, rep in cons_folds:
         att = rep.get("attribution") or {}
         if att.get("status") != "ok":
             continue
         rows = _sleeve_rows(rep)
-        csi500_w.append(float(rows.get("csi500_sleeve", {})
-                              .get("portfolio_weight", 0.0)))
-        unknown_w.append(float(rows.get("unknown", {})
-                               .get("portfolio_weight", 0.0)))
+        w500 = float(rows.get("csi500_sleeve", {})
+                     .get("portfolio_weight", 0.0))
+        w_unknown = float(rows.get("unknown", {})
+                          .get("portfolio_weight", 0.0))
+        # NaN/inf must refuse (codex #373 r7 P1): ``nan > 0.75`` is
+        # False, so corrupted weights would record veto 5 as passing.
+        if not (math.isfinite(w500) and math.isfinite(w_unknown)):
+            raise AttachError(
+                f"fold {idx}: non-finite sleeve weights "
+                f"(csi500={w500!r}, unknown={w_unknown!r}) — corrupted "
+                "concentration evidence, refusing.")
+        csi500_w.append(w500)
+        unknown_w.append(w_unknown)
     if len(csi500_w) != expected_folds:
         return {
             "folds_used": len(csi500_w),

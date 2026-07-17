@@ -175,11 +175,26 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
     # be replaced post-pairing together with its positions series in a
     # self-consistent way.
     fold_report_sha256: dict[str, str] = {}
+    seen_paths: set[Path] = set()
     for f in folds:
+        # duplicate fold indices / report paths must refuse (codex #373
+        # r7 P1): a repeated entry would silently overwrite the pinned
+        # digest and let ONE favorable fold stand in as coverage for
+        # several while an adverse fold is omitted.
+        idx_key = str(f.get("fold_index"))
+        if idx_key in fold_report_sha256:
+            raise PairReportError(
+                f"{wf_p} declares fold_index {idx_key} more than once — "
+                "duplicate fold entries cannot certify distinct "
+                "coverage; refusing.")
         fold_report = _resolve_fold_report(run_dir, str(f["report_path"]))
+        if fold_report in seen_paths:
+            raise PairReportError(
+                f"{wf_p} declares report path {fold_report} for more "
+                "than one fold entry — refusing.")
+        seen_paths.add(fold_report)
         raw = fold_report.read_bytes()
-        fold_report_sha256[str(f.get("fold_index"))] = hashlib.sha256(
-            raw).hexdigest()
+        fold_report_sha256[idx_key] = hashlib.sha256(raw).hexdigest()
         payload = json.loads(raw.decode("utf-8"))
         # the selected fold must BELONG to this aggregate entry (codex
         # #369 r5): the producer stamps fold_index into each fold report.
