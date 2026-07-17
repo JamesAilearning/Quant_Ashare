@@ -317,6 +317,21 @@ def test_reference_nonofficial_fold_report_refuses():
             attach(pair_p, base, cons, ref)
 
 
+def test_edited_check1_in_pair_report_refuses():
+    # codex #373 r6: veto 1 is re-derived from the bound conservative
+    # side's official metrics — flipping the stored check-1 value/flag
+    # in the mutable pair-report JSON must refuse, not emit eligibility.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=-0.02)
+        payload = json.loads(pair_p.read_text(encoding="utf-8"))
+        c1 = payload["veto_checklist"]["1_conservative_net_excess"]
+        c1["value_annualized"] = 0.05
+        c1["veto_triggered"] = False
+        pair_p.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(SystemExit, match="edited after pairing"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_post_pairing_fold_report_tamper_refuses():
     # codex #373 r5: the pair report pins each declared fold report's
     # content hash at generation time — a fold report replaced AFTER

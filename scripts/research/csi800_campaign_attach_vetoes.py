@@ -106,6 +106,7 @@ from scripts.research.csi800_campaign_pair_report import (  # noqa: E402
     BASE_SLIPPAGE_BPS,
     _load_side,
     _projected_diff,
+    _require_finite_net,
     _resolve_fold_report,
     evaluate_promotion_eligibility,
 )
@@ -600,7 +601,6 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
         raise AttachError(
             "pair report lacks computed check 1 — regenerate with "
             "csi800_campaign_pair_report.py first.")
-    cons_net = float(check1["value_annualized"])
 
     base_side, base_fold_reports = _bind_paired_side(
         "base", base_run, report["base"])
@@ -609,6 +609,32 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
     cons_n = int(cons_side["num_folds"])
     _ref_report, ref_failed, ref_fold_reports = _bind_reference(
         reference_run, base_side["config"])
+
+    # Veto 1 is RE-DERIVED from the BOUND sides' official metrics (which
+    # come from the hash-verified aggregates), never trusted from the
+    # mutable pair-report JSON (codex #373 r6 P1: an edited check-1
+    # value/flag would otherwise flip promotion_eligible while every
+    # binding check still passes). Any mismatch with the stored entry
+    # means the pair report was edited after pairing — refuse.
+    cons_net = _require_finite_net(cons_side, "conservative")
+    base_net = _require_finite_net(base_side, "base")
+    for field, derived in (("value_annualized", cons_net),
+                           ("base_value_annualized", base_net)):
+        stored = check1.get(field)
+        if (isinstance(stored, bool)
+                or not isinstance(stored, (int, float))
+                or not math.isclose(float(stored), derived,
+                                    rel_tol=1e-12, abs_tol=1e-12)):
+            raise AttachError(
+                f"check 1 {field}={stored!r} does not match the bound "
+                f"side's official metrics ({derived!r}) — the pair "
+                "report was edited after pairing, refusing.")
+    if check1.get("veto_triggered") is not bool(cons_net <= 0.0):
+        raise AttachError(
+            f"check 1 veto_triggered={check1.get('veto_triggered')!r} "
+            f"contradicts the bound conservative net excess "
+            f"({cons_net!r}) — the pair report was edited after "
+            "pairing, refusing.")
 
     checklist["2_csi500_dependence"] = compute_csi500_dependence(
         cons_fold_reports, cons_net, cons_n)
