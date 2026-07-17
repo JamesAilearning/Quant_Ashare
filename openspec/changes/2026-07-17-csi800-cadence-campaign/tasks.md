@@ -84,10 +84,10 @@
 - [ ] 判定 WIN → **certify 步骤**（证据锚成立后）：验证 pair v3
       字节==主线锚 + 经证据锚（origin/main 可达 commit，
       `git show <evidence-anchor>:<path>` 口径）读取全部证据字节
-      端到端重算全链 + 五 veto/主判据 → 产出 verdict 侧车（pair 锚
-      + 证据锚 commit id + 判定）→ 侧车入库 PR → codex/CI → STOP →
-      **用户 merge（侧车提交评审）** → 晋升成立；证据未主线锚定时
-      certify 拒绝
+      端到端重算全链 + N1 侧经 N1 主线锚读取 + 五 veto/主判据 →
+      产出 verdict 侧车（**三锚 commit id：pair + 证据 + N1** +
+      判定）→ 侧车入库 PR → codex/CI → STOP → **用户 merge（侧车
+      提交评审）** → 晋升成立；证据或 N1 未主线锚定时 certify 拒绝
 - [ ] 顺序不可倒置：run → attach → pair 提交 → 源证据提交 →
       certify → 侧车提交 → 晋升；跳过任一环 = 晋升无效；下游按侧车
       记录的三锚(pair/证据/N1)重算复验
