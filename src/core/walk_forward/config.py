@@ -293,6 +293,18 @@ class WalkForwardConfig:
                 "metrics without the mandated decomposition "
                 "(v2-csi800-expansion-guards, codex P1 on #370)."
             )
+        if self.instruments == "csi800" and not (
+                self.attribution_sleeve_grouping
+                and self.risk_constraints_enabled):
+            raise WalkForwardError(
+                "instruments='csi800' requires BOTH "
+                "attribution_sleeve_grouping=True and "
+                "risk_constraints_enabled=True — official csi800 metrics "
+                "without the sleeve report and position-level constraints "
+                "are forbidden; presets config/presets/csi800*.yaml carry "
+                "both (v2-csi800-expansion-guards, codex P1 on #370 r6; "
+                "custom/copied campaign configs get no bypass)."
+            )
 
         if self.st_mask_mode not in ("required", "off_experiment"):
             raise WalkForwardError(

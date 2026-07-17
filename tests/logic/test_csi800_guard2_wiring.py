@@ -314,10 +314,38 @@ class TestSleeveTurnover:
 
 
 class TestCampaignPresetsOptIn:
-    def test_both_presets_enable_both_guards(self):
+    def test_csi800_presets_enable_both_guards(self):
+        # default.yaml is a csi800 config too — the config-level rule
+        # (codex #370 r6) makes both guards mandatory for the universe.
         presets = _PROJECT_ROOT / "config" / "presets"
-        for name in ("csi800.yaml", "csi800_conservative.yaml"):
+        for name in ("csi800.yaml", "csi800_conservative.yaml",
+                     "default.yaml"):
             data = yaml.safe_load(
                 (presets / name).read_text(encoding="utf-8"))
             assert data.get("attribution_sleeve_grouping") is True, name
             assert data.get("risk_constraints_enabled") is True, name
+
+
+class TestCsi800UniverseRequiresBothGuards:
+    def test_csi800_without_guards_refused_both_engines(self):
+        # codex #370 r6 P1: custom/copied csi800 configs get no bypass —
+        # the universe itself demands both guards at construction.
+        from src.core.pipeline import PipelineConfig, PipelineError
+        from src.core.walk_forward.config import (
+            WalkForwardConfig,
+            WalkForwardError,
+        )
+        with pytest.raises(PipelineError, match="requires BOTH"):
+            PipelineConfig(provider_uri="D:/fake", instruments="csi800")
+        with pytest.raises(PipelineError, match="requires BOTH"):
+            PipelineConfig(provider_uri="D:/fake", instruments="csi800",
+                           attribution_sleeve_grouping=True)
+        with pytest.raises(WalkForwardError, match="requires BOTH"):
+            WalkForwardConfig(instruments="csi800")
+        # both guards on -> accepted.
+        PipelineConfig(provider_uri="D:/fake", instruments="csi800",
+                       attribution_sleeve_grouping=True,
+                       risk_constraints_enabled=True)
+        WalkForwardConfig(instruments="csi800",
+                          attribution_sleeve_grouping=True,
+                          risk_constraints_enabled=True)
