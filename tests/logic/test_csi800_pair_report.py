@@ -130,6 +130,7 @@ def _mk_wf_run(root: Path, name: str, cfg: dict,
     # nested under "backtest" (codex #369 r2 — a synthetic top-level
     # field masked the real shape and hid an always-refuse bug).
     fold_report.write_text(json.dumps({
+        "fold_index": 0,
         "backtest": {"metric_status": fold_status},
     }), encoding="utf-8")
     (d / "walk_forward_report.json").write_text(json.dumps({
@@ -182,6 +183,52 @@ def test_walk_forward_non_official_fold_refuses():
             build_pair_report(a, b)
 
 
+def test_fold_report_outside_run_dir_refuses():
+    # codex #369 r5 P1: an aggregate pointing at ANOTHER run's official
+    # fold report (absolute path, or a ../ escape) must refuse — borrowed
+    # status cannot certify this aggregate's metrics.
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        foreign = _mk_wf_run(root, "foreign", _WF_CFG)   # donor run
+        a = _mk_wf_run(root, "wf_a", _WF_CFG)
+        # rewrite wf_a's aggregate to point at the foreign fold report.
+        wf_p = root / "wf_a" / "walk_forward_report.json"
+        payload = json.loads(wf_p.read_text(encoding="utf-8"))
+        payload["folds"][0]["report_path"] = str(
+            (foreign / "fold_0_report.json").resolve())
+        wf_p.write_text(json.dumps(payload), encoding="utf-8")
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"})
+        with pytest.raises(PairReportError, match="OUTSIDE"):
+            build_pair_report(a, b)
+        # relative ../ escape refuses identically.
+        payload["folds"][0]["report_path"] = "../foreign/fold_0_report.json"
+        wf_p.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(PairReportError, match="OUTSIDE"):
+            build_pair_report(a, b)
+
+
+def test_fold_index_mismatch_refuses():
+    # codex #369 r5: the selected fold must belong to the aggregate
+    # entry — the producer stamps fold_index into each fold report.
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG)
+        fold_p = root / "wf_a" / "fold_0_report.json"
+        fold_p.write_text(json.dumps({
+            "fold_index": 3,
+            "backtest": {"metric_status": "official"},
+        }), encoding="utf-8")
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"})
+        with pytest.raises(PairReportError, match="fold_index"):
+            build_pair_report(a, b)
+
+
 def test_walk_forward_missing_backtest_block_refuses():
     # codex #369 r2: a fold report without the nested backtest block is
     # a producer-schema mismatch — refuse, never default to "official".
@@ -189,7 +236,8 @@ def test_walk_forward_missing_backtest_block_refuses():
         root = Path(t)
         a = _mk_wf_run(root, "wf_a", _WF_CFG)
         (root / "wf_a" / "fold_0_report.json").write_text(
-            json.dumps({"metric_status": "official"}),  # top-level only
+            json.dumps({"fold_index": 0,
+                        "metric_status": "official"}),  # top-level only
             encoding="utf-8")
         b = _mk_wf_run(
             root, "wf_b",

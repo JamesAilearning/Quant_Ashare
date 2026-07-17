@@ -123,11 +123,28 @@ def _load_pipeline_side(run_dir: Path) -> dict[str, Any]:
 
 
 def _resolve_fold_report(run_dir: Path, report_path: str) -> Path:
+    """Resolve a fold report, CONFINED to the claimed run dir (codex
+    #369 r5 P1): an aggregate must not be able to point at another run's
+    official fold reports to borrow their status while certifying its
+    own arbitrary headline metrics. The producer's repo-relative form
+    (``report_path = str(output_dir / "fold_XX_report.json")``) is
+    supported by resolving it first — but the RESOLVED path must stay
+    under ``run_dir``."""
+    run_root = run_dir.resolve()
     rp = Path(report_path)
-    for candidate in ((rp,) if rp.is_absolute()
-                      else (run_dir / rp, _REPO / rp)):
-        if candidate.is_file():
-            return candidate
+    candidates = ((rp,) if rp.is_absolute() else (run_dir / rp, _REPO / rp))
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            continue
+        if not resolved.is_relative_to(run_root):
+            raise PairReportError(
+                f"fold report {report_path!r} resolves OUTSIDE the "
+                f"claimed run dir {run_dir} ({resolved}) — refusing: "
+                "borrowed fold status from another run cannot certify "
+                "this aggregate's metrics."
+            )
+        return resolved
     raise PairReportError(
         f"fold report unreadable: {report_path!r} (tried under {run_dir} "
         "and the repo root) — per-fold official status cannot be "
@@ -151,6 +168,15 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
     for f in folds:
         fold_report = _resolve_fold_report(run_dir, str(f["report_path"]))
         payload = json.loads(fold_report.read_text(encoding="utf-8"))
+        # the selected fold must BELONG to this aggregate entry (codex
+        # #369 r5): the producer stamps fold_index into each fold report.
+        if payload.get("fold_index") != f.get("fold_index"):
+            raise PairReportError(
+                f"fold report {fold_report} carries fold_index="
+                f"{payload.get('fold_index')!r} but the aggregate entry "
+                f"claims {f.get('fold_index')!r} — mismatched fold, "
+                "refusing to certify."
+            )
         # producer schema (write_fold_report): the status is NESTED under
         # "backtest" (codex #369 r2 — a top-level read is always None and
         # would refuse every real pair).
