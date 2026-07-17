@@ -363,6 +363,18 @@ def compute_turnover_check(cons_dir: Path, base_dir: Path, ref_dir: Path,
     cons, cons_problems = _run_positions_turnover(cons_dir, cons_folds)
     base, base_problems = _run_positions_turnover(base_dir, base_folds)
     ref_folds = int(ref_report["num_folds"])
+    # A documented-failed fold must carry NO positions evidence at all —
+    # a stale/injected series for a fold the aggregate aborted would
+    # silently enter the reference turnover denominator and could
+    # suppress veto 3 (codex #373 r3 P1).
+    for idx in sorted(documented_failed):
+        stale = ref_dir / f"fold_{idx:02d}_positions.json"
+        if stale.exists():
+            raise AttachError(
+                f"reference fold {idx} is documented FAILED (report_path "
+                f"null) yet carries a positions artifact ({stale}) — "
+                "stale/injected evidence cannot enter the veto-3 "
+                "baseline, refusing.")
     ref, ref_problems = _run_positions_turnover(ref_dir, ref_folds)
 
     # Reference folds may lack positions ONLY where the aggregate

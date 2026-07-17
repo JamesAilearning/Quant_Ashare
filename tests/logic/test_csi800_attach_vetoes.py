@@ -283,6 +283,18 @@ def test_reference_nonofficial_fold_report_refuses():
             attach(pair_p, base, cons, ref)
 
 
+def test_reference_stale_positions_on_failed_fold_refuses():
+    # codex #373 r3: a documented-failed fold with a leftover/injected
+    # positions series would inflate the reference turnover denominator
+    # and could suppress veto 3 — refuse instead of consuming it.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), failed_folds=(1,))
+        (ref / "fold_01_positions.json").write_text(
+            json.dumps(_positions(shift=0.2)), encoding="utf-8")
+        with pytest.raises(SystemExit, match="documented FAILED"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_reference_missing_fold_report_refuses():
     # config-shaped directory without the documented fold reports (the
     # synthetic low-turnover baseline scenario) refuses.
