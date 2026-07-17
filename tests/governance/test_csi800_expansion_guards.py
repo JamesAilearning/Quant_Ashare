@@ -146,6 +146,24 @@ class CampaignWalkForwardPairPins(unittest.TestCase):
         self.assertEqual(BASE_SLIPPAGE_BPS, ref.get("slippage_bps"))
         self.assertNotEqual(base["output_dir"], ref["output_dir"])
 
+    def test_reference_resolved_universe_is_pinned(self) -> None:
+        # codex P2 on #371 r2: the reference INHERITS universe/benchmark
+        # from config_walk.yaml — a raw-mapping diff cannot see a parent
+        # drift (e.g. config_walk moving to another universe would turn
+        # veto-3 into a csi800-vs-<other> comparison). Pin the RESOLVED
+        # values through the same inheritance loader the runner uses.
+        from src.core._yaml_loader import load_yaml_with_inheritance
+        resolved_ref = load_yaml_with_inheritance(
+            _PRESETS / "csi300_campaign_reference.yaml")
+        self.assertEqual("csi300", resolved_ref.get("instruments"))
+        self.assertEqual("SH000300TR", resolved_ref.get("benchmark_code"))
+        for name in ("csi800_campaign_base.yaml",
+                     "csi800_campaign_conservative.yaml"):
+            resolved = load_yaml_with_inheritance(_PRESETS / name)
+            self.assertEqual("csi800", resolved.get("instruments"), name)
+            self.assertEqual("SH000906TR", resolved.get("benchmark_code"),
+                             name)
+
 
 class VetoSheetNumberPins(unittest.TestCase):
     """The five DP-4 numbers, pinned as literal spec text — editing any
