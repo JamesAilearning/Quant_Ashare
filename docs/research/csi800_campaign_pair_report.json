@@ -1,0 +1,167 @@
+{
+  "schema_version": "csi800_pair_report_v1",
+  "projection_whitelist": [
+    "output_dir"
+  ],
+  "config_diff_projected": {
+    "slippage_bps": {
+      "base": 5.0,
+      "conservative": 20.0
+    }
+  },
+  "base": {
+    "run_id": "csi800_campaign_base",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "889d8b0fd4aa67b04accf6a2a4d3e05965cd6a90c24e10369086176ab7977cdb",
+    "report_sha256": "a57252bb6ad12d987705d68fa1a06e8fbaa3d11bab79ea802618e33dfee8fb02",
+    "official_metrics": {
+      "excess_return_with_cost": {
+        "annualized_return": 0.060802536991864324,
+        "information_ratio": 0.4148652747132539,
+        "max_drawdown": -0.1396057619219939
+      }
+    },
+    "benchmark": {
+      "code": "SH000906TR"
+    },
+    "num_folds": 23,
+    "per_fold_net_annualized": [
+      0.010860596098499995,
+      -0.14677620717420392,
+      -0.4256369653324007,
+      0.3752553314354393,
+      0.222475479105284,
+      0.1848066109647426,
+      -0.13093096276376248,
+      0.4128830494094423,
+      0.5282133274644882,
+      -0.13331696452185346,
+      0.21997074810126105,
+      0.14628307218154984,
+      -0.019237404535654517,
+      -0.31300845043229325,
+      0.08338079997951618,
+      0.29803381479133795,
+      -0.04374861381826446,
+      -0.10727954208574539,
+      0.21367516706828954,
+      0.6344358695997904,
+      0.03522177979893273,
+      -0.5085987520206591,
+      -0.13850343250085778
+    ]
+  },
+  "conservative": {
+    "run_id": "csi800_campaign_conservative",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "9db2f69241c6c66dbd7c2eeb58fedecf414602fd60c027698f8e9eb85da70ddf",
+    "report_sha256": "b6c2fb92966d80ddf7656d26c6e51ae0fb782fb6f23c5a2356fe46482a261469",
+    "official_metrics": {
+      "excess_return_with_cost": {
+        "annualized_return": -0.010221719963470134,
+        "information_ratio": -0.3051423576060475,
+        "max_drawdown": -0.15861736383386477
+      }
+    },
+    "benchmark": {
+      "code": "SH000906TR"
+    },
+    "num_folds": 23,
+    "per_fold_net_annualized": [
+      -0.05907056562027878,
+      -0.2142890959974588,
+      -0.4949069424819499,
+      0.3034692956984348,
+      0.15153895041157353,
+      0.11523599047315804,
+      -0.20149882387899845,
+      0.3400312292524688,
+      0.4608183074255412,
+      -0.20491846360786925,
+      0.14729285463185526,
+      0.07359162848985466,
+      -0.0910758855203646,
+      -0.38611745382825996,
+      0.009527493342710485,
+      0.22315774028317942,
+      -0.11664469017176142,
+      -0.17018144168291738,
+      0.14452150582407272,
+      0.5637827043334164,
+      -0.03741553927933732,
+      -0.5797117066249146,
+      -0.21223665063196798
+    ]
+  },
+  "veto_checklist": {
+    "1_conservative_net_excess": {
+      "value_annualized": -0.010221719963470134,
+      "base_value_annualized": 0.060802536991864324,
+      "veto_triggered": true
+    },
+    "2_csi500_dependence": {
+      "csi500_effect_share_of_gross": 0.7112791928674381,
+      "csi500_effect_sum": 0.44612,
+      "gross_effect_sum": 0.6272079999999999,
+      "folds_used": 23,
+      "conservative_net_excess": -0.010221719963470134,
+      "threshold_share": 0.8,
+      "note": null,
+      "veto_triggered": false
+    },
+    "3_turnover_vs_csi300_ref": {
+      "conservative": {
+        "total_oneway": 139.115874136101,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.10297251971584087,
+        "annualized_oneway": 24.507459692370126,
+        "valid_folds": 23.0
+      },
+      "base": {
+        "total_oneway": 139.39171716385238,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.10317669664237777,
+        "annualized_oneway": 24.55605380088591,
+        "valid_folds": 23.0
+      },
+      "csi300_reference": {
+        "total_oneway": 134.61103554687602,
+        "n_transitions": 1294.0,
+        "daily_mean_oneway": 0.10402707538398456,
+        "annualized_oneway": 24.758443941388325,
+        "valid_folds": 22.0
+      },
+      "conservative_over_reference_ratio": 0.9898626808044817,
+      "base_over_reference_ratio": 0.9918254095054785,
+      "threshold_ratio": 1.5,
+      "annualization_days": 238,
+      "ref_valid_folds": 22.0,
+      "veto_triggered": false
+    },
+    "4_risk_constraints_recorded": {
+      "expected": {
+        "max_per_name": 0.05,
+        "max_per_board": 1.0,
+        "cash_buffer_min": 0.0,
+        "max_leverage": 1.0,
+        "mode": "raise"
+      },
+      "folds_checked": 46,
+      "problems": [],
+      "veto_triggered": false
+    },
+    "5_midcap_concentration": {
+      "csi500_time_avg_weight": 0.4823478260869565,
+      "unknown_time_avg_weight": 0.0,
+      "folds_used": 23,
+      "thresholds": {
+        "csi500": 0.75,
+        "unknown": 0.1
+      },
+      "veto_triggered": false
+    }
+  },
+  "promotion_eligible": false,
+  "incomplete_checks": [],
+  "veto_checklist_status": "COMPLETE"
+}
