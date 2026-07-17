@@ -382,12 +382,22 @@ def compute_csi500_dependence(
         if att.get("status") != "ok":
             continue
         rows = _sleeve_rows(rep)
+        # An "ok" attribution must actually CARRY the evidence (codex
+        # #373 r16 P2): an omitted csi500 row / effects sum must refuse,
+        # never read as a favorable 0.0.
+        row500 = rows.get("csi500_sleeve")
+        if (not isinstance(row500, dict) or "total_effect" not in row500
+                or "sector_effects_sum" not in att):
+            raise AttachError(
+                f"fold {idx}: attribution status is ok but "
+                "csi500_sleeve.total_effect / sector_effects_sum is "
+                "absent — omitted producer fields cannot be read as "
+                "favorable zeros, refusing.")
         # NaN/inf must refuse, not slide through comparisons (codex #373
         # r7 P1: ``nan >= 0.80`` is False, so corrupted evidence would
         # read as "not dependent").
-        fold_csi500 = float(rows.get("csi500_sleeve", {})
-                            .get("total_effect", 0.0))
-        fold_total = float(att.get("sector_effects_sum", 0.0))
+        fold_csi500 = float(row500["total_effect"])
+        fold_total = float(att["sector_effects_sum"])
         if not (math.isfinite(fold_csi500) and math.isfinite(fold_total)):
             raise AttachError(
                 f"fold {idx}: non-finite attribution effects "
@@ -696,17 +706,50 @@ def compute_midcap_concentration(
         if att.get("status") != "ok":
             continue
         rows = _sleeve_rows(rep)
-        w500 = float(rows.get("csi500_sleeve", {})
-                     .get("portfolio_weight", 0.0))
-        w_unknown = float(rows.get("unknown", {})
-                          .get("portfolio_weight", 0.0))
+        # The csi500 row is producer-mandatory in an ok csi800 sleeve
+        # report — its absence must refuse, never read as zero
+        # concentration (codex #373 r16 P2). The ``unknown`` row is
+        # legitimately OMITTED by the producer when the honest bucket is
+        # empty on both sides (observed in 8/23 real folds), so absence
+        # alone is not tampering — instead the weight-mass closure
+        # check below catches a DELETED row that actually carried
+        # portfolio weight.
+        row500 = rows.get("csi500_sleeve")
+        if not isinstance(row500, dict) or "portfolio_weight" not in row500:
+            raise AttachError(
+                f"fold {idx}: attribution status is ok but the "
+                "csi500_sleeve portfolio_weight row is absent — an "
+                "omitted producer field cannot be read as zero "
+                "concentration, refusing.")
+        w500 = float(row500["portfolio_weight"])
+        row_unknown = rows.get("unknown")
+        if isinstance(row_unknown, dict):
+            if "portfolio_weight" not in row_unknown:
+                raise AttachError(
+                    f"fold {idx}: unknown sleeve row lacks "
+                    "portfolio_weight — refusing.")
+            w_unknown = float(row_unknown["portfolio_weight"])
+        else:
+            w_unknown = 0.0
         # NaN/inf must refuse (codex #373 r7 P1): ``nan > 0.75`` is
         # False, so corrupted weights would record veto 5 as passing.
+        # Checked BEFORE mass closure so a poisoned weight gets its
+        # specific message rather than a NaN sum.
         if not (math.isfinite(w500) and math.isfinite(w_unknown)):
             raise AttachError(
                 f"fold {idx}: non-finite sleeve weights "
                 f"(csi500={w500!r}, unknown={w_unknown!r}) — corrupted "
                 "concentration evidence, refusing.")
+        # weight-mass closure: portfolio weights over ALL present rows
+        # must sum to ~1 — deleting a row that carried weight (e.g. to
+        # hide unknown-bucket exposure) breaks the sum.
+        total_w = sum(float(r.get("portfolio_weight", 0.0))
+                      for r in rows.values())
+        if not math.isfinite(total_w) or abs(total_w - 1.0) > 0.005:
+            raise AttachError(
+                f"fold {idx}: sleeve portfolio weights sum to "
+                f"{total_w!r}, not ~1.0 — a weight-carrying row is "
+                "missing or corrupted, refusing.")
         csi500_w.append(w500)
         unknown_w.append(w_unknown)
     if len(csi500_w) != expected_folds:

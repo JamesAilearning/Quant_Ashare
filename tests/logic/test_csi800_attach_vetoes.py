@@ -444,6 +444,56 @@ def test_duplicate_sleeve_row_refuses():
             attach(pair_p, base, cons, ref)
 
 
+def test_ok_attribution_missing_fields_refuses():
+    # codex #373 r16: an "ok" attribution whose csi500 row or effects
+    # sum is omitted must refuse — absence is not a favorable zero.
+    def drop_csi500(_b: Path, c: Path, _r: Path) -> None:
+        rep_p = c / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        payload["attribution"]["sector_attribution"] = [
+            r for r in payload["attribution"]["sector_attribution"]
+            if r["sector"] != "csi500_sleeve"]
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), pre_pair=drop_csi500)
+        with pytest.raises(SystemExit, match="favorable zeros|zero conc"):
+            attach(pair_p, base, cons, ref)
+
+    def drop_sum(_b: Path, c: Path, _r: Path) -> None:
+        rep_p = c / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        del payload["attribution"]["sector_effects_sum"]
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), pre_pair=drop_sum)
+        with pytest.raises(SystemExit, match="favorable zeros"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_deleted_weighty_unknown_row_breaks_mass_closure():
+    # codex #373 r16: the unknown row may be legitimately absent when it
+    # carried nothing — but DELETING a row that held real weight breaks
+    # the ~1.0 portfolio weight-mass closure and must refuse.
+    def hide_unknown(_b: Path, c: Path, _r: Path) -> None:
+        rep_p = c / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        payload["attribution"]["sector_attribution"] = [
+            {"sector": "csi500_sleeve", "portfolio_weight": 0.45,
+             "total_effect": 0.010},
+            {"sector": "csi300_sleeve", "portfolio_weight": 0.35,
+             "total_effect": 0.008},
+            # unknown row (0.20 weight) deleted -> sum 0.80
+        ]
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), pre_pair=hide_unknown)
+        with pytest.raises(SystemExit, match="weight-carrying row"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_nonfinite_sleeve_weight_refuses():
     # codex #373 r7: NaN weights make every threshold comparison False —
     # veto 5 must refuse on corrupted evidence, never record a pass.
