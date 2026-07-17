@@ -123,6 +123,42 @@ _DEFAULT_CASH_BUFFER_MIN = 0.01
 _DEFAULT_MAX_LEVERAGE = 1.00
 
 
+def campaign_risk_constraints_v1() -> MinimalRiskConstraints:
+    """CSI800 campaign risk-constraint calibration (veto-4, operator
+    option A signed 2026-07-17 — amended while ZERO campaign results
+    existed).
+
+    The class defaults were built-but-dormant since audit P0-1 and had
+    never been validated against the actual canonical strategy; the
+    first campaign ignition (csi300 reference) failed 23/23 folds on
+    two STRUCTURAL mismatches, not strategy violations:
+
+    - ``max_per_board`` 0.40: board-heuristic buckets are LISTING VENUES
+      (SH main / SZ main / ChiNext / STAR), not risk sectors — the SH
+      main board alone carries ~half of an index basket's weight
+      (observed 53-60% per fold), so a 40% cap structurally rejects
+      every long-only index-basket portfolio. Disabled at 1.0 with this
+      rationale on record.
+    - ``cash_buffer_min`` 0.01: the qlib topk strategy runs fully
+      invested BY DESIGN (observed cash 0.55-0.9%). Set to 0.0 — cash
+      buffering is a live-deployment concern, not a backtest-validity
+      one.
+
+    ``max_per_name`` = 0.05 and ``max_leverage`` = 1.0 stay STRICT in
+    RAISE mode — they are the constraints with real anti-concentration /
+    sanity teeth, and the observed runs pass them. A function (not a
+    module-level instance) so each run gets a fresh frozen object; the
+    exact values are governance-pinned in
+    tests/governance/test_csi800_expansion_guards.py."""
+    return MinimalRiskConstraints(
+        max_per_name=0.05,
+        max_per_board=1.0,
+        cash_buffer_min=0.0,
+        max_leverage=1.0,
+        mode=RiskConstraintMode.RAISE,
+    )
+
+
 @dataclass(frozen=True)
 class MinimalRiskConstraints:
     """Frozen configuration + apply method for the four-constraint

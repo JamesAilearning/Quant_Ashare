@@ -49,7 +49,7 @@ from src.core.qlib_runtime import (
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
 )
-from src.core.risk_constraints import MinimalRiskConstraints
+from src.core.risk_constraints import campaign_risk_constraints_v1
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
     SignalAnalyzer,
@@ -864,10 +864,13 @@ class WalkForwardEngine:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
-            # CSI800 guard-2 (veto-4): campaign configs opt into the
-            # position-level constraints at their DEFAULT values; the
-            # effective values land in each fold's backtest provenance.
-            risk_constraints=(MinimalRiskConstraints()
+            # CSI800 guard-2 (veto-4, calibration option A 2026-07-17):
+            # campaign configs opt into the CAMPAIGN calibration —
+            # max_per_name/leverage strict, board/cash structural
+            # mismatches disabled with rationale (see
+            # campaign_risk_constraints_v1). Effective values land in
+            # each fold's backtest provenance.
+            risk_constraints=(campaign_risk_constraints_v1()
                               if config.risk_constraints_enabled else None),
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest so the microstructure mask and the
