@@ -96,6 +96,36 @@ class SensitivityBandPresetPins(unittest.TestCase):
             )
 
 
+class CampaignWalkForwardPairPins(unittest.TestCase):
+    """The walk-forward campaign pair (base/conservative) must stay a
+    true sensitivity band: identical except the DP-2 slippage values and
+    the per-arm output dirs (run-level pairing is separately proven by
+    the pair-report tool from persisted configs)."""
+
+    def test_campaign_pair_differs_only_in_slippage_and_output_dir(
+            self) -> None:
+        base = _load("csi800_campaign_base.yaml")
+        cons = _load("csi800_campaign_conservative.yaml")
+        diff = {k for k in set(base) | set(cons)
+                if base.get(k) != cons.get(k)}
+        self.assertEqual(
+            {"slippage_bps", "output_dir"}, diff,
+            f"campaign pair drifted: differing keys {sorted(diff)} — the "
+            "sensitivity band is void unless slippage_bps (+ per-arm "
+            "output_dir) is the only difference.",
+        )
+        self.assertEqual(BASE_SLIPPAGE_BPS, base["slippage_bps"])
+        self.assertEqual(CONSERVATIVE_SLIPPAGE_BPS, cons["slippage_bps"])
+        self.assertNotEqual(base["output_dir"], cons["output_dir"])
+        for cfg, name in ((base, "base"), (cons, "conservative")):
+            self.assertEqual("csi800", cfg.get("instruments"), name)
+            self.assertEqual("SH000906TR", cfg.get("benchmark_code"), name)
+            self.assertIs(True, cfg.get("attribution_sleeve_grouping"), name)
+            self.assertIs(True, cfg.get("risk_constraints_enabled"), name)
+            self.assertEqual("../../config_walk.yaml", cfg.get("extends"),
+                             name)
+
+
 class VetoSheetNumberPins(unittest.TestCase):
     """The five DP-4 numbers, pinned as literal spec text — editing any
     of them after campaign data exists must fail HERE first."""

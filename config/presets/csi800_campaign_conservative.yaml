@@ -1,0 +1,17 @@
+# CSI800 (a) 战役 — 敏感带 conservative 主判档（DP-2: 20bps 全账本,
+# 跑前写死不可回调;修改 = 作废战役结果并走新 OpenSpec 变更）。
+#
+# 与 base 档（csi800_campaign_base.yaml）除 slippage_bps 与 output_dir
+# 外逐字段一致——治理测试钉死;晋升判定以本档净超额为主判,base 仅参考
+# （veto 表见 v2-csi800-expansion-guards）。
+#
+# Run discipline: 一次不间断调用,与 base 档串行绝不并发:
+#     python scripts/run_walk_forward.py config/presets/csi800_campaign_conservative.yaml
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+slippage_bps: 20.0
+output_dir: "output/walk_forward/csi800_campaign_conservative"

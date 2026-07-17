@@ -1,0 +1,19 @@
+# CSI800 (a) 战役 — 敏感带 base 档（v2-csi800-expansion-guards）。
+#
+# 与 csi300 canonical walk-forward（config_walk.yaml）严格同形：唯一
+# 语义差异 = 宇宙 + 其 canonical 全收益基准（per-universe 映射,#365）
+# + 双 guard（csi800 宇宙强制,#370）。滑点显式 5.0 = DP-2 base 档。
+# 与 conservative 档（csi800_campaign_conservative.yaml）除 slippage_bps
+# 与 output_dir 外逐字段一致——由治理测试钉死,run 级配对由
+# scripts/research/csi800_campaign_pair_report.py 以持久化配置自证。
+#
+# Run discipline: 一次不间断调用,与 conservative 档串行绝不并发:
+#     python scripts/run_walk_forward.py config/presets/csi800_campaign_base.yaml
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+slippage_bps: 5.0
+output_dir: "output/walk_forward/csi800_campaign_base"
