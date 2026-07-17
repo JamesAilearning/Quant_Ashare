@@ -358,6 +358,27 @@ def test_unauthenticated_reference_blocks_promotion_not_vetoes():
         assert "unauthenticated" in r["promotion_blocked_reason"]
 
 
+def test_malformed_daily_positions_refuse_cleanly():
+    # codex #373 r14: a null day or non-numeric weight must refuse with
+    # AttachError, not crash inside sleeve_turnover.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        bad = _positions()
+        bad["2024-01-03"] = None
+        (cons / "fold_01_positions.json").write_text(
+            json.dumps(bad), encoding="utf-8")
+        with pytest.raises(SystemExit, match="not a holdings mapping"):
+            attach(pair_p, base, cons, ref)
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        bad = _positions()
+        bad["2024-01-03"] = {"SH600000": "0.5", "SZ000001": 0.5}
+        (cons / "fold_01_positions.json").write_text(
+            json.dumps(bad), encoding="utf-8")
+        with pytest.raises(SystemExit, match="not numeric"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_zero_holding_positions_refuse_cleanly():
     # codex #373 r13: >=2 dates with all-empty daily maps must refuse
     # with AttachError, not crash with a bare StopIteration.

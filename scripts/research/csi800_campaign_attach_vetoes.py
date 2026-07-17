@@ -501,6 +501,24 @@ def _run_positions_turnover(
                 f"days, {dates[0]}..{dates[-1]}) does not match the "
                 f"certified fold report window ({pos_days} days inside "
                 f"{start}..{end}) — torn/replaced evidence, refusing.")
+        # Every daily value must be a mapping of numeric weights BEFORE
+        # sleeve_turnover touches it (codex #373 r14 P2: a null/list day
+        # or a string weight would raise a raw TypeError instead of the
+        # clean malformed-artifact refusal; NaN weights are caught by
+        # the isfinite check on the fold total below).
+        for day, holdings in positions.items():
+            if not isinstance(holdings, dict):
+                raise AttachError(
+                    f"{run_dir}: fold {idx} positions for {day} is "
+                    f"{type(holdings).__name__}, not a holdings mapping "
+                    "— malformed evidence, refusing.")
+            for inst, weight in holdings.items():
+                if isinstance(weight, bool) or not isinstance(
+                        weight, (int, float)):
+                    raise AttachError(
+                        f"{run_dir}: fold {idx} positions {day}/{inst} "
+                        f"weight {weight!r} is not numeric — malformed "
+                        "evidence, refusing.")
         block = sleeve_turnover(positions, {})  # single honest bucket
         if not block:
             # >=2 dates but every daily map empty: sleeve_turnover has
