@@ -73,10 +73,12 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
    - **N5 三 run 源证据 SHALL 先行主线锚定**（codex #374 r9+r10：
      fresh checkout 无 `output/` 工件，复验不能信断言；且证据目录
      若只是路径无锚，certify 可对本地 untracked 内容认证而已提交
-     目录不完整/不一致）——WIN 路径 SHALL 将三 run 全部 fold
-     reports 与 positions 文件本体（实测量级 ~10 MB，一次性、仅
-     WIN 时发生）以字节保真方式（`-text`）提交至钉死证据目录并
-     **先并入主线**；certify SHALL 经该**证据锚**（`origin/main`
+     目录不完整/不一致）——WIN 路径 SHALL 将三 run 的
+     `walk_forward_report.json` **聚合报告**（`report_sha256` 源
+     字节、内嵌 config、fold 声明集与 veto① 净值的载体，缺它复验
+     链断，codex #374 r13）、全部 fold reports 与 positions 文件
+     本体（实测量级 ~10 MB，一次性、仅 WIN 时发生）以字节保真方式
+     （`-text`）提交至钉死证据目录并**先并入主线**；certify SHALL 经该**证据锚**（`origin/main`
      可达 commit）读取/验证每个证据文件的字节
      （`git show <evidence-anchor>:<path>` 口径，或校验盘面字节与
      锚上逐字节一致），并把证据锚 commit id 记入侧车；证据未主线

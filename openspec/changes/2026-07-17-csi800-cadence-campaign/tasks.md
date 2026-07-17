@@ -76,7 +76,9 @@
 - [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
       收束闭环，certify 不执行
 - [ ] 判定 WIN → **N5 三 run 源证据入库并先并主线**（codex r9+r10）：
-      全部 fold reports + positions 本体（~10 MB，字节保真 `-text`）
+      三份聚合 walk_forward_report.json + 全部 fold reports +
+      positions 本体（~10 MB，字节保真 `-text`，codex r13：聚合是
+      report_sha256/内嵌 config/fold 声明/veto① 净值的复验源）
       提交钉死证据目录 → PR → **用户 merge（证据锚成立）**；可与
       pair v3 同 PR
 - [ ] 判定 WIN → **certify 步骤**（证据锚成立后）：验证 pair v3
