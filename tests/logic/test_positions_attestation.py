@@ -143,14 +143,90 @@ def test_manifest_threads_digest_through_roundtrip() -> None:
         assert loaded[0].positions_sha256 == "cd" * 32
 
 
-def test_pipeline_report_carries_same_name_key() -> None:
-    # two-engine schema symmetry (AGENTS.md): pipeline_report carries
-    # the SAME-NAME top-level key; explicit None when no positions.
-    import inspect
+def _pipeline_report_stubs() -> tuple[object, object, object, object, object]:
+    """Minimal stubs for Pipeline._write_report (mirrors the pattern in
+    tests/logic/test_pipeline.py ReportGitProvenanceTests)."""
+    from types import SimpleNamespace
 
+    from src.core.signal_analyzer import SignalAnalysisResult
+
+    config = SimpleNamespace(
+        instruments="csi300", feature_handler="alpha158",
+        label_horizon_days=1,
+        train_start="2022-01-01", train_end="2022-12-31",
+        valid_start="2023-01-01", valid_end="2023-03-31",
+        test_start="2023-04-01", test_end="2023-06-30",
+        model_type="LGBModel", benchmark_code="SH000300",
+        topk=50, n_drop=5, industry_taxonomy_id=None,
+        attribution_sleeve_grouping=False,
+        risk_constraints_enabled=False,
+        risk_constraints_calibration="default",
+        delisted_registry_path="",
+    )
+    feature_result = SimpleNamespace(
+        train_shape=(10, 5), valid_shape=(5, 5), test_shape=(5, 5),
+    )
+    model_result = SimpleNamespace(
+        prediction_shape=(5, 1), model_artifact_path="m.pkl",
+    )
+    signal_result = SignalAnalysisResult(
+        ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5,
+                        "num_days": 5}},
+        ic_series={}, ic_decay=[0.01], turnover_stats={"mean_turnover": 0.1},
+    )
+    backtest_output = SimpleNamespace(
+        metric_status="ok", official_backtest_path="official",
+        report={}, provenance={}, risk_analysis={},
+    )
+    return config, feature_result, model_result, signal_result, backtest_output
+
+
+def test_pipeline_persist_and_report_roundtrip() -> None:
+    # two-engine schema symmetry (AGENTS.md), exercised through the REAL
+    # write path (codex #375 r1): persist positions via the same helper
+    # Pipeline.run uses, recompute the digest from the bytes on disk,
+    # thread it through the real report writer, and read it back.
     from src.core.pipeline import Pipeline
 
-    sig = inspect.signature(Pipeline._write_report)
-    assert "positions_sha256" in sig.parameters
-    src = inspect.getsource(Pipeline._write_report)
-    assert 'report["positions_sha256"] = positions_sha256' in src
+    cfg, feat, model, sig, bt = _pipeline_report_stubs()
+    with tempfile.TemporaryDirectory() as t:
+        out = Path(t)
+        p_path, digest = Pipeline._persist_positions(out, _POSITIONS)
+        assert p_path == out / "positions.json"
+        assert digest == hashlib.sha256(p_path.read_bytes()).hexdigest()
+
+        report_path = out / "pipeline_report.json"
+        Pipeline._write_report(
+            str(report_path), cfg, feat, model, sig, bt,
+            factor_skipped_reason="unit-test",
+            git_provenance={"commit": "cafebabe" * 5, "dirty": False},
+            positions_sha256=digest,
+        )
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+        assert data["positions_sha256"] == digest
+
+        # tampering the persisted series breaks re-verification against
+        # the emitted report field — the exact certify-chain check.
+        payload = json.loads(p_path.read_text(encoding="utf-8"))
+        payload["2024-01-03"]["SH600000"] = 0.99
+        p_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert (hashlib.sha256(p_path.read_bytes()).hexdigest()
+                != data["positions_sha256"])
+
+
+def test_pipeline_report_explicit_null_without_positions() -> None:
+    # no positions persisted -> the same-name key is present as an
+    # explicit None (absence-vs-null must be distinguishable).
+    from src.core.pipeline import Pipeline
+
+    cfg, feat, model, sig, bt = _pipeline_report_stubs()
+    with tempfile.TemporaryDirectory() as t:
+        report_path = Path(t) / "pipeline_report.json"
+        Pipeline._write_report(
+            str(report_path), cfg, feat, model, sig, bt,
+            factor_skipped_reason="unit-test",
+            git_provenance={"commit": "cafebabe" * 5, "dirty": False},
+        )
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+        assert "positions_sha256" in data
+        assert data["positions_sha256"] is None
