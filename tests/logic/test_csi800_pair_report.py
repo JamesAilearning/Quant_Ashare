@@ -239,6 +239,44 @@ def test_pipeline_nonfinite_net_refuses():
             build_pair_report(a, b)
 
 
+def test_base_side_missing_or_nonfinite_net_refuses():
+    # codex #369 r4 P1: the BASE side's net excess is required too — a
+    # malformed base must not ride into a certified pair as "evidence".
+    for bad in (None, float("nan")):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            a = _mk_run(root, "run_a", _BASE_CFG, net_ann=bad)
+            b = _mk_run(root, "run_b", _cons_cfg(), net_ann=-0.02)
+            with pytest.raises(PairReportError, match="base.*FINITE"):
+                build_pair_report(a, b)
+
+
+def test_wf_config_hash_is_config_not_report():
+    # codex #369 r4 P2: identical embedded configs must hash identically
+    # even when fold outcomes/timestamps differ — the field is verifiable
+    # against report["config"], not an artifact hash in disguise.
+    from scripts.research.csi800_campaign_pair_report import _config_sha256
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        cfg_c = {**_WF_CFG, "slippage_bps": 20.0,
+                 "output_dir": "output/walk_forward/csi800_conservative"}
+        a = _mk_wf_run(root, "wf_a", _WF_CFG, mean_net=0.011)
+        b = _mk_wf_run(root, "wf_b", cfg_c, mean_net=-0.015)
+        r1 = build_pair_report(a, b)
+        assert r1["base"]["config_sha256"] == _config_sha256(_WF_CFG)
+        assert r1["conservative"]["config_sha256"] == _config_sha256(cfg_c)
+        # different outcomes, same configs -> same config hashes.
+        with tempfile.TemporaryDirectory() as t2:
+            root2 = Path(t2)
+            a2 = _mk_wf_run(root2, "wf_a2", _WF_CFG, mean_net=0.030)
+            b2 = _mk_wf_run(root2, "wf_b2", cfg_c, mean_net=-0.001)
+            r2 = build_pair_report(a2, b2)
+            assert (r1["base"]["config_sha256"]
+                    == r2["base"]["config_sha256"])
+            assert (r1["conservative"]["report_sha256"]
+                    != r2["conservative"]["report_sha256"])
+
+
 def test_walk_forward_null_aggregate_refuses():
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)

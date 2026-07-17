@@ -53,6 +53,35 @@ class PairReportError(RuntimeError):
     """Fail-loud: refuse to certify what cannot be proven paired."""
 
 
+def _config_sha256(cfg: dict[str, Any]) -> str:
+    """Hash a CANONICAL serialization of the config itself — never the
+    surrounding artifact (codex #369 r4 P2: hashing the full
+    walk_forward_report.json mixes timestamps/outcomes into a field
+    labeled ``config_sha256``, so identical configs hash differently and
+    the field cannot be verified against the embedded config)."""
+    canonical = json.dumps(cfg, sort_keys=True, ensure_ascii=False,
+                           default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _require_finite_net(side: dict[str, Any], label: str) -> float:
+    """Both sides' net excess is REQUIRED finite (codex #369 r4 P1):
+    a pair whose base (or conservative) net is missing/None/bool/NaN/Inf
+    is not a completed sensitivity band — refuse, never certify."""
+    om = side.get("official_metrics") or {}
+    value = (om.get("excess_return_with_cost") or {}).get(
+        "annualized_return")
+    if (value is None or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)):
+        raise PairReportError(
+            f"{label} net excess is {value!r} — the sensitivity-band "
+            "contract requires BOTH sides' net excess as FINITE numbers; "
+            "refusing to certify."
+        )
+    return float(value)
+
+
 def _load_side(run_dir: Path) -> dict[str, Any]:
     """Load one side. Two artifact shapes (codex P1 on #369):
 
@@ -86,7 +115,7 @@ def _load_pipeline_side(run_dir: Path) -> dict[str, Any]:
         "run_id": run_dir.name,
         "artifact_shape": "pipeline",
         "config": cfg,
-        "config_sha256": hashlib.sha256(cfg_p.read_bytes()).hexdigest(),
+        "config_sha256": _config_sha256(cfg),
         "metric_status": metrics.get("metric_status"),
         "official_metrics": metrics.get("official_metrics"),
         "benchmark": metrics.get("benchmark"),
@@ -158,7 +187,8 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
         "run_id": run_dir.name,
         "artifact_shape": "walk_forward",
         "config": cfg,
-        "config_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
+        "config_sha256": _config_sha256(cfg),
+        "report_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
         "metric_status": "official",   # proven per fold above
         # normalized to the pipeline shape so the veto computation is
         # shape-agnostic; fold headline metrics ARE the with-cost excess.
@@ -223,25 +253,14 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
                 "can enter the veto checklist."
             )
 
-    def _net_ann(side: dict[str, Any]) -> Any:
-        om = side.get("official_metrics") or {}
-        return (om.get("excess_return_with_cost") or {}).get(
-            "annualized_return")
-
-    cons_net = _net_ann(cons)
-    # same finite discipline for the pipeline shape (codex #369 r3): a
-    # NaN in metrics.json must refuse, never read as "not vetoed".
-    if cons_net is not None and (
-            isinstance(cons_net, bool)
-            or not isinstance(cons_net, (int, float))
-            or not math.isfinite(cons_net)):
-        raise PairReportError(
-            f"conservative net excess is {cons_net!r} — the veto-1 input "
-            "must be a FINITE number; refusing to certify."
-        )
+    # BOTH sides required-finite (codex #369 r3+r4): a NaN/None on either
+    # side must refuse — never read as "not vetoed", never certify a
+    # half-computed band.
+    base_net = _require_finite_net(base, "base")
+    cons_net = _require_finite_net(cons, "conservative")
     side_keys = ("run_id", "artifact_shape", "config_sha256",
-                 "official_metrics", "benchmark", "num_folds",
-                 "per_fold_net_annualized")
+                 "report_sha256", "official_metrics", "benchmark",
+                 "num_folds", "per_fold_net_annualized")
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "projection_whitelist": sorted(RUN_IDENTITY_FIELDS),
@@ -254,8 +273,8 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
         "veto_checklist": {
             "1_conservative_net_excess": {
                 "value_annualized": cons_net,
-                "veto_triggered": (None if cons_net is None
-                                   else bool(cons_net <= 0.0)),
+                "base_value_annualized": base_net,
+                "veto_triggered": bool(cons_net <= 0.0),
             },
             "2_csi500_dependence": None,
             "3_turnover_vs_csi300_ref": None,
