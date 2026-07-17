@@ -96,6 +96,75 @@ class SensitivityBandPresetPins(unittest.TestCase):
             )
 
 
+class CampaignWalkForwardPairPins(unittest.TestCase):
+    """The walk-forward campaign pair (base/conservative) must stay a
+    true sensitivity band: identical except the DP-2 slippage values and
+    the per-arm output dirs (run-level pairing is separately proven by
+    the pair-report tool from persisted configs)."""
+
+    def test_campaign_pair_differs_only_in_slippage_and_output_dir(
+            self) -> None:
+        base = _load("csi800_campaign_base.yaml")
+        cons = _load("csi800_campaign_conservative.yaml")
+        diff = {k for k in set(base) | set(cons)
+                if base.get(k) != cons.get(k)}
+        self.assertEqual(
+            {"slippage_bps", "output_dir"}, diff,
+            f"campaign pair drifted: differing keys {sorted(diff)} — the "
+            "sensitivity band is void unless slippage_bps (+ per-arm "
+            "output_dir) is the only difference.",
+        )
+        self.assertEqual(BASE_SLIPPAGE_BPS, base["slippage_bps"])
+        self.assertEqual(CONSERVATIVE_SLIPPAGE_BPS, cons["slippage_bps"])
+        self.assertNotEqual(base["output_dir"], cons["output_dir"])
+        for cfg, name in ((base, "base"), (cons, "conservative")):
+            self.assertEqual("csi800", cfg.get("instruments"), name)
+            self.assertEqual("SH000906TR", cfg.get("benchmark_code"), name)
+            self.assertIs(True, cfg.get("attribution_sleeve_grouping"), name)
+            self.assertIs(True, cfg.get("risk_constraints_enabled"), name)
+            self.assertEqual("../../config_walk.yaml", cfg.get("extends"),
+                             name)
+
+    def test_csi300_reference_matches_base_except_universe(self) -> None:
+        # codex P1 on #371: veto-3's turnover baseline must be a MATCHED
+        # config — the reference differs from the base arm ONLY in the
+        # universe/benchmark pair, the (csi300-meaningless) sleeve switch,
+        # and its own output dir. risk_constraints stays ON for literal
+        # config symmetry (it is post-trade validation and does not alter
+        # official turnover; RAISE aborts rather than mutates).
+        base = _load("csi800_campaign_base.yaml")
+        ref = _load("csi300_campaign_reference.yaml")
+        diff = {k for k in set(base) | set(ref)
+                if base.get(k) != ref.get(k)}
+        self.assertEqual(
+            {"instruments", "benchmark_code", "attribution_sleeve_grouping",
+             "output_dir"},
+            diff,
+            f"csi300 reference drifted from the base arm: {sorted(diff)}",
+        )
+        self.assertIs(True, ref.get("risk_constraints_enabled"))
+        self.assertEqual(BASE_SLIPPAGE_BPS, ref.get("slippage_bps"))
+        self.assertNotEqual(base["output_dir"], ref["output_dir"])
+
+    def test_reference_resolved_universe_is_pinned(self) -> None:
+        # codex P2 on #371 r2: the reference INHERITS universe/benchmark
+        # from config_walk.yaml — a raw-mapping diff cannot see a parent
+        # drift (e.g. config_walk moving to another universe would turn
+        # veto-3 into a csi800-vs-<other> comparison). Pin the RESOLVED
+        # values through the same inheritance loader the runner uses.
+        from src.core._yaml_loader import load_yaml_with_inheritance
+        resolved_ref = load_yaml_with_inheritance(
+            _PRESETS / "csi300_campaign_reference.yaml")
+        self.assertEqual("csi300", resolved_ref.get("instruments"))
+        self.assertEqual("SH000300TR", resolved_ref.get("benchmark_code"))
+        for name in ("csi800_campaign_base.yaml",
+                     "csi800_campaign_conservative.yaml"):
+            resolved = load_yaml_with_inheritance(_PRESETS / name)
+            self.assertEqual("csi800", resolved.get("instruments"), name)
+            self.assertEqual("SH000906TR", resolved.get("benchmark_code"),
+                             name)
+
+
 class VetoSheetNumberPins(unittest.TestCase):
     """The five DP-4 numbers, pinned as literal spec text — editing any
     of them after campaign data exists must fail HERE first."""

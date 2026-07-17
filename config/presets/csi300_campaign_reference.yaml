@@ -1,0 +1,16 @@
+# CSI800 (a) 战役 — csi300 参照档（veto-3 换手基准,codex P1 on #371）。
+#
+# 与 csi800 双档字面同配置:唯一语义差异 = 宇宙 + 其 canonical 基准 +
+# sleeve 开关(csi300 宇宙无 sleeve 诊断意义,且 sleeve 是诊断层不改官方
+# 数字)。risk_constraints_enabled 与战役档一致地开启——注:该约束是
+# POST-TRADE 验证(官方指标反映 unclipped 执行,RAISE 违规=中止而非改变
+# 换手),开启是为了配置字面对称与 provenance 可比,非因它影响数字。
+# 独立 output_dir:参照 run 不得污染 canonical config_walk 输出位置。
+#
+# Run discipline: 与战役双档三发串行,绝不并发:
+#     python scripts/run_walk_forward.py config/presets/csi300_campaign_reference.yaml
+extends: ../../config_walk.yaml
+
+risk_constraints_enabled: true
+slippage_bps: 5.0
+output_dir: "output/walk_forward/csi300_campaign_reference"
