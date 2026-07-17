@@ -175,8 +175,13 @@ class VetoSheetNumberPins(unittest.TestCase):
             ("conservative 20 bps", r"conservative\s*=\s*\*{0,2}20\s*bps"),
             ("csi500 dependence 80%", r"≥\s*80%"),
             ("turnover 1.5x", r"1\.5\s*倍"),
-            ("max_per_name 0.05", r"max_per_name\s*=\s*0\.05"),
-            ("max_per_board 0.40", r"max_per_board\s*=\s*0\.40"),
+            ("max_per_name 0.05 strict", r"max_per_name\s*=\s*0\.05"),
+            ("max_leverage 1.0 strict", r"max_leverage\s*=\s*1\.0"),
+            # veto-4 calibration (option A, 2026-07-17): board cap
+            # disabled at 1.0 / cash buffer 0.0 WITH the rationale on
+            # record — the pins keep the amended numbers frozen too.
+            ("max_per_board disabled at 1.0", r"max_per_board\s*=\s*1\.0"),
+            ("cash_buffer_min 0.0", r"cash_buffer_min\s*=\s*0\.0"),
             ("csi500 weight 75%", r">\s*75%"),
             ("unknown bucket 10%", r">\s*10%"),
         ):
@@ -187,6 +192,23 @@ class VetoSheetNumberPins(unittest.TestCase):
                 "changing one requires a new OpenSpec change and voids "
                 "existing campaign results.",
             )
+
+    def test_campaign_risk_constraint_calibration_pinned(self) -> None:
+        # veto-4 calibration (option A, 2026-07-17): the exact values of
+        # campaign_risk_constraints_v1 are frozen — max_per_name and
+        # max_leverage strict in RAISE mode, board/cash disabled with
+        # rationale. Changing ANY of these requires a new OpenSpec
+        # change (and would void existing campaign results).
+        from src.core.risk_constraints import (
+            RiskConstraintMode,
+            campaign_risk_constraints_v1,
+        )
+        rc = campaign_risk_constraints_v1()
+        self.assertEqual(0.05, rc.max_per_name)
+        self.assertEqual(1.0, rc.max_per_board)
+        self.assertEqual(0.0, rc.cash_buffer_min)
+        self.assertEqual(1.0, rc.max_leverage)
+        self.assertIs(RiskConstraintMode.RAISE, rc.mode)
 
     def test_conservative_preset_matches_spec_number(self) -> None:
         cons = _load("csi800_conservative.yaml")

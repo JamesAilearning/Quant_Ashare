@@ -12,5 +12,6 @@
 extends: ../../config_walk.yaml
 
 risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
 slippage_bps: 5.0
 output_dir: "output/walk_forward/csi300_campaign_reference"

@@ -129,6 +129,9 @@ class TopLevelReportParityTests(unittest.TestCase):
             test_start="2023-04-01", test_end="2023-06-30",
             model_type="LGBModel", benchmark_code="SH000300",
             topk=50, n_drop=5, industry_taxonomy_id=None,
+            attribution_sleeve_grouping=False,
+            risk_constraints_enabled=False,
+            risk_constraints_calibration="default",
             delisted_registry_path="",
         )
         feature_result = SimpleNamespace(

@@ -89,12 +89,17 @@ SHALL 先于任何战役数据存在（本 change 合并即满足），跑后 SH
    illiquidity 冒充 breadth）"→ veto（工单红旗判据的量化形态）。
 3. **换手**：csi800 run 的年化单边换手 > 同配置 csi300 参照 run 的
    1.5 倍 → veto（breadth 不得靠制造换手兑现）。
-4. **单票/板块集中度**：run 必须以既有 `MinimalRiskConstraints` 默认值
-   在 **runtime 强制执行**（max_per_name = 0.05、max_per_board = 0.40，
-   不得放宽），且生效值 SHALL 记录进 run 工件供勾验。当前 pipeline /
-   walk-forward 调 `BacktestRunner.run` 时**不传 `risk_constraints`**
-   （缺省=无仓位级约束，codex P1 on #368）——战役实现 SHALL 补显式
-   接线；约束未接线、未记录或被放宽的 run 一律无效。
+4. **单票集中度与杠杆**（校准修订：选项 A，2026-07-17 操作人签，修订
+   时零战役结果存在）：run 必须以 **campaign 校准**
+   （`campaign_risk_constraints_v1`）在 runtime 强制执行——
+   **max_per_name = 0.05 与 max_leverage = 1.0 严格（RAISE 模式），不得
+   放宽**；max_per_board = 1.0（禁用——board_heuristic 桶是上市板块非
+   风险行业，沪主板独占指数篮子权重约半，首发点火实证 23/23 折
+   53-60% 结构性"违规"）；cash_buffer_min = 0.0（qlib topk 策略满仓
+   设计，实证现金 0.55-0.9%；现金缓冲属实盘部署关切非回测有效性）。
+   生效值 SHALL 记录进 run 工件供勾验；约束未接线、未记录、或
+   max_per_name / max_leverage / mode 被改动的 run 一律无效。校准值
+   由治理测试钉死，再改仍须新 OpenSpec 变更。
 5. **中盘集中度**：csi500 sleeve 的时均组合权重 > 75%，或 sleeve 报告
    `unknown` 桶时均权重 > 10% → veto（宇宙退化为中盘单边注 / 分组图
    失真，probe 实证基线 61.8% / 4.4%）。
