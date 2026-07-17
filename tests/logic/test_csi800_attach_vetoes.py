@@ -78,8 +78,22 @@ def _mk_campaign_run(root: Path, name: str, cfg: dict,
     for i in range(n_folds):
         (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
             "fold_index": i,
+            "positions_path": f"fold_{i:02d}_positions.json",
+            # producer-embedded per-sleeve turnover; _positions() yields
+            # 0.05 one-way per transition x 2 transitions = 0.10 total.
+            "sleeve_turnover": {
+                "csi300_sleeve": {"total_oneway": 0.06,
+                                  "daily_mean_oneway": 0.03,
+                                  "n_transitions": 2.0},
+                "csi500_sleeve": {"total_oneway": 0.04,
+                                  "daily_mean_oneway": 0.02,
+                                  "n_transitions": 2.0},
+            },
             "backtest": {
                 "metric_status": "official",
+                "report": {"start_date": "2024-01-02",
+                           "end_date": "2024-01-04",
+                           "positions_days": 3, "total_days": 3},
                 "provenance": {
                     "config": {"risk_constraints": dict(CAMPAIGN_V1_EXPECTED)},
                 },
@@ -123,10 +137,18 @@ def _mk_reference_run(root: Path, cfg_over: dict | None = None,
                           "report_path": None})
             continue
         # completed reference folds must be DOCUMENTED by their own
-        # official fold report (codex #373 r2).
+        # official fold report (codex #373 r2); the report also binds
+        # the positions series (declared path + window, codex r4).
         (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
             "fold_index": i,
-            "backtest": {"metric_status": "official"},
+            "positions_path": f"fold_{i:02d}_positions.json",
+            "sleeve_turnover": None,   # grouping off per the #371 pin
+            "backtest": {
+                "metric_status": "official",
+                "report": {"start_date": "2024-01-02",
+                           "end_date": "2024-01-04",
+                           "positions_days": 3, "total_days": 3},
+            },
         }), encoding="utf-8")
         (d / f"fold_{i:02d}_positions.json").write_text(
             json.dumps(_positions()), encoding="utf-8")
@@ -280,6 +302,33 @@ def test_reference_nonofficial_fold_report_refuses():
         payload["backtest"]["metric_status"] = "degraded"
         rep_p.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(SystemExit, match="not a documented"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_tampered_positions_fail_embedded_turnover_binding():
+    # codex #373 r4: positions are mutable — a swapped csi800 series must
+    # be caught by the content binding against the certified fold
+    # report's producer-embedded sleeve_turnover total.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        tampered = _positions()
+        tampered["2024-01-03"] = {"SH600000": 0.40, "SZ000001": 0.60}
+        (cons / "fold_01_positions.json").write_text(
+            json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(SystemExit, match="not the one the run"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_reference_positions_window_mismatch_refuses():
+    # codex #373 r4: a replaced reference series must at least match the
+    # certified fold report's documented window/day count.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        longer = _positions()
+        longer["2024-01-05"] = dict(longer["2024-01-04"])
+        (ref / "fold_01_positions.json").write_text(
+            json.dumps(longer), encoding="utf-8")
+        with pytest.raises(SystemExit, match="torn/replaced"):
             attach(pair_p, base, cons, ref)
 
 

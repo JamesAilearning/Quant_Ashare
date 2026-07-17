@@ -87,6 +87,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -208,7 +209,7 @@ def _bind_paired_side(
 
 def _bind_reference(
         ref_dir: Path, base_cfg: dict[str, Any],
-) -> tuple[dict[str, Any], set[int]]:
+) -> tuple[dict[str, Any], set[int], list[tuple[int, dict[str, Any]]]]:
     """Bind the veto-3 baseline. Structural binding: the reference's
     embedded config must differ from the certified base config by EXACTLY
     the #371-pinned reference fields (projection already excludes
@@ -249,6 +250,7 @@ def _bind_reference(
             f"{wf_p}: num_folds={num_folds!r} but {len(folds)} fold "
             "entries — torn aggregate, refusing.")
     failed: set[int] = set()
+    payloads: list[tuple[int, dict[str, Any]]] = []
     for entry in folds:
         idx = int(entry["fold_index"])
         rp = entry.get("report_path")
@@ -256,7 +258,8 @@ def _bind_reference(
             failed.add(idx)
             continue
         resolved = _resolve_fold_report(ref_dir, str(rp))
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        payload: dict[str, Any] = json.loads(
+            resolved.read_text(encoding="utf-8"))
         if payload.get("fold_index") != idx:
             raise AttachError(
                 f"reference {resolved} carries fold_index="
@@ -268,7 +271,8 @@ def _bind_reference(
                 f"reference fold {idx} metric_status={status!r} yet the "
                 "aggregate documents it as completed — not a documented "
                 "reference run, refusing.")
-    return report, failed
+        payloads.append((idx, payload))
+    return report, failed, payloads
 
 
 def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -320,32 +324,117 @@ def compute_csi500_dependence(
     }
 
 
+def _resolve_run_artifact(run_dir: Path, path_str: str,
+                          what: str) -> Path | None:
+    """Resolve a fold-report-declared artifact path, CONFINED to the run
+    dir (same discipline as guard-1's ``_resolve_fold_report``: evidence
+    must not be borrowable from outside the claimed run). Returns None if
+    no candidate exists (caller decides whether that is a coverage
+    problem or torn evidence)."""
+    run_root = run_dir.resolve()
+    rp = Path(path_str)
+    candidates = ((rp,) if rp.is_absolute() else (run_dir / rp, _REPO_ROOT / rp))
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            continue
+        if not resolved.is_relative_to(run_root):
+            raise AttachError(
+                f"{what} {path_str!r} resolves OUTSIDE the claimed run "
+                f"dir {run_dir} ({resolved}) — borrowed evidence, "
+                "refusing.")
+        return resolved
+    return None
+
+
 def _run_positions_turnover(
-        run_dir: Path, expected_folds: int,
+        run_dir: Path, fold_payloads: list[tuple[int, dict[str, Any]]],
+        require_embedded_match: bool,
 ) -> tuple[dict[str, float], list[str]]:
-    """One-way turnover pooled over fold indices 0..expected_folds-1.
+    """One-way turnover pooled over the CERTIFIED fold set (codex #373
+    r4 P1: positions are mutable and unauthenticated, so each series is
+    bound to its certified fold report as far as the producer's artifacts
+    allow):
+
+    - the positions file is resolved via the fold report's DECLARED
+      ``positions_path`` (confined to the run dir), never by naming
+      convention;
+    - the series must match the fold report's documented backtest window
+      (``backtest.report``: exact ``positions_days`` count, dates inside
+      ``start_date``/``end_date``) — mismatch is torn evidence, refuse;
+    - with ``require_embedded_match`` (the csi800 arms, whose pinned
+      config embeds a producer-computed ``sleeve_turnover`` block), the
+      recomputed per-fold total must equal the embedded total — this is
+      a CONTENT binding: a swapped series cannot reproduce it.
+
+    The reference has no embedded turnover (sleeve grouping off per the
+    #371 pin) and the producer emits no positions content hash, so a
+    fabricated same-window/same-day-count reference series remains
+    undetectable here — a documented residual; closing it needs the
+    producer to stamp a positions hash into the fold report (backlog).
 
     Returns ``(stats, problems)`` — a fold whose positions artifact is
     missing, non-mapping, or has < 2 dates is listed in ``problems`` and
     excluded from the pooled stats; the CALLER decides whether problems
-    are fatal (csi800 arms) or must map to documented failures (ref)."""
+    are fatal. Window/embedded-turnover mismatches refuse outright."""
     total = 0.0
     transitions = 0.0
     folds = 0
     problems: list[str] = []
-    for idx in range(expected_folds):
-        f = run_dir / f"fold_{idx:02d}_positions.json"
-        if not f.is_file():
+    for idx, rep in fold_payloads:
+        declared = rep.get("positions_path")
+        if not isinstance(declared, str) or not declared:
+            raise AttachError(
+                f"{run_dir}: certified fold {idx} report declares no "
+                "positions_path — producer schema mismatch, refusing.")
+        resolved = _resolve_run_artifact(run_dir, declared,
+                                         f"fold {idx} positions")
+        if resolved is None:
             problems.append(f"fold {idx}: positions artifact missing")
             continue
-        positions = json.loads(f.read_text(encoding="utf-8"))
+        positions = json.loads(resolved.read_text(encoding="utf-8"))
         if not isinstance(positions, dict) or len(positions) < 2:
             problems.append(
                 f"fold {idx}: positions empty or single-day — no "
                 "transition to measure")
             continue
+        bt_report = ((rep.get("backtest") or {}).get("report")) or {}
+        pos_days = bt_report.get("positions_days")
+        start = bt_report.get("start_date")
+        end = bt_report.get("end_date")
+        dates = sorted(positions)
+        if (not isinstance(pos_days, int) or not isinstance(start, str)
+                or not isinstance(end, str)):
+            raise AttachError(
+                f"{run_dir}: certified fold {idx} report carries no "
+                "backtest.report window (positions_days/start_date/"
+                "end_date) — cannot bind the positions series, refusing.")
+        if (len(dates) != pos_days or dates[0] < start or dates[-1] > end):
+            raise AttachError(
+                f"{run_dir}: fold {idx} positions series ({len(dates)} "
+                f"days, {dates[0]}..{dates[-1]}) does not match the "
+                f"certified fold report window ({pos_days} days inside "
+                f"{start}..{end}) — torn/replaced evidence, refusing.")
         block = sleeve_turnover(positions, {})  # single honest bucket
-        total += sum(row["total_oneway"] for row in block.values())
+        fold_total = sum(row["total_oneway"] for row in block.values())
+        if require_embedded_match:
+            embedded = rep.get("sleeve_turnover")
+            if not isinstance(embedded, dict) or not embedded:
+                raise AttachError(
+                    f"{run_dir}: certified fold {idx} report has no "
+                    "embedded sleeve_turnover block — a campaign arm "
+                    "must carry it (guard-2 pin), refusing.")
+            embedded_total = sum(float(v["total_oneway"])
+                                 for v in embedded.values())
+            if not math.isclose(fold_total, embedded_total,
+                                rel_tol=1e-9, abs_tol=1e-9):
+                raise AttachError(
+                    f"{run_dir}: fold {idx} recomputed one-way turnover "
+                    f"{fold_total!r} does not match the certified fold "
+                    f"report's embedded total {embedded_total!r} — the "
+                    "positions series is not the one the run produced, "
+                    "refusing.")
+        total += fold_total
         # n_transitions is identical across buckets of one fold
         transitions += next(iter(block.values()))["n_transitions"]
         folds += 1
@@ -356,13 +445,16 @@ def _run_positions_turnover(
              "valid_folds": float(folds)}, problems)
 
 
-def compute_turnover_check(cons_dir: Path, base_dir: Path, ref_dir: Path,
-                           cons_folds: int, base_folds: int,
-                           ref_report: dict[str, Any],
-                           documented_failed: set[int]) -> dict[str, Any]:
-    cons, cons_problems = _run_positions_turnover(cons_dir, cons_folds)
-    base, base_problems = _run_positions_turnover(base_dir, base_folds)
-    ref_folds = int(ref_report["num_folds"])
+def compute_turnover_check(
+        cons_dir: Path, base_dir: Path, ref_dir: Path,
+        cons_payloads: list[tuple[int, dict[str, Any]]],
+        base_payloads: list[tuple[int, dict[str, Any]]],
+        ref_payloads: list[tuple[int, dict[str, Any]]],
+        documented_failed: set[int]) -> dict[str, Any]:
+    cons, cons_problems = _run_positions_turnover(
+        cons_dir, cons_payloads, require_embedded_match=True)
+    base, base_problems = _run_positions_turnover(
+        base_dir, base_payloads, require_embedded_match=True)
     # A documented-failed fold must carry NO positions evidence at all —
     # a stale/injected series for a fold the aggregate aborted would
     # silently enter the reference turnover denominator and could
@@ -375,19 +467,17 @@ def compute_turnover_check(cons_dir: Path, base_dir: Path, ref_dir: Path,
                 f"null) yet carries a positions artifact ({stale}) — "
                 "stale/injected evidence cannot enter the veto-3 "
                 "baseline, refusing.")
-    ref, ref_problems = _run_positions_turnover(ref_dir, ref_folds)
+    ref, ref_problems = _run_positions_turnover(
+        ref_dir, ref_payloads, require_embedded_match=False)
 
-    # Reference folds may lack positions ONLY where the aggregate
-    # documents the fold as failed (the binding step already verified
-    # every completed fold against its official report); anything else
-    # is a torn artifact.
-    for problem in ref_problems:
-        idx = int(problem.split(":", 1)[0].split()[1])
-        if idx not in documented_failed:
-            raise AttachError(
-                f"reference {problem}, but the aggregate does NOT "
-                "document that fold as failed — torn positions evidence "
-                "cannot anchor the veto-3 baseline.")
+    # Every reference payload is a completed OFFICIAL fold (binding
+    # proved it) — missing/unusable positions there is a torn artifact,
+    # never a coverage note (documented-failed folds carry no payload).
+    if ref_problems:
+        raise AttachError(
+            "reference torn positions evidence: " + "; ".join(ref_problems)
+            + " — completed official folds must retain their positions "
+            "series to anchor the veto-3 baseline.")
 
     coverage_problems = ([f"conservative: {p}" for p in cons_problems]
                          + [f"base: {p}" for p in base_problems])
@@ -494,16 +584,16 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
         "base", base_run, report["base"])
     cons_side, cons_fold_reports = _bind_paired_side(
         "conservative", conservative_run, report["conservative"])
-    base_n = int(base_side["num_folds"])
     cons_n = int(cons_side["num_folds"])
-    ref_report, ref_failed = _bind_reference(reference_run,
-                                             base_side["config"])
+    _ref_report, ref_failed, ref_fold_reports = _bind_reference(
+        reference_run, base_side["config"])
 
     checklist["2_csi500_dependence"] = compute_csi500_dependence(
         cons_fold_reports, cons_net, cons_n)
     checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(
         conservative_run, base_run, reference_run,
-        cons_n, base_n, ref_report, ref_failed)
+        cons_fold_reports, base_fold_reports, ref_fold_reports,
+        ref_failed)
     checklist["4_risk_constraints_recorded"] = compute_constraints_check(
         base_side["config"], cons_side["config"],
         base_fold_reports, cons_fold_reports)
