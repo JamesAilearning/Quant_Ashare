@@ -358,6 +358,27 @@ def test_unauthenticated_reference_blocks_promotion_not_vetoes():
         assert "unauthenticated" in r["promotion_blocked_reason"]
 
 
+def test_rerun_clears_stale_promotion_blocked_reason():
+    # codex #373 r12: a first attach over a clean checklist records
+    # promotion_blocked_reason ("all five pass, blocked only by the
+    # prerequisite"); when evidence later degrades (positions removed —
+    # deliberately outside the pair-report hash) a rerun must not carry
+    # the stale claim alongside a now-triggered veto.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02)
+        first = attach(pair_p, base, cons, ref)
+        assert "promotion_blocked_reason" in first
+        (cons / "fold_01_positions.json").unlink()
+        second = attach(pair_p, base, cons, ref)
+        c3 = second["veto_checklist"]["3_turnover_vs_csi300_ref"]
+        assert c3["veto_triggered"] is True
+        assert "promotion_blocked_reason" not in second
+        assert any("reference_binding_unauthenticated" in b
+                   for b in second["promotion_blockers"])
+        persisted = json.loads(pair_p.read_text(encoding="utf-8"))
+        assert "promotion_blocked_reason" not in persisted
+
+
 def test_duplicate_reference_fold_entry_refuses():
     # codex #373 r8: a repeated reference fold would be pooled twice into
     # the veto-3 denominator (num_folds can be set to match) — refuse.

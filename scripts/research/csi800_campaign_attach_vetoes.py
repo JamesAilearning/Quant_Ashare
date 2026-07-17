@@ -774,6 +774,11 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
             "backlog), independent of the current veto verdict; codex "
             "#373 r9-r11.")
     report["promotion_blockers"] = blockers
+    # promotion_blocked_reason asserts "all five checks pass, blocked
+    # only by the prerequisite" — recompute it on EVERY attach (codex
+    # #373 r12 P2): a rerun over a report whose evidence has since
+    # gained a triggered veto must not carry the stale claim forward.
+    report.pop("promotion_blocked_reason", None)
     if eligible and blockers:
         eligible = False
         report["promotion_blocked_reason"] = blockers[0]
