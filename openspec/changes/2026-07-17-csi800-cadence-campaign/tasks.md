@@ -24,13 +24,17 @@
 - [ ] attach：改从 v3 工件读参照认证条目（pre-v3 拒绝）；全链摘要
       验证（pair→fold report 哈希→positions_sha256→盘面字节）；
       缺摘要维持 unauthenticated + block；失配拒绝
-- [ ] **不可变锚 + verdict 侧车（强制两件套）**（codex #374 r3+r4）：
-      attach 内嵌资格恒 false（非权威）；certify 独立步骤——验证
-      pair v3 字节==主线锚(origin/main 可达 commit)、全摘要链、五 veto+主判据，全过则
-      产出 verdict 侧车（被锚 pair digest+commit id+判定），certify
-      不改写任何已锚工件；晋升仅以"已提交侧车+digest 与已提交 pair
-      一致"形态成立；测试含 certify 不改写/侧车断链拒/工作树拒/
-      顺序不可倒置
+- [ ] **不可变锚 + verdict 侧车（强制两件套）**（codex #374
+      r3+r4+r10+r12）：attach 内嵌资格恒 false（非权威）；certify
+      独立步骤——验证 pair v3 字节==主线锚（origin/main 可达
+      commit）+ **经证据锚（origin/main 可达 commit）读取全部 N5
+      源证据字节**（`git show <evidence-anchor>:<path>` 口径；证据
+      未主线锚定即拒，绝不消费本地/untracked 工件）+ 全摘要链 +
+      五 veto/主判据，全过则产出 verdict 侧车（pair 锚 + 证据锚
+      commit id + 判定），certify 不改写任何已锚工件；晋升仅以
+      "已提交侧车 + digest 与已提交 pair 一致"形态成立；测试含
+      certify 不改写/侧车断链拒/工作树拒/**证据未锚定拒**/顺序不可
+      倒置
 - [ ] **N1 源 fold reports 本体入库**（codex #374 r1+r7+r8）：双侧
       46 个 fold report（~1.1 MB）提交至钉死证据目录，目录
       `.gitattributes -text` 保证字节保真；治理测试逐折断言已提交
