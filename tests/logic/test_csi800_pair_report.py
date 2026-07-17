@@ -213,6 +213,32 @@ def test_walk_forward_missing_fold_report_refuses():
             build_pair_report(a, b)
 
 
+def test_walk_forward_nonfinite_aggregate_refuses():
+    # codex #369 r3: json.loads yields NaN/Infinity floats and
+    # ``nan <= 0.0`` is False — a malformed artifact must REFUSE, never
+    # read as "veto not triggered".
+    for bad in (float("nan"), float("inf")):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            a = _mk_wf_run(root, "wf_a", _WF_CFG)
+            b = _mk_wf_run(
+                root, "wf_b",
+                {**_WF_CFG, "slippage_bps": 20.0,
+                 "output_dir": "output/walk_forward/csi800_conservative"},
+                mean_net=bad)
+            with pytest.raises(PairReportError, match="FINITE"):
+                build_pair_report(a, b)
+
+
+def test_pipeline_nonfinite_net_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG)
+        b = _mk_run(root, "run_b", _cons_cfg(), net_ann=float("nan"))
+        with pytest.raises(PairReportError, match="FINITE"):
+            build_pair_report(a, b)
+
+
 def test_walk_forward_null_aggregate_refuses():
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)

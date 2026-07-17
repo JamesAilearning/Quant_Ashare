@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -139,10 +140,16 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
             )
     agg = report.get("aggregate_metrics") or {}
     net_ann = agg.get("mean_annualized_return")
-    if not isinstance(net_ann, (int, float)):
+    # FINITE required (codex #369 r3): json.loads happily yields
+    # NaN/Infinity floats, and ``nan <= 0.0`` is False — a malformed or
+    # legacy artifact would falsely present an uncomputable conservative
+    # net excess as "veto not triggered".
+    if (isinstance(net_ann, bool)
+            or not isinstance(net_ann, (int, float))
+            or not math.isfinite(net_ann)):
         raise PairReportError(
             f"{wf_p} aggregate_metrics.mean_annualized_return is "
-            f"{net_ann!r} — a campaign decision needs a valid cross-fold "
+            f"{net_ann!r} — a campaign decision needs a FINITE cross-fold "
             "NET excess (per-fold values come from "
             "excess_return_with_cost via extract_cost_metrics)."
         )
@@ -222,6 +229,16 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
             "annualized_return")
 
     cons_net = _net_ann(cons)
+    # same finite discipline for the pipeline shape (codex #369 r3): a
+    # NaN in metrics.json must refuse, never read as "not vetoed".
+    if cons_net is not None and (
+            isinstance(cons_net, bool)
+            or not isinstance(cons_net, (int, float))
+            or not math.isfinite(cons_net)):
+        raise PairReportError(
+            f"conservative net excess is {cons_net!r} — the veto-1 input "
+            "must be a FINITE number; refusing to certify."
+        )
     side_keys = ("run_id", "artifact_shape", "config_sha256",
                  "official_metrics", "benchmark", "num_folds",
                  "per_fold_net_annualized")
