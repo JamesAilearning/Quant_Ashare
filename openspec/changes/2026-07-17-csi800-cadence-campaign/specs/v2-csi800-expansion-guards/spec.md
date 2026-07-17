@@ -110,16 +110,58 @@ SHALL NOT 取自任何可编辑文档（简报/手抄数字）：
 
 ## MODIFIED Requirements
 
-### Requirement: 虚高 veto 表跑前钉死且任一触发即否决晋升（veto③ 参照口径修订）
+### Requirement: 虚高 veto 表跑前钉死且任一触发即否决晋升
 
-（仅修订 veto③ 的参照定义，其余五条原文与数字不变——修订于 N5 战役
-零结果窗口内，2026-07-17。）
+（本次仅修订 veto③ 的参照定义——"同配置"明确含 cadence 三字段；
+其余四条原文与数字照录不变（含 #372 选项 A 的 veto④ 校准修订），
+修订于 N5 战役零结果窗口内，2026-07-17。MODIFIED 全文重述以保持
+canonical spec 完整——codex #374 r2。）
 
-3. **换手**：csi800 run 的年化单边换手 > **同配置（含
-   `rebalance_cadence_days`/`rebalance_phase`/`rebalance_anchor`
-   三字段）** csi300 参照 run 的 1.5 倍 → veto。N5 战役的 veto③
-   参照 = csi300 N5 参照；对日频参照比较周频 run 的比率无意义地
-   趋零，会使 veto③ 失去牙齿，SHALL NOT 采用。
+每个 csi800 战役决策 run SHALL 逐条对照下表勾验，任一触发 SHALL 否决
+晋升（该 run 可作诊断继续分析，但不得作为晋升依据）。判据与数字
+SHALL 先于任何战役数据存在，跑后 SHALL NOT 修改。五条判据：
+
+1. **conservative 净超额**：conservative 档（20 bps）对 SH000906TR 的
+   全窗净超额年化 ≤ 0 → veto。
+2. **CSI500-sleeve 依赖度**：sleeve 报告中 csi500 sleeve 贡献占毛超额
+   比例 ≥ 80% **且** conservative 档净超额 ≤ 0 → 判定"虚高（低估
+   illiquidity 冒充 breadth）"→ veto（工单红旗判据的量化形态）。
+3. **换手（本次修订）**：csi800 run 的年化单边换手 > **同配置** csi300
+   参照 run 的 1.5 倍 → veto（breadth 不得靠制造换手兑现）。"同配置"
+   SHALL 包含 `rebalance_cadence_days`/`rebalance_phase`/
+   `rebalance_anchor` 三字段——N5 战役的 veto③ 参照 = csi300 N5
+   参照；对日频参照比较周频 run 的比率无意义地趋零，会使 veto③
+   失去牙齿，SHALL NOT 采用。
+4. **单票集中度与杠杆**（校准修订：选项 A，2026-07-17 操作人签，修订
+   时零战役结果存在）：run 必须以 **campaign 校准**
+   （`campaign_risk_constraints_v1`）在 runtime 强制执行——
+   **max_per_name = 0.05 与 max_leverage = 1.0 严格（RAISE 模式），不得
+   放宽**；max_per_board = 1.0（禁用——board_heuristic 桶是上市板块非
+   风险行业，沪主板独占指数篮子权重约半，首发点火实证 23/23 折
+   53-60% 结构性"违规"）；cash_buffer_min = 0.0（qlib topk 策略满仓
+   设计，实证现金 0.55-0.9%；现金缓冲属实盘部署关切非回测有效性）。
+   生效值 SHALL 记录进 run 工件供勾验；约束未接线、未记录、或
+   max_per_name / max_leverage / mode 被改动的 run 一律无效。校准值
+   由治理测试钉死，再改仍须新 OpenSpec 变更。
+5. **中盘集中度**：csi500 sleeve 的时均组合权重 > 75%，或 sleeve 报告
+   `unknown` 桶时均权重 > 10% → veto（宇宙退化为中盘单边注 / 分组图
+   失真，probe 实证基线 61.8% / 4.4%）。
+
+#### Scenario: 依赖度红旗触发
+- **WHEN** 某战役 run 毛超额的 82% 来自 csi500 sleeve 且 conservative
+  档净超额为 −0.4%
+- **THEN** 判定虚高，该 run 不得进入晋升流程，结论如实入档
+
+#### Scenario: veto 表先于数据
+- **WHEN** 第一个战役决策 run 点火之时
+- **THEN** 本 veto 表（含全部数字）已在 main 上，且战役报告逐条对照
+  勾验
+
+#### Scenario: 风险约束未接线的 run 无效
+- **WHEN** 一个战役 run 在 pipeline/walk-forward 未显式传入
+  `MinimalRiskConstraints` 默认值（即 `BacktestRunner.run` 以
+  `risk_constraints=None` 执行）或其工件缺约束生效值记录
+- **THEN** 该 run 判无效，不得进入 veto 勾验与晋升流程
 
 #### Scenario: 参照节奏失配被拒
 - **WHEN** N5 战役的 veto③ 勾验被提供 N=1 的 csi300 参照
