@@ -38,18 +38,34 @@ positions 证据；pre-v3 工件 SHALL 被 attach 拒绝（防降级剥离）。
 
 attach 工装 SHALL 对三 run 的每个完成折验证摘要链：pair v3 条目 →
 fold report 字节哈希 → fold report 内 `positions_sha256` → 盘面
-positions 字节哈希。全链一致时 `reference_content_binding` SHALL 置
-`producer_digest_certified`（晋升门可开）；任何一环缺失或失配 SHALL
-按既有语义处理（缺 `positions_sha256` = 未认证，维持
-`window_only_unauthenticated` 与晋升 block；哈希失配 = 撕裂证据，
-拒绝）。既有的窗口绑定、内嵌换手交叉验证、去重、非有限值防线
-SHALL 全部保留（摘要链是追加防线非替代）。
+positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理（缺
+`positions_sha256` = 未认证，维持 `window_only_unauthenticated` 与
+晋升 block；哈希失配 = 撕裂证据，拒绝）。既有的窗口绑定、内嵌换手
+交叉验证、去重、非有限值防线 SHALL 全部保留（摘要链是追加防线非
+替代）。
 
-#### Scenario: 全链达标晋升门开
-- **WHEN** 三 run 全部由 attestation 生产者产出且盘面未被动过，五项
-  veto 全不触发
-- **THEN** attach 发 `promotion_eligible=true` 且无
+**不可变锚前置（codex #374 r3）**：摘要链的根（pair v3 文件）在
+attach 时与其余工件同盘可变——伪造全套自洽证据后重生成 v3 即可使
+链内一切一致。故 `producer_digest_certified`（及随之的
+`promotion_eligible=true`）SHALL 额外要求**不可变锚验证**：所消费的
+pair v3 字节 SHALL 与 git 已提交版本（钉死 repo 路径在 HEAD 的字节）
+逐字节一致（trust root 与 attach 工装现行 docstring 的定性一致——
+锚=已提交已评审工件）；仅存在于工作树、未经提交评审的 pair 工件
+SHALL NOT 开晋升门，此路径产出的勾验 SHALL 恒携带 unauthenticated
+blocker。锚验证的机械形态（`git show` 字节比对 / 独立 certify 步骤
+与 verdict 侧车）在 PR-B 实现并测试；实现 SHALL 保证"先提交评审、
+后认证"的顺序不可倒置。
+
+#### Scenario: 全链达标且过不可变锚晋升门开
+- **WHEN** 三 run 全部由 attestation 生产者产出、盘面未被动过、pair
+  v3 字节与 git 已提交版本一致，五项 veto 全不触发
+- **THEN** 认证路径发 `promotion_eligible=true` 且无
   `reference_binding_unauthenticated` blocker
+
+#### Scenario: 工作树工件铸不出资格
+- **WHEN** 摘要链全链一致但所消费的 pair v3 仅存在于工作树（与
+  HEAD 已提交字节不一致或路径未纳管）
+- **THEN** 晋升门不开，勾验照常入档并携带 unauthenticated blocker
 
 #### Scenario: positions 被换而摘要不可复现
 - **WHEN** 任一完成折的 positions 被替换（摘要链任一环失配）
