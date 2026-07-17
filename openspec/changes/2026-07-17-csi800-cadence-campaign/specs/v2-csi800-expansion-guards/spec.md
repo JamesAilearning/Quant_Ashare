@@ -89,10 +89,11 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
    顺序据此为：pair v3 merge → 源证据 merge → certify → 侧车
    merge → 晋升（前两步可同 PR）。
 
-顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → certify →
-侧车提交评审 → 晋升。仅存在于工作树、未经提交评审的任一环 SHALL NOT
-达成晋升。实现与测试（含"certify 不改写已锚工件"“侧车 digest 断链
-拒绝"用例）在 PR-B。
+顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → 源证据提交
+评审（可与 pair 同 PR）→ certify → 侧车提交评审 → 晋升。仅存在于
+工作树、未经提交评审的任一环 SHALL NOT 达成晋升；证据未主线锚定时
+certify SHALL 拒绝。实现与测试（含"certify 不改写已锚工件"“侧车
+digest 断链拒绝"用例）在 PR-B。
 
 #### Scenario: 全链达标且过主线锚晋升门开
 - **WHEN** 三 run 全部由 attestation 生产者产出、盘面未被动过、pair
