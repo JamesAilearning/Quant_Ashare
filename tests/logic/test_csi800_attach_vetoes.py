@@ -317,6 +317,38 @@ def test_reference_nonofficial_fold_report_refuses():
             attach(pair_p, base, cons, ref)
 
 
+def test_duplicate_reference_fold_entry_refuses():
+    # codex #373 r8: a repeated reference fold would be pooled twice into
+    # the veto-3 denominator (num_folds can be set to match) — refuse.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        wf_p = ref / "walk_forward_report.json"
+        payload = json.loads(wf_p.read_text(encoding="utf-8"))
+        payload["folds"] = [payload["folds"][0], payload["folds"][0]]
+        payload["num_folds"] = 2
+        wf_p.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(SystemExit, match="more than once"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_duplicate_sleeve_row_refuses():
+    # codex #373 r8: duplicate sector rows must refuse — a trailing
+    # low-weight csi500 row would silently mask an earlier high one.
+    def dup_row(_b: Path, c: Path, _r: Path) -> None:
+        rep_p = c / "fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        rows = payload["attribution"]["sector_attribution"]
+        high = {"sector": "csi500_sleeve", "portfolio_weight": 0.9,
+                "total_effect": 0.5}
+        payload["attribution"]["sector_attribution"] = [high] + rows
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), pre_pair=dup_row)
+        with pytest.raises(SystemExit, match="more than once"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_nonfinite_sleeve_weight_refuses():
     # codex #373 r7: NaN weights make every threshold comparison False —
     # veto 5 must refuse on corrupted evidence, never record a pass.

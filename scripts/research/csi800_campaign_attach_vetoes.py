@@ -284,13 +284,30 @@ def _bind_reference(
             "entries — torn aggregate, refusing.")
     failed: set[int] = set()
     payloads: list[tuple[int, dict[str, Any]]] = []
+    seen_indices: set[int] = set()
+    seen_paths: set[Path] = set()
     for entry in folds:
         idx = int(entry["fold_index"])
+        # duplicate entries must refuse (codex #373 r8 P1: a repeated
+        # high-turnover reference fold would be pooled twice, inflating
+        # the veto-3 denominator; num_folds can be set to match, so the
+        # length check alone does not catch it).
+        if idx in seen_indices:
+            raise AttachError(
+                f"reference aggregate declares fold_index {idx} more "
+                "than once — duplicate fold entries cannot anchor the "
+                "veto-3 baseline, refusing.")
+        seen_indices.add(idx)
         rp = entry.get("report_path")
         if rp is None:
             failed.add(idx)
             continue
         resolved = _resolve_fold_report(ref_dir, str(rp))
+        if resolved in seen_paths:
+            raise AttachError(
+                f"reference aggregate declares report path {resolved} "
+                "for more than one fold entry — refusing.")
+        seen_paths.add(resolved)
         payload: dict[str, Any] = json.loads(
             resolved.read_text(encoding="utf-8"))
         if payload.get("fold_index") != idx:
@@ -311,7 +328,21 @@ def _bind_reference(
 def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
     att = report.get("attribution") or {}
     rows = att.get("sector_attribution") or []
-    return {r["sector"]: r for r in rows}
+    out: dict[str, dict[str, float]] = {}
+    for r in rows:
+        sector = r["sector"]
+        # duplicate sector rows must refuse (codex #373 r8 P1): a dict
+        # comprehension would silently keep only the LAST row, letting a
+        # trailing low-weight/effect row hide an earlier high csi500
+        # contribution from vetoes 2/5. The producer emits exactly one
+        # row per sector.
+        if sector in out:
+            raise AttachError(
+                f"attribution carries sector {sector!r} more than once "
+                f"(fold_index={report.get('fold_index')!r}) — duplicate "
+                "sleeve rows cannot be evidence, refusing.")
+        out[sector] = r
+    return out
 
 
 def compute_csi500_dependence(
