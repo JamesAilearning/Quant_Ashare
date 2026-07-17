@@ -129,6 +129,24 @@ class VetoSheetNumberPins(unittest.TestCase):
 
 
 class PairReportProjectionPins(unittest.TestCase):
+    def test_required_veto_check_names_pinned(self) -> None:
+        from scripts.research.csi800_campaign_pair_report import (
+            REQUIRED_VETO_CHECKS,
+        )
+        self.assertEqual(
+            (
+                "1_conservative_net_excess",
+                "2_csi500_dependence",
+                "3_turnover_vs_csi300_ref",
+                "4_risk_constraints_recorded",
+                "5_midcap_concentration",
+            ),
+            REQUIRED_VETO_CHECKS,
+            "the canonical veto check set changed — eligibility is judged "
+            "against these five DP-4 names; renaming/removing one detaches "
+            "the checklist from the spec's veto sheet.",
+        )
+
     def test_projection_whitelist_is_run_identity_only(self) -> None:
         from scripts.research.csi800_campaign_pair_report import (
             RUN_IDENTITY_FIELDS,

@@ -237,22 +237,45 @@ def _projected_diff(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
             for k in sorted(keys) if a.get(k) != b.get(k)}
 
 
+# the five canonical veto checks (DP-4) — eligibility is evaluated
+# against THIS set, not against whatever keys a (possibly truncated)
+# checklist happens to carry (codex #369 r7 P1: `{}` must not read as
+# eligible). Governance-pinned in
+# tests/governance/test_csi800_expansion_guards.py.
+REQUIRED_VETO_CHECKS: tuple[str, ...] = (
+    "1_conservative_net_excess",
+    "2_csi500_dependence",
+    "3_turnover_vs_csi300_ref",
+    "4_risk_constraints_recorded",
+    "5_midcap_concentration",
+)
+
+
 def evaluate_promotion_eligibility(
     veto_checklist: dict[str, Any],
 ) -> tuple[bool, list[str]]:
     """``(promotion_eligible, incomplete_checks)`` for a veto checklist
-    (codex #369 r6 P1): a run is promotion-eligible ONLY when every one
-    of the five checks is PRESENT (a dict with ``veto_triggered``) and
-    NONE triggered. Any null/missing check → ineligible AND listed as
-    incomplete — an artifact with open checks can never read as a
-    completed checklist downstream."""
+    (codex #369 r6+r7 P1): a run is promotion-eligible ONLY when every
+    one of the five CANONICAL checks (``REQUIRED_VETO_CHECKS``) is
+    PRESENT (a dict with ``veto_triggered``) and NONE triggered —
+    membership is judged against the canonical set, so a truncated
+    checklist (``{}``, or one carrying only a passing check) is
+    ineligible with the absent names listed. Extra supplied entries are
+    still inspected for triggers (an unknown-but-triggered check must
+    not be ignored)."""
     incomplete: list[str] = []
     any_triggered = False
-    for name, entry in veto_checklist.items():
+    for name in REQUIRED_VETO_CHECKS:
+        entry = veto_checklist.get(name)
         if not isinstance(entry, dict) or "veto_triggered" not in entry:
             incomplete.append(name)
             continue
         if entry["veto_triggered"] is not False:
+            any_triggered = True
+    for name, entry in veto_checklist.items():
+        if (name not in REQUIRED_VETO_CHECKS and isinstance(entry, dict)
+                and entry.get("veto_triggered") is not False
+                and "veto_triggered" in entry):
             any_triggered = True
     eligible = not incomplete and not any_triggered
     return eligible, incomplete

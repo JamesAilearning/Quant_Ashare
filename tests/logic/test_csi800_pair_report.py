@@ -356,20 +356,34 @@ def test_mixed_artifact_shapes_refuse():
 
 
 def test_promotion_eligibility_semantics():
-    # codex #369 r6: eligibility only when ALL five checks are present
-    # and NONE triggered; any null/missing/triggered entry blocks it.
+    # codex #369 r6+r7: eligibility is judged against the CANONICAL five
+    # check names — a truncated checklist ({} or a subset) is ineligible
+    # with absent names listed; null/triggered/None-state entries block.
     from scripts.research.csi800_campaign_pair_report import (
+        REQUIRED_VETO_CHECKS,
         evaluate_promotion_eligibility,
     )
-    ok = {f"{i}_check": {"veto_triggered": False} for i in range(1, 6)}
+    ok = {name: {"veto_triggered": False} for name in REQUIRED_VETO_CHECKS}
     assert evaluate_promotion_eligibility(ok) == (True, [])
-    with_null = {**ok, "4_check": None}
+    # truncated checklists never read as eligible (codex r7).
+    assert evaluate_promotion_eligibility({}) == (
+        False, list(REQUIRED_VETO_CHECKS))
+    only_one = {"1_conservative_net_excess": {"veto_triggered": False}}
+    eligible, incomplete = evaluate_promotion_eligibility(only_one)
+    assert eligible is False and len(incomplete) == 4
+    with_null = {**ok, "4_risk_constraints_recorded": None}
     eligible, incomplete = evaluate_promotion_eligibility(with_null)
-    assert eligible is False and incomplete == ["4_check"]
-    with_trigger = {**ok, "1_check": {"veto_triggered": True}}
+    assert eligible is False
+    assert incomplete == ["4_risk_constraints_recorded"]
+    with_trigger = {**ok,
+                    "1_conservative_net_excess": {"veto_triggered": True}}
     assert evaluate_promotion_eligibility(with_trigger)[0] is False
-    with_none_state = {**ok, "2_check": {"veto_triggered": None}}
+    with_none_state = {**ok,
+                       "2_csi500_dependence": {"veto_triggered": None}}
     assert evaluate_promotion_eligibility(with_none_state)[0] is False
+    # an extra, unknown-but-triggered check must not be ignored.
+    with_extra = {**ok, "6_ad_hoc": {"veto_triggered": True}}
+    assert evaluate_promotion_eligibility(with_extra)[0] is False
 
 
 def test_wrong_universe_or_status_refuses():
