@@ -70,9 +70,15 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
      钉死路径的字节一致（侧车自身主线锚）；
    - 侧车记录的 pair digest SHALL 与其记录的主线锚 commit 上的
      pair v3 字节哈希一致；
+   - **N5 三 run 源证据 SHALL 已提交**（codex #374 r9：fresh
+     checkout 无 `output/` 工件，复验不能信断言）——WIN 路径 SHALL
+     将三 run 全部 fold reports 与 positions 文件本体（实测量级
+     ~10 MB，一次性、仅 WIN 时发生）以字节保真方式（`-text`）提交
+     至钉死证据目录，侧车 SHALL 记录该证据目录；
    - 下游复核 SHALL NOT 仅信侧车断言——SHALL 以 certify 的验证模式
-     对侧车记录的锚与链**重算复验**（certify 是确定性计算，复验
-     失败即判定无效）。
+     对侧车记录的锚与链**从已提交源证据端到端重算复验**（pair v3
+     哈希 → 已提交 fold reports → 内嵌 `positions_sha256` → 已提交
+     positions 字节；certify 是确定性计算，复验失败即判定无效）。
 
 顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → certify →
 侧车提交评审 → 晋升。仅存在于工作树、未经提交评审的任一环 SHALL NOT

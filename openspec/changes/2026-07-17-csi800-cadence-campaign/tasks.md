@@ -57,9 +57,10 @@
 - [ ] 主判据双条件数字 pin（>0 与 50%）+ 比较臂 pin
       （conservative-to-conservative + 双臂毛发散 ≤5% fail-closed）
       入治理测试
-- [ ] 主判据比较工装：仅消费已提交的 N1 毛值证据工件与 N5 pair v3，
-      毛塌缩比较（钉臂）+ 净判据 + 覆盖全折校验 + 双臂发散校验，
-      缺失/断链/失配拒绝
+- [ ] 主判据比较工装：N1 侧仅从**已提交的钉死 N1 源 fold report
+      目录**读毛值（读取前逐折哈希验证 == v2 已钉值，codex r9），
+      N5 侧消费 pair v3；毛塌缩比较（钉臂）+ 净判据 + 覆盖全折校验
+      + 双臂发散校验，缺失/断链/失配拒绝
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 4. 点火（单独授权，PR-A/B/C 全并后）
@@ -70,10 +71,15 @@
       签字 → **用户 merge（= pair v3 提交评审，锚成立）**
 - [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
       收束闭环，certify 不执行
+- [ ] 判定 WIN → **N5 三 run 源证据入库**（codex r9）：全部 fold
+      reports + positions 本体（~10 MB，字节保真 `-text`）提交钉死
+      证据目录（可与侧车同 PR 或先行 PR）
 - [ ] 判定 WIN → **certify 步骤**：验证 pair v3 字节==主线锚
       （origin/main 可达 commit，`git show <anchor>:<path>` 口径）+
-      全摘要链 + 五 veto/主判据 → 产出 verdict 侧车（被锚 pair
-      digest + 主线锚 commit id + 判定）→ 侧车入库 PR → codex/CI →
-      STOP → **用户 merge（侧车提交评审）** → 晋升成立，进入晋升流程
+      全摘要链（从已提交源证据端到端）+ 五 veto/主判据 → 产出
+      verdict 侧车（被锚 pair digest + 主线锚 commit id + 证据目录
+      + 判定）→ 侧车入库 PR → codex/CI → STOP → **用户 merge（侧车
+      提交评审）** → 晋升成立，进入晋升流程；CI/下游复验从已提交
+      证据重算全链
 - [ ] 顺序不可倒置：run → attach → pair 提交 → certify → 侧车提交
       → 晋升；跳过任一环 = 晋升无效
