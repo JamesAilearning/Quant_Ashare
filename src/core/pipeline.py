@@ -980,6 +980,13 @@ class Pipeline:
                 "topk": config.topk,
                 "n_drop": config.n_drop,
                 "industry_taxonomy_id": config.industry_taxonomy_id or None,
+                # CSI800 guard-2 provenance (codex P1 on #372 r2): the
+                # report must declare which guards/calibration the run
+                # used — walk-forward carries these via asdict(config);
+                # the pipeline projection mirrors them explicitly.
+                "attribution_sleeve_grouping": config.attribution_sleeve_grouping,
+                "risk_constraints_enabled": config.risk_constraints_enabled,
+                "risk_constraints_calibration": config.risk_constraints_calibration,
             },
             "dataset": {
                 "train_shape": list(feature_result.train_shape),

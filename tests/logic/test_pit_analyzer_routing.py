@@ -432,6 +432,9 @@ class ReportRecordsRegistryTests(unittest.TestCase):
             test_start="2023-04-01", test_end="2023-06-30",
             model_type="LGBModel", benchmark_code="SH000300",
             topk=50, n_drop=5, industry_taxonomy_id=None,
+            attribution_sleeve_grouping=False,
+            risk_constraints_enabled=False,
+            risk_constraints_calibration="default",
         )
         signal_result = SignalAnalysisResult(
             ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5, "num_days": 5}},
