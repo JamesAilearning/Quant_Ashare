@@ -61,7 +61,10 @@ from src.core.qlib_runtime import (
     init_qlib_canonical,
     provider_uri_guard_message,
 )
-from src.core.risk_constraints import campaign_risk_constraints_v1
+from src.core.risk_constraints import (
+    MinimalRiskConstraints,
+    campaign_risk_constraints_v1,
+)
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
@@ -181,6 +184,12 @@ class PipelineConfig:
     # effective values recorded in provenance — veto-4).
     attribution_sleeve_grouping: bool = False
     risk_constraints_enabled: bool = False
+    # Which constraint calibration ``risk_constraints_enabled`` supplies
+    # (codex P2 on #372): "default" = the P0-1 class defaults (0.40
+    # board cap, 1% cash floor — the pre-campaign semantics); the
+    # campaign calibration is an EXPLICIT opt-in, never silently
+    # substituted for a non-campaign run.
+    risk_constraints_calibration: str = "default"
 
     # output
     output_dir: str = "output"
@@ -217,16 +226,24 @@ class PipelineConfig:
                 "metrics without the mandated decomposition "
                 "(v2-csi800-expansion-guards, codex P1 on #370)."
             )
+        if self.risk_constraints_calibration not in ("default",
+                                                     "campaign_v1"):
+            raise PipelineError(
+                "risk_constraints_calibration must be 'default' or "
+                f"'campaign_v1'; got {self.risk_constraints_calibration!r}."
+            )
         if self.instruments == "csi800" and not (
                 self.attribution_sleeve_grouping
-                and self.risk_constraints_enabled):
+                and self.risk_constraints_enabled
+                and self.risk_constraints_calibration == "campaign_v1"):
             raise PipelineError(
-                "instruments='csi800' requires BOTH "
-                "attribution_sleeve_grouping=True and "
-                "risk_constraints_enabled=True — official csi800 metrics "
-                "without the sleeve report and position-level constraints "
-                "are forbidden; presets config/presets/csi800*.yaml carry "
-                "both (v2-csi800-expansion-guards, codex P1 on #370 r6; "
+                "instruments='csi800' requires attribution_sleeve_grouping="
+                "True, risk_constraints_enabled=True AND "
+                "risk_constraints_calibration='campaign_v1' — official "
+                "csi800 metrics without the sleeve report and the campaign "
+                "constraint calibration are forbidden; presets "
+                "config/presets/csi800*.yaml carry all three "
+                "(v2-csi800-expansion-guards, codex #370 r6 + #372 r1; "
                 "custom/copied campaign configs get no bypass)."
             )
         h = self.label_horizon_days
@@ -576,14 +593,16 @@ class Pipeline:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
-            # CSI800 guard-2 (veto-4, calibration option A 2026-07-17):
-            # campaign configs opt into the CAMPAIGN calibration —
-            # max_per_name/leverage strict, board/cash structural
-            # mismatches disabled with rationale (see
-            # campaign_risk_constraints_v1). Effective values land in
-            # backtest provenance.
-            risk_constraints=(campaign_risk_constraints_v1()
-                              if config.risk_constraints_enabled else None),
+            # CSI800 guard-2 (veto-4): calibration is an EXPLICIT config
+            # choice (codex P2 on #372) — campaign presets opt into
+            # campaign_v1 (name/leverage strict, board/cash structural
+            # mismatches disabled with rationale); everything else keeps
+            # the P0-1 defaults. Effective values land in provenance.
+            risk_constraints=(
+                (campaign_risk_constraints_v1()
+                 if config.risk_constraints_calibration == "campaign_v1"
+                 else MinimalRiskConstraints())
+                if config.risk_constraints_enabled else None),
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest (microstructure mask + equal-weight
             # baseline raw-field fetches take the §4.3.2 layer instead of

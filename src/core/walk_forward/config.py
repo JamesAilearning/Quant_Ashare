@@ -224,6 +224,12 @@ class WalkForwardConfig:
     # values recorded in each fold's backtest provenance — veto-4).
     attribution_sleeve_grouping: bool = False
     risk_constraints_enabled: bool = False
+    # Which constraint calibration ``risk_constraints_enabled`` supplies
+    # (codex P2 on #372): "default" = the P0-1 class defaults; the
+    # campaign calibration ("campaign_v1") is an EXPLICIT opt-in, never
+    # silently substituted for a non-campaign run. Two engines, one
+    # schema: mirrors PipelineConfig.
+    risk_constraints_calibration: str = "default"
 
     # Output
     output_dir: str = "output/walk_forward"
@@ -293,16 +299,24 @@ class WalkForwardConfig:
                 "metrics without the mandated decomposition "
                 "(v2-csi800-expansion-guards, codex P1 on #370)."
             )
+        if self.risk_constraints_calibration not in ("default",
+                                                     "campaign_v1"):
+            raise WalkForwardError(
+                "risk_constraints_calibration must be 'default' or "
+                f"'campaign_v1'; got {self.risk_constraints_calibration!r}."
+            )
         if self.instruments == "csi800" and not (
                 self.attribution_sleeve_grouping
-                and self.risk_constraints_enabled):
+                and self.risk_constraints_enabled
+                and self.risk_constraints_calibration == "campaign_v1"):
             raise WalkForwardError(
-                "instruments='csi800' requires BOTH "
-                "attribution_sleeve_grouping=True and "
-                "risk_constraints_enabled=True — official csi800 metrics "
-                "without the sleeve report and position-level constraints "
-                "are forbidden; presets config/presets/csi800*.yaml carry "
-                "both (v2-csi800-expansion-guards, codex P1 on #370 r6; "
+                "instruments='csi800' requires attribution_sleeve_grouping="
+                "True, risk_constraints_enabled=True AND "
+                "risk_constraints_calibration='campaign_v1' — official "
+                "csi800 metrics without the sleeve report and the campaign "
+                "constraint calibration are forbidden; presets "
+                "config/presets/csi800*.yaml carry all three "
+                "(v2-csi800-expansion-guards, codex #370 r6 + #372 r1; "
                 "custom/copied campaign configs get no bypass)."
             )
 

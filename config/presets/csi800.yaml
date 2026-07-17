@@ -23,3 +23,4 @@ signal_to_execution_lag: 1
 # 分解与仓位级风险约束（veto-4 生效值随 provenance 入工件）。
 attribution_sleeve_grouping: true
 risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"

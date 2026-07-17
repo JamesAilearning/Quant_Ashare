@@ -319,11 +319,18 @@ class TestCampaignPresetsOptIn:
         # (codex #370 r6) makes both guards mandatory for the universe.
         presets = _PROJECT_ROOT / "config" / "presets"
         for name in ("csi800.yaml", "csi800_conservative.yaml",
-                     "default.yaml"):
+                     "default.yaml", "csi800_campaign_base.yaml",
+                     "csi800_campaign_conservative.yaml",
+                     "csi300_campaign_reference.yaml"):
             data = yaml.safe_load(
                 (presets / name).read_text(encoding="utf-8"))
-            assert data.get("attribution_sleeve_grouping") is True, name
+            if name != "csi300_campaign_reference.yaml":
+                assert data.get("attribution_sleeve_grouping") is True, name
             assert data.get("risk_constraints_enabled") is True, name
+            # codex #372 r1: campaign calibration is an explicit opt-in —
+            # every campaign-family preset declares it.
+            assert (data.get("risk_constraints_calibration")
+                    == "campaign_v1"), name
 
 
 class TestCsi800UniverseRequiresBothGuards:
@@ -335,17 +342,38 @@ class TestCsi800UniverseRequiresBothGuards:
             WalkForwardConfig,
             WalkForwardError,
         )
-        with pytest.raises(PipelineError, match="requires BOTH"):
+        with pytest.raises(PipelineError, match="csi800"):
             PipelineConfig(provider_uri="D:/fake", instruments="csi800")
-        with pytest.raises(PipelineError, match="requires BOTH"):
+        with pytest.raises(PipelineError, match="csi800"):
             PipelineConfig(provider_uri="D:/fake", instruments="csi800",
                            attribution_sleeve_grouping=True)
-        with pytest.raises(WalkForwardError, match="requires BOTH"):
+        with pytest.raises(WalkForwardError, match="csi800"):
             WalkForwardConfig(instruments="csi800")
-        # both guards on -> accepted.
+        # both guards on but DEFAULT calibration -> still refused
+        # (codex #372 r1: the campaign calibration is an explicit
+        # opt-in, and csi800 must run under it).
+        with pytest.raises(PipelineError, match="campaign_v1"):
+            PipelineConfig(provider_uri="D:/fake", instruments="csi800",
+                           attribution_sleeve_grouping=True,
+                           risk_constraints_enabled=True)
+        # all three on -> accepted.
         PipelineConfig(provider_uri="D:/fake", instruments="csi800",
                        attribution_sleeve_grouping=True,
-                       risk_constraints_enabled=True)
+                       risk_constraints_enabled=True,
+                       risk_constraints_calibration="campaign_v1")
         WalkForwardConfig(instruments="csi800",
                           attribution_sleeve_grouping=True,
-                          risk_constraints_enabled=True)
+                          risk_constraints_enabled=True,
+                          risk_constraints_calibration="campaign_v1")
+
+    def test_invalid_calibration_value_refused(self):
+        from src.core.pipeline import PipelineConfig, PipelineError
+        from src.core.walk_forward.config import (
+            WalkForwardConfig,
+            WalkForwardError,
+        )
+        with pytest.raises(PipelineError, match="calibration"):
+            PipelineConfig(provider_uri="D:/fake",
+                           risk_constraints_calibration="bogus")
+        with pytest.raises(WalkForwardError, match="calibration"):
+            WalkForwardConfig(risk_constraints_calibration="bogus")
