@@ -239,11 +239,14 @@ def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
 
 
 # Bumped whenever the fold-report SCHEMA changes in a way that affects
-# comparability (here: the daily_series substrate is added). Written into every
-# fold report AND folded into the resume fingerprint (_resume.py), so a run
-# resumed across this boundary re-runs the stale folds instead of silently mixing
-# comparable (daily_series-carrying) and non-comparable folds in one aggregate.
-FOLD_REPORT_SCHEMA_VERSION = "2-daily-series"
+# comparability. Written into every fold report AND folded into the resume
+# fingerprint (_resume.py), so a run resumed across this boundary re-runs the
+# stale folds instead of silently mixing schemas in one aggregate.
+# History: "2-daily-series" added the daily_series substrate;
+# "3-sleeve-turnover" added the explicit ``sleeve_turnover`` field
+# (CSI800 guard-2, codex P2 on #370 — pre-change folds must regenerate,
+# not coexist without the field).
+FOLD_REPORT_SCHEMA_VERSION = "3-sleeve-turnover"
 
 
 def _ic_series_to_map(series: Any) -> dict[str, float]:
@@ -323,6 +326,7 @@ def build_fold_report(
     attribution_result: AttributionResult | None = None,
     attribution_skipped_reason: str | None = None,
     ensemble_meta: Mapping[str, Any] | None = None,
+    sleeve_turnover: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Build the per-fold report dict.
 
@@ -388,6 +392,15 @@ def build_fold_report(
         # comparison tools see a uniform shape.
         "attribution": attribution_section_for_fold(
             attribution_result, attribution_skipped_reason,
+        ),
+        # CSI800 guard-2 (codex P1 on #370): per-sleeve one-way turnover
+        # from the fold's authoritative positions — the turnover veto is
+        # evaluated from run artifacts, so it must live here. ``None``
+        # when sleeve grouping is off (schema stays explicit, never
+        # silently absent-vs-zero ambiguous).
+        "sleeve_turnover": (
+            {k: dict(v) for k, v in sleeve_turnover.items()}
+            if sleeve_turnover is not None else None
         ),
         # Default the ensemble block to a "no-op" shape when the caller
         # did not supply meta — this preserves report compatibility for

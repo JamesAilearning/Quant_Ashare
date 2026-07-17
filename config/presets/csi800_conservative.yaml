@@ -19,6 +19,10 @@ benchmark_code: SH000906TR
 topk: 50
 n_drop: 5
 signal_to_execution_lag: 1
+# CSI800 guard-2（v2-csi800-expansion-guards）：战役 run 必须带 sleeve
+# 分解与仓位级风险约束（veto-4 生效值随 provenance 入工件）。
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
 # DP-2（2026-07-16 操作人签，全账本平铺，跑前写死）：A 股中盘单边
 # 冲击+价差对 topk=50 量级约 15-25bps；probe 实证 61.8% 权重在中盘腿，
 # 全书 20bps ≈ 中盘腿按 25bps+ 计而大盘腿被过罚 —— 过罚方向即保守

@@ -23,6 +23,11 @@ from src.core.attribution_industry_loader import (
     assert_industry_config_complete_or_empty,
     resolve_industry_taxonomy,
 )
+from src.core.attribution_sleeve_loader import (
+    SleeveResolutionError,
+    resolve_sleeve_map,
+    sleeve_turnover,
+)
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -56,6 +61,7 @@ from src.core.qlib_runtime import (
     init_qlib_canonical,
     provider_uri_guard_message,
 )
+from src.core.risk_constraints import MinimalRiskConstraints
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
@@ -167,6 +173,14 @@ class PipelineConfig:
     industry_manifest_path: str | None = None
     industry_taxonomy_id: str = ""
     industry_temporal_mode: str = TAXONOMY_MODE_STATIC
+    # CSI800 expansion guard-2 (v2-csi800-expansion-guards): Brinson
+    # grouping by csi300/csi500 membership sleeves instead of industries
+    # (mutually exclusive with the industry artifact — one run, one
+    # grouping source), and mandatory position-level risk constraints
+    # (MinimalRiskConstraints defaults threaded into BacktestRunner.run,
+    # effective values recorded in provenance — veto-4).
+    attribution_sleeve_grouping: bool = False
+    risk_constraints_enabled: bool = False
 
     # output
     output_dir: str = "output"
@@ -188,6 +202,32 @@ class PipelineConfig:
             raise PipelineError(
                 "PipelineConfig.benchmark_code must be non-empty; the "
                 "canonical backtest contract requires a benchmark."
+            )
+        if self.attribution_sleeve_grouping and self.industry_artifact_path:
+            raise PipelineError(
+                "attribution_sleeve_grouping and industry_artifact_path "
+                "are mutually exclusive — one Brinson run takes exactly "
+                "one grouping source (v2-csi800-expansion-guards)."
+            )
+        if self.attribution_sleeve_grouping and not self.run_attribution:
+            raise PipelineError(
+                "attribution_sleeve_grouping=True requires "
+                "run_attribution=True — disabling attribution would skip "
+                "the sleeve resolution entirely and emit bare csi800 "
+                "metrics without the mandated decomposition "
+                "(v2-csi800-expansion-guards, codex P1 on #370)."
+            )
+        if self.instruments == "csi800" and not (
+                self.attribution_sleeve_grouping
+                and self.risk_constraints_enabled):
+            raise PipelineError(
+                "instruments='csi800' requires BOTH "
+                "attribution_sleeve_grouping=True and "
+                "risk_constraints_enabled=True — official csi800 metrics "
+                "without the sleeve report and position-level constraints "
+                "are forbidden; presets config/presets/csi800*.yaml carry "
+                "both (v2-csi800-expansion-guards, codex P1 on #370 r6; "
+                "custom/copied campaign configs get no bypass)."
             )
         h = self.label_horizon_days
         if not isinstance(h, int) or isinstance(h, bool) or h < 1:
@@ -536,6 +576,11 @@ class Pipeline:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
+            # CSI800 guard-2 (veto-4): campaign configs opt into the
+            # position-level constraints at their DEFAULT values; the
+            # effective values land in backtest provenance.
+            risk_constraints=(MinimalRiskConstraints()
+                              if config.risk_constraints_enabled else None),
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest (microstructure mask + equal-weight
             # baseline raw-field fetches take the §4.3.2 layer instead of
@@ -627,6 +672,7 @@ class Pipeline:
         # to look identical in the report (no ``attribution`` block at
         # all), even though only the second is a degraded run.
         attribution_skipped_reason: str | None = None
+        sleeve_turnover_block: dict[str, dict[str, float]] | None = None
         if not config.run_attribution:
             attribution_skipped_reason = "disabled_by_config"
         else:
@@ -635,6 +681,16 @@ class Pipeline:
             # for a reader walking the branch tree. Plain ``else`` makes
             # the intent obvious.
             if not backtest_output.positions:
+                # guard-2 (codex P1 on #370 r4): with sleeve grouping on,
+                # EVERY inability-to-produce-the-sleeve-report path is
+                # fatal — not just map construction.
+                if cls._attribution_failure_is_fatal(config):
+                    raise PipelineError(
+                        "attribution_sleeve_grouping=True but the backtest "
+                        "produced no positions map — the mandatory sleeve "
+                        "report cannot be built; refusing to emit bare "
+                        "csi800 metrics (v2-csi800-expansion-guards)."
+                    )
                 # The previous implementation silently coerced ``positions`` to
                 # ``None`` here, which flipped PerformanceAttribution into its
                 # prediction-score fallback mode — a semantically-different
@@ -656,6 +712,13 @@ class Pipeline:
                 try:
                     attribution_config = cls._build_attribution_config(config)
                 except PipelineError as exc:
+                    # guard-2 (codex P1 on #370): sleeve-coverage
+                    # failures are FATAL — the csi800 campaign contract
+                    # forbids bare performance numbers without the
+                    # sleeve report, so the industry-taxonomy soft-skip
+                    # below must not swallow them.
+                    if cls._attribution_failure_is_fatal(config):
+                        raise
                     # ``_build_attribution_config`` re-raises
                     # :class:`IndustryTaxonomyLoadError` as
                     # :class:`PipelineError`. The previous implementation
@@ -682,50 +745,22 @@ class Pipeline:
                 if attribution_config is None:
                     pass  # already handled above
                 else:
-                    try:
-                        attribution_result = PerformanceAttribution.analyze(
-                            return_series=backtest_output.return_series,
-                            predictions=model_result.predictions,
-                            config=attribution_config,
-                            positions=backtest_output.positions,
-                            pit_provider=pit_provider,
-                        )
-                        PerformanceAttribution.print_report(attribution_result)
-                    except PerformanceAttributionError as exc:
-                        # Degenerate inputs (e.g. all-non-positive predictions,
-                        # all-zero position weights) raise from the attribution
-                        # engine by design — they would otherwise be silently
-                        # masked by a uniform-weighting fallback. Downgrade to
-                        # "skipped with loud WARNING" so the run can still
-                        # finish (backtest + report are already valid) while
-                        # making the degradation visible to callers.
-                        attribution_result = None
-                        attribution_skipped_reason = (
-                            f"engine_error: {type(exc).__name__}: {exc}"
-                        )
-                        _logger.warning(
-                            "Performance attribution skipped — engine raised "
-                            "%s: %s. Backtest and risk_analysis remain valid; "
-                            "only the sector-attribution block is absent from "
-                            "the report.",
-                            type(exc).__name__, exc,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        # Catch-all for non-PerformanceAttributionError
-                        # failures inside the attribution engine — bare
-                        # ValueError from float(v), RuntimeError/KeyError
-                        # from qlib D.features(), pandas groupby ValueError,
-                        # etc. Same downgrade pattern as FactorAnalyzer and
-                        # ResultVisualizer: skip + WARN, preserve backtest.
-                        attribution_result = None
-                        attribution_skipped_reason = (
-                            f"unexpected_error: {type(exc).__name__}: {exc}"
-                        )
-                        _logger.warning(
-                            "Performance attribution skipped — unexpected "
-                            "error in engine: %s: %s. Backtest and "
-                            "risk_analysis remain valid.",
-                            type(exc).__name__, exc,
+                    (attribution_result,
+                     attribution_skipped_reason) = cls._run_attribution_engine(
+                        config=config,
+                        attribution_config=attribution_config,
+                        backtest_output=backtest_output,
+                        predictions=model_result.predictions,
+                        pit_provider=pit_provider,
+                    )
+                    # guard-2 (codex P1 on #370 r5): pipeline runs persist
+                    # the per-sleeve turnover too — schema parity with the
+                    # walk-forward fold report.
+                    if (attribution_result is not None
+                            and config.attribution_sleeve_grouping):
+                        sleeve_turnover_block = sleeve_turnover(
+                            backtest_output.positions,
+                            attribution_config.industry_map_override or {},
                         )
 
         # Step 8: Write report
@@ -737,6 +772,7 @@ class Pipeline:
                 attribution_skipped_reason=attribution_skipped_reason,
                 factor_skipped_reason=factor_skipped_reason,
                 git_provenance=git_provenance,  # captured at run start, not write time
+                sleeve_turnover=sleeve_turnover_block,
             )
             _logger.info("  Report: %s", report_path)
         except Exception as exc:  # noqa: BLE001
@@ -889,6 +925,7 @@ class Pipeline:
         attribution_skipped_reason: str | None = None,
         factor_skipped_reason: str | None = None,
         git_provenance: Mapping[str, Any] | None = None,
+        sleeve_turnover: Mapping[str, Mapping[str, float]] | None = None,
     ) -> None:
         # Two engines, one schema: pipeline_report.json and walk_forward_report.json
         # carry the SAME top-level git_commit / git_dirty provenance fields, so the
@@ -960,6 +997,14 @@ class Pipeline:
                 "skipped_reason": factor_skipped_reason,
             }
 
+        # CSI800 guard-2 (codex P1 on #370 r5): pipeline reports carry
+        # the per-sleeve turnover too — the two runtime report schemas
+        # stay parallel (explicit null when sleeve grouping is off, same
+        # convention as the walk-forward fold report).
+        report["sleeve_turnover"] = (
+            {k: dict(v) for k, v in sleeve_turnover.items()}
+            if sleeve_turnover is not None else None
+        )
         report["attribution"] = Pipeline._attribution_section(
             attribution_result, attribution_skipped_reason,
         )
@@ -1012,6 +1057,90 @@ class Pipeline:
         }
 
     @staticmethod
+    def _attribution_failure_is_fatal(config: PipelineConfig) -> bool:
+        """Whether an attribution-config load failure must ABORT the run.
+
+        The industry-taxonomy path soft-skips (backtest metrics stay
+        valid, only the sector block is absent). With sleeve grouping
+        enabled the calculus flips (guard-2, codex P1 on #370): the
+        v2-csi800-expansion-guards contract forbids emitting bare
+        performance numbers without the sleeve report, so a sleeve
+        resolution failure (stale/missing membership coverage) fails
+        the whole run instead of degrading it."""
+        return config.attribution_sleeve_grouping
+
+    @classmethod
+    def _run_attribution_engine(
+        cls,
+        *,
+        config: PipelineConfig,
+        attribution_config: AttributionConfig,
+        backtest_output: CanonicalBacktestOutput,
+        predictions: Any,
+        pit_provider: Any | None,
+    ) -> tuple[AttributionResult | None, str | None]:
+        """Invoke the attribution engine under the guard-2 failure policy.
+
+        Extracted from ``run()`` so the policy is directly unit-testable
+        (codex P1 on #370 r5): with ``attribution_sleeve_grouping`` on,
+        EVERY engine failure — ``PerformanceAttributionError`` and the
+        broad catch-all alike — raises ``PipelineError`` instead of
+        downgrading to a skipped block; without it, both downgrade to
+        "skip + WARN" exactly as before."""
+        try:
+            result = PerformanceAttribution.analyze(
+                return_series=backtest_output.return_series,
+                predictions=predictions,
+                config=attribution_config,
+                positions=backtest_output.positions,
+                pit_provider=pit_provider,
+            )
+            PerformanceAttribution.print_report(result)
+            return result, None
+        except PerformanceAttributionError as exc:
+            if cls._attribution_failure_is_fatal(config):
+                raise PipelineError(
+                    "attribution_sleeve_grouping=True but the attribution "
+                    f"engine failed ({exc}) — the mandatory sleeve report "
+                    "cannot be built; refusing to emit bare csi800 metrics "
+                    "(v2-csi800-expansion-guards)."
+                ) from exc
+            # Degenerate inputs (e.g. all-non-positive predictions,
+            # all-zero position weights) raise from the attribution engine
+            # by design. Downgrade to "skipped with loud WARNING" so the
+            # run still finishes (backtest + report are already valid).
+            _logger.warning(
+                "Performance attribution skipped — engine raised %s: %s. "
+                "Backtest and risk_analysis remain valid; only the "
+                "sector-attribution block is absent from the report.",
+                type(exc).__name__, exc,
+            )
+            return None, f"engine_error: {type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            # guard-2 (codex P1 on #370 r5): the fatal predicate covers
+            # the catch-all too — a bare ValueError inside the engine must
+            # not smuggle a sleeve-less csi800 report past the contract.
+            if cls._attribution_failure_is_fatal(config):
+                raise PipelineError(
+                    "attribution_sleeve_grouping=True but attribution "
+                    f"failed unexpectedly ({type(exc).__name__}: {exc}) — "
+                    "the mandatory sleeve report cannot be built; refusing "
+                    "to emit bare csi800 metrics "
+                    "(v2-csi800-expansion-guards)."
+                ) from exc
+            # Catch-all for non-PerformanceAttributionError failures inside
+            # the attribution engine — bare ValueError from float(v),
+            # RuntimeError/KeyError from qlib D.features(), pandas groupby
+            # ValueError, etc. Same downgrade pattern as FactorAnalyzer and
+            # ResultVisualizer: skip + WARN, preserve backtest.
+            _logger.warning(
+                "Performance attribution skipped — unexpected error in "
+                "engine: %s: %s. Backtest and risk_analysis remain valid.",
+                type(exc).__name__, exc,
+            )
+            return None, f"unexpected_error: {type(exc).__name__}: {exc}"
+
+    @staticmethod
     def _build_attribution_config(config: PipelineConfig) -> AttributionConfig:
         """Build attribution config, optionally with a validated taxonomy map.
 
@@ -1031,6 +1160,26 @@ class Pipeline:
             "start_date": config.test_start,
             "end_date": config.test_end,
         }
+        if config.attribution_sleeve_grouping:
+            # CSI800 guard-2: membership sleeves as the Brinson grouping.
+            # Coverage violations (as_of past a sleeve's snapshot bound)
+            # fail LOUD — never a silently-stale sleeve report.
+            try:
+                sleeves = resolve_sleeve_map(
+                    config.provider_uri, config.test_start)
+            except SleeveResolutionError as exc:
+                raise PipelineError(str(exc)) from exc
+            _logger.info(
+                "Attribution sleeve grouping: csi300=%d csi500=%d "
+                "as_of=%s coverage_end=%s",
+                sleeves.n_csi300, sleeves.n_csi500,
+                sleeves.as_of, sleeves.coverage_end,
+            )
+            return AttributionConfig(
+                **base,
+                industry_map_override=sleeves.sleeve_map,
+                industry_taxonomy_id=sleeves.taxonomy_id,
+            )
         if not config.industry_artifact_path:
             return AttributionConfig(**base)
 

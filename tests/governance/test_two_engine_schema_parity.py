@@ -60,6 +60,13 @@ REPORT_PIPELINE_ONLY = {
     "metric_status", "official_backtest_path", "dataset", "model",
     "signal_analysis", "backtest", "risk_analysis", "factor_analysis",
     "attribution",
+    # CSI800 guard-2 (v2-csi800-expansion-guards): per-sleeve turnover is
+    # MIRRORED in walk-forward, but at FOLD level (positions are
+    # fold-scoped in the rolling shape — fold_report.json carries the
+    # same key, pinned by test_walk_forward's additive-schema test); the
+    # single-run shape has exactly one positions series, so it sits
+    # top-level here. Not aggregate-level drift.
+    "sleeve_turnover",
 }
 REPORT_WALK_FORWARD_ONLY = {
     # rolling shape: per-fold rows + cross-fold aggregation

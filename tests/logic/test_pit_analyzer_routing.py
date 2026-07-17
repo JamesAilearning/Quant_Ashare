@@ -487,7 +487,7 @@ class EngineActivationTests(unittest.TestCase):
         with patch.object(
             PerformanceAttribution, "analyze", MagicMock(return_value=sentinel),
         ) as fake_analyze:
-            result, reason = WalkForwardEngine._run_attribution_for_fold(
+            result, reason, _sleeve_to = WalkForwardEngine._run_attribution_for_fold(
                 config=config,
                 fold_index=0,
                 test_start="2024-01-02", test_end="2024-03-29",

@@ -16,3 +16,7 @@ benchmark_code: SH000906TR
 topk: 50
 n_drop: 5
 signal_to_execution_lag: 1
+# csi800 宇宙强制双 guard（v2-csi800-expansion-guards）：sleeve 分解 +
+# 仓位级风险约束——config 层校验拒绝缺任一的 csi800 配置。
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true

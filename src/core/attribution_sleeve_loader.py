@@ -51,6 +51,7 @@ brief consumes this loader post-hoc.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -142,6 +143,43 @@ def _coverage_bound(spans: list[tuple[str, date, date]]) -> date | None:
     real_dates = [s for _, s, _ in spans]
     real_dates += [e for _, _, e in spans if e != _OPEN_END_SENTINEL]
     return max(real_dates) if real_dates else None
+
+
+def sleeve_turnover(
+    positions: Mapping[str, Mapping[str, float]],
+    sleeve_map: Mapping[str, str],
+    unknown_label: str = "unknown",
+) -> dict[str, dict[str, float]]:
+    """Per-sleeve ONE-WAY turnover from a daily positions map
+    (``{date_str: {instrument: weight}}`` — the authoritative
+    ``CanonicalBacktestOutput.positions`` / persisted positions series).
+
+    For each consecutive date pair the one-way turnover of a sleeve is
+    ``0.5 * Σ|Δw|`` over the instruments the sleeve owns (unmapped
+    instruments aggregate under ``unknown_label`` — same honest-bucket
+    convention as the Brinson report). Returns
+    ``{sleeve: {"total_oneway": x, "daily_mean_oneway": y,
+    "n_transitions": n}}``. This is the guard-2 building block the
+    ignition tooling uses for the per-sleeve turnover diagnostic; it is
+    pure and deterministic (dates processed in sorted order)."""
+    dates = sorted(positions)
+    totals: dict[str, float] = {}
+    n_transitions = max(0, len(dates) - 1)
+    for prev_d, next_d in zip(dates, dates[1:], strict=False):
+        prev_w, next_w = positions[prev_d], positions[next_d]
+        for inst in set(prev_w) | set(next_w):
+            sleeve = sleeve_map.get(inst, unknown_label)
+            delta = abs(next_w.get(inst, 0.0) - prev_w.get(inst, 0.0))
+            totals[sleeve] = totals.get(sleeve, 0.0) + 0.5 * delta
+    return {
+        sleeve: {
+            "total_oneway": total,
+            "daily_mean_oneway": (total / n_transitions
+                                  if n_transitions else 0.0),
+            "n_transitions": float(n_transitions),
+        }
+        for sleeve, total in sorted(totals.items())
+    }
 
 
 def resolve_sleeve_map(provider_dir: Path | str,
