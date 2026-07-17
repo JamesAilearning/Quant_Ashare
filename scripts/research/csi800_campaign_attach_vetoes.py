@@ -758,16 +758,25 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
     # replaced together with their positions).
     binding = checklist["3_turnover_vs_csi300_ref"].get(
         "reference_content_binding")
-    if eligible and binding != PROMOTION_QUALIFYING_REF_BINDING:
-        eligible = False
-        report["promotion_blocked_reason"] = (
-            "all five veto checks pass, but the veto-3 reference "
-            "turnover evidence is unauthenticated "
-            f"(reference_content_binding={binding!r}, promotion "
-            f"requires {PROMOTION_QUALIFYING_REF_BINDING!r}) — a "
+    # The structural prerequisite is recorded UNCONDITIONALLY (codex
+    # #373 r11 P2): a vetoed artifact must still tell a later operator
+    # that even a clean rerun cannot become promotion-eligible until the
+    # producer-side certified digest ships — otherwise the recorded veto
+    # reads as the only blocker.
+    blockers: list[str] = []
+    if binding != PROMOTION_QUALIFYING_REF_BINDING:
+        blockers.append(
+            "reference_binding_unauthenticated: veto-3 reference "
+            f"turnover evidence is {binding!r}; promotion structurally "
+            f"requires {PROMOTION_QUALIFYING_REF_BINDING!r} (a "
             "producer-stamped positions digest bound to a certified "
-            "reference artifact must ship before any campaign can be "
-            "promotion-eligible (backlog); codex #373 r9+r10.")
+            "reference artifact — not yet implemented by any producer; "
+            "backlog), independent of the current veto verdict; codex "
+            "#373 r9-r11.")
+    report["promotion_blockers"] = blockers
+    if eligible and blockers:
+        eligible = False
+        report["promotion_blocked_reason"] = blockers[0]
     report["promotion_eligible"] = eligible
     report["incomplete_checks"] = incomplete
     report["veto_checklist_status"] = (

@@ -97,6 +97,12 @@ fail-closed（codex #373 r1）：base/conservative 证据目录以 guard-1
 
 - 本对 run 判定：**不予晋升**，作为诊断证据入档（本简报 + 配对
   工件）。
+- **结构性前置（codex #373 r9-r11 收敛结果）**：参照 run 的 positions
+  证据在当前生产者形态下无不可变内容锚（同窗同天数替换序列不可检
+  测），故勾验工装对任何战役——包括未来五项全过的——都不发
+  `promotion_eligible=true`；证据工件以 `promotion_blockers` 恒记录
+  该前置。解锁需生产者把 positions 摘要盖章并锚进已证工件（runtime
+  变更，独立 OpenSpec，任何未来晋升的硬前置）。
 - holdout 未揭盲，不可反悔条款不受影响（本战役未触 holdout）。
 - 可选后续（均需单独授权）：(i) 就此收束 csi800 战役，结论入
   OpenSpec 归档；(ii) 以"降换手 × csi800"为题开新 OpenSpec 变更

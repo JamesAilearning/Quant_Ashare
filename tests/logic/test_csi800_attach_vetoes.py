@@ -253,6 +253,11 @@ def test_partial_sleeve_attribution_fails_closed():
         # all five PRESENT -> COMPLETE, but triggered -> not eligible
         assert r["veto_checklist_status"] == "COMPLETE"
         assert r["promotion_eligible"] is False
+        # the structural producer prerequisite is recorded even on a
+        # vetoed artifact (codex #373 r11) — the veto is never presented
+        # as the only blocker.
+        assert any("reference_binding_unauthenticated" in b
+                   for b in r["promotion_blockers"])
 
 
 def test_missing_csi800_positions_triggers_turnover_veto():
