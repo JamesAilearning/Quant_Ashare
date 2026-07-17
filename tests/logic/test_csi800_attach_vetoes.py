@@ -198,7 +198,10 @@ def _set_attribution(run_dir: Path, fold: int, block) -> None:
     rep_p.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_clean_attach_completes_and_is_eligible():
+def test_clean_attach_completes_but_promotion_gated_on_reference():
+    # all five checks pass and are recorded COMPLETE — but with no
+    # producer-certified reference binding in existence (codex #373 r10),
+    # promotion eligibility is structurally blocked, never granted.
     with tempfile.TemporaryDirectory() as t:
         pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02)
         r = attach(pair_p, base, cons, ref)
@@ -206,16 +209,18 @@ def test_clean_attach_completes_and_is_eligible():
         assert all(isinstance(vc[k], dict) and vc[k]["veto_triggered"]
                    is False for k in vc)
         assert r["veto_checklist_status"] == "COMPLETE"
-        assert r["promotion_eligible"] is True
         c3 = vc["3_turnover_vs_csi300_ref"]
         assert c3["conservative_over_reference_ratio"] == pytest.approx(1.0)
         assert c3["coverage_problems"] == []
         assert c3["ref_failed_folds"] == []
-        assert c3["reference_content_binding"] == "embedded_sleeve_turnover"
-        assert "promotion_blocked_reason" not in r
+        assert c3["reference_content_binding"] == (
+            "window_only_unauthenticated")
+        assert c3["reference_embedded_turnover_verified"] is True
+        assert r["promotion_eligible"] is False
+        assert "producer" in r["promotion_blocked_reason"]
         # rewritten in place
         assert json.loads(pair_p.read_text(encoding="utf-8"))[
-            "promotion_eligible"] is True
+            "promotion_eligible"] is False
 
 
 def test_tampered_run_dir_refuses_binding():
@@ -329,11 +334,12 @@ def test_reference_nonofficial_fold_report_refuses():
 
 
 def test_unauthenticated_reference_blocks_promotion_not_vetoes():
-    # codex #373 r9: without an immutable producer binding for reference
-    # positions (the production state today), an otherwise fully-passing
-    # checklist must NOT emit promotion_eligible=true — but the checks
-    # are still recorded (unauthenticated evidence may support a veto,
-    # never a promotion).
+    # codex #373 r9+r10: without a producer-certified binding for
+    # reference positions (the production state today — with OR without
+    # a presence-only embedded turnover block), an otherwise
+    # fully-passing checklist must NOT emit promotion_eligible=true —
+    # but the checks are still recorded (unauthenticated evidence may
+    # support a veto, never a promotion).
     with tempfile.TemporaryDirectory() as t:
         pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02,
                                            authenticated=False)
@@ -342,6 +348,7 @@ def test_unauthenticated_reference_blocks_promotion_not_vetoes():
         assert c3["veto_triggered"] is False
         assert c3["reference_content_binding"] == (
             "window_only_unauthenticated")
+        assert c3["reference_embedded_turnover_verified"] is False
         assert r["promotion_eligible"] is False
         assert "unauthenticated" in r["promotion_blocked_reason"]
 

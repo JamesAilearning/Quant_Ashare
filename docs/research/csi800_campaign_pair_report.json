@@ -162,28 +162,28 @@
     },
     "3_turnover_vs_csi300_ref": {
       "conservative": {
-        "total_oneway": 139.115874136101,
+        "total_oneway": 139.11587413610104,
         "n_transitions": 1351.0,
-        "daily_mean_oneway": 0.10297251971584087,
-        "annualized_oneway": 24.507459692370126,
+        "daily_mean_oneway": 0.10297251971584089,
+        "annualized_oneway": 24.50745969237013,
         "valid_folds": 23.0
       },
       "base": {
-        "total_oneway": 139.39171716385238,
+        "total_oneway": 139.3917171638524,
         "n_transitions": 1351.0,
-        "daily_mean_oneway": 0.10317669664237777,
-        "annualized_oneway": 24.55605380088591,
+        "daily_mean_oneway": 0.1031766966423778,
+        "annualized_oneway": 24.556053800885916,
         "valid_folds": 23.0
       },
       "csi300_reference": {
-        "total_oneway": 134.61103554687605,
+        "total_oneway": 134.61103554687602,
         "n_transitions": 1294.0,
-        "daily_mean_oneway": 0.10402707538398459,
-        "annualized_oneway": 24.758443941388332,
+        "daily_mean_oneway": 0.10402707538398456,
+        "annualized_oneway": 24.758443941388325,
         "valid_folds": 22.0
       },
-      "conservative_over_reference_ratio": 0.9898626808044815,
-      "base_over_reference_ratio": 0.9918254095054783,
+      "conservative_over_reference_ratio": 0.9898626808044819,
+      "base_over_reference_ratio": 0.9918254095054788,
       "threshold_ratio": 1.5,
       "annualization_days": 238,
       "ref_valid_folds": 22.0,
@@ -191,6 +191,7 @@
         8
       ],
       "reference_content_binding": "window_only_unauthenticated",
+      "reference_embedded_turnover_verified": false,
       "coverage_problems": [],
       "veto_triggered": false
     },
