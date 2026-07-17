@@ -781,6 +781,19 @@ class FoldReportSerialisationTests(unittest.TestCase):
         self.assertIn("1", keys)
         self.assertIn("5", keys)
 
+    def test_sleeve_turnover_block_serialized_and_null_by_default(self) -> None:
+        # CSI800 guard-2 (codex P1 on #370): the turnover veto is
+        # evaluated from run artifacts — the fold report carries the
+        # per-sleeve block when supplied, and an explicit null when
+        # sleeve grouping is off (never absent-vs-zero ambiguous).
+        d = build_fold_report(**self._build_args())
+        self.assertIsNone(d["sleeve_turnover"])
+        block = {"csi300_sleeve": {"total_oneway": 0.1,
+                                   "daily_mean_oneway": 0.05,
+                                   "n_transitions": 2.0}}
+        d2 = build_fold_report(**self._build_args(), sleeve_turnover=block)
+        self.assertEqual(d2["sleeve_turnover"], block)
+
     def test_metrics_block_mirrors_walk_forward_fold(self) -> None:
         d = build_fold_report(**self._build_args())
         self.assertAlmostEqual(d["metrics"]["ic_1d"], 0.02)
@@ -849,7 +862,13 @@ class FoldReportSerialisationTests(unittest.TestCase):
             "fold_index", "windows", "model", "signal_analysis", "backtest",
             "metrics", "attribution", "ensemble", "positions_path", "generated_at",
         }
-        self.assertEqual(set(d), preexisting | {"daily_series", "schema_version"})
+        # ``sleeve_turnover`` joined the schema with CSI800 guard-2
+        # (v2-csi800-expansion-guards; explicit null when grouping off).
+        self.assertEqual(
+            set(d),
+            preexisting | {"daily_series", "schema_version",
+                           "sleeve_turnover"},
+        )
         # signal_analysis is untouched (IC goes into daily_series, not here).
         self.assertEqual(
             set(d["signal_analysis"]), {"ic_summary", "ic_decay", "turnover_stats"}
@@ -1255,7 +1274,7 @@ class _AttributionForFoldTests(unittest.TestCase):
 
     def test_disabled_by_config_short_circuits(self) -> None:
         config = WalkForwardConfig(run_attribution=False)
-        result, reason = WalkForwardEngine._run_attribution_for_fold(
+        result, reason, _sleeve_to = WalkForwardEngine._run_attribution_for_fold(
             config=config, fold_index=0,
             test_start="2024-10-01", test_end="2024-12-31",
             predictions=MagicMock(),
@@ -1272,7 +1291,7 @@ class _AttributionForFoldTests(unittest.TestCase):
         with patch(
             "src.core.walk_forward.engine.PerformanceAttribution.analyze"
         ) as mock_analyze:
-            result, reason = WalkForwardEngine._run_attribution_for_fold(
+            result, reason, _sleeve_to = WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=0,
                 test_start="2024-10-01", test_end="2024-12-31",
                 predictions=MagicMock(),
@@ -1294,7 +1313,7 @@ class _AttributionForFoldTests(unittest.TestCase):
             "src.core.walk_forward.engine.PerformanceAttribution.analyze",
             side_effect=PerformanceAttributionError("all-non-positive"),
         ):
-            result, reason = WalkForwardEngine._run_attribution_for_fold(
+            result, reason, _sleeve_to = WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=3,
                 test_start="2024-10-01", test_end="2024-12-31",
                 predictions=MagicMock(),
@@ -1312,7 +1331,7 @@ class _AttributionForFoldTests(unittest.TestCase):
             "src.core.walk_forward.engine.PerformanceAttribution.analyze",
             side_effect=ValueError("bad attribution shape"),
         ):
-            result, reason = WalkForwardEngine._run_attribution_for_fold(
+            result, reason, _sleeve_to = WalkForwardEngine._run_attribution_for_fold(
                 config=config, fold_index=3,
                 test_start="2024-10-01", test_end="2024-12-31",
                 predictions=MagicMock(),

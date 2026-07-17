@@ -51,6 +51,7 @@ brief consumes this loader post-hoc.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -145,8 +146,8 @@ def _coverage_bound(spans: list[tuple[str, date, date]]) -> date | None:
 
 
 def sleeve_turnover(
-    positions: dict[str, dict[str, float]],
-    sleeve_map: dict[str, str],
+    positions: Mapping[str, Mapping[str, float]],
+    sleeve_map: Mapping[str, str],
     unknown_label: str = "unknown",
 ) -> dict[str, dict[str, float]]:
     """Per-sleeve ONE-WAY turnover from a daily positions map

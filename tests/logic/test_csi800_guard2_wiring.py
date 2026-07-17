@@ -99,6 +99,19 @@ class TestPipelineSleeveWiring:
                 Pipeline._build_attribution_config(cfg)
 
 
+class TestSleeveFailureIsFatalInPipelineRun:
+    def test_fatal_flag_follows_sleeve_grouping(self):
+        # codex #370 r1 P1: with sleeve grouping on, an attribution
+        # config failure must ABORT the run (no bare csi800 numbers);
+        # the industry-taxonomy path keeps its soft-skip.
+        from src.core.pipeline import Pipeline, PipelineConfig
+        on = PipelineConfig(provider_uri="D:/fake",
+                            attribution_sleeve_grouping=True)
+        off = PipelineConfig(provider_uri="D:/fake")
+        assert Pipeline._attribution_failure_is_fatal(on) is True
+        assert Pipeline._attribution_failure_is_fatal(off) is False
+
+
 class TestRiskConstraintProvenance:
     def _request(self):
         from src.core.canonical_backtest_contract import (

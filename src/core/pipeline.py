@@ -680,6 +680,13 @@ class Pipeline:
                 try:
                     attribution_config = cls._build_attribution_config(config)
                 except PipelineError as exc:
+                    # guard-2 (codex P1 on #370): sleeve-coverage
+                    # failures are FATAL — the csi800 campaign contract
+                    # forbids bare performance numbers without the
+                    # sleeve report, so the industry-taxonomy soft-skip
+                    # below must not swallow them.
+                    if cls._attribution_failure_is_fatal(config):
+                        raise
                     # ``_build_attribution_config`` re-raises
                     # :class:`IndustryTaxonomyLoadError` as
                     # :class:`PipelineError`. The previous implementation
@@ -1034,6 +1041,19 @@ class Pipeline:
             "ic_decay": list(signal_result.ic_decay),
             "turnover": dict(signal_result.turnover_stats),
         }
+
+    @staticmethod
+    def _attribution_failure_is_fatal(config: PipelineConfig) -> bool:
+        """Whether an attribution-config load failure must ABORT the run.
+
+        The industry-taxonomy path soft-skips (backtest metrics stay
+        valid, only the sector block is absent). With sleeve grouping
+        enabled the calculus flips (guard-2, codex P1 on #370): the
+        v2-csi800-expansion-guards contract forbids emitting bare
+        performance numbers without the sleeve report, so a sleeve
+        resolution failure (stale/missing membership coverage) fails
+        the whole run instead of degrading it."""
+        return config.attribution_sleeve_grouping
 
     @staticmethod
     def _build_attribution_config(config: PipelineConfig) -> AttributionConfig:

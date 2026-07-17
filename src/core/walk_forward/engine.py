@@ -24,6 +24,7 @@ from src.core.attribution_industry_loader import (
 from src.core.attribution_sleeve_loader import (
     SleeveResolutionError,
     resolve_sleeve_map,
+    sleeve_turnover,
 )
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
@@ -918,7 +919,7 @@ class WalkForwardEngine:
         # raise ``PerformanceAttributionError`` from the engine; we
         # downgrade to "skip + WARN + status in fold report" so a single
         # bad fold does not abort the entire walk-forward run.
-        attribution_result, attribution_skipped_reason = (
+        attribution_result, attribution_skipped_reason, fold_sleeve_turnover = (
             cls._run_attribution_for_fold(
                 config=config,
                 fold_index=fold_index,
@@ -950,6 +951,7 @@ class WalkForwardEngine:
             information_ratio=ir,
             attribution_result=attribution_result,
             attribution_skipped_reason=attribution_skipped_reason,
+            sleeve_turnover=fold_sleeve_turnover,
             ensemble_meta=ensemble_meta,
         )
 
@@ -977,8 +979,16 @@ class WalkForwardEngine:
         predictions: Any,
         backtest_output: CanonicalBacktestOutput,
         pit_provider: Any | None = None,
-    ) -> tuple[AttributionResult | None, str | None]:
-        """Run per-fold performance attribution; return ``(result, reason)``.
+    ) -> tuple[AttributionResult | None, str | None,
+               dict[str, dict[str, float]] | None]:
+        """Run per-fold performance attribution; return
+        ``(result, reason, sleeve_turnover_block)``.
+
+        The third element is the per-sleeve one-way turnover computed
+        from the fold's authoritative positions when
+        ``attribution_sleeve_grouping`` is enabled (guard-2, codex P1 on
+        #370: the turnover veto must be evaluable from run artifacts);
+        ``None`` otherwise.
 
         Mirrors ``Pipeline.run`` step 7 layering exactly:
 
@@ -999,7 +1009,7 @@ class WalkForwardEngine:
           can flag the degraded fold without aborting the rest.
         """
         if not config.run_attribution:
-            return None, "disabled_by_config"
+            return None, "disabled_by_config", None
 
         if not backtest_output.positions:
             _logger.warning(
@@ -1008,9 +1018,10 @@ class WalkForwardEngine:
                 "attribution (no implicit fallback).",
                 fold_index,
             )
-            return None, "no_positions_from_backtest"
+            return None, "no_positions_from_backtest", None
 
         attribution_overrides: dict[str, Any] = {}
+        sleeve_turnover_block: dict[str, dict[str, float]] | None = None
         if config.attribution_sleeve_grouping:
             # CSI800 guard-2: membership sleeves as the Brinson grouping,
             # as-of this fold's test start. Coverage violations fail LOUD
@@ -1042,6 +1053,12 @@ class WalkForwardEngine:
             )
             attribution_overrides["industry_map_override"] = sleeves.sleeve_map
             attribution_overrides["industry_taxonomy_id"] = sleeves.taxonomy_id
+            # guard-2 (codex P1 on #370): the turnover veto must be
+            # evaluable from run artifacts — per-sleeve one-way turnover
+            # from THIS fold's authoritative positions, serialized into
+            # the fold report by the caller.
+            sleeve_turnover_block = sleeve_turnover(
+                backtest_output.positions, sleeves.sleeve_map)
         if config.industry_artifact_path:
             # ``purpose=PURPOSE_ATTRIBUTION`` is the explicit "this is
             # post-hoc analysis, not training" declaration. The shared
@@ -1099,7 +1116,7 @@ class WalkForwardEngine:
                 "sector-attribution block is absent from this fold's report.",
                 fold_index, type(exc).__name__, exc,
             )
-            return None, f"engine_error: {type(exc).__name__}: {exc}"
+            return None, f"engine_error: {type(exc).__name__}: {exc}", None
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Fold %d: attribution skipped due to unexpected error %s: %s. "
@@ -1107,6 +1124,6 @@ class WalkForwardEngine:
                 "sector-attribution block is absent from this fold's report.",
                 fold_index, type(exc).__name__, exc,
             )
-            return None, f"unexpected_error: {type(exc).__name__}: {exc}"
+            return None, f"unexpected_error: {type(exc).__name__}: {exc}", None
 
-        return result, None
+        return result, None, sleeve_turnover_block

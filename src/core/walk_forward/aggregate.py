@@ -323,6 +323,7 @@ def build_fold_report(
     attribution_result: AttributionResult | None = None,
     attribution_skipped_reason: str | None = None,
     ensemble_meta: Mapping[str, Any] | None = None,
+    sleeve_turnover: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Build the per-fold report dict.
 
@@ -388,6 +389,15 @@ def build_fold_report(
         # comparison tools see a uniform shape.
         "attribution": attribution_section_for_fold(
             attribution_result, attribution_skipped_reason,
+        ),
+        # CSI800 guard-2 (codex P1 on #370): per-sleeve one-way turnover
+        # from the fold's authoritative positions — the turnover veto is
+        # evaluated from run artifacts, so it must live here. ``None``
+        # when sleeve grouping is off (schema stays explicit, never
+        # silently absent-vs-zero ambiguous).
+        "sleeve_turnover": (
+            {k: dict(v) for k, v in sleeve_turnover.items()}
+            if sleeve_turnover is not None else None
         ),
         # Default the ensemble block to a "no-op" shape when the caller
         # did not supply meta — this preserves report compatibility for
