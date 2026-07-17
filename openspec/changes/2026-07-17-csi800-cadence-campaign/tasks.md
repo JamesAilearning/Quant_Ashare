@@ -24,11 +24,13 @@
 - [ ] attach：改从 v3 工件读参照认证条目（pre-v3 拒绝）；全链摘要
       验证（pair→fold report 哈希→positions_sha256→盘面字节）；
       缺摘要维持 unauthenticated + block；失配拒绝
-- [ ] **不可变锚前置**（codex #374 r3）：`producer_digest_certified`
-      额外要求 pair v3 字节与 git 已提交版本（钉死路径@HEAD）逐字节
-      一致——工作树工件恒 block；机械形态（git show 比对 / certify
-      步骤+verdict 侧车）在此实现并测试（"先提交评审、后认证"顺序
-      不可倒置）
+- [ ] **不可变锚 + verdict 侧车（强制两件套）**（codex #374 r3+r4）：
+      attach 内嵌资格恒 false（非权威）；certify 独立步骤——验证
+      pair v3 字节==HEAD 已提交、全摘要链、五 veto+主判据，全过则
+      产出 verdict 侧车（被锚 pair digest+commit id+判定），certify
+      不改写任何已锚工件；晋升仅以"已提交侧车+digest 与已提交 pair
+      一致"形态成立；测试含 certify 不改写/侧车断链拒/工作树拒/
+      顺序不可倒置
 - [ ] **N1 工件 v3 重生成**（codex #374 r1）：从完好 run 目录重生成
       `docs/research/csi800_campaign_pair_report.json` 至 v3（逐折
       毛值入档），治理断言 v2 已钉哈希（双侧 run_id/config_sha256/

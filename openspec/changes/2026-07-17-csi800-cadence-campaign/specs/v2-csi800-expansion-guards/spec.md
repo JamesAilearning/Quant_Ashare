@@ -44,28 +44,46 @@ positions 字节哈希。任何一环缺失或失配 SHALL 按既有语义处理
 交叉验证、去重、非有限值防线 SHALL 全部保留（摘要链是追加防线非
 替代）。
 
-**不可变锚前置（codex #374 r3）**：摘要链的根（pair v3 文件）在
-attach 时与其余工件同盘可变——伪造全套自洽证据后重生成 v3 即可使
-链内一切一致。故 `producer_digest_certified`（及随之的
-`promotion_eligible=true`）SHALL 额外要求**不可变锚验证**：所消费的
-pair v3 字节 SHALL 与 git 已提交版本（钉死 repo 路径在 HEAD 的字节）
-逐字节一致（trust root 与 attach 工装现行 docstring 的定性一致——
-锚=已提交已评审工件）；仅存在于工作树、未经提交评审的 pair 工件
-SHALL NOT 开晋升门，此路径产出的勾验 SHALL 恒携带 unauthenticated
-blocker。锚验证的机械形态（`git show` 字节比对 / 独立 certify 步骤
-与 verdict 侧车）在 PR-B 实现并测试；实现 SHALL 保证"先提交评审、
-后认证"的顺序不可倒置。
+**不可变锚前置与 verdict 侧车（codex #374 r3+r4）**：摘要链的根
+（pair v3 文件）在 attach 时与其余工件同盘可变——伪造全套自洽证据后
+重生成 v3 即可使链内一切一致；且 attach 会把勾验回写进 pair 工件，
+认证后该文件必然偏离 HEAD、其内嵌资格字段本身无锚。故 SHALL 采用
+**强制两件套**（非可选机械形态）：
+
+1. **attach（工作树步骤）**：照常回写勾验与诊断到 pair 工件，但其
+   内嵌 `promotion_eligible` SHALL 恒为 false 并携带 unauthenticated
+   blocker——pair 工件内嵌资格字段 SHALL NOT 是晋升权威，任何下游
+   SHALL NOT 据其放行；
+2. **certify（认证步骤，SHALL NOT 改写任何已锚工件）**：验证
+   (a) 所消费 pair v3 字节与 git 已提交版本（钉死 repo 路径@HEAD）
+   逐字节一致，(b) 全摘要链对盘面成立，(c) 五项 veto 与主判据——
+   全部通过时产出**独立 verdict 侧车**（钉死路径），载有被锚 pair
+   v3 的 sha256、锚验证时的 commit id、链验证结果与晋升判定。
+   `promotion_eligible=true` SHALL 仅以"已提交的 verdict 侧车 + 其
+   记录的 pair digest 与已提交 pair v3 一致"这一组合形态存在。
+
+顺序 SHALL 不可倒置：run → attach → pair v3 提交评审 → certify →
+侧车提交评审 → 晋升。仅存在于工作树、未经提交评审的任一环 SHALL NOT
+达成晋升。实现与测试（含"certify 不改写已锚工件"“侧车 digest 断链
+拒绝"用例）在 PR-B。
 
 #### Scenario: 全链达标且过不可变锚晋升门开
 - **WHEN** 三 run 全部由 attestation 生产者产出、盘面未被动过、pair
-  v3 字节与 git 已提交版本一致，五项 veto 全不触发
-- **THEN** 认证路径发 `promotion_eligible=true` 且无
-  `reference_binding_unauthenticated` blocker
+  v3 已提交且字节与 HEAD 一致，certify 全链验证通过、五项 veto 全不
+  触发
+- **THEN** certify 产出 verdict 侧车（载被锚 pair digest + commit
+  id），侧车提交评审后晋升成立；pair 工件本体未被 certify 改写
 
 #### Scenario: 工作树工件铸不出资格
 - **WHEN** 摘要链全链一致但所消费的 pair v3 仅存在于工作树（与
   HEAD 已提交字节不一致或路径未纳管）
-- **THEN** 晋升门不开，勾验照常入档并携带 unauthenticated blocker
+- **THEN** certify 拒绝产出侧车；attach 回写的 pair 工件内嵌资格
+  恒为 false 并携带 unauthenticated blocker
+
+#### Scenario: 侧车与已锚 pair 断链被拒
+- **WHEN** verdict 侧车记录的 pair digest 与已提交 pair v3 的字节
+  哈希不一致（任一侧被替换）
+- **THEN** 下游按断链拒绝该晋升判定
 
 #### Scenario: positions 被换而摘要不可复现
 - **WHEN** 任一完成折的 positions 被替换（摘要链任一环失配）
