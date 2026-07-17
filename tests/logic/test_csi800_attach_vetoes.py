@@ -358,6 +358,18 @@ def test_unauthenticated_reference_blocks_promotion_not_vetoes():
         assert "unauthenticated" in r["promotion_blocked_reason"]
 
 
+def test_zero_holding_positions_refuse_cleanly():
+    # codex #373 r13: >=2 dates with all-empty daily maps must refuse
+    # with AttachError, not crash with a bare StopIteration.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        (cons / "fold_01_positions.json").write_text(
+            json.dumps({"2024-01-02": {}, "2024-01-03": {},
+                        "2024-01-04": {}}), encoding="utf-8")
+        with pytest.raises(SystemExit, match="no holdings"):
+            attach(pair_p, base, cons, ref)
+
+
 def test_rerun_clears_stale_promotion_blocked_reason():
     # codex #373 r12: a first attach over a clean checklist records
     # promotion_blocked_reason ("all five pass, blocked only by the

@@ -502,6 +502,15 @@ def _run_positions_turnover(
                 f"certified fold report window ({pos_days} days inside "
                 f"{start}..{end}) — torn/replaced evidence, refusing.")
         block = sleeve_turnover(positions, {})  # single honest bucket
+        if not block:
+            # >=2 dates but every daily map empty: sleeve_turnover has
+            # no bucket to report and next(iter(...)) below would raise
+            # a bare StopIteration (codex #373 r13 P2) — refuse cleanly.
+            raise AttachError(
+                f"{run_dir}: fold {idx} positions series has "
+                f"{len(dates)} dates but no holdings on any day — "
+                "degenerate evidence cannot anchor a turnover check, "
+                "refusing.")
         fold_total = sum(row["total_oneway"] for row in block.values())
         if not math.isfinite(fold_total):
             raise AttachError(
