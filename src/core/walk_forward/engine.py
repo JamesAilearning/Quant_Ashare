@@ -1012,6 +1012,16 @@ class WalkForwardEngine:
             return None, "disabled_by_config", None
 
         if not backtest_output.positions:
+            # guard-2 (codex P1 on #370 r4): with sleeve grouping on,
+            # every inability-to-produce-the-sleeve-report path is fatal.
+            if config.attribution_sleeve_grouping:
+                raise WalkForwardError(
+                    f"Fold {fold_index}: attribution_sleeve_grouping=True "
+                    "but the backtest produced no positions — the "
+                    "mandatory sleeve report cannot be built; refusing to "
+                    "persist bare csi800 fold metrics "
+                    "(v2-csi800-expansion-guards)."
+                )
             _logger.warning(
                 "Fold %d: skipping attribution — backtest produced no "
                 "positions. Refusing to fall back to prediction-score "
@@ -1110,6 +1120,17 @@ class WalkForwardEngine:
                 pit_provider=pit_provider,
             )
         except PerformanceAttributionError as exc:
+            # guard-2 (codex P1 on #370 r4): sleeve grouping makes ANY
+            # attribution failure fatal — a csi800 fold must never
+            # persist bare metrics without its mandatory sleeve report.
+            if config.attribution_sleeve_grouping:
+                raise WalkForwardError(
+                    f"Fold {fold_index}: attribution_sleeve_grouping=True "
+                    f"but the attribution engine failed ({exc}) — the "
+                    "mandatory sleeve report cannot be built; refusing to "
+                    "persist bare csi800 fold metrics "
+                    "(v2-csi800-expansion-guards)."
+                ) from exc
             _logger.warning(
                 "Fold %d: attribution skipped — engine raised %s: %s. "
                 "Backtest and risk_analysis remain valid; only the "
@@ -1118,6 +1139,14 @@ class WalkForwardEngine:
             )
             return None, f"engine_error: {type(exc).__name__}: {exc}", None
         except Exception as exc:  # noqa: BLE001
+            if config.attribution_sleeve_grouping:
+                raise WalkForwardError(
+                    f"Fold {fold_index}: attribution_sleeve_grouping=True "
+                    f"but attribution failed unexpectedly "
+                    f"({type(exc).__name__}: {exc}) — the mandatory sleeve "
+                    "report cannot be built; refusing to persist bare "
+                    "csi800 fold metrics (v2-csi800-expansion-guards)."
+                ) from exc
             _logger.warning(
                 "Fold %d: attribution skipped due to unexpected error %s: %s. "
                 "Backtest and risk_analysis remain valid; only the "

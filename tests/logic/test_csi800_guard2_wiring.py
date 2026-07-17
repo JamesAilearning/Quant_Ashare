@@ -134,6 +134,62 @@ class TestSleeveFailureIsFatalInPipelineRun:
         assert Pipeline._attribution_failure_is_fatal(off) is False
 
 
+class TestSleeveFailuresFatalInWalkForwardFold:
+    """codex #370 r4: with sleeve grouping on, EVERY inability-to-
+    produce-the-sleeve-report path raises instead of downgrading —
+    no-positions, engine failure, unexpected failure. (The pipeline
+    engine mirrors these branches via the same predicate; its
+    map-construction fatality is covered above.)"""
+
+    def _config(self):
+        from src.core.walk_forward.config import WalkForwardConfig
+        return WalkForwardConfig(attribution_sleeve_grouping=True)
+
+    def test_no_positions_raises(self):
+        from types import SimpleNamespace
+
+        from src.core.walk_forward.config import WalkForwardError
+        from src.core.walk_forward.engine import WalkForwardEngine
+        with pytest.raises(WalkForwardError, match="no positions"):
+            WalkForwardEngine._run_attribution_for_fold(
+                config=self._config(),
+                fold_index=0,
+                test_start="2025-07-01", test_end="2025-12-31",
+                predictions=None,
+                backtest_output=SimpleNamespace(positions={}),
+            )
+
+    def test_engine_failure_raises(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import src.core.walk_forward.engine as engine_mod
+        from src.core.performance_attribution import (
+            PerformanceAttributionError,
+        )
+        from src.core.walk_forward.config import WalkForwardError
+        from src.core.walk_forward.engine import WalkForwardEngine
+        with tempfile.TemporaryDirectory() as t:
+            root = _bundle(Path(t))
+            monkeypatch.setattr(
+                engine_mod, "get_canonical_qlib_config",
+                lambda: SimpleNamespace(provider_uri=str(root)))
+            monkeypatch.setattr(
+                engine_mod.PerformanceAttribution, "analyze",
+                staticmethod(lambda **kw: (_ for _ in ()).throw(
+                    PerformanceAttributionError("degenerate"))))
+            with pytest.raises(WalkForwardError,
+                               match="attribution engine failed"):
+                WalkForwardEngine._run_attribution_for_fold(
+                    config=self._config(),
+                    fold_index=0,
+                    test_start="2025-07-01", test_end="2025-12-31",
+                    predictions=object(),
+                    backtest_output=SimpleNamespace(
+                        positions={"2025-07-01": {"SH600000": 1.0}},
+                        return_series={}),
+                )
+
+
 class TestRiskConstraintProvenance:
     def _request(self):
         from src.core.canonical_backtest_contract import (

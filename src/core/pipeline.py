@@ -667,6 +667,16 @@ class Pipeline:
             # for a reader walking the branch tree. Plain ``else`` makes
             # the intent obvious.
             if not backtest_output.positions:
+                # guard-2 (codex P1 on #370 r4): with sleeve grouping on,
+                # EVERY inability-to-produce-the-sleeve-report path is
+                # fatal — not just map construction.
+                if cls._attribution_failure_is_fatal(config):
+                    raise PipelineError(
+                        "attribution_sleeve_grouping=True but the backtest "
+                        "produced no positions map — the mandatory sleeve "
+                        "report cannot be built; refusing to emit bare "
+                        "csi800 metrics (v2-csi800-expansion-guards)."
+                    )
                 # The previous implementation silently coerced ``positions`` to
                 # ``None`` here, which flipped PerformanceAttribution into its
                 # prediction-score fallback mode — a semantically-different
@@ -731,6 +741,18 @@ class Pipeline:
                         )
                         PerformanceAttribution.print_report(attribution_result)
                     except PerformanceAttributionError as exc:
+                        # guard-2 (codex P1 on #370 r4): sleeve grouping
+                        # makes ANY attribution failure fatal — a csi800
+                        # run must never complete without its sleeve
+                        # report.
+                        if cls._attribution_failure_is_fatal(config):
+                            raise PipelineError(
+                                "attribution_sleeve_grouping=True but the "
+                                f"attribution engine failed ({exc}) — the "
+                                "mandatory sleeve report cannot be built; "
+                                "refusing to emit bare csi800 metrics "
+                                "(v2-csi800-expansion-guards)."
+                            ) from exc
                         # Degenerate inputs (e.g. all-non-positive predictions,
                         # all-zero position weights) raise from the attribution
                         # engine by design — they would otherwise be silently
