@@ -74,6 +74,31 @@ N∈{1,5}，改 N 须新 OpenSpec 变更并作废既有结果）。N=1 对照臂
 两条同过 = WIN（进入晋升流程，仍须过五项 veto 与 attestation 晋升
 门）；任一不过 = 如实入档不晋升。五项 veto 数字沿用 #368/#372 原样。
 
+**N1 基线 SHALL 钉进认证链（codex #374 r1）**——50% 比较的 N1 毛值
+SHALL NOT 取自任何可编辑文档（简报/手抄数字）：
+
+- 已提交的 #373 配对工件（v2）钉有 N1 base run 身份（run_id
+  `csi800_campaign_base`、`report_sha256`、逐折 `fold_report_sha256`），
+  毛值本体在被这些哈希钉住的 fold report 内
+  （`backtest.risk_analysis.excess_return_without_cost`）；
+- PR-B SHALL 将 N1 配对工件以 v3 **重生成**：新增逐折毛超额记录，
+  且 v2 已钉的全部哈希（双侧 run_id/config_sha256/report_sha256/
+  fold_report_sha256）SHALL 逐字段不变（治理断言）——盘面 run 目录
+  不变则重生成不改变认证内容，只是把毛值抬进认证工件；
+- 主判据比较工装 SHALL 仅消费已提交的 v3 工件（N1 与 N5 两侧），
+  N1 逐折毛值缺失、哈希与盘面失配、或官方折覆盖不全（双侧各须
+  23/23）一律拒绝；
+- 折网格对齐由构造保证：N5 preset 与 N1 的 walk-forward 窗口/步长
+  配置 SHALL 恰同（治理 diff pin 仅容 cadence 三字段 + output_dir
+  差异），毛均值 = 各自全部官方折的跨折均值；
+- N1 run 目录 SHALL 保持完好直至战役收束——丢失即 fail-closed
+  （基线不可重建，战役判定无效），SHALL NOT 以文档数字替代。
+
+#### Scenario: N1 基线被换或事后修改
+- **WHEN** 主判据比较时提供的 N1 工件哈希与 #373 已提交 v2 所钉
+  不一致，或其逐折毛值与盘面 hash 验证后的 fold report 不符
+- **THEN** 比较工装拒绝，战役判定不产出
+
 #### Scenario: 省成本靠杀 alpha 被否
 - **WHEN** N5 conservative 净超额 +0.5% 但 N5 毛超额仅为 N1 的 40%
 - **THEN** 毛塌缩否决触发，判 LOSE 入档，不进入晋升流程

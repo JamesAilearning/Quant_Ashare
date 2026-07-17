@@ -16,17 +16,25 @@
       `openspec/changes/archive/`
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
-## 2. PR-B — pair v3 三方认证 + attach 摘要链
+## 2. PR-B — pair v3 三方认证 + attach 摘要链 + N1 基线抬进认证工件
 - [ ] pair 工具：`--reference-run` 三方入证（四件套 + 配置绑定钉死
-      差集校验），schema 升 `csi800_pair_report_v3`
+      差集校验），schema 升 `csi800_pair_report_v3`；v3 侧条目新增
+      逐折毛超额（`excess_return_without_cost`，取自哈希钉住的
+      fold report）
 - [ ] attach：改从 v3 工件读参照认证条目（pre-v3 拒绝）；全链摘要
       验证（pair→fold report 哈希→positions_sha256→盘面字节）；
       达标置 `producer_digest_certified`，晋升门可开；缺摘要维持
       unauthenticated + block；失配拒绝
+- [ ] **N1 工件 v3 重生成**（codex #374 r1）：从完好 run 目录重生成
+      `docs/research/csi800_campaign_pair_report.json` 至 v3（逐折
+      毛值入档），治理断言 v2 已钉哈希（双侧 run_id/config_sha256/
+      report_sha256/fold_report_sha256）逐字段不变；PR diff 供人工
+      复核。N1 run 目录保持完好直至战役收束（丢失=fail-closed）
 - [ ] 既有防线（窗口绑定/内嵌换手交叉验证/去重/非有限值/质量闭合）
       全保留，测试断言不回退
 - [ ] 测试：全链达标晋升门开；positions 换后拒；参照 fold report
-      配对后改拒；pre-v3 工件拒
+      配对后改拒；pre-v3 工件拒；v3 毛值与 hash 验证后 fold report
+      不符拒
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 3. PR-C — N5 战役 preset + 治理 pin
@@ -40,6 +48,8 @@
       rebalance_anchor, output_dir}（N1 preset 不动，diff 由显式
       写死值产生）；resolved 级 cadence pin（三发同值 5/0/fold_phase）
 - [ ] 主判据双条件数字 pin（>0 与 50%）入治理测试
+- [ ] 主判据比较工装：仅消费已提交 v3 工件（N1 与 N5 双侧），毛
+      塌缩比较 + 净判据 + 覆盖全折校验，缺失/失配拒绝
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 4. 点火（单独授权，PR-A/B/C 全并后）
