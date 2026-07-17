@@ -441,11 +441,14 @@ def _run_positions_turnover(
       recomputed per-fold total must equal the embedded total — this is
       a CONTENT binding: a swapped series cannot reproduce it.
 
-    The reference has no embedded turnover (sleeve grouping off per the
-    #371 pin) and the producer emits no positions content hash, so a
-    fabricated same-window/same-day-count reference series remains
-    undetectable here — a documented residual; closing it needs the
-    producer to stamp a positions hash into the fold report (backlog).
+    The production reference has no embedded turnover (sleeve grouping
+    off per the #371 pin) and the producer emits no positions content
+    hash, so a fabricated same-window/same-day-count reference series is
+    not detectable by recomputation — such UNAUTHENTICATED reference
+    evidence may support a veto but never a promotion: attach() refuses
+    to emit promotion_eligible=true on top of it (codex #373 r9), and
+    closing the gap for promotions needs the producer to stamp a
+    positions hash into reference fold reports (backlog).
 
     Returns ``(stats, problems)`` — a fold whose positions artifact is
     missing, non-mapping, or has < 2 dates is listed in ``problems`` and
@@ -547,8 +550,22 @@ def compute_turnover_check(
                 f"null) yet carries a positions artifact ({stale}) — "
                 "stale/injected evidence cannot enter the veto-3 "
                 "baseline, refusing.")
+    # Reference content binding (codex #373 r9 P1): the producer stamps
+    # no positions hash into reference fold reports, so a same-window/
+    # same-day-count replacement series is undetectable by recomputation
+    # alone. IF every reference fold report carries a producer-embedded
+    # sleeve_turnover block, verify against it (immutable binding, same
+    # as the csi800 arms); otherwise the reference evidence is
+    # UNAUTHENTICATED — it may still support a veto (withholding
+    # promotion is the safe direction; tampering can only help an
+    # attacker by making the check PASS), but the attach step refuses to
+    # emit promotion_eligible=true on top of it (see attach()).
+    ref_authenticated = all(
+        isinstance(rep.get("sleeve_turnover"), dict)
+        and rep.get("sleeve_turnover")
+        for _i, rep in ref_payloads)
     ref, ref_problems = _run_positions_turnover(
-        ref_dir, ref_payloads, require_embedded_match=False)
+        ref_dir, ref_payloads, require_embedded_match=ref_authenticated)
 
     # Every reference payload is a completed OFFICIAL fold (binding
     # proved it) — missing/unusable positions there is a torn artifact,
@@ -575,6 +592,9 @@ def compute_turnover_check(
         "annualization_days": ANNUALIZATION_DAYS,
         "ref_valid_folds": ref["valid_folds"],
         "ref_failed_folds": sorted(documented_failed),
+        "reference_content_binding": (
+            "embedded_sleeve_turnover" if ref_authenticated
+            else "window_only_unauthenticated"),
         # fail-closed: incomplete csi800 positions coverage or an
         # unusable reference cannot certify the check.
         "coverage_problems": coverage_problems,
@@ -715,6 +735,23 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
         cons_fold_reports, cons_n)
 
     eligible, incomplete = evaluate_promotion_eligibility(checklist)
+    # Promotion gate on reference authentication (codex #373 r9 P1):
+    # UNAUTHENTICATED reference evidence may support a veto (safe
+    # direction) but never a promotion — a fully-passing checklist whose
+    # veto-3 baseline could have been silently replaced must not emit
+    # eligibility until the producer stamps an immutable binding
+    # (positions hash / embedded turnover) into reference fold reports.
+    binding = checklist["3_turnover_vs_csi300_ref"].get(
+        "reference_content_binding")
+    if eligible and binding != "embedded_sleeve_turnover":
+        eligible = False
+        report["promotion_blocked_reason"] = (
+            "all five veto checks pass, but the veto-3 reference "
+            "turnover evidence is unauthenticated "
+            f"(reference_content_binding={binding!r}) — promotion "
+            "requires an immutable producer binding for reference "
+            "positions (backlog: stamp positions sha256 / sleeve "
+            "turnover into reference fold reports); codex #373 r9.")
     report["promotion_eligible"] = eligible
     report["incomplete_checks"] = incomplete
     report["veto_checklist_status"] = (

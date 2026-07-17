@@ -122,7 +122,8 @@ def _mk_campaign_run(root: Path, name: str, cfg: dict,
 
 def _mk_reference_run(root: Path, cfg_over: dict | None = None,
                       n_folds: int = 2,
-                      failed_folds: tuple[int, ...] = ()) -> Path:
+                      failed_folds: tuple[int, ...] = (),
+                      authenticated: bool = True) -> Path:
     cfg = {**_CAMPAIGN_CFG, "instruments": "csi300",
            "benchmark_code": "SH000300TR",
            "attribution_sleeve_grouping": False,
@@ -139,10 +140,18 @@ def _mk_reference_run(root: Path, cfg_over: dict | None = None,
         # completed reference folds must be DOCUMENTED by their own
         # official fold report (codex #373 r2); the report also binds
         # the positions series (declared path + window, codex r4).
+        # ``authenticated`` models a producer that embeds an immutable
+        # turnover binding (codex r9) — the production reference today
+        # does NOT (sleeve grouping off per the #371 pin), which blocks
+        # promotion but not vetoes.
         (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
             "fold_index": i,
             "positions_path": f"fold_{i:02d}_positions.json",
-            "sleeve_turnover": None,   # grouping off per the #371 pin
+            "sleeve_turnover": ({
+                "csi300_sleeve": {"total_oneway": 0.10,
+                                  "daily_mean_oneway": 0.05,
+                                  "n_transitions": 2.0},
+            } if authenticated else None),
             "backtest": {
                 "metric_status": "official",
                 "report": {"start_date": "2024-01-02",
@@ -202,6 +211,8 @@ def test_clean_attach_completes_and_is_eligible():
         assert c3["conservative_over_reference_ratio"] == pytest.approx(1.0)
         assert c3["coverage_problems"] == []
         assert c3["ref_failed_folds"] == []
+        assert c3["reference_content_binding"] == "embedded_sleeve_turnover"
+        assert "promotion_blocked_reason" not in r
         # rewritten in place
         assert json.loads(pair_p.read_text(encoding="utf-8"))[
             "promotion_eligible"] is True
@@ -315,6 +326,24 @@ def test_reference_nonofficial_fold_report_refuses():
         rep_p.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(SystemExit, match="not a documented"):
             attach(pair_p, base, cons, ref)
+
+
+def test_unauthenticated_reference_blocks_promotion_not_vetoes():
+    # codex #373 r9: without an immutable producer binding for reference
+    # positions (the production state today), an otherwise fully-passing
+    # checklist must NOT emit promotion_eligible=true — but the checks
+    # are still recorded (unauthenticated evidence may support a veto,
+    # never a promotion).
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02,
+                                           authenticated=False)
+        r = attach(pair_p, base, cons, ref)
+        c3 = r["veto_checklist"]["3_turnover_vs_csi300_ref"]
+        assert c3["veto_triggered"] is False
+        assert c3["reference_content_binding"] == (
+            "window_only_unauthenticated")
+        assert r["promotion_eligible"] is False
+        assert "unauthenticated" in r["promotion_blocked_reason"]
 
 
 def test_duplicate_reference_fold_entry_refuses():
