@@ -1,0 +1,129 @@
+"""Unit tests for the CSI800 paired sensitivity-band report tool.
+
+Coverage matrix (>=1 case per dimension):
+  clean pair      — projected diff exactly slippage_bps(5->20), report
+                    carries both run ids + veto-1 verdict.
+  projection      — differing output_dir (run-identity) does NOT refuse.
+  semantic drift  — a non-whitelisted field differing refuses.
+  band tampering  — conservative slippage != 20 refuses (DP-2).
+  missing side    — absent conservative dir refuses (invalid, not
+                    pending).
+  identity        — non-csi800 universe / wrong benchmark refuses;
+                    non-official metric_status refuses.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+import yaml
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from scripts.research.csi800_campaign_pair_report import (  # noqa: E402
+    PairReportError,
+    build_pair_report,
+)
+
+_BASE_CFG = {
+    "mode": "pipeline",
+    "instruments": "csi800",
+    "benchmark_code": "SH000906TR",
+    "topk": 50,
+    "n_drop": 5,
+    "slippage_bps": 5.0,
+    "output_dir": "output/walk_forward/csi800_base",
+}
+
+
+def _mk_run(root: Path, name: str, cfg: dict, net_ann: float = -0.02,
+            status: str = "official") -> Path:
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "config.yaml").write_text(
+        yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    (d / "metrics.json").write_text(json.dumps({
+        "metric_status": status,
+        "official_metrics": {
+            "excess_return_with_cost": {"annualized_return": net_ann},
+        },
+        "benchmark": {"code": cfg.get("benchmark_code")},
+    }), encoding="utf-8")
+    return d
+
+
+def _cons_cfg(**over) -> dict:
+    cfg = dict(_BASE_CFG)
+    cfg["slippage_bps"] = 20.0
+    cfg["output_dir"] = "output/walk_forward/csi800_conservative"
+    cfg.update(over)
+    return cfg
+
+
+def test_clean_pair_builds_report_with_veto1():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG, net_ann=0.01)
+        b = _mk_run(root, "run_b", _cons_cfg(), net_ann=-0.02)
+        r = build_pair_report(a, b)
+        assert r["base"]["run_id"] == "run_a"
+        assert r["conservative"]["run_id"] == "run_b"
+        assert set(r["config_diff_projected"]) == {"slippage_bps"}
+        # output_dir differed but is projection-whitelisted.
+        assert r["projection_whitelist"] == ["output_dir"]
+        v1 = r["veto_checklist"]["1_conservative_net_excess"]
+        assert v1["veto_triggered"] is True   # -0.02 <= 0
+        # the other checks are explicit nulls, never silently "passed".
+        assert r["veto_checklist"]["2_csi500_dependence"] is None
+
+
+def test_semantic_field_drift_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG)
+        b = _mk_run(root, "run_b", _cons_cfg(topk=60))
+        with pytest.raises(PairReportError, match="slippage_bps"):
+            build_pair_report(a, b)
+
+
+def test_band_tampering_refuses():
+    # DP-2: the conservative magnitude is pre-registered; 12bps is not a
+    # legal band even though it "differs only in slippage".
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG)
+        b = _mk_run(root, "run_b", _cons_cfg(slippage_bps=12.0))
+        with pytest.raises(PairReportError, match="20.0"):
+            build_pair_report(a, b)
+
+
+def test_missing_conservative_side_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG)
+        with pytest.raises(PairReportError, match="absent side|missing"):
+            build_pair_report(a, root / "nope")
+
+
+def test_wrong_universe_or_status_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a",
+                    {**_BASE_CFG, "instruments": "csi300",
+                     "benchmark_code": "SH000300TR"})
+        b = _mk_run(root, "run_b",
+                    _cons_cfg(instruments="csi300",
+                              benchmark_code="SH000300TR"))
+        with pytest.raises(PairReportError, match="csi800"):
+            build_pair_report(a, b)
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_run(root, "run_a", _BASE_CFG, status="research")
+        b = _mk_run(root, "run_b", _cons_cfg())
+        with pytest.raises(PairReportError, match="official"):
+            build_pair_report(a, b)
