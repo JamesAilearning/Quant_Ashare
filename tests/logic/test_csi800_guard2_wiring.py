@@ -190,6 +190,60 @@ class TestSleeveFailuresFatalInWalkForwardFold:
                 )
 
 
+class TestPipelineAttributionEnginePolicy:
+    """codex #370 r5: the pipeline's engine-failure policy, directly
+    unit-tested via the extracted ``_run_attribution_engine`` — the
+    broad catch-all must honor the sleeve fatal predicate too."""
+
+    def _call(self, cfg, exc):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from src.core.performance_attribution import PerformanceAttribution
+        from src.core.pipeline import AttributionConfig, Pipeline
+        bt = SimpleNamespace(
+            return_series={"return": {}, "bench": {}, "cost": {}},
+            positions={"2025-07-01": {"SH600000": 1.0}})
+        with patch.object(PerformanceAttribution, "analyze",
+                          side_effect=exc):
+            return Pipeline._run_attribution_engine(
+                config=cfg,
+                attribution_config=AttributionConfig(),
+                backtest_output=bt,
+                predictions=object(),
+                pit_provider=None,
+            )
+
+    def test_unexpected_error_fatal_with_sleeve_on(self):
+        from src.core.pipeline import PipelineConfig, PipelineError
+        cfg = PipelineConfig(provider_uri="D:/fake",
+                             attribution_sleeve_grouping=True)
+        with pytest.raises(PipelineError, match="unexpectedly"):
+            self._call(cfg, ValueError("malformed"))
+
+    def test_engine_error_fatal_with_sleeve_on(self):
+        from src.core.performance_attribution import (
+            PerformanceAttributionError,
+        )
+        from src.core.pipeline import PipelineConfig, PipelineError
+        cfg = PipelineConfig(provider_uri="D:/fake",
+                             attribution_sleeve_grouping=True)
+        with pytest.raises(PipelineError, match="engine failed"):
+            self._call(cfg, PerformanceAttributionError("degenerate"))
+
+    def test_downgrades_preserved_with_sleeve_off(self):
+        from src.core.performance_attribution import (
+            PerformanceAttributionError,
+        )
+        from src.core.pipeline import PipelineConfig
+        cfg = PipelineConfig(provider_uri="D:/fake")
+        result, reason = self._call(cfg, ValueError("malformed"))
+        assert result is None and reason.startswith("unexpected_error:")
+        result, reason = self._call(
+            cfg, PerformanceAttributionError("degenerate"))
+        assert result is None and reason.startswith("engine_error:")
+
+
 class TestRiskConstraintProvenance:
     def _request(self):
         from src.core.canonical_backtest_contract import (

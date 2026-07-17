@@ -26,6 +26,7 @@ from src.core.attribution_industry_loader import (
 from src.core.attribution_sleeve_loader import (
     SleeveResolutionError,
     resolve_sleeve_map,
+    sleeve_turnover,
 )
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
@@ -659,6 +660,7 @@ class Pipeline:
         # to look identical in the report (no ``attribution`` block at
         # all), even though only the second is a degraded run.
         attribution_skipped_reason: str | None = None
+        sleeve_turnover_block: dict[str, dict[str, float]] | None = None
         if not config.run_attribution:
             attribution_skipped_reason = "disabled_by_config"
         else:
@@ -731,62 +733,22 @@ class Pipeline:
                 if attribution_config is None:
                     pass  # already handled above
                 else:
-                    try:
-                        attribution_result = PerformanceAttribution.analyze(
-                            return_series=backtest_output.return_series,
-                            predictions=model_result.predictions,
-                            config=attribution_config,
-                            positions=backtest_output.positions,
-                            pit_provider=pit_provider,
-                        )
-                        PerformanceAttribution.print_report(attribution_result)
-                    except PerformanceAttributionError as exc:
-                        # guard-2 (codex P1 on #370 r4): sleeve grouping
-                        # makes ANY attribution failure fatal — a csi800
-                        # run must never complete without its sleeve
-                        # report.
-                        if cls._attribution_failure_is_fatal(config):
-                            raise PipelineError(
-                                "attribution_sleeve_grouping=True but the "
-                                f"attribution engine failed ({exc}) — the "
-                                "mandatory sleeve report cannot be built; "
-                                "refusing to emit bare csi800 metrics "
-                                "(v2-csi800-expansion-guards)."
-                            ) from exc
-                        # Degenerate inputs (e.g. all-non-positive predictions,
-                        # all-zero position weights) raise from the attribution
-                        # engine by design — they would otherwise be silently
-                        # masked by a uniform-weighting fallback. Downgrade to
-                        # "skipped with loud WARNING" so the run can still
-                        # finish (backtest + report are already valid) while
-                        # making the degradation visible to callers.
-                        attribution_result = None
-                        attribution_skipped_reason = (
-                            f"engine_error: {type(exc).__name__}: {exc}"
-                        )
-                        _logger.warning(
-                            "Performance attribution skipped — engine raised "
-                            "%s: %s. Backtest and risk_analysis remain valid; "
-                            "only the sector-attribution block is absent from "
-                            "the report.",
-                            type(exc).__name__, exc,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        # Catch-all for non-PerformanceAttributionError
-                        # failures inside the attribution engine — bare
-                        # ValueError from float(v), RuntimeError/KeyError
-                        # from qlib D.features(), pandas groupby ValueError,
-                        # etc. Same downgrade pattern as FactorAnalyzer and
-                        # ResultVisualizer: skip + WARN, preserve backtest.
-                        attribution_result = None
-                        attribution_skipped_reason = (
-                            f"unexpected_error: {type(exc).__name__}: {exc}"
-                        )
-                        _logger.warning(
-                            "Performance attribution skipped — unexpected "
-                            "error in engine: %s: %s. Backtest and "
-                            "risk_analysis remain valid.",
-                            type(exc).__name__, exc,
+                    (attribution_result,
+                     attribution_skipped_reason) = cls._run_attribution_engine(
+                        config=config,
+                        attribution_config=attribution_config,
+                        backtest_output=backtest_output,
+                        predictions=model_result.predictions,
+                        pit_provider=pit_provider,
+                    )
+                    # guard-2 (codex P1 on #370 r5): pipeline runs persist
+                    # the per-sleeve turnover too — schema parity with the
+                    # walk-forward fold report.
+                    if (attribution_result is not None
+                            and config.attribution_sleeve_grouping):
+                        sleeve_turnover_block = sleeve_turnover(
+                            backtest_output.positions,
+                            attribution_config.industry_map_override or {},
                         )
 
         # Step 8: Write report
@@ -798,6 +760,7 @@ class Pipeline:
                 attribution_skipped_reason=attribution_skipped_reason,
                 factor_skipped_reason=factor_skipped_reason,
                 git_provenance=git_provenance,  # captured at run start, not write time
+                sleeve_turnover=sleeve_turnover_block,
             )
             _logger.info("  Report: %s", report_path)
         except Exception as exc:  # noqa: BLE001
@@ -950,6 +913,7 @@ class Pipeline:
         attribution_skipped_reason: str | None = None,
         factor_skipped_reason: str | None = None,
         git_provenance: Mapping[str, Any] | None = None,
+        sleeve_turnover: Mapping[str, Mapping[str, float]] | None = None,
     ) -> None:
         # Two engines, one schema: pipeline_report.json and walk_forward_report.json
         # carry the SAME top-level git_commit / git_dirty provenance fields, so the
@@ -1021,6 +985,14 @@ class Pipeline:
                 "skipped_reason": factor_skipped_reason,
             }
 
+        # CSI800 guard-2 (codex P1 on #370 r5): pipeline reports carry
+        # the per-sleeve turnover too — the two runtime report schemas
+        # stay parallel (explicit null when sleeve grouping is off, same
+        # convention as the walk-forward fold report).
+        report["sleeve_turnover"] = (
+            {k: dict(v) for k, v in sleeve_turnover.items()}
+            if sleeve_turnover is not None else None
+        )
         report["attribution"] = Pipeline._attribution_section(
             attribution_result, attribution_skipped_reason,
         )
@@ -1084,6 +1056,77 @@ class Pipeline:
         resolution failure (stale/missing membership coverage) fails
         the whole run instead of degrading it."""
         return config.attribution_sleeve_grouping
+
+    @classmethod
+    def _run_attribution_engine(
+        cls,
+        *,
+        config: PipelineConfig,
+        attribution_config: AttributionConfig,
+        backtest_output: CanonicalBacktestOutput,
+        predictions: Any,
+        pit_provider: Any | None,
+    ) -> tuple[AttributionResult | None, str | None]:
+        """Invoke the attribution engine under the guard-2 failure policy.
+
+        Extracted from ``run()`` so the policy is directly unit-testable
+        (codex P1 on #370 r5): with ``attribution_sleeve_grouping`` on,
+        EVERY engine failure — ``PerformanceAttributionError`` and the
+        broad catch-all alike — raises ``PipelineError`` instead of
+        downgrading to a skipped block; without it, both downgrade to
+        "skip + WARN" exactly as before."""
+        try:
+            result = PerformanceAttribution.analyze(
+                return_series=backtest_output.return_series,
+                predictions=predictions,
+                config=attribution_config,
+                positions=backtest_output.positions,
+                pit_provider=pit_provider,
+            )
+            PerformanceAttribution.print_report(result)
+            return result, None
+        except PerformanceAttributionError as exc:
+            if cls._attribution_failure_is_fatal(config):
+                raise PipelineError(
+                    "attribution_sleeve_grouping=True but the attribution "
+                    f"engine failed ({exc}) — the mandatory sleeve report "
+                    "cannot be built; refusing to emit bare csi800 metrics "
+                    "(v2-csi800-expansion-guards)."
+                ) from exc
+            # Degenerate inputs (e.g. all-non-positive predictions,
+            # all-zero position weights) raise from the attribution engine
+            # by design. Downgrade to "skipped with loud WARNING" so the
+            # run still finishes (backtest + report are already valid).
+            _logger.warning(
+                "Performance attribution skipped — engine raised %s: %s. "
+                "Backtest and risk_analysis remain valid; only the "
+                "sector-attribution block is absent from the report.",
+                type(exc).__name__, exc,
+            )
+            return None, f"engine_error: {type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            # guard-2 (codex P1 on #370 r5): the fatal predicate covers
+            # the catch-all too — a bare ValueError inside the engine must
+            # not smuggle a sleeve-less csi800 report past the contract.
+            if cls._attribution_failure_is_fatal(config):
+                raise PipelineError(
+                    "attribution_sleeve_grouping=True but attribution "
+                    f"failed unexpectedly ({type(exc).__name__}: {exc}) — "
+                    "the mandatory sleeve report cannot be built; refusing "
+                    "to emit bare csi800 metrics "
+                    "(v2-csi800-expansion-guards)."
+                ) from exc
+            # Catch-all for non-PerformanceAttributionError failures inside
+            # the attribution engine — bare ValueError from float(v),
+            # RuntimeError/KeyError from qlib D.features(), pandas groupby
+            # ValueError, etc. Same downgrade pattern as FactorAnalyzer and
+            # ResultVisualizer: skip + WARN, preserve backtest.
+            _logger.warning(
+                "Performance attribution skipped — unexpected error in "
+                "engine: %s: %s. Backtest and risk_analysis remain valid.",
+                type(exc).__name__, exc,
+            )
+            return None, f"unexpected_error: {type(exc).__name__}: {exc}"
 
     @staticmethod
     def _build_attribution_config(config: PipelineConfig) -> AttributionConfig:
