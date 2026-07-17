@@ -25,7 +25,10 @@ through the certified aggregate's DECLARED ``folds[].report_path``
 entries (confined resolver + fold_index ownership, guard-1's own) — never
 by globbing the directory, so a stale/injected extra fold report can
 neither satisfy coverage counts nor substitute a certified fold's
-evidence. The ``--reference-run`` is bound structurally AND as a
+evidence — and each resolved fold report's BYTES must hash to the
+``fold_report_sha256`` map the pair report pinned at generation time
+(schema v2, codex r5): a fold report replaced post-pairing, even
+self-consistently with its positions series, refuses. The ``--reference-run`` is bound structurally AND as a
 documented run: its embedded config's projected diff against the
 certified base config must be EXACTLY the #371-pinned reference fields
 (``instruments``/``benchmark_code``/``attribution_sleeve_grouping``),
@@ -138,14 +141,19 @@ class AttachError(SystemExit):
 
 def _certified_fold_reports(
         run_dir: Path, aggregate: dict[str, Any],
+        expected_hashes: dict[str, str],
 ) -> list[tuple[int, dict[str, Any]]]:
     """Fold evidence resolved through the certified aggregate's DECLARED
     ``folds[].report_path`` entries — never by globbing the directory
     (codex #373 r2 P1: a stale/injected extra ``fold_XX_report.json``
     must not be able to satisfy count-based coverage while a certified
     fold's evidence is absent or replaced). Every declared fold must
-    resolve (confined to the run dir, guard-1's resolver) and carry its
-    own ``fold_index``."""
+    resolve (confined to the run dir, guard-1's resolver), carry its own
+    ``fold_index``, and its BYTES must hash to the pair report's pinned
+    ``fold_report_sha256`` entry (codex #373 r5 P1: the aggregate stores
+    only report_path, so without this pin a fold report could be
+    replaced post-pairing together with its positions in a
+    self-consistent way)."""
     out: list[tuple[int, dict[str, Any]]] = []
     for entry in aggregate.get("folds") or []:
         idx = entry.get("fold_index")
@@ -156,8 +164,15 @@ def _certified_fold_reports(
                 "a certified paired side has no failed folds; torn "
                 "aggregate, refusing.")
         resolved = _resolve_fold_report(run_dir, str(rp))
-        payload: dict[str, Any] = json.loads(
-            resolved.read_text(encoding="utf-8"))
+        raw = resolved.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        pinned = expected_hashes.get(str(idx))
+        if digest != pinned:
+            raise AttachError(
+                f"{resolved} sha256 {digest} != pair-report pinned "
+                f"{pinned!r} for fold {idx!r} — fold evidence changed "
+                "after pairing, refusing.")
+        payload: dict[str, Any] = json.loads(raw.decode("utf-8"))
         if payload.get("fold_index") != idx:
             raise AttachError(
                 f"{resolved} carries fold_index="
@@ -191,6 +206,13 @@ def _bind_paired_side(
             f"--{label}-run {run_dir} is not a walk-forward campaign "
             "artifact (no num_folds) — the attach step only certifies "
             "the campaign shape.")
+    expected_hashes = pair_entry.get("fold_report_sha256")
+    if not isinstance(expected_hashes, dict) or not expected_hashes:
+        raise AttachError(
+            f"pair-report {label} entry carries no fold_report_sha256 "
+            "map (pre-v2 artifact) — regenerate the pair report with the "
+            "current guard-1 tool; unpinned fold evidence cannot be "
+            "consumed.")
     # Parse the same bytes the certified hash covers, then enumerate the
     # DECLARED fold set through it.
     raw = (run_dir / "walk_forward_report.json").read_bytes()
@@ -199,7 +221,7 @@ def _bind_paired_side(
             f"--{label}-run {run_dir} aggregate changed between binding "
             "reads — refusing.")
     aggregate: dict[str, Any] = json.loads(raw.decode("utf-8"))
-    folds = _certified_fold_reports(run_dir, aggregate)
+    folds = _certified_fold_reports(run_dir, aggregate, expected_hashes)
     if len(folds) != num_folds:
         raise AttachError(
             f"--{label}-run {run_dir} declares num_folds={num_folds} but "

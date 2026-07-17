@@ -170,6 +170,10 @@ def test_walk_forward_pair_builds_report():
         r = build_pair_report(a, b)
         assert r["base"]["artifact_shape"] == "walk_forward"
         assert set(r["config_diff_projected"]) == {"slippage_bps"}
+        # v2: each side pins its declared fold reports' content hashes
+        # (codex #373 r5 — post-pairing fold evidence must be verifiable)
+        assert set(r["base"]["fold_report_sha256"]) == {"0"}
+        assert len(r["base"]["fold_report_sha256"]["0"]) == 64
         v1 = r["veto_checklist"]["1_conservative_net_excess"]
         assert v1["value_annualized"] == -0.015
         assert v1["veto_triggered"] is True

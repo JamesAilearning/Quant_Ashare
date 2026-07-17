@@ -163,7 +163,8 @@ def _mk_reference_run(root: Path, cfg_over: dict | None = None,
     return d
 
 
-def _mk_trio(root: Path, cons_net: float = 0.02, **ref_kwargs):
+def _mk_trio(root: Path, cons_net: float = 0.02, pre_pair=None,
+             **ref_kwargs):
     base = _mk_campaign_run(root, "base", _CAMPAIGN_CFG, mean_net=0.05)
     cons = _mk_campaign_run(
         root, "cons",
@@ -171,10 +172,21 @@ def _mk_trio(root: Path, cons_net: float = 0.02, **ref_kwargs):
          "output_dir": "output/walk_forward/cons"},
         mean_net=cons_net)
     ref = _mk_reference_run(root, **ref_kwargs)
+    if pre_pair is not None:
+        # run-state edits that must exist BEFORE pairing (the pair
+        # report pins per-fold report hashes at generation time).
+        pre_pair(base, cons, ref)
     pair_p = root / "pair.json"
     pair_p.write_text(json.dumps(build_pair_report(base, cons)),
                       encoding="utf-8")
     return pair_p, base, cons, ref
+
+
+def _set_attribution(run_dir: Path, fold: int, block) -> None:
+    rep_p = run_dir / f"fold_{fold:02d}_report.json"
+    payload = json.loads(rep_p.read_text(encoding="utf-8"))
+    payload["attribution"] = block
+    rep_p.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_clean_attach_completes_and_is_eligible():
@@ -210,12 +222,13 @@ def test_tampered_run_dir_refuses_binding():
 
 
 def test_partial_sleeve_attribution_fails_closed():
+    # non-ok attribution present at PAIRING time (a genuinely degraded
+    # run, not post-pairing tampering) fails closed on checks 2 and 5.
     with tempfile.TemporaryDirectory() as t:
-        pair_p, base, cons, ref = _mk_trio(Path(t))
-        rep_p = cons / "fold_01_report.json"
-        payload = json.loads(rep_p.read_text(encoding="utf-8"))
-        payload["attribution"] = {"status": "skipped_no_data"}
-        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+        pair_p, base, cons, ref = _mk_trio(
+            Path(t),
+            pre_pair=lambda b, c, r: _set_attribution(
+                c, 1, {"status": "skipped_no_data"}))
         r = attach(pair_p, base, cons, ref)
         vc = r["veto_checklist"]
         assert vc["2_csi500_dependence"]["veto_triggered"] is True
@@ -271,18 +284,17 @@ def test_injected_extra_fold_report_cannot_stand_in():
     # aggregate's DECLARED report_path set — an injected extra report
     # with favorable attribution must not repair coverage lost when a
     # certified fold's attribution is non-ok.
-    with tempfile.TemporaryDirectory() as t:
-        pair_p, base, cons, ref = _mk_trio(Path(t))
-        rep_p = cons / "fold_01_report.json"
-        payload = json.loads(rep_p.read_text(encoding="utf-8"))
-        payload["attribution"] = {"status": "skipped_no_data"}
-        rep_p.write_text(json.dumps(payload), encoding="utf-8")
-        # inject an undeclared extra fold report with ok attribution
+    def degrade_and_inject(_b: Path, c: Path, _r: Path) -> None:
+        _set_attribution(c, 1, {"status": "skipped_no_data"})
         extra = json.loads(
-            (cons / "fold_00_report.json").read_text(encoding="utf-8"))
+            (c / "fold_00_report.json").read_text(encoding="utf-8"))
         extra["fold_index"] = 2
-        (cons / "fold_02_report.json").write_text(json.dumps(extra),
-                                                  encoding="utf-8")
+        (c / "fold_02_report.json").write_text(json.dumps(extra),
+                                               encoding="utf-8")
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t),
+                                           pre_pair=degrade_and_inject)
         r = attach(pair_p, base, cons, ref)
         vc = r["veto_checklist"]
         # only the DECLARED folds count: 1/2 ok -> fail closed.
@@ -302,6 +314,19 @@ def test_reference_nonofficial_fold_report_refuses():
         payload["backtest"]["metric_status"] = "degraded"
         rep_p.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(SystemExit, match="not a documented"):
+            attach(pair_p, base, cons, ref)
+
+
+def test_post_pairing_fold_report_tamper_refuses():
+    # codex #373 r5: the pair report pins each declared fold report's
+    # content hash at generation time — a fold report replaced AFTER
+    # pairing (even self-consistently with its positions) refuses.
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t))
+        _set_attribution(cons, 1, {"status": "ok",
+                                   "sector_attribution": _SLEEVE_ROWS,
+                                   "sector_effects_sum": 0.5})
+        with pytest.raises(SystemExit, match="changed after pairing"):
             attach(pair_p, base, cons, ref)
 
 

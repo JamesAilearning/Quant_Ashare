@@ -46,7 +46,10 @@ BASE_SLIPPAGE_BPS = 5.0
 CONSERVATIVE_SLIPPAGE_BPS = 20.0
 CAMPAIGN_UNIVERSE = "csi800"
 CAMPAIGN_BENCHMARK = "SH000906TR"
-SCHEMA_VERSION = "csi800_pair_report_v1"
+# v2: walk-forward sides pin per-fold report content hashes
+# (``fold_report_sha256``) so post-pairing fold evidence is verifiable
+# (codex #373 r5).
+SCHEMA_VERSION = "csi800_pair_report_v2"
 
 
 class PairReportError(RuntimeError):
@@ -164,10 +167,20 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
     if not folds:
         raise PairReportError(f"{wf_p} has no folds — nothing to certify.")
     # Per-fold official status lives in each fold's own report
-    # (the aggregate deliberately keeps fold summaries compact).
+    # (the aggregate deliberately keeps fold summaries compact). The
+    # aggregate records only report_path (no per-fold digest), so the
+    # PAIR REPORT is where each fold report's content hash is pinned
+    # (codex #373 r5 P1): downstream veto tooling verifies these hashes
+    # before consuming any fold payload, otherwise a fold report could
+    # be replaced post-pairing together with its positions series in a
+    # self-consistent way.
+    fold_report_sha256: dict[str, str] = {}
     for f in folds:
         fold_report = _resolve_fold_report(run_dir, str(f["report_path"]))
-        payload = json.loads(fold_report.read_text(encoding="utf-8"))
+        raw = fold_report.read_bytes()
+        fold_report_sha256[str(f.get("fold_index"))] = hashlib.sha256(
+            raw).hexdigest()
+        payload = json.loads(raw.decode("utf-8"))
         # the selected fold must BELONG to this aggregate entry (codex
         # #369 r5): the producer stamps fold_index into each fold report.
         if payload.get("fold_index") != f.get("fold_index"):
@@ -215,6 +228,7 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
         "config": cfg,
         "config_sha256": _config_sha256(cfg),
         "report_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
+        "fold_report_sha256": fold_report_sha256,
         "metric_status": "official",   # proven per fold above
         # normalized to the pipeline shape so the veto computation is
         # shape-agnostic; fold headline metrics ARE the with-cost excess.
@@ -329,8 +343,8 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
     base_net = _require_finite_net(base, "base")
     cons_net = _require_finite_net(cons, "conservative")
     side_keys = ("run_id", "artifact_shape", "config_sha256",
-                 "report_sha256", "official_metrics", "benchmark",
-                 "num_folds", "per_fold_net_annualized")
+                 "report_sha256", "fold_report_sha256", "official_metrics",
+                 "benchmark", "num_folds", "per_fold_net_annualized")
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "projection_whitelist": sorted(RUN_IDENTITY_FIELDS),
