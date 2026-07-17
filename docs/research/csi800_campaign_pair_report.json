@@ -1,0 +1,228 @@
+{
+  "schema_version": "csi800_pair_report_v2",
+  "projection_whitelist": [
+    "output_dir"
+  ],
+  "config_diff_projected": {
+    "slippage_bps": {
+      "base": 5.0,
+      "conservative": 20.0
+    }
+  },
+  "base": {
+    "run_id": "csi800_campaign_base",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "889d8b0fd4aa67b04accf6a2a4d3e05965cd6a90c24e10369086176ab7977cdb",
+    "report_sha256": "a57252bb6ad12d987705d68fa1a06e8fbaa3d11bab79ea802618e33dfee8fb02",
+    "fold_report_sha256": {
+      "0": "9092dabfedb41326ba4edb65896c9042f7562751c3401943958ad2ad91fd617c",
+      "1": "a53a53970658be412c8ae44552945bd824dff8d736ff1acc026416928d900b46",
+      "2": "51f9576dd664f8992dbd2431cf735a64cd74d6734caefb0a4a11e551d8773d52",
+      "3": "b2328153957c0e58c39353d7e0416d4f3099df14fdbf0cc27b2d7504f7a6c073",
+      "4": "ea124ad49da5fcb4524eb6a38068a2d439c7a58cb151f508fa7d71dc5bfbdce9",
+      "5": "89b69cce2ce472b64980abd139f7adae461114a3381315b1c3fff95901e08ca8",
+      "6": "037e7c7d3dfddcb95cf45302395dcbc27eb01d3318c95a821021db9ba0a30243",
+      "7": "37154052f948097b46d212e1caa115abeb0744d5b2f33a9988037b2c80698783",
+      "8": "9da276ba0e72741914982b2a1e35ab02ffbde2a4f3d1a0c9784474247c49827c",
+      "9": "55ab74d8cea93507e5ff3a00cd329c312286b4037fa653df7ad17fe17f42f28b",
+      "10": "7853017d82499cb5eb609b519b5019e4407ae61009cb2dd3a9b07a1f55978dfb",
+      "11": "26d38cb0848082e1557a5205760c59137dc110d7ad5b3a948df0e3e27bb3c3a0",
+      "12": "e36a14a8f6d3039e9d6de46a8f874d8d6ffb168c25de63582ba98689ac41d502",
+      "13": "6c806a375a57a5c50fb7a25c8aadea0f1f2aa9a1c685d5f2b577d6d943dfb436",
+      "14": "a90ec6f53c946e5759e2e433f0fd2fb188aa3593befb4510586913bb9239f271",
+      "15": "970a06f526418697c651248019501d43923a8f89bf2d48bee23b6e5ce9f77ca7",
+      "16": "051e49d50859b4c8fd769be63921502c9bf5f3da7f1bf408d8aefd1d3968fe72",
+      "17": "d75fe03508620726d2a6aed36dad272afae305bddb7c8919d43747848853169c",
+      "18": "64d1deb49736a2289c7ebccbd5269c780dea707b85820f0dfd360e4a4bedfddc",
+      "19": "c9517e279563e368cfffc893ec6bcebd60a6422f9ba7d6506e170494c5fb2b3c",
+      "20": "54c84f9e20990ac77372f3605fabf84dac3968c24e15a531cf7f7ba7617bd550",
+      "21": "186bbde8214ac565576a558100fabab38729de5a74209ffd29dab2bf34362471",
+      "22": "11544f5f9bb71449bba07ec9c137d2d1c8abe5a4cb3653fc4a6020f007675a4b"
+    },
+    "official_metrics": {
+      "excess_return_with_cost": {
+        "annualized_return": 0.060802536991864324,
+        "information_ratio": 0.4148652747132539,
+        "max_drawdown": -0.1396057619219939
+      }
+    },
+    "benchmark": {
+      "code": "SH000906TR"
+    },
+    "num_folds": 23,
+    "per_fold_net_annualized": [
+      0.010860596098499995,
+      -0.14677620717420392,
+      -0.4256369653324007,
+      0.3752553314354393,
+      0.222475479105284,
+      0.1848066109647426,
+      -0.13093096276376248,
+      0.4128830494094423,
+      0.5282133274644882,
+      -0.13331696452185346,
+      0.21997074810126105,
+      0.14628307218154984,
+      -0.019237404535654517,
+      -0.31300845043229325,
+      0.08338079997951618,
+      0.29803381479133795,
+      -0.04374861381826446,
+      -0.10727954208574539,
+      0.21367516706828954,
+      0.6344358695997904,
+      0.03522177979893273,
+      -0.5085987520206591,
+      -0.13850343250085778
+    ]
+  },
+  "conservative": {
+    "run_id": "csi800_campaign_conservative",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "9db2f69241c6c66dbd7c2eeb58fedecf414602fd60c027698f8e9eb85da70ddf",
+    "report_sha256": "b6c2fb92966d80ddf7656d26c6e51ae0fb782fb6f23c5a2356fe46482a261469",
+    "fold_report_sha256": {
+      "0": "06898f6f8f1a823dd81dc945e579bc2b649ec49686eb03203e7fc4dee2ddd5b4",
+      "1": "16e6c6cd9ef92632b5b1059624e3eac92aa1ab0081b7e017b20b2805e6421c29",
+      "2": "7833c81245c07d10e232b2d7f355b7a9f4d3c81e8ae3f0844ea78784cc47e808",
+      "3": "01c3239b2dab2a370ec8b1c712e9fd657c6ab92c3e8b9d8f8899ade91c76d376",
+      "4": "046823c5de4e3d339004906186982dcd8a43edea31c9adeff5f2e2be53493b5f",
+      "5": "4e1fa8d1f43edcc21eb78cefe1389547ced2b84f5ae1547929290204d8c1d906",
+      "6": "b4bd56aa8e42f08d8e195e48bd135f9710b4743526e458497458a06f83f92f49",
+      "7": "9aaab0888a36a801c84fdfc28cacff6f3600cfb3216f4016502e978b5b7437e1",
+      "8": "10f919a5b6405f4b7b2aac206434262e91b730f83ba3e713d7d122bdaded6a41",
+      "9": "67d0ac727e55e39d76e4341793e10849edb4e6b0420062946d6b58cedfc98270",
+      "10": "6be838a26e36bfa5de6fbd9f3299ba9adb747b66eeb253a611a8536dd9b87cc9",
+      "11": "4b6345aae2ce4c2806899a27cdf91139a4aed90434c28d39f32f90d1a3c05492",
+      "12": "31f61eada3be4636e094a3a99fb9a4554873b6343d6f40282372e8f2ed13caff",
+      "13": "032cb864f737bff91ec655a7f6b238d3ba4c96cfafc81a097cd230b48580dd31",
+      "14": "2c1b5bd4af3e894bfbf5e66504a646aae3aa07bd16ffbea5b0ee0f0c961ed828",
+      "15": "1144b675e714a18cd3c8cb7a024372bc071a1951d5844e15e47f7e4ab91807c4",
+      "16": "b769d44749b82a96d8f76cb137730977163a130ea4f51ccc367a4478fbe9c68f",
+      "17": "a5b6ef3457add93ff83299e52ee2e4fd7bec91460597ae7762aadf1b61095618",
+      "18": "c88e610abdef2133ca16f46de74811e5a872ea9569319d0715440a986d1a50ed",
+      "19": "f64f15fa6a2485f9ca0533c49ebdfc97ecdfa14d00eeb9a37776f9a6ad33b569",
+      "20": "5994387a435d786d9ace19985821cf88e9f9488292c1ad47760aa2f7a18a203d",
+      "21": "7315beeed9f272146d7f7ad8ce23e7952e8a0ab73d64f1d561d8335d98af259b",
+      "22": "6d9e38dbba059337199a5df0f2cb935f572e13bd62803bc4719258933487d55b"
+    },
+    "official_metrics": {
+      "excess_return_with_cost": {
+        "annualized_return": -0.010221719963470134,
+        "information_ratio": -0.3051423576060475,
+        "max_drawdown": -0.15861736383386477
+      }
+    },
+    "benchmark": {
+      "code": "SH000906TR"
+    },
+    "num_folds": 23,
+    "per_fold_net_annualized": [
+      -0.05907056562027878,
+      -0.2142890959974588,
+      -0.4949069424819499,
+      0.3034692956984348,
+      0.15153895041157353,
+      0.11523599047315804,
+      -0.20149882387899845,
+      0.3400312292524688,
+      0.4608183074255412,
+      -0.20491846360786925,
+      0.14729285463185526,
+      0.07359162848985466,
+      -0.0910758855203646,
+      -0.38611745382825996,
+      0.009527493342710485,
+      0.22315774028317942,
+      -0.11664469017176142,
+      -0.17018144168291738,
+      0.14452150582407272,
+      0.5637827043334164,
+      -0.03741553927933732,
+      -0.5797117066249146,
+      -0.21223665063196798
+    ]
+  },
+  "veto_checklist": {
+    "1_conservative_net_excess": {
+      "value_annualized": -0.010221719963470134,
+      "base_value_annualized": 0.060802536991864324,
+      "veto_triggered": true
+    },
+    "2_csi500_dependence": {
+      "csi500_effect_share_of_gross": 0.7112791928674381,
+      "csi500_effect_sum": 0.44612,
+      "gross_effect_sum": 0.6272079999999999,
+      "folds_used": 23,
+      "expected_folds": 23,
+      "conservative_net_excess": -0.010221719963470134,
+      "threshold_share": 0.8,
+      "note": null,
+      "veto_triggered": false
+    },
+    "3_turnover_vs_csi300_ref": {
+      "conservative": {
+        "total_oneway": 139.11587413610104,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.10297251971584089,
+        "annualized_oneway": 24.50745969237013,
+        "valid_folds": 23.0
+      },
+      "base": {
+        "total_oneway": 139.3917171638524,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.1031766966423778,
+        "annualized_oneway": 24.556053800885916,
+        "valid_folds": 23.0
+      },
+      "csi300_reference": {
+        "total_oneway": 134.61103554687602,
+        "n_transitions": 1294.0,
+        "daily_mean_oneway": 0.10402707538398456,
+        "annualized_oneway": 24.758443941388325,
+        "valid_folds": 22.0
+      },
+      "conservative_over_reference_ratio": 0.9898626808044819,
+      "base_over_reference_ratio": 0.9918254095054788,
+      "threshold_ratio": 1.5,
+      "annualization_days": 238,
+      "ref_valid_folds": 22.0,
+      "ref_failed_folds": [
+        8
+      ],
+      "reference_content_binding": "window_only_unauthenticated",
+      "reference_embedded_turnover_verified": false,
+      "coverage_problems": [],
+      "veto_triggered": false
+    },
+    "4_risk_constraints_recorded": {
+      "expected": {
+        "max_per_name": 0.05,
+        "max_per_board": 1.0,
+        "cash_buffer_min": 0.0,
+        "max_leverage": 1.0,
+        "mode": "raise"
+      },
+      "folds_checked": 46,
+      "problems": [],
+      "veto_triggered": false
+    },
+    "5_midcap_concentration": {
+      "csi500_time_avg_weight": 0.4823478260869565,
+      "unknown_time_avg_weight": 0.0,
+      "folds_used": 23,
+      "expected_folds": 23,
+      "thresholds": {
+        "csi500": 0.75,
+        "unknown": 0.1
+      },
+      "veto_triggered": false
+    }
+  },
+  "promotion_eligible": false,
+  "incomplete_checks": [],
+  "veto_checklist_status": "COMPLETE",
+  "promotion_blockers": [
+    "reference_binding_unauthenticated: veto-3 reference turnover evidence is 'window_only_unauthenticated'; promotion structurally requires 'producer_digest_certified' (a producer-stamped positions digest bound to a certified reference artifact — not yet implemented by any producer; backlog), independent of the current veto verdict; codex #373 r9-r11."
+  ]
+}
