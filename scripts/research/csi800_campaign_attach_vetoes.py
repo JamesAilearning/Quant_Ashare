@@ -76,6 +76,23 @@ openspec/changes/2026-07-16-csi800-antiinflation-guards/specs/):
   required) of the csi500 sleeve ``portfolio_weight`` > 0.75, or of the
   ``unknown`` bucket > 0.10, in the conservative arm's sleeve attribution.
 
+Trust root (codex #373 r15)
+---------------------------
+The pair report lives on the SAME mutable filesystem as the run
+artifacts: an actor with full write access can rewrite the evidence and
+its pinned digests together — including this tool itself. No
+local-filesystem scheme can authenticate against that; the trust anchor
+for this evidence system is therefore the COMMITTED, REVIEWED pair
+report in git (post-pairing edits are visible in history/diff), and the
+attach step prints the final artifact's sha256 so operators/CI can
+compare it out-of-band against the committed bytes. The binding chain
+implemented here protects against accidental divergence and partial
+tampering; machine-verifiable immutability requires the producer-side
+certified digest that is ALREADY the structural promotion prerequisite
+(``PROMOTION_QUALIFYING_REF_BINDING``, r10) — promotion can never be
+minted from locally-editable evidence in the meantime, and consumers
+must read the committed artifact, never a working-tree copy.
+
 Usage::
 
     python scripts/research/csi800_campaign_attach_vetoes.py \
@@ -815,9 +832,15 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
         "COMPLETE" if not incomplete else
         "INCOMPLETE — NOT promotion-eligible; checks "
         + ", ".join(incomplete) + " must be attached and pass")
-    pair_report_path.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8")
+    final_bytes = (json.dumps(report, indent=2, ensure_ascii=False)
+                   + "\n").encode("utf-8")
+    pair_report_path.write_text(final_bytes.decode("utf-8"),
+                                encoding="utf-8")
+    # Out-of-band anchor (codex #373 r15): the filesystem copy is
+    # mutable — consumers must compare this digest against the
+    # COMMITTED artifact's bytes (git), which is the trust root.
+    print("pair report sha256 (compare against committed bytes): "
+          + hashlib.sha256(final_bytes).hexdigest())
     return report
 
 
