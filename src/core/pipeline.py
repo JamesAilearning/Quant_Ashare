@@ -23,6 +23,10 @@ from src.core.attribution_industry_loader import (
     assert_industry_config_complete_or_empty,
     resolve_industry_taxonomy,
 )
+from src.core.attribution_sleeve_loader import (
+    SleeveResolutionError,
+    resolve_sleeve_map,
+)
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -56,6 +60,7 @@ from src.core.qlib_runtime import (
     init_qlib_canonical,
     provider_uri_guard_message,
 )
+from src.core.risk_constraints import MinimalRiskConstraints
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
@@ -167,6 +172,14 @@ class PipelineConfig:
     industry_manifest_path: str | None = None
     industry_taxonomy_id: str = ""
     industry_temporal_mode: str = TAXONOMY_MODE_STATIC
+    # CSI800 expansion guard-2 (v2-csi800-expansion-guards): Brinson
+    # grouping by csi300/csi500 membership sleeves instead of industries
+    # (mutually exclusive with the industry artifact — one run, one
+    # grouping source), and mandatory position-level risk constraints
+    # (MinimalRiskConstraints defaults threaded into BacktestRunner.run,
+    # effective values recorded in provenance — veto-4).
+    attribution_sleeve_grouping: bool = False
+    risk_constraints_enabled: bool = False
 
     # output
     output_dir: str = "output"
@@ -188,6 +201,12 @@ class PipelineConfig:
             raise PipelineError(
                 "PipelineConfig.benchmark_code must be non-empty; the "
                 "canonical backtest contract requires a benchmark."
+            )
+        if self.attribution_sleeve_grouping and self.industry_artifact_path:
+            raise PipelineError(
+                "attribution_sleeve_grouping and industry_artifact_path "
+                "are mutually exclusive — one Brinson run takes exactly "
+                "one grouping source (v2-csi800-expansion-guards)."
             )
         h = self.label_horizon_days
         if not isinstance(h, int) or isinstance(h, bool) or h < 1:
@@ -536,6 +555,11 @@ class Pipeline:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
+            # CSI800 guard-2 (veto-4): campaign configs opt into the
+            # position-level constraints at their DEFAULT values; the
+            # effective values land in backtest provenance.
+            risk_constraints=(MinimalRiskConstraints()
+                              if config.risk_constraints_enabled else None),
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest (microstructure mask + equal-weight
             # baseline raw-field fetches take the §4.3.2 layer instead of
@@ -1031,6 +1055,26 @@ class Pipeline:
             "start_date": config.test_start,
             "end_date": config.test_end,
         }
+        if config.attribution_sleeve_grouping:
+            # CSI800 guard-2: membership sleeves as the Brinson grouping.
+            # Coverage violations (as_of past a sleeve's snapshot bound)
+            # fail LOUD — never a silently-stale sleeve report.
+            try:
+                sleeves = resolve_sleeve_map(
+                    config.provider_uri, config.test_start)
+            except SleeveResolutionError as exc:
+                raise PipelineError(str(exc)) from exc
+            _logger.info(
+                "Attribution sleeve grouping: csi300=%d csi500=%d "
+                "as_of=%s coverage_end=%s",
+                sleeves.n_csi300, sleeves.n_csi500,
+                sleeves.as_of, sleeves.coverage_end,
+            )
+            return AttributionConfig(
+                **base,
+                industry_map_override=sleeves.sleeve_map,
+                industry_taxonomy_id=sleeves.taxonomy_id,
+            )
         if not config.industry_artifact_path:
             return AttributionConfig(**base)
 

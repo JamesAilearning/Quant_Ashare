@@ -21,6 +21,10 @@ from src.core.attribution_industry_loader import (
     IndustryTaxonomyLoadError,
     resolve_industry_taxonomy,
 )
+from src.core.attribution_sleeve_loader import (
+    SleeveResolutionError,
+    resolve_sleeve_map,
+)
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     CanonicalAccountConfig,
@@ -40,7 +44,11 @@ from src.core.performance_attribution import (
     PerformanceAttribution,
     PerformanceAttributionError,
 )
-from src.core.qlib_runtime import is_canonical_qlib_initialized
+from src.core.qlib_runtime import (
+    get_canonical_qlib_config,
+    is_canonical_qlib_initialized,
+)
+from src.core.risk_constraints import MinimalRiskConstraints
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
     SignalAnalyzer,
@@ -855,6 +863,11 @@ class WalkForwardEngine:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
+            # CSI800 guard-2 (veto-4): campaign configs opt into the
+            # position-level constraints at their DEFAULT values; the
+            # effective values land in each fold's backtest provenance.
+            risk_constraints=(MinimalRiskConstraints()
+                              if config.risk_constraints_enabled else None),
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest so the microstructure mask and the
             # equal-weight baseline route their raw-field fetches through
@@ -998,6 +1011,37 @@ class WalkForwardEngine:
             return None, "no_positions_from_backtest"
 
         attribution_overrides: dict[str, Any] = {}
+        if config.attribution_sleeve_grouping:
+            # CSI800 guard-2: membership sleeves as the Brinson grouping,
+            # as-of this fold's test start. Coverage violations fail LOUD
+            # — every fold would hit the same stale-membership root cause,
+            # so promote to a hard WalkForwardError like the industry
+            # loader below (never a silently-stale sleeve report).
+            # WalkForwardConfig carries no provider path — the span files
+            # live in the CANONICAL runtime's bundle (same source
+            # pit_wiring uses).
+            canonical_cfg = get_canonical_qlib_config()
+            if canonical_cfg is None:
+                raise WalkForwardError(
+                    f"Fold {fold_index}: sleeve grouping requires the "
+                    "canonical qlib runtime to be initialized (its "
+                    "provider_uri locates the membership span files)."
+                )
+            try:
+                sleeves = resolve_sleeve_map(
+                    canonical_cfg.provider_uri, test_start)
+            except SleeveResolutionError as exc:
+                raise WalkForwardError(
+                    f"Fold {fold_index}: sleeve grouping failed: {exc}"
+                ) from exc
+            _logger.info(
+                "Fold %d attribution sleeve grouping: csi300=%d csi500=%d "
+                "as_of=%s coverage_end=%s",
+                fold_index, sleeves.n_csi300, sleeves.n_csi500,
+                sleeves.as_of, sleeves.coverage_end,
+            )
+            attribution_overrides["industry_map_override"] = sleeves.sleeve_map
+            attribution_overrides["industry_taxonomy_id"] = sleeves.taxonomy_id
         if config.industry_artifact_path:
             # ``purpose=PURPOSE_ATTRIBUTION`` is the explicit "this is
             # post-hoc analysis, not training" declaration. The shared

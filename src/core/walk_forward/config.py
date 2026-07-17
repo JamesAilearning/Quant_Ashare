@@ -216,6 +216,15 @@ class WalkForwardConfig:
     industry_taxonomy_id: str = ""
     industry_temporal_mode: str = TAXONOMY_MODE_STATIC
 
+    # CSI800 expansion guard-2 (v2-csi800-expansion-guards): Brinson
+    # grouping by csi300/csi500 membership sleeves (mutually exclusive
+    # with the industry artifact — one run, one grouping source), and
+    # mandatory position-level risk constraints (MinimalRiskConstraints
+    # defaults threaded into BacktestRunner.run per fold, effective
+    # values recorded in each fold's backtest provenance — veto-4).
+    attribution_sleeve_grouping: bool = False
+    risk_constraints_enabled: bool = False
+
     # Output
     output_dir: str = "output/walk_forward"
 
@@ -269,6 +278,13 @@ class WalkForwardConfig:
                     "A zero-length window would hang the walk-forward loop "
                     "or produce empty folds."
                 )
+
+        if self.attribution_sleeve_grouping and self.industry_artifact_path:
+            raise WalkForwardError(
+                "attribution_sleeve_grouping and industry_artifact_path "
+                "are mutually exclusive — one Brinson run takes exactly "
+                "one grouping source (v2-csi800-expansion-guards)."
+            )
 
         if self.st_mask_mode not in ("required", "off_experiment"):
             raise WalkForwardError(

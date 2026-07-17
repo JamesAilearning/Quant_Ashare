@@ -891,9 +891,21 @@ class BacktestRunner:
                 "phase": rebalance_phase,
                 "anchor": rebalance_anchor,
             }
+        # Effective risk-constraint values into provenance when supplied
+        # (CSI800 guard-2, veto-4: "recorded in the run artifact").
+        rc_provenance: dict[str, Any] | None = None
+        if risk_constraints is not None:
+            rc_provenance = {
+                "max_per_name": risk_constraints.max_per_name,
+                "max_per_board": risk_constraints.max_per_board,
+                "cash_buffer_min": risk_constraints.cash_buffer_min,
+                "max_leverage": risk_constraints.max_leverage,
+                "mode": risk_constraints.mode.value,
+            }
         provenance = cls._build_provenance(
             request, topk, n_drop, st_mask_provenance,
             rebalance=rebalance_provenance,
+            risk_constraints=rc_provenance,
         )
 
         return CanonicalBacktestOutput(
@@ -1561,6 +1573,7 @@ class BacktestRunner:
         n_drop: int,
         st_mask: Mapping[str, Any] | None = None,
         rebalance: Mapping[str, Any] | None = None,
+        risk_constraints: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -1593,6 +1606,13 @@ class BacktestRunner:
         # share a fingerprint with a daily run of the same request.
         if rebalance is not None:
             strategy_dict["rebalance"] = dict(rebalance)
+        # Risk constraints (CSI800 guard-2, veto-4): include-when-supplied
+        # so constraint-enabled runs carry their EFFECTIVE values in the
+        # artifact (the veto checker reads them here), while default
+        # (None) runs keep byte-identical fingerprints — REGEN replay
+        # safety, same pattern as ``rebalance`` above.
+        if risk_constraints is not None:
+            strategy_dict["risk_constraints"] = dict(risk_constraints)
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)
