@@ -126,8 +126,12 @@ def _mk_wf_run(root: Path, name: str, cfg: dict,
     d = root / name
     d.mkdir(parents=True)
     fold_report = d / "fold_0_report.json"
-    fold_report.write_text(json.dumps({"metric_status": fold_status}),
-                           encoding="utf-8")
+    # mirror the PRODUCER schema (write_fold_report): metric_status is
+    # nested under "backtest" (codex #369 r2 — a synthetic top-level
+    # field masked the real shape and hid an always-refuse bug).
+    fold_report.write_text(json.dumps({
+        "backtest": {"metric_status": fold_status},
+    }), encoding="utf-8")
     (d / "walk_forward_report.json").write_text(json.dumps({
         "config": cfg,
         "folds": [{
@@ -175,6 +179,24 @@ def test_walk_forward_non_official_fold_refuses():
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError, match="official"):
+            build_pair_report(a, b)
+
+
+def test_walk_forward_missing_backtest_block_refuses():
+    # codex #369 r2: a fold report without the nested backtest block is
+    # a producer-schema mismatch — refuse, never default to "official".
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        a = _mk_wf_run(root, "wf_a", _WF_CFG)
+        (root / "wf_a" / "fold_0_report.json").write_text(
+            json.dumps({"metric_status": "official"}),  # top-level only
+            encoding="utf-8")
+        b = _mk_wf_run(
+            root, "wf_b",
+            {**_WF_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/csi800_conservative"})
+        with pytest.raises(PairReportError,
+                           match="backtest.metric_status"):
             build_pair_report(a, b)
 
 

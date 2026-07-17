@@ -120,8 +120,17 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
     # (the aggregate deliberately keeps fold summaries compact).
     for f in folds:
         fold_report = _resolve_fold_report(run_dir, str(f["report_path"]))
-        status = json.loads(
-            fold_report.read_text(encoding="utf-8")).get("metric_status")
+        payload = json.loads(fold_report.read_text(encoding="utf-8"))
+        # producer schema (write_fold_report): the status is NESTED under
+        # "backtest" (codex #369 r2 — a top-level read is always None and
+        # would refuse every real pair).
+        backtest = payload.get("backtest")
+        if not isinstance(backtest, dict) or "metric_status" not in backtest:
+            raise PairReportError(
+                f"fold report {fold_report} has no backtest.metric_status "
+                "block — producer schema mismatch; refusing to certify."
+            )
+        status = backtest["metric_status"]
         if status != "official":
             raise PairReportError(
                 f"fold {f.get('fold_index')} metric_status={status!r} "
