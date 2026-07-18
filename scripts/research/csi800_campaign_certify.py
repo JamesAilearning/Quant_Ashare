@@ -253,6 +253,15 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
         for key in ("base", "conservative"):
             series: list[float] = []
             pinned = anchored_pair[key]["fold_report_sha256"]
+            # exact key set, same rule as the N1 side (codex #376 r6+r7):
+            # alias keys ("0"/"00") would double-count a favorable fold
+            # while the materialized-file count still matches.
+            n_folds = int(anchored_pair[key]["num_folds"])
+            if set(pinned) != {str(i) for i in range(n_folds)}:
+                raise CertifyError(
+                    f"N5 {key}: pinned fold keys {sorted(pinned)} != "
+                    f"expected exact set 0..{n_folds - 1} — aliased or "
+                    "incomplete pair map, refusing.")
             for idx_s in sorted(pinned, key=int):
                 rep_p = (runs[key]
                          / f"fold_{int(idx_s):02d}_report.json")

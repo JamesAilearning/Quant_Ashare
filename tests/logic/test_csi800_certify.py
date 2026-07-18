@@ -430,3 +430,25 @@ def test_aliased_n1_fold_keys_refuse(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="aliased"):
         certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
                 "n1_pair_alias.json", "n1_evidence", tmp_path / "v.json")
+
+
+def test_aliased_n5_fold_keys_refuse(tmp_path: Path) -> None:
+    # codex #376 r7: alias keys in the N5 pair maps would double-count
+    # a favorable fold in the retention mean — same exact-key-set rule
+    # as the N1 side.
+    w = _mk_repo(tmp_path)
+    repo = Path(w["repo"])
+    pair_p = repo / "pair.json"
+    pair = json.loads(pair_p.read_text(encoding="utf-8"))
+    digest0 = pair["conservative"]["fold_report_sha256"]["0"]
+    pair["conservative"]["fold_report_sha256"] = {
+        "0": digest0, "00": digest0}
+    pair["conservative"]["per_fold_gross_annualized"] = [0.05, 0.05]
+    pair_p.write_text(json.dumps(pair), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "alias n5", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    with pytest.raises((SystemExit, RuntimeError),
+                       match="aliased|does not match|changed after"):
+        _run_certify(w, tmp_path / "v.json")
