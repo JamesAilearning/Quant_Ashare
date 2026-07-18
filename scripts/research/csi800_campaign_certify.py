@@ -143,10 +143,14 @@ def _n1_gross_means(repo: Path, anchor: str, n1_pair_path: str,
     for side in ("base", "conservative"):
         pinned: dict[str, str] = n1_pair[side]["fold_report_sha256"]
         num_folds = n1_pair[side]["num_folds"]
-        if len(pinned) != num_folds:
+        # exact expected key set — alias keys like "0"/"00" must not
+        # satisfy the count while omitting a fold (codex #376 r6 P2).
+        expected_keys = {str(i) for i in range(num_folds)}
+        if set(pinned) != expected_keys:
             raise CertifyError(
-                f"N1 {side}: pinned hashes cover {len(pinned)}/"
-                f"{num_folds} folds — incomplete baseline.")
+                f"N1 {side}: pinned fold keys {sorted(pinned)} != "
+                f"expected exact set 0..{num_folds - 1} — incomplete or "
+                "aliased baseline, refusing.")
         gross: list[float] = []
         for idx_s, expected in sorted(pinned.items()):
             rel = (f"{n1_evidence_dir}/{side}/"
@@ -174,13 +178,17 @@ def _n1_gross_means(repo: Path, anchor: str, n1_pair_path: str,
     return means
 
 
-def _digest_chain_complete(run_dir: Path) -> None:
-    """certified grade requires EVERY fold report to carry the producer
-    attestation digest (attach verifies it when present; presence for
-    all folds is what upgrades the binding to certified)."""
+def _digest_chain_complete(run_dir: Path, expected_folds: int) -> None:
+    """certified grade requires EVERY DECLARED fold to carry the
+    producer attestation digest — counting only the files that exist
+    would let a run with failed/absent folds read as complete (codex
+    #376 r6 P1)."""
     reports = sorted(run_dir.glob("fold_*_report.json"))
-    if not reports:
-        raise CertifyError(f"{run_dir}: no fold reports materialized.")
+    if len(reports) != expected_folds:
+        raise CertifyError(
+            f"{run_dir}: {len(reports)}/{expected_folds} fold reports "
+            "materialized — promotion-grade coverage requires the full "
+            "declared fold set, refusing.")
     for rep_p in reports:
         payload = json.loads(rep_p.read_text(encoding="utf-8"))
         if not payload.get("positions_sha256"):
@@ -210,6 +218,16 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
         # computation end-to-end on them (#374 r7: recompute, never
         # trust assertions). Directory names must equal the certified
         # run_ids (attach binds run_id == dir name).
+        # Promotion-grade coverage: a reference with documented FAILED
+        # folds cannot certify — the "all three runs, all folds" digest
+        # claim would be hollow (codex #376 r6 P1). Vetoed/diagnostic
+        # archiving of such campaigns stays available via the brief.
+        if anchored_pair["reference"].get("ref_failed_folds"):
+            raise CertifyError(
+                "reference run has documented failed folds "
+                f"{anchored_pair['reference']['ref_failed_folds']} — "
+                "promotion-grade certification requires a fully "
+                "official reference; refusing.")
         runs: dict[str, Path] = {}
         for key, reldir in (("base", base_dir),
                             ("conservative", cons_dir),
@@ -218,7 +236,8 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
             dest = tmp / run_id
             _materialize_dir(repo, anchor, reldir, dest)
             runs[key] = dest
-            _digest_chain_complete(dest)
+            _digest_chain_complete(
+                dest, int(anchored_pair[key]["num_folds"]))
         tmp_pair = tmp / "pair.json"
         tmp_pair.write_bytes(_show(repo, anchor, pair_path))
         recomputed = attach(tmp_pair, runs["base"], runs["conservative"],

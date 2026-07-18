@@ -369,3 +369,64 @@ def test_nonfinite_n5_gross_refuses(tmp_path: Path) -> None:
                        match="FINITE|non-finite"):
         _run_certify(w, tmp_path / "v.json")
     assert not (tmp_path / "v.json").exists()
+
+
+def test_failed_reference_fold_refuses_certification(tmp_path: Path) -> None:
+    # codex #376 r6: a reference with a documented failed fold passes
+    # the attach turnover check (disclosed exemption) but must NOT
+    # certify — promotion-grade coverage requires the full fold set.
+    repo = tmp_path / "repo"
+    ev = repo / "evidence"
+    ev.mkdir(parents=True)
+    base = _mk_campaign_run(ev, "base", _CAMPAIGN_CFG, mean_net=0.05)
+    cons = _mk_campaign_run(
+        ev, "cons",
+        {**_CAMPAIGN_CFG, "slippage_bps": 20.0,
+         "output_dir": "output/walk_forward/cons"},
+        mean_net=0.02)
+    ref = _mk_reference_run(ev, failed_folds=(1,))
+    pair_p = repo / "pair.json"
+    pair_p.write_text(
+        json.dumps(build_pair_report(base, cons, ref)), encoding="utf-8")
+    attach(pair_p, base, cons, ref)
+    n1_ev = repo / "n1_evidence"
+    for side, run in (("base", base), ("conservative", cons)):
+        d = n1_ev / side
+        d.mkdir(parents=True)
+        for rep_p in sorted(run.glob("fold_*_report.json")):
+            (d / rep_p.name).write_bytes(rep_p.read_bytes())
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "failed ref", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    with pytest.raises(SystemExit, match="failed folds"):
+        certify(repo, "pair.json", "evidence/base", "evidence/cons",
+                "evidence/ref", "pair.json", "n1_evidence",
+                tmp_path / "v.json")
+
+
+def test_aliased_n1_fold_keys_refuse(tmp_path: Path) -> None:
+    # codex #376 r6 P2: alias keys ("0"/"00") satisfying the count
+    # while omitting a fold must refuse.
+    import hashlib as _hashlib
+
+    w = _mk_repo(tmp_path)
+    repo = Path(w["repo"])
+    rep_bytes = (repo / "n1_evidence/base/fold_00_report.json").read_bytes()
+    digest = _hashlib.sha256(rep_bytes).hexdigest()
+    (repo / "n1_pair_alias.json").write_text(json.dumps({
+        "base": {"fold_report_sha256": {"0": digest, "00": digest},
+                 "num_folds": 2},
+        "conservative": {"fold_report_sha256": {"0": digest, "00": digest},
+                         "num_folds": 2},
+    }), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "alias", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    with pytest.raises(SystemExit, match="aliased"):
+        certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
+                "n1_pair_alias.json", "n1_evidence", tmp_path / "v.json")
