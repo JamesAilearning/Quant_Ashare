@@ -345,11 +345,16 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
     return sidecar
 
 
-def verify(repo: Path, sidecar_path: Path) -> None:
-    """Downstream re-verification (#374 r7): recompute the whole
-    certification from the sidecar's recorded anchors and require the
-    produced verdict to equal the sidecar's — never trust assertions."""
-    stored = json.loads(sidecar_path.read_text(encoding="utf-8"))
+def verify(repo: Path, sidecar_relpath: str) -> None:
+    """Downstream re-verification (#374 r7): the sidecar itself is read
+    THROUGH the mainline anchor (codex #376 r5 — an unmerged local
+    sidecar must never verify as a promotion verdict; the sidecar
+    review/merge step is part of the required sequence), then the whole
+    certification is recomputed from its recorded anchors and the
+    produced verdict must equal the anchored bytes — never trust
+    assertions."""
+    tip = _anchor_commit(repo)
+    stored = json.loads(_show(repo, tip, sidecar_relpath))
     anchor = stored["anchors"]["pair_anchor"]
     inputs = stored["inputs"]
     with tempfile.TemporaryDirectory() as t:
@@ -383,9 +388,10 @@ def main() -> int:
                     "csi800_n1_folds")
     ap.add_argument("--out", type=Path, default=Path("docs/research/"
                     "csi800_cadence_verdict.json"))
-    ap.add_argument("--verify", type=Path, default=None,
-                    help="verify an existing sidecar instead of "
-                         "certifying")
+    ap.add_argument("--verify", default=None,
+                    help="repo-relative path of a MERGED sidecar to "
+                         "verify (read through the mainline anchor) "
+                         "instead of certifying")
     args = ap.parse_args()
     if args.verify is not None:
         verify(args.repo, args.verify)

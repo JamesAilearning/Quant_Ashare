@@ -195,15 +195,30 @@ def test_gross_collapse_refuses():
 def test_verify_roundtrip_and_tamper():
     with tempfile.TemporaryDirectory() as t:
         w = _mk_repo(Path(t))
-        out = Path(t) / "verdict.json"
+        repo = Path(w["repo"])
+        out = repo / "verdict.json"
         _run_certify(w, out)
-        verify(Path(w["repo"]), out)     # clean roundtrip
+        # an UNMERGED sidecar must not verify (codex #376 r5): the
+        # sidecar itself is read through the mainline anchor.
+        with pytest.raises(SystemExit, match="CERTIFY REFUSED"):
+            verify(repo, "verdict.json")
+        # merge the sidecar -> verifies clean
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "sidecar", "--no-verify")
+        _git(repo, "update-ref", "refs/remotes/origin/main",
+             _git(repo, "rev-parse", "HEAD"))
+        verify(repo, "verdict.json")
+        # merged-but-tampered sidecar breaks reproduction
         payload = json.loads(out.read_text(encoding="utf-8"))
         payload["verdict"]["gross_retention"] = 9.9
         out.write_text(json.dumps(payload, indent=2) + "\n",
                        encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "tamper", "--no-verify")
+        _git(repo, "update-ref", "refs/remotes/origin/main",
+             _git(repo, "rev-parse", "HEAD"))
         with pytest.raises(SystemExit, match="do not reproduce"):
-            verify(Path(w["repo"]), out)
+            verify(repo, "verdict.json")
 
 
 def test_edited_pair_gross_fields_refuse():
