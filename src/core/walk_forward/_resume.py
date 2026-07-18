@@ -538,9 +538,15 @@ def _missing_required_artifacts(manifest: FoldManifest) -> list[str]:
     """Return the names of any required artifact paths whose files are
     missing or unreadable. Used by ``discover(verify_artifacts=True)``.
 
-    ``positions_path`` is **not** required — the backtest skips
-    writing it when there are no positions, and the engine writes
-    the manifest with ``positions_path=None`` in that case.
+    ``positions_path`` is **not** required in the absent case — the
+    backtest skips writing it when there are no positions, and the
+    engine writes the manifest with ``positions_path=None`` then. But
+    when the manifest DOES record positions, the file must exist, and
+    when it also records an attestation digest the bytes must still
+    hash to it — otherwise an AUTO resume would silently reuse a fold
+    whose attested positions were deleted or mutated after the run and
+    emit a new aggregate over unverifiable evidence (codex P2 on #375
+    r3). A failed check rejects the manifest so the fold re-runs.
     ``predictions_path`` IS required for ensemble loading;
     ``model_path`` is required for prior-model averaging; ``report_path``
     is required for downstream comparisons / dashboards.
@@ -553,6 +559,15 @@ def _missing_required_artifacts(manifest: FoldManifest) -> list[str]:
     ):
         if not value or not Path(value).is_file():
             missing.append(label)
+    if manifest.positions_path:
+        p = Path(manifest.positions_path)
+        if not p.is_file():
+            missing.append("positions_path")
+        elif manifest.positions_sha256 is not None and (
+            hashlib.sha256(p.read_bytes()).hexdigest()
+            != manifest.positions_sha256
+        ):
+            missing.append("positions_path (attestation digest mismatch)")
     return missing
 
 

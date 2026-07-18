@@ -124,23 +124,89 @@ def test_manifest_threads_digest_through_roundtrip() -> None:
         report_path="fold_00_report.json",
     )
     cfg = WalkForwardConfig()
-    manifest = FoldManifest.from_fold(
-        fold=fold, config=cfg,
-        model_path="model_fold0.pkl",
-        report_path="fold_00_report.json",
-        predictions_path="fold_00_predictions.pkl",
-        positions_path="fold_00_positions.json",
-        positions_sha256="cd" * 32,
-    )
-    assert manifest.positions_sha256 == "cd" * 32
     with tempfile.TemporaryDirectory() as t:
         # discover() requires the referenced artifacts to exist on disk
+        # — and (since codex #375 r3) the attested positions bytes to
+        # still hash to the recorded digest, so use the REAL digest.
         for name in ("model_fold0.pkl", "fold_00_report.json",
-                     "fold_00_predictions.pkl", "fold_00_positions.json"):
+                     "fold_00_predictions.pkl"):
             (Path(t) / name).write_text("{}", encoding="utf-8")
+        digest = write_positions(
+            Path(t) / "fold_00_positions.json", _POSITIONS)
+        manifest = FoldManifest.from_fold(
+            fold=fold, config=cfg,
+            model_path="model_fold0.pkl",
+            report_path="fold_00_report.json",
+            predictions_path="fold_00_predictions.pkl",
+            positions_path="fold_00_positions.json",
+            positions_sha256=digest,
+        )
+        assert manifest.positions_sha256 == digest
         manifest.save(Path(t))
         loaded = FoldManifest.discover(Path(t))
-        assert loaded[0].positions_sha256 == "cd" * 32
+        assert loaded[0].positions_sha256 == digest
+
+
+def test_resume_rejects_missing_or_mutated_attested_positions() -> None:
+    # codex #375 r3: an AUTO resume must not silently reuse a fold whose
+    # attested positions were deleted or mutated after the run — the
+    # manifest is rejected so the fold re-runs.
+    from src.core.walk_forward._resume import FoldManifest
+    from src.core.walk_forward._types import WalkForwardFold
+    from src.core.walk_forward.config import WalkForwardConfig
+
+    fold = WalkForwardFold(
+        fold_index=0,
+        train_period="2024-01-01 ~ 2024-06-30",
+        valid_period="2024-07-01 ~ 2024-09-30",
+        test_period="2024-10-01 ~ 2024-12-31",
+        ic_1d=0.02, ic_5d=0.04,
+        annualized_return=0.11, max_drawdown=-0.08,
+        information_ratio=1.2,
+        prediction_shape=(123,),
+        report_path="fold_00_report.json",
+    )
+
+    def _mk(t: Path) -> None:
+        for name in ("model_fold0.pkl", "fold_00_report.json",
+                     "fold_00_predictions.pkl"):
+            (t / name).write_text("{}", encoding="utf-8")
+
+    def _manifest(digest: str) -> FoldManifest:
+        return FoldManifest.from_fold(
+            fold=fold, config=WalkForwardConfig(),
+            model_path="model_fold0.pkl",
+            report_path="fold_00_report.json",
+            predictions_path="fold_00_predictions.pkl",
+            positions_path="fold_00_positions.json",
+            positions_sha256=digest,
+        )
+
+    # intact: digest matches -> manifest accepted
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        _mk(td)
+        digest = write_positions(td / "fold_00_positions.json", _POSITIONS)
+        _manifest(digest).save(td)
+        assert 0 in FoldManifest.discover(td)
+
+    # mutated after the run: digest mismatch -> rejected (fold re-runs)
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        _mk(td)
+        digest = write_positions(td / "fold_00_positions.json", _POSITIONS)
+        _manifest(digest).save(td)
+        (td / "fold_00_positions.json").write_text("{}", encoding="utf-8")
+        assert 0 not in FoldManifest.discover(td)
+
+    # deleted after the run: recorded positions missing -> rejected
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        _mk(td)
+        digest = write_positions(td / "fold_00_positions.json", _POSITIONS)
+        _manifest(digest).save(td)
+        (td / "fold_00_positions.json").unlink()
+        assert 0 not in FoldManifest.discover(td)
 
 
 def _pipeline_report_stubs() -> tuple[object, object, object, object, object]:
