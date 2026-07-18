@@ -204,3 +204,26 @@ def test_verify_roundtrip_and_tamper():
                        encoding="utf-8")
         with pytest.raises(SystemExit, match="do not reproduce"):
             verify(Path(w["repo"]), out)
+
+
+def test_edited_pair_gross_fields_refuse():
+    # codex #376 r1: certify re-derives the N5 gross series from the
+    # anchored fold reports — an anchored pair whose stored
+    # per_fold_gross_annualized was inflated must refuse, not mint a
+    # passing retention.
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        w = _mk_repo(root)
+        repo = Path(w["repo"])
+        pair_p = repo / "pair.json"
+        payload = json.loads(pair_p.read_text(encoding="utf-8"))
+        payload["conservative"]["per_fold_gross_annualized"] = [
+            x * 3 for x in
+            payload["conservative"]["per_fold_gross_annualized"]]
+        pair_p.write_text(json.dumps(payload), encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "inflate", "--no-verify")
+        _git(repo, "update-ref", "refs/remotes/origin/main",
+             _git(repo, "rev-parse", "HEAD"))
+        with pytest.raises(SystemExit, match="were edited"):
+            _run_certify(w, root / "v.json")

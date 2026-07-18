@@ -214,6 +214,33 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
         tmp_pair.write_bytes(_show(repo, anchor, pair_path))
         recomputed = attach(tmp_pair, runs["base"], runs["conservative"],
                             runs["reference"])
+        # N5 gross RE-DERIVED from the anchored (hash-verified) fold
+        # reports — never trusted from the pair JSON fields (codex #376
+        # r1: an edited per_fold_gross_annualized series could otherwise
+        # pass the 50% retention with the sources showing a collapse).
+        # attach just re-proved every fold report hashes to the pair's
+        # pinned digest, so these materialized bytes ARE the certified
+        # sources.
+        gross_series: dict[str, list[float]] = {}
+        for key in ("base", "conservative"):
+            series: list[float] = []
+            pinned = anchored_pair[key]["fold_report_sha256"]
+            for idx_s in sorted(pinned, key=int):
+                rep_p = (runs[key]
+                         / f"fold_{int(idx_s):02d}_report.json")
+                payload = json.loads(rep_p.read_text(encoding="utf-8"))
+                series.append(float(
+                    payload["backtest"]["risk_analysis"]
+                    ["excess_return_without_cost"]["annualized_return"]))
+            stored = [float(x) for x in
+                      anchored_pair[key]["per_fold_gross_annualized"]]
+            if series != stored:
+                raise CertifyError(
+                    f"N5 {key}: pair-stored per_fold_gross_annualized "
+                    "does not equal the series re-derived from the "
+                    "anchored fold reports — the pair's gross fields "
+                    "were edited; refusing.")
+            gross_series[key] = series
 
     if recomputed["veto_checklist"] != anchored_pair.get("veto_checklist"):
         raise CertifyError(
@@ -235,12 +262,8 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
         raise CertifyError(
             f"primary criterion 1 fails: conservative net {cons_net!r} "
             f"is not > {NET_MIN} — LOSE; no sidecar.")
-    n5_base_mean = _mean(
-        [float(x) for x in anchored_pair["base"]
-         ["per_fold_gross_annualized"]], "N5 base")
-    n5_cons_mean = _mean(
-        [float(x) for x in anchored_pair["conservative"]
-         ["per_fold_gross_annualized"]], "N5 conservative")
+    n5_base_mean = _mean(gross_series["base"], "N5 base")
+    n5_cons_mean = _mean(gross_series["conservative"], "N5 conservative")
     n1_means = _n1_gross_means(repo, anchor, n1_pair_path,
                                n1_evidence_dir)
     for label, div in (
