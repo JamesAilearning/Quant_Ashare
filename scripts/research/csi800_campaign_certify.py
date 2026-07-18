@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -158,9 +159,17 @@ def _n1_gross_means(repo: Path, anchor: str, n1_pair_path: str,
                     f"sha256 {actual} != N1-pair-pinned {expected} — "
                     "baseline evidence broken.")
             payload = json.loads(raw)
-            gross.append(float(
+            value = float(
                 payload["backtest"]["risk_analysis"]
-                ["excess_return_without_cost"]["annualized_return"]))
+                ["excess_return_without_cost"]["annualized_return"])
+            # NaN/Infinity survive json.loads and make every threshold
+            # comparison False (codex #376 r2) — fail closed instead of
+            # minting a NaN retention.
+            if not math.isfinite(value):
+                raise CertifyError(
+                    f"N1 {side} fold {idx_s}: gross value {value!r} is "
+                    "non-finite — malformed baseline evidence, refusing.")
+            gross.append(value)
         means[side] = _mean(gross, f"N1 {side}")
     return means
 

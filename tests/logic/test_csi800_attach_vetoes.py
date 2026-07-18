@@ -73,16 +73,21 @@ def _positions(shift: float = 0.0) -> dict[str, dict[str, float]]:
 
 def _mk_campaign_run(root: Path, name: str, cfg: dict,
                      mean_net: float, n_folds: int = 2,
-                     gross: float = 0.05) -> Path:
+                     gross: float = 0.05,
+                     producer_paths: bool = False) -> Path:
+    """``producer_paths=True`` declares report/positions paths the way
+    the real WalkForwardEngine does — ``str(output_dir / name)`` — so
+    resolver basename-fallback behaviour is exercised (codex #376 r2)."""
     d = root / name
     d.mkdir(parents=True)
     folds = []
     for i in range(n_folds):
         positions_bytes = json.dumps(_positions()).encode("utf-8")
         (d / f"fold_{i:02d}_positions.json").write_bytes(positions_bytes)
+        _prefix = (cfg.get("output_dir", "") + "/") if producer_paths else ""
         (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
             "fold_index": i,
-            "positions_path": f"fold_{i:02d}_positions.json",
+            "positions_path": f"{_prefix}fold_{i:02d}_positions.json",
             # producer attestation (PR-A): digest of the persisted bytes
             "positions_sha256": hashlib.sha256(positions_bytes).hexdigest(),
             # producer-embedded per-sleeve turnover; _positions() yields
@@ -115,7 +120,7 @@ def _mk_campaign_run(root: Path, name: str, cfg: dict,
             },
         }), encoding="utf-8")
         folds.append({"fold_index": i, "annualized_return": mean_net,
-                      "report_path": f"fold_{i:02d}_report.json"})
+                      "report_path": f"{_prefix}fold_{i:02d}_report.json"})
     (d / "walk_forward_report.json").write_text(json.dumps({
         "config": cfg,
         "folds": folds,

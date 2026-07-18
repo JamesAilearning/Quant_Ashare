@@ -149,7 +149,14 @@ def _resolve_fold_report(run_dir: Path, report_path: str) -> Path:
     under ``run_dir``."""
     run_root = run_dir.resolve()
     rp = Path(report_path)
-    candidates = ((rp,) if rp.is_absolute() else (run_dir / rp, _REPO / rp))
+    # Basename fallback LAST (codex #376 r2): the producer declares
+    # ``str(output_dir / "fold_XX_report.json")``, so a run dir that was
+    # MATERIALIZED elsewhere (certify's anchored-bytes temp copy) can
+    # only resolve by basename within the claimed dir — same
+    # location-independence philosophy as the manifest's basenames, and
+    # still confined to ``run_dir`` below.
+    candidates = ((rp,) if rp.is_absolute()
+                  else (run_dir / rp, _REPO / rp, run_dir / rp.name))
     for candidate in candidates:
         resolved = candidate.resolve()
         if not resolved.is_file():

@@ -227,3 +227,73 @@ def test_edited_pair_gross_fields_refuse():
              _git(repo, "rev-parse", "HEAD"))
         with pytest.raises(SystemExit, match="were edited"):
             _run_certify(w, root / "v.json")
+
+
+def test_producer_style_paths_certify(tmp_path: Path) -> None:
+    # codex #376 r2: the real WalkForwardEngine declares
+    # str(output_dir / "fold_XX_report.json") paths — a materialized
+    # (relocated) evidence copy must still resolve them (basename
+    # fallback, confined to the claimed run dir).
+    repo = tmp_path / "repo"
+    ev = repo / "evidence"
+    ev.mkdir(parents=True)
+    base = _mk_campaign_run(ev, "base", _CAMPAIGN_CFG, mean_net=0.05,
+                            producer_paths=True)
+    cons = _mk_campaign_run(
+        ev, "cons",
+        {**_CAMPAIGN_CFG, "slippage_bps": 20.0,
+         "output_dir": "output/walk_forward/cons"},
+        mean_net=0.02, producer_paths=True)
+    ref = _mk_reference_run(ev)
+    pair_p = repo / "pair.json"
+    pair_p.write_text(
+        json.dumps(build_pair_report(base, cons, ref)), encoding="utf-8")
+    attach(pair_p, base, cons, ref)
+    n1_ev = repo / "n1_evidence"
+    for side, run in (("base", base), ("conservative", cons)):
+        d = n1_ev / side
+        d.mkdir(parents=True)
+        for rep_p in sorted(run.glob("fold_*_report.json")):
+            (d / rep_p.name).write_bytes(rep_p.read_bytes())
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "producer paths", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    sidecar = certify(repo, "pair.json", "evidence/base",
+                      "evidence/cons", "evidence/ref", "pair.json",
+                      "n1_evidence", tmp_path / "v.json")
+    assert sidecar["verdict"]["promotion_eligible"] is True
+
+
+def test_nonfinite_n1_gross_refuses(tmp_path: Path) -> None:
+    # codex #376 r2: a NaN N1 gross would make every threshold
+    # comparison False — fail closed on malformed baseline evidence.
+    import hashlib as _hashlib
+
+    w = _mk_repo(tmp_path)
+    repo = Path(w["repo"])
+    bad_report = json.dumps({
+        "fold_index": 0,
+        "backtest": {"risk_analysis": {"excess_return_without_cost": {
+            "annualized_return": float("nan")}}},
+    }).encode("utf-8")
+    digest = _hashlib.sha256(bad_report).hexdigest()
+    n1_dir = repo / "n1_nan"
+    for side in ("base", "conservative"):
+        (n1_dir / side).mkdir(parents=True)
+        (n1_dir / side / "fold_00_report.json").write_bytes(bad_report)
+    (repo / "n1_pair_nan.json").write_text(json.dumps({
+        "base": {"fold_report_sha256": {"0": digest}, "num_folds": 1},
+        "conservative": {"fold_report_sha256": {"0": digest},
+                         "num_folds": 1},
+    }), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "nan n1", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    with pytest.raises(SystemExit, match="non-finite"):
+        certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
+                "n1_pair_nan.json", "n1_nan", tmp_path / "v.json")

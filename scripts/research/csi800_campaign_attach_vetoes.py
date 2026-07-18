@@ -473,7 +473,12 @@ def _resolve_run_artifact(run_dir: Path, path_str: str,
     problem or torn evidence)."""
     run_root = run_dir.resolve()
     rp = Path(path_str)
-    candidates = ((rp,) if rp.is_absolute() else (run_dir / rp, _REPO_ROOT / rp))
+    # Basename fallback LAST (codex #376 r2): producer-style declared
+    # paths (``str(output_dir / ...)``) must stay resolvable when the
+    # run dir was MATERIALIZED elsewhere (certify's anchored temp copy);
+    # confinement below still applies.
+    candidates = ((rp,) if rp.is_absolute()
+                  else (run_dir / rp, _REPO_ROOT / rp, run_dir / rp.name))
     for candidate in candidates:
         resolved = candidate.resolve()
         if not resolved.is_file():
