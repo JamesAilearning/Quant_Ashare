@@ -19,6 +19,7 @@ Coverage matrix (>=1 case per dimension):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -71,14 +72,24 @@ def _positions(shift: float = 0.0) -> dict[str, dict[str, float]]:
 
 
 def _mk_campaign_run(root: Path, name: str, cfg: dict,
-                     mean_net: float, n_folds: int = 2) -> Path:
+                     mean_net: float, n_folds: int = 2,
+                     gross: float = 0.05,
+                     producer_paths: bool = False) -> Path:
+    """``producer_paths=True`` declares report/positions paths the way
+    the real WalkForwardEngine does — ``str(output_dir / name)`` — so
+    resolver basename-fallback behaviour is exercised (codex #376 r2)."""
     d = root / name
     d.mkdir(parents=True)
     folds = []
     for i in range(n_folds):
+        positions_bytes = json.dumps(_positions()).encode("utf-8")
+        (d / f"fold_{i:02d}_positions.json").write_bytes(positions_bytes)
+        _prefix = (cfg.get("output_dir", "") + "/") if producer_paths else ""
         (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
             "fold_index": i,
-            "positions_path": f"fold_{i:02d}_positions.json",
+            "positions_path": f"{_prefix}fold_{i:02d}_positions.json",
+            # producer attestation (PR-A): digest of the persisted bytes
+            "positions_sha256": hashlib.sha256(positions_bytes).hexdigest(),
             # producer-embedded per-sleeve turnover; _positions() yields
             # 0.05 one-way per transition x 2 transitions = 0.10 total.
             "sleeve_turnover": {
@@ -94,6 +105,9 @@ def _mk_campaign_run(root: Path, name: str, cfg: dict,
                 "report": {"start_date": "2024-01-02",
                            "end_date": "2024-01-04",
                            "positions_days": 3, "total_days": 3},
+                # v3: per-fold GROSS is extracted at pairing time
+                "risk_analysis": {"excess_return_without_cost": {
+                    "annualized_return": gross}},
                 "provenance": {
                     "config": {"risk_constraints": dict(CAMPAIGN_V1_EXPECTED)},
                 },
@@ -105,10 +119,8 @@ def _mk_campaign_run(root: Path, name: str, cfg: dict,
                     r["total_effect"] for r in _SLEEVE_ROWS),
             },
         }), encoding="utf-8")
-        (d / f"fold_{i:02d}_positions.json").write_text(
-            json.dumps(_positions()), encoding="utf-8")
         folds.append({"fold_index": i, "annualized_return": mean_net,
-                      "report_path": f"fold_{i:02d}_report.json"})
+                      "report_path": f"{_prefix}fold_{i:02d}_report.json"})
     (d / "walk_forward_report.json").write_text(json.dumps({
         "config": cfg,
         "folds": folds,
@@ -144,9 +156,12 @@ def _mk_reference_run(root: Path, cfg_over: dict | None = None,
         # turnover binding (codex r9) — the production reference today
         # does NOT (sleeve grouping off per the #371 pin), which blocks
         # promotion but not vetoes.
+        positions_bytes = json.dumps(_positions()).encode("utf-8")
+        (d / f"fold_{i:02d}_positions.json").write_bytes(positions_bytes)
         (d / f"fold_{i:02d}_report.json").write_text(json.dumps({
             "fold_index": i,
             "positions_path": f"fold_{i:02d}_positions.json",
+            "positions_sha256": hashlib.sha256(positions_bytes).hexdigest(),
             "sleeve_turnover": ({
                 "csi300_sleeve": {"total_oneway": 0.10,
                                   "daily_mean_oneway": 0.05,
@@ -159,8 +174,6 @@ def _mk_reference_run(root: Path, cfg_over: dict | None = None,
                            "positions_days": 3, "total_days": 3},
             },
         }), encoding="utf-8")
-        (d / f"fold_{i:02d}_positions.json").write_text(
-            json.dumps(_positions()), encoding="utf-8")
         folds.append({"fold_index": i, "annualized_return": 0.01,
                       "report_path": f"fold_{i:02d}_report.json"})
     (d / "walk_forward_report.json").write_text(json.dumps({
@@ -186,7 +199,7 @@ def _mk_trio(root: Path, cons_net: float = 0.02, pre_pair=None,
         # report pins per-fold report hashes at generation time).
         pre_pair(base, cons, ref)
     pair_p = root / "pair.json"
-    pair_p.write_text(json.dumps(build_pair_report(base, cons)),
+    pair_p.write_text(json.dumps(build_pair_report(base, cons, ref)),
                       encoding="utf-8")
     return pair_p, base, cons, ref
 
@@ -217,7 +230,10 @@ def test_clean_attach_completes_but_promotion_gated_on_reference():
             "window_only_unauthenticated")
         assert c3["reference_embedded_turnover_verified"] is True
         assert r["promotion_eligible"] is False
-        assert "producer" in r["promotion_blocked_reason"]
+        assert r["checks_all_pass"] is True
+        # attach is NEVER the promotion authority (#374 r4): the sole
+        # authority is a committed certify verdict sidecar.
+        assert "certify" in r["promotion_blocked_reason"]
         # rewritten in place
         assert json.loads(pair_p.read_text(encoding="utf-8"))[
             "promotion_eligible"] is False
@@ -293,11 +309,15 @@ def test_reference_documented_failed_fold_is_disclosed():
 
 
 def test_reference_config_drift_refuses():
+    # v3: the drifted reference is refused at PAIRING time already —
+    # pairing itself certifies the third party.
+    from scripts.research.csi800_campaign_pair_report import (
+        PairReportError,
+    )
+
     with tempfile.TemporaryDirectory() as t:
-        pair_p, base, cons, ref = _mk_trio(Path(t),
-                                           cfg_over={"topk": 60})
-        with pytest.raises(SystemExit, match="expected exactly"):
-            attach(pair_p, base, cons, ref)
+        with pytest.raises(PairReportError, match="expected exactly"):
+            _mk_trio(Path(t), cfg_over={"topk": 60})
 
 
 def test_injected_extra_fold_report_cannot_stand_in():
@@ -334,7 +354,8 @@ def test_reference_nonofficial_fold_report_refuses():
         payload = json.loads(rep_p.read_text(encoding="utf-8"))
         payload["backtest"]["metric_status"] = "degraded"
         rep_p.write_text(json.dumps(payload), encoding="utf-8")
-        with pytest.raises(SystemExit, match="not a documented"):
+        with pytest.raises(SystemExit,
+                           match="changed after pairing|not a documented"):
             attach(pair_p, base, cons, ref)
 
 
@@ -355,14 +376,28 @@ def test_unauthenticated_reference_blocks_promotion_not_vetoes():
             "window_only_unauthenticated")
         assert c3["reference_embedded_turnover_verified"] is False
         assert r["promotion_eligible"] is False
-        assert "unauthenticated" in r["promotion_blocked_reason"]
+        assert "certify" in r["promotion_blocked_reason"]
+        assert any("reference_binding_unauthenticated" in b
+                   for b in r["promotion_blockers"])
+
+
+def _strip_attestation(*dirs: Path) -> None:
+    """Remove producer attestation digests BEFORE pairing — models a
+    pre-attestation run so the malformed-shape defenses (which sit
+    behind the digest check for attested runs) stay exercised."""
+    for d in dirs:
+        for rep_p in d.glob("fold_*_report.json"):
+            payload = json.loads(rep_p.read_text(encoding="utf-8"))
+            payload.pop("positions_sha256", None)
+            rep_p.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_malformed_daily_positions_refuse_cleanly():
     # codex #373 r14: a null day or non-numeric weight must refuse with
     # AttachError, not crash inside sleeve_turnover.
     with tempfile.TemporaryDirectory() as t:
-        pair_p, base, cons, ref = _mk_trio(Path(t))
+        pair_p, base, cons, ref = _mk_trio(
+            Path(t), pre_pair=lambda b, c, r: _strip_attestation(b, c, r))
         bad = _positions()
         bad["2024-01-03"] = None
         (cons / "fold_01_positions.json").write_text(
@@ -370,7 +405,8 @@ def test_malformed_daily_positions_refuse_cleanly():
         with pytest.raises(SystemExit, match="not a holdings mapping"):
             attach(pair_p, base, cons, ref)
     with tempfile.TemporaryDirectory() as t:
-        pair_p, base, cons, ref = _mk_trio(Path(t))
+        pair_p, base, cons, ref = _mk_trio(
+            Path(t), pre_pair=lambda b, c, r: _strip_attestation(b, c, r))
         bad = _positions()
         bad["2024-01-03"] = {"SH600000": "0.5", "SZ000001": 0.5}
         (cons / "fold_01_positions.json").write_text(
@@ -383,7 +419,8 @@ def test_zero_holding_positions_refuse_cleanly():
     # codex #373 r13: >=2 dates with all-empty daily maps must refuse
     # with AttachError, not crash with a bare StopIteration.
     with tempfile.TemporaryDirectory() as t:
-        pair_p, base, cons, ref = _mk_trio(Path(t))
+        pair_p, base, cons, ref = _mk_trio(
+            Path(t), pre_pair=lambda b, c, r: _strip_attestation(b, c, r))
         (cons / "fold_01_positions.json").write_text(
             json.dumps({"2024-01-02": {}, "2024-01-03": {},
                         "2024-01-04": {}}), encoding="utf-8")
@@ -554,7 +591,8 @@ def test_tampered_positions_fail_embedded_turnover_binding():
         tampered["2024-01-03"] = {"SH600000": 0.40, "SZ000001": 0.60}
         (cons / "fold_01_positions.json").write_text(
             json.dumps(tampered), encoding="utf-8")
-        with pytest.raises(SystemExit, match="not the one the run"):
+        with pytest.raises(SystemExit,
+                           match="not the one the (run|producer)"):
             attach(pair_p, base, cons, ref)
 
 
@@ -567,7 +605,8 @@ def test_reference_positions_window_mismatch_refuses():
         longer["2024-01-05"] = dict(longer["2024-01-04"])
         (ref / "fold_01_positions.json").write_text(
             json.dumps(longer), encoding="utf-8")
-        with pytest.raises(SystemExit, match="torn/replaced"):
+        with pytest.raises(SystemExit,
+                           match="torn/replaced|producer stamped"):
             attach(pair_p, base, cons, ref)
 
 

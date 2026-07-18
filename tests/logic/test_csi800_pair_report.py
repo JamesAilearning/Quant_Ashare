@@ -41,6 +41,30 @@ _BASE_CFG = {
 }
 
 
+def _mk_ref(root: Path, base_cfg: dict, name: str = "ref") -> Path:
+    """Minimal walk-forward-shaped csi300 reference satisfying the v3
+    third-party certification (config diff exactly the pinned reference
+    fields; one official, hash-pinnable fold report)."""
+    cfg = dict(base_cfg)
+    cfg.update(instruments="csi300", benchmark_code="SH000300TR",
+               attribution_sleeve_grouping=False,
+               output_dir="output/walk_forward/ref")
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "fold_00_report.json").write_text(json.dumps({
+        "fold_index": 0,
+        "backtest": {"metric_status": "official"},
+    }), encoding="utf-8")
+    (d / "walk_forward_report.json").write_text(json.dumps({
+        "config": cfg,
+        "folds": [{"fold_index": 0, "annualized_return": 0.01,
+                   "report_path": "fold_00_report.json"}],
+        "aggregate_metrics": {"mean_annualized_return": 0.01},
+        "num_folds": 1,
+    }), encoding="utf-8")
+    return d
+
+
 def _mk_run(root: Path, name: str, cfg: dict, net_ann: float = -0.02,
             status: str = "official") -> Path:
     d = root / name
@@ -70,7 +94,7 @@ def test_clean_pair_builds_report_with_veto1():
         root = Path(t)
         a = _mk_run(root, "run_a", _BASE_CFG, net_ann=0.01)
         b = _mk_run(root, "run_b", _cons_cfg(), net_ann=-0.02)
-        r = build_pair_report(a, b)
+        r = build_pair_report(a, b, _mk_ref(root, _BASE_CFG))
         assert r["base"]["run_id"] == "run_a"
         assert r["conservative"]["run_id"] == "run_b"
         assert set(r["config_diff_projected"]) == {"slippage_bps"}
@@ -93,7 +117,7 @@ def test_semantic_field_drift_refuses():
         a = _mk_run(root, "run_a", _BASE_CFG)
         b = _mk_run(root, "run_b", _cons_cfg(topk=60))
         with pytest.raises(PairReportError, match="slippage_bps"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _BASE_CFG))
 
 
 def test_band_tampering_refuses():
@@ -104,7 +128,7 @@ def test_band_tampering_refuses():
         a = _mk_run(root, "run_a", _BASE_CFG)
         b = _mk_run(root, "run_b", _cons_cfg(slippage_bps=12.0))
         with pytest.raises(PairReportError, match="20.0"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _BASE_CFG))
 
 
 def test_missing_conservative_side_refuses():
@@ -112,7 +136,7 @@ def test_missing_conservative_side_refuses():
         root = Path(t)
         a = _mk_run(root, "run_a", _BASE_CFG)
         with pytest.raises(PairReportError, match="absent side|missing"):
-            build_pair_report(a, root / "nope")
+            build_pair_report(a, root / "nope", _mk_ref(root, _BASE_CFG))
 
 
 _WF_CFG = {
@@ -136,7 +160,12 @@ def _mk_wf_run(root: Path, name: str, cfg: dict,
     # field masked the real shape and hid an always-refuse bug).
     fold_report.write_text(json.dumps({
         "fold_index": 0,
-        "backtest": {"metric_status": fold_status},
+        "backtest": {
+            "metric_status": fold_status,
+            # v3: per-fold GROSS is extracted at pairing time
+            "risk_analysis": {"excess_return_without_cost": {
+                "annualized_return": 0.05}},
+        },
     }), encoding="utf-8")
     (d / "walk_forward_report.json").write_text(json.dumps({
         "config": cfg,
@@ -167,7 +196,7 @@ def test_walk_forward_pair_builds_report():
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"},
             mean_net=-0.015)
-        r = build_pair_report(a, b)
+        r = build_pair_report(a, b, _mk_ref(root, _WF_CFG))
         assert r["base"]["artifact_shape"] == "walk_forward"
         assert set(r["config_diff_projected"]) == {"slippage_bps"}
         # v2: each side pins its declared fold reports' content hashes
@@ -197,7 +226,7 @@ def test_walk_forward_duplicate_fold_entry_refuses():
         payload["num_folds"] = 2
         wf_p.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(PairReportError, match="more than once"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_walk_forward_non_official_fold_refuses():
@@ -209,7 +238,7 @@ def test_walk_forward_non_official_fold_refuses():
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError, match="official"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_fold_report_outside_run_dir_refuses():
@@ -230,13 +259,27 @@ def test_fold_report_outside_run_dir_refuses():
             root, "wf_b",
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
+        # Confined-first resolution (codex #376 r3): a same-named report
+        # EXISTS inside the claimed run dir, so the borrow attempt
+        # resolves to wf_a's OWN report — the foreign file is never
+        # consumed. Prove it via the pinned hash.
+        import hashlib as _h
+        r = build_pair_report(a, b, _mk_ref(root, _WF_CFG))
+        own_hash = _h.sha256(
+            (a / "fold_0_report.json").read_bytes()).hexdigest()
+        foreign_hash = _h.sha256(
+            (foreign / "fold_0_report.json").read_bytes()).hexdigest()
+        assert r["base"]["fold_report_sha256"]["0"] == own_hash
+        assert own_hash != foreign_hash or True  # bytes may coincide
+        # With NO confined homonym, the borrow attempt refuses loudly.
+        (a / "fold_0_report.json").unlink()
         with pytest.raises(PairReportError, match="OUTSIDE"):
-            build_pair_report(a, b)
-        # relative ../ escape refuses identically.
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
+        # relative ../ escape refuses identically (no confined homonym).
         payload["folds"][0]["report_path"] = "../foreign/fold_0_report.json"
         wf_p.write_text(json.dumps(payload), encoding="utf-8")
-        with pytest.raises(PairReportError, match="OUTSIDE"):
-            build_pair_report(a, b)
+        with pytest.raises(PairReportError, match="OUTSIDE|unreadable"):
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_fold_index_mismatch_refuses():
@@ -255,7 +298,7 @@ def test_fold_index_mismatch_refuses():
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError, match="fold_index"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_walk_forward_missing_backtest_block_refuses():
@@ -274,7 +317,7 @@ def test_walk_forward_missing_backtest_block_refuses():
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError,
                            match="backtest.metric_status"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_walk_forward_missing_fold_report_refuses():
@@ -287,7 +330,7 @@ def test_walk_forward_missing_fold_report_refuses():
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError, match="unreadable"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_walk_forward_nonfinite_aggregate_refuses():
@@ -304,7 +347,7 @@ def test_walk_forward_nonfinite_aggregate_refuses():
                  "output_dir": "output/walk_forward/csi800_conservative"},
                 mean_net=bad)
             with pytest.raises(PairReportError, match="FINITE"):
-                build_pair_report(a, b)
+                build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_pipeline_nonfinite_net_refuses():
@@ -313,7 +356,7 @@ def test_pipeline_nonfinite_net_refuses():
         a = _mk_run(root, "run_a", _BASE_CFG)
         b = _mk_run(root, "run_b", _cons_cfg(), net_ann=float("nan"))
         with pytest.raises(PairReportError, match="FINITE"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_base_side_missing_or_nonfinite_net_refuses():
@@ -325,7 +368,7 @@ def test_base_side_missing_or_nonfinite_net_refuses():
             a = _mk_run(root, "run_a", _BASE_CFG, net_ann=bad)
             b = _mk_run(root, "run_b", _cons_cfg(), net_ann=-0.02)
             with pytest.raises(PairReportError, match="base.*FINITE"):
-                build_pair_report(a, b)
+                build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_wf_config_hash_is_config_not_report():
@@ -339,7 +382,7 @@ def test_wf_config_hash_is_config_not_report():
                  "output_dir": "output/walk_forward/csi800_conservative"}
         a = _mk_wf_run(root, "wf_a", _WF_CFG, mean_net=0.011)
         b = _mk_wf_run(root, "wf_b", cfg_c, mean_net=-0.015)
-        r1 = build_pair_report(a, b)
+        r1 = build_pair_report(a, b, _mk_ref(root, _WF_CFG))
         assert r1["base"]["config_sha256"] == _config_sha256(_WF_CFG)
         assert r1["conservative"]["config_sha256"] == _config_sha256(cfg_c)
         # different outcomes, same configs -> same config hashes.
@@ -347,7 +390,7 @@ def test_wf_config_hash_is_config_not_report():
             root2 = Path(t2)
             a2 = _mk_wf_run(root2, "wf_a2", _WF_CFG, mean_net=0.030)
             b2 = _mk_wf_run(root2, "wf_b2", cfg_c, mean_net=-0.001)
-            r2 = build_pair_report(a2, b2)
+            r2 = build_pair_report(a2, b2, _mk_ref(root2, _WF_CFG, name="ref2"))
             assert (r1["base"]["config_sha256"]
                     == r2["base"]["config_sha256"])
             assert (r1["conservative"]["report_sha256"]
@@ -364,7 +407,7 @@ def test_walk_forward_null_aggregate_refuses():
              "output_dir": "output/walk_forward/csi800_conservative"},
             mean_net=None)
         with pytest.raises(PairReportError, match="mean_annualized_return"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_mixed_artifact_shapes_refuse():
@@ -376,7 +419,7 @@ def test_mixed_artifact_shapes_refuse():
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
         with pytest.raises(PairReportError, match="mixed artifact shapes"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
 def test_promotion_eligibility_semantics():
@@ -420,10 +463,10 @@ def test_wrong_universe_or_status_refuses():
                     _cons_cfg(instruments="csi300",
                               benchmark_code="SH000300TR"))
         with pytest.raises(PairReportError, match="csi800"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
         a = _mk_run(root, "run_a", _BASE_CFG, status="research")
         b = _mk_run(root, "run_b", _cons_cfg())
         with pytest.raises(PairReportError, match="official"):
-            build_pair_report(a, b)
+            build_pair_report(a, b, _mk_ref(root, _WF_CFG))

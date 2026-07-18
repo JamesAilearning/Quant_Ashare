@@ -49,7 +49,21 @@ CAMPAIGN_BENCHMARK = "SH000906TR"
 # v2: walk-forward sides pin per-fold report content hashes
 # (``fold_report_sha256``) so post-pairing fold evidence is verifiable
 # (codex #373 r5).
-SCHEMA_VERSION = "csi800_pair_report_v2"
+# v3 (2026-07-17-csi800-cadence-campaign DP-5): the csi300 REFERENCE run
+# is certified as a third party (same four-piece identity as the paired
+# sides), and both csi800 sides record per-fold GROSS annualized excess
+# (the 50% gross-collapse criterion input) extracted from the
+# hash-pinned fold reports at pairing time.
+SCHEMA_VERSION = "csi800_pair_report_v3"
+
+# #371-pinned reference-vs-base projected config diff (exact key set)
+# and reference identity — binds the veto-3 baseline to "同配置 csi300
+# 参照". (Moved here from the attach tool at v3: pairing itself now
+# certifies the reference.)
+REFERENCE_DIFF_FIELDS: frozenset[str] = frozenset(
+    {"instruments", "benchmark_code", "attribution_sleeve_grouping"})
+REFERENCE_UNIVERSE = "csi300"
+REFERENCE_BENCHMARK = "SH000300TR"
 
 
 class PairReportError(RuntimeError):
@@ -135,19 +149,35 @@ def _resolve_fold_report(run_dir: Path, report_path: str) -> Path:
     under ``run_dir``."""
     run_root = run_dir.resolve()
     rp = Path(report_path)
-    candidates = ((rp,) if rp.is_absolute() else (run_dir / rp, _REPO / rp))
-    for candidate in candidates:
+    # CONFINED candidates first (codex #376 r2+r3): the producer
+    # declares ``str(output_dir / "fold_XX_report.json")``, so a run dir
+    # that was MATERIALIZED elsewhere (certify's anchored-bytes temp
+    # copy) resolves by basename within the claimed dir — and that
+    # confined fallback must be tried BEFORE any repo-root candidate,
+    # otherwise an unrelated leftover at the original working-tree path
+    # would trip the outside-run_dir refusal even though the confined
+    # copy is valid. Outside candidates remain last purely so a
+    # borrowed-evidence attempt still refuses loudly below.
+    confined = ((run_dir / rp.name,) if rp.is_absolute()
+                else (run_dir / rp, run_dir / rp.name))
+    for candidate in confined:
         resolved = candidate.resolve()
-        if not resolved.is_file():
-            continue
-        if not resolved.is_relative_to(run_root):
+        # a confined candidate that escapes run_root (e.g. ../) is just
+        # a failed confined attempt — skip, don't refuse yet.
+        if resolved.is_file() and resolved.is_relative_to(run_root):
+            return resolved
+    outside = (rp,) if rp.is_absolute() else (_REPO / rp,)
+    for candidate in outside:
+        resolved = candidate.resolve()
+        if resolved.is_file() and not resolved.is_relative_to(run_root):
             raise PairReportError(
                 f"fold report {report_path!r} resolves OUTSIDE the "
                 f"claimed run dir {run_dir} ({resolved}) — refusing: "
                 "borrowed fold status from another run cannot certify "
                 "this aggregate's metrics."
             )
-        return resolved
+        if resolved.is_file():
+            return resolved
     raise PairReportError(
         f"fold report unreadable: {report_path!r} (tried under {run_dir} "
         "and the repo root) — per-fold official status cannot be "
@@ -175,6 +205,7 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
     # be replaced post-pairing together with its positions series in a
     # self-consistent way.
     fold_report_sha256: dict[str, str] = {}
+    per_fold_gross: list[float] = []
     seen_paths: set[Path] = set()
     for f in folds:
         # duplicate fold indices / report paths must refuse (codex #373
@@ -221,6 +252,22 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
                 f"({fold_report}) — every campaign fold must ride the "
                 "official path."
             )
+        # v3: per-fold GROSS annualized excess, extracted from the
+        # hash-pinned fold report at pairing time — the 50%
+        # gross-collapse criterion input must live in the certified
+        # artifact, never in an editable document (codex #374 r1/r8).
+        gross = ((backtest.get("risk_analysis") or {})
+                 .get("excess_return_without_cost") or {}).get(
+                     "annualized_return")
+        if (gross is None or isinstance(gross, bool)
+                or not isinstance(gross, (int, float))
+                or not math.isfinite(gross)):
+            raise PairReportError(
+                f"fold {f.get('fold_index')} gross annualized excess is "
+                f"{gross!r} ({fold_report}) — the v3 pair artifact "
+                "requires a FINITE per-fold gross series; refusing."
+            )
+        per_fold_gross.append(float(gross))
     agg = report.get("aggregate_metrics") or {}
     net_ann = agg.get("mean_annualized_return")
     # FINITE required (codex #369 r3): json.loads happily yields
@@ -244,6 +291,7 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
         "config_sha256": _config_sha256(cfg),
         "report_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
         "fold_report_sha256": fold_report_sha256,
+        "per_fold_gross_annualized": per_fold_gross,
         "metric_status": "official",   # proven per fold above
         # normalized to the pipeline shape so the veto computation is
         # shape-agnostic; fold headline metrics ARE the with-cost excess.
@@ -257,6 +305,94 @@ def _load_walk_forward_side(run_dir: Path, wf_p: Path) -> dict[str, Any]:
         "benchmark": {"code": cfg.get("benchmark_code")},
         "num_folds": report.get("num_folds"),
         "per_fold_net_annualized": per_fold_net,
+    }
+
+
+def _load_reference_side(ref_dir: Path,
+                         base_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Certify the csi300 REFERENCE run as the pair's third party (v3).
+
+    Structural binding: the reference's embedded config must differ from
+    the base config by EXACTLY the #371-pinned reference fields
+    (projection excludes run-identity), which also proves slippage
+    parity at 5 bps. Documented-run binding: every fold the aggregate
+    documents as completed must resolve (confined, fold_index-owned,
+    no duplicates) to its own OFFICIAL fold report, whose content hash
+    is pinned; folds with ``report_path`` null are the documented
+    failures, disclosed via ``ref_failed_folds``.
+    """
+    wf_p = ref_dir / "walk_forward_report.json"
+    if not wf_p.is_file():
+        raise PairReportError(f"reference aggregate missing: {wf_p}")
+    report = json.loads(wf_p.read_text(encoding="utf-8"))
+    cfg = report.get("config")
+    if not isinstance(cfg, dict):
+        raise PairReportError(f"{wf_p} carries no embedded config mapping.")
+    diff = _projected_diff(base_cfg, cfg)
+    if set(diff) != REFERENCE_DIFF_FIELDS:
+        raise PairReportError(
+            f"reference config diff vs base is {sorted(diff)} — expected "
+            f"exactly {sorted(REFERENCE_DIFF_FIELDS)}; a reference that "
+            "is not 同配置 cannot serve as the veto-3 baseline.")
+    if (cfg.get("instruments") != REFERENCE_UNIVERSE
+            or cfg.get("benchmark_code") != REFERENCE_BENCHMARK
+            or cfg.get("slippage_bps") != BASE_SLIPPAGE_BPS):
+        raise PairReportError(
+            "reference identity mismatch: expected "
+            f"{REFERENCE_UNIVERSE}/{REFERENCE_BENCHMARK}/"
+            f"{BASE_SLIPPAGE_BPS}bps, got "
+            f"{cfg.get('instruments')!r}/{cfg.get('benchmark_code')!r}/"
+            f"{cfg.get('slippage_bps')!r}.")
+    folds = report.get("folds") or []
+    num_folds = report.get("num_folds")
+    if not isinstance(num_folds, int) or len(folds) != num_folds:
+        raise PairReportError(
+            f"{wf_p}: num_folds={num_folds!r} but {len(folds)} fold "
+            "entries — torn aggregate, refusing.")
+    fold_report_sha256: dict[str, str] = {}
+    failed: list[int] = []
+    seen_indices: set[int] = set()
+    seen_paths: set[Path] = set()
+    for entry in folds:
+        idx = int(entry["fold_index"])
+        if idx in seen_indices:
+            raise PairReportError(
+                f"{wf_p} declares fold_index {idx} more than once — "
+                "refusing.")
+        seen_indices.add(idx)
+        rp = entry.get("report_path")
+        if rp is None:
+            failed.append(idx)
+            continue
+        resolved = _resolve_fold_report(ref_dir, str(rp))
+        if resolved in seen_paths:
+            raise PairReportError(
+                f"{wf_p} declares report path {resolved} for more than "
+                "one fold entry — refusing.")
+        seen_paths.add(resolved)
+        raw = resolved.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("fold_index") != idx:
+            raise PairReportError(
+                f"{resolved} carries fold_index="
+                f"{payload.get('fold_index')!r} but the aggregate entry "
+                f"claims {idx} — mismatched fold, refusing.")
+        status = ((payload.get("backtest") or {}).get("metric_status"))
+        if status != "official":
+            raise PairReportError(
+                f"reference fold {idx} metric_status={status!r} yet the "
+                "aggregate documents it as completed — not a documented "
+                "reference run, refusing.")
+        fold_report_sha256[str(idx)] = hashlib.sha256(raw).hexdigest()
+    return {
+        "run_id": ref_dir.name,
+        "artifact_shape": "walk_forward",
+        "config": cfg,
+        "config_sha256": _config_sha256(cfg),
+        "report_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
+        "fold_report_sha256": fold_report_sha256,
+        "num_folds": num_folds,
+        "ref_failed_folds": sorted(failed),
     }
 
 
@@ -310,7 +446,8 @@ def evaluate_promotion_eligibility(
     return eligible, incomplete
 
 
-def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
+def build_pair_report(base_dir: Path, cons_dir: Path,
+                      ref_dir: Path) -> dict[str, Any]:
     base, cons = _load_side(base_dir), _load_side(cons_dir)
     if base["artifact_shape"] != cons["artifact_shape"]:
         raise PairReportError(
@@ -357,14 +494,22 @@ def build_pair_report(base_dir: Path, cons_dir: Path) -> dict[str, Any]:
     # half-computed band.
     base_net = _require_finite_net(base, "base")
     cons_net = _require_finite_net(cons, "conservative")
+    # Reference certification LAST — pairing validity (shape/diff/band/
+    # identity/finite) is established before the third party is bound.
+    reference = _load_reference_side(ref_dir, base["config"])
     side_keys = ("run_id", "artifact_shape", "config_sha256",
-                 "report_sha256", "fold_report_sha256", "official_metrics",
+                 "report_sha256", "fold_report_sha256",
+                 "per_fold_gross_annualized", "official_metrics",
                  "benchmark", "num_folds", "per_fold_net_annualized")
+    ref_keys = ("run_id", "artifact_shape", "config_sha256",
+                "report_sha256", "fold_report_sha256", "num_folds",
+                "ref_failed_folds")
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "projection_whitelist": sorted(RUN_IDENTITY_FIELDS),
         "config_diff_projected": diff,
         "base": {k: base[k] for k in side_keys if k in base},
+        "reference": {k: reference[k] for k in ref_keys if k in reference},
         "conservative": {k: cons[k] for k in side_keys if k in cons},
         # veto ① is directly computable from the pair; ②③⑤ need the
         # sleeve report / turnover / csi300 reference and are attached at
@@ -403,10 +548,14 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--base-run", required=True, type=Path)
     p.add_argument("--conservative-run", required=True, type=Path)
+    p.add_argument("--reference-run", required=True, type=Path,
+                   help="csi300 reference run dir — certified as the "
+                        "pair's third party at v3")
     p.add_argument("--out", required=True, type=Path)
     args = p.parse_args(argv)
     try:
-        report = build_pair_report(args.base_run, args.conservative_run)
+        report = build_pair_report(args.base_run, args.conservative_run,
+                                   args.reference_run)
     except (PairReportError, OSError, ValueError) as exc:
         print(f"PAIR REPORT REFUSED: {exc}", file=sys.stderr)
         return 1
