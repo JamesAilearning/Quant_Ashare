@@ -563,11 +563,19 @@ def _missing_required_artifacts(manifest: FoldManifest) -> list[str]:
         p = Path(manifest.positions_path)
         if not p.is_file():
             missing.append("positions_path")
-        elif manifest.positions_sha256 is not None and (
-            hashlib.sha256(p.read_bytes()).hexdigest()
-            != manifest.positions_sha256
-        ):
-            missing.append("positions_path (attestation digest mismatch)")
+        elif manifest.positions_sha256 is not None:
+            # An unreadable-but-present file (ACL change, I/O error)
+            # must degrade to the same invalid-manifest path as a
+            # missing one — not escape as OSError and abort the whole
+            # run before the fold loop (codex P2 on #375 r4).
+            try:
+                actual = hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError:
+                missing.append("positions_path (unreadable)")
+            else:
+                if actual != manifest.positions_sha256:
+                    missing.append(
+                        "positions_path (attestation digest mismatch)")
     return missing
 
 

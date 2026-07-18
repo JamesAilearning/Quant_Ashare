@@ -209,6 +209,47 @@ def test_resume_rejects_missing_or_mutated_attested_positions() -> None:
         assert 0 not in FoldManifest.discover(td)
 
 
+def test_unreadable_attested_positions_marks_manifest_invalid() -> None:
+    # codex #375 r4: present-but-unreadable (ACL/I-O error) must degrade
+    # to the invalid-manifest path, not escape as OSError and abort the
+    # whole run before the fold loop.
+    from unittest import mock
+
+    from src.core.walk_forward._resume import (
+        FoldManifest,
+        _missing_required_artifacts,
+    )
+    from src.core.walk_forward._types import WalkForwardFold
+    from src.core.walk_forward.config import WalkForwardConfig
+
+    fold = WalkForwardFold(
+        fold_index=0,
+        train_period="a ~ b", valid_period="c ~ d", test_period="e ~ f",
+        ic_1d=0.01, ic_5d=0.02, annualized_return=0.1,
+        max_drawdown=-0.05, information_ratio=0.5,
+        prediction_shape=(10,), report_path="fold_00_report.json",
+    )
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        for name in ("model_fold0.pkl", "fold_00_report.json",
+                     "fold_00_predictions.pkl"):
+            (td / name).write_text("{}", encoding="utf-8")
+        digest = write_positions(td / "fold_00_positions.json", _POSITIONS)
+        manifest = FoldManifest.from_fold(
+            fold=fold, config=WalkForwardConfig(),
+            model_path=str(td / "model_fold0.pkl"),
+            report_path=str(td / "fold_00_report.json"),
+            predictions_path=str(td / "fold_00_predictions.pkl"),
+            positions_path=str(td / "fold_00_positions.json"),
+            positions_sha256=digest,
+        ).with_paths_rebased(td)
+        with mock.patch.object(
+            Path, "read_bytes", side_effect=OSError("permission denied"),
+        ):
+            missing = _missing_required_artifacts(manifest)
+        assert any("unreadable" in m for m in missing)
+
+
 def _pipeline_report_stubs() -> tuple[object, object, object, object, object]:
     """Minimal stubs for Pipeline._write_report (mirrors the pattern in
     tests/logic/test_pipeline.py ReportGitProvenanceTests)."""
