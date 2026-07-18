@@ -1,0 +1,21 @@
+# CSI800 降换手战役（N5）— 敏感带 conservative 档（主判，20 bps）
+# （2026-07-17-csi800-cadence-campaign，DP-1/2/6 签署）。
+#
+# 与 base 档 csi800_cadence5_base.yaml 恰差 slippage_bps + output_dir
+# （治理测试钉死）；20 bps 为 #368 DP-2 预注册值，跑前写死不可回调。
+# cadence 三字段显式写死同 base（N=5 / phase=0 / fold_phase）。
+#
+# Run discipline: 一次不间断调用，三发串行绝不并发:
+#     python scripts/run_walk_forward.py config/presets/csi800_cadence5_conservative.yaml
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 20.0
+rebalance_cadence_days: 5
+rebalance_phase: 0
+rebalance_anchor: "fold_phase"
+output_dir: "output/walk_forward/csi800_cadence5_conservative"

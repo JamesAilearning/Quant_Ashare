@@ -1,0 +1,21 @@
+# CSI800 降换手战役（N5）— csi300 参照档（veto-3 换手基准，DP-4）。
+#
+# veto③ 的"同配置"必须含 cadence 三字段（2026-07-17 spec 修订）：对
+# 日频参照比较周频 run 的换手比率无意义地趋零，veto③ 失去牙齿——故
+# N5 战役的参照同为 N=5 / phase=0 / fold_phase（显式写死）。与 N1
+# 参照 csi300_campaign_reference.yaml 恰差 cadence 三字段 +
+# output_dir；与 N5 base 档恰差宇宙/基准/sleeve 开关 + output_dir
+# （均由治理测试钉死）。risk_constraints 与战役档一致开启（post-trade
+# 验证，官方数字反映 unclipped 执行，为字面对称与 provenance 可比）。
+#
+# Run discipline: 三发串行绝不并发:
+#     python scripts/run_walk_forward.py config/presets/csi300_cadence5_reference.yaml
+extends: ../../config_walk.yaml
+
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 5.0
+rebalance_cadence_days: 5
+rebalance_phase: 0
+rebalance_anchor: "fold_phase"
+output_dir: "output/walk_forward/csi300_cadence5_reference"
