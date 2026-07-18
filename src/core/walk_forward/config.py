@@ -230,6 +230,17 @@ class WalkForwardConfig:
     # silently substituted for a non-campaign run. Two engines, one
     # schema: mirrors PipelineConfig.
     risk_constraints_calibration: str = "default"
+    # Risk-constraint validation scope (R1, codex #378 r3): the
+    # canonical contract validates the FULL positions map ("all_days",
+    # default — byte-identical to the pre-R1 behaviour for every
+    # caller). Campaign presets with a non-daily cadence opt into
+    # "rebalance_days": constraints validate only rebalance-EFFECT
+    # days, because hold-day drift is market movement, not an
+    # allocation decision, and full-map validation makes the same cap
+    # harsher than under N=1. Requires cadence != 1 (under N=1 every
+    # day is a rebalance day; the explicit opt-in would be a no-op
+    # that only blurs provenance).
+    risk_constraint_scope: str = "all_days"
 
     # Output
     output_dir: str = "output/walk_forward"
@@ -299,6 +310,17 @@ class WalkForwardConfig:
                 "metrics without the mandated decomposition "
                 "(v2-csi800-expansion-guards, codex P1 on #370)."
             )
+        if self.risk_constraint_scope not in ("all_days",
+                                              "rebalance_days"):
+            raise WalkForwardError(
+                "risk_constraint_scope must be 'all_days' or "
+                f"'rebalance_days'; got {self.risk_constraint_scope!r}.")
+        if (self.risk_constraint_scope == "rebalance_days"
+                and self.rebalance_cadence_days == 1):
+            raise WalkForwardError(
+                "risk_constraint_scope='rebalance_days' requires a "
+                "non-daily rebalance cadence (under N=1 every day is a "
+                "rebalance day — the opt-in would be a no-op).")
         if self.risk_constraints_calibration not in ("default",
                                                      "campaign_v1"):
             raise WalkForwardError(

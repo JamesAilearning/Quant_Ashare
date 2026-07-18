@@ -246,9 +246,15 @@ SHALL 先于任何战役数据存在，跑后 SHALL NOT 修改。五条判据：
    **再平衡生效日**（thinned signal-stamp + 总滞后的成交日）对
    positions 校验——未再平衡日的权重变化是市场漂移而非配置决策，
    逐日检查会使同一数字在 N>1 下语义更严、破坏同配置可比；N=1 时
-   每日皆再平衡生效日，路径逐字节不变。非默认节奏 run 的工件 SHALL
+   每日皆再平衡生效日，路径逐字节不变。该作用域是**显式 opt-in
+   配置**（`risk_constraint_scope: "rebalance_days"`；canonical 默认
+   `"all_days"` 对所有调用者保持全图校验合约逐字节不变，codex #378
+   r3）——campaign preset SHALL 显式声明之，且该 opt-in 仅在非默认
+   节奏下合法（N=1 时为无效配置）。非默认节奏 run 的工件 SHALL
    以 `risk_constraint_scope: "rebalance_days"` 披露该语义（置于
-   cadence provenance 块，不改 veto④ 勾验所钉的约束值 dict 形状）。
+   cadence provenance 块，不改 veto④ 勾验所钉的约束值 dict 形状）；
+   veto④ 勾验 SHALL 同时强制 config 声明与逐折 provenance 披露——
+   pre-R1 全图语义的 N5 工件不得作为战役证据。
 5. **中盘集中度**：csi500 sleeve 的时均组合权重 > 75%，或 sleeve 报告
    `unknown` 桶时均权重 > 10% → veto（宇宙退化为中盘单边注 / 分组图
    失真，probe 实证基线 61.8% / 4.4%）。

@@ -18,4 +18,6 @@ slippage_bps: 5.0
 rebalance_cadence_days: 5
 rebalance_phase: 0
 rebalance_anchor: "fold_phase"
+# R1(#378): 约束仅在再平衡生效日校验的显式 opt-in(canonical 默认 all_days)
+risk_constraint_scope: "rebalance_days"
 output_dir: "output/walk_forward/csi300_cadence5_reference"

@@ -191,6 +191,11 @@ class PipelineConfig:
     # campaign calibration is an EXPLICIT opt-in, never silently
     # substituted for a non-campaign run.
     risk_constraints_calibration: str = "default"
+    # R1 (codex #378 r3): see WalkForwardConfig — "all_days" preserves
+    # the canonical full-map contract; "rebalance_days" is the campaign
+    # opt-in (pipeline has no cadence machinery, so only "all_days" is
+    # valid here; the field exists for two-engine config symmetry).
+    risk_constraint_scope: str = "all_days"
 
     # output
     output_dir: str = "output"
@@ -227,6 +232,11 @@ class PipelineConfig:
                 "metrics without the mandated decomposition "
                 "(v2-csi800-expansion-guards, codex P1 on #370)."
             )
+        if self.risk_constraint_scope != "all_days":
+            raise ValueError(
+                "risk_constraint_scope: the pipeline engine has no "
+                "rebalance-cadence machinery — only 'all_days' is "
+                f"valid; got {self.risk_constraint_scope!r}.")
         if self.risk_constraints_calibration not in ("default",
                                                      "campaign_v1"):
             raise PipelineError(
@@ -604,6 +614,10 @@ class Pipeline:
                  if config.risk_constraints_calibration == "campaign_v1"
                  else MinimalRiskConstraints())
                 if config.risk_constraints_enabled else None),
+            # R1 (codex #378 r3): explicit scope opt-in threads through;
+            # the default "all_days" keeps the canonical full-map
+            # contract byte-identical.
+            risk_constraint_scope=config.risk_constraint_scope,
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest (microstructure mask + equal-weight
             # baseline raw-field fetches take the §4.3.2 layer instead of

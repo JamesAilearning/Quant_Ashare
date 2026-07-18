@@ -134,6 +134,7 @@ class BacktestRunner:
         st_audit_path: str | None = None,
         require_st_mask: bool = False,
         rebalance_cadence_days: int = 1,
+        risk_constraint_scope: str = "all_days",
         rebalance_phase: int = 0,
         rebalance_anchor: str = "fold_phase",
         universe_hint: str | None = None,
@@ -148,6 +149,21 @@ class BacktestRunner:
         # refused HERE too — never silently accepted while provenance records
         # a non-default value. This also enforces the lag interaction (codex
         # P1 on #336; see the helper).
+        # R1 gating (codex #378 r3): rebalance-day constraint scoping
+        # is an EXPLICIT opt-in — the canonical contract's default stays
+        # full-map validation for every caller.
+        if risk_constraint_scope not in ("all_days", "rebalance_days"):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: risk_constraint_scope must be "
+                "'all_days' or 'rebalance_days'; got "
+                f"{risk_constraint_scope!r}.")
+        if (risk_constraint_scope == "rebalance_days"
+                and rebalance_cadence_days == 1):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: risk_constraint_scope="
+                "'rebalance_days' requires a non-daily cadence — under "
+                "N=1 every day is a rebalance day; the opt-in would "
+                "only blur provenance.")
         cls._validate_cadence(
             rebalance_cadence_days, rebalance_phase, rebalance_anchor,
             request.signal_to_execution_lag,
@@ -855,7 +871,7 @@ class BacktestRunner:
             constraint_positions: Mapping[str, Mapping[str, float]] = (
                 positions_map
             )
-            if rebalance_cadence_days != 1:
+            if risk_constraint_scope == "rebalance_days":
                 # Scope from the FINAL post-mask signal (codex #378 r1):
                 # a scheduled stamp whose rows were ALL removed by the
                 # microstructure/ST masks emits no signal — qlib holds
@@ -936,7 +952,8 @@ class BacktestRunner:
             # constraints validate rebalance-effect days only. Lives in
             # the cadence block (not the risk_constraints dict, whose
             # exact shape is pinned by the veto-4 checker).
-            if risk_constraints is not None and rebalance_cadence_days != 1:
+            if (risk_constraints is not None
+                    and risk_constraint_scope == "rebalance_days"):
                 rebalance_provenance["risk_constraint_scope"] = (
                     "rebalance_days"
                 )

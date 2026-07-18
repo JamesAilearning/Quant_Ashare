@@ -892,6 +892,10 @@ class WalkForwardEngine:
                  if config.risk_constraints_calibration == "campaign_v1"
                  else MinimalRiskConstraints())
                 if config.risk_constraints_enabled else None),
+            # R1 (codex #378 r3): explicit scope opt-in threads through;
+            # the default "all_days" keeps the canonical full-map
+            # contract byte-identical.
+            risk_constraint_scope=config.risk_constraint_scope,
             # Audit P2 tail (P0-6 follow-up): thread the run-level PIT
             # provider into the backtest so the microstructure mask and the
             # equal-weight baseline route their raw-field fetches through

@@ -638,7 +638,8 @@ def test_cadence_artifact_requires_scope_disclosure():
     # risk_constraint_scope=rebalance_days — a pre-R1 artifact (no
     # scope field) triggers; a post-R1 artifact passes.
     cadence_cfg = {**_CAMPAIGN_CFG, "rebalance_cadence_days": 5,
-                   "rebalance_phase": 0, "rebalance_anchor": "fold_phase"}
+                   "rebalance_phase": 0, "rebalance_anchor": "fold_phase",
+                   "risk_constraint_scope": "rebalance_days"}
 
     def add_scope(with_scope: bool):
         def _hook(b: Path, c: Path, _r: Path) -> None:
@@ -665,7 +666,8 @@ def test_cadence_artifact_requires_scope_disclosure():
         ref = _mk_reference_run(
             root, cfg_over={"rebalance_cadence_days": 5,
                             "rebalance_phase": 0,
-                            "rebalance_anchor": "fold_phase"})
+                            "rebalance_anchor": "fold_phase",
+                            "risk_constraint_scope": "rebalance_days"})
         add_scope(True)(base, cons, ref)
         pair_p = root / "pair.json"
         pair_p.write_text(json.dumps(build_pair_report(base, cons, ref)),
@@ -685,8 +687,9 @@ def test_cadence_artifact_requires_scope_disclosure():
         ref = _mk_reference_run(
             root, cfg_over={"rebalance_cadence_days": 5,
                             "rebalance_phase": 0,
-                            "rebalance_anchor": "fold_phase"})
-        # pre-R1 shape: no scope field
+                            "rebalance_anchor": "fold_phase",
+                            "risk_constraint_scope": "rebalance_days"})
+        # pre-R1 shape: no scope field in fold provenance
         pair_p = root / "pair.json"
         pair_p.write_text(json.dumps(build_pair_report(base, cons, ref)),
                           encoding="utf-8")

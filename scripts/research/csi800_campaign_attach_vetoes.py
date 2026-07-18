@@ -738,6 +738,16 @@ def compute_constraints_check(
         if cfg.get("risk_constraints_calibration") != "campaign_v1":
             problems.append(f"{label}: calibration != campaign_v1")
         expected_cadence = int(cfg.get("rebalance_cadence_days") or 1)
+        # R1 opt-in must be DECLARED in the config too (codex #378 r3):
+        # scoping is explicit, so a campaign cadence config that does
+        # not opt in ran full-map semantics — not campaign evidence.
+        if (expected_cadence != 1
+                and cfg.get("risk_constraint_scope") != "rebalance_days"):
+            problems.append(
+                f"{label}: non-default cadence config lacks "
+                "risk_constraint_scope='rebalance_days' — R1 scoping "
+                "is an explicit opt-in and campaign evidence requires "
+                "it")
         for idx, rep in folds:
             folds_checked += 1
             prov_cfg = (((rep.get("backtest") or {})
