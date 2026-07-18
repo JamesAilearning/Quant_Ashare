@@ -1022,6 +1022,7 @@ class Pipeline:
                 "attribution_sleeve_grouping": config.attribution_sleeve_grouping,
                 "risk_constraints_enabled": config.risk_constraints_enabled,
                 "risk_constraints_calibration": config.risk_constraints_calibration,
+                "risk_constraint_scope": config.risk_constraint_scope,
             },
             "dataset": {
                 "train_shape": list(feature_result.train_shape),

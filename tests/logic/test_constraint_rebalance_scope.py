@@ -103,3 +103,62 @@ def test_merge_clipped_preserves_hold_days() -> None:
     assert merged["2024-01-03"]["SH600000"] == 0.05
     assert merged["2024-01-04"] == full["2024-01-04"]
     assert set(merged) == set(full)
+
+
+def test_pipeline_report_config_mirrors_risk_constraint_scope() -> None:
+    # codex #378 r4: walk-forward artifacts disclose the scope through
+    # asdict(config); the pipeline's CURATED config projection must
+    # mirror the key so an official pipeline run can prove it used the
+    # canonical all_days semantics (two engines, one schema).
+    import json
+    import tempfile
+    from types import SimpleNamespace
+
+    from src.core.pipeline import Pipeline
+    from src.core.signal_analyzer import SignalAnalysisResult
+
+    config = SimpleNamespace(
+        instruments="csi300", feature_handler="alpha158",
+        label_horizon_days=1,
+        train_start="2022-01-01", train_end="2022-12-31",
+        valid_start="2023-01-01", valid_end="2023-03-31",
+        test_start="2023-04-01", test_end="2023-06-30",
+        model_type="LGBModel", benchmark_code="SH000300",
+        topk=50, n_drop=5, industry_taxonomy_id=None,
+        attribution_sleeve_grouping=False,
+        risk_constraints_enabled=False,
+        risk_constraints_calibration="default",
+        risk_constraint_scope="all_days",
+        delisted_registry_path="",
+    )
+    feature_result = SimpleNamespace(
+        train_shape=(10, 5), valid_shape=(5, 5), test_shape=(5, 5))
+    model_result = SimpleNamespace(
+        prediction_shape=(5, 1), model_artifact_path="m.pkl")
+    signal_result = SignalAnalysisResult(
+        ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5,
+                        "num_days": 5}},
+        ic_series={}, ic_decay=[0.01],
+        turnover_stats={"mean_turnover": 0.1})
+    backtest_output = SimpleNamespace(
+        metric_status="ok", official_backtest_path="official",
+        report={}, provenance={}, risk_analysis={})
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "pipeline_report.json"
+        Pipeline._write_report(
+            str(path), config, feature_result, model_result,
+            signal_result, backtest_output,
+            factor_skipped_reason="unit-test",
+            git_provenance={"commit": "cafebabe" * 5, "dirty": False})
+        data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["config"]["risk_constraint_scope"] == "all_days"
+
+    # walk-forward side of the same pin: asdict(config) carries the key.
+    from src.core.walk_forward.aggregate import build_aggregate_report
+    from src.core.walk_forward.config import WalkForwardConfig
+
+    wf = build_aggregate_report(
+        config=WalkForwardConfig(output_dir="output/wf"), folds=[],
+        aggregate_metrics={},
+        git_provenance={"commit": "x", "dirty": True})
+    assert wf["config"]["risk_constraint_scope"] == "all_days"
