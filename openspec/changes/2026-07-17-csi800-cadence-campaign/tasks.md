@@ -53,19 +53,19 @@
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 3. PR-C — N5 战役 preset + 治理 pin
-- [ ] 三 preset：`csi300_cadence5_reference.yaml`、
+- [x] 三 preset：`csi300_cadence5_reference.yaml`、
       `csi800_cadence5_base.yaml`、`csi800_cadence5_conservative.yaml`
       （cadence 三字段显式写死 5/0/fold_phase；余沿 campaign 三件）
-- [ ] 治理 pin：N5 双档 diff 恰 {slippage_bps, output_dir}；N5 参照
+- [x] 治理 pin：N5 双档 diff 恰 {slippage_bps, output_dir}；N5 参照
       vs N5 base diff 恰 {instruments, benchmark_code,
       attribution_sleeve_grouping, output_dir}；N5 vs N1 同角色
       preset diff 恰 {rebalance_cadence_days, rebalance_phase,
       rebalance_anchor, output_dir}（N1 preset 不动，diff 由显式
       写死值产生）；resolved 级 cadence pin（三发同值 5/0/fold_phase）
-- [ ] 主判据双条件数字 pin（>0 与 50%）+ 比较臂 pin
+- [x] 主判据双条件数字 pin（>0 与 50%）+ 比较臂 pin
       （conservative-to-conservative + 双臂毛发散 ≤5% fail-closed）
       入治理测试
-- [ ] 主判据比较工装：N1 侧仅从**已提交的钉死 N1 源 fold report
+- [x] 主判据比较工装：N1 侧仅从**已提交的钉死 N1 源 fold report
       目录**读毛值（读取前逐折哈希验证 == v2 已钉值，codex r9），
       N5 侧消费 pair v3；毛塌缩比较（钉臂）+ 净判据 + 覆盖全折校验
       + 双臂发散校验，缺失/断链/失配拒绝

@@ -1,0 +1,24 @@
+# CSI800 降换手战役（N5）— 敏感带 base 档
+# （2026-07-17-csi800-cadence-campaign，DP-1/2 签署）。
+#
+# 与 N1 战役档 csi800_campaign_base.yaml 恰差 cadence 三字段 +
+# output_dir（治理测试钉死）：N=5 / phase=0 / fold_phase 为 DP-2 预
+# 注册值，三字段显式写死（不靠继承默认——N5 vs N1 的 raw diff 必须
+# 可见可 pin），禁试后调 N（N∈{1,5}，改须新 OpenSpec 变更并作废既有
+# 结果）。与 conservative 档除 slippage_bps 与 output_dir 外逐字段
+# 一致；run 级配对由 pair v3 工具以持久化配置自证。
+#
+# Run discipline: 一次不间断调用，三发串行绝不并发:
+#     python scripts/run_walk_forward.py config/presets/csi800_cadence5_base.yaml
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 5.0
+rebalance_cadence_days: 5
+rebalance_phase: 0
+rebalance_anchor: "fold_phase"
+output_dir: "output/walk_forward/csi800_cadence5_base"
