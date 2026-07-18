@@ -472,3 +472,34 @@ def test_gapped_reference_fold_indices_refuse(tmp_path: Path) -> None:
     with pytest.raises((SystemExit, RuntimeError),
                        match="aliased|does not match|incomplete"):
         _run_certify(w, tmp_path / "v.json")
+
+
+def test_boolean_n1_gross_refuses(tmp_path: Path) -> None:
+    # codex #376 r9: float(True) == 1.0 — a hash-pinned but malformed
+    # baseline must refuse before coercion.
+    import hashlib as _hashlib
+
+    w = _mk_repo(tmp_path)
+    repo = Path(w["repo"])
+    bad_report = json.dumps({
+        "fold_index": 0,
+        "backtest": {"risk_analysis": {"excess_return_without_cost": {
+            "annualized_return": True}}},
+    }).encode("utf-8")
+    digest = _hashlib.sha256(bad_report).hexdigest()
+    n1_dir = repo / "n1_bool"
+    for side in ("base", "conservative"):
+        (n1_dir / side).mkdir(parents=True)
+        (n1_dir / side / "fold_00_report.json").write_bytes(bad_report)
+    (repo / "n1_pair_bool.json").write_text(json.dumps({
+        "base": {"fold_report_sha256": {"0": digest}, "num_folds": 1},
+        "conservative": {"fold_report_sha256": {"0": digest},
+                         "num_folds": 1},
+    }), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "bool n1", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    with pytest.raises(SystemExit, match="not a number"):
+        certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
+                "n1_pair_bool.json", "n1_bool", tmp_path / "v.json")

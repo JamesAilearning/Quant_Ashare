@@ -163,9 +163,18 @@ def _n1_gross_means(repo: Path, anchor: str, n1_pair_path: str,
                     f"sha256 {actual} != N1-pair-pinned {expected} — "
                     "baseline evidence broken.")
             payload = json.loads(raw)
-            value = float(
-                payload["backtest"]["risk_analysis"]
-                ["excess_return_without_cost"]["annualized_return"])
+            raw_value = (payload["backtest"]["risk_analysis"]
+                         ["excess_return_without_cost"]
+                         ["annualized_return"])
+            # bool/str would coerce via float() (True -> 1.0) — require
+            # a real number BEFORE coercion (codex #376 r9).
+            if isinstance(raw_value, bool) or not isinstance(
+                    raw_value, (int, float)):
+                raise CertifyError(
+                    f"N1 {side} fold {idx_s}: gross value {raw_value!r} "
+                    "is not a number — malformed baseline evidence, "
+                    "refusing.")
+            value = float(raw_value)
             # NaN/Infinity survive json.loads and make every threshold
             # comparison False (codex #376 r2) — fail closed instead of
             # minting a NaN retention.
@@ -277,9 +286,16 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
                 rep_p = (runs[key]
                          / f"fold_{int(idx_s):02d}_report.json")
                 payload = json.loads(rep_p.read_text(encoding="utf-8"))
-                value = float(
-                    payload["backtest"]["risk_analysis"]
-                    ["excess_return_without_cost"]["annualized_return"])
+                raw_value = (payload["backtest"]["risk_analysis"]
+                             ["excess_return_without_cost"]
+                             ["annualized_return"])
+                if isinstance(raw_value, bool) or not isinstance(
+                        raw_value, (int, float)):
+                    raise CertifyError(
+                        f"N5 {key} fold {idx_s}: gross value "
+                        f"{raw_value!r} is not a number — malformed "
+                        "evidence, refusing.")
+                value = float(raw_value)
                 # same fail-closed rule as the N1 path (codex #376 r4):
                 # a consistently-edited pair could carry inf==inf past
                 # the equality check while NaN divergence bypasses the
