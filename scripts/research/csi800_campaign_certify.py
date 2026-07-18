@@ -228,6 +228,17 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
                 f"{anchored_pair['reference']['ref_failed_folds']} — "
                 "promotion-grade certification requires a fully "
                 "official reference; refusing.")
+        # exact reference fold-index coverage (codex #376 r8): with no
+        # failed folds, the certified completed set must be exactly
+        # 0..num_folds-1 — indices like {0, 99} with num_folds=2 would
+        # pass a length-only check while a fold is absent.
+        ref_n = int(anchored_pair["reference"]["num_folds"])
+        ref_keys = set(anchored_pair["reference"]["fold_report_sha256"])
+        if ref_keys != {str(i) for i in range(ref_n)}:
+            raise CertifyError(
+                f"reference certified fold keys {sorted(ref_keys)} != "
+                f"expected exact set 0..{ref_n - 1} — incomplete or "
+                "aliased reference coverage, refusing.")
         runs: dict[str, Path] = {}
         for key, reldir in (("base", base_dir),
                             ("conservative", cons_dir),
