@@ -21,14 +21,14 @@
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. PR-B — pair v3 三方认证 + attach 摘要链 + N1 基线抬进认证工件
-- [ ] pair 工具：`--reference-run` 三方入证（四件套 + 配置绑定钉死
+- [x] pair 工具：`--reference-run` 三方入证（四件套 + 配置绑定钉死
       差集校验），schema 升 `csi800_pair_report_v3`；v3 侧条目新增
       逐折毛超额（`excess_return_without_cost`，取自哈希钉住的
       fold report）
-- [ ] attach：改从 v3 工件读参照认证条目（pre-v3 拒绝）；全链摘要
+- [x] attach：改从 v3 工件读参照认证条目（pre-v3 拒绝）；全链摘要
       验证（pair→fold report 哈希→positions_sha256→盘面字节）；
       缺摘要维持 unauthenticated + block；失配拒绝
-- [ ] **不可变锚 + verdict 侧车（强制两件套）**（codex #374
+- [x] **不可变锚 + verdict 侧车（强制两件套）**（codex #374
       r3+r4+r10+r12）：attach 内嵌资格恒 false（非权威）；certify
       独立步骤——验证 pair v3 字节==主线锚（origin/main 可达
       commit）+ **经证据锚（origin/main 可达 commit）读取全部 N5
@@ -39,15 +39,15 @@
       "已提交侧车 + digest 与已提交 pair 一致"形态成立；测试含
       certify 不改写/侧车断链拒/工作树拒/**证据未锚定拒**/顺序不可
       倒置
-- [ ] **N1 源 fold reports 本体入库**（codex #374 r1+r7+r8）：双侧
+- [x] **N1 源 fold reports 本体入库**（codex #374 r1+r7+r8）：双侧
       46 个 fold report（~1.1 MB）提交至钉死证据目录，目录
       `.gitattributes -text` 保证字节保真；治理测试逐折断言已提交
       源文件 sha256 == 已提交 v2 工件所钉 fold_report_sha256（CI
       端到端可验，毛值直接读自哈希验证过的源）；证据工件/v3 重生成
       两方案均废止（前者值不可复验来源、后者依赖单机目录）
-- [ ] 既有防线（窗口绑定/内嵌换手交叉验证/去重/非有限值/质量闭合）
+- [x] 既有防线（窗口绑定/内嵌换手交叉验证/去重/非有限值/质量闭合）
       全保留，测试断言不回退
-- [ ] 测试：全链达标晋升门开；positions 换后拒；参照 fold report
+- [x] 测试：全链达标晋升门开；positions 换后拒；参照 fold report
       配对后改拒；pre-v3 工件拒；v3 毛值与 hash 验证后 fold report
       不符拒
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge

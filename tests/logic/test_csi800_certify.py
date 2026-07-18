@@ -1,0 +1,206 @@
+"""Certify step tests — synthetic git repos with a real origin/main ref.
+
+Coverage matrix (>=1 case per dimension):
+  WIN certifies      — anchored trio + N1 baseline, all vetoes pass,
+                       primary criteria pass -> sidecar written with
+                       producer_digest_certified + three anchors.
+  unanchored refuses — inputs not present at the mainline anchor refuse
+                       (working-tree/feature-only evidence can never
+                       certify).
+  chain incomplete   — a fold report without positions_sha256 refuses
+                       (only PR-A attestation producers certify).
+  vetoed refuses     — veto-1 triggered (cons net <= 0) -> no sidecar.
+  gross collapse     — N5 gross < 50% of N1 gross -> LOSE, no sidecar.
+  verify roundtrip   — a written sidecar re-verifies; a tampered field
+                       breaks reproduction and refuses.
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from scripts.research.csi800_campaign_attach_vetoes import attach  # noqa: E402
+from scripts.research.csi800_campaign_certify import (  # noqa: E402
+    certify,
+    verify,
+)
+from scripts.research.csi800_campaign_pair_report import (  # noqa: E402
+    build_pair_report,
+)
+from tests.logic.test_csi800_attach_vetoes import (  # noqa: E402
+    _CAMPAIGN_CFG,
+    _mk_campaign_run,
+    _mk_reference_run,
+)
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(["git", "-C", str(repo), *args],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def _mk_repo(root: Path, cons_net: float = 0.02) -> dict[str, str]:
+    """Build a committed campaign world: N5 trio (attached pair) + the
+    same artifacts doubling as the N1 baseline, on a real mainline."""
+    repo = root / "repo"
+    ev = repo / "evidence"
+    ev.mkdir(parents=True)
+    base = _mk_campaign_run(ev, "base", _CAMPAIGN_CFG, mean_net=0.05)
+    cons = _mk_campaign_run(
+        ev, "cons",
+        {**_CAMPAIGN_CFG, "slippage_bps": 20.0,
+         "output_dir": "output/walk_forward/cons"},
+        mean_net=cons_net)
+    ref = _mk_reference_run(ev)
+    pair_p = repo / "pair.json"
+    pair_p.write_text(
+        json.dumps(build_pair_report(base, cons, ref)), encoding="utf-8")
+    attach(pair_p, base, cons, ref)
+    # N1 baseline: reuse the attached pair + copy the fold reports into
+    # the pinned N1 evidence layout (side dirs base/conservative).
+    n1_ev = repo / "n1_evidence"
+    for side, run in (("base", base), ("conservative", cons)):
+        d = n1_ev / side
+        d.mkdir(parents=True)
+        for rep_p in sorted(run.glob("fold_*_report.json")):
+            (d / rep_p.name).write_bytes(rep_p.read_bytes())
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "campaign evidence", "--no-verify")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/main", head)
+    return {
+        "repo": str(repo), "head": head,
+        "pair": "pair.json",
+        "base": "evidence/base", "cons": "evidence/cons",
+        "ref": "evidence/ref", "n1_pair": "pair.json",
+        "n1_ev": "n1_evidence",
+    }
+
+
+def _run_certify(w: dict[str, str], out: Path) -> dict:
+    return certify(Path(w["repo"]), w["pair"], w["base"], w["cons"],
+                   w["ref"], w["n1_pair"], w["n1_ev"], out)
+
+
+def test_win_certifies_with_three_anchors_and_sidecar():
+    with tempfile.TemporaryDirectory() as t:
+        w = _mk_repo(Path(t), cons_net=0.02)
+        out = Path(t) / "verdict.json"
+        sidecar = _run_certify(w, out)
+        assert out.is_file()
+        v = sidecar["verdict"]
+        assert v["promotion_eligible"] is True
+        assert v["reference_content_binding"] == "producer_digest_certified"
+        assert v["gross_retention"] == pytest.approx(1.0)
+        assert set(sidecar["anchors"]) == {
+            "pair_anchor", "evidence_anchor", "n1_anchor", "mainline_ref"}
+        assert sidecar["anchors"]["pair_anchor"] == w["head"]
+
+
+def test_uncommitted_input_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        w = _mk_repo(Path(t))
+        # a pair path that exists ONLY in the working tree
+        wt_only = Path(w["repo"]) / "pair_wt.json"
+        wt_only.write_bytes((Path(w["repo"]) / "pair.json").read_bytes())
+        with pytest.raises(SystemExit, match="CERTIFY REFUSED"):
+            certify(Path(w["repo"]), "pair_wt.json", w["base"], w["cons"],
+                    w["ref"], w["n1_pair"], w["n1_ev"],
+                    Path(t) / "v.json")
+
+
+def test_incomplete_digest_chain_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        w = _mk_repo(root)
+        repo = Path(w["repo"])
+        # strip attestation from one committed fold report, re-pair,
+        # re-attach, re-commit — self-consistent but chain-incomplete
+        rep_p = repo / "evidence/cons/fold_01_report.json"
+        payload = json.loads(rep_p.read_text(encoding="utf-8"))
+        payload.pop("positions_sha256")
+        rep_p.write_text(json.dumps(payload), encoding="utf-8")
+        pair_p = repo / "pair.json"
+        pair_p.write_text(json.dumps(build_pair_report(
+            repo / "evidence/base", repo / "evidence/cons",
+            repo / "evidence/ref")), encoding="utf-8")
+        attach(pair_p, repo / "evidence/base", repo / "evidence/cons",
+               repo / "evidence/ref")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "strip", "--no-verify")
+        _git(repo, "update-ref", "refs/remotes/origin/main",
+             _git(repo, "rev-parse", "HEAD"))
+        with pytest.raises(SystemExit, match="digest chain is incomplete"):
+            _run_certify(w, root / "v.json")
+
+
+def test_vetoed_campaign_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        w = _mk_repo(Path(t), cons_net=-0.02)   # veto-1 triggers
+        with pytest.raises(SystemExit, match="does not pass"):
+            _run_certify(w, Path(t) / "v.json")
+        assert not (Path(t) / "v.json").exists()
+
+
+def test_gross_collapse_refuses():
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        w = _mk_repo(root)
+        repo = Path(w["repo"])
+        # inflate the N1 baseline gross (3x the N5 gross) in BOTH side
+        # evidence dirs, then re-pin the N1 pair hashes accordingly by
+        # building a dedicated N1 trio with high gross.
+        ev2 = repo / "n1_high"
+        base2 = _mk_campaign_run(ev2, "base", _CAMPAIGN_CFG,
+                                 mean_net=0.05, gross=0.20)
+        cons2 = _mk_campaign_run(
+            ev2, "cons",
+            {**_CAMPAIGN_CFG, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/cons"},
+            mean_net=0.02, gross=0.20)
+        ref2 = _mk_reference_run(ev2)
+        (repo / "n1_pair_high.json").write_text(
+            json.dumps(build_pair_report(base2, cons2, ref2)),
+            encoding="utf-8")
+        n1_ev = repo / "n1_evidence_high"
+        for side, run in (("base", base2), ("conservative", cons2)):
+            d = n1_ev / side
+            d.mkdir(parents=True)
+            for rep_p in sorted(run.glob("fold_*_report.json")):
+                (d / rep_p.name).write_bytes(rep_p.read_bytes())
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "n1 high", "--no-verify")
+        _git(repo, "update-ref", "refs/remotes/origin/main",
+             _git(repo, "rev-parse", "HEAD"))
+        with pytest.raises(SystemExit, match="gross retention"):
+            certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
+                    "n1_pair_high.json", "n1_evidence_high",
+                    root / "v.json")
+
+
+def test_verify_roundtrip_and_tamper():
+    with tempfile.TemporaryDirectory() as t:
+        w = _mk_repo(Path(t))
+        out = Path(t) / "verdict.json"
+        _run_certify(w, out)
+        verify(Path(w["repo"]), out)     # clean roundtrip
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        payload["verdict"]["gross_retention"] = 9.9
+        out.write_text(json.dumps(payload, indent=2) + "\n",
+                       encoding="utf-8")
+        with pytest.raises(SystemExit, match="do not reproduce"):
+            verify(Path(w["repo"]), out)

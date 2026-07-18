@@ -72,7 +72,8 @@ def _positions(shift: float = 0.0) -> dict[str, dict[str, float]]:
 
 
 def _mk_campaign_run(root: Path, name: str, cfg: dict,
-                     mean_net: float, n_folds: int = 2) -> Path:
+                     mean_net: float, n_folds: int = 2,
+                     gross: float = 0.05) -> Path:
     d = root / name
     d.mkdir(parents=True)
     folds = []
@@ -101,7 +102,7 @@ def _mk_campaign_run(root: Path, name: str, cfg: dict,
                            "positions_days": 3, "total_days": 3},
                 # v3: per-fold GROSS is extracted at pairing time
                 "risk_analysis": {"excess_return_without_cost": {
-                    "annualized_return": 0.05}},
+                    "annualized_return": gross}},
                 "provenance": {
                     "config": {"risk_constraints": dict(CAMPAIGN_V1_EXPECTED)},
                 },
