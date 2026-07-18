@@ -297,3 +297,24 @@ def test_nonfinite_n1_gross_refuses(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="non-finite"):
         certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
                 "n1_pair_nan.json", "n1_nan", tmp_path / "v.json")
+
+
+def test_confined_resolution_wins_over_repo_root_leftover(
+        tmp_path: Path, monkeypatch) -> None:
+    # codex #376 r3: a leftover artifact at the ORIGINAL repo-root path
+    # must not trip the outside-run_dir refusal when the materialized
+    # (confined) copy resolves by basename.
+    import scripts.research.csi800_campaign_pair_report as pair_mod
+
+    fake_repo = tmp_path / "fake_repo"
+    leftover = fake_repo / "output/walk_forward/cons"
+    leftover.mkdir(parents=True)
+    (leftover / "fold_00_report.json").write_text("{}", encoding="utf-8")
+    run_dir = tmp_path / "materialized_cons"
+    run_dir.mkdir()
+    (run_dir / "fold_00_report.json").write_text(
+        json.dumps({"fold_index": 0}), encoding="utf-8")
+    monkeypatch.setattr(pair_mod, "_REPO", fake_repo)
+    resolved = pair_mod._resolve_fold_report(
+        run_dir, "output/walk_forward/cons/fold_00_report.json")
+    assert resolved == (run_dir / "fold_00_report.json").resolve()

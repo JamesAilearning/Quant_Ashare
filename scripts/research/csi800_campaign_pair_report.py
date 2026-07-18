@@ -149,26 +149,35 @@ def _resolve_fold_report(run_dir: Path, report_path: str) -> Path:
     under ``run_dir``."""
     run_root = run_dir.resolve()
     rp = Path(report_path)
-    # Basename fallback LAST (codex #376 r2): the producer declares
-    # ``str(output_dir / "fold_XX_report.json")``, so a run dir that was
-    # MATERIALIZED elsewhere (certify's anchored-bytes temp copy) can
-    # only resolve by basename within the claimed dir — same
-    # location-independence philosophy as the manifest's basenames, and
-    # still confined to ``run_dir`` below.
-    candidates = ((rp,) if rp.is_absolute()
-                  else (run_dir / rp, _REPO / rp, run_dir / rp.name))
-    for candidate in candidates:
+    # CONFINED candidates first (codex #376 r2+r3): the producer
+    # declares ``str(output_dir / "fold_XX_report.json")``, so a run dir
+    # that was MATERIALIZED elsewhere (certify's anchored-bytes temp
+    # copy) resolves by basename within the claimed dir — and that
+    # confined fallback must be tried BEFORE any repo-root candidate,
+    # otherwise an unrelated leftover at the original working-tree path
+    # would trip the outside-run_dir refusal even though the confined
+    # copy is valid. Outside candidates remain last purely so a
+    # borrowed-evidence attempt still refuses loudly below.
+    confined = ((run_dir / rp.name,) if rp.is_absolute()
+                else (run_dir / rp, run_dir / rp.name))
+    for candidate in confined:
         resolved = candidate.resolve()
-        if not resolved.is_file():
-            continue
-        if not resolved.is_relative_to(run_root):
+        # a confined candidate that escapes run_root (e.g. ../) is just
+        # a failed confined attempt — skip, don't refuse yet.
+        if resolved.is_file() and resolved.is_relative_to(run_root):
+            return resolved
+    outside = (rp,) if rp.is_absolute() else (_REPO / rp,)
+    for candidate in outside:
+        resolved = candidate.resolve()
+        if resolved.is_file() and not resolved.is_relative_to(run_root):
             raise PairReportError(
                 f"fold report {report_path!r} resolves OUTSIDE the "
                 f"claimed run dir {run_dir} ({resolved}) — refusing: "
                 "borrowed fold status from another run cannot certify "
                 "this aggregate's metrics."
             )
-        return resolved
+        if resolved.is_file():
+            return resolved
     raise PairReportError(
         f"fold report unreadable: {report_path!r} (tried under {run_dir} "
         "and the repo root) — per-fold official status cannot be "

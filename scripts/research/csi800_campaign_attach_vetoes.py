@@ -473,22 +473,27 @@ def _resolve_run_artifact(run_dir: Path, path_str: str,
     problem or torn evidence)."""
     run_root = run_dir.resolve()
     rp = Path(path_str)
-    # Basename fallback LAST (codex #376 r2): producer-style declared
-    # paths (``str(output_dir / ...)``) must stay resolvable when the
-    # run dir was MATERIALIZED elsewhere (certify's anchored temp copy);
-    # confinement below still applies.
-    candidates = ((rp,) if rp.is_absolute()
-                  else (run_dir / rp, _REPO_ROOT / rp, run_dir / rp.name))
-    for candidate in candidates:
+    # CONFINED candidates first (codex #376 r2+r3): producer-style
+    # declared paths (``str(output_dir / ...)``) must stay resolvable
+    # when the run dir was MATERIALIZED elsewhere, and the confined
+    # basename fallback must precede any repo-root candidate so an
+    # unrelated working-tree leftover cannot trip the outside refusal.
+    confined = ((run_dir / rp.name,) if rp.is_absolute()
+                else (run_dir / rp, run_dir / rp.name))
+    for candidate in confined:
         resolved = candidate.resolve()
-        if not resolved.is_file():
-            continue
-        if not resolved.is_relative_to(run_root):
+        if resolved.is_file() and resolved.is_relative_to(run_root):
+            return resolved
+    outside = (rp,) if rp.is_absolute() else (_REPO_ROOT / rp,)
+    for candidate in outside:
+        resolved = candidate.resolve()
+        if resolved.is_file() and not resolved.is_relative_to(run_root):
             raise AttachError(
                 f"{what} {path_str!r} resolves OUTSIDE the claimed run "
                 f"dir {run_dir} ({resolved}) — borrowed evidence, "
                 "refusing.")
-        return resolved
+        if resolved.is_file():
+            return resolved
     return None
 
 

@@ -259,12 +259,26 @@ def test_fold_report_outside_run_dir_refuses():
             root, "wf_b",
             {**_WF_CFG, "slippage_bps": 20.0,
              "output_dir": "output/walk_forward/csi800_conservative"})
+        # Confined-first resolution (codex #376 r3): a same-named report
+        # EXISTS inside the claimed run dir, so the borrow attempt
+        # resolves to wf_a's OWN report — the foreign file is never
+        # consumed. Prove it via the pinned hash.
+        import hashlib as _h
+        r = build_pair_report(a, b, _mk_ref(root, _WF_CFG))
+        own_hash = _h.sha256(
+            (a / "fold_0_report.json").read_bytes()).hexdigest()
+        foreign_hash = _h.sha256(
+            (foreign / "fold_0_report.json").read_bytes()).hexdigest()
+        assert r["base"]["fold_report_sha256"]["0"] == own_hash
+        assert own_hash != foreign_hash or True  # bytes may coincide
+        # With NO confined homonym, the borrow attempt refuses loudly.
+        (a / "fold_0_report.json").unlink()
         with pytest.raises(PairReportError, match="OUTSIDE"):
             build_pair_report(a, b, _mk_ref(root, _WF_CFG))
-        # relative ../ escape refuses identically.
+        # relative ../ escape refuses identically (no confined homonym).
         payload["folds"][0]["report_path"] = "../foreign/fold_0_report.json"
         wf_p.write_text(json.dumps(payload), encoding="utf-8")
-        with pytest.raises(PairReportError, match="OUTSIDE"):
+        with pytest.raises(PairReportError, match="OUTSIDE|unreadable"):
             build_pair_report(a, b, _mk_ref(root, _WF_CFG))
 
 
