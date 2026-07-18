@@ -318,3 +318,39 @@ def test_confined_resolution_wins_over_repo_root_leftover(
     resolved = pair_mod._resolve_fold_report(
         run_dir, "output/walk_forward/cons/fold_00_report.json")
     assert resolved == (run_dir / "fold_00_report.json").resolve()
+
+
+def test_nonfinite_n5_gross_refuses(tmp_path: Path) -> None:
+    # codex #376 r4: Infinity in the anchored N5 fold reports with a
+    # CONSISTENTLY edited pair series passes inf==inf equality while
+    # NaN divergence bypasses the guard — the re-derived N5 series must
+    # fail closed exactly like the N1 path.
+    import hashlib as _hashlib
+
+    w = _mk_repo(tmp_path)
+    repo = Path(w["repo"])
+    # rewrite one cons fold report with Infinity gross, then repair the
+    # WHOLE chain consistently: pair regenerated would refuse, so edit
+    # the committed pair by hand (fold hash + gross series + digest ok).
+    rep_p = repo / "evidence/cons/fold_01_report.json"
+    payload = json.loads(rep_p.read_text(encoding="utf-8"))
+    payload["backtest"]["risk_analysis"]["excess_return_without_cost"][
+        "annualized_return"] = float("inf")
+    rep_p.write_text(json.dumps(payload), encoding="utf-8")
+    pair_p = repo / "pair.json"
+    pair = json.loads(pair_p.read_text(encoding="utf-8"))
+    pair["conservative"]["fold_report_sha256"]["1"] = _hashlib.sha256(
+        rep_p.read_bytes()).hexdigest()
+    pair["conservative"]["per_fold_gross_annualized"][1] = float("inf")
+    pair_p.write_text(json.dumps(pair), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "inf n5", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    # the v3 loader already refuses non-finite gross during the attach
+    # re-load (PairReportError "FINITE"); certify's own isfinite check
+    # is defense-in-depth behind it. Either loud exit closes the hole.
+    with pytest.raises((SystemExit, RuntimeError),
+                       match="FINITE|non-finite"):
+        _run_certify(w, tmp_path / "v.json")
+    assert not (tmp_path / "v.json").exists()

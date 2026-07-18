@@ -238,9 +238,18 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
                 rep_p = (runs[key]
                          / f"fold_{int(idx_s):02d}_report.json")
                 payload = json.loads(rep_p.read_text(encoding="utf-8"))
-                series.append(float(
+                value = float(
                     payload["backtest"]["risk_analysis"]
-                    ["excess_return_without_cost"]["annualized_return"]))
+                    ["excess_return_without_cost"]["annualized_return"])
+                # same fail-closed rule as the N1 path (codex #376 r4):
+                # a consistently-edited pair could carry inf==inf past
+                # the equality check while NaN divergence bypasses the
+                # guard.
+                if not math.isfinite(value):
+                    raise CertifyError(
+                        f"N5 {key} fold {idx_s}: gross value {value!r} "
+                        "is non-finite — malformed evidence, refusing.")
+                series.append(value)
             stored = [float(x) for x in
                       anchored_pair[key]["per_fold_gross_annualized"]]
             if series != stored:
