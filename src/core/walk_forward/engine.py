@@ -317,6 +317,22 @@ class WalkForwardEngine:
                             if (output_dir / f"fold_{i:02d}_positions.json").exists()
                             else None
                         ),
+                        # Attestation digest MIRRORED from the already-
+                        # written fold report — the single stamping
+                        # authority. Re-hashing the artifact here would
+                        # mint a SECOND attestation: a mutation landing
+                        # between report write and manifest write would
+                        # yield two conflicting digests, and a consumer
+                        # checking the manifest could bless the mutated
+                        # bytes (codex P2 on #375 r2).
+                        positions_sha256=(
+                            json.loads(
+                                (output_dir / f"fold_{i:02d}_report.json")
+                                .read_text(encoding="utf-8")
+                            ).get("positions_sha256")
+                            if (output_dir / f"fold_{i:02d}_report.json").exists()
+                            else None
+                        ),
                         bundle_identity=bundle_identity,
                         git_provenance=git_provenance,  # the code that produced THIS fold
                     )
@@ -915,9 +931,13 @@ class WalkForwardEngine:
         # tools cannot compare two runs from the in-memory ``WalkForwardFold``
         # alone — they need the file on disk.
         positions_path: Path | None = None
+        positions_sha256: str | None = None
         if backtest_output.positions:
             positions_path = output_dir / f"fold_{fold_index:02d}_positions.json"
-            write_positions(positions_path, backtest_output.positions)
+            # write_positions returns the sha256 of the PERSISTED bytes
+            # (attestation digest, schema "4-positions-attestation").
+            positions_sha256 = write_positions(
+                positions_path, backtest_output.positions)
 
         # Per-fold performance attribution. Runs after backtest so the
         # attribution engine sees the real positions / return series.
@@ -952,6 +972,7 @@ class WalkForwardEngine:
             signal_result=signal_result,
             backtest_output=backtest_output,
             positions_path=positions_path,
+            positions_sha256=positions_sha256,
             ic_1d=ic_1d, ic_5d=ic_5d,
             annualized_return=ann_ret,
             max_drawdown=max_dd,

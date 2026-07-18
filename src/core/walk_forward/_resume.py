@@ -254,6 +254,12 @@ class FoldManifest:
     # fingerprint already invalidates a cadence change; this field lets the
     # re-run NAME its cause (阶段7 add-rebalance-cadence).
     rebalance_cadence: str | None = None
+    # Attestation digest of the persisted positions bytes (additive; None
+    # on manifests written before attestation stamping or when the fold
+    # produced no positions). Mirrors the fold report's field of the same
+    # name (schema "4-positions-attestation",
+    # 2026-07-17-csi800-cadence-campaign DP-5).
+    positions_sha256: str | None = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -269,6 +275,7 @@ class FoldManifest:
         report_path: str,
         predictions_path: str,
         positions_path: str | None,
+        positions_sha256: str | None = None,
         bundle_identity: str | None = None,
         git_provenance: Mapping[str, Any] | None = None,
     ) -> FoldManifest:
@@ -301,6 +308,7 @@ class FoldManifest:
             git_dirty=(git_provenance or {}).get("dirty"),
             label_horizon_days=getattr(config, "label_horizon_days", None),
             rebalance_cadence=rebalance_cadence_repr(config),
+            positions_sha256=positions_sha256,
         )
 
     # ------------------------------------------------------------------
@@ -370,6 +378,7 @@ class FoldManifest:
             "git_dirty": self.git_dirty,
             "label_horizon_days": self.label_horizon_days,
             "rebalance_cadence": self.rebalance_cadence,
+            "positions_sha256": self.positions_sha256,
         }
 
     @classmethod
@@ -415,6 +424,11 @@ class FoldManifest:
             rebalance_cadence=(
                 str(payload["rebalance_cadence"])
                 if payload.get("rebalance_cadence") is not None
+                else None
+            ),
+            positions_sha256=(
+                str(payload["positions_sha256"])
+                if payload.get("positions_sha256") is not None
                 else None
             ),
         )
@@ -524,9 +538,15 @@ def _missing_required_artifacts(manifest: FoldManifest) -> list[str]:
     """Return the names of any required artifact paths whose files are
     missing or unreadable. Used by ``discover(verify_artifacts=True)``.
 
-    ``positions_path`` is **not** required — the backtest skips
-    writing it when there are no positions, and the engine writes
-    the manifest with ``positions_path=None`` in that case.
+    ``positions_path`` is **not** required in the absent case — the
+    backtest skips writing it when there are no positions, and the
+    engine writes the manifest with ``positions_path=None`` then. But
+    when the manifest DOES record positions, the file must exist, and
+    when it also records an attestation digest the bytes must still
+    hash to it — otherwise an AUTO resume would silently reuse a fold
+    whose attested positions were deleted or mutated after the run and
+    emit a new aggregate over unverifiable evidence (codex P2 on #375
+    r3). A failed check rejects the manifest so the fold re-runs.
     ``predictions_path`` IS required for ensemble loading;
     ``model_path`` is required for prior-model averaging; ``report_path``
     is required for downstream comparisons / dashboards.
@@ -539,6 +559,23 @@ def _missing_required_artifacts(manifest: FoldManifest) -> list[str]:
     ):
         if not value or not Path(value).is_file():
             missing.append(label)
+    if manifest.positions_path:
+        p = Path(manifest.positions_path)
+        if not p.is_file():
+            missing.append("positions_path")
+        elif manifest.positions_sha256 is not None:
+            # An unreadable-but-present file (ACL change, I/O error)
+            # must degrade to the same invalid-manifest path as a
+            # missing one — not escape as OSError and abort the whole
+            # run before the fold loop (codex P2 on #375 r4).
+            try:
+                actual = hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError:
+                missing.append("positions_path (unreadable)")
+            else:
+                if actual != manifest.positions_sha256:
+                    missing.append(
+                        "positions_path (attestation digest mismatch)")
     return missing
 
 

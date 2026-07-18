@@ -67,6 +67,13 @@ REPORT_PIPELINE_ONLY = {
     # single-run shape has exactly one positions series, so it sits
     # top-level here. Not aggregate-level drift.
     "sleeve_turnover",
+    # Positions attestation (2026-07-17-csi800-cadence-campaign DP-5):
+    # same rationale and same mirroring shape as sleeve_turnover — the
+    # digest is positions-scoped, so walk-forward carries the SAME-NAME
+    # key per fold (fold_report schema "4-positions-attestation",
+    # asserted by tests/logic/test_positions_attestation.py) while the
+    # single-run pipeline shape carries it top-level.
+    "positions_sha256",
 }
 REPORT_WALK_FORWARD_ONLY = {
     # rolling shape: per-fold rows + cross-fold aggregation
