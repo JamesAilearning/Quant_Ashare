@@ -846,8 +846,35 @@ class BacktestRunner:
                 "Audit P0-1."
             )
         else:
+            # Constraint scope (cadence-campaign revision R1): under a
+            # non-daily cadence, validate REBALANCE-EFFECT days only —
+            # hold-day drift is market movement, not an allocation
+            # decision, and validating it makes the same cap harsher
+            # than under N=1 (see _constraint_scope_days). The N=1 path
+            # is byte-identical (full map, same object).
+            constraint_positions: Mapping[str, Mapping[str, float]] = (
+                positions_map
+            )
+            if rebalance_cadence_days != 1:
+                scope_days = cls._constraint_scope_days(
+                    predictions.index.get_level_values(0).unique(),
+                    trading_calendar,
+                    request.signal_to_execution_lag,
+                )
+                constraint_positions = {
+                    d: w for d, w in positions_map.items()
+                    if d in scope_days
+                }
+                if not constraint_positions:
+                    raise BacktestRunnerError(
+                        "BacktestRunner.run: constraint scope for the "
+                        f"N={rebalance_cadence_days} cadence resolved to "
+                        "ZERO rebalance-effect days inside the positions "
+                        "window — refusing to skip risk validation "
+                        "silently."
+                    )
             try:
-                apply_result = risk_constraints.apply(positions_map)
+                apply_result = risk_constraints.apply(constraint_positions)
             except RiskConstraintError as exc:
                 # RAISE mode — surface the consolidated violation
                 # report as a BacktestRunnerError so callers
@@ -891,6 +918,14 @@ class BacktestRunner:
                 "phase": rebalance_phase,
                 "anchor": rebalance_anchor,
             }
+            # Revision R1 disclosure: on a non-daily cadence the risk
+            # constraints validate rebalance-effect days only. Lives in
+            # the cadence block (not the risk_constraints dict, whose
+            # exact shape is pinned by the veto-4 checker).
+            if risk_constraints is not None and rebalance_cadence_days != 1:
+                rebalance_provenance["risk_constraint_scope"] = (
+                    "rebalance_days"
+                )
         # Effective risk-constraint values into provenance when supplied
         # (CSI800 guard-2, veto-4: "recorded in the run artifact").
         rc_provenance: dict[str, Any] | None = None
@@ -1403,6 +1438,46 @@ class BacktestRunner:
                     out.append(d)
             return out
         return list(dates)[phase::cadence_days]
+
+    @classmethod
+    def _constraint_scope_days(
+        cls,
+        stamp_days: Sequence[Any],
+        trading_calendar: Sequence[Any],
+        lag: int,
+    ) -> set[str]:
+        """Rebalance-EFFECT days for risk-constraint validation
+        (cadence-campaign revision R1, 2026-07-18, signed result-blind).
+
+        Under a non-daily cadence the positions map contains HOLD days
+        whose weights moved only by market drift — no allocation
+        decision was taken there. Validating those days makes the SAME
+        numeric cap strictly harsher than under N=1 (where the daily
+        rebalance resets weights before each check), breaking the
+        same-config comparability the campaign requires. The constraint
+        therefore validates the days an allocation DECISION took
+        effect: each thinned signal-stamp day fills at
+        ``stamp + signal_to_execution_lag`` trading days (total-lag
+        semantics, PR-C audit A1) — those fill days are the scope.
+
+        Pure and calendar-driven (tested without qlib); stamps outside
+        the calendar or fills beyond its end are skipped (no fill day
+        exists in the evaluated window).
+        """
+        import pandas as pd
+
+        cal = [pd.Timestamp(d).normalize() for d in trading_calendar]
+        pos_of = {ts: i for i, ts in enumerate(cal)}
+        out: set[str] = set()
+        for s in stamp_days:
+            i = pos_of.get(pd.Timestamp(s).normalize())
+            if i is None:
+                continue
+            j = i + lag
+            if 0 <= j < len(cal):
+                out.add(str(cal[j].date()))
+        return out
+
 
     @classmethod
     def _thin_predictions(

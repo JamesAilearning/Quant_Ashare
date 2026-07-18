@@ -71,6 +71,16 @@
       + 双臂发散校验，缺失/断链/失配拒绝
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
+## 3.5 R1 — 约束作用域修订（首发 N5 点火后,结果盲,选项 A 签署）
+- [x] BacktestRunner `_constraint_scope_days` 纯函数(stamp+总滞后→
+      生效日集,日历驱动)+ N>1 时约束校验域过滤(空域 fail-loud);
+      N=1 路径逐字节不变
+- [x] cadence provenance 增 `risk_constraint_scope: rebalance_days`
+      (不动 veto④ 所钉约束值 dict)
+- [x] 测试四维:fill 映射/日历边缘/漂移日violation 不查而再平衡日照
+      RAISE/多周期覆盖
+- [x] 首发三 run 作废,修订合并后重跑
+
 ## 4. 点火（单独授权，PR-A/B/C 全并后）
 - [ ] 三发串行（参照 → base → conservative），日志入 scratchpad
 - [ ] pair v3 生成 + attach 全链勾验（veto 五项 + 主判据双条件；
