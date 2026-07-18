@@ -630,3 +630,67 @@ def test_reference_missing_fold_report_refuses():
         (ref / "fold_01_report.json").unlink()
         with pytest.raises(Exception, match="unreadable"):
             attach(pair_p, base, cons, ref)
+
+
+def test_cadence_artifact_requires_scope_disclosure():
+    # codex #378 r2: with a non-default cadence declared in the config,
+    # veto 4 requires each fold report to disclose
+    # risk_constraint_scope=rebalance_days — a pre-R1 artifact (no
+    # scope field) triggers; a post-R1 artifact passes.
+    cadence_cfg = {**_CAMPAIGN_CFG, "rebalance_cadence_days": 5,
+                   "rebalance_phase": 0, "rebalance_anchor": "fold_phase"}
+
+    def add_scope(with_scope: bool):
+        def _hook(b: Path, c: Path, _r: Path) -> None:
+            for d in (b, c):
+                for rep_p in d.glob("fold_*_report.json"):
+                    payload = json.loads(rep_p.read_text(encoding="utf-8"))
+                    reb = {"cadence_days": 5, "phase": 0,
+                           "anchor": "fold_phase"}
+                    if with_scope:
+                        reb["risk_constraint_scope"] = "rebalance_days"
+                    payload["backtest"]["provenance"]["config"][
+                        "rebalance"] = reb
+                    rep_p.write_text(json.dumps(payload), encoding="utf-8")
+        return _hook
+
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        base = _mk_campaign_run(root, "base", cadence_cfg, mean_net=0.05)
+        cons = _mk_campaign_run(
+            root, "cons",
+            {**cadence_cfg, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/cons"},
+            mean_net=0.02)
+        ref = _mk_reference_run(
+            root, cfg_over={"rebalance_cadence_days": 5,
+                            "rebalance_phase": 0,
+                            "rebalance_anchor": "fold_phase"})
+        add_scope(True)(base, cons, ref)
+        pair_p = root / "pair.json"
+        pair_p.write_text(json.dumps(build_pair_report(base, cons, ref)),
+                          encoding="utf-8")
+        r = attach(pair_p, base, cons, ref)
+        assert r["veto_checklist"]["4_risk_constraints_recorded"][
+            "veto_triggered"] is False
+
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        base = _mk_campaign_run(root, "base", cadence_cfg, mean_net=0.05)
+        cons = _mk_campaign_run(
+            root, "cons",
+            {**cadence_cfg, "slippage_bps": 20.0,
+             "output_dir": "output/walk_forward/cons"},
+            mean_net=0.02)
+        ref = _mk_reference_run(
+            root, cfg_over={"rebalance_cadence_days": 5,
+                            "rebalance_phase": 0,
+                            "rebalance_anchor": "fold_phase"})
+        # pre-R1 shape: no scope field
+        pair_p = root / "pair.json"
+        pair_p.write_text(json.dumps(build_pair_report(base, cons, ref)),
+                          encoding="utf-8")
+        r = attach(pair_p, base, cons, ref)
+        c4 = r["veto_checklist"]["4_risk_constraints_recorded"]
+        assert c4["veto_triggered"] is True
+        assert any("risk_constraint_scope" in p for p in c4["problems"])
