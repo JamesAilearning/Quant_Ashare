@@ -305,8 +305,17 @@ def certify(repo: Path, pair_path: str, base_dir: str, cons_dir: str,
                         f"N5 {key} fold {idx_s}: gross value {value!r} "
                         "is non-finite — malformed evidence, refusing.")
                 series.append(value)
-            stored = [float(x) for x in
-                      anchored_pair[key]["per_fold_gross_annualized"]]
+            stored_raw = anchored_pair[key]["per_fold_gross_annualized"]
+            # same non-bool numeric guard on the STORED side (codex
+            # #376 r10): float(True)==1.0 could collide with a genuine
+            # 1.0/0.0 source value and slip past the equality check.
+            for i, x in enumerate(stored_raw):
+                if isinstance(x, bool) or not isinstance(x, (int, float)):
+                    raise CertifyError(
+                        f"N5 {key}: stored per_fold_gross_annualized[{i}]"
+                        f" = {x!r} is not a number — malformed pair "
+                        "artifact, refusing.")
+            stored = [float(x) for x in stored_raw]
             if series != stored:
                 raise CertifyError(
                     f"N5 {key}: pair-stored per_fold_gross_annualized "

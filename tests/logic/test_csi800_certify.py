@@ -503,3 +503,20 @@ def test_boolean_n1_gross_refuses(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="not a number"):
         certify(repo, w["pair"], w["base"], w["cons"], w["ref"],
                 "n1_pair_bool.json", "n1_bool", tmp_path / "v.json")
+
+
+def test_boolean_stored_n5_gross_refuses(tmp_path: Path) -> None:
+    # codex #376 r10: booleans in the anchored pair's stored gross
+    # series must refuse before coercion/comparison.
+    w = _mk_repo(tmp_path)
+    repo = Path(w["repo"])
+    pair_p = repo / "pair.json"
+    pair = json.loads(pair_p.read_text(encoding="utf-8"))
+    pair["conservative"]["per_fold_gross_annualized"][0] = True
+    pair_p.write_text(json.dumps(pair), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "bool stored", "--no-verify")
+    _git(repo, "update-ref", "refs/remotes/origin/main",
+         _git(repo, "rev-parse", "HEAD"))
+    with pytest.raises(SystemExit, match="not a number"):
+        _run_certify(w, tmp_path / "v.json")
