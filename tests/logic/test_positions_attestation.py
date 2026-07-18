@@ -268,6 +268,7 @@ def _pipeline_report_stubs() -> tuple[object, object, object, object, object]:
         attribution_sleeve_grouping=False,
         risk_constraints_enabled=False,
         risk_constraints_calibration="default",
+        risk_constraint_scope="all_days",
         delisted_registry_path="",
     )
     feature_result = SimpleNamespace(

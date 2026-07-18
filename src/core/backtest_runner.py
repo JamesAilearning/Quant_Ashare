@@ -134,6 +134,7 @@ class BacktestRunner:
         st_audit_path: str | None = None,
         require_st_mask: bool = False,
         rebalance_cadence_days: int = 1,
+        risk_constraint_scope: str = "all_days",
         rebalance_phase: int = 0,
         rebalance_anchor: str = "fold_phase",
         universe_hint: str | None = None,
@@ -148,6 +149,21 @@ class BacktestRunner:
         # refused HERE too — never silently accepted while provenance records
         # a non-default value. This also enforces the lag interaction (codex
         # P1 on #336; see the helper).
+        # R1 gating (codex #378 r3): rebalance-day constraint scoping
+        # is an EXPLICIT opt-in — the canonical contract's default stays
+        # full-map validation for every caller.
+        if risk_constraint_scope not in ("all_days", "rebalance_days"):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: risk_constraint_scope must be "
+                "'all_days' or 'rebalance_days'; got "
+                f"{risk_constraint_scope!r}.")
+        if (risk_constraint_scope == "rebalance_days"
+                and rebalance_cadence_days == 1):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: risk_constraint_scope="
+                "'rebalance_days' requires a non-daily cadence — under "
+                "N=1 every day is a rebalance day; the opt-in would "
+                "only blur provenance.")
         cls._validate_cadence(
             rebalance_cadence_days, rebalance_phase, rebalance_anchor,
             request.signal_to_execution_lag,
@@ -846,8 +862,43 @@ class BacktestRunner:
                 "Audit P0-1."
             )
         else:
+            # Constraint scope (cadence-campaign revision R1): under a
+            # non-daily cadence, validate REBALANCE-EFFECT days only —
+            # hold-day drift is market movement, not an allocation
+            # decision, and validating it makes the same cap harsher
+            # than under N=1 (see _constraint_scope_days). The N=1 path
+            # is byte-identical (full map, same object).
+            constraint_positions: Mapping[str, Mapping[str, float]] = (
+                positions_map
+            )
+            if risk_constraint_scope == "rebalance_days":
+                # Scope from the FINAL post-mask signal (codex #378 r1):
+                # a scheduled stamp whose rows were ALL removed by the
+                # microstructure/ST masks emits no signal — qlib holds
+                # and its would-be fill day is drift-only, so it must
+                # not enter the scope. ``shifted_predictions`` is
+                # stamped at stamp+lag-1; qlib's built-in shift adds
+                # the remaining 1 trading day to the fill.
+                scope_days = cls._constraint_scope_days(
+                    shifted_predictions.index.get_level_values(
+                        0).unique(),
+                    trading_calendar,
+                    1,
+                )
+                constraint_positions = {
+                    d: w for d, w in positions_map.items()
+                    if d in scope_days
+                }
+                if not constraint_positions:
+                    raise BacktestRunnerError(
+                        "BacktestRunner.run: constraint scope for the "
+                        f"N={rebalance_cadence_days} cadence resolved to "
+                        "ZERO rebalance-effect days inside the positions "
+                        "window — refusing to skip risk validation "
+                        "silently."
+                    )
             try:
-                apply_result = risk_constraints.apply(positions_map)
+                apply_result = risk_constraints.apply(constraint_positions)
             except RiskConstraintError as exc:
                 # RAISE mode — surface the consolidated violation
                 # report as a BacktestRunnerError so callers
@@ -865,9 +916,15 @@ class BacktestRunner:
             # internally consistent with the official return
             # series and risk_analysis above.
             if apply_result.was_clipped:
-                positions_clipped = {
-                    d: dict(w) for d, w in apply_result.clipped_positions.items()
-                }
+                # positions_clipped is documented as the FULL
+                # constraint-respecting allocation map — under a scoped
+                # (non-daily) validation the apply() result covers only
+                # rebalance-effect days, so merge it over the full map
+                # (hold days keep their original weights; codex #378
+                # r1). The N=1 path is unchanged: scope == full map.
+                positions_clipped = cls._merge_clipped(
+                    positions_map, apply_result.clipped_positions,
+                )
 
         report = {
             "total_days": len(report_normal),
@@ -891,6 +948,15 @@ class BacktestRunner:
                 "phase": rebalance_phase,
                 "anchor": rebalance_anchor,
             }
+            # Revision R1 disclosure: on a non-daily cadence the risk
+            # constraints validate rebalance-effect days only. Lives in
+            # the cadence block (not the risk_constraints dict, whose
+            # exact shape is pinned by the veto-4 checker).
+            if (risk_constraints is not None
+                    and risk_constraint_scope == "rebalance_days"):
+                rebalance_provenance["risk_constraint_scope"] = (
+                    "rebalance_days"
+                )
         # Effective risk-constraint values into provenance when supplied
         # (CSI800 guard-2, veto-4: "recorded in the run artifact").
         rc_provenance: dict[str, Any] | None = None
@@ -1403,6 +1469,61 @@ class BacktestRunner:
                     out.append(d)
             return out
         return list(dates)[phase::cadence_days]
+
+    @staticmethod
+    def _merge_clipped(
+        positions_map: Mapping[str, Mapping[str, float]],
+        clipped_scoped: Mapping[str, Mapping[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        """Overlay clipped (scoped) days onto the full positions map so
+        ``positions_clipped`` keeps its documented contract — the whole
+        constraint-respecting allocation series, hold days included
+        (revision R1 follow-up, codex #378 r1)."""
+        merged = {d: dict(w) for d, w in positions_map.items()}
+        for d, w in clipped_scoped.items():
+            merged[d] = dict(w)
+        return merged
+
+
+    @classmethod
+    def _constraint_scope_days(
+        cls,
+        stamp_days: Sequence[Any],
+        trading_calendar: Sequence[Any],
+        lag: int,
+    ) -> set[str]:
+        """Rebalance-EFFECT days for risk-constraint validation
+        (cadence-campaign revision R1, 2026-07-18, signed result-blind).
+
+        Under a non-daily cadence the positions map contains HOLD days
+        whose weights moved only by market drift — no allocation
+        decision was taken there. Validating those days makes the SAME
+        numeric cap strictly harsher than under N=1 (where the daily
+        rebalance resets weights before each check), breaking the
+        same-config comparability the campaign requires. The constraint
+        therefore validates the days an allocation DECISION took
+        effect: each thinned signal-stamp day fills at
+        ``stamp + signal_to_execution_lag`` trading days (total-lag
+        semantics, PR-C audit A1) — those fill days are the scope.
+
+        Pure and calendar-driven (tested without qlib); stamps outside
+        the calendar or fills beyond its end are skipped (no fill day
+        exists in the evaluated window).
+        """
+        import pandas as pd
+
+        cal = [pd.Timestamp(d).normalize() for d in trading_calendar]
+        pos_of = {ts: i for i, ts in enumerate(cal)}
+        out: set[str] = set()
+        for s in stamp_days:
+            i = pos_of.get(pd.Timestamp(s).normalize())
+            if i is None:
+                continue
+            j = i + lag
+            if 0 <= j < len(cal):
+                out.add(str(cal[j].date()))
+        return out
+
 
     @classmethod
     def _thin_predictions(

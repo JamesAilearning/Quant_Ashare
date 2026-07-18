@@ -737,13 +737,40 @@ def compute_constraints_check(
             problems.append(f"{label}: risk_constraints_enabled != true")
         if cfg.get("risk_constraints_calibration") != "campaign_v1":
             problems.append(f"{label}: calibration != campaign_v1")
+        expected_cadence = int(cfg.get("rebalance_cadence_days") or 1)
+        # R1 opt-in must be DECLARED in the config too (codex #378 r3):
+        # scoping is explicit, so a campaign cadence config that does
+        # not opt in ran full-map semantics — not campaign evidence.
+        if (expected_cadence != 1
+                and cfg.get("risk_constraint_scope") != "rebalance_days"):
+            problems.append(
+                f"{label}: non-default cadence config lacks "
+                "risk_constraint_scope='rebalance_days' — R1 scoping "
+                "is an explicit opt-in and campaign evidence requires "
+                "it")
         for idx, rep in folds:
             folds_checked += 1
-            rc = ((rep.get("backtest") or {}).get("provenance") or {}) \
-                .get("config", {}).get("risk_constraints")
+            prov_cfg = (((rep.get("backtest") or {})
+                         .get("provenance") or {}).get("config", {}))
+            rc = prov_cfg.get("risk_constraints")
             if rc != CAMPAIGN_V1_EXPECTED:
                 problems.append(
                     f"{label} fold {idx}: risk_constraints={rc!r}")
+            # Revision R1 disclosure (codex #378 r2): a non-default
+            # cadence artifact must PROVE it validated constraints on
+            # rebalance-effect days — a pre-R1 N5 fold report (full-map
+            # semantics, no scope field) must not slip through veto 4.
+            if expected_cadence != 1:
+                reb = prov_cfg.get("rebalance")
+                if (not isinstance(reb, dict)
+                        or reb.get("risk_constraint_scope")
+                        != "rebalance_days"):
+                    problems.append(
+                        f"{label} fold {idx}: non-default cadence "
+                        "artifact lacks risk_constraint_scope="
+                        f"'rebalance_days' (rebalance={reb!r}) — "
+                        "pre-R1 full-map validation semantics are not "
+                        "acceptable campaign evidence")
     return {
         "expected": CAMPAIGN_V1_EXPECTED,
         "folds_checked": folds_checked,

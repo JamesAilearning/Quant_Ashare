@@ -37,6 +37,9 @@ CADENCE_FIELDS = {
     "rebalance_cadence_days": 5,
     "rebalance_phase": 0,
     "rebalance_anchor": "fold_phase",
+    # R1 (codex #378 r3): rebalance-day constraint scoping is an
+    # EXPLICIT preset opt-in — canonical default stays "all_days".
+    "risk_constraint_scope": "rebalance_days",
 }
 
 
