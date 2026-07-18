@@ -77,3 +77,29 @@ def test_multi_cycle_scope_covers_every_rebalance() -> None:
     stamps = [_CAL[0], _CAL[5]]
     days = BacktestRunner._constraint_scope_days(stamps, _CAL, lag=1)
     assert days == {"2024-01-03", "2024-01-10"}
+
+
+def test_masked_out_stamp_day_excluded_from_scope() -> None:
+    # codex #378 r1: a scheduled stamp fully removed by the pre-strategy
+    # masks emits no signal — its would-be fill day is drift-only and
+    # must not be scoped. The wiring feeds the FINAL post-mask shifted
+    # stamps (+1 trading-day qlib shift); with the masked stamp absent
+    # from that index, no scope day is derived for it.
+    surviving_shifted_stamps = [date(2024, 1, 2)]       # 01-09 masked out
+    days = BacktestRunner._constraint_scope_days(
+        surviving_shifted_stamps, _CAL, lag=1)
+    assert days == {"2024-01-03"}
+
+
+def test_merge_clipped_preserves_hold_days() -> None:
+    # codex #378 r1: positions_clipped keeps its full-map contract —
+    # clipped scoped days overlaid, hold days retained.
+    full = {
+        "2024-01-03": {"SH600000": 0.09, "SZ000001": 0.04},
+        "2024-01-04": {"SH600000": 0.10, "SZ000001": 0.04},  # hold day
+    }
+    clipped_scoped = {"2024-01-03": {"SH600000": 0.05, "SZ000001": 0.04}}
+    merged = BacktestRunner._merge_clipped(full, clipped_scoped)
+    assert merged["2024-01-03"]["SH600000"] == 0.05
+    assert merged["2024-01-04"] == full["2024-01-04"]
+    assert set(merged) == set(full)

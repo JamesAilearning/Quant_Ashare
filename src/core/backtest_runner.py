@@ -856,10 +856,18 @@ class BacktestRunner:
                 positions_map
             )
             if rebalance_cadence_days != 1:
+                # Scope from the FINAL post-mask signal (codex #378 r1):
+                # a scheduled stamp whose rows were ALL removed by the
+                # microstructure/ST masks emits no signal — qlib holds
+                # and its would-be fill day is drift-only, so it must
+                # not enter the scope. ``shifted_predictions`` is
+                # stamped at stamp+lag-1; qlib's built-in shift adds
+                # the remaining 1 trading day to the fill.
                 scope_days = cls._constraint_scope_days(
-                    predictions.index.get_level_values(0).unique(),
+                    shifted_predictions.index.get_level_values(
+                        0).unique(),
                     trading_calendar,
-                    request.signal_to_execution_lag,
+                    1,
                 )
                 constraint_positions = {
                     d: w for d, w in positions_map.items()
@@ -892,9 +900,15 @@ class BacktestRunner:
             # internally consistent with the official return
             # series and risk_analysis above.
             if apply_result.was_clipped:
-                positions_clipped = {
-                    d: dict(w) for d, w in apply_result.clipped_positions.items()
-                }
+                # positions_clipped is documented as the FULL
+                # constraint-respecting allocation map — under a scoped
+                # (non-daily) validation the apply() result covers only
+                # rebalance-effect days, so merge it over the full map
+                # (hold days keep their original weights; codex #378
+                # r1). The N=1 path is unchanged: scope == full map.
+                positions_clipped = cls._merge_clipped(
+                    positions_map, apply_result.clipped_positions,
+                )
 
         report = {
             "total_days": len(report_normal),
@@ -1438,6 +1452,21 @@ class BacktestRunner:
                     out.append(d)
             return out
         return list(dates)[phase::cadence_days]
+
+    @staticmethod
+    def _merge_clipped(
+        positions_map: Mapping[str, Mapping[str, float]],
+        clipped_scoped: Mapping[str, Mapping[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        """Overlay clipped (scoped) days onto the full positions map so
+        ``positions_clipped`` keeps its documented contract — the whole
+        constraint-respecting allocation series, hold days included
+        (revision R1 follow-up, codex #378 r1)."""
+        merged = {d: dict(w) for d, w in positions_map.items()}
+        for d, w in clipped_scoped.items():
+            merged[d] = dict(w)
+        return merged
+
 
     @classmethod
     def _constraint_scope_days(
