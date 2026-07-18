@@ -119,8 +119,15 @@ if str(_REPO_ROOT) not in sys.path:
 # _load_side/_projected_diff/_resolve_fold_report are guard-1's own
 # loader/projection/confined-resolver — reused deliberately so binding
 # and pairing can never drift apart.
+# REFERENCE_* moved to the pair tool at v3 (pairing itself certifies
+# the reference); re-imported here for existing consumers/tests.
 from scripts.research.csi800_campaign_pair_report import (  # noqa: E402
     BASE_SLIPPAGE_BPS,
+    REFERENCE_BENCHMARK,
+    REFERENCE_DIFF_FIELDS,
+    REFERENCE_UNIVERSE,
+    SCHEMA_VERSION,
+    _config_sha256,
     _load_side,
     _projected_diff,
     _require_finite_net,
@@ -139,10 +146,6 @@ CAMPAIGN_V1_EXPECTED: dict[str, Any] = {
 }
 # #371-pinned reference-vs-base projected config diff (exact key set) and
 # reference identity — binds the veto-3 baseline to "同配置 csi300 参照".
-REFERENCE_DIFF_FIELDS: frozenset[str] = frozenset(
-    {"instruments", "benchmark_code", "attribution_sleeve_grouping"})
-REFERENCE_UNIVERSE = "csi300"
-REFERENCE_BENCHMARK = "SH000300TR"
 # The ONLY reference binding level that may support promotion (codex
 # #373 r10): a producer-stamped positions digest that is itself bound to
 # an immutable/certified reference artifact. NO current producer emits
@@ -268,6 +271,7 @@ def _bind_paired_side(
 
 def _bind_reference(
         ref_dir: Path, base_cfg: dict[str, Any],
+        pair_entry: dict[str, Any],
 ) -> tuple[dict[str, Any], set[int], list[tuple[int, dict[str, Any]]]]:
     """Bind the veto-3 baseline. Structural binding: the reference's
     embedded config must differ from the certified base config by EXACTLY
@@ -334,8 +338,18 @@ def _bind_reference(
                 f"reference aggregate declares report path {resolved} "
                 "for more than one fold entry — refusing.")
         seen_paths.add(resolved)
-        payload: dict[str, Any] = json.loads(
-            resolved.read_text(encoding="utf-8"))
+        raw = resolved.read_bytes()
+        # v3 identity binding: every completed reference fold report's
+        # bytes must hash to the pair-report-pinned digest — the
+        # reference is certified at pairing time like the paired sides.
+        pinned = (pair_entry.get("fold_report_sha256") or {}).get(str(idx))
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != pinned:
+            raise AttachError(
+                f"reference {resolved} sha256 {digest} != pair-report "
+                f"pinned {pinned!r} for fold {idx} — reference fold "
+                "evidence changed after pairing, refusing.")
+        payload: dict[str, Any] = json.loads(raw.decode("utf-8"))
         if payload.get("fold_index") != idx:
             raise AttachError(
                 f"reference {resolved} carries fold_index="
@@ -348,6 +362,22 @@ def _bind_reference(
                 "aggregate documents it as completed — not a documented "
                 "reference run, refusing.")
         payloads.append((idx, payload))
+    # whole-run identity vs the certified pair entry (v3): run_id,
+    # config hash, aggregate hash, failed-fold set, fold count.
+    identity = {
+        "run_id": ref_dir.name,
+        "config_sha256": _config_sha256(cfg),
+        "report_sha256": hashlib.sha256(wf_p.read_bytes()).hexdigest(),
+        "num_folds": num_folds,
+        "ref_failed_folds": sorted(failed),
+    }
+    for key, actual in identity.items():
+        if actual != pair_entry.get(key):
+            raise AttachError(
+                f"--reference-run {ref_dir} does not match the certified "
+                f"pair-report reference entry: {key} {actual!r} != "
+                f"{pair_entry.get(key)!r} — veto evidence must come from "
+                "the certified reference run.")
     return report, failed, payloads
 
 
@@ -505,7 +535,23 @@ def _run_positions_turnover(
         if resolved is None:
             problems.append(f"fold {idx}: positions artifact missing")
             continue
-        positions = json.loads(resolved.read_text(encoding="utf-8"))
+        raw_positions = resolved.read_bytes()
+        # Producer attestation chain (PR-A, schema
+        # "4-positions-attestation"): a fold report that RECORDS a
+        # positions digest binds the series content — recompute and
+        # refuse on mismatch. Reports without the field (pre-attestation
+        # producers) fall through to the window/embedded bindings and
+        # keep the run unauthenticated for promotion purposes.
+        recorded_digest = rep.get("positions_sha256")
+        if recorded_digest is not None:
+            actual_digest = hashlib.sha256(raw_positions).hexdigest()
+            if actual_digest != recorded_digest:
+                raise AttachError(
+                    f"{run_dir}: fold {idx} positions bytes hash "
+                    f"{actual_digest} != fold-report-attested "
+                    f"{recorded_digest} — the persisted series is not "
+                    "the one the producer stamped, refusing.")
+        positions = json.loads(raw_positions.decode("utf-8"))
         if not isinstance(positions, dict) or len(positions) < 2:
             problems.append(
                 f"fold {idx}: positions empty or single-day — no "
@@ -780,6 +826,18 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
     rewrite the pair report in place. Returns the updated report."""
     report: dict[str, Any] = json.loads(
         pair_report_path.read_text(encoding="utf-8"))
+    # v3 REQUIRED (cadence campaign): pre-v3 artifacts carry no
+    # certified reference entry / per-fold gross — refusing prevents a
+    # downgrade-strip of the third-party certification.
+    if report.get("schema_version") != SCHEMA_VERSION:
+        raise AttachError(
+            f"pair report schema {report.get('schema_version')!r} != "
+            f"{SCHEMA_VERSION!r} — regenerate with the current pair "
+            "tool; pre-v3 artifacts cannot certify the reference.")
+    if not isinstance(report.get("reference"), dict):
+        raise AttachError(
+            "pair report carries no certified reference entry — "
+            "regenerate with --reference-run.")
     checklist = report["veto_checklist"]
     check1 = checklist.get("1_conservative_net_excess")
     if not isinstance(check1, dict) or "veto_triggered" not in check1:
@@ -793,7 +851,7 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
         "conservative", conservative_run, report["conservative"])
     cons_n = int(cons_side["num_folds"])
     _ref_report, ref_failed, ref_fold_reports = _bind_reference(
-        reference_run, base_side["config"])
+        reference_run, base_side["config"], report["reference"])
 
     # Veto 1 is RE-DERIVED from the BOUND sides' official metrics (which
     # come from the hash-verified aggregates), never trusted from the
@@ -833,43 +891,40 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
     checklist["5_midcap_concentration"] = compute_midcap_concentration(
         cons_fold_reports, cons_n)
 
-    eligible, incomplete = evaluate_promotion_eligibility(checklist)
-    # Promotion gate on reference authentication (codex #373 r9+r10 P1):
-    # UNAUTHENTICATED reference evidence may support a veto (safe
-    # direction) but never a promotion — a fully-passing checklist whose
-    # veto-3 baseline could have been silently replaced must not emit
-    # eligibility. Only PROMOTION_QUALIFYING_REF_BINDING (a
-    # producer-stamped positions digest bound to a certified reference
-    # artifact — not yet implemented by any producer) qualifies;
-    # presence-based labels do not (r10: mutable fold reports can be
-    # replaced together with their positions).
+    checks_all_pass, incomplete = evaluate_promotion_eligibility(checklist)
     binding = checklist["3_turnover_vs_csi300_ref"].get(
         "reference_content_binding")
-    # The structural prerequisite is recorded UNCONDITIONALLY (codex
-    # #373 r11 P2): a vetoed artifact must still tell a later operator
-    # that even a clean rerun cannot become promotion-eligible until the
-    # producer-side certified digest ships — otherwise the recorded veto
-    # reads as the only blocker.
-    blockers: list[str] = []
+    # attach is NEVER the promotion authority (cadence-campaign DP-5,
+    # codex #374 r4): its in-artifact eligibility is ALWAYS false — the
+    # sole authority is a committed certify verdict sidecar whose
+    # pair / N5-evidence / N1 anchors are origin/main-reachable. The
+    # blockers are recorded UNCONDITIONALLY (codex #373 r11 P2) so a
+    # vetoed artifact still names the structural prerequisite.
+    blockers: list[str] = [
+        "attach_non_authoritative: attach is a working-tree computation "
+        "and never mints promotion eligibility — the sole authority is "
+        "a committed certify verdict sidecar with origin/main-reachable "
+        "pair/evidence/N1 anchors (run "
+        "scripts/research/csi800_campaign_certify.py after the pair and "
+        "evidence are merged); 2026-07-17-csi800-cadence-campaign DP-5.",
+    ]
     if binding != PROMOTION_QUALIFYING_REF_BINDING:
         blockers.append(
             "reference_binding_unauthenticated: veto-3 reference "
-            f"turnover evidence is {binding!r}; promotion structurally "
-            f"requires {PROMOTION_QUALIFYING_REF_BINDING!r} (a "
-            "producer-stamped positions digest bound to a certified "
-            "reference artifact — not yet implemented by any producer; "
-            "backlog), independent of the current veto verdict; codex "
-            "#373 r9-r11.")
+            f"turnover evidence is {binding!r}; the certify step grants "
+            f"{PROMOTION_QUALIFYING_REF_BINDING!r} only after the full "
+            "digest chain verifies from mainline-anchored bytes; codex "
+            "#373 r9-r11 / #374 r10.")
     report["promotion_blockers"] = blockers
     # promotion_blocked_reason asserts "all five checks pass, blocked
     # only by the prerequisite" — recompute it on EVERY attach (codex
     # #373 r12 P2): a rerun over a report whose evidence has since
     # gained a triggered veto must not carry the stale claim forward.
     report.pop("promotion_blocked_reason", None)
-    if eligible and blockers:
-        eligible = False
+    if checks_all_pass:
         report["promotion_blocked_reason"] = blockers[0]
-    report["promotion_eligible"] = eligible
+    report["promotion_eligible"] = False
+    report["checks_all_pass"] = checks_all_pass
     report["incomplete_checks"] = incomplete
     report["veto_checklist_status"] = (
         "COMPLETE" if not incomplete else
