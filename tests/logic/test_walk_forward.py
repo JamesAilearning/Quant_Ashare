@@ -1185,11 +1185,14 @@ class FoldReportPersistenceFlowTests(unittest.TestCase):
             self.assertTrue(report_path.exists())
             self.assertTrue(positions_path.exists())
             self.assertTrue(predictions_path.exists())
-            self.assertEqual(fold.report_path, str(report_path))
+            # POSIX form is the artifact contract (codex #379 P1) — the
+            # committed evidence must resolve on any OS.
+            self.assertEqual(fold.report_path, report_path.as_posix())
             with open(report_path) as f:
                 report = json.load(f)
             self.assertEqual(report["fold_index"], 0)
-            self.assertEqual(report["positions_path"], str(positions_path))
+            self.assertEqual(
+                report["positions_path"], positions_path.as_posix())
             self.assertEqual(
                 report["ensemble"]["prediction_artifact_path"],
                 str(predictions_path),

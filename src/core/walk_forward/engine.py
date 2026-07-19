@@ -998,7 +998,9 @@ class WalkForwardEngine:
             max_drawdown=max_dd,
             information_ratio=ir,
             prediction_shape=model_result.prediction_shape,
-            report_path=str(report_path),
+            # POSIX form (codex #379 P1): this value lands in the
+            # committed aggregate's fold rows and must resolve on any OS.
+            report_path=report_path.as_posix(),
         )
 
     @classmethod
