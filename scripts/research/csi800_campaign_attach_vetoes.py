@@ -401,6 +401,18 @@ def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
     return out
 
 
+def _ceil9(value: float) -> float:
+    """Canonicalize toward the VETO-TRIGGERING side: the smallest
+    9-decimal grid value >= ``value``. With every pinned threshold
+    exactly on the 9dp grid (0.80/1.5/0.75/0.10), the strict/inclusive
+    predicates on the ceiled value are EQUIVALENT to the raw ones on
+    the triggering side — ``raw > thr  <=>  _ceil9(raw) > thr`` — so
+    canonicalization can never round a violating value back under a
+    threshold (codex #381 r3), while stored evidence and flag still
+    derive from the same number (codex #381 r1)."""
+    return math.ceil(value * 1e9) / 1e9
+
+
 def compute_csi500_dependence(
         cons_folds: list[tuple[int, dict[str, Any]]],
         cons_net_excess: float, expected_folds: int) -> dict[str, Any]:
@@ -449,7 +461,7 @@ def compute_csi500_dependence(
     # check vetoes the same run as non-positive.
     effect_csi500 = round(effect_csi500, 9)
     effect_total = round(effect_total, 9)
-    share = (round(effect_csi500 / effect_total, 9)
+    share = (_ceil9(effect_csi500 / effect_total)
              if coverage_ok and effect_total > 0 else None)
     dependent = share is not None and share >= CSI500_DEPENDENCE_THRESHOLD
     if not coverage_ok:
@@ -715,16 +727,18 @@ def compute_turnover_check(
                          + [f"base: {p}" for p in base_problems])
     # Canonicalize the per-side stats BEFORE deriving the ratios and the
     # veto flag (codex #381 r1): stored evidence, stored ratio and the
-    # predicate must all agree on the same rounded values — the ratio is
-    # then exactly recomputable from the stored daily means.
+    # predicate must all agree on the same canonical values — the ratio
+    # is exactly recomputable as _ceil9(stored daily-mean quotient), and
+    # the ceiling direction keeps the strict > predicate fail-closed for
+    # marginally over-threshold raw ratios (codex #381 r3).
     for side in (cons, base, ref):
         for k, v in side.items():
             if isinstance(v, float) and not isinstance(v, bool):
                 side[k] = round(v, 9)
-    ratio = (round(cons["daily_mean_oneway"] / ref["daily_mean_oneway"], 9)
+    ratio = (_ceil9(cons["daily_mean_oneway"] / ref["daily_mean_oneway"])
              if ref["daily_mean_oneway"] > 0 else None)
     base_ratio = (
-        round(base["daily_mean_oneway"] / ref["daily_mean_oneway"], 9)
+        _ceil9(base["daily_mean_oneway"] / ref["daily_mean_oneway"])
         if ref["daily_mean_oneway"] > 0 else None)
     return {
         "conservative": cons,
@@ -864,10 +878,12 @@ def compute_midcap_concentration(
                      "ok sleeve attribution — fail closed"),
             "veto_triggered": True,
         }
-    # Canonicalize BEFORE the predicate (codex #381 r1) — flag and
-    # stored evidence must be derived from the same rounded values.
-    avg500 = round(sum(csi500_w) / len(csi500_w), 9)
-    avg_unknown = round(sum(unknown_w) / len(unknown_w), 9)
+    # Canonicalize toward the triggering side BEFORE the predicate
+    # (codex #381 r1+r3) — flag and stored evidence derive from the same
+    # value, and a marginally over-threshold raw average can never be
+    # rounded back under the strict > comparison.
+    avg500 = _ceil9(sum(csi500_w) / len(csi500_w))
+    avg_unknown = _ceil9(sum(unknown_w) / len(unknown_w))
     return {
         "csi500_time_avg_weight": avg500,
         "unknown_time_avg_weight": avg_unknown,

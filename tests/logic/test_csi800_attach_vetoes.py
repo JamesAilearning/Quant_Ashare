@@ -287,6 +287,61 @@ def test_threshold_adjacent_share_flags_from_rounded_value():
     assert marginal["conservative_net_excess"] == 4e-10
 
 
+def test_ceil9_is_fail_closed_on_grid_thresholds():
+    # codex #381 r3: canonicalization must never round a violating value
+    # back under a strict > threshold. _ceil9 rounds toward the
+    # triggering side; with thresholds on the 9dp grid the predicate on
+    # the ceiled value is equivalent to the raw one.
+    from scripts.research.csi800_campaign_attach_vetoes import _ceil9
+
+    assert _ceil9(1.5000000004) == 1.500000001
+    assert _ceil9(1.5000000004) > 1.5          # violation preserved
+    assert _ceil9(1.5) == 1.5                  # exact threshold: no veto
+    assert not _ceil9(1.5) > 1.5
+    assert _ceil9(1.4999999996) == 1.5         # under stays under (>)
+    assert not _ceil9(1.4999999996) > 1.5
+    assert _ceil9(0.7500000004) > 0.75
+    assert not _ceil9(0.75) > 0.75
+    assert _ceil9(0.1000000004) > 0.10
+
+
+def test_marginal_over_threshold_concentration_still_vetoes():
+    # codex #381 r3: raw avg csi500 weight 0.7500000004 must veto — the
+    # stored value ceils to 0.750000001 and the strict > predicate runs
+    # on that same stored value.
+    from scripts.research.csi800_campaign_attach_vetoes import (
+        compute_midcap_concentration,
+    )
+
+    fold = (0, {"attribution": {
+        "status": "ok",
+        "sector_effects_sum": 1.0,
+        "sector_attribution": [
+            {"sector": "csi500_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.7500000004},
+            {"sector": "csi300_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.2499999996},
+        ],
+    }})
+    r = compute_midcap_concentration([fold], expected_folds=1)
+    assert r["csi500_time_avg_weight"] == 0.750000001
+    assert r["veto_triggered"] is True
+    # exactly at the threshold: strict > must NOT veto.
+    fold_at = (0, {"attribution": {
+        "status": "ok",
+        "sector_effects_sum": 1.0,
+        "sector_attribution": [
+            {"sector": "csi500_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.75},
+            {"sector": "csi300_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.25},
+        ],
+    }})
+    r2 = compute_midcap_concentration([fold_at], expected_folds=1)
+    assert r2["csi500_time_avg_weight"] == 0.75
+    assert r2["veto_triggered"] is False
+
+
 def test_clean_attach_completes_but_promotion_gated_on_reference():
     # all five checks pass and are recorded COMPLETE — but with no
     # producer-certified reference binding in existence (codex #373 r10),
