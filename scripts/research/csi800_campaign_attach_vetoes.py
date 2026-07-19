@@ -401,6 +401,36 @@ def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
     return out
 
 
+def _ceil9(value: float) -> float:
+    """Smallest 9dp-grid value >= ``value``. Canonicalization for a
+    STRICT ``> thr`` trigger predicate: with ``thr`` exactly on the 9dp
+    grid, ``raw > thr <=> _ceil9(raw) > thr`` — a marginal violation is
+    never rounded back under the threshold (codex #381 r3) and stored
+    evidence and flag derive from the same number (codex #381 r1)."""
+    return math.ceil(value * 1e9) / 1e9
+
+
+def _floor9(value: float) -> float:
+    """Largest 9dp-grid value <= ``value``. Canonicalization for an
+    INCLUSIVE ``>= thr`` trigger predicate (codex #381 r4): with ``thr``
+    on the grid, ``raw >= thr <=> _floor9(raw) >= thr`` — a violation is
+    preserved AND a just-below-threshold raw value can never be rounded
+    UP into a spurious trigger (``raw < thr => _floor9(raw) < thr``)."""
+    return math.floor(value * 1e9) / 1e9
+
+
+def _turnover_ratio(arm_daily_mean: float,
+                    ref_daily_mean: float) -> float | None:
+    """Veto-3 ratio from the RAW daily means (codex #381 r4 P1):
+    deriving it from per-side ROUNDED means can erase a marginal
+    violation (cons 0.07500000002 / ref 0.05 = 1.5000000004 raw, but
+    0.075 / 0.05 = exactly 1.5). _ceil9 matches the strict > trigger —
+    a violating raw ratio always stays above the pinned 1.5."""
+    if ref_daily_mean <= 0:
+        return None
+    return _ceil9(arm_daily_mean / ref_daily_mean)
+
+
 def compute_csi500_dependence(
         cons_folds: list[tuple[int, dict[str, Any]]],
         cons_net_excess: float, expected_folds: int) -> dict[str, Any]:
@@ -437,8 +467,25 @@ def compute_csi500_dependence(
         effect_total += fold_total
         folds_used += 1
     coverage_ok = folds_used == expected_folds
-    share = ((effect_csi500 / effect_total)
+    # Canonicalize BEFORE the predicate (codex #381 r1): the stored
+    # evidence and the veto flag must be derived from the SAME (rounded)
+    # values, or a threshold-adjacent raw value would serialize at the
+    # threshold while the flag reflects the unrounded side.
+    # ``cons_net_excess`` is deliberately RAW (codex #381 r2): it is the
+    # bound aggregate's official metric — a JSON-parsed stored byte with
+    # no cross-environment drift surface — and check 1's veto predicate
+    # runs on the same raw value; rounding it here would let a
+    # marginally-positive net (e.g. 4e-10) pass check 1 while this
+    # check vetoes the same run as non-positive.
+    # share BEFORE rounding the effect sums — deriving it from rounded
+    # inputs could shift it across the threshold in either direction
+    # (codex #381 r4). _floor9 matches the INCLUSIVE >= trigger:
+    # raw >= 0.80 <=> _floor9(raw) >= 0.80, and a just-below raw
+    # (0.7999999996) can never round up into a spurious trigger.
+    share = (_floor9(effect_csi500 / effect_total)
              if coverage_ok and effect_total > 0 else None)
+    effect_csi500 = round(effect_csi500, 9)
+    effect_total = round(effect_total, 9)
     dependent = share is not None and share >= CSI500_DEPENDENCE_THRESHOLD
     if not coverage_ok:
         note: str | None = (
@@ -701,10 +748,18 @@ def compute_turnover_check(
 
     coverage_problems = ([f"conservative: {p}" for p in cons_problems]
                          + [f"base: {p}" for p in base_problems])
-    ratio = (cons["daily_mean_oneway"] / ref["daily_mean_oneway"]
-             if ref["daily_mean_oneway"] > 0 else None)
-    base_ratio = (base["daily_mean_oneway"] / ref["daily_mean_oneway"]
-                  if ref["daily_mean_oneway"] > 0 else None)
+    # Ratios FIRST, from the RAW daily means (codex #381 r4 P1) — see
+    # _turnover_ratio. The per-side stats are then rounded for storage
+    # only (codex #379 P1 cross-environment canonicalization); they
+    # carry no predicate.
+    ratio = _turnover_ratio(cons["daily_mean_oneway"],
+                            ref["daily_mean_oneway"])
+    base_ratio = _turnover_ratio(base["daily_mean_oneway"],
+                                 ref["daily_mean_oneway"])
+    for side in (cons, base, ref):
+        for k, v in side.items():
+            if isinstance(v, float) and not isinstance(v, bool):
+                side[k] = round(v, 9)
     return {
         "conservative": cons,
         "base": base,
@@ -843,8 +898,12 @@ def compute_midcap_concentration(
                      "ok sleeve attribution — fail closed"),
             "veto_triggered": True,
         }
-    avg500 = sum(csi500_w) / len(csi500_w)
-    avg_unknown = sum(unknown_w) / len(unknown_w)
+    # Canonicalize toward the triggering side BEFORE the predicate
+    # (codex #381 r1+r3) — flag and stored evidence derive from the same
+    # value, and a marginally over-threshold raw average can never be
+    # rounded back under the strict > comparison.
+    avg500 = _ceil9(sum(csi500_w) / len(csi500_w))
+    avg_unknown = _ceil9(sum(unknown_w) / len(unknown_w))
     return {
         "csi500_time_avg_weight": avg500,
         "unknown_time_avg_weight": avg_unknown,
@@ -916,6 +975,19 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
             f"({cons_net!r}) — the pair report was edited after "
             "pairing, refusing.")
 
+    # Canonical 9-decimal floats (codex #379 gen3 P1): the derived
+    # aggregates in checks 2/3/5 go through numpy/pandas, whose
+    # reduction order varies across builds/SIMD paths by ~1 ulp
+    # (~1e-14 at these magnitudes). certify EXACT-compares the
+    # recomputed checklist against the anchored pair bytes, so an
+    # ulp-drifting float would structurally refuse certification on any
+    # environment that sums differently. round(x, 9) sits ~1e5 above
+    # the ulp noise and >=1e6 below every veto threshold.
+    # Canonicalization lives INSIDE each compute_* — the veto predicate
+    # and the stored evidence are derived from the same rounded values
+    # (codex #381 r1) — with ONE deliberate exception: check 2's
+    # ``conservative_net_excess`` stays raw so its zero-net leg runs on
+    # the identical value as check 1's predicate (codex #381 r2).
     checklist["2_csi500_dependence"] = compute_csi500_dependence(
         cons_fold_reports, cons_net, cons_n)
     checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(

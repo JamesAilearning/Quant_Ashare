@@ -211,6 +211,176 @@ def _set_attribution(run_dir: Path, fold: int, block) -> None:
     rep_p.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_attached_checklist_floats_are_9dp_canonical():
+    # codex #379 gen3 P1: checks 2/3/5 aggregate through numpy, whose
+    # reduction order drifts ~1 ulp across builds; certify EXACT-compares
+    # the recomputed checklist against the anchored pair bytes, so every
+    # attached float must be canonicalized (round 9dp) at serialization.
+    def _walk(obj):
+        if isinstance(obj, bool):
+            return
+        if isinstance(obj, float):
+            assert round(obj, 9) == obj, f"non-canonical float {obj!r}"
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                _walk(v)
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02)
+        r = attach(pair_p, base, cons, ref)
+        for key in ("2_csi500_dependence", "3_turnover_vs_csi300_ref",
+                    "4_risk_constraints_recorded",
+                    "5_midcap_concentration"):
+            entry = dict(r["veto_checklist"][key])
+            # check 2's conservative_net_excess is deliberately RAW —
+            # it must equal check 1's predicate value byte-for-byte
+            # (codex #381 r2); it is a stored official metric with no
+            # cross-environment drift surface.
+            entry.pop("conservative_net_excess", None)
+            _walk(entry)
+        assert (r["veto_checklist"]["2_csi500_dependence"]
+                ["conservative_net_excess"]
+                == r["veto_checklist"]["1_conservative_net_excess"]
+                ["value_annualized"])
+
+
+def test_threshold_adjacent_share_flags_from_rounded_value():
+    # codex #381 r1+r4: the veto flag derives from the SAME canonical
+    # value that gets stored, and the canonicalization direction matches
+    # the INCLUSIVE >= trigger — a raw share of 0.7999999996 (< 0.80,
+    # rule not met) floors to 0.799999999 and must NOT trigger; a raw
+    # 0.8000000004 floors to 0.8 and must trigger.
+    from scripts.research.csi800_campaign_attach_vetoes import (
+        compute_csi500_dependence,
+    )
+
+    def _fold(total_effect: float):
+        return (0, {"attribution": {
+            "status": "ok",
+            "sector_effects_sum": 1.0,
+            "sector_attribution": [
+                {"sector": "csi500_sleeve", "total_effect": total_effect,
+                 "portfolio_weight": 0.5},
+                {"sector": "csi300_sleeve",
+                 "total_effect": 1.0 - total_effect,
+                 "portfolio_weight": 0.5},
+            ],
+        }})
+
+    below_window = compute_csi500_dependence(
+        [_fold(0.7999999996)], cons_net_excess=-0.01, expected_folds=1)
+    assert below_window["csi500_effect_share_of_gross"] == 0.799999999
+    assert below_window["veto_triggered"] is False
+    over = compute_csi500_dependence(
+        [_fold(0.8000000004)], cons_net_excess=-0.01, expected_folds=1)
+    assert over["csi500_effect_share_of_gross"] == 0.8
+    assert over["veto_triggered"] is True
+    at = compute_csi500_dependence(
+        [_fold(0.8)], cons_net_excess=-0.01, expected_folds=1)
+    assert at["csi500_effect_share_of_gross"] == 0.8
+    assert at["veto_triggered"] is True
+    below = compute_csi500_dependence(
+        [_fold(0.799999999)], cons_net_excess=-0.01, expected_folds=1)
+    assert below["csi500_effect_share_of_gross"] == 0.799999999
+    assert below["veto_triggered"] is False
+    # codex #381 r2: the zero-net leg runs on the RAW official net —
+    # a marginally positive net (4e-10, below the 9dp half-step) must
+    # NOT be rounded to 0.0 and veto a run that check 1 passes; the
+    # stored value stays byte-identical to check 1's.
+    marginal = compute_csi500_dependence(
+        [_fold(0.85)], cons_net_excess=4e-10, expected_folds=1)
+    assert marginal["veto_triggered"] is False
+    assert marginal["conservative_net_excess"] == 4e-10
+
+
+def test_ceil9_is_fail_closed_on_grid_thresholds():
+    # codex #381 r3: canonicalization must never round a violating value
+    # back under a strict > threshold. _ceil9 rounds toward the
+    # triggering side; with thresholds on the 9dp grid the predicate on
+    # the ceiled value is equivalent to the raw one.
+    from scripts.research.csi800_campaign_attach_vetoes import _ceil9
+
+    assert _ceil9(1.5000000004) == 1.500000001
+    assert _ceil9(1.5000000004) > 1.5          # violation preserved
+    assert _ceil9(1.5) == 1.5                  # exact threshold: no veto
+    assert not _ceil9(1.5) > 1.5
+    assert _ceil9(1.4999999996) == 1.5         # under stays under (>)
+    assert not _ceil9(1.4999999996) > 1.5
+    assert _ceil9(0.7500000004) > 0.75
+    assert not _ceil9(0.75) > 0.75
+    assert _ceil9(0.1000000004) > 0.10
+
+
+def test_floor9_matches_inclusive_threshold():
+    # codex #381 r4: for an inclusive >= trigger, _floor9 preserves the
+    # raw predicate exactly — a violation survives, a just-below value
+    # can never round UP into a spurious trigger.
+    from scripts.research.csi800_campaign_attach_vetoes import _floor9
+
+    assert _floor9(0.8000000004) == 0.8
+    assert _floor9(0.8000000004) >= 0.8        # violation preserved
+    assert _floor9(0.8) >= 0.8                 # inclusive: exact triggers
+    assert _floor9(0.7999999996) == 0.799999999
+    assert not _floor9(0.7999999996) >= 0.8    # sub-threshold stays sub
+
+
+def test_turnover_ratio_derived_from_raw_means():
+    # codex #381 r4 P1: cons daily mean 0.07500000002 over ref 0.05 is a
+    # raw ratio of 1.5000000004 — a marginal violation that per-side
+    # rounding (0.075/0.05 == exactly 1.5) would erase. The ratio must
+    # come from the RAW means and ceil toward the veto side.
+    from scripts.research.csi800_campaign_attach_vetoes import (
+        _turnover_ratio,
+    )
+
+    r = _turnover_ratio(0.07500000002, 0.05)
+    assert r == 1.500000001
+    assert r > 1.5
+    assert _turnover_ratio(0.075, 0.05) == 1.5
+    assert not _turnover_ratio(0.075, 0.05) > 1.5
+    assert _turnover_ratio(0.075, 0.0) is None
+
+
+def test_marginal_over_threshold_concentration_still_vetoes():
+    # codex #381 r3: raw avg csi500 weight 0.7500000004 must veto — the
+    # stored value ceils to 0.750000001 and the strict > predicate runs
+    # on that same stored value.
+    from scripts.research.csi800_campaign_attach_vetoes import (
+        compute_midcap_concentration,
+    )
+
+    fold = (0, {"attribution": {
+        "status": "ok",
+        "sector_effects_sum": 1.0,
+        "sector_attribution": [
+            {"sector": "csi500_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.7500000004},
+            {"sector": "csi300_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.2499999996},
+        ],
+    }})
+    r = compute_midcap_concentration([fold], expected_folds=1)
+    assert r["csi500_time_avg_weight"] == 0.750000001
+    assert r["veto_triggered"] is True
+    # exactly at the threshold: strict > must NOT veto.
+    fold_at = (0, {"attribution": {
+        "status": "ok",
+        "sector_effects_sum": 1.0,
+        "sector_attribution": [
+            {"sector": "csi500_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.75},
+            {"sector": "csi300_sleeve", "total_effect": 0.5,
+             "portfolio_weight": 0.25},
+        ],
+    }})
+    r2 = compute_midcap_concentration([fold_at], expected_folds=1)
+    assert r2["csi500_time_avg_weight"] == 0.75
+    assert r2["veto_triggered"] is False
+
+
 def test_clean_attach_completes_but_promotion_gated_on_reference():
     # all five checks pass and are recorded COMPLETE — but with no
     # producer-certified reference binding in existence (codex #373 r10),
