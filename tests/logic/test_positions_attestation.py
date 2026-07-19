@@ -106,6 +106,13 @@ def test_fold_report_positions_path_serializes_posix() -> None:
         "output/walk_forward/x/fold_00_positions.json")
     without = build_fold_report(**_fold_report_args(positions_path=None))
     assert without["positions_path"] is None
+    # codex #380 r1: a literal-backslash string (pre-fix Windows
+    # producer) must also normalize on ANY OS — plain as_posix() keeps
+    # backslashes on POSIX.
+    legacy = build_fold_report(**_fold_report_args(
+        positions_path="output\\walk_forward\\x\\fold_00_positions.json"))
+    assert legacy["positions_path"] == (
+        "output/walk_forward/x/fold_00_positions.json")
 
 
 def test_fold_report_carries_digest_and_explicit_null() -> None:

@@ -327,6 +327,27 @@ class BuildAggregateReportTests(unittest.TestCase):
             "output/walk_forward/x/fold_00_report.json",
         )
 
+    def test_fold_row_report_path_normalizes_windows_separators(self):
+        # codex #380 r1: a fold resumed from a PRE-fix Windows manifest
+        # carries a literal-backslash string; on POSIX a plain
+        # Path(...).as_posix() keeps the backslashes (they are ordinary
+        # filename characters there). The serialization boundary must
+        # split BOTH separators deterministically on any OS.
+        import dataclasses
+
+        config = WalkForwardConfig(output_dir="output/wf")
+        fold = dataclasses.replace(
+            _make_fold(0),
+            report_path="output\\walk_forward\\x\\fold_00_report.json",
+        )
+        report = build_aggregate_report(
+            config=config, folds=[fold], aggregate_metrics={},
+        )
+        self.assertEqual(
+            report["folds"][0]["report_path"],
+            "output/walk_forward/x/fold_00_report.json",
+        )
+
     def test_prediction_shape_serializes_to_list_not_tuple(self):
         # JSON has no tuple — tuple → list at report build time so the
         # downstream report's shape is byte-stable across serialization.
