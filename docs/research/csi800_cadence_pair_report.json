@@ -1,0 +1,312 @@
+{
+  "schema_version": "csi800_pair_report_v3",
+  "projection_whitelist": [
+    "output_dir"
+  ],
+  "config_diff_projected": {
+    "slippage_bps": {
+      "base": 5.0,
+      "conservative": 20.0
+    }
+  },
+  "base": {
+    "run_id": "csi800_cadence5_base",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "1bba3ac7955d587ee98f69ddc096c84ed66cfbb8d76edbc42b405d0f407bd417",
+    "report_sha256": "cb2a3b08abb371ba8429873a354be2d0273cd268d1bfb3384e27a4d0ef8944f3",
+    "fold_report_sha256": {
+      "0": "971ba70e51e56baa82160a8d992947662a299a4c3371e8a87451ef47dc3862db",
+      "1": "27813f0d1ea2d316ba7da40f64e8c10980174ae88fce04dfd5313105739da639",
+      "2": "3acf8a5a82f50715e0e0b054f6e89f3df517ed46014c5780fc021c123e34a2a3",
+      "3": "7b6f29d47ae23e97c05d5fbfbf27bf3766ec988f71d0a140facef3a39b399dba",
+      "4": "6f7f9ffb16de8af8f058acde2c8246bbca64047d854b545017008c81696df6ee",
+      "5": "84f4ccdd10bbb8372d32ba0f68f4a8ca01c62cf3c96b7fc53f935698cfa5d904",
+      "6": "cdc51af990d7bb7c59579a5ac01cd0cc51e60b5ef96ed093acc46b6dc1496cd6",
+      "7": "9a07eb9510743f270730c7f0b01b44f5702331368733b8be484117b08075f341",
+      "8": "1fa7ac6a5b87348405b26f39e8cd467ca423054a98d370d7ad65b145e3ee5b98",
+      "9": "421f63c45f54636c5a4c496041a9ce03610bf8e5b4ac9cd1e6ba5eefe695d9ed",
+      "10": "4f108aaef28d90dfa7b55ee9232e6f2533b3f5bfae667af4a7126f9461c26621",
+      "11": "cc5138843d3a8fa0e5d90c094b51cfcd9895f42a089e992568219f8bc8343cb1",
+      "12": "997c73037d796b2cc3cbeb22a7f91076d7c75f04f68cb4c053a744dc6628b3aa",
+      "13": "bfddb46a94b9479874eb1678685880e6c8f677567663520643ebfc26ca0b2ff9",
+      "14": "b916f3fe2472a5ee805c6375b71179b462b35a1b2e1fcf30c062373a1febcffc",
+      "15": "f560823d844d7969ed6cf4754cb96fcce3a8e36c1bf93f3e42b1b9766e21ea13",
+      "16": "76c461de8d0eed7bcf05af38c0d2ec73089cf1904639f25020cb05b67845de40",
+      "17": "aa36c58f6d3d458f35b05e6d49bbe9ba4cee09d3dfc3bdbe0b94c271fbede5f3",
+      "18": "407a2a6dd06f40637b316282d68275b15ccb32a452a1a04392ac840e8514ec15",
+      "19": "3f45d7e17fc3ac8faa42cc5d191d09c2e020ef950f06ed00a5be21d65e6cc475",
+      "20": "391387b0b51bc01454772c3f182f00903168644db1f22ec53f69bf26e54ef019",
+      "21": "36157d0a121f7950c70c15404bf8c84575b67514dc76db2c4822ce1eb9a6fbd2",
+      "22": "83f610af3b9e5d6071ed5f358319639e841178d79f0b6541d773ff6b73051527"
+    },
+    "per_fold_gross_annualized": [
+      0.17868550992814797,
+      -0.2790554582645545,
+      -0.3470416041373924,
+      0.2040963167473258,
+      0.42639677854561914,
+      0.3076912283706525,
+      -0.05069671170552577,
+      0.22082136336277136,
+      0.27547401267871585,
+      0.1351473514765893,
+      0.30876401994402886,
+      0.2698602155437738,
+      -0.019250118584618538,
+      -0.20670385027169375,
+      0.09075201017085889,
+      0.28457749086444106,
+      0.1200104938162301,
+      -0.22127072684072113,
+      0.18002628995272799,
+      0.5707095235554773,
+      0.09878516419917534,
+      -0.2869468053047416,
+      0.02198488878406142
+    ],
+    "official_metrics": {
+      "excess_return_with_cost": {
+        "annualized_return": 0.08364274405398306,
+        "information_ratio": 0.7363775200433225,
+        "max_drawdown": -0.10204489249235245
+      }
+    },
+    "benchmark": {
+      "code": "SH000906TR"
+    },
+    "num_folds": 23,
+    "per_fold_net_annualized": [
+      0.16232546266694373,
+      -0.294641643028386,
+      -0.3630840145782257,
+      0.1876171293662723,
+      0.41144907933565067,
+      0.2911207820490284,
+      -0.06689466124350986,
+      0.20318958973216686,
+      0.25933355010412346,
+      0.11903151631916167,
+      0.29246058593484175,
+      0.25289562987812886,
+      -0.03546834247484121,
+      -0.22135164528888615,
+      0.07612572739404283,
+      0.26906078740813133,
+      0.10502748027673114,
+      -0.23495735610174365,
+      0.1657945128919191,
+      0.5552032626003954,
+      0.0839601424207812,
+      -0.3018607887840281,
+      0.007446326362912635
+    ]
+  },
+  "reference": {
+    "run_id": "csi300_cadence5_reference",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "5d2140f54289ef9a02db533d3849192e741c60a4240ce6b7d6a5a9a6062efe1d",
+    "report_sha256": "1df2138c8af0842246949f54b6ea8c6cce1e90157d58133c291d1b118fbd435b",
+    "fold_report_sha256": {
+      "0": "d75c0d9b41476f353106e4bcdbdf6f8b907b08dfd9f937964bea9fbb8155616c",
+      "1": "513f83f362988173e83c056b5e42dd7769a33be61e17f212b668570e5b49d763",
+      "2": "f8b348e00eb957a638656fab01d4889ed34c0edebf3dd6205e647e574e720213",
+      "3": "010b33b8f7ba01a61b2ab2e0426ebfd5c07be4558b979f40c41672b5025a0627",
+      "4": "4fbc2fcf3fe4016c2fe088730e44aece32d98e119764f7a16e46bacc90a7205c",
+      "5": "995e946d42e88b34ca339dcb00d630b915a865ad5f69a9f159f866ca1f33bcf2",
+      "6": "e382b6ee9499fe5133eeb5ed6f7c33ed7cccbf0eb7da976210bd6078f2f3815a",
+      "7": "9a32350058d9ea9fca6db223030cabb531c2b8890d3613c050d6d1f8d35aaec1",
+      "8": "176427711142199712d2ed99133cf3781940ae1c8c1ed37eeb853f00afd1a75b",
+      "9": "7762e9bdd39b8075541c4454c31a0dd4795019fc9987fd339f45d0023c14958f",
+      "10": "e834a67c18b618d0a89e918ab42f9ad2419624650087662cf893b529dfefe622",
+      "11": "9c5dd2c056f6847a697668ffd1f16cb60f49b6950b4204047986b1b9ecc34874",
+      "12": "0b31606aa6355244e03fde60a894ac9444817ef2999759022bab6db962b3f183",
+      "13": "7cc13fe1a66a9513c77ceb787a80df49fd7f95e006fec14d6ea2f3af5a296662",
+      "14": "99afa2a5f088a29fe77447b1f7b6e492fe5ff8ff6c3b197df8e3f1612b7d1374",
+      "15": "4abbd681d164a5b8722015f7bd8151177d75198e0f200dec66e9b7d1ade0248d",
+      "16": "13d0664c35330a797517e8072e19e8d0444730ca95c982c47b1b3f5a11ca4b6e",
+      "17": "7099c893c506d04a83e9665a3ff0d67d0824a8cc61a11422b5b4dbd30b182f96",
+      "18": "4ca7ba6071df59a951b44ac04f025894d620e98538f5411df58e0bbf9a4ca964",
+      "19": "8f71653c165cd7d35934bb5205fcb21b28f8d0a5744a9ee02469370abddfab06",
+      "20": "53b348264faa790485c88fb0de012bb2eb017f8f45650c9872d2374bbe9331fe",
+      "21": "3cdf94cee27472487295b91fdfeb68630a7d063d7b3921fb9e7793d52b8d2ed2",
+      "22": "8ee39f8973a084092018a431986c3727dd046d109f89c3eb860f7b121c1eb7fe"
+    },
+    "num_folds": 23,
+    "ref_failed_folds": []
+  },
+  "conservative": {
+    "run_id": "csi800_cadence5_conservative",
+    "artifact_shape": "walk_forward",
+    "config_sha256": "440e27e22a899e6d66fe859fbf7fcc42bef4b4ede82a00fa0220eed858cc1c39",
+    "report_sha256": "9f6d98070f6ba134ef02519426c361563ee82d717a8a2c92735d0d8962d2355f",
+    "fold_report_sha256": {
+      "0": "0bd900e1fcacd18fbe6c879a4bdec95f6dca7d1f7a07011c53b597167c98fd98",
+      "1": "ce88d3203df086e4d0511274d8a9904bb79c74814f779b4a6b9517067e867a25",
+      "2": "713bd3db85b47df45fad970962c5fbfa4b8cdbbdba60f90b0128e00c6c9310c3",
+      "3": "8f3d21e18a247a6134e56a313c0d06d206604dfffa49e4a5d522675ea56fad66",
+      "4": "f343e1131e55205085519b9105fd73f1e93dc781f2a0518d28d15132219a700d",
+      "5": "c3e48a982945fa43a02e08bf4d5ae96ff02604b0ef0c0b4d0cf957a50d8002bd",
+      "6": "0b37987890ce8563f21527279750d349ef0d3d95ab1a9e9da5a750629901ea04",
+      "7": "a1a2fc8e54810de6a94d6dd798025a975090b307a9805b2fe68a5596d87992f0",
+      "8": "1c65a71b756f5ee30f917e33db7979359760c2096c97085fe5eefd77484a625f",
+      "9": "e190643452fc8695aa577c49e47b70f1166252e722413f5795f95ec6022dd332",
+      "10": "3ce5c7d306fe7aa5e98b49bd3a60ff49d05ea2e22852b2ea17dd4c86321d57f8",
+      "11": "e5af4b20a171790c5be53060eee7e01f758c6b8d36f3f1c6647a67465bb7c4a6",
+      "12": "613e7bd6a818aaff9f817b03e91ea35aba7918734beb690f48263dce3ef4c353",
+      "13": "5aab8380a52238ddc4c7d87e0af7cbbbd5509f72dde1e0895288dca7ccd920f4",
+      "14": "985ac433f8a9469dc1a63371cf4bbd030516e74a9ce32c480f740ecefa8f4c28",
+      "15": "667e418a986cb9a1dee096e59b3e94a704ac6f470a7db3cf85db62ee4661dda1",
+      "16": "5870d43d76b043e82fafb5a7041397ae7f6f4e5a2b3fb568284f9ec77f5cf68b",
+      "17": "7da75d0f32af7940873e297105711f8e5f1ea339975ef9af0ea1bab1196ed495",
+      "18": "b91b6555ddf4e704a5f4fd3979f30bc1afbe7067eb485e6858bf1514c32da112",
+      "19": "80f95060b083a4c0374a9c7bd197c67bbada8cb11282402705b4d7456c06ecc9",
+      "20": "11efe59e7d2320b8ea6464373b05ae91f3c9f31ef142f483d70998629350cca2",
+      "21": "a41dbfb041322c7ecda40eef7b395d51a0036acfa18e5672e119d9ce0378380c",
+      "22": "2e59d29c0ff9baf8139570815bbaf97dc00bcad9773c42d547dd3fc12a562301"
+    },
+    "per_fold_gross_annualized": [
+      0.17830501080461444,
+      -0.27809716961575426,
+      -0.34774301250686346,
+      0.20473049211334052,
+      0.42526255835031535,
+      0.3072978133766565,
+      -0.05051386379095884,
+      0.22038313098982631,
+      0.2743764258674478,
+      0.13535081493044693,
+      0.30945519855846876,
+      0.26948094989962923,
+      -0.01946909937090599,
+      -0.20712609219155786,
+      0.09109330194481179,
+      0.2852687300838989,
+      0.11989168411932713,
+      -0.2221248696064131,
+      0.18035688808683797,
+      0.5715783019952569,
+      0.09820362281705833,
+      -0.2862896596120751,
+      0.02181144800617393
+    ],
+    "official_metrics": {
+      "excess_return_with_cost": {
+        "annualized_return": 0.06519304205234885,
+        "information_ratio": 0.5488807821516939,
+        "max_drawdown": -0.10510410473628162
+      }
+    },
+    "benchmark": {
+      "code": "SH000906TR"
+    },
+    "num_folds": 23,
+    "per_fold_net_annualized": [
+      0.1436310703907883,
+      -0.31096834590419975,
+      -0.3817780250399435,
+      0.16976047218037482,
+      0.39347008029154995,
+      0.2723675610116605,
+      -0.084772996833757,
+      0.18311443256204277,
+      0.24014607095361168,
+      0.10133774982952001,
+      0.27493357750653613,
+      0.2336386410957579,
+      -0.05386373236311765,
+      -0.23898019871118154,
+      0.057758775851922226,
+      0.24995441248219047,
+      0.08576218374741416,
+      -0.25329679489843665,
+      0.1479402343304516,
+      0.5362503030120059,
+      0.06448855234880113,
+      -0.3201240867499188,
+      -0.0113299698900496
+    ]
+  },
+  "veto_checklist": {
+    "1_conservative_net_excess": {
+      "value_annualized": 0.06519304205234885,
+      "base_value_annualized": 0.08364274405398306,
+      "veto_triggered": false
+    },
+    "2_csi500_dependence": {
+      "csi500_effect_share_of_gross": 0.441357259,
+      "csi500_effect_sum": 0.187045,
+      "gross_effect_sum": 0.423795,
+      "folds_used": 23,
+      "expected_folds": 23,
+      "conservative_net_excess": 0.06519304205234885,
+      "threshold_share": 0.8,
+      "note": null,
+      "veto_triggered": false
+    },
+    "3_turnover_vs_csi300_ref": {
+      "conservative": {
+        "total_oneway": 36.857552963,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.027281682,
+        "annualized_oneway": 6.493040418,
+        "valid_folds": 23.0
+      },
+      "base": {
+        "total_oneway": 36.898773044,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.027312193,
+        "annualized_oneway": 6.500301987,
+        "valid_folds": 23.0
+      },
+      "csi300_reference": {
+        "total_oneway": 36.160974068,
+        "n_transitions": 1351.0,
+        "daily_mean_oneway": 0.02676608,
+        "annualized_oneway": 6.370327038,
+        "valid_folds": 23.0
+      },
+      "conservative_over_reference_ratio": 1.019263278,
+      "base_over_reference_ratio": 1.020403184,
+      "threshold_ratio": 1.5,
+      "annualization_days": 238,
+      "ref_valid_folds": 23.0,
+      "ref_failed_folds": [],
+      "reference_content_binding": "window_only_unauthenticated",
+      "reference_embedded_turnover_verified": false,
+      "coverage_problems": [],
+      "veto_triggered": false
+    },
+    "4_risk_constraints_recorded": {
+      "expected": {
+        "max_per_name": 0.05,
+        "max_per_board": 1.0,
+        "cash_buffer_min": 0.0,
+        "max_leverage": 1.0,
+        "mode": "raise"
+      },
+      "folds_checked": 46,
+      "problems": [],
+      "veto_triggered": false
+    },
+    "5_midcap_concentration": {
+      "csi500_time_avg_weight": 0.487330435,
+      "unknown_time_avg_weight": 0.0,
+      "folds_used": 23,
+      "expected_folds": 23,
+      "thresholds": {
+        "csi500": 0.75,
+        "unknown": 0.1
+      },
+      "veto_triggered": false
+    }
+  },
+  "promotion_blockers": [
+    "attach_non_authoritative: attach is a working-tree computation and never mints promotion eligibility — the sole authority is a committed certify verdict sidecar with origin/main-reachable pair/evidence/N1 anchors (run scripts/research/csi800_campaign_certify.py after the pair and evidence are merged); 2026-07-17-csi800-cadence-campaign DP-5.",
+    "reference_binding_unauthenticated: veto-3 reference turnover evidence is 'window_only_unauthenticated'; the certify step grants 'producer_digest_certified' only after the full digest chain verifies from mainline-anchored bytes; codex #373 r9-r11 / #374 r10."
+  ],
+  "promotion_blocked_reason": "attach_non_authoritative: attach is a working-tree computation and never mints promotion eligibility — the sole authority is a committed certify verdict sidecar with origin/main-reachable pair/evidence/N1 anchors (run scripts/research/csi800_campaign_certify.py after the pair and evidence are merged); 2026-07-17-csi800-cadence-campaign DP-5.",
+  "promotion_eligible": false,
+  "checks_all_pass": true,
+  "incomplete_checks": [],
+  "veto_checklist_status": "COMPLETE"
+}

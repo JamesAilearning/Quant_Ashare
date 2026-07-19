@@ -82,9 +82,11 @@
 - [x] 首发三 run 作废,修订合并后重跑
 
 ## 4. 点火（单独授权，PR-A/B/C 全并后）
-- [ ] 三发串行（参照 → base → conservative），日志入 scratchpad
-- [ ] pair v3 生成 + attach 全链勾验（veto 五项 + 主判据双条件；
-      attach 内嵌资格恒 false，非权威）
+- [x] 三发串行（参照 → base → conservative），日志入 scratchpad
+      （首发被 fold 4 约束语义事件击落 → R1 #378 修订合并后重跑，
+      23/23 × 3 全 official，attestation 全折）
+- [x] pair v3 生成 + attach 全链勾验（veto 五项零触发 + 主判据双条件
+      全过 = 预注册 WIN；attach 内嵌资格恒 false，非权威）
 - [ ] 战役简报 + 证据工件（pair v3）入库 PR → codex/CI → 数字 STOP
       签字 → **用户 merge（= pair v3 提交评审，锚成立）**
 - [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
