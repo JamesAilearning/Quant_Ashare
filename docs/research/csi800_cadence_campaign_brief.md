@@ -1,4 +1,4 @@
-# CSI800 降换手战役简报 — N5 三发 + DP-3 主判据 + veto 五项（2026-07-19）
+# CSI800 降换手战役简报 — N5 三发 + DP-3 主判据 + veto 五项（2026-07-19，gen3 证据）
 
 **判定（预注册 DP-3 双条件，AND）：两条全过 = WIN。**
 ① conservative（20 bps）N5 全窗净超额年化 **+6.52% > 0**；
@@ -10,8 +10,9 @@ N5 证据 + N1，`2026-07-17-csi800-cadence-campaign` DP-5）。
 
 ## 1. Run 事实记录
 
-三发严格串行，全部跑在 main `e2a11e3`（= #378 R1 约束作用域修订合并
-commit）。preset 为 #377 的三个 tracked 文件（2018-2025 全窗、24/3/3
+三发严格串行，全部跑在 main `ce86036`（= #380 工件路径 POSIX 序列化
+合并 commit，含 #378 R1 修订），**`git_dirty: false`**（干净工作树）。
+preset 为 #377 的三个 tracked 文件（2018-2025 全窗、24/3/3
 步 3 → 23 折、ensemble 3、`campaign_v1` 约束、cadence 5/0/fold_phase、
 `risk_constraint_scope: rebalance_days` 显式 opt-in）。
 
@@ -31,6 +32,17 @@ fold 4 被 `max_per_name` RAISE 击落（SH601127 @2021-05-12，5.04%/
 默认 `all_days` 全图合约逐字节不变；5% 数字、RAISE 模式、veto 数字
 全部不动）。失败工件留证 `output/walk_forward/*_prer1_fullmap/`；
 修订合并后三发全部重跑，结果盲保持至本简报判定时点。
+
+**gen2→gen3 重生成（codex #379 两 P1）**：R1 后首轮重跑（gen2）的
+工件带 Windows 反斜杠路径（POSIX fresh-checkout 认证时 basename
+解析结构性失败）且聚合 `git_dirty: true`（唯一脏源 = repo 根一个
+未跟踪的个人 probe preset）。生产者修复 #380（序列化边界
+`PureWindowsPath(...).as_posix()` 双分隔符归一）合并后，于干净
+工作树重跑三发（gen3，即本简报证据）。gen3 vs gen2 逐折等值核对：
+全部折的 IC/年化/回撤/IR/毛/净最大绝对偏差 **4.4e-14**（LightGBM
+线程求和序浮点抖动），比本 repo 重放标尺 1e-6 小 8 个数量级；DP-3
+与五 veto 的全部呈报数字在显示精度上逐位不变。gen2 工件留证
+`output/walk_forward/*_gen2_nonportable/`。
 
 ## 2. 官方数字（逐折年化超额均值，净=with_cost）
 
