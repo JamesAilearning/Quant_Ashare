@@ -1,0 +1,518 @@
+{
+  "generated_at": "2026-07-19T00:42:48.596312+00:00",
+  "git_commit": "e2a11e3aa2de94354783874f9f24650f398ae10c",
+  "git_dirty": true,
+  "config": {
+    "instruments": "csi800",
+    "feature_handler": "Alpha158",
+    "label_horizon_days": 1,
+    "delisted_registry_path": "D:/qlib_data/tushare_raw/delisted_registry.parquet",
+    "overall_start": "2018-01-01",
+    "overall_end": "2025-12-31",
+    "train_months": 24,
+    "valid_months": 3,
+    "test_months": 3,
+    "step_months": 3,
+    "model_type": "LGBModel",
+    "num_boost_round": 1000,
+    "early_stopping_rounds": 50,
+    "learning_rate": 0.005,
+    "max_depth": 6,
+    "num_leaves": 64,
+    "lambda_l1": 0.0,
+    "lambda_l2": 1.0,
+    "min_data_in_leaf": 50,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "benchmark_code": "SH000906TR",
+    "init_cash": 100000000,
+    "topk": 50,
+    "n_drop": 5,
+    "commission_rate": 0.0005,
+    "stamp_tax_schedule": null,
+    "slippage_bps": 20.0,
+    "min_cost": 5.0,
+    "execution_price_kind": "close",
+    "adjust_mode": "pre_adjusted",
+    "signal_to_execution_lag": 1,
+    "limit_threshold": 0.095,
+    "namechange_path": "D:/qlib_data/tushare_raw/all_namechanges.parquet",
+    "st_mask_mode": "required",
+    "rebalance_cadence_days": 5,
+    "rebalance_phase": 0,
+    "rebalance_anchor": "fold_phase",
+    "ensemble_window": 3,
+    "seed": 42,
+    "compute_device": "cpu",
+    "run_attribution": true,
+    "industry_artifact_path": null,
+    "industry_manifest_path": null,
+    "industry_taxonomy_id": "",
+    "industry_temporal_mode": "static",
+    "attribution_sleeve_grouping": true,
+    "risk_constraints_enabled": true,
+    "risk_constraints_calibration": "campaign_v1",
+    "risk_constraint_scope": "rebalance_days",
+    "output_dir": "output/walk_forward/csi800_cadence5_conservative",
+    "dataset_cache_dir": null
+  },
+  "folds": [
+    {
+      "fold_index": 0,
+      "train_period": "2018-01-01 ~ 2019-12-27",
+      "valid_period": "2020-01-01 ~ 2020-03-27",
+      "test_period": "2020-04-01 ~ 2020-06-30",
+      "ic_1d": -0.043204354047348105,
+      "ic_5d": 0.004066450424520207,
+      "annualized_return": 0.14363107039078882,
+      "max_drawdown": -0.03575318815943715,
+      "information_ratio": 1.220442023536149,
+      "prediction_shape": [
+        23677
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_00_report.json",
+      "duration_seconds": 40.461794600007124,
+      "started_at": "2026-07-19T00:26:00.250417+00:00",
+      "finished_at": "2026-07-19T00:26:40.712033+00:00"
+    },
+    {
+      "fold_index": 1,
+      "train_period": "2018-04-01 ~ 2020-03-27",
+      "valid_period": "2020-04-01 ~ 2020-06-24",
+      "test_period": "2020-07-01 ~ 2020-09-30",
+      "ic_1d": 0.07483404432714051,
+      "ic_5d": 0.04809531595533511,
+      "annualized_return": -0.31096834590419875,
+      "max_drawdown": -0.070330969714876,
+      "information_ratio": -3.1260082770958957,
+      "prediction_shape": [
+        52780
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_01_report.json",
+      "duration_seconds": 43.153288699977566,
+      "started_at": "2026-07-19T00:26:40.723838+00:00",
+      "finished_at": "2026-07-19T00:27:23.877424+00:00"
+    },
+    {
+      "fold_index": 2,
+      "train_period": "2018-07-01 ~ 2020-06-24",
+      "valid_period": "2020-07-01 ~ 2020-09-28",
+      "test_period": "2020-10-01 ~ 2020-12-31",
+      "ic_1d": 0.026497254772004694,
+      "ic_5d": 0.03657391873860722,
+      "annualized_return": -0.3817780250399429,
+      "max_drawdown": -0.1009788593150409,
+      "information_ratio": -3.3003928981998927,
+      "prediction_shape": [
+        46812
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_02_report.json",
+      "duration_seconds": 46.07960190001177,
+      "started_at": "2026-07-19T00:27:23.885523+00:00",
+      "finished_at": "2026-07-19T00:28:09.964323+00:00"
+    },
+    {
+      "fold_index": 3,
+      "train_period": "2018-10-01 ~ 2020-09-28",
+      "valid_period": "2020-10-01 ~ 2020-12-29",
+      "test_period": "2021-01-01 ~ 2021-03-31",
+      "ic_1d": 0.04617209731129071,
+      "ic_5d": 0.05266456617826265,
+      "annualized_return": 0.16976047218037446,
+      "max_drawdown": -0.04629889333944278,
+      "information_ratio": 1.4206130500902912,
+      "prediction_shape": [
+        23200
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_03_report.json",
+      "duration_seconds": 42.92999779997626,
+      "started_at": "2026-07-19T00:28:09.972322+00:00",
+      "finished_at": "2026-07-19T00:28:52.902382+00:00"
+    },
+    {
+      "fold_index": 4,
+      "train_period": "2019-01-01 ~ 2020-12-29",
+      "valid_period": "2021-01-01 ~ 2021-03-29",
+      "test_period": "2021-04-01 ~ 2021-06-30",
+      "ic_1d": 0.057963206949888546,
+      "ic_5d": 0.06437231628648557,
+      "annualized_return": 0.39347008029155045,
+      "max_drawdown": -0.016867877962434878,
+      "information_ratio": 3.705830260469265,
+      "prediction_shape": [
+        24180
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_04_report.json",
+      "duration_seconds": 43.489436400006525,
+      "started_at": "2026-07-19T00:28:52.909467+00:00",
+      "finished_at": "2026-07-19T00:29:36.399261+00:00"
+    },
+    {
+      "fold_index": 5,
+      "train_period": "2019-04-01 ~ 2021-03-29",
+      "valid_period": "2021-04-01 ~ 2021-06-28",
+      "test_period": "2021-07-01 ~ 2021-09-30",
+      "ic_1d": -0.0030720514889110515,
+      "ic_5d": -0.016287934694250508,
+      "annualized_return": 0.2723675610116596,
+      "max_drawdown": -0.03743229983052382,
+      "information_ratio": 2.246782091043121,
+      "prediction_shape": [
+        51162
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_05_report.json",
+      "duration_seconds": 46.42670240002917,
+      "started_at": "2026-07-19T00:29:36.406353+00:00",
+      "finished_at": "2026-07-19T00:30:22.833734+00:00"
+    },
+    {
+      "fold_index": 6,
+      "train_period": "2019-07-01 ~ 2021-06-28",
+      "valid_period": "2021-07-01 ~ 2021-09-28",
+      "test_period": "2021-10-01 ~ 2021-12-31",
+      "ic_1d": -0.049552621284751734,
+      "ic_5d": -0.03589832535958381,
+      "annualized_return": -0.08477299683375573,
+      "max_drawdown": -0.04278795233999508,
+      "information_ratio": -0.8496304205128798,
+      "prediction_shape": [
+        47634
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_06_report.json",
+      "duration_seconds": 44.7646007000003,
+      "started_at": "2026-07-19T00:30:22.840734+00:00",
+      "finished_at": "2026-07-19T00:31:07.605605+00:00"
+    },
+    {
+      "fold_index": 7,
+      "train_period": "2019-10-01 ~ 2021-09-28",
+      "valid_period": "2021-10-01 ~ 2021-12-29",
+      "test_period": "2022-01-01 ~ 2022-03-31",
+      "ic_1d": 0.03241569943653913,
+      "ic_5d": 0.013169636997972725,
+      "annualized_return": 0.1831144325620428,
+      "max_drawdown": -0.05470124628434904,
+      "information_ratio": 1.5695566563489767,
+      "prediction_shape": [
+        23200
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_07_report.json",
+      "duration_seconds": 42.668417100037914,
+      "started_at": "2026-07-19T00:31:07.613608+00:00",
+      "finished_at": "2026-07-19T00:31:50.282077+00:00"
+    },
+    {
+      "fold_index": 8,
+      "train_period": "2020-01-01 ~ 2021-12-29",
+      "valid_period": "2022-01-01 ~ 2022-03-29",
+      "test_period": "2022-04-01 ~ 2022-06-30",
+      "ic_1d": 0.02283566748518566,
+      "ic_5d": 0.07905524294182213,
+      "annualized_return": 0.2401460709536106,
+      "max_drawdown": -0.02393074679068489,
+      "information_ratio": 2.9582265111379518,
+      "prediction_shape": [
+        23700
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_08_report.json",
+      "duration_seconds": 42.87730230001034,
+      "started_at": "2026-07-19T00:31:50.289076+00:00",
+      "finished_at": "2026-07-19T00:32:33.166686+00:00"
+    },
+    {
+      "fold_index": 9,
+      "train_period": "2020-04-01 ~ 2022-03-29",
+      "valid_period": "2022-04-01 ~ 2022-06-28",
+      "test_period": "2022-07-01 ~ 2022-09-30",
+      "ic_1d": -0.07343010474810092,
+      "ic_5d": -0.0834399486425072,
+      "annualized_return": 0.10133774982952022,
+      "max_drawdown": -0.05600098648855898,
+      "information_ratio": 0.848887401233187,
+      "prediction_shape": [
+        52000
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_09_report.json",
+      "duration_seconds": 44.774776500009466,
+      "started_at": "2026-07-19T00:32:33.173687+00:00",
+      "finished_at": "2026-07-19T00:33:17.948256+00:00"
+    },
+    {
+      "fold_index": 10,
+      "train_period": "2020-07-01 ~ 2022-06-28",
+      "valid_period": "2022-07-01 ~ 2022-09-28",
+      "test_period": "2022-10-01 ~ 2022-12-31",
+      "ic_1d": 0.04672173868082232,
+      "ic_5d": 0.009738017006607515,
+      "annualized_return": 0.274933577506535,
+      "max_drawdown": -0.05386700514856671,
+      "information_ratio": 2.2486896785626476,
+      "prediction_shape": [
+        46971
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_10_report.json",
+      "duration_seconds": 43.529901700036135,
+      "started_at": "2026-07-19T00:33:17.956236+00:00",
+      "finished_at": "2026-07-19T00:34:01.486367+00:00"
+    },
+    {
+      "fold_index": 11,
+      "train_period": "2020-10-01 ~ 2022-09-28",
+      "valid_period": "2022-10-01 ~ 2022-12-28",
+      "test_period": "2023-01-01 ~ 2023-03-31",
+      "ic_1d": 0.021037613583406844,
+      "ic_5d": -0.033102143469450646,
+      "annualized_return": 0.2336386410957573,
+      "max_drawdown": -0.012991512249817913,
+      "information_ratio": 2.758276697752494,
+      "prediction_shape": [
+        23600
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_11_report.json",
+      "duration_seconds": 43.17813309998019,
+      "started_at": "2026-07-19T00:34:01.493367+00:00",
+      "finished_at": "2026-07-19T00:34:44.671277+00:00"
+    },
+    {
+      "fold_index": 12,
+      "train_period": "2021-01-01 ~ 2022-12-28",
+      "valid_period": "2023-01-01 ~ 2023-03-29",
+      "test_period": "2023-04-01 ~ 2023-06-30",
+      "ic_1d": 0.0075557327060616465,
+      "ic_5d": -0.022297283032253968,
+      "annualized_return": -0.05386373236311837,
+      "max_drawdown": -0.04249048447074502,
+      "information_ratio": -0.40995459331830036,
+      "prediction_shape": [
+        23829
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_12_report.json",
+      "duration_seconds": 42.36980719998246,
+      "started_at": "2026-07-19T00:34:44.680260+00:00",
+      "finished_at": "2026-07-19T00:35:27.050269+00:00"
+    },
+    {
+      "fold_index": 13,
+      "train_period": "2021-04-01 ~ 2023-03-29",
+      "valid_period": "2023-04-01 ~ 2023-06-28",
+      "test_period": "2023-07-01 ~ 2023-09-30",
+      "ic_1d": 0.0073800871088475755,
+      "ic_5d": -0.0016829672658522034,
+      "annualized_return": -0.2389801987111819,
+      "max_drawdown": -0.07377272118087401,
+      "information_ratio": -2.671356596956555,
+      "prediction_shape": [
+        51200
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_13_report.json",
+      "duration_seconds": 43.31769739999436,
+      "started_at": "2026-07-19T00:35:27.064268+00:00",
+      "finished_at": "2026-07-19T00:36:10.381653+00:00"
+    },
+    {
+      "fold_index": 14,
+      "train_period": "2021-07-01 ~ 2023-06-28",
+      "valid_period": "2023-07-01 ~ 2023-09-26",
+      "test_period": "2023-10-01 ~ 2023-12-31",
+      "ic_1d": 0.001035312502822805,
+      "ic_5d": 0.02560680882286384,
+      "annualized_return": 0.05775877585192234,
+      "max_drawdown": -0.04802394430384836,
+      "information_ratio": 0.6480865328809701,
+      "prediction_shape": [
+        47019
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_14_report.json",
+      "duration_seconds": 43.60593290004181,
+      "started_at": "2026-07-19T00:36:10.389744+00:00",
+      "finished_at": "2026-07-19T00:36:53.996105+00:00"
+    },
+    {
+      "fold_index": 15,
+      "train_period": "2021-10-01 ~ 2023-09-26",
+      "valid_period": "2023-10-01 ~ 2023-12-27",
+      "test_period": "2024-01-01 ~ 2024-03-31",
+      "ic_1d": 0.0020307173783700497,
+      "ic_5d": 0.06548536292754187,
+      "annualized_return": 0.24995441248218883,
+      "max_drawdown": -0.029502814990211554,
+      "information_ratio": 2.9792283143710803,
+      "prediction_shape": [
+        23200
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_15_report.json",
+      "duration_seconds": 42.86440010002116,
+      "started_at": "2026-07-19T00:36:54.003102+00:00",
+      "finished_at": "2026-07-19T00:37:36.867213+00:00"
+    },
+    {
+      "fold_index": 16,
+      "train_period": "2022-01-01 ~ 2023-12-27",
+      "valid_period": "2024-01-01 ~ 2024-03-27",
+      "test_period": "2024-04-01 ~ 2024-06-30",
+      "ic_1d": 0.015336168729290847,
+      "ic_5d": 0.048119108674654215,
+      "annualized_return": 0.08576218374741426,
+      "max_drawdown": -0.021752272869193158,
+      "information_ratio": 1.2102187509126983,
+      "prediction_shape": [
+        23891
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_16_report.json",
+      "duration_seconds": 42.98603059997549,
+      "started_at": "2026-07-19T00:37:36.875351+00:00",
+      "finished_at": "2026-07-19T00:38:19.860948+00:00"
+    },
+    {
+      "fold_index": 17,
+      "train_period": "2022-04-01 ~ 2024-03-27",
+      "valid_period": "2024-04-01 ~ 2024-06-26",
+      "test_period": "2024-07-01 ~ 2024-09-30",
+      "ic_1d": 0.00831399865691436,
+      "ic_5d": 0.05414563921059815,
+      "annualized_return": -0.25329679489843665,
+      "max_drawdown": -0.06761315881886559,
+      "information_ratio": -4.159234025624402,
+      "prediction_shape": [
+        51136
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_17_report.json",
+      "duration_seconds": 49.83929420000641,
+      "started_at": "2026-07-19T00:38:19.869056+00:00",
+      "finished_at": "2026-07-19T00:39:09.707709+00:00"
+    },
+    {
+      "fold_index": 18,
+      "train_period": "2022-07-01 ~ 2024-06-26",
+      "valid_period": "2024-07-01 ~ 2024-09-26",
+      "test_period": "2024-10-01 ~ 2024-12-31",
+      "ic_1d": -0.006911933223089607,
+      "ic_5d": 0.06076039800526987,
+      "annualized_return": 0.14794023433045006,
+      "max_drawdown": -0.040837281259212654,
+      "information_ratio": 0.7376226982884664,
+      "prediction_shape": [
+        47794
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_18_report.json",
+      "duration_seconds": 44.870928000018466,
+      "started_at": "2026-07-19T00:39:09.715710+00:00",
+      "finished_at": "2026-07-19T00:39:54.586385+00:00"
+    },
+    {
+      "fold_index": 19,
+      "train_period": "2022-10-01 ~ 2024-09-26",
+      "valid_period": "2024-10-01 ~ 2024-12-27",
+      "test_period": "2025-01-01 ~ 2025-03-31",
+      "ic_1d": 0.06307162612326316,
+      "ic_5d": 0.05026413144664793,
+      "annualized_return": 0.5362503030120043,
+      "max_drawdown": -0.016659734830879597,
+      "information_ratio": 5.175153306501611,
+      "prediction_shape": [
+        22686
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_19_report.json",
+      "duration_seconds": 42.78687439998612,
+      "started_at": "2026-07-19T00:39:54.594261+00:00",
+      "finished_at": "2026-07-19T00:40:37.381038+00:00"
+    },
+    {
+      "fold_index": 20,
+      "train_period": "2023-01-01 ~ 2024-12-27",
+      "valid_period": "2025-01-01 ~ 2025-03-27",
+      "test_period": "2025-04-01 ~ 2025-06-30",
+      "ic_1d": 0.09555968673965702,
+      "ic_5d": 0.07969240040123156,
+      "annualized_return": 0.06448855234879998,
+      "max_drawdown": -0.02573956634701845,
+      "information_ratio": 0.8022022879703942,
+      "prediction_shape": [
+        24151
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_20_report.json",
+      "duration_seconds": 42.40479990001768,
+      "started_at": "2026-07-19T00:40:37.393057+00:00",
+      "finished_at": "2026-07-19T00:41:19.797522+00:00"
+    },
+    {
+      "fold_index": 21,
+      "train_period": "2023-04-01 ~ 2025-03-27",
+      "valid_period": "2025-04-01 ~ 2025-06-26",
+      "test_period": "2025-07-01 ~ 2025-09-30",
+      "ic_1d": -8.949187444683256e-05,
+      "ic_5d": -0.050702517579315126,
+      "annualized_return": -0.3201240867499195,
+      "max_drawdown": -0.10510410473628122,
+      "information_ratio": -3.279469161263023,
+      "prediction_shape": [
+        52779
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_21_report.json",
+      "duration_seconds": 45.20703749998938,
+      "started_at": "2026-07-19T00:41:19.805522+00:00",
+      "finished_at": "2026-07-19T00:42:05.011964+00:00"
+    },
+    {
+      "fold_index": 22,
+      "train_period": "2023-07-01 ~ 2025-06-26",
+      "valid_period": "2025-07-01 ~ 2025-09-26",
+      "test_period": "2025-10-01 ~ 2025-12-31",
+      "ic_1d": -0.04037025004278033,
+      "ic_5d": -0.007752661210509913,
+      "annualized_return": -0.01132996989004961,
+      "max_drawdown": -0.048298096701750504,
+      "information_ratio": -0.10951229863941682,
+      "prediction_shape": [
+        46922
+      ],
+      "report_path": "output\\walk_forward\\csi800_cadence5_conservative\\fold_22_report.json",
+      "duration_seconds": 43.56147979997331,
+      "started_at": "2026-07-19T00:42:05.021012+00:00",
+      "finished_at": "2026-07-19T00:42:48.582309+00:00"
+    }
+  ],
+  "aggregate_metrics": {
+    "mean_ic_1d": 0.013570862860090316,
+    "std_ic_1d": 0.03993881281033597,
+    "mean_ic_1d_ci_low": -0.00337034558465448,
+    "mean_ic_1d_ci_high": 0.029192727250932016,
+    "valid_folds_ic_1d": 23,
+    "mean_ic_5d": 0.01915850142455205,
+    "std_ic_5d": 0.04381970565783099,
+    "mean_ic_5d_ci_low": 0.0005438271625541807,
+    "mean_ic_5d_ci_high": 0.036346244667747614,
+    "valid_folds_ic_5d": 23,
+    "mean_annualized_return": 0.06519304205234851,
+    "mean_annualized_return_ci_low": -0.03198901926280843,
+    "mean_annualized_return_ci_high": 0.15859424489766358,
+    "valid_folds_annualized_return": 23,
+    "worst_drawdown": -0.10510410473628122,
+    "valid_folds_max_drawdown": 23,
+    "mean_information_ratio": 0.5488807821516929,
+    "std_information_ratio": 2.4267221373006533,
+    "mean_information_ratio_ci_low": -0.4577567566402352,
+    "mean_information_ratio_ci_high": 1.512059494247467,
+    "valid_folds_information_ratio": 23,
+    "num_folds": 23,
+    "bootstrap_seed": 42,
+    "bootstrap_n": 10000,
+    "timing": {
+      "total_duration_seconds": 1008.1482352000894,
+      "mean_fold_duration_seconds": 43.83253196522128,
+      "slowest_fold_index": 17,
+      "slowest_fold_duration_seconds": 49.83929420000641,
+      "valid_folds_duration": 23
+    }
+  },
+  "test_window_coverage": {
+    "mode": "continuous",
+    "gap_count": 0,
+    "max_gap_days": 0,
+    "overlap_count": 0,
+    "max_overlap_days": 0,
+    "max_overlap_depth": 1
+  },
+  "num_folds": 23
+}
