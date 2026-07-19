@@ -237,6 +237,38 @@ def test_attached_checklist_floats_are_9dp_canonical():
             _walk(r["veto_checklist"][key])
 
 
+def test_threshold_adjacent_share_flags_from_rounded_value():
+    # codex #381 r1: the veto flag must be derived from the SAME rounded
+    # value that gets stored — a raw share of 0.7999999996 serializes as
+    # 0.8 (== threshold), so the flag must read True, never a stored-0.8
+    # / flag-False contradiction.
+    from scripts.research.csi800_campaign_attach_vetoes import (
+        compute_csi500_dependence,
+    )
+
+    def _fold(total_effect: float):
+        return (0, {"attribution": {
+            "status": "ok",
+            "sector_effects_sum": 1.0,
+            "sector_attribution": [
+                {"sector": "csi500_sleeve", "total_effect": total_effect,
+                 "portfolio_weight": 0.5},
+                {"sector": "csi300_sleeve",
+                 "total_effect": 1.0 - total_effect,
+                 "portfolio_weight": 0.5},
+            ],
+        }})
+
+    adjacent = compute_csi500_dependence(
+        [_fold(0.7999999996)], cons_net_excess=-0.01, expected_folds=1)
+    assert adjacent["csi500_effect_share_of_gross"] == 0.8
+    assert adjacent["veto_triggered"] is True
+    below = compute_csi500_dependence(
+        [_fold(0.799999999)], cons_net_excess=-0.01, expected_folds=1)
+    assert below["csi500_effect_share_of_gross"] == 0.799999999
+    assert below["veto_triggered"] is False
+
+
 def test_clean_attach_completes_but_promotion_gated_on_reference():
     # all five checks pass and are recorded COMPLETE — but with no
     # producer-certified reference binding in existence (codex #373 r10),

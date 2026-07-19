@@ -437,7 +437,14 @@ def compute_csi500_dependence(
         effect_total += fold_total
         folds_used += 1
     coverage_ok = folds_used == expected_folds
-    share = ((effect_csi500 / effect_total)
+    # Canonicalize BEFORE the predicate (codex #381 r1): the stored
+    # evidence and the veto flag must be derived from the SAME (rounded)
+    # values, or a threshold-adjacent raw value would serialize at the
+    # threshold while the flag reflects the unrounded side.
+    effect_csi500 = round(effect_csi500, 9)
+    effect_total = round(effect_total, 9)
+    cons_net_excess = round(cons_net_excess, 9)
+    share = (round(effect_csi500 / effect_total, 9)
              if coverage_ok and effect_total > 0 else None)
     dependent = share is not None and share >= CSI500_DEPENDENCE_THRESHOLD
     if not coverage_ok:
@@ -701,10 +708,19 @@ def compute_turnover_check(
 
     coverage_problems = ([f"conservative: {p}" for p in cons_problems]
                          + [f"base: {p}" for p in base_problems])
-    ratio = (cons["daily_mean_oneway"] / ref["daily_mean_oneway"]
+    # Canonicalize the per-side stats BEFORE deriving the ratios and the
+    # veto flag (codex #381 r1): stored evidence, stored ratio and the
+    # predicate must all agree on the same rounded values — the ratio is
+    # then exactly recomputable from the stored daily means.
+    for side in (cons, base, ref):
+        for k, v in side.items():
+            if isinstance(v, float) and not isinstance(v, bool):
+                side[k] = round(v, 9)
+    ratio = (round(cons["daily_mean_oneway"] / ref["daily_mean_oneway"], 9)
              if ref["daily_mean_oneway"] > 0 else None)
-    base_ratio = (base["daily_mean_oneway"] / ref["daily_mean_oneway"]
-                  if ref["daily_mean_oneway"] > 0 else None)
+    base_ratio = (
+        round(base["daily_mean_oneway"] / ref["daily_mean_oneway"], 9)
+        if ref["daily_mean_oneway"] > 0 else None)
     return {
         "conservative": cons,
         "base": base,
@@ -843,8 +859,10 @@ def compute_midcap_concentration(
                      "ok sleeve attribution — fail closed"),
             "veto_triggered": True,
         }
-    avg500 = sum(csi500_w) / len(csi500_w)
-    avg_unknown = sum(unknown_w) / len(unknown_w)
+    # Canonicalize BEFORE the predicate (codex #381 r1) — flag and
+    # stored evidence must be derived from the same rounded values.
+    avg500 = round(sum(csi500_w) / len(csi500_w), 9)
+    avg_unknown = round(sum(unknown_w) / len(unknown_w), 9)
     return {
         "csi500_time_avg_weight": avg500,
         "unknown_time_avg_weight": avg_unknown,
@@ -939,7 +957,11 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
     # ulp-drifting float would structurally refuse certification on any
     # environment that sums differently. round(x, 9) sits ~1e5 above
     # the ulp noise and >=1e6 below every veto threshold, and both
-    # sides of the certify comparison run this same code path.
+    # sides of the certify comparison run this same code path. The
+    # predicates INSIDE each compute_* already run on the rounded
+    # values (codex #381 r1 — flag and stored evidence must agree at
+    # threshold-adjacent inputs); this outer pass is the idempotent
+    # safety net for any remaining derived float.
     checklist["2_csi500_dependence"] = _canonicalize_floats(
         compute_csi500_dependence(cons_fold_reports, cons_net, cons_n))
     checklist["3_turnover_vs_csi300_ref"] = _canonicalize_floats(
