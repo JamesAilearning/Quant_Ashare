@@ -1,7 +1,7 @@
 # Tasks: 2026-07-17-csi800-cadence-campaign
 
 ## 0. 提案签署（本 PR）
-- [ ] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后数字冻结
+- [x] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后数字冻结（#374 merge = 签署）
 
 ## 1. PR-A — 生产者 attestation（runtime 唯一触点）
 - [x] **前置归档（本 change 的依赖，codex #374 r17）**：归档两个已
@@ -18,7 +18,7 @@
 - [x] fold report schema 版本升级（`4-positions-attestation`）
 - [x] 测试：摘要与盘面字节一致（两引擎）；失败折不携带；篡改
       positions 后重验失配
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. PR-B — pair v3 三方认证 + attach 摘要链 + N1 基线抬进认证工件
 - [x] pair 工具：`--reference-run` 三方入证（四件套 + 配置绑定钉死
@@ -50,7 +50,7 @@
 - [x] 测试：全链达标晋升门开；positions 换后拒；参照 fold report
       配对后改拒；pre-v3 工件拒；v3 毛值与 hash 验证后 fold report
       不符拒
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 3. PR-C — N5 战役 preset + 治理 pin
 - [x] 三 preset：`csi300_cadence5_reference.yaml`、
@@ -69,7 +69,7 @@
       目录**读毛值（读取前逐折哈希验证 == v2 已钉值，codex r9），
       N5 侧消费 pair v3；毛塌缩比较（钉臂）+ 净判据 + 覆盖全折校验
       + 双臂发散校验，缺失/断链/失配拒绝
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 3.5 R1 — 约束作用域修订（首发 N5 点火后,结果盲,选项 A 签署）
 - [x] BacktestRunner `_constraint_scope_days` 纯函数(stamp+总滞后→
@@ -87,23 +87,23 @@
       23/23 × 3 全 official，attestation 全折）
 - [x] pair v3 生成 + attach 全链勾验（veto 五项零触发 + 主判据双条件
       全过 = 预注册 WIN；attach 内嵌资格恒 false，非权威）
-- [ ] 战役简报 + 证据工件（pair v3）入库 PR → codex/CI → 数字 STOP
+- [x] 战役简报 + 证据工件（pair v3）入库 PR → codex/CI → 数字 STOP
       签字 → **用户 merge（= pair v3 提交评审，锚成立）**
-- [ ] 判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
+- [x] （未触发——判定为 WIN）判定 LOSE（任一主判据不过或 veto 触发）→ 如实入档，方向 A
       收束闭环，certify 不执行
-- [ ] 判定 WIN → **N5 三 run 源证据入库并先并主线**（codex r9+r10）：
+- [x] 判定 WIN → **N5 三 run 源证据入库并先并主线**（codex r9+r10，与 pair 同 PR #379=3ffceb4）：
       三份聚合 walk_forward_report.json + 全部 fold reports +
       positions 本体（~10 MB，字节保真 `-text`，codex r13：聚合是
       report_sha256/内嵌 config/fold 声明/veto① 净值的复验源）
       提交钉死证据目录 → PR → **用户 merge（证据锚成立）**；可与
       pair v3 同 PR
-- [ ] 判定 WIN → **certify 步骤**（证据锚成立后）：验证 pair v3
+- [x] 判定 WIN → **certify 步骤**（证据锚成立后，侧车 PR #383 已并+--verify 复验 OK）：验证 pair v3
       字节==主线锚 + 经证据锚（origin/main 可达 commit，
       `git show <evidence-anchor>:<path>` 口径）读取全部证据字节
       端到端重算全链 + N1 侧经 N1 主线锚读取 + 五 veto/主判据 →
       产出 verdict 侧车（**三锚 commit id：pair + 证据 + N1** +
       判定）→ 侧车入库 PR → codex/CI → STOP → **用户 merge（侧车
       提交评审）** → 晋升成立；证据或 N1 未主线锚定时 certify 拒绝
-- [ ] 顺序不可倒置：run → attach → pair 提交 → 源证据提交 →
+- [x] 顺序不可倒置：run → attach → pair 提交 → 源证据提交 →
       certify → 侧车提交 → 晋升；跳过任一环 = 晋升无效；下游按侧车
       记录的三锚(pair/证据/N1)重算复验

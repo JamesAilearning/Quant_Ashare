@@ -211,13 +211,12 @@ CI 无 `output/` 工件，"到时重生成"不可执行也不可验证）：
 
 ### Requirement: 虚高 veto 表跑前钉死且任一触发即否决晋升
 
-（本次仅修订 veto③ 的参照定义——"同配置"明确含 cadence 三字段；
-其余四条原文与数字照录不变（含 #372 选项 A 的 veto④ 校准修订），
-修订于 N5 战役零结果窗口内，2026-07-17。MODIFIED 全文重述以保持
-canonical spec 完整——codex #374 r2。）
-
 每个 csi800 战役决策 run SHALL 逐条对照下表勾验，任一触发 SHALL 否决
-晋升（该 run 可作诊断继续分析，但不得作为晋升依据）。判据与数字
+晋升（该 run 可作诊断继续分析，但不得作为晋升依据）。（本次仅修订
+veto③ 的参照定义——"同配置"明确含 cadence 三字段；其余四条原文与
+数字照录不变（含 #372 选项 A 的 veto④ 校准修订），修订于 N5 战役
+零结果窗口内，2026-07-17。MODIFIED 全文重述以保持 canonical spec
+完整——codex #374 r2。）判据与数字
 SHALL 先于任何战役数据存在，跑后 SHALL NOT 修改。五条判据：
 
 1. **conservative 净超额**：conservative 档（20 bps）对 SH000906TR 的
