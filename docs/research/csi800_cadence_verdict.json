@@ -1,0 +1,38 @@
+{
+  "schema_version": "csi800_cadence_verdict_v1",
+  "anchors": {
+    "pair_anchor": "3ffceb4f5ed924704f62e63327c7203fb570f2ef",
+    "evidence_anchor": "3ffceb4f5ed924704f62e63327c7203fb570f2ef",
+    "n1_anchor": "3ffceb4f5ed924704f62e63327c7203fb570f2ef",
+    "mainline_ref": "origin/main"
+  },
+  "inputs": {
+    "pair_path": "docs/research/csi800_cadence_pair_report.json",
+    "pair_sha256": "ab832352685e64f0552eecd01766432b8d7e9f57ae6406de54a737bf1776ebf4",
+    "base_evidence": "docs/research/evidence/csi800_n5_runs/csi800_cadence5_base",
+    "conservative_evidence": "docs/research/evidence/csi800_n5_runs/csi800_cadence5_conservative",
+    "reference_evidence": "docs/research/evidence/csi800_n5_runs/csi300_cadence5_reference",
+    "n1_pair_path": "docs/research/csi800_campaign_pair_report.json",
+    "n1_pair_sha256": "193de97879ff3365c1a818ace89fe9a6757f3bb3df7d28b0b30d33781c4174b6",
+    "n1_evidence_dir": "docs/research/evidence/csi800_n1_folds"
+  },
+  "verdict": {
+    "reference_content_binding": "producer_digest_certified",
+    "promotion_eligible": true,
+    "conservative_net_annualized": 0.06519304205234885,
+    "n5_gross_mean": {
+      "base": 0.09925292968831952,
+      "conservative": 0.09919489588041663
+    },
+    "n1_gross_mean": {
+      "base": 0.12577766807751364,
+      "conservative": 0.1258647794680421
+    },
+    "gross_retention": 0.7881068580079059,
+    "thresholds": {
+      "net_min": 0.0,
+      "gross_retention_min": 0.5,
+      "arm_divergence_max": 0.05
+    }
+  }
+}
