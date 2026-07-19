@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from src.core._json_utils import _sanitize_for_json
@@ -72,7 +72,18 @@ def build_aggregate_report(
                 "max_drawdown": f.max_drawdown,
                 "information_ratio": f.information_ratio,
                 "prediction_shape": list(f.prediction_shape),
-                "report_path": f.report_path,
+                # POSIX form (codex #379 P1): the campaign verifiers
+                # (pair/attach/certify) resolve this value's basename on
+                # any OS — a Windows-separator string is one giant path
+                # component on POSIX and never resolves. PureWindowsPath
+                # (codex #380 r1) splits BOTH separators on any OS, so a
+                # fold resumed from a pre-fix Windows manifest is also
+                # normalized; a plain Path would keep the backslashes
+                # when this code runs on POSIX. None (failed /
+                # placeholder folds) passes through untouched.
+                "report_path": (
+                    PureWindowsPath(f.report_path).as_posix()
+                    if f.report_path is not None else None),
                 # FU-4 per-fold timing. ``None`` for folds resumed
                 # from a pre-timing manifest or constructed without
                 # going through the engine; dashboards should treat
@@ -434,7 +445,12 @@ def build_fold_report(
                 "rejected_priors": [],
             }
         ),
-        "positions_path": str(positions_path) if positions_path else None,
+        # POSIX form (codex #379 P1) — same portability constraint and
+        # same both-separator normalization (codex #380 r1) as the
+        # aggregate's fold-row report_path.
+        "positions_path": (
+            PureWindowsPath(positions_path).as_posix()
+            if positions_path else None),
         # Attestation digest of the PERSISTED positions bytes (schema
         # "4-positions-attestation"): explicit None when no positions
         # were produced — absence-vs-null must be distinguishable.
