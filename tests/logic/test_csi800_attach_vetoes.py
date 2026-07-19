@@ -248,10 +248,11 @@ def test_attached_checklist_floats_are_9dp_canonical():
 
 
 def test_threshold_adjacent_share_flags_from_rounded_value():
-    # codex #381 r1: the veto flag must be derived from the SAME rounded
-    # value that gets stored — a raw share of 0.7999999996 serializes as
-    # 0.8 (== threshold), so the flag must read True, never a stored-0.8
-    # / flag-False contradiction.
+    # codex #381 r1+r4: the veto flag derives from the SAME canonical
+    # value that gets stored, and the canonicalization direction matches
+    # the INCLUSIVE >= trigger — a raw share of 0.7999999996 (< 0.80,
+    # rule not met) floors to 0.799999999 and must NOT trigger; a raw
+    # 0.8000000004 floors to 0.8 and must trigger.
     from scripts.research.csi800_campaign_attach_vetoes import (
         compute_csi500_dependence,
     )
@@ -269,10 +270,18 @@ def test_threshold_adjacent_share_flags_from_rounded_value():
             ],
         }})
 
-    adjacent = compute_csi500_dependence(
+    below_window = compute_csi500_dependence(
         [_fold(0.7999999996)], cons_net_excess=-0.01, expected_folds=1)
-    assert adjacent["csi500_effect_share_of_gross"] == 0.8
-    assert adjacent["veto_triggered"] is True
+    assert below_window["csi500_effect_share_of_gross"] == 0.799999999
+    assert below_window["veto_triggered"] is False
+    over = compute_csi500_dependence(
+        [_fold(0.8000000004)], cons_net_excess=-0.01, expected_folds=1)
+    assert over["csi500_effect_share_of_gross"] == 0.8
+    assert over["veto_triggered"] is True
+    at = compute_csi500_dependence(
+        [_fold(0.8)], cons_net_excess=-0.01, expected_folds=1)
+    assert at["csi500_effect_share_of_gross"] == 0.8
+    assert at["veto_triggered"] is True
     below = compute_csi500_dependence(
         [_fold(0.799999999)], cons_net_excess=-0.01, expected_folds=1)
     assert below["csi500_effect_share_of_gross"] == 0.799999999
@@ -303,6 +312,36 @@ def test_ceil9_is_fail_closed_on_grid_thresholds():
     assert _ceil9(0.7500000004) > 0.75
     assert not _ceil9(0.75) > 0.75
     assert _ceil9(0.1000000004) > 0.10
+
+
+def test_floor9_matches_inclusive_threshold():
+    # codex #381 r4: for an inclusive >= trigger, _floor9 preserves the
+    # raw predicate exactly — a violation survives, a just-below value
+    # can never round UP into a spurious trigger.
+    from scripts.research.csi800_campaign_attach_vetoes import _floor9
+
+    assert _floor9(0.8000000004) == 0.8
+    assert _floor9(0.8000000004) >= 0.8        # violation preserved
+    assert _floor9(0.8) >= 0.8                 # inclusive: exact triggers
+    assert _floor9(0.7999999996) == 0.799999999
+    assert not _floor9(0.7999999996) >= 0.8    # sub-threshold stays sub
+
+
+def test_turnover_ratio_derived_from_raw_means():
+    # codex #381 r4 P1: cons daily mean 0.07500000002 over ref 0.05 is a
+    # raw ratio of 1.5000000004 — a marginal violation that per-side
+    # rounding (0.075/0.05 == exactly 1.5) would erase. The ratio must
+    # come from the RAW means and ceil toward the veto side.
+    from scripts.research.csi800_campaign_attach_vetoes import (
+        _turnover_ratio,
+    )
+
+    r = _turnover_ratio(0.07500000002, 0.05)
+    assert r == 1.500000001
+    assert r > 1.5
+    assert _turnover_ratio(0.075, 0.05) == 1.5
+    assert not _turnover_ratio(0.075, 0.05) > 1.5
+    assert _turnover_ratio(0.075, 0.0) is None
 
 
 def test_marginal_over_threshold_concentration_still_vetoes():

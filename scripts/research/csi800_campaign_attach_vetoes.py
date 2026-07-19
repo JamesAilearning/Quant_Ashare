@@ -402,15 +402,33 @@ def _sleeve_rows(report: dict[str, Any]) -> dict[str, dict[str, float]]:
 
 
 def _ceil9(value: float) -> float:
-    """Canonicalize toward the VETO-TRIGGERING side: the smallest
-    9-decimal grid value >= ``value``. With every pinned threshold
-    exactly on the 9dp grid (0.80/1.5/0.75/0.10), the strict/inclusive
-    predicates on the ceiled value are EQUIVALENT to the raw ones on
-    the triggering side — ``raw > thr  <=>  _ceil9(raw) > thr`` — so
-    canonicalization can never round a violating value back under a
-    threshold (codex #381 r3), while stored evidence and flag still
-    derive from the same number (codex #381 r1)."""
+    """Smallest 9dp-grid value >= ``value``. Canonicalization for a
+    STRICT ``> thr`` trigger predicate: with ``thr`` exactly on the 9dp
+    grid, ``raw > thr <=> _ceil9(raw) > thr`` — a marginal violation is
+    never rounded back under the threshold (codex #381 r3) and stored
+    evidence and flag derive from the same number (codex #381 r1)."""
     return math.ceil(value * 1e9) / 1e9
+
+
+def _floor9(value: float) -> float:
+    """Largest 9dp-grid value <= ``value``. Canonicalization for an
+    INCLUSIVE ``>= thr`` trigger predicate (codex #381 r4): with ``thr``
+    on the grid, ``raw >= thr <=> _floor9(raw) >= thr`` — a violation is
+    preserved AND a just-below-threshold raw value can never be rounded
+    UP into a spurious trigger (``raw < thr => _floor9(raw) < thr``)."""
+    return math.floor(value * 1e9) / 1e9
+
+
+def _turnover_ratio(arm_daily_mean: float,
+                    ref_daily_mean: float) -> float | None:
+    """Veto-3 ratio from the RAW daily means (codex #381 r4 P1):
+    deriving it from per-side ROUNDED means can erase a marginal
+    violation (cons 0.07500000002 / ref 0.05 = 1.5000000004 raw, but
+    0.075 / 0.05 = exactly 1.5). _ceil9 matches the strict > trigger —
+    a violating raw ratio always stays above the pinned 1.5."""
+    if ref_daily_mean <= 0:
+        return None
+    return _ceil9(arm_daily_mean / ref_daily_mean)
 
 
 def compute_csi500_dependence(
@@ -459,10 +477,15 @@ def compute_csi500_dependence(
     # runs on the same raw value; rounding it here would let a
     # marginally-positive net (e.g. 4e-10) pass check 1 while this
     # check vetoes the same run as non-positive.
+    # share BEFORE rounding the effect sums — deriving it from rounded
+    # inputs could shift it across the threshold in either direction
+    # (codex #381 r4). _floor9 matches the INCLUSIVE >= trigger:
+    # raw >= 0.80 <=> _floor9(raw) >= 0.80, and a just-below raw
+    # (0.7999999996) can never round up into a spurious trigger.
+    share = (_floor9(effect_csi500 / effect_total)
+             if coverage_ok and effect_total > 0 else None)
     effect_csi500 = round(effect_csi500, 9)
     effect_total = round(effect_total, 9)
-    share = (_ceil9(effect_csi500 / effect_total)
-             if coverage_ok and effect_total > 0 else None)
     dependent = share is not None and share >= CSI500_DEPENDENCE_THRESHOLD
     if not coverage_ok:
         note: str | None = (
@@ -725,21 +748,18 @@ def compute_turnover_check(
 
     coverage_problems = ([f"conservative: {p}" for p in cons_problems]
                          + [f"base: {p}" for p in base_problems])
-    # Canonicalize the per-side stats BEFORE deriving the ratios and the
-    # veto flag (codex #381 r1): stored evidence, stored ratio and the
-    # predicate must all agree on the same canonical values — the ratio
-    # is exactly recomputable as _ceil9(stored daily-mean quotient), and
-    # the ceiling direction keeps the strict > predicate fail-closed for
-    # marginally over-threshold raw ratios (codex #381 r3).
+    # Ratios FIRST, from the RAW daily means (codex #381 r4 P1) — see
+    # _turnover_ratio. The per-side stats are then rounded for storage
+    # only (codex #379 P1 cross-environment canonicalization); they
+    # carry no predicate.
+    ratio = _turnover_ratio(cons["daily_mean_oneway"],
+                            ref["daily_mean_oneway"])
+    base_ratio = _turnover_ratio(base["daily_mean_oneway"],
+                                 ref["daily_mean_oneway"])
     for side in (cons, base, ref):
         for k, v in side.items():
             if isinstance(v, float) and not isinstance(v, bool):
                 side[k] = round(v, 9)
-    ratio = (_ceil9(cons["daily_mean_oneway"] / ref["daily_mean_oneway"])
-             if ref["daily_mean_oneway"] > 0 else None)
-    base_ratio = (
-        _ceil9(base["daily_mean_oneway"] / ref["daily_mean_oneway"])
-        if ref["daily_mean_oneway"] > 0 else None)
     return {
         "conservative": cons,
         "base": base,
