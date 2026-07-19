@@ -1024,12 +1024,22 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
             f"{PROMOTION_QUALIFYING_REF_BINDING!r} only after the full "
             "digest chain verifies from mainline-anchored bytes; codex "
             "#373 r9-r11 / #374 r10.")
-    report["promotion_blockers"] = blockers
     # promotion_blocked_reason asserts "all five checks pass, blocked
     # only by the prerequisite" — recompute it on EVERY attach (codex
     # #373 r12 P2): a rerun over a report whose evidence has since
     # gained a triggered veto must not carry the stale claim forward.
-    report.pop("promotion_blocked_reason", None)
+    # DETERMINISTIC key order (codex #379 r4): every attach-owned tail
+    # key is popped and re-inserted in one fixed sequence, so attach is
+    # byte-idempotent — re-running it over an already-attached report
+    # reproduces the committed bytes and the printed out-of-band digest
+    # audit stays meaningful. (A conditional pop-and-append would park
+    # promotion_blocked_reason at a position that depends on the prior
+    # state of the report.)
+    for key in ("promotion_blockers", "promotion_blocked_reason",
+                "promotion_eligible", "checks_all_pass",
+                "incomplete_checks", "veto_checklist_status"):
+        report.pop(key, None)
+    report["promotion_blockers"] = blockers
     if checks_all_pass:
         report["promotion_blocked_reason"] = blockers[0]
     report["promotion_eligible"] = False

@@ -381,6 +381,21 @@ def test_marginal_over_threshold_concentration_still_vetoes():
     assert r2["veto_triggered"] is False
 
 
+def test_attach_is_byte_idempotent():
+    # codex #379 r4: attach prints an out-of-band sha256 for operators
+    # to compare against the committed pair bytes — re-running attach
+    # over an already-attached report must reproduce the bytes exactly,
+    # so the attach-owned tail keys are rebuilt in one fixed order
+    # every run (a conditional pop-and-append would park
+    # promotion_blocked_reason wherever the prior state left room).
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02)
+        attach(pair_p, base, cons, ref)
+        first = pair_p.read_bytes()
+        attach(pair_p, base, cons, ref)
+        assert pair_p.read_bytes() == first
+
+
 def test_clean_attach_completes_but_promotion_gated_on_reference():
     # all five checks pass and are recorded COMPLETE — but with no
     # producer-certified reference binding in existence (codex #373 r10),
