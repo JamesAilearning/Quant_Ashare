@@ -18,9 +18,15 @@ preset 为 #377 的三个 tracked 文件（2018-2025 全窗、24/3/3
 
 | run | preset | 折 | attestation |
 |---|---|---|---|
-| csi300 N5 参照 | `csi300_cadence5_reference.yaml`（5 bps, SH000300TR） | **23/23** | 23/23 折 `positions_sha256` + manifest 镜像 |
+| csi300 N5 参照 | `csi300_cadence5_reference.yaml`（5 bps, SH000300TR） | **23/23** | 23/23 折 `positions_sha256`（对 positions 字节，certify 逐折重算比对） |
 | csi800 N5 base | `csi800_cadence5_base.yaml`（5 bps, SH000906TR） | **23/23** | 同上 |
 | csi800 N5 conservative | `csi800_cadence5_conservative.yaml`（20 bps, SH000906TR） | **23/23** | 同上 |
+
+注（codex #379 r3）：锚定证据树（`docs/research/evidence/
+csi800_n5_runs/`）只含聚合报告 + fold reports + positions 本体；
+certify 的摘要链校验以 fold report 顶层 `positions_sha256` 对
+positions 字节逐折重算比对。运行时 run 目录里的 manifest 镜像是
+resume 机器的本地工件，不属于锚定证据清单。
 
 **首发点火事件（已档，R1 修订）**：R1 前的首发三发中，csi800 双档在
 fold 4 被 `max_per_name` RAISE 击落（SH601127 @2021-05-12，5.04%/
