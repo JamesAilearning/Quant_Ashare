@@ -300,13 +300,13 @@
       "veto_triggered": false
     }
   },
-  "promotion_eligible": false,
-  "incomplete_checks": [],
-  "veto_checklist_status": "COMPLETE",
   "promotion_blockers": [
     "attach_non_authoritative: attach is a working-tree computation and never mints promotion eligibility — the sole authority is a committed certify verdict sidecar with origin/main-reachable pair/evidence/N1 anchors (run scripts/research/csi800_campaign_certify.py after the pair and evidence are merged); 2026-07-17-csi800-cadence-campaign DP-5.",
     "reference_binding_unauthenticated: veto-3 reference turnover evidence is 'window_only_unauthenticated'; the certify step grants 'producer_digest_certified' only after the full digest chain verifies from mainline-anchored bytes; codex #373 r9-r11 / #374 r10."
   ],
   "promotion_blocked_reason": "attach_non_authoritative: attach is a working-tree computation and never mints promotion eligibility — the sole authority is a committed certify verdict sidecar with origin/main-reachable pair/evidence/N1 anchors (run scripts/research/csi800_campaign_certify.py after the pair and evidence are merged); 2026-07-17-csi800-cadence-campaign DP-5.",
-  "checks_all_pass": true
+  "promotion_eligible": false,
+  "checks_all_pass": true,
+  "incomplete_checks": [],
+  "veto_checklist_status": "COMPLETE"
 }
