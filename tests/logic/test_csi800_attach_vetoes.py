@@ -211,6 +211,32 @@ def _set_attribution(run_dir: Path, fold: int, block) -> None:
     rep_p.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_attached_checklist_floats_are_9dp_canonical():
+    # codex #379 gen3 P1: checks 2/3/5 aggregate through numpy, whose
+    # reduction order drifts ~1 ulp across builds; certify EXACT-compares
+    # the recomputed checklist against the anchored pair bytes, so every
+    # attached float must be canonicalized (round 9dp) at serialization.
+    def _walk(obj):
+        if isinstance(obj, bool):
+            return
+        if isinstance(obj, float):
+            assert round(obj, 9) == obj, f"non-canonical float {obj!r}"
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                _walk(v)
+
+    with tempfile.TemporaryDirectory() as t:
+        pair_p, base, cons, ref = _mk_trio(Path(t), cons_net=0.02)
+        r = attach(pair_p, base, cons, ref)
+        for key in ("2_csi500_dependence", "3_turnover_vs_csi300_ref",
+                    "4_risk_constraints_recorded",
+                    "5_midcap_concentration"):
+            _walk(r["veto_checklist"][key])
+
+
 def test_clean_attach_completes_but_promotion_gated_on_reference():
     # all five checks pass and are recorded COMPLETE — but with no
     # producer-certified reference binding in existence (codex #373 r10),

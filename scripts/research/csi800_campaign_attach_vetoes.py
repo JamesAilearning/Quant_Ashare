@@ -857,6 +857,21 @@ def compute_midcap_concentration(
     }
 
 
+def _canonicalize_floats(obj: Any, ndigits: int = 9) -> Any:
+    """Recursively round every float (bools excluded) to ``ndigits``
+    decimals. Serialization-boundary canonicalization for the attached
+    checklist (codex #379 gen3 P1) — see the call site for why."""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, float):
+        return round(obj, ndigits)
+    if isinstance(obj, dict):
+        return {k: _canonicalize_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_canonicalize_floats(v, ndigits) for v in obj]
+    return obj
+
+
 def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
            reference_run: Path) -> dict[str, Any]:
     """Bind evidence dirs to the pair report, compute checks 2-5, and
@@ -916,17 +931,28 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
             f"({cons_net!r}) — the pair report was edited after "
             "pairing, refusing.")
 
-    checklist["2_csi500_dependence"] = compute_csi500_dependence(
-        cons_fold_reports, cons_net, cons_n)
-    checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(
-        conservative_run, base_run, reference_run,
-        cons_fold_reports, base_fold_reports, ref_fold_reports,
-        ref_failed)
-    checklist["4_risk_constraints_recorded"] = compute_constraints_check(
-        base_side["config"], cons_side["config"],
-        base_fold_reports, cons_fold_reports)
-    checklist["5_midcap_concentration"] = compute_midcap_concentration(
-        cons_fold_reports, cons_n)
+    # Canonical 9-decimal floats (codex #379 gen3 P1): checks 2/3/5
+    # aggregate positions/attribution series through numpy, whose
+    # reduction order varies across builds/SIMD paths by ~1 ulp
+    # (~1e-14 at these magnitudes). certify EXACT-compares the
+    # recomputed checklist against the anchored pair bytes, so an
+    # ulp-drifting float would structurally refuse certification on any
+    # environment that sums differently. round(x, 9) sits ~1e5 above
+    # the ulp noise and >=1e6 below every veto threshold, and both
+    # sides of the certify comparison run this same code path.
+    checklist["2_csi500_dependence"] = _canonicalize_floats(
+        compute_csi500_dependence(cons_fold_reports, cons_net, cons_n))
+    checklist["3_turnover_vs_csi300_ref"] = _canonicalize_floats(
+        compute_turnover_check(
+            conservative_run, base_run, reference_run,
+            cons_fold_reports, base_fold_reports, ref_fold_reports,
+            ref_failed))
+    checklist["4_risk_constraints_recorded"] = _canonicalize_floats(
+        compute_constraints_check(
+            base_side["config"], cons_side["config"],
+            base_fold_reports, cons_fold_reports))
+    checklist["5_midcap_concentration"] = _canonicalize_floats(
+        compute_midcap_concentration(cons_fold_reports, cons_n))
 
     checks_all_pass, incomplete = evaluate_promotion_eligibility(checklist)
     binding = checklist["3_turnover_vs_csi300_ref"].get(
