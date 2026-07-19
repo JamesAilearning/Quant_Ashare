@@ -95,6 +95,19 @@ def _fold_report_args(**over: object) -> dict:
     return args
 
 
+def test_fold_report_positions_path_serializes_posix() -> None:
+    # codex #379 P1: attach/certify resolve the fold report's
+    # positions_path basename on ANY OS — the writer must emit POSIX
+    # form regardless of the producing OS; None passes through.
+    payload = build_fold_report(**_fold_report_args(
+        positions_path=Path("output") / "walk_forward" / "x"
+        / "fold_00_positions.json"))
+    assert payload["positions_path"] == (
+        "output/walk_forward/x/fold_00_positions.json")
+    without = build_fold_report(**_fold_report_args(positions_path=None))
+    assert without["positions_path"] is None
+
+
 def test_fold_report_carries_digest_and_explicit_null() -> None:
     with_digest = build_fold_report(
         **_fold_report_args(positions_sha256="ab" * 32))

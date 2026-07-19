@@ -304,6 +304,29 @@ class BuildAggregateReportTests(unittest.TestCase):
         # Coverage section is embedded.
         self.assertIn("mode", report["test_window_coverage"])
 
+    def test_fold_row_report_path_serializes_posix(self):
+        # codex #379 P1: the campaign verifiers (pair/attach/certify)
+        # resolve folds[].report_path on ANY OS — a Windows-separator
+        # string is a single giant path component on POSIX and never
+        # resolves. The serialization boundary must emit POSIX form
+        # regardless of the producing OS.
+        import dataclasses
+
+        config = WalkForwardConfig(output_dir="output/wf")
+        fold = dataclasses.replace(
+            _make_fold(0),
+            report_path=str(
+                Path("output") / "walk_forward" / "x"
+                / "fold_00_report.json"),
+        )
+        report = build_aggregate_report(
+            config=config, folds=[fold], aggregate_metrics={},
+        )
+        self.assertEqual(
+            report["folds"][0]["report_path"],
+            "output/walk_forward/x/fold_00_report.json",
+        )
+
     def test_prediction_shape_serializes_to_list_not_tuple(self):
         # JSON has no tuple — tuple → list at report build time so the
         # downstream report's shape is byte-stable across serialization.
