@@ -234,7 +234,17 @@ def test_attached_checklist_floats_are_9dp_canonical():
         for key in ("2_csi500_dependence", "3_turnover_vs_csi300_ref",
                     "4_risk_constraints_recorded",
                     "5_midcap_concentration"):
-            _walk(r["veto_checklist"][key])
+            entry = dict(r["veto_checklist"][key])
+            # check 2's conservative_net_excess is deliberately RAW —
+            # it must equal check 1's predicate value byte-for-byte
+            # (codex #381 r2); it is a stored official metric with no
+            # cross-environment drift surface.
+            entry.pop("conservative_net_excess", None)
+            _walk(entry)
+        assert (r["veto_checklist"]["2_csi500_dependence"]
+                ["conservative_net_excess"]
+                == r["veto_checklist"]["1_conservative_net_excess"]
+                ["value_annualized"])
 
 
 def test_threshold_adjacent_share_flags_from_rounded_value():
@@ -267,6 +277,14 @@ def test_threshold_adjacent_share_flags_from_rounded_value():
         [_fold(0.799999999)], cons_net_excess=-0.01, expected_folds=1)
     assert below["csi500_effect_share_of_gross"] == 0.799999999
     assert below["veto_triggered"] is False
+    # codex #381 r2: the zero-net leg runs on the RAW official net —
+    # a marginally positive net (4e-10, below the 9dp half-step) must
+    # NOT be rounded to 0.0 and veto a run that check 1 passes; the
+    # stored value stays byte-identical to check 1's.
+    marginal = compute_csi500_dependence(
+        [_fold(0.85)], cons_net_excess=4e-10, expected_folds=1)
+    assert marginal["veto_triggered"] is False
+    assert marginal["conservative_net_excess"] == 4e-10
 
 
 def test_clean_attach_completes_but_promotion_gated_on_reference():

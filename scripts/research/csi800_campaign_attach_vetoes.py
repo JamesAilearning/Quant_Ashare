@@ -441,9 +441,14 @@ def compute_csi500_dependence(
     # evidence and the veto flag must be derived from the SAME (rounded)
     # values, or a threshold-adjacent raw value would serialize at the
     # threshold while the flag reflects the unrounded side.
+    # ``cons_net_excess`` is deliberately RAW (codex #381 r2): it is the
+    # bound aggregate's official metric — a JSON-parsed stored byte with
+    # no cross-environment drift surface — and check 1's veto predicate
+    # runs on the same raw value; rounding it here would let a
+    # marginally-positive net (e.g. 4e-10) pass check 1 while this
+    # check vetoes the same run as non-positive.
     effect_csi500 = round(effect_csi500, 9)
     effect_total = round(effect_total, 9)
-    cons_net_excess = round(cons_net_excess, 9)
     share = (round(effect_csi500 / effect_total, 9)
              if coverage_ok and effect_total > 0 else None)
     dependent = share is not None and share >= CSI500_DEPENDENCE_THRESHOLD
@@ -875,21 +880,6 @@ def compute_midcap_concentration(
     }
 
 
-def _canonicalize_floats(obj: Any, ndigits: int = 9) -> Any:
-    """Recursively round every float (bools excluded) to ``ndigits``
-    decimals. Serialization-boundary canonicalization for the attached
-    checklist (codex #379 gen3 P1) — see the call site for why."""
-    if isinstance(obj, bool):
-        return obj
-    if isinstance(obj, float):
-        return round(obj, ndigits)
-    if isinstance(obj, dict):
-        return {k: _canonicalize_floats(v, ndigits) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_canonicalize_floats(v, ndigits) for v in obj]
-    return obj
-
-
 def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
            reference_run: Path) -> dict[str, Any]:
     """Bind evidence dirs to the pair report, compute checks 2-5, and
@@ -949,32 +939,30 @@ def attach(pair_report_path: Path, base_run: Path, conservative_run: Path,
             f"({cons_net!r}) — the pair report was edited after "
             "pairing, refusing.")
 
-    # Canonical 9-decimal floats (codex #379 gen3 P1): checks 2/3/5
-    # aggregate positions/attribution series through numpy, whose
+    # Canonical 9-decimal floats (codex #379 gen3 P1): the derived
+    # aggregates in checks 2/3/5 go through numpy/pandas, whose
     # reduction order varies across builds/SIMD paths by ~1 ulp
     # (~1e-14 at these magnitudes). certify EXACT-compares the
     # recomputed checklist against the anchored pair bytes, so an
     # ulp-drifting float would structurally refuse certification on any
     # environment that sums differently. round(x, 9) sits ~1e5 above
-    # the ulp noise and >=1e6 below every veto threshold, and both
-    # sides of the certify comparison run this same code path. The
-    # predicates INSIDE each compute_* already run on the rounded
-    # values (codex #381 r1 — flag and stored evidence must agree at
-    # threshold-adjacent inputs); this outer pass is the idempotent
-    # safety net for any remaining derived float.
-    checklist["2_csi500_dependence"] = _canonicalize_floats(
-        compute_csi500_dependence(cons_fold_reports, cons_net, cons_n))
-    checklist["3_turnover_vs_csi300_ref"] = _canonicalize_floats(
-        compute_turnover_check(
-            conservative_run, base_run, reference_run,
-            cons_fold_reports, base_fold_reports, ref_fold_reports,
-            ref_failed))
-    checklist["4_risk_constraints_recorded"] = _canonicalize_floats(
-        compute_constraints_check(
-            base_side["config"], cons_side["config"],
-            base_fold_reports, cons_fold_reports))
-    checklist["5_midcap_concentration"] = _canonicalize_floats(
-        compute_midcap_concentration(cons_fold_reports, cons_n))
+    # the ulp noise and >=1e6 below every veto threshold.
+    # Canonicalization lives INSIDE each compute_* — the veto predicate
+    # and the stored evidence are derived from the same rounded values
+    # (codex #381 r1) — with ONE deliberate exception: check 2's
+    # ``conservative_net_excess`` stays raw so its zero-net leg runs on
+    # the identical value as check 1's predicate (codex #381 r2).
+    checklist["2_csi500_dependence"] = compute_csi500_dependence(
+        cons_fold_reports, cons_net, cons_n)
+    checklist["3_turnover_vs_csi300_ref"] = compute_turnover_check(
+        conservative_run, base_run, reference_run,
+        cons_fold_reports, base_fold_reports, ref_fold_reports,
+        ref_failed)
+    checklist["4_risk_constraints_recorded"] = compute_constraints_check(
+        base_side["config"], cons_side["config"],
+        base_fold_reports, cons_fold_reports)
+    checklist["5_midcap_concentration"] = compute_midcap_concentration(
+        cons_fold_reports, cons_n)
 
     checks_all_pass, incomplete = evaluate_promotion_eligibility(checklist)
     binding = checklist["3_turnover_vs_csi300_ref"].get(
