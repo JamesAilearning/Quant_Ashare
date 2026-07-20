@@ -1,0 +1,26 @@
+# CSI800 N5 conservative — iso_week 锚复核切片
+# （2026-07-20-csi800-n5-production-promotion PR-A/DP-2，7b 预承诺的
+#  "iso_week 胜者复核切片"落地形态；codex #385 r1/r2）。
+#
+# 与认证胜者 csi800_cadence5_conservative.yaml 恰差
+# {rebalance_anchor, output_dir}（治理测试钉死——两级绑定链第一级）。
+# 复核判据（跑前钉死）：全窗净超额年化 > 0；毛/净差 vs fold_phase
+# 胜者如实入档为诊断披露。复核 run 在 PR-B 点火（单发串行），证据
+# 入库主线后晋升门经 origin/main 锚读取。
+#
+# Run discipline: 一次不间断调用,单发,绝不与其它重型 run 并发:
+#     python scripts/run_walk_forward.py config/presets/csi800_cadence5_conservative_isoweek.yaml
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 20.0
+rebalance_cadence_days: 5
+rebalance_phase: 0
+rebalance_anchor: "iso_week"
+# R1(#378): 约束仅在再平衡生效日校验的显式 opt-in(canonical 默认 all_days)
+risk_constraint_scope: "rebalance_days"
+output_dir: "output/walk_forward/csi800_cadence5_conservative_isoweek"

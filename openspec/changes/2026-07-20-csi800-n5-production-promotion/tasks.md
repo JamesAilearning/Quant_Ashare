@@ -4,25 +4,25 @@
 - [ ] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后冻结
 
 ## 1. PR-A — 服务节奏机制 + 两级绑定链工件（唯一 runtime 触点）
-- [ ] iso-week 再平衡日判定（交易日历驱动：ISO 周第一个交易日；
-      跨年周/长假周/单日周确定性测试）
-- [ ] daily_recommend 输出工件增 `rebalance_day` +
+- [x] iso-week 再平衡日判定（交易日历驱动：ISO 周第一个交易日；
+      跨年周/长假周/单日周确定性测试）——src/inference/rebalance_schedule.py
+- [x] daily_recommend 输出工件增 `rebalance_day` +
       `next_rebalance_date` 字段 + 非再平衡日 HOLD 提示（schema
       追加字段；如与 artifact schema v2 requirement 原文冲突则该
       PR 内 MODIFIED 全文重述）
-- [ ] **operator UI 决策页 HOLD reader 同 PR 落地**（codex #385
+- [x] **operator UI 决策页 HOLD reader 同 PR 落地**（codex #385
       r5：读 `rebalance_day`，HOLD 工件显示 HOLD 状态 +
       next_rebalance_date + 入场表单阻断；旧工件无字段向后兼容）
       + 测试双态
-- [ ] **iso_week 复核 preset 落地**
+- [x] **iso_week 复核 preset 落地**
       （`csi800_cadence5_conservative_isoweek.yaml`，纯配置文件，
       先于其复核 run 入库——codex #385 r2：两级链的比较对象必须
       在一级测试之前存在）+ **一级治理测试**：该 preset vs 胜者
       preset 恰差 {rebalance_anchor, output_dir} 钉死
-- [ ] csi800 服务参数落地（universe/benchmark/cadence 语义经两级
-      绑定链锚定；服务侧白名单差异字段写死）
-- [ ] **二级治理测试**：服务参数 vs iso_week 复核 preset 恰差
-      白名单 pin
+- [x] csi800 服务参数落地（config/serving/csi800_n5_production.yaml，
+      语义经两级绑定链锚定；服务侧白名单差异字段写死）
+- [x] **二级治理测试**：服务参数 vs iso_week 复核 preset 恰差
+      白名单 pin（tests/governance/test_csi800_n5_production_serving.py）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. PR-B — iso_week 复核 run + 候选训练 + guard eval（结果盲）

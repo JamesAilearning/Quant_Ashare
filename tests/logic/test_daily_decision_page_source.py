@@ -85,6 +85,50 @@ class RegistrationAndDocsTests(unittest.TestCase):
 class HelpersRuntimeTests(unittest.TestCase):
     """The pure helpers behave per spec (no Streamlit needed)."""
 
+    def test_hold_state_three_way(self) -> None:
+        # PR-A (csi800-n5-production-promotion, codex #385 r5): the HOLD
+        # reader — explicit false = HOLD; true or ABSENT (legacy daily
+        # artifact) renders exactly as before; a present non-bool is a
+        # shape violation surfaced loudly, never guessed around.
+        from web.operator_ui.pages._daily_decision_helpers import hold_state
+
+        hold = hold_state({"rebalance_day": False,
+                           "next_rebalance_date": "2025-07-07"})
+        self.assertTrue(hold.is_hold)
+        self.assertEqual(hold.next_rebalance_date, "2025-07-07")
+        self.assertIsNone(hold.malformed)
+
+        active = hold_state({"rebalance_day": True,
+                             "next_rebalance_date": "2025-07-01"})
+        self.assertFalse(active.is_hold)
+        self.assertIsNone(active.malformed)
+
+        legacy = hold_state({"as_of_date": "2025-06-30"})
+        self.assertFalse(legacy.is_hold)
+        self.assertIsNone(legacy.next_rebalance_date)
+        self.assertIsNone(legacy.malformed)
+
+        bad = hold_state({"rebalance_day": "false"})
+        self.assertFalse(bad.is_hold)
+        self.assertIsNotNone(bad.malformed)
+
+    def test_hold_state_null_next_anchor_disclosed(self) -> None:
+        from web.operator_ui.pages._daily_decision_helpers import hold_state
+
+        hold = hold_state({"rebalance_day": False,
+                           "next_rebalance_date": None})
+        self.assertTrue(hold.is_hold)
+        self.assertIsNone(hold.next_rebalance_date)
+
+    def test_page_blocks_entry_form_on_hold(self) -> None:
+        # Source-level pin (same style as the boundary tests above): the
+        # page consults hold_state and refuses to render the entry form
+        # on a HOLD artifact.
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("hold_state", src)
+        self.assertIn("_hold.is_hold", src)
+        self.assertIn("不构成入场指令", src)
+
     def test_cost_reference_is_score_minus_30bps(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import (
             ROUND_TRIP_COST,
