@@ -104,10 +104,13 @@ rebalance_days 作用域）接进生产服务路径。
 ## Impact
 
 - 分阶段 PR（本提案先行签署，每 PR 独立 STOP，用户唯一合并点）：
-  1. **PR-A 服务节奏机制**：daily_recommend iso-week 再平衡日
-     判定 + 输出标记 + csi800 服务参数 + 测试（唯一 runtime 触点）；
-  2. **PR-B 候选训练 + guard eval**：训练点火（GPU，用户执行——
-     阶段6 先例）→ frozen guard eval（结果盲至数字 STOP）；
+  1. **PR-A 服务节奏机制 + 两级绑定链工件**：daily_recommend
+     iso-week 再平衡日判定 + 输出标记 + csi800 服务参数 +
+     **iso_week 复核 preset（纯配置先入库）+ 两级恰差治理测试**
+     （codex #385 r2：比较对象先于测试存在）——唯一 runtime 触点；
+  2. **PR-B iso_week 复核 run + 候选训练 + guard eval**：复核 run
+     （消费 PR-A preset）→ 训练点火（GPU，用户执行——阶段6
+     先例）→ frozen guard eval（结果盲至数字 STOP）；
   3. **PR-C 晋升执行**：pkl + meta 替换 + 备份件 + baseline json +
      runbook 修订 + 治理 pin → **数字 STOP 签字**（guard eval 全部
      数字首次呈报于此）→ 用户 merge = 晋升执行完成。
