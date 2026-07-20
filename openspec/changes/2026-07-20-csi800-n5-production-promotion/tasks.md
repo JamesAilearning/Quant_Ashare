@@ -6,9 +6,14 @@
 ## 1. PR-A — 服务节奏机制 + 两级绑定链工件（唯一 runtime 触点）
 - [ ] iso-week 再平衡日判定（交易日历驱动：ISO 周第一个交易日；
       跨年周/长假周/单日周确定性测试）
-- [ ] daily_recommend 输出工件增 `rebalance_day` 字段 + 非再平衡日
-      HOLD 提示（schema 追加字段；如与 artifact schema v2 requirement
-      原文冲突则该 PR 内 MODIFIED 全文重述）
+- [ ] daily_recommend 输出工件增 `rebalance_day` +
+      `next_rebalance_date` 字段 + 非再平衡日 HOLD 提示（schema
+      追加字段；如与 artifact schema v2 requirement 原文冲突则该
+      PR 内 MODIFIED 全文重述）
+- [ ] **operator UI 决策页 HOLD reader 同 PR 落地**（codex #385
+      r5：读 `rebalance_day`，HOLD 工件显示 HOLD 状态 +
+      next_rebalance_date + 入场表单阻断；旧工件无字段向后兼容）
+      + 测试双态
 - [ ] **iso_week 复核 preset 落地**
       （`csi800_cadence5_conservative_isoweek.yaml`，纯配置文件，
       先于其复核 run 入库——codex #385 r2：两级链的比较对象必须

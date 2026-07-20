@@ -91,14 +91,22 @@ rebalance_days 作用域）接进生产服务路径。
 
 ## What changes
 
-- **MODIFIED capability `v2-daily-stock-recommendation`**（本提案
-  delta 为 ADDED requirements，既有 requirement 原文不动）：
-  1. 生产服务节奏（DP-2：iso-week 再平衡日判定 + `rebalance_day`
-     披露 + 非再平衡日 HOLD 语义）；
-  2. 生产晋升门（DP-3：certify 侧车前置 + guard eval 硬 veto +
-     DP-4 回滚件义务）；
-  3. 生产 preset 与 campaign 胜者绑定（DP-5 治理 diff pin +
-     20 bps 口径入运维文档）。
+- **MODIFIED capability `v2-daily-stock-recommendation`**
+  （codex #385 r3/r5：delta 含一条 MODIFIED 全文重述 + 三条
+  ADDED）：
+  - **MODIFIED** buy-list requirement（全文重述 + cadence-aware
+    entry semantics：`rebalance_day`/`next_rebalance_date` 字段、
+    HOLD 日非入场指令语义、`entry_date` as-of 契约不变、日频
+    路径逐字不变）；
+  - ADDED ①生产服务节奏（DP-2：iso-week 再平衡日判定 + 字段
+    披露，工件语义唯一归属上述 MODIFIED）；②生产晋升门
+    （DP-3：certify 侧车前置 + iso_week 复核锚定门 + guard eval
+    硬 veto + DP-4 回滚件义务）；③生产参数两级治理绑定链
+    （DP-5 + 20 bps 口径入运维文档）。
+- **MODIFIED capability `v2-daily-decision-page`**（codex #385
+  r5，ADDED 一条）：决策页 HOLD reader——读 `rebalance_day`，
+  HOLD 工件显示 HOLD 状态 + `next_rebalance_date` + 入场表单
+  阻断，旧工件向后兼容；生产者与 reader 同 PR 落地。
 - NO 官方回测语义变更：runtime 的 cadence/scope 机制已全部在位
   （7a + #378 R1 + #380/#381/#382），本 change 只动服务层与晋升
   流程层。
