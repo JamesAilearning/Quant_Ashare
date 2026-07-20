@@ -112,6 +112,13 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertFalse(bad.is_hold)
         self.assertIsNotNone(bad.malformed)
 
+        # codex #386 r1: a PRESENT null is a shape violation, NOT the
+        # legacy-absent case — it must not silently downgrade to daily
+        # (actionable) semantics.
+        null_present = hold_state({"rebalance_day": None})
+        self.assertFalse(null_present.is_hold)
+        self.assertIsNotNone(null_present.malformed)
+
     def test_hold_state_null_next_anchor_disclosed(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import hold_state
 

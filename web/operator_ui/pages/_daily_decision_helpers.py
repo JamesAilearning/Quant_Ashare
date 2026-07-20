@@ -264,10 +264,14 @@ class HoldState:
 
 def hold_state(payload: dict[str, Any]) -> HoldState:
     """Read the cadence fields off a recommendation artifact payload."""
-    raw = payload.get("rebalance_day")
-    if raw is None:
+    # ABSENT field = legacy daily artifact (backward compatible).
+    # A PRESENT null is NOT legacy (codex #386 r1): the producer writes
+    # a real bool or omits the key entirely — a null here is a shape
+    # violation and must not silently downgrade to daily semantics.
+    if "rebalance_day" not in payload:
         return HoldState(is_hold=False, next_rebalance_date=None,
                          malformed=None)
+    raw = payload["rebalance_day"]
     if not isinstance(raw, bool):
         return HoldState(
             is_hold=False, next_rebalance_date=None,

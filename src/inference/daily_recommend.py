@@ -606,6 +606,20 @@ def _assemble_run_meta(
 def recommend(
     config: RecommendationConfig, *, now: date | None = None,
 ) -> DailyRecommendationResult:
+    # Cadence value-domain guard FIRST (PR-A, DP-2; pure precondition,
+    # no qlib needed): only daily (1) and the certified N5 weekly
+    # cadence (5) exist. STRICT int check before the membership test
+    # (codex #386 r1): bool and float compare equal to 1/5 (True == 1,
+    # 5.0 == 5) and would slip through — same discipline as the
+    # walk-forward cadence validator.
+    cadence = config.rebalance_cadence_days
+    if (isinstance(cadence, bool) or not isinstance(cadence, int)
+            or cadence not in (1, 5)):
+        raise DailyRecommendationError(
+            "rebalance_cadence_days must be the int 1 (daily) or 5 "
+            f"(certified N5 weekly); got {cadence!r} "
+            f"({type(cadence).__name__})."
+        )
     # Fail loud on a missing / misconfigured bundle BEFORE qlib touches it: a
     # non-existent provider_uri otherwise surfaces as an obscure qlib error at
     # the first ``D.calendar()`` below, not a clear "set QUANT_PROVIDER_URI".
@@ -625,13 +639,8 @@ def recommend(
     calendar = list(D.calendar())
     as_of_date, entry_date = resolve_dates(config.as_of_date, calendar=calendar)
 
-    # Cadence-aware serving (PR-A, DP-2): value-domain guard first —
-    # only daily (1) and the certified N5 weekly cadence (5) exist.
-    if config.rebalance_cadence_days not in (1, 5):
-        raise DailyRecommendationError(
-            "rebalance_cadence_days must be 1 (daily) or 5 (certified "
-            f"N5 weekly); got {config.rebalance_cadence_days!r}."
-        )
+    # Cadence-aware serving fields (PR-A, DP-2) — the value-domain
+    # guard already ran at the top of recommend().
     rebalance_day: bool | None = None
     next_reb_date: str | None = None
     if config.rebalance_cadence_days == 5:

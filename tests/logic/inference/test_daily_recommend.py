@@ -759,6 +759,29 @@ def _dummy_run_meta(**overrides: object) -> dict[str, object]:
     return meta
 
 
+class CadenceValueDomainTests(unittest.TestCase):
+    def test_strict_int_guard_rejects_bool_and_float(self) -> None:
+        # codex #386 r1: True == 1 and 5.0 == 5 under plain membership —
+        # the guard must reject non-int types BEFORE the value test, and
+        # it runs FIRST in recommend() (pure precondition, before any
+        # provider/qlib touch) so this is unit-testable with a bogus
+        # provider path.
+        from src.inference.daily_recommend import recommend
+
+        for bad in (True, False, 1.0, 5.0, "5", 0, 2, 7):
+            with self.subTest(value=bad):
+                config = RecommendationConfig(
+                    model_path="Z:/nonexistent/model.pkl",
+                    provider_uri="Z:/nonexistent/bundle",
+                    delisted_registry_path="Z:/nonexistent/reg.parquet",
+                    fit_start="2018-01-02", fit_end="2024-12-18",
+                    rebalance_cadence_days=bad,  # type: ignore[arg-type]
+                )
+                with self.assertRaises(DailyRecommendationError) as ctx:
+                    recommend(config)
+                self.assertIn("rebalance_cadence_days", str(ctx.exception))
+
+
 class WriteOutputsTests(unittest.TestCase):
     def test_daily_config_artifact_omits_cadence_fields(self) -> None:
         # PR-A (csi800-n5-production-promotion): a daily (cadence=1)
