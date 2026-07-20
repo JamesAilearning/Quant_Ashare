@@ -221,6 +221,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="Training fit-window end (must match the model). "
                         "Default: read from <model>.meta.json fit_end_for_inference.")
     p.add_argument(
+        "--rebalance-cadence-days", type=int, default=1, choices=(1, 5),
+        help="Serving rebalance cadence (PR-A of csi800-n5-production-"
+             "promotion). 1 = daily semantics (default, unchanged "
+             "behaviour). 5 = certified N5 weekly cadence: the artifact "
+             "carries rebalance_day/next_rebalance_date (ISO-week "
+             "anchor) and non-rebalance days print a HOLD notice.")
+    p.add_argument(
         "--allow-holey-recommend", action="store_true",
         help="Recommend even if the bundle was built from a holey tushare fetch "
              "(or lacks a fetch-integrity stamp) (P3-4c). SEPARATE from the "
@@ -255,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle_max_age_days=args.bundle_max_age_days,
         out_dir=args.out_dir,
         allow_holey_recommend=args.allow_holey_recommend,
+        rebalance_cadence_days=args.rebalance_cadence_days,
     )
 
     try:
@@ -268,6 +276,17 @@ def main(argv: list[str] | None = None) -> int:
     # Terminal print — both time points always shown.
     print("=" * 64)
     print("  DAILY STOCK RECOMMENDATION")
+    # Cadence-aware HOLD notice (DP-2): a non-rebalance-day artifact is a
+    # monitoring view, NOT an entry instruction — say so before the list.
+    if result.rebalance_day is False:
+        print("  " + "!" * 60)
+        print("  !! HOLD DAY — 非再平衡日:下方列表仅为监控视图,不构成入场指令")
+        print(f"  !! 下一再平衡日 next_rebalance_date: "
+              f"{result.next_rebalance_date or '(超出日历尾部,未知)'}")
+        print("  " + "!" * 60)
+    elif result.rebalance_day is True:
+        print(f"  REBALANCE DAY — 再平衡日(下一再平衡日 "
+              f"{result.next_rebalance_date}):列表为可执行 T+1 入场清单")
     print(f"  as_of_date (data cutoff, T)   : {result.as_of_date}")
     print(f"  entry_date (suggested buy, T+1): {result.entry_date}")
     print(f"  universe={config.instruments}  scored={result.n_scored}  "

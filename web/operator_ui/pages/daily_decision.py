@@ -35,6 +35,7 @@ from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
     artifact_meta_status,
     banner_status,
+    hold_state,
     journal_model_id,
     list_recommendation_artifacts,
     load_promotion_meta,
@@ -170,6 +171,23 @@ elif _meta_status.sha_mismatch is None:
     )
 
 # ---------------------------------------------------------------------------
+# HOLD 日语义(cadence-aware,PR-A of csi800-n5-production-promotion):
+# rebalance_day: false 的工件是监控视图而非入场指令 — 醒目横幅 + 决策
+# 表单阻断;字段缺失(旧日频工件)/true 时渲染与既有契约一致。
+# ---------------------------------------------------------------------------
+_hold = hold_state(_payload)
+if _hold.malformed is not None:
+    st.error(f"⚠ {_hold.malformed}(文件:{_selected_path})")
+    st.stop()
+if _hold.is_hold:
+    st.error(
+        "⛔ **HOLD 日(非再平衡日)**:本工件为监控视图,**不构成入场指令**。"
+        "N5 生产节奏下调仓只发生在每 ISO 周第一个交易日;下一再平衡日:**"
+        + (_hold.next_rebalance_date or "(超出日历尾部,未知)")
+        + "**。入场决策表单已阻断。"
+    )
+
+# ---------------------------------------------------------------------------
 # 候选表(只读透传 + 30bps 成本参照列)
 # ---------------------------------------------------------------------------
 try:
@@ -191,6 +209,8 @@ else:
 
 # ---------------------------------------------------------------------------
 # 决策表单(显式按钮 + 落盘 nonce 幂等;见威胁对表 T1)
+# HOLD 日整段不渲染(spec: 入场表单 SHALL 被禁用或等效阻断)——监控
+# 视图不受理入场决策;当日 effective 决策表在下方照常展示。
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("记录决策")
@@ -207,7 +227,14 @@ if "dd_nonce" not in st.session_state:
     st.session_state["dd_nonce"] = uuid4().hex
 
 _codes = [str(row["代码"]) for row in _rows if row.get("代码")]
-if not _codes:
+if _hold.is_hold:
+    # spec(v2-daily-decision-page HOLD reader): 入场表单 SHALL 被禁用或
+    # 等效阻断 — HOLD 日不渲染表单控件,监控视图不受理入场决策。
+    st.caption(
+        "⛔ HOLD 日不受理入场决策(监控视图)。入场决策请于下一再平衡日"
+        "重跑 scripts/daily_recommend.py 后进行。"
+    )
+elif not _codes:
     st.info("无候选可决策。")
 else:
     _fc1, _fc2 = st.columns([1, 1])

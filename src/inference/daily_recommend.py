@@ -58,6 +58,10 @@ from src.data.pit.bundle_integrity import (
     read_bundle_integrity,
 )
 from src.data.st_status import current_st_codes
+from src.inference.rebalance_schedule import (
+    is_rebalance_day,
+    next_rebalance_date,
+)
 
 _logger = get_logger(__name__)
 
@@ -127,6 +131,15 @@ class RecommendationConfig:
     # than silently scoring on stale prices. See _assert_bundle_fresh.
     bundle_max_age_days: int = 14
     out_dir: str = "output/daily_recommend"
+    # Serving rebalance cadence (2026-07-20-csi800-n5-production-promotion
+    # PR-A, DP-2). 1 = daily semantics, byte-identical current behaviour
+    # (no cadence fields in the artifact). 5 = the certified N5 weekly
+    # cadence: the artifact carries ``rebalance_day`` +
+    # ``next_rebalance_date`` (ISO-week anchor — first trading day of
+    # each ISO week; see src/inference/rebalance_schedule). Only these
+    # two values are legal; the production switch itself happens at the
+    # PR-C promotion execution, this field is the machinery.
+    rebalance_cadence_days: int = 1
     # P3-4c Layer 2: refuse to recommend from a bundle stamped
     # built-from-holey-fetch (or lacking a fetch-integrity stamp) unless the
     # operator explicitly opts in HERE. This is SEPARATE from the build override
@@ -161,6 +174,16 @@ class DailyRecommendationResult:
     # ``_assemble_run_meta``; serialized by ``write_outputs`` as the JSON
     # ``meta`` block.
     run_meta: Mapping[str, Any]
+    # Cadence-aware serving semantics (PR-A, DP-2): ``None`` = daily
+    # config (cadence 1) — the fields stay ABSENT from the artifact so
+    # legacy readers and current behaviour are untouched. Under
+    # cadence=5 both are populated; ``rebalance_day=False`` marks a
+    # HOLD-day artifact (monitoring view, NOT an entry instruction —
+    # the buy-list requirement's cadence-aware entry semantics).
+    # ``next_rebalance_date`` may be None near the calendar tail even
+    # under cadence=5 (disclosed, never fabricated).
+    rebalance_day: bool | None = None
+    next_rebalance_date: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -583,6 +606,20 @@ def _assemble_run_meta(
 def recommend(
     config: RecommendationConfig, *, now: date | None = None,
 ) -> DailyRecommendationResult:
+    # Cadence value-domain guard FIRST (PR-A, DP-2; pure precondition,
+    # no qlib needed): only daily (1) and the certified N5 weekly
+    # cadence (5) exist. STRICT int check before the membership test
+    # (codex #386 r1): bool and float compare equal to 1/5 (True == 1,
+    # 5.0 == 5) and would slip through — same discipline as the
+    # walk-forward cadence validator.
+    cadence = config.rebalance_cadence_days
+    if (isinstance(cadence, bool) or not isinstance(cadence, int)
+            or cadence not in (1, 5)):
+        raise DailyRecommendationError(
+            "rebalance_cadence_days must be the int 1 (daily) or 5 "
+            f"(certified N5 weekly); got {cadence!r} "
+            f"({type(cadence).__name__})."
+        )
     # Fail loud on a missing / misconfigured bundle BEFORE qlib touches it: a
     # non-existent provider_uri otherwise surfaces as an obscure qlib error at
     # the first ``D.calendar()`` below, not a clear "set QUANT_PROVIDER_URI".
@@ -601,6 +638,15 @@ def recommend(
     from qlib.data import D
     calendar = list(D.calendar())
     as_of_date, entry_date = resolve_dates(config.as_of_date, calendar=calendar)
+
+    # Cadence-aware serving fields (PR-A, DP-2) — the value-domain
+    # guard already ran at the top of recommend().
+    rebalance_day: bool | None = None
+    next_reb_date: str | None = None
+    if config.rebalance_cadence_days == 5:
+        cal_strs = [str(pd.Timestamp(c).date()) for c in calendar]
+        rebalance_day = is_rebalance_day(as_of_date, cal_strs)
+        next_reb_date = next_rebalance_date(as_of_date, cal_strs)
 
     # Phase 2: price/feature-data freshness guard. resolve_dates picks the
     # as-of date from the BUNDLE's own calendar, so a stale bundle would
@@ -746,6 +792,7 @@ def recommend(
         as_of_date=as_of_date, entry_date=entry_date, picks=picks,
         n_scored=len(scored_frame) - n_excluded, n_masked=n_masked,
         n_st_excluded=n_st, scored_frame=scored_frame, run_meta=run_meta,
+        rebalance_day=rebalance_day, next_rebalance_date=next_reb_date,
     )
 
 
@@ -991,7 +1038,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
     pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).to_csv(
         csv_path, index=False, encoding="utf-8-sig",
     )
-    json_path.write_text(json.dumps({
+    payload: dict[str, Any] = {
         # Artifact contract v2 (add-daily-decision-page A1): the version marker
         # + meta block let readers DISTINGUISH a legacy v1 file (both absent)
         # from a self-describing one — readers warn on absence, never default.
@@ -1003,6 +1050,15 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         "n_st_excluded": result.n_st_excluded,
         "picks": buy_rows,
         "meta": dict(result.run_meta),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    }
+    # Cadence-aware serving fields (PR-A, DP-2): present ONLY under a
+    # cadence-enabled config — a daily (cadence=1) artifact stays
+    # byte-identical to the pre-cadence contract, and readers treat the
+    # absent field as daily semantics (backward compatible).
+    if result.rebalance_day is not None:
+        payload["rebalance_day"] = result.rebalance_day
+        payload["next_rebalance_date"] = result.next_rebalance_date
+    json_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     result.scored_frame.to_csv(audit_path, index=False, encoding="utf-8-sig")
     return {"csv": str(csv_path), "json": str(json_path), "audit": str(audit_path)}

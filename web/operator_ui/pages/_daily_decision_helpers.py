@@ -242,3 +242,45 @@ def picks_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "不可用原因": pick.get("unavailable_reason"),
         })
     return rows
+
+
+@dataclass(frozen=True)
+class HoldState:
+    """Cadence-aware HOLD verdict for one artifact (PR-A of
+    2026-07-20-csi800-n5-production-promotion, codex #385 r5).
+
+    ``is_hold`` is True ONLY for an explicit ``rebalance_day: false``
+    payload; a missing field (legacy daily artifact) or ``true`` renders
+    exactly as before — backward compatible by construction. A present
+    field with a non-bool value is a shape violation (producer writes a
+    real bool) and is surfaced as ``malformed`` so the page can refuse
+    loudly instead of guessing.
+    """
+
+    is_hold: bool
+    next_rebalance_date: str | None
+    malformed: str | None
+
+
+def hold_state(payload: dict[str, Any]) -> HoldState:
+    """Read the cadence fields off a recommendation artifact payload."""
+    # ABSENT field = legacy daily artifact (backward compatible).
+    # A PRESENT null is NOT legacy (codex #386 r1): the producer writes
+    # a real bool or omits the key entirely — a null here is a shape
+    # violation and must not silently downgrade to daily semantics.
+    if "rebalance_day" not in payload:
+        return HoldState(is_hold=False, next_rebalance_date=None,
+                         malformed=None)
+    raw = payload["rebalance_day"]
+    if not isinstance(raw, bool):
+        return HoldState(
+            is_hold=False, next_rebalance_date=None,
+            malformed=(
+                "工件形状违约:rebalance_day 存在但不是布尔值"
+                f"(实际类型 {type(raw).__name__})——文件可能损坏。"
+            ),
+        )
+    nxt = payload.get("next_rebalance_date")
+    nxt_str = str(nxt) if isinstance(nxt, str) and nxt else None
+    return HoldState(is_hold=(raw is False), next_rebalance_date=nxt_str,
+                     malformed=None)

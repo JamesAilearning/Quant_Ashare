@@ -1,0 +1,29 @@
+# CSI800 N5 生产服务参数（2026-07-20-csi800-n5-production-promotion
+# PR-A/DP-5，两级绑定链第二级）。
+#
+# 语义字段 SHALL 与 iso_week 复核 preset
+# （config/presets/csi800_cadence5_conservative_isoweek.yaml，其经一级
+# 恰差 {rebalance_anchor, output_dir} 锚定认证胜者）逐值相等——治理
+# 测试钉死；服务侧允许差异仅限白名单 {out_dir}（跑前写死）。
+#
+# 本文件在 PR-A 阶段是治理锚定工件（声明生产意图参数）；实际生产
+# 切换（daily_recommend 消费本文件 + canonical 模型替换）发生在 PR-C
+# 晋升执行，且以侧车 --verify + iso_week 复核门 + guard eval 硬 veto
+# 全过为前置。20 bps 保守成本口径与 ≈73 bps 盈亏平衡参考见
+# docs/daily-recommend-runbook.md（PR-C 修订）。
+
+# ---- 语义字段（= iso_week 复核 preset 同值,治理钉死) ----
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 20.0
+rebalance_cadence_days: 5
+rebalance_phase: 0
+rebalance_anchor: "iso_week"
+risk_constraint_scope: "rebalance_days"
+topk: 50
+
+# ---- 服务侧字段（白名单,治理钉死) ----
+out_dir: "output/daily_recommend"

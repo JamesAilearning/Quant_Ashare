@@ -759,7 +759,82 @@ def _dummy_run_meta(**overrides: object) -> dict[str, object]:
     return meta
 
 
+class CadenceValueDomainTests(unittest.TestCase):
+    def test_strict_int_guard_rejects_bool_and_float(self) -> None:
+        # codex #386 r1: True == 1 and 5.0 == 5 under plain membership —
+        # the guard must reject non-int types BEFORE the value test, and
+        # it runs FIRST in recommend() (pure precondition, before any
+        # provider/qlib touch) so this is unit-testable with a bogus
+        # provider path.
+        from src.inference.daily_recommend import recommend
+
+        for bad in (True, False, 1.0, 5.0, "5", 0, 2, 7):
+            with self.subTest(value=bad):
+                config = RecommendationConfig(
+                    model_path="Z:/nonexistent/model.pkl",
+                    provider_uri="Z:/nonexistent/bundle",
+                    delisted_registry_path="Z:/nonexistent/reg.parquet",
+                    fit_start="2018-01-02", fit_end="2024-12-18",
+                    rebalance_cadence_days=bad,  # type: ignore[arg-type]
+                )
+                with self.assertRaises(DailyRecommendationError) as ctx:
+                    recommend(config)
+                self.assertIn("rebalance_cadence_days", str(ctx.exception))
+
+
 class WriteOutputsTests(unittest.TestCase):
+    def test_daily_config_artifact_omits_cadence_fields(self) -> None:
+        # PR-A (csi800-n5-production-promotion): a daily (cadence=1)
+        # artifact stays byte-compatible with the pre-cadence contract —
+        # the fields are ABSENT, not null (readers treat absence as
+        # daily semantics; backward compat is pinned on the UI side).
+        result = DailyRecommendationResult(
+            as_of_date="2025-06-30", entry_date="2025-07-01",
+            picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+            scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+            run_meta=_dummy_run_meta(),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(result, tmp)
+            payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+        self.assertNotIn("rebalance_day", payload)
+        self.assertNotIn("next_rebalance_date", payload)
+
+    def test_cadence_artifact_carries_hold_fields(self) -> None:
+        # Cadence-enabled HOLD artifact: rebalance_day False + the next
+        # anchor date both land in the JSON top level (spec: cadence !=
+        # 1 SHALL carry both fields; entry_date is untouched).
+        result = DailyRecommendationResult(
+            as_of_date="2025-07-01", entry_date="2025-07-02",
+            picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+            scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+            run_meta=_dummy_run_meta(),
+            rebalance_day=False, next_rebalance_date="2025-07-07",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(result, tmp)
+            payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+        self.assertIs(payload["rebalance_day"], False)
+        self.assertEqual(payload["next_rebalance_date"], "2025-07-07")
+        self.assertEqual(payload["entry_date"], "2025-07-02")
+
+    def test_cadence_artifact_discloses_unknown_next_anchor(self) -> None:
+        # Near the calendar tail next_rebalance_date may be honestly
+        # unknown: the key is present and null, never fabricated.
+        result = DailyRecommendationResult(
+            as_of_date="2025-07-01", entry_date="2025-07-02",
+            picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+            scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+            run_meta=_dummy_run_meta(),
+            rebalance_day=True, next_rebalance_date=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(result, tmp)
+            payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+        self.assertIs(payload["rebalance_day"], True)
+        self.assertIn("next_rebalance_date", payload)
+        self.assertIsNone(payload["next_rebalance_date"])
+
     def test_empty_buy_list_csv_still_has_header(self) -> None:
         # Empty picks (e.g. --topk 0 or all masked) must still write a CSV
         # header row so downstream readers don't choke on a column-less file.
