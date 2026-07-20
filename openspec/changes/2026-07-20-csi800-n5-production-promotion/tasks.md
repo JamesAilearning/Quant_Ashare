@@ -9,12 +9,18 @@
 - [ ] daily_recommend 输出工件增 `rebalance_day` 字段 + 非再平衡日
       HOLD 提示（schema 追加字段；如与 artifact schema v2 requirement
       原文冲突则该 PR 内 MODIFIED 全文重述）
-- [ ] csi800 服务参数落地（universe/benchmark/cadence 语义与胜者
-      preset 同值；服务侧白名单差异字段写死）
-- [ ] 治理测试：服务参数 vs 胜者 preset 恰差白名单 pin
+- [ ] csi800 服务参数落地（universe/benchmark/cadence 语义经两级
+      绑定链锚定；服务侧白名单差异字段写死）
+- [ ] 治理测试：服务参数 vs iso_week 复核 preset 恰差白名单 pin
+      （第二级；第一级恰差 {anchor, output_dir} 在 PR-B 落地）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
-## 2. PR-B — 候选训练 + guard eval（结果盲）
+## 2. PR-B — iso_week 复核 + 候选训练 + guard eval（结果盲）
+- [ ] **iso_week 复核 preset**（`csi800_cadence5_conservative_isoweek.yaml`
+      ，与胜者 preset 恰差 {rebalance_anchor, output_dir}，治理
+      恰差测试钉死）——codex #385 r1：锚漂移证据前置
+- [ ] iso_week 复核 run 单发串行（7b 胜者复核切片落地）；判据
+      跑前钉死：净超额年化 > 0（毛/净差如实入档为诊断披露）
 - [ ] 训练配置定稿（Alpha158+LGB、csi800、train 2018-01-02..最新
       可用-embargo、topk 50/n_drop 5/label horizon 同 campaign 族）
 - [ ] **训练点火 = 用户执行（GPU，阶段6 先例）**；产物 =
@@ -27,7 +33,8 @@
 
 ## 3. PR-C — 晋升执行（数字 STOP）
 - [ ] 晋升工具执行前置校验：侧车 --verify 通过 +
-      promotion_eligible: true（否则拒绝，零写入）
+      promotion_eligible: true + iso_week 复核门过线（否则拒绝；
+      零写入限于 canonical 本体，失败记录照常写入——codex #385 r2）
 - [ ] guard eval 硬 veto 勾验（0 degenerate/0 straddle/净>0/五 veto
       数字沿 canonical spec）
 - [ ] pre-promote 备份（pkl+meta 带时间戳）+ docs/promotion/ 新

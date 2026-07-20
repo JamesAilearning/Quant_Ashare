@@ -30,13 +30,24 @@ rebalance_days 作用域）接进生产服务路径。
   - 明确 **NOT**：不直接拿 campaign fold 模型上生产（fold 训窗止于
     历史折点，鲜度不足）；不允许现任 csi300 时代模型给 csi800 打分
     （分布外，战役证据不覆盖该组合）。
-- **DP-2 生产节奏锚 = iso-week（每 ISO 周第一个交易日为再平衡日）**：
-  campaign 的 `fold_phase` 锚在生产无对应物；7b 已预承诺 iso_week
-  为胜者复核切片，生产锚与复核切片同构。非再平衡日
-  `daily_recommend` 照常可跑（监控用途），但输出 SHALL 携带
-  `rebalance_day: false` 并醒目 HOLD 提示；周中 ST/退市/停牌事件
-  **不触发中途调仓**（与回测 N5 语义一致——持有日只有市场漂移，
-  卖出在下一再平衡日处理，如实入档该口径差异由 DP-6 观察期覆盖）。
+- **DP-2 生产节奏锚 = iso-week（每 ISO 周第一个交易日为再平衡日），
+  锚的证据义务前置（codex #385 r1）**：campaign 的 `fold_phase` 锚
+  在生产无对应物；7b 已预承诺 iso_week 为胜者复核切片。但认证胜者
+  preset 的锚是 `fold_phase`——`v2-rebalance-cadence` 明确两者是
+  不同 schedule，生产绑定 SHALL NOT 建立在未经复核的锚漂移上。
+  故 **PR-B SHALL 先跑 iso_week 复核 run**（7b 预承诺的胜者复核
+  切片的落地形态）：新增 preset
+  `csi800_cadence5_conservative_isoweek.yaml`，与认证胜者 preset
+  恰差 **{rebalance_anchor, output_dir}**（治理测试钉死该恰差），
+  单发串行；**复核判据（跑前钉死）**：iso_week 切片全窗净超额
+  年化 > 0，且与 fold_phase 胜者的毛/净差如实入档（诊断披露，
+  不设第二道数值门——锚切片是稳健性复核不是重新选型）。复核过
+  线后生产锚才成立；不过线 = 如实入档、晋升中止、锚问题另行
+  提案。非再平衡日 `daily_recommend` 照常可跑（监控用途），但
+  输出 SHALL 携带 `rebalance_day: false` 并醒目 HOLD 提示；周中
+  ST/退市/停牌事件**不触发中途调仓**（与回测 N5 语义一致——
+  持有日只有市场漂移，卖出在下一再平衡日处理，如实入档该口径
+  差异由 DP-6 观察期覆盖）。
 - **DP-3 晋升门（新候选模型，数字预注册，跑后不可改）**：
   1. certify 侧车机器前置：晋升工具 SHALL 验证已提交侧车
      `--verify` 通过且 `promotion_eligible: true`，否则拒绝执行
@@ -49,16 +60,27 @@ rebalance_days 作用域）接进生产服务路径。
      （④ 的"freshness 例外"不适用：campaign 已证净转正可达，
      生产门槛就是净转正）；
   4. 五 veto 数字沿 `v2-csi800-expansion-guards` canonical spec
-     原样适用于 guard eval 产物。
+     原样适用于 guard eval 产物；
+  5. **iso_week 复核门（DP-2）**：iso_week 复核 run 净超额年化
+     > 0（该 run 先于候选 guard eval 完成，为生产锚提供证据）。
+  **零写入范围界定（codex #385 r2）**：前置或任一门失败时
+  SHALL NOT 触碰 canonical 生产工件（pkl/meta/备份/基线）——但
+  失败记录本身 SHALL 写入（guard eval 产物 + 入档文本是失败路径
+  的义务产出，审计不可缺）；"拒绝执行且不产生任何写入"仅指
+  晋升执行本体（canonical 替换及其附属写入）。
 - **DP-4 回滚与基线（④ 先例）**：替换前 SHALL 落
   `alpha158_lgb_pit_pre_promote_<ts>.pkl` 备份 + meta 备份；
   `docs/promotion/` 新增 csi800 N5 口径 baseline json，现任
   基线保留为回滚记录；回滚 = 恢复备份件一步完成。
-- **DP-5 治理 pin**：生产服务 preset（serving 侧参数文件）与
-  campaign 胜者 preset `csi800_cadence5_conservative.yaml` 的
-  语义字段恰差集由治理测试钉死（允许差异仅限服务侧必要字段，
-  跑前写死白名单）；`docs/daily-recommend-runbook.md` 修订为
-  周节奏操作卡；晋升执行步骤全部入 runbook。
+- **DP-5 治理 pin（两级绑定链，codex #385 r1）**：
+  1. iso_week 复核 preset vs 认证胜者 preset 恰差
+     **{rebalance_anchor, output_dir}**（治理测试钉死）；
+  2. 生产服务参数 vs **iso_week 复核 preset** 的语义字段恰差
+     白名单（仅限服务侧必要字段，跑前写死）。
+  两级相接：serving → iso_week 复核 preset → 认证胜者 preset，
+  每级差异显式钉死，锚漂移不再有白名单逃逸。
+  `docs/daily-recommend-runbook.md` 修订为周节奏操作卡；晋升
+  执行步骤全部入 runbook。
 - **DP-6 预期管理与观察期**：+6.52% 是 walk-forward 20 bps 回测
   口径，**非实盘承诺**；上线后首个季度为观察期——只记录不回调
   任何预注册数字；holdout 未揭盲不可反悔纪律沿用；若实盘实测
