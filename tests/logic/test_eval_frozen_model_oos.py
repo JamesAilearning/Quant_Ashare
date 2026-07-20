@@ -215,14 +215,10 @@ class ConstraintVetoArtifactTests(unittest.TestCase):
     (constraint_veto recorded, backtest null) and exit 1, never die with
     only a stderr traceback."""
 
-    def test_constraint_veto_writes_artifact_and_exits_nonzero(self) -> None:
-        import json as _json
-        import tempfile
+    @staticmethod
+    def _stub_ctx(m, backtest_side_effect):  # noqa: ANN001
         from types import SimpleNamespace
         from unittest import mock
-
-        import scripts.eval_frozen_model_oos as m
-        from src.core.risk_constraints import RiskConstraintError
 
         idx = pd.MultiIndex.from_product(
             [pd.to_datetime(["2025-07-01", "2025-07-02"]),
@@ -235,19 +231,41 @@ class ConstraintVetoArtifactTests(unittest.TestCase):
                         5: {"mean_ic": 0.02}},
             turnover_stats={"mean_turnover": 0.1},
         )
+        return (
+            mock.patch.object(
+                m, "_predictions_over_window", return_value=preds),
+            mock.patch.object(
+                m, "_executable_stamps", side_effect=lambda p, a, pr: p),
+            mock.patch.object(
+                m.SignalAnalyzer, "analyze", return_value=signal_stub),
+            mock.patch.object(
+                m, "_backtest_metrics", side_effect=backtest_side_effect),
+        )
+
+    def test_wrapped_constraint_veto_writes_artifact_and_exits_nonzero(
+            self) -> None:
+        # codex #387 r8: production raises BacktestRunnerError WRAPPING
+        # the RiskConstraintError as __cause__ — the veto path must fire
+        # on that exact shape, not just a bare RiskConstraintError.
+        import json as _json
+        import tempfile
+
+        import scripts.eval_frozen_model_oos as m
+        from src.core.backtest_runner import BacktestRunnerError
+        from src.core.risk_constraints import RiskConstraintError
+
+        try:
+            raise BacktestRunnerError(
+                "risk constraints rejected the backtest positions map. "
+                "max_per_name 5.04% > 5%"
+            ) from RiskConstraintError("max_per_name 5.04% > 5%")
+        except BacktestRunnerError as wrapped_exc:
+            wrapped = wrapped_exc
+
+        p1, p2, p3, p4 = self._stub_ctx(m, wrapped)
         with tempfile.TemporaryDirectory() as td:
             out_path = Path(td) / "veto.json"
-            with mock.patch.object(
-                m, "_predictions_over_window", return_value=preds,
-            ), mock.patch.object(
-                m, "_executable_stamps",
-                side_effect=lambda p, a, pr: p,
-            ), mock.patch.object(
-                m.SignalAnalyzer, "analyze", return_value=signal_stub,
-            ), mock.patch.object(
-                m, "_backtest_metrics",
-                side_effect=RiskConstraintError("max_per_name 5.04% > 5%"),
-            ):
+            with p1, p2, p3, p4:
                 rc = m.main([
                     "--profile", "csi800_n5",
                     "--model", "D:/tmp/candidate.pkl",
@@ -258,6 +276,28 @@ class ConstraintVetoArtifactTests(unittest.TestCase):
         self.assertIn("max_per_name", payload["constraint_veto"])
         self.assertIsNone(payload["backtest_excess_with_cost"])
         self.assertEqual("csi800_n5", payload["profile"])
+
+    def test_runner_error_without_constraint_cause_reraises(self) -> None:
+        # A BacktestRunnerError with NO RiskConstraintError in its cause
+        # chain is tool breakage — it must re-raise, never be recorded
+        # as a candidate veto.
+        import tempfile
+
+        import scripts.eval_frozen_model_oos as m
+        from src.core.backtest_runner import BacktestRunnerError
+
+        p1, p2, p3, p4 = self._stub_ctx(
+            m, BacktestRunnerError("benchmark series unavailable"))
+        with tempfile.TemporaryDirectory() as td:
+            out_path = Path(td) / "never.json"
+            with p1, p2, p3, p4:
+                with self.assertRaises(BacktestRunnerError):
+                    m.main([
+                        "--profile", "csi800_n5",
+                        "--model", "D:/tmp/candidate.pkl",
+                        "--out", str(out_path),
+                    ])
+            self.assertFalse(out_path.exists())
 
 
 class ProfileCrossPinTests(unittest.TestCase):

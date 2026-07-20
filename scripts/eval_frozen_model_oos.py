@@ -48,7 +48,10 @@ from scripts.regen.replay_frozen_baseline import (  # noqa: E402
     SLIPPAGE_BPS,
     TOPK,
 )
-from src.core.backtest_runner import BacktestRunner  # noqa: E402
+from src.core.backtest_runner import (  # noqa: E402
+    BacktestRunner,
+    BacktestRunnerError,
+)
 from src.core.canonical_backtest_contract import (  # noqa: E402
     ADJUST_MODE_PRE,
     CN_STAMP_TAX_SCHEDULE_DEFAULT,
@@ -401,14 +404,25 @@ def main(argv: list[str] | None = None) -> int:
     # inside BacktestRunner — that is a GUARD VETO, not tool breakage,
     # and the spec's failure-path obligation (codex #387 r7) requires an
     # inspectable eval artifact: record the veto in the JSON and exit
-    # non-zero instead of dying with only a stderr traceback. Schema
-    # drift (the fail-closed gross-leg guard etc.) still aborts without
-    # an artifact — that is a producer error, not a candidate verdict.
+    # non-zero instead of dying with only a stderr traceback. The runner
+    # WRAPS the RiskConstraintError in a BacktestRunnerError with the
+    # original as ``__cause__`` (codex #387 r8 — a bare
+    # ``except RiskConstraintError`` never fires in production), so the
+    # veto is recognised by walking the cause chain; a BacktestRunnerError
+    # WITHOUT a RiskConstraintError cause is tool breakage and re-raises.
+    # Schema drift (the fail-closed gross-leg guard etc.) likewise still
+    # aborts without an artifact — a producer error, not a verdict.
     constraint_veto: str | None = None
     backtest: dict[str, Any] | None
     try:
         backtest = _backtest_metrics(preds, args, profile)
-    except RiskConstraintError as exc:
+    except (RiskConstraintError, BacktestRunnerError) as exc:
+        cause: BaseException | None = exc
+        while cause is not None and not isinstance(
+                cause, RiskConstraintError):
+            cause = cause.__cause__
+        if cause is None:
+            raise  # not a constraint veto — genuine tool failure
         backtest = None
         constraint_veto = str(exc)
         print(f"[oos-eval] CONSTRAINT VETO: {exc}")
