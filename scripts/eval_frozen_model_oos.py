@@ -58,7 +58,10 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
     CanonicalExchangeCostModel,
 )
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
-from src.core.risk_constraints import campaign_risk_constraints_v1  # noqa: E402
+from src.core.risk_constraints import (  # noqa: E402
+    RiskConstraintError,
+    campaign_risk_constraints_v1,
+)
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer  # noqa: E402
 from src.core.walk_forward.aggregate import extract_cost_metrics  # noqa: E402
 from src.data.feature_dataset_builder import (  # noqa: E402
@@ -394,7 +397,21 @@ def main(argv: list[str] | None = None) -> int:
     degen_all: dict[str, Any] | None = None
     if exec_preds is not preds:
         degen_all = _degeneracy_scan(preds)
-    backtest = _backtest_metrics(preds, args, profile)
+    # A campaign_v1 constraint breach under the csi800_n5 profile RAISEs
+    # inside BacktestRunner — that is a GUARD VETO, not tool breakage,
+    # and the spec's failure-path obligation (codex #387 r7) requires an
+    # inspectable eval artifact: record the veto in the JSON and exit
+    # non-zero instead of dying with only a stderr traceback. Schema
+    # drift (the fail-closed gross-leg guard etc.) still aborts without
+    # an artifact — that is a producer error, not a candidate verdict.
+    constraint_veto: str | None = None
+    backtest: dict[str, Any] | None
+    try:
+        backtest = _backtest_metrics(preds, args, profile)
+    except RiskConstraintError as exc:
+        backtest = None
+        constraint_veto = str(exc)
+        print(f"[oos-eval] CONSTRAINT VETO: {exc}")
 
     result = {
         "model": args.model,
@@ -412,6 +429,9 @@ def main(argv: list[str] | None = None) -> int:
         "ic_1d_positive_ratio": float(signal.ic_summary[1].get("ic_positive_ratio", float("nan"))),
         "mean_turnover": float(signal.turnover_stats.get("mean_turnover", float("nan"))),
         "backtest_excess_with_cost": backtest,
+        # Non-null = the candidate breached campaign_v1 constraints
+        # (RAISE) — a recorded hard veto, exit code 1 (codex #387 r7).
+        "constraint_veto": constraint_veto,
         # Veto-bearing scan: EXECUTABLE stamps only (profile-thinned).
         "degeneracy": degen,
         # Non-veto diagnostic (cadence profiles only): every raw stamp.
@@ -434,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     print(f"[oos-eval] wrote {out}")
+    if constraint_veto is not None:
+        print("[oos-eval] RESULT: CONSTRAINT VETO — artifact recorded, "
+              "candidate fails the guard (exit 1).")
+        return 1
     return 0
 
 

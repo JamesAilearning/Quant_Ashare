@@ -209,6 +209,57 @@ class MissingModelGuardTests(unittest.TestCase):
         self.assertEqual("csi800", captured["instruments"])
 
 
+class ConstraintVetoArtifactTests(unittest.TestCase):
+    """codex #387 r7: a campaign_v1 RAISE inside the profiled backtest is
+    a GUARD VETO — the eval must still write an inspectable artifact
+    (constraint_veto recorded, backtest null) and exit 1, never die with
+    only a stderr traceback."""
+
+    def test_constraint_veto_writes_artifact_and_exits_nonzero(self) -> None:
+        import json as _json
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+        from src.core.risk_constraints import RiskConstraintError
+
+        idx = pd.MultiIndex.from_product(
+            [pd.to_datetime(["2025-07-01", "2025-07-02"]),
+             [f"S{i}" for i in range(5)]],
+        )
+        preds = pd.Series(range(10), index=idx, dtype=float)
+        signal_stub = SimpleNamespace(
+            ic_summary={1: {"mean_ic": 0.01, "ir": 0.5,
+                            "ic_positive_ratio": 0.6},
+                        5: {"mean_ic": 0.02}},
+            turnover_stats={"mean_turnover": 0.1},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            out_path = Path(td) / "veto.json"
+            with mock.patch.object(
+                m, "_predictions_over_window", return_value=preds,
+            ), mock.patch.object(
+                m, "_executable_stamps",
+                side_effect=lambda p, a, pr: p,
+            ), mock.patch.object(
+                m.SignalAnalyzer, "analyze", return_value=signal_stub,
+            ), mock.patch.object(
+                m, "_backtest_metrics",
+                side_effect=RiskConstraintError("max_per_name 5.04% > 5%"),
+            ):
+                rc = m.main([
+                    "--profile", "csi800_n5",
+                    "--model", "D:/tmp/candidate.pkl",
+                    "--out", str(out_path),
+                ])
+            self.assertEqual(1, rc)
+            payload = _json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertIn("max_per_name", payload["constraint_veto"])
+        self.assertIsNone(payload["backtest_excess_with_cost"])
+        self.assertEqual("csi800_n5", payload["profile"])
+
+
 class ProfileCrossPinTests(unittest.TestCase):
     """codex #387 r1: the pure eval_profiles module hardcodes the legacy
     slippage so governance tests stay off the qlib import path — THIS
