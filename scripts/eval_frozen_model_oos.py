@@ -352,22 +352,27 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[oos-eval] predictions: {preds.shape[0]} rows, "
           f"{preds.index.get_level_values(0).nunique()} dates")
 
+    # EXECUTABLE stamp set first (codex #387 r3+r4): under a cadence
+    # profile every artifact metric that describes traded behaviour —
+    # IC / turnover (SignalAnalyzer, mirroring the walk-forward cadence
+    # path's _traded_predictions_for_fold) and the veto-bearing
+    # degeneracy scan — consumes the thinned series; only the raw
+    # all-stamps degeneracy stays, as an explicitly non-veto diagnostic.
+    # Daily profile: exec_preds IS preds (helper fast path), byte-
+    # identical legacy behaviour.
+    exec_preds = _executable_stamps(preds, args, profile)
+    if exec_preds is not preds:
+        print(f"[oos-eval] executable stamps: "
+              f"{exec_preds.index.get_level_values(0).nunique()} of "
+              f"{preds.index.get_level_values(0).nunique()} prediction dates")
     signal = SignalAnalyzer.analyze(
-        predictions=preds,
+        predictions=exec_preds,
         config=SignalAnalysisConfig(forward_periods=(1, 5), topk=TOPK),
     )
-    # Veto-bearing degeneracy scan runs on the EXECUTABLE stamp set (the
-    # profile's rebalance days — same thinning as the backtest below);
-    # the all-stamps scan is kept as a non-veto diagnostic for cadence
-    # profiles (codex #387 r3).
-    exec_preds = _executable_stamps(preds, args, profile)
     degen = _degeneracy_scan(exec_preds)
     degen_all: dict[str, Any] | None = None
     if exec_preds is not preds:
         degen_all = _degeneracy_scan(preds)
-        print(f"[oos-eval] executable stamps: "
-              f"{exec_preds.index.get_level_values(0).nunique()} of "
-              f"{preds.index.get_level_values(0).nunique()} prediction dates")
     backtest = _backtest_metrics(preds, args, profile)
 
     result = {
