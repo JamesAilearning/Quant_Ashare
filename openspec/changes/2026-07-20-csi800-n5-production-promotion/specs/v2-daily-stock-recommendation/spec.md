@@ -13,14 +13,17 @@ contiguous `1..N` with `N ≤ topk`. The list SHALL be persisted as both
 terminal. The two time points — `as_of_date` (data cutoff T) and
 `entry_date` (suggested entry T+1) — SHALL both appear.
 
-**Cadence-aware entry semantics（本次修订，codex #385 r3——消除
-HOLD 日双重语义）**：在节奏化生产配置（cadence ≠ 1）下，工件
-SHALL 携带 `rebalance_day: true|false`；`rebalance_day: true` 时
-本列表是可执行的 T+1 入场清单（上文语义原样）；
-`rebalance_day: false` 时工件仍按同 schema 持久化（行内容、排名、
-双时间点全部照常）但 SHALL NOT 构成入场指令——输出 SHALL 附
-醒目 HOLD 提示，`entry_date` 语义变为"下一再平衡日入场参考"。
-日频配置（cadence = 1，含现行为）下每日皆再平衡日，语义与本
+**Cadence-aware entry semantics（本次修订，codex #385 r3/r4——
+消除 HOLD 日双重语义且不触碰 as-of 契约）**：在节奏化生产配置
+（cadence ≠ 1）下，工件 SHALL 携带 `rebalance_day: true|false`
+与 `next_rebalance_date`（下一再平衡日，追加字段）；
+`rebalance_day: true` 时本列表是可执行的 T+1 入场清单（上文语义
+原样）；`rebalance_day: false` 时工件仍按同 schema 持久化（行
+内容、排名、双时间点含 `entry_date` = 下一交易日**全部照常**——
+`entry_date` 的 as-of 解析契约不因节奏而变）但 SHALL NOT 构成
+入场指令——输出 SHALL 附醒目 HOLD 提示，入场参考由
+`next_rebalance_date` 字段承载而非改写 `entry_date` 语义。日频
+配置（cadence = 1，含现行为）下每日皆再平衡日，语义与本
 requirement 原文逐字一致、路径不变。
 
 #### Scenario: output is ranked and bounded
@@ -31,10 +34,12 @@ requirement 原文逐字一致、路径不变。
 - **AND** a `daily_recommendation_<date>.csv` and `.json` are written
   carrying both `as_of_date` and `entry_date`
 
-#### Scenario: HOLD 日工件不构成入场指令
-- **WHEN** 节奏化生产配置下在非再平衡日运行 recommend
-- **THEN** 工件照常持久化且携带 `rebalance_day: false` 与 HOLD
-  提示，列表为监控视图而非入场指令
+#### Scenario: HOLD 日工件不构成入场指令且 entry_date 契约不变
+- **WHEN** 节奏化生产配置下在非再平衡日（例：周一再平衡后的
+  周二）运行 recommend
+- **THEN** 工件照常持久化，`entry_date` 仍等于下一交易日（as-of
+  解析契约原样），`rebalance_day: false` + HOLD 提示标明列表为
+  监控视图而非入场指令，`next_rebalance_date` 携带下一再平衡日
 
 ## ADDED Requirements
 
@@ -42,9 +47,9 @@ requirement 原文逐字一致、路径不变。
 
 生产服务（daily_recommend）SHALL 按 **每 ISO 周第一个交易日 =
 再平衡日** 的锚判定当日角色，并在输出工件中携带
-`rebalance_day: true|false` 字段（HOLD 日的工件语义由上文
-MODIFIED 的 buy-list requirement 唯一定义，本 requirement 只负责
-锚判定与字段披露）。周中 ST/退市/停牌事件 SHALL NOT 触发中途
+`rebalance_day: true|false` 与 `next_rebalance_date` 字段（HOLD
+日的工件语义由上文 MODIFIED 的 buy-list requirement 唯一定义，
+本 requirement 只负责锚判定与字段披露）。周中 ST/退市/停牌事件 SHALL NOT 触发中途
 调仓——卖出在下一再平衡日处理，与认证回测的 N5 语义（持有日仅
 市场漂移、约束仅在再平衡生效日校验）保持一致。再平衡日判定
 SHALL 由交易日历驱动（节假日顺延至该 ISO 周内第一个实际交易日；
