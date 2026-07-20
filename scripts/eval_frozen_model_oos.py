@@ -308,7 +308,16 @@ def _backtest_metrics(
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", default="D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl")
+    # No hardcoded default here (codex #387 r5): the incumbent path is
+    # filled in ONLY for the legacy profile — a csi800_n5 eval must name
+    # its model explicitly, or the csi300-era incumbent would be scored
+    # on csi800 (the exact cross-universe pairing DP-1 forbids).
+    p.add_argument(
+        "--model", default=None,
+        help="Frozen model pkl. Default (csi300_daily profile only): "
+             "the incumbent canonical alpha158_lgb_pit.pkl. REQUIRED "
+             "for csi800_n5 — the incumbent must never be scored on "
+             "csi800 (DP-1).")
     p.add_argument("--provider", default="D:/qlib_data/my_cn_data_pit")
     p.add_argument("--namechange", default="D:/qlib_data/tushare_raw/all_namechanges.parquet")
     p.add_argument(
@@ -339,6 +348,18 @@ def main(argv: list[str] | None = None) -> int:
     # instruments come FROM the profile (pre-registered, not tunable):
     # the dataset build below reads args.instruments.
     args.instruments = profile["instruments"]
+    # Model resolution (codex #387 r5): the incumbent default applies to
+    # the LEGACY profile only — a non-daily profile without an explicit
+    # --model is refused (DP-1: the csi300-era incumbent must never be
+    # scored on csi800).
+    if args.model is None:
+        if args.profile != "csi300_daily":
+            raise SystemExit(
+                f"--model is REQUIRED for profile {args.profile!r}: the "
+                "incumbent default is a csi300-era model and DP-1 "
+                "forbids scoring it on the csi800 universe. Pass the "
+                "candidate pkl explicitly.")
+        args.model = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
 
     print(f"[oos-eval] model={args.model}")
     print(f"[oos-eval] profile={args.profile}  "
