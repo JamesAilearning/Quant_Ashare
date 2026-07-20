@@ -26,19 +26,22 @@
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. PR-B — iso_week 复核 run + 候选训练 + guard eval（结果盲）
-- [ ] iso_week 复核 run 单发串行（7b 胜者复核切片落地，消费
+- [x] iso_week 复核 run 单发串行（7b 胜者复核切片落地，消费
       PR-A 已入库的 preset）；判据跑前钉死：净超额年化 > 0
       （毛/净差如实入档为诊断披露）——codex #385 r1：锚漂移
-      证据前置于生产绑定生效
-- [ ] **复核证据入库**（钉死证据路径，走 PR 并主线 = 锚成立）：
-      聚合 report + 逐折 reports（codex #385 r3：晋升门经
+      证据前置于生产绑定生效。gen2 干净树跑于 main 4df3109
+      （首跑 dirty 树留证 *_gen1_dirtytree/，结果盲保持）
+- [x] **复核证据入库**（docs/research/evidence/csi800_n5_runs/
+      csi800_cadence5_conservative_isoweek/，本 PR 并主线 = 锚成立）：
+      聚合 report + 逐折 reports + positions 本体（codex #385 r3：晋升门经
       origin/main 锚 git show 读取并验证 config 绑定 preset +
       净值从锚上重导，本地未锚定输出拒绝）
-- [ ] 训练配置定稿（Alpha158+LGB、csi800、train 2018-01-02..最新
-      可用-embargo、topk 50/n_drop 5/label horizon 同 campaign 族）
+- [x] 训练配置定稿（csi800_n5_candidate.yaml：④ 镜像窗——guard
+      洁净约束下"最新可用-embargo"的解；治理窗口 pin 入档）
 - [ ] **训练点火 = 用户执行（GPU，阶段6 先例）**；产物 =
       候选 pkl + meta（含 fit_start/fit_end_for_inference）
-- [ ] guard 窗日期跑前钉死（最近干净窗口，写死入 PR 文本）
+- [x] guard 窗日期跑前钉死：2025-07-01..2026-06-12（= ④ 已提交
+      comparison-origin 窗，候选未训未验于此；治理 pin）
 - [ ] frozen guard eval（eval_frozen_model_oos 同族口径升级
       csi800/SH000906TR/N5/20bps）跑毕——数字保持未读直至 PR-C
       数字 STOP

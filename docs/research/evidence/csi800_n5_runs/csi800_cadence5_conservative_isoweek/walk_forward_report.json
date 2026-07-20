@@ -1,0 +1,518 @@
+{
+  "generated_at": "2026-07-20T13:46:12.994377+00:00",
+  "git_commit": "4df3109d1940ef3ed690e512938e89e2dd2ff6d6",
+  "git_dirty": false,
+  "config": {
+    "instruments": "csi800",
+    "feature_handler": "Alpha158",
+    "label_horizon_days": 1,
+    "delisted_registry_path": "D:/qlib_data/tushare_raw/delisted_registry.parquet",
+    "overall_start": "2018-01-01",
+    "overall_end": "2025-12-31",
+    "train_months": 24,
+    "valid_months": 3,
+    "test_months": 3,
+    "step_months": 3,
+    "model_type": "LGBModel",
+    "num_boost_round": 1000,
+    "early_stopping_rounds": 50,
+    "learning_rate": 0.005,
+    "max_depth": 6,
+    "num_leaves": 64,
+    "lambda_l1": 0.0,
+    "lambda_l2": 1.0,
+    "min_data_in_leaf": 50,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "benchmark_code": "SH000906TR",
+    "init_cash": 100000000,
+    "topk": 50,
+    "n_drop": 5,
+    "commission_rate": 0.0005,
+    "stamp_tax_schedule": null,
+    "slippage_bps": 20.0,
+    "min_cost": 5.0,
+    "execution_price_kind": "close",
+    "adjust_mode": "pre_adjusted",
+    "signal_to_execution_lag": 1,
+    "limit_threshold": 0.095,
+    "namechange_path": "D:/qlib_data/tushare_raw/all_namechanges.parquet",
+    "st_mask_mode": "required",
+    "rebalance_cadence_days": 5,
+    "rebalance_phase": 0,
+    "rebalance_anchor": "iso_week",
+    "ensemble_window": 3,
+    "seed": 42,
+    "compute_device": "cpu",
+    "run_attribution": true,
+    "industry_artifact_path": null,
+    "industry_manifest_path": null,
+    "industry_taxonomy_id": "",
+    "industry_temporal_mode": "static",
+    "attribution_sleeve_grouping": true,
+    "risk_constraints_enabled": true,
+    "risk_constraints_calibration": "campaign_v1",
+    "risk_constraint_scope": "rebalance_days",
+    "output_dir": "output/walk_forward/csi800_cadence5_conservative_isoweek",
+    "dataset_cache_dir": null
+  },
+  "folds": [
+    {
+      "fold_index": 0,
+      "train_period": "2018-01-01 ~ 2019-12-27",
+      "valid_period": "2020-01-01 ~ 2020-03-27",
+      "test_period": "2020-04-01 ~ 2020-06-30",
+      "ic_1d": -0.03485946373026551,
+      "ic_5d": -0.020225659928393844,
+      "annualized_return": -0.007755967385673568,
+      "max_drawdown": -0.038896604744459884,
+      "information_ratio": -0.07017265512003182,
+      "prediction_shape": [
+        23677
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_00_report.json",
+      "duration_seconds": 39.20965689999866,
+      "started_at": "2026-07-20T13:30:32.409640+00:00",
+      "finished_at": "2026-07-20T13:31:11.620739+00:00"
+    },
+    {
+      "fold_index": 1,
+      "train_period": "2018-04-01 ~ 2020-03-27",
+      "valid_period": "2020-04-01 ~ 2020-06-24",
+      "test_period": "2020-07-01 ~ 2020-09-30",
+      "ic_1d": 0.003646854796265843,
+      "ic_5d": 0.04977042894481054,
+      "annualized_return": -0.13760703477939973,
+      "max_drawdown": -0.04548395142377318,
+      "information_ratio": -1.5611629396966218,
+      "prediction_shape": [
+        52780
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_01_report.json",
+      "duration_seconds": 41.43088739999803,
+      "started_at": "2026-07-20T13:31:11.630275+00:00",
+      "finished_at": "2026-07-20T13:31:53.052623+00:00"
+    },
+    {
+      "fold_index": 2,
+      "train_period": "2018-07-01 ~ 2020-06-24",
+      "valid_period": "2020-07-01 ~ 2020-09-28",
+      "test_period": "2020-10-01 ~ 2020-12-31",
+      "ic_1d": 0.04200393107491136,
+      "ic_5d": 0.05158758649870442,
+      "annualized_return": -0.4915144690217201,
+      "max_drawdown": -0.11937730487819509,
+      "information_ratio": -4.490465299495117,
+      "prediction_shape": [
+        46812
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_02_report.json",
+      "duration_seconds": 44.20181660000526,
+      "started_at": "2026-07-20T13:31:53.068261+00:00",
+      "finished_at": "2026-07-20T13:32:37.270096+00:00"
+    },
+    {
+      "fold_index": 3,
+      "train_period": "2018-10-01 ~ 2020-09-28",
+      "valid_period": "2020-10-01 ~ 2020-12-29",
+      "test_period": "2021-01-01 ~ 2021-03-31",
+      "ic_1d": 0.03557879882969776,
+      "ic_5d": 0.04564538041147516,
+      "annualized_return": 0.18380589880748427,
+      "max_drawdown": -0.047101064972331734,
+      "information_ratio": 1.5091828880683738,
+      "prediction_shape": [
+        23200
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_03_report.json",
+      "duration_seconds": 41.02757200000633,
+      "started_at": "2026-07-20T13:32:37.274121+00:00",
+      "finished_at": "2026-07-20T13:33:18.300741+00:00"
+    },
+    {
+      "fold_index": 4,
+      "train_period": "2019-01-01 ~ 2020-12-29",
+      "valid_period": "2021-01-01 ~ 2021-03-29",
+      "test_period": "2021-04-01 ~ 2021-06-30",
+      "ic_1d": 0.06067133078569038,
+      "ic_5d": 0.032638069496239396,
+      "annualized_return": 0.1700659257874632,
+      "max_drawdown": -0.02685259462717478,
+      "information_ratio": 1.7491572659149934,
+      "prediction_shape": [
+        24180
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_04_report.json",
+      "duration_seconds": 41.50126629999431,
+      "started_at": "2026-07-20T13:33:18.310819+00:00",
+      "finished_at": "2026-07-20T13:33:59.815694+00:00"
+    },
+    {
+      "fold_index": 5,
+      "train_period": "2019-04-01 ~ 2021-03-29",
+      "valid_period": "2021-04-01 ~ 2021-06-28",
+      "test_period": "2021-07-01 ~ 2021-09-30",
+      "ic_1d": -0.016587433835799227,
+      "ic_5d": -0.018156280310849367,
+      "annualized_return": 0.002253361606585959,
+      "max_drawdown": -0.06532506603765575,
+      "information_ratio": 0.020321351413236065,
+      "prediction_shape": [
+        51162
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_05_report.json",
+      "duration_seconds": 44.342019500007154,
+      "started_at": "2026-07-20T13:33:59.827096+00:00",
+      "finished_at": "2026-07-20T13:34:44.154804+00:00"
+    },
+    {
+      "fold_index": 6,
+      "train_period": "2019-07-01 ~ 2021-06-28",
+      "valid_period": "2021-07-01 ~ 2021-09-28",
+      "test_period": "2021-10-01 ~ 2021-12-31",
+      "ic_1d": -0.012059897241084399,
+      "ic_5d": -0.018570205622859843,
+      "annualized_return": 0.10409248136650036,
+      "max_drawdown": -0.036853946514016904,
+      "information_ratio": 0.8259549610128162,
+      "prediction_shape": [
+        47634
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_06_report.json",
+      "duration_seconds": 41.32219749999058,
+      "started_at": "2026-07-20T13:34:44.170686+00:00",
+      "finished_at": "2026-07-20T13:35:25.501586+00:00"
+    },
+    {
+      "fold_index": 7,
+      "train_period": "2019-10-01 ~ 2021-09-28",
+      "valid_period": "2021-10-01 ~ 2021-12-29",
+      "test_period": "2022-01-01 ~ 2022-03-31",
+      "ic_1d": 0.01544145420990226,
+      "ic_5d": -0.007364092227915832,
+      "annualized_return": 0.19222321341469664,
+      "max_drawdown": -0.02062077344583002,
+      "information_ratio": 2.0189157491221557,
+      "prediction_shape": [
+        23200
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_07_report.json",
+      "duration_seconds": 39.36993989998882,
+      "started_at": "2026-07-20T13:35:25.511656+00:00",
+      "finished_at": "2026-07-20T13:36:04.877964+00:00"
+    },
+    {
+      "fold_index": 8,
+      "train_period": "2020-01-01 ~ 2021-12-29",
+      "valid_period": "2022-01-01 ~ 2022-03-29",
+      "test_period": "2022-04-01 ~ 2022-06-30",
+      "ic_1d": 0.007850860825041375,
+      "ic_5d": 0.09218779657270412,
+      "annualized_return": 0.2934902402774236,
+      "max_drawdown": -0.03234605884808963,
+      "information_ratio": 3.1867538084953213,
+      "prediction_shape": [
+        23700
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_08_report.json",
+      "duration_seconds": 39.57758039998589,
+      "started_at": "2026-07-20T13:36:04.893852+00:00",
+      "finished_at": "2026-07-20T13:36:44.464414+00:00"
+    },
+    {
+      "fold_index": 9,
+      "train_period": "2020-04-01 ~ 2022-03-29",
+      "valid_period": "2022-04-01 ~ 2022-06-28",
+      "test_period": "2022-07-01 ~ 2022-09-30",
+      "ic_1d": -0.07262180812806782,
+      "ic_5d": -0.04681934584857766,
+      "annualized_return": -0.05078000857301698,
+      "max_drawdown": -0.0702587092658486,
+      "information_ratio": -0.46772880013237833,
+      "prediction_shape": [
+        52000
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_09_report.json",
+      "duration_seconds": 41.27516520000063,
+      "started_at": "2026-07-20T13:36:44.479458+00:00",
+      "finished_at": "2026-07-20T13:37:25.750988+00:00"
+    },
+    {
+      "fold_index": 10,
+      "train_period": "2020-07-01 ~ 2022-06-28",
+      "valid_period": "2022-07-01 ~ 2022-09-28",
+      "test_period": "2022-10-01 ~ 2022-12-31",
+      "ic_1d": 0.04672173868082232,
+      "ic_5d": 0.009738017006607515,
+      "annualized_return": 0.2749335775065351,
+      "max_drawdown": -0.05386700514856657,
+      "information_ratio": 2.2486896785626427,
+      "prediction_shape": [
+        46971
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_10_report.json",
+      "duration_seconds": 40.057748499995796,
+      "started_at": "2026-07-20T13:37:25.760998+00:00",
+      "finished_at": "2026-07-20T13:38:05.820122+00:00"
+    },
+    {
+      "fold_index": 11,
+      "train_period": "2020-10-01 ~ 2022-09-28",
+      "valid_period": "2022-10-01 ~ 2022-12-28",
+      "test_period": "2023-01-01 ~ 2023-03-31",
+      "ic_1d": 0.03027551865900734,
+      "ic_5d": -0.02701315642242459,
+      "annualized_return": 0.04716596478927389,
+      "max_drawdown": -0.02128833833163994,
+      "information_ratio": 0.7178719178128697,
+      "prediction_shape": [
+        23600
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_11_report.json",
+      "duration_seconds": 39.94031819999509,
+      "started_at": "2026-07-20T13:38:05.827606+00:00",
+      "finished_at": "2026-07-20T13:38:45.764035+00:00"
+    },
+    {
+      "fold_index": 12,
+      "train_period": "2021-01-01 ~ 2022-12-28",
+      "valid_period": "2023-01-01 ~ 2023-03-29",
+      "test_period": "2023-04-01 ~ 2023-06-30",
+      "ic_1d": 8.399532741129163e-05,
+      "ic_5d": -0.015151040187451512,
+      "annualized_return": 0.022863014257704973,
+      "max_drawdown": -0.028780608993232672,
+      "information_ratio": 0.2010205642884829,
+      "prediction_shape": [
+        23829
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_12_report.json",
+      "duration_seconds": 38.87920480000321,
+      "started_at": "2026-07-20T13:38:45.776518+00:00",
+      "finished_at": "2026-07-20T13:39:24.650443+00:00"
+    },
+    {
+      "fold_index": 13,
+      "train_period": "2021-04-01 ~ 2023-03-29",
+      "valid_period": "2023-04-01 ~ 2023-06-28",
+      "test_period": "2023-07-01 ~ 2023-09-30",
+      "ic_1d": 0.0073800871088475755,
+      "ic_5d": -0.0016829672658522034,
+      "annualized_return": -0.2389801987111812,
+      "max_drawdown": -0.07377272118087434,
+      "information_ratio": -2.6713565969565223,
+      "prediction_shape": [
+        51200
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_13_report.json",
+      "duration_seconds": 39.93934110000555,
+      "started_at": "2026-07-20T13:39:24.650443+00:00",
+      "finished_at": "2026-07-20T13:40:04.596932+00:00"
+    },
+    {
+      "fold_index": 14,
+      "train_period": "2021-07-01 ~ 2023-06-28",
+      "valid_period": "2023-07-01 ~ 2023-09-26",
+      "test_period": "2023-10-01 ~ 2023-12-31",
+      "ic_1d": 0.001035312502822805,
+      "ic_5d": 0.02560680882286384,
+      "annualized_return": 0.057758775851922586,
+      "max_drawdown": -0.04802394430384781,
+      "information_ratio": 0.648086532880981,
+      "prediction_shape": [
+        47019
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_14_report.json",
+      "duration_seconds": 40.257649799998035,
+      "started_at": "2026-07-20T13:40:04.610550+00:00",
+      "finished_at": "2026-07-20T13:40:44.869434+00:00"
+    },
+    {
+      "fold_index": 15,
+      "train_period": "2021-10-01 ~ 2023-09-26",
+      "valid_period": "2023-10-01 ~ 2023-12-27",
+      "test_period": "2024-01-01 ~ 2024-03-31",
+      "ic_1d": -0.0007130480118798013,
+      "ic_5d": 0.044609490269631014,
+      "annualized_return": 0.24967379198027226,
+      "max_drawdown": -0.03061258239134257,
+      "information_ratio": 2.7253344457721287,
+      "prediction_shape": [
+        23200
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_15_report.json",
+      "duration_seconds": 39.44323930000246,
+      "started_at": "2026-07-20T13:40:44.877437+00:00",
+      "finished_at": "2026-07-20T13:41:24.319852+00:00"
+    },
+    {
+      "fold_index": 16,
+      "train_period": "2022-01-01 ~ 2023-12-27",
+      "valid_period": "2024-01-01 ~ 2024-03-27",
+      "test_period": "2024-04-01 ~ 2024-06-30",
+      "ic_1d": 0.01602542027312644,
+      "ic_5d": 0.05528977992147054,
+      "annualized_return": 0.14520067404527026,
+      "max_drawdown": -0.01852048747752949,
+      "information_ratio": 1.9781949972945607,
+      "prediction_shape": [
+        23891
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_16_report.json",
+      "duration_seconds": 39.85011800000211,
+      "started_at": "2026-07-20T13:41:24.319852+00:00",
+      "finished_at": "2026-07-20T13:42:04.178277+00:00"
+    },
+    {
+      "fold_index": 17,
+      "train_period": "2022-04-01 ~ 2024-03-27",
+      "valid_period": "2024-04-01 ~ 2024-06-26",
+      "test_period": "2024-07-01 ~ 2024-09-30",
+      "ic_1d": 0.02420944648342095,
+      "ic_5d": 0.05239989045347954,
+      "annualized_return": -0.25772608603846825,
+      "max_drawdown": -0.07033433534074614,
+      "information_ratio": -4.095153077985545,
+      "prediction_shape": [
+        51136
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_17_report.json",
+      "duration_seconds": 46.429864200006705,
+      "started_at": "2026-07-20T13:42:04.186388+00:00",
+      "finished_at": "2026-07-20T13:42:50.613836+00:00"
+    },
+    {
+      "fold_index": 18,
+      "train_period": "2022-07-01 ~ 2024-06-26",
+      "valid_period": "2024-07-01 ~ 2024-09-26",
+      "test_period": "2024-10-01 ~ 2024-12-31",
+      "ic_1d": 0.06988379715185541,
+      "ic_5d": 0.08599804917191764,
+      "annualized_return": 0.24550567333940862,
+      "max_drawdown": -0.02681815625211073,
+      "information_ratio": 1.2129850198639271,
+      "prediction_shape": [
+        47794
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_18_report.json",
+      "duration_seconds": 41.52899150000303,
+      "started_at": "2026-07-20T13:42:50.623996+00:00",
+      "finished_at": "2026-07-20T13:43:32.140591+00:00"
+    },
+    {
+      "fold_index": 19,
+      "train_period": "2022-10-01 ~ 2024-09-26",
+      "valid_period": "2024-10-01 ~ 2024-12-27",
+      "test_period": "2025-01-01 ~ 2025-03-31",
+      "ic_1d": -0.005965382542140996,
+      "ic_5d": 0.021095520682404077,
+      "annualized_return": 0.6890385648480045,
+      "max_drawdown": -0.027043428476332648,
+      "information_ratio": 5.433072446270835,
+      "prediction_shape": [
+        22686
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_19_report.json",
+      "duration_seconds": 39.74894299999869,
+      "started_at": "2026-07-20T13:43:32.156430+00:00",
+      "finished_at": "2026-07-20T13:44:11.907145+00:00"
+    },
+    {
+      "fold_index": 20,
+      "train_period": "2023-01-01 ~ 2024-12-27",
+      "valid_period": "2025-01-01 ~ 2025-03-27",
+      "test_period": "2025-04-01 ~ 2025-06-30",
+      "ic_1d": -0.006754517585238566,
+      "ic_5d": 0.04355460969280122,
+      "annualized_return": 0.1375540897925197,
+      "max_drawdown": -0.0285635402446033,
+      "information_ratio": 1.654991261623857,
+      "prediction_shape": [
+        24151
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_20_report.json",
+      "duration_seconds": 38.98588619999646,
+      "started_at": "2026-07-20T13:44:11.917120+00:00",
+      "finished_at": "2026-07-20T13:44:50.903389+00:00"
+    },
+    {
+      "fold_index": 21,
+      "train_period": "2023-04-01 ~ 2025-03-27",
+      "valid_period": "2025-04-01 ~ 2025-06-26",
+      "test_period": "2025-07-01 ~ 2025-09-30",
+      "ic_1d": -0.012834863192344797,
+      "ic_5d": -0.027403560702803274,
+      "annualized_return": -0.2793905749221961,
+      "max_drawdown": -0.09516583740819948,
+      "information_ratio": -2.614199626559203,
+      "prediction_shape": [
+        52779
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_21_report.json",
+      "duration_seconds": 41.663240199995926,
+      "started_at": "2026-07-20T13:44:50.903389+00:00",
+      "finished_at": "2026-07-20T13:45:32.570243+00:00"
+    },
+    {
+      "fold_index": 22,
+      "train_period": "2023-07-01 ~ 2025-06-26",
+      "valid_period": "2025-07-01 ~ 2025-09-26",
+      "test_period": "2025-10-01 ~ 2025-12-31",
+      "ic_1d": -0.024054385891727956,
+      "ic_5d": 0.04470561610252095,
+      "annualized_return": 0.0299373893280547,
+      "max_drawdown": -0.05118990227026687,
+      "information_ratio": 0.3376963715525772,
+      "prediction_shape": [
+        46922
+      ],
+      "report_path": "output/walk_forward/csi800_cadence5_conservative_isoweek/fold_22_report.json",
+      "duration_seconds": 40.39754429999448,
+      "started_at": "2026-07-20T13:45:32.580242+00:00",
+      "finished_at": "2026-07-20T13:46:12.981541+00:00"
+    }
+  ],
+  "aggregate_metrics": {
+    "mean_ic_1d": 0.00758077158914235,
+    "std_ic_1d": 0.031151304389076477,
+    "mean_ic_1d_ci_low": -0.005241625987833659,
+    "mean_ic_1d_ci_high": 0.020027206716972324,
+    "valid_folds_ic_1d": 23,
+    "mean_ic_5d": 0.020540901544804428,
+    "std_ic_5d": 0.037534794218462904,
+    "mean_ic_5d_ci_low": 0.005046181220377634,
+    "mean_ic_5d_ci_high": 0.03578141449251298,
+    "valid_folds_ic_5d": 23,
+    "mean_annualized_return": 0.06007862163336804,
+    "mean_annualized_return_ci_low": -0.037665297208964485,
+    "mean_annualized_return_ci_high": 0.155728517778254,
+    "valid_folds_annualized_return": 23,
+    "worst_drawdown": -0.11937730487819509,
+    "valid_folds_max_drawdown": 23,
+    "mean_information_ratio": 0.45643435930453646,
+    "std_information_ratio": 2.2864531195763353,
+    "mean_information_ratio_ci_low": -0.4973410013127919,
+    "mean_information_ratio_ci_high": 1.3646795031650572,
+    "valid_folds_information_ratio": 23,
+    "num_folds": 23,
+    "bootstrap_seed": 42,
+    "bootstrap_n": 10000,
+    "timing": {
+      "total_duration_seconds": 940.3801907999732,
+      "mean_fold_duration_seconds": 40.88609525217275,
+      "slowest_fold_index": 17,
+      "slowest_fold_duration_seconds": 46.429864200006705,
+      "valid_folds_duration": 23
+    }
+  },
+  "test_window_coverage": {
+    "mode": "continuous",
+    "gap_count": 0,
+    "max_gap_days": 0,
+    "overlap_count": 0,
+    "max_overlap_days": 0,
+    "max_overlap_depth": 1
+  },
+  "num_folds": 23
+}
