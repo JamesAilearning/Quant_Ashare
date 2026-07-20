@@ -25,6 +25,10 @@
       PR-A 已入库的 preset）；判据跑前钉死：净超额年化 > 0
       （毛/净差如实入档为诊断披露）——codex #385 r1：锚漂移
       证据前置于生产绑定生效
+- [ ] **复核证据入库**（钉死证据路径，走 PR 并主线 = 锚成立）：
+      聚合 report + 逐折 reports（codex #385 r3：晋升门经
+      origin/main 锚 git show 读取并验证 config 绑定 preset +
+      净值从锚上重导，本地未锚定输出拒绝）
 - [ ] 训练配置定稿（Alpha158+LGB、csi800、train 2018-01-02..最新
       可用-embargo、topk 50/n_drop 5/label horizon 同 campaign 族）
 - [ ] **训练点火 = 用户执行（GPU，阶段6 先例）**；产物 =

@@ -61,8 +61,10 @@ rebalance_days 作用域）接进生产服务路径。
      生产门槛就是净转正）；
   4. 五 veto 数字沿 `v2-csi800-expansion-guards` canonical spec
      原样适用于 guard eval 产物；
-  5. **iso_week 复核门（DP-2）**：iso_week 复核 run 净超额年化
-     > 0（该 run 先于候选 guard eval 完成，为生产锚提供证据）。
+  5. **iso_week 复核门（DP-2，锚定工件——codex #385 r3）**：复核
+     证据 SHALL 已并主线，门经 `origin/main` 锚 `git show` 读取
+     （与战役 certify 同口径），验证 config 绑定已提交 preset +
+     净超额年化 > 0 从锚上 report 重导；本地未锚定输出拒绝。
   **零写入范围界定（codex #385 r2）**：前置或任一门失败时
   SHALL NOT 触碰 canonical 生产工件（pkl/meta/备份/基线）——但
   失败记录本身 SHALL 写入（guard eval 产物 + 入档文本是失败路径
