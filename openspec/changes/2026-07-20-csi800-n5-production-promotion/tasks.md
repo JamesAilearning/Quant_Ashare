@@ -39,7 +39,10 @@
 - [x] 训练配置定稿（csi800_n5_candidate.yaml：④ 镜像窗——guard
       洁净约束下"最新可用-embargo"的解；治理窗口 pin 入档）
 - [ ] **训练点火 = 用户执行（GPU，阶段6 先例）**；产物 =
-      候选 pkl + meta（含 fit_start/fit_end_for_inference）
+      候选 pkl + trainer sidecar（仅训练 provenance——codex #387
+      r2：fit_*_for_inference 属 inference meta，由 PR-C 晋升执行
+      按 ④ 先例写入；guard eval 以显式 --fit-start/--fit-end 传
+      preset 预注册窗，不依赖 inference meta）
 - [x] guard 窗日期跑前钉死：2025-07-01..2026-06-12（= ④ 已提交
       comparison-origin 窗，候选未训未验于此；治理 pin）
 - [ ] frozen guard eval（eval_frozen_model_oos 同族口径升级
@@ -54,7 +57,9 @@
 - [ ] guard eval 硬 veto 勾验（0 degenerate/0 straddle/净>0/五 veto
       数字沿 canonical spec）
 - [ ] pre-promote 备份（pkl+meta 带时间戳）+ docs/promotion/ 新
-      baseline json + 现任基线保留
+      baseline json + 现任基线保留；**写候选 inference meta**
+      （<canonical>.meta.json 含 fit_*_for_inference/train_window/
+      promoted_at，④ 先例——serving fail-loud 依赖它）
 - [ ] canonical pkl + meta 替换；runbook 修订为周节奏操作卡
       （含观察期纪律与 73bps 盈亏平衡参考）
 - [ ] **数字 STOP**：guard eval 全部数字首次呈报 → codex/CI →
