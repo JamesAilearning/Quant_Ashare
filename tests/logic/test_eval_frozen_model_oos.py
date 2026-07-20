@@ -144,6 +144,71 @@ class ConcentrationStatsTests(unittest.TestCase):
         self.assertEqual(_concentration_stats(None), {})
 
 
+class MissingModelGuardTests(unittest.TestCase):
+    """codex #387 r6: the DP-1 guard (`--profile csi800_n5` REQUIRES an
+    explicit --model) must be exercised, not just documented — a missed
+    flag scoring the csi300-era incumbent on csi800 is the exact
+    cross-universe pairing DP-1 forbids."""
+
+    def test_non_legacy_profile_without_model_refuses_before_eval(self) -> None:
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+
+        with mock.patch.object(
+            m, "_predictions_over_window",
+            side_effect=AssertionError("heavy eval path reached"),
+        ) as heavy:
+            with self.assertRaises(SystemExit) as ctx:
+                m.main(["--profile", "csi800_n5"])
+        self.assertIn("REQUIRED for profile", str(ctx.exception))
+        heavy.assert_not_called()
+
+    def test_legacy_profile_fills_incumbent_default(self) -> None:
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+
+        class _Sentinel(Exception):
+            pass
+
+        captured: dict[str, str] = {}
+
+        def _stub(args):  # noqa: ANN001 — argparse.Namespace
+            captured["model"] = args.model
+            raise _Sentinel()
+
+        with mock.patch.object(m, "_predictions_over_window", _stub):
+            with self.assertRaises(_Sentinel):
+                m.main(["--profile", "csi300_daily"])
+        self.assertEqual(
+            "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl",
+            captured["model"],
+        )
+
+    def test_non_legacy_profile_with_explicit_model_proceeds(self) -> None:
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+
+        class _Sentinel(Exception):
+            pass
+
+        captured: dict[str, str] = {}
+
+        def _stub(args):  # noqa: ANN001
+            captured["model"] = args.model
+            captured["instruments"] = args.instruments
+            raise _Sentinel()
+
+        with mock.patch.object(m, "_predictions_over_window", _stub):
+            with self.assertRaises(_Sentinel):
+                m.main(["--profile", "csi800_n5",
+                        "--model", "D:/tmp/candidate.pkl"])
+        self.assertEqual("D:/tmp/candidate.pkl", captured["model"])
+        self.assertEqual("csi800", captured["instruments"])
+
+
 class ProfileCrossPinTests(unittest.TestCase):
     """codex #387 r1: the pure eval_profiles module hardcodes the legacy
     slippage so governance tests stay off the qlib import path — THIS
