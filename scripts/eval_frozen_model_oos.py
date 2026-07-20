@@ -56,6 +56,7 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
     CanonicalExchangeCostModel,
 )
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
+from src.core.risk_constraints import campaign_risk_constraints_v1  # noqa: E402
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer  # noqa: E402
 from src.core.walk_forward.aggregate import extract_cost_metrics  # noqa: E402
 from src.data.feature_dataset_builder import (  # noqa: E402
@@ -64,6 +65,53 @@ from src.data.feature_dataset_builder import (  # noqa: E402
 )
 
 _BENCHMARK_TR = "SH000300TR"  # canonical total-return basis (PR-2)
+
+
+# ---------------------------------------------------------------------------
+# Eval profiles (2026-07-20-csi800-n5-production-promotion PR-B, DP-3).
+# A profile is the PRE-REGISTERED semantic knob set for one promotion
+# family — not operator-tunable per run (overriding any of these values
+# means a different gate and needs a new OpenSpec change).
+#
+# * csi300_daily — the legacy ④ profile: byte-identical to the tool's
+#   historical behaviour (csi300 / SH000300TR / daily rebalance / replay
+#   slippage / no risk constraints).
+# * csi800_n5 — the certified-winner production-guard semantics:
+#   csi800 / SH000906TR / N=5 iso_week cadence / rebalance_days
+#   constraint scoping / campaign_v1 constraints / 20 bps slippage
+#   (numbers pinned by tests/governance/test_csi800_n5_production_serving.py).
+# ---------------------------------------------------------------------------
+EVAL_PROFILES: dict[str, dict[str, Any]] = {
+    "csi300_daily": {
+        "instruments": "csi300",
+        "benchmark_code": _BENCHMARK_TR,
+        "slippage_bps": SLIPPAGE_BPS,
+        "rebalance_cadence_days": 1,
+        "rebalance_phase": 0,
+        "rebalance_anchor": "fold_phase",
+        "risk_constraint_scope": "all_days",
+        "campaign_constraints": False,
+    },
+    "csi800_n5": {
+        "instruments": "csi800",
+        "benchmark_code": "SH000906TR",
+        "slippage_bps": 20.0,
+        "rebalance_cadence_days": 5,
+        "rebalance_phase": 0,
+        "rebalance_anchor": "iso_week",
+        "risk_constraint_scope": "rebalance_days",
+        "campaign_constraints": True,
+    },
+}
+
+
+def resolve_profile(name: str) -> dict[str, Any]:
+    """Return the pre-registered knob set for ``name`` (pure; testable)."""
+    if name not in EVAL_PROFILES:
+        raise ValueError(
+            f"unknown eval profile {name!r}; valid: "
+            f"{sorted(EVAL_PROFILES)}")
+    return dict(EVAL_PROFILES[name])
 
 
 def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
@@ -195,7 +243,9 @@ def _concentration_stats(positions: Any) -> dict[str, float]:
     }
 
 
-def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, Any]:
+def _backtest_metrics(
+    preds: pd.Series, args: argparse.Namespace, profile: dict[str, Any],
+) -> dict[str, Any]:
     request = CanonicalBacktestInput(
         predictions_ref=f"oos_eval:{Path(args.model).name}",
         evaluation_start=args.guard_start,
@@ -207,14 +257,14 @@ def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, A
             cost_model=CanonicalExchangeCostModel(
                 commission_rate=COMMISSION,
                 stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
-                slippage_bps=SLIPPAGE_BPS,
+                slippage_bps=profile["slippage_bps"],
                 min_cost=MIN_COST,
             ),
             limit_threshold=LIMIT_THRESHOLD,
         ),
         adjust_mode=ADJUST_MODE_PRE,
         signal_to_execution_lag=LAG,
-        benchmark_code=_BENCHMARK_TR,
+        benchmark_code=profile["benchmark_code"],
     )
     output = BacktestRunner.run(
         request=request,
@@ -224,14 +274,30 @@ def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, A
         compute_baselines=False,
         namechange_path=args.namechange,
         require_st_mask=True,  # match the incumbent's single-fold path
+        rebalance_cadence_days=profile["rebalance_cadence_days"],
+        rebalance_phase=profile["rebalance_phase"],
+        rebalance_anchor=profile["rebalance_anchor"],
+        risk_constraint_scope=profile["risk_constraint_scope"],
+        risk_constraints=(
+            campaign_risk_constraints_v1()
+            if profile["campaign_constraints"] else None
+        ),
+        universe_hint=profile["instruments"],
     )
     ann, dd, ir = extract_cost_metrics(output.risk_analysis, 0)
-    return {
+    metrics: dict[str, Any] = {
         "annualized_return": ann,
         "max_drawdown": dd,
         "information_ratio": ir,
         "concentration": _concentration_stats(output.positions),
     }
+    # GROSS leg too (DP-3 diagnostics downstream) — same reader path as
+    # the campaign evidence tools (fail loud on shape mismatch).
+    gross_block = output.risk_analysis.get("excess_return_without_cost")
+    if isinstance(gross_block, dict) and "annualized_return" in gross_block:
+        metrics["gross_annualized_return"] = float(
+            gross_block["annualized_return"])
+    return metrics
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,7 +305,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default="D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl")
     p.add_argument("--provider", default="D:/qlib_data/my_cn_data_pit")
     p.add_argument("--namechange", default="D:/qlib_data/tushare_raw/all_namechanges.parquet")
-    p.add_argument("--instruments", default="csi300")
+    p.add_argument(
+        "--profile", choices=sorted(EVAL_PROFILES), default="csi300_daily",
+        help="Pre-registered semantic knob set (universe/benchmark/"
+             "slippage/cadence/constraints). csi300_daily = legacy ④ "
+             "behaviour; csi800_n5 = the certified-winner production "
+             "guard (PR-B of csi800-n5-production-promotion). The "
+             "profile's knobs are NOT individually overridable.")
     p.add_argument("--handler", default="Alpha158")
     # Normalization fit window = the model's OWN training window (canonical model
     # default; the canonical alpha158_lgb_pit.pkl trains 2018-01-02..2024-12-18).
@@ -257,8 +329,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--guard-end", default="2026-06-12")
     p.add_argument("--out", default=None, help="JSON output path.")
     args = p.parse_args(argv)
+    profile = resolve_profile(args.profile)
+    # instruments come FROM the profile (pre-registered, not tunable):
+    # the dataset build below reads args.instruments.
+    args.instruments = profile["instruments"]
 
     print(f"[oos-eval] model={args.model}")
+    print(f"[oos-eval] profile={args.profile}  "
+          f"universe={profile['instruments']}  "
+          f"bench={profile['benchmark_code']}  "
+          f"slippage={profile['slippage_bps']}bps  "
+          f"cadence={profile['rebalance_cadence_days']}"
+          f"/{profile['rebalance_anchor']}")
     print(f"[oos-eval] fit={args.fit_start}..{args.fit_end}  guard={args.guard_start}..{args.guard_end}")
     preds = _predictions_over_window(args)
     print(f"[oos-eval] predictions: {preds.shape[0]} rows, "
@@ -269,10 +351,14 @@ def main(argv: list[str] | None = None) -> int:
         config=SignalAnalysisConfig(forward_periods=(1, 5), topk=TOPK),
     )
     degen = _degeneracy_scan(preds)
-    backtest = _backtest_metrics(preds, args)
+    backtest = _backtest_metrics(preds, args, profile)
 
     result = {
         "model": args.model,
+        # Profile provenance (PR-B): which pre-registered semantics this
+        # eval ran under — downstream gates bind to these values.
+        "profile": args.profile,
+        "profile_knobs": profile,
         "fit_window": [args.fit_start, args.fit_end],
         "guard_window": [args.guard_start, args.guard_end],
         "n_pred_rows": int(preds.shape[0]),
