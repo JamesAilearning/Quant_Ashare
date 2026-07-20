@@ -144,5 +144,20 @@ class ConcentrationStatsTests(unittest.TestCase):
         self.assertEqual(_concentration_stats(None), {})
 
 
+class ProfileCrossPinTests(unittest.TestCase):
+    """codex #387 r1: the pure eval_profiles module hardcodes the legacy
+    slippage so governance tests stay off the qlib import path — THIS
+    qlib-gated test owns the equality with the replay constant."""
+
+    def test_legacy_profile_slippage_equals_replay_constant(self) -> None:
+        from scripts.eval_profiles import EVAL_PROFILES
+        from scripts.regen.replay_frozen_baseline import SLIPPAGE_BPS
+
+        self.assertEqual(
+            SLIPPAGE_BPS,
+            EVAL_PROFILES["csi300_daily"]["slippage_bps"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

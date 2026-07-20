@@ -109,12 +109,18 @@ class LevelTwoServingParamsPin(unittest.TestCase):
 
 
 class GuardEvalProfilePin(unittest.TestCase):
+    # Profiles are imported from the PURE scripts/eval_profiles.py
+    # (codex #387 r1): the qlib-bound eval tool must never sit on the
+    # governance import path. The csi300_daily slippage ==
+    # replay_frozen_baseline.SLIPPAGE_BPS equality is cross-pinned in
+    # the qlib-gated tests/logic/test_eval_frozen_model_oos.py.
+
     def test_csi800_n5_profile_matches_certified_semantics(self) -> None:
         # PR-B (DP-3): the guard-eval csi800_n5 profile IS the certified
         # winner's semantics — every knob equal to the iso_week re-check
         # preset chain. A drifted knob silently changes the promotion
         # gate; pin each value.
-        from scripts.eval_frozen_model_oos import resolve_profile
+        from scripts.eval_profiles import resolve_profile
 
         profile = resolve_profile("csi800_n5")
         isoweek = _load(
@@ -128,15 +134,15 @@ class GuardEvalProfilePin(unittest.TestCase):
 
     def test_legacy_profile_is_byte_identical_to_history(self) -> None:
         # The ④ path must stay reproducible: csi300_daily pins the
-        # historical knob set exactly (replay constants + SH000300TR +
-        # daily + no constraints).
-        from scripts.eval_frozen_model_oos import resolve_profile
-        from scripts.regen.replay_frozen_baseline import SLIPPAGE_BPS
+        # historical knob set exactly (5.0 bps replay slippage literal —
+        # the replay-constant equality lives in the qlib-gated logic
+        # test — + SH000300TR + daily + no constraints).
+        from scripts.eval_profiles import resolve_profile
 
         profile = resolve_profile("csi300_daily")
         self.assertEqual(
             {"instruments": "csi300", "benchmark_code": "SH000300TR",
-             "slippage_bps": SLIPPAGE_BPS, "rebalance_cadence_days": 1,
+             "slippage_bps": 5.0, "rebalance_cadence_days": 1,
              "rebalance_phase": 0, "rebalance_anchor": "fold_phase",
              "risk_constraint_scope": "all_days",
              "campaign_constraints": False},
@@ -144,7 +150,7 @@ class GuardEvalProfilePin(unittest.TestCase):
         )
 
     def test_unknown_profile_refused(self) -> None:
-        from scripts.eval_frozen_model_oos import resolve_profile
+        from scripts.eval_profiles import resolve_profile
 
         with self.assertRaises(ValueError):
             resolve_profile("csi800_daily")

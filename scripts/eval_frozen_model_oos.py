@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pickle
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Canonical backtest knobs — imported from the SAME module the WF/REGEN replay uses, so
 # the metrics are computed identically (T+1, close exec, ±9.5% limit, costs).
+from scripts.eval_profiles import EVAL_PROFILES, resolve_profile  # noqa: E402
 from scripts.regen.replay_frozen_baseline import (  # noqa: E402
     COMMISSION,
     EXEC_PRICE,
@@ -66,52 +68,15 @@ from src.data.feature_dataset_builder import (  # noqa: E402
 
 _BENCHMARK_TR = "SH000300TR"  # canonical total-return basis (PR-2)
 
-
-# ---------------------------------------------------------------------------
-# Eval profiles (2026-07-20-csi800-n5-production-promotion PR-B, DP-3).
-# A profile is the PRE-REGISTERED semantic knob set for one promotion
-# family — not operator-tunable per run (overriding any of these values
-# means a different gate and needs a new OpenSpec change).
-#
-# * csi300_daily — the legacy ④ profile: byte-identical to the tool's
-#   historical behaviour (csi300 / SH000300TR / daily rebalance / replay
-#   slippage / no risk constraints).
-# * csi800_n5 — the certified-winner production-guard semantics:
-#   csi800 / SH000906TR / N=5 iso_week cadence / rebalance_days
-#   constraint scoping / campaign_v1 constraints / 20 bps slippage
-#   (numbers pinned by tests/governance/test_csi800_n5_production_serving.py).
-# ---------------------------------------------------------------------------
-EVAL_PROFILES: dict[str, dict[str, Any]] = {
-    "csi300_daily": {
-        "instruments": "csi300",
-        "benchmark_code": _BENCHMARK_TR,
-        "slippage_bps": SLIPPAGE_BPS,
-        "rebalance_cadence_days": 1,
-        "rebalance_phase": 0,
-        "rebalance_anchor": "fold_phase",
-        "risk_constraint_scope": "all_days",
-        "campaign_constraints": False,
-    },
-    "csi800_n5": {
-        "instruments": "csi800",
-        "benchmark_code": "SH000906TR",
-        "slippage_bps": 20.0,
-        "rebalance_cadence_days": 5,
-        "rebalance_phase": 0,
-        "rebalance_anchor": "iso_week",
-        "risk_constraint_scope": "rebalance_days",
-        "campaign_constraints": True,
-    },
-}
-
-
-def resolve_profile(name: str) -> dict[str, Any]:
-    """Return the pre-registered knob set for ``name`` (pure; testable)."""
-    if name not in EVAL_PROFILES:
-        raise ValueError(
-            f"unknown eval profile {name!r}; valid: "
-            f"{sorted(EVAL_PROFILES)}")
-    return dict(EVAL_PROFILES[name])
+# Eval profiles live in the PURE scripts/eval_profiles.py (codex #387
+# r1: governance pins must not drag this qlib-bound module onto their
+# import path). The csi300_daily profile's slippage MUST equal the
+# replay constant — assert it at import time here (the one place both
+# modules are loaded together) and cross-pin in the qlib-gated
+# tests/logic/test_eval_frozen_model_oos.py.
+assert EVAL_PROFILES["csi300_daily"]["slippage_bps"] == SLIPPAGE_BPS, (
+    "eval_profiles.csi300_daily slippage drifted from "
+    "replay_frozen_baseline.SLIPPAGE_BPS")
 
 
 def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
@@ -291,12 +256,25 @@ def _backtest_metrics(
         "information_ratio": ir,
         "concentration": _concentration_stats(output.positions),
     }
-    # GROSS leg too (DP-3 diagnostics downstream) — same reader path as
-    # the campaign evidence tools (fail loud on shape mismatch).
+    # GROSS leg (a PRE-REGISTERED PR-B diagnostic) — fail CLOSED on any
+    # schema drift (codex #387 r1): a silently absent gross leg would
+    # hand PR-C an eval artifact missing a mandated field instead of
+    # stopping at the producer.
     gross_block = output.risk_analysis.get("excess_return_without_cost")
-    if isinstance(gross_block, dict) and "annualized_return" in gross_block:
-        metrics["gross_annualized_return"] = float(
-            gross_block["annualized_return"])
+    if not isinstance(gross_block, dict) or (
+            "annualized_return" not in gross_block):
+        raise SystemExit(
+            "risk_analysis is missing excess_return_without_cost."
+            "annualized_return — schema drift; the gross leg is a "
+            "pre-registered PR-B diagnostic, refusing to emit a "
+            "partial eval artifact.")
+    raw_gross = gross_block["annualized_return"]
+    if isinstance(raw_gross, bool) or not isinstance(
+            raw_gross, (int, float)) or not math.isfinite(float(raw_gross)):
+        raise SystemExit(
+            f"excess_return_without_cost.annualized_return is not a "
+            f"finite number ({raw_gross!r}) — refusing.")
+    metrics["gross_annualized_return"] = float(raw_gross)
     return metrics
 
 
@@ -379,7 +357,11 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out) if args.out else (
         PROJECT_ROOT / "output" / "oos_eval"
-        / f"{Path(args.model).stem}_{args.guard_start}_{args.guard_end}.json"
+        # Profile in the default filename (codex #387 r1): the two
+        # profiles are DIFFERENT gates over the same model/window — a
+        # csi800_n5 eval must never overwrite the legacy artifact.
+        / (f"{Path(args.model).stem}_{args.profile}"
+           f"_{args.guard_start}_{args.guard_end}.json")
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
