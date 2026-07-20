@@ -79,6 +79,34 @@ assert EVAL_PROFILES["csi300_daily"]["slippage_bps"] == SLIPPAGE_BPS, (
     "replay_frozen_baseline.SLIPPAGE_BPS")
 
 
+def _executable_stamps(
+    preds: pd.Series, args: argparse.Namespace, profile: dict[str, Any],
+) -> pd.Series:
+    """Thin prediction stamps to the profile's rebalance-day set — via the
+    SAME canonical helper the profiled backtest uses, so the veto-bearing
+    degeneracy scan counts only EXECUTABLE stamps (codex #387 r3: a
+    degenerate score block on a mid-week HOLD stamp never trades under
+    iso_week cadence and must not hard-veto the candidate). Daily profile:
+    returns ``preds`` unchanged (the helper's byte-identical fast path)."""
+    if (profile["rebalance_cadence_days"] == 1
+            and profile["rebalance_anchor"] == "fold_phase"):
+        return preds
+    from qlib.data import D
+
+    cal = list(D.calendar(
+        start_time=args.guard_start, end_time=args.guard_end))
+    thinned = BacktestRunner._thin_predictions(
+        preds,
+        cadence_days=profile["rebalance_cadence_days"],
+        phase=profile["rebalance_phase"],
+        anchor=profile["rebalance_anchor"],
+        trading_calendar=cal,
+    )
+    if not isinstance(thinned, pd.Series):
+        thinned = pd.Series(thinned)
+    return thinned
+
+
 def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
     """Build the Alpha158 dataset (test = guard window, normalized to the fit window),
     load the frozen model, and predict on the test segment."""
@@ -328,7 +356,18 @@ def main(argv: list[str] | None = None) -> int:
         predictions=preds,
         config=SignalAnalysisConfig(forward_periods=(1, 5), topk=TOPK),
     )
-    degen = _degeneracy_scan(preds)
+    # Veto-bearing degeneracy scan runs on the EXECUTABLE stamp set (the
+    # profile's rebalance days — same thinning as the backtest below);
+    # the all-stamps scan is kept as a non-veto diagnostic for cadence
+    # profiles (codex #387 r3).
+    exec_preds = _executable_stamps(preds, args, profile)
+    degen = _degeneracy_scan(exec_preds)
+    degen_all: dict[str, Any] | None = None
+    if exec_preds is not preds:
+        degen_all = _degeneracy_scan(preds)
+        print(f"[oos-eval] executable stamps: "
+              f"{exec_preds.index.get_level_values(0).nunique()} of "
+              f"{preds.index.get_level_values(0).nunique()} prediction dates")
     backtest = _backtest_metrics(preds, args, profile)
 
     result = {
@@ -347,7 +386,10 @@ def main(argv: list[str] | None = None) -> int:
         "ic_1d_positive_ratio": float(signal.ic_summary[1].get("ic_positive_ratio", float("nan"))),
         "mean_turnover": float(signal.turnover_stats.get("mean_turnover", float("nan"))),
         "backtest_excess_with_cost": backtest,
+        # Veto-bearing scan: EXECUTABLE stamps only (profile-thinned).
         "degeneracy": degen,
+        # Non-veto diagnostic (cadence profiles only): every raw stamp.
+        "degeneracy_all_stamps": degen_all,
     }
     print("\n" + "=" * 64)
     print(json.dumps({k: v for k, v in result.items() if k != "degeneracy"}, indent=2, default=str))
