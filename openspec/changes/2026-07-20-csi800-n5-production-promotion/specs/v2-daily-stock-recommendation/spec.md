@@ -147,6 +147,12 @@ SHALL 为且仅为 (a) 现行战役认证有效（已提交 verdict 侧车在库
 ensemble）。轮换 SHALL NOT 重跑侧车 `--verify`/iso_week 门——
 它们锚定的是策略语义，成员轮换不改变策略；年度再认证过期或
 LOSE 期间轮换路径 SHALL 冻结（升级操作人决策点）。
+**有效期锚（codex #389 r2，确定性机读）**：认证有效期 = 最近
+一次 verdict 侧车在 `origin/main` 上的合并 commit 的 committer
+日期起 **15 个月**（12 个月再认证周期 + 3 个月执行宽限）；过期
+判定 = 轮换执行日 > 该日期 + 15 个月，锚日期以
+`git log -1 --format=%cI origin/main -- <侧车路径>` 机读，SHALL
+NOT 依赖操作人断言或本地文件时间戳。
 **年度再认证义务**：每年 SHALL 以最新数据重跑战役协议全链
 （walk-forward + pair/attach/certify）产出新 verdict 侧车；再认证
 LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT 承担

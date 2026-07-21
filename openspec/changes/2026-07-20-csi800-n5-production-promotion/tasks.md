@@ -87,11 +87,16 @@
       旧路径字节不变
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
-### PR-B' — per-retrain 门工装
+### PR-B' — per-retrain 门工装 + 轮换执行器
 - [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
       serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
       ensemble+如实入档;连续两季不过=操作人决策点
 - [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
+- [ ] **轮换执行器**(codex #389 r2)：认证有效性前置校验(侧车在库
+      + 有效期锚 = 侧车主线合并 commit 日期 + 15 个月,git log
+      机读;LOSE/过期即冻结零写入+升级决策点) + gate 工件消费 +
+      pre-rotation manifest 备份(单步回退) + 轮换落 manifest；
+      测试:过期冻结/LOSE 冻结/备份在场/回退单步/合法轮换全链
 - [ ] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
       再认证义务
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
