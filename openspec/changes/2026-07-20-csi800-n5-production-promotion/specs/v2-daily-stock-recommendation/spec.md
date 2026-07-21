@@ -128,12 +128,16 @@ per-retrain 门的全部数字 SHALL 于对应执行 PR 的数字 STOP 首次
   结果如实入档、升级为操作人决策点（轮换维护路径的"沿用旧
   ensemble/两季升级"动作不适用于本路径）
 
-#### Scenario: 训练预算耗尽的成员被拒
+#### Scenario: 训练预算耗尽的成员触发晋升路径中止
 
-- **WHEN** 新成员的 trainer sidecar 记录
-  `best_iteration == num_boost_round`（早停从未触发）
-- **THEN** trainer 完整性门拒绝该成员（边界异常非收敛信号），
-  成员不入 ensemble、如实入档
+- **WHEN** 晋升路径（自举/策略级变更）中某成员的 trainer
+  sidecar 记录 `best_iteration == num_boost_round`（早停从未
+  触发）
+- **THEN** trainer 完整性门失败（边界异常非收敛信号）→ 切换
+  中止、现任 canonical 及其服务语义不变、失败如实入档、升级为
+  操作人决策点（"成员不入 ensemble/沿用现行"是季度轮换维护
+  路径专属动作，不适用于本路径；部分 ensemble 继续 SHALL NOT
+  发生）
 
 #### Scenario: 未锚定的 iso_week 复核输出被拒绝
 
