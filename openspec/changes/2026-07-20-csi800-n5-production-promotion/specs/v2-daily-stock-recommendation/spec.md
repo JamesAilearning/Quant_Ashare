@@ -91,7 +91,9 @@ SHALL 照常写入，二者不冲突（失败必须留痕，canonical 必须
    ——该门与协议级认证证据结构性错配，实证见
    `docs/research/csi800_n5_promotion_guard_brief.md`）**：每名
    新成员进入生产 ensemble 前 SHALL 全过：(a) trainer 完整性
-   （best_iteration/valid loss 有限，sidecar 机读）；(b) 退化门
+   （best_iteration/valid loss 有限，且 best_iteration SHALL NOT
+   等于 num_boost_round——早停从未触发即训练预算耗尽的边界
+   异常，sidecar 机读，codex #389 r12）；(b) 退化门
    （新 ensemble 对 trailing quarter 可执行 stamp 0 degenerate /
    0 straddle）；(c) 约束干跑（trailing quarter N5 回测
    campaign_v1 RAISE 零触发）；(d) IC 方向门（valid 窗
@@ -121,6 +123,13 @@ per-retrain 门的全部数字 SHALL 于对应执行 PR 的数字 STOP 首次
   任一门失败
 - **THEN** 该成员不入 ensemble、旧 ensemble 沿用、门工件与结果
   如实入档、canonical 零写入；连续两季不过升级为操作人决策点
+
+#### Scenario: 训练预算耗尽的成员被拒
+
+- **WHEN** 新成员的 trainer sidecar 记录
+  `best_iteration == num_boost_round`（早停从未触发）
+- **THEN** trainer 完整性门拒绝该成员（边界异常非收敛信号），
+  成员不入 ensemble、如实入档
 
 #### Scenario: 未锚定的 iso_week 复核输出被拒绝
 
