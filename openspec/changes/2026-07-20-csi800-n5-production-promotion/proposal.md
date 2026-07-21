@@ -136,3 +136,61 @@ rebalance_days 作用域）接进生产服务路径。
 - 新训候选与 campaign fold 模型非同一工件——campaign 证明的是
   **协议级** alpha（滚动重训 + N5），生产以同族配置的最新模型
   近似该协议；此近似的残差由 DP-3 guard eval 把门。
+
+## R1 修订：协议对齐（2026-07-21 签，guard FAIL 实证驱动）
+
+**触发**：DP-3 gate C-4（冻结候选单年净>0）如实 FAIL（净 −2.14%，
+入档 PR #388，简报 `docs/research/csi800_n5_promotion_guard_brief.md`）。
+诊断已入档：该门与被认证证据**结构性错配**——战役认证的是
+**协议级** alpha（24m 滚动训窗、季度重训、ensemble 3、N5），冻结
+单模型在弱年+鲜度衰减叠加下几乎必然被拒。DP-1 的"新训候选近似
+协议"路线被实证否决；修订 = 生产实现协议本体。原 DP-3 gate C-4
+与"五 veto 原样适用于 frozen eval 产物"条款废止（后者的结构缺口
+同见 #388 r1 入档），其余 DP 不动。
+
+- **R1-DP-A 生产形态 = 协议本体**：**季度重训 + ensemble 3 + N5
+  iso_week 服务**。每季度末（数据可用后）训练一名新成员（同族
+  配置：Alpha158/LGB/csi800/campaign 三守卫/24m 滚动训窗 + 3m
+  valid，embargo 同 walk-forward 折算术），生产打分 = **最近三名
+  季度成员的 ensemble**（与 `apply_ensemble` 同语义——战役证据
+  的预测生成方式，不再近似）。daily_recommend 增多模型 ensemble
+  消费（serving manifest 列三成员 pkl + meta，treat as one logical
+  model）。
+- **R1-DP-B per-retrain 轻门（预注册，替代 gate C-4）**：每次
+  季度重训后、新成员进入 ensemble 前 SHALL 全过：
+  1. trainer 完整性：best_iteration 有限且非早停边界异常、valid
+     loss 有限（trainer sidecar 机读）；
+  2. 退化门：新 ensemble 对 trailing quarter 可执行 stamp 的
+     0 degenerate / 0 straddle（C-1 同款，退化非收益指标，无
+     lookahead 顾虑）；
+  3. 约束干跑：trailing quarter N5 回测 campaign_v1 RAISE 零触发
+     （机械安全，非业绩门）；
+  4. IC 方向门：valid 窗（embargo-clean）IC(1d) > 0；
+  5. sleeve 面（#388 义务的 serving veto 重设计）：约束干跑的
+     attribution 分解上 veto②/⑤ 数字原样（csi500 效应占比 <80%、
+     时均权重 <75%、unknown <10%）；veto③ = 干跑年化换手 ≤ 锚上
+     isoweek 复核 run 换手均值 ×1.5（同配置、主线锚上、可复验）。
+  **无净收益门**——单季净收益是噪声（锚上实证单季 ±30-70%），
+  业绩权威 = 已认证战役证据 + R1-DP-D 年度再认证 + DP-6 观察期。
+  任一门不过：该成员不入 ensemble，沿用旧 ensemble 并如实入档，
+  连续两季不过 = 升级为操作人决策点。
+- **R1-DP-C 首次上线自举**：一次性训练三名错峰成员（训窗终点
+  T-6m/T-3m/T，各自 24m 滚动窗+3m valid，GPU 点火在操作人，三发
+  串行），各过 R1-DP-B 门后组成首个生产 ensemble；切换沿 DP-4
+  回滚件义务（pre-promote 备份 + inference meta + baseline json，
+  ④ 先例）。既有已训候选（run 20260721_195924，训至 2024-12-18）
+  **不复用**——其训窗与错峰算术不符，如实弃置。
+- **R1-DP-D 年度再认证**：每年 SHALL 以最新数据重跑战役协议
+  （walk-forward 全窗 + pair/attach/certify 全链）并产出新 verdict
+  侧车；再认证 LOSE = 生产降级决策点（回滚现任或停用，操作人
+  裁决）。这是净业绩的唯一权威循环——季度门永不承担该职责。
+- **R1-DP-E 观察期沿 DP-6**：首季只记录不回调；季度复盘报告
+  （实测 vs 锚上同期折分布）入 runbook 义务；诚实预期 = edge 仅
+  均值意义存在。
+
+- 分段（每 PR 独立 STOP）：**PR-A' ensemble 服务机制**（
+  daily_recommend 多模型消费 + serving manifest + 治理绑定扩展，
+  runtime 触点）→ **PR-B' per-retrain 门工装**（gate 工具产出
+  机读 gate 工件 + 季度操作卡 runbook）→ **PR-C' 自举点火**
+  （三发 GPU 在操作人）→ 门勾验 → 切换执行（备份/meta/baseline）
+  → **数字 STOP**（三成员门工件 + valid 窗数字呈报）→ 观察期起点。

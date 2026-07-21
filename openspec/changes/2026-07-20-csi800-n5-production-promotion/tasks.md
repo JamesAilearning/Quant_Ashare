@@ -50,7 +50,8 @@
       数字 STOP（已呈报：gate C-4 净 −2.14% FAIL）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
-## 3. PR-C — 晋升执行（数字 STOP）
+## 3. PR-C — 晋升执行（数字 STOP）【R1 废止：gate C-4 FAIL 实证
+（PR #388 入档），本节由 §5 R1 分段取代；下列未勾项不再执行】
 - [ ] 晋升工具执行前置校验：侧车 --verify 通过 +
       promotion_eligible: true + iso_week 复核门过线（否则拒绝；
       零写入限于 canonical 本体，失败记录照常写入——codex #385 r2）
@@ -72,3 +73,40 @@
 ## 4. 收束
 - [ ] 观察期起点记录（首季度只记录不回调）
 - [ ] 战役记忆/runbook 终稿同步 → `/opsx:archive`
+
+
+## 5. R1 协议对齐分段（2026-07-21 签，替代 §3 执行路径）
+
+### PR-A' — ensemble 服务机制（runtime 触点）
+- [ ] daily_recommend 多模型 ensemble 消费（serving manifest 列
+      三成员 pkl+meta，apply_ensemble 同语义打分；缺员/断链
+      fail-loud 拒绝出单，绝不静默降级）
+- [ ] serving manifest schema + 治理绑定扩展（manifest 成员窗口
+      算术 pin：24m 滚动+3m valid+错峰终点）
+- [ ] 测试：三成员合成 ensemble 等价性/缺员拒绝/断链拒绝/单模型
+      旧路径字节不变
+- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+
+### PR-B' — per-retrain 门工装
+- [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
+      serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
+      ensemble+如实入档;连续两季不过=操作人决策点
+- [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
+- [ ] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
+      再认证义务
+- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+
+### PR-C' — 自举点火 + 切换执行（数字 STOP）
+- [ ] 三名错峰成员训练配置定稿(训窗终点 T-6m/T-3m/T,各 24m+3m,
+      跑前钉死具体日期)
+- [ ] **三发 GPU 点火 = 操作人执行,严格串行**
+- [ ] 三成员各过 per-retrain 门(gate 工件入库)
+- [ ] 切换执行:pre-promote 备份+三成员 inference meta+serving
+      manifest+baseline json(④ 先例)
+- [ ] **数字 STOP**:三成员门工件+valid 窗数字首次呈报 → codex/CI
+      → 用户 merge = 切换完成,观察期起点记录
+- [ ] 既有候选(run 20260721_195924)如实弃置(训窗与错峰算术不符)
+
+### 收束
+- [ ] 首季观察期报告义务入 runbook;年度再认证日历锚定
+- [ ] 战役记忆终稿 → `/opsx:archive`
