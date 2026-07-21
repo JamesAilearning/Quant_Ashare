@@ -1,7 +1,11 @@
 # Tasks: 2026-07-20-csi800-n5-production-promotion
 
-## 0. 提案签署（本 PR）
-- [ ] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后冻结
+## 0. 提案签署
+- [x] 操作人签 DP-1..DP-6（proposal.md 决策账，#385 merge =
+      签署），签字后冻结
+- [ ] **操作人签 R1-DP-A..E**（R1 修订决策账——取代 §3 晋升门的
+      协议对齐决策；本 R1 提案 PR merge = 签署，签字后冻结；
+      codex #389 r19：R1 决策集须显式签署项）
 
 ## 1. PR-A — 服务节奏机制 + 两级绑定链工件（唯一 runtime 触点）
 - [x] iso-week 再平衡日判定（交易日历驱动：ISO 周第一个交易日；
