@@ -169,9 +169,12 @@ SHALL 仅经 `git show origin/main:<状态工件路径>` 读取该文件——
 日期）。状态工件 SHALL 仅由年检流程与首次自举修改（治理
 测试钉守——侧车路径的非年检触碰不影响轮换判定）。
 **年度再认证义务**：每年 SHALL 以最新数据重跑战役协议全链
-（walk-forward + pair/attach/certify）产出新 verdict 侧车；再认证
-LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT 承担
-净业绩职责。首次上线 SHALL 以三名错峰成员自举（训窗终点
+（walk-forward + pair/attach/certify）并**更新状态工件**
+（codex #389 r6：产物是状态工件的新状态，非无条件的新侧车）——
+WIN 时 certify 产新 verdict 侧车且状态工件携其内容哈希引用；
+LOSE 时 certify 按设计不写侧车，状态工件单独承载 LOSE 判定。
+再认证 LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT
+承担净业绩职责。首次上线 SHALL 以三名错峰成员自举（训窗终点
 T-6m/T-3m/T，各过轻门）。
 
 #### Scenario: ensemble manifest 缺员时拒绝出单
