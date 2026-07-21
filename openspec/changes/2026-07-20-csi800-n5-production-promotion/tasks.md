@@ -91,6 +91,11 @@
 - [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
       serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
       ensemble+如实入档;连续两季不过=操作人决策点
+- [ ] **逐门失败验收测试**(codex #389 r10:缺此项实现可静默弱化
+      任一门仍满足清单)：每门至少一个拒绝态——坏 trainer sidecar
+      (best_iteration/valid loss 非有限)拒/退化或 straddle 输出拒/
+      约束干跑 RAISE 拒/valid IC≤0 拒/serving veto ②③⑤ 各越界拒;
+      另加全过放行态+gate 工件内容 pin(逐门 verdict 与数值入档)
 - [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
 - [ ] **轮换执行器**(codex #389 r2/r3/r4)：认证有效性前置校验——
       仅 git show 读单一状态工件 csi800_recert_status.json 内容
