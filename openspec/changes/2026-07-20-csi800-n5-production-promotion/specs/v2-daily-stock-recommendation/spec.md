@@ -63,11 +63,15 @@ SHALL 由交易日历驱动（节假日顺延至该 ISO 周内第一个实际交
 
 ### Requirement: 生产模型晋升 SHALL 以 certify 侧车与 guard eval 双门把守
 
-任何替换 canonical 生产模型（pkl + meta）的晋升执行 SHALL 满足
-全部前置，缺一即拒绝执行——**零写入的范围限于晋升执行本体**
-（canonical pkl/meta 替换、备份件、基线记录），失败路径的审计
-记录（guard eval 产物、如实入档文本）SHALL 照常写入，二者不
-冲突（失败必须留痕，canonical 必须不动）：
+本 requirement 管辖**晋升路径**：首次生产切换（自举 ensemble
+上线）与任何策略级变更（universe/cadence/约束/成本口径改动）。
+**季度成员轮换是独立的维护路径**（见"生产打分 SHALL 实现认证
+协议本体"requirement——codex #389 r1：轮换不改策略语义，SHALL
+NOT 重跑侧车/iso_week 门，其前置在彼处定义）。晋升路径的执行
+SHALL 满足全部前置，缺一即拒绝执行——**零写入的范围限于晋升
+执行本体**（canonical pkl/meta 替换、备份件、基线记录），失败
+路径的审计记录（guard eval 产物、如实入档文本）SHALL 照常写入，
+二者不冲突（失败必须留痕，canonical 必须不动）：
 
 1. **战役资格门**：已提交 verdict 侧车经
    `csi800_campaign_certify.py --verify` 复验通过且
@@ -135,6 +139,13 @@ walk-forward `apply_ensemble` 同语义——认证战役证据的预测生成
 折算术），经 per-retrain 轻门后轮换进 ensemble（最老成员退出）。
 serving SHALL 经 manifest 消费三成员（pkl + meta 逐一列出，
 视为一个逻辑模型；manifest 缺员/断链 SHALL fail-loud 拒绝出单）。
+**季度轮换是维护路径而非晋升路径（codex #389 r1）**：其前置
+SHALL 为且仅为 (a) 现行战役认证有效（已提交 verdict 侧车在库且
+年度再认证未过期、未 LOSE）；(b) 新成员通过 per-retrain 轻门；
+(c) 轮换前 SHALL 写 pre-rotation manifest 备份（单步回退到上一
+ensemble）。轮换 SHALL NOT 重跑侧车 `--verify`/iso_week 门——
+它们锚定的是策略语义，成员轮换不改变策略；年度再认证过期或
+LOSE 期间轮换路径 SHALL 冻结（升级操作人决策点）。
 **年度再认证义务**：每年 SHALL 以最新数据重跑战役协议全链
 （walk-forward + pair/attach/certify）产出新 verdict 侧车；再认证
 LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT 承担
@@ -153,6 +164,12 @@ T-6m/T-3m/T，各过轻门）。
 - **WHEN** 年度再认证 walk-forward 全链产出 LOSE 判定
 - **THEN** 结果如实入档并升级为操作人决策点（回滚/停用），
   生产 ensemble 在裁决前不自动变更
+
+#### Scenario: 再认证过期期间季度轮换被冻结
+
+- **WHEN** 年度再认证已过期（或 LOSE 未裁决）时尝试季度成员轮换
+- **THEN** 轮换路径拒绝执行（manifest 零写入），升级为操作人
+  决策点——维护路径的合法性以现行认证有效为前提
 
 ### Requirement: 生产服务参数 SHALL 经两级治理绑定链锚定认证胜者
 
