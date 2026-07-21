@@ -91,11 +91,13 @@
 - [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
       serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
       ensemble+如实入档;连续两季不过=操作人决策点
-- [ ] **逐门失败验收测试**(codex #389 r10:缺此项实现可静默弱化
-      任一门仍满足清单)：每门至少一个拒绝态——坏 trainer sidecar
-      (best_iteration/valid loss 非有限)拒/退化或 straddle 输出拒/
-      约束干跑 RAISE 拒/valid IC≤0 拒/serving veto ②③⑤ 各越界拒;
-      另加全过放行态+gate 工件内容 pin(逐门 verdict 与数值入档)
+- [ ] **逐门失败验收测试**(codex #389 r10/r11:缺此项实现可静默
+      弱化任一门仍满足清单)：每门至少一个拒绝态——坏 trainer
+      sidecar(best_iteration/valid loss 非有限)拒 + **早停边界拒**
+      (best_iteration == num_boost_round 即早停从未触发,训练预算
+      耗尽的边界异常,r11)/退化或 straddle 输出拒/约束干跑 RAISE
+      拒/valid IC≤0 拒/serving veto ②③⑤ 各越界拒;另加全过放行态
+      +gate 工件内容 pin(逐门 verdict 与数值入档)
 - [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
 - [ ] **轮换执行器**(codex #389 r2/r3/r4)：认证有效性前置校验——
       仅 git show 读单一状态工件 csi800_recert_status.json 内容
@@ -104,7 +106,9 @@
       +15 个月 + gate 工件消费 + pre-rotation manifest 备份
       (单步回退) + 轮换落 manifest；测试:过期冻结/LOSE 冻结/
       WIN 恢复/备份在场/回退单步/合法轮换全链/侧车路径非年检
-      触碰不影响判定
+      触碰不影响判定/**gate 工件缺失拒轮换+gate 工件 FAIL 拒轮换**
+      (codex #389 r11:门工具拒了但执行器无视=成员照样入生产的
+      通道必须封死,两态均 manifest 零写入)
 - [ ] **年检状态工件义务**(codex #389 r3/r4/r8)：单一状态工件
       schema(verdict/WIN 侧车内容哈希/证据锚/判定说明)+仅年检
       流程可改的治理钉守+runbook 年检操作卡——**仅 schema/文档,
