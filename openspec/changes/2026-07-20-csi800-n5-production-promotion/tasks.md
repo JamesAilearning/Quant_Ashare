@@ -114,7 +114,10 @@
 - [ ] **三发 GPU 点火 = 操作人执行,严格串行**
 - [ ] 三成员各过 per-retrain 门(gate 工件入库)
 - [ ] 切换执行:pre-promote 备份+三成员 inference meta+serving
-      manifest+baseline json(④ 先例)
+      manifest+baseline json(④ 先例)+**初始 WIN 状态工件**
+      (codex #389 r7:csi800_recert_status.json 首写——verdict WIN
+      +现行 #383 verdict 侧车内容哈希引用+证据锚,与切换同 PR 入库;
+      缺此项轮换执行器读无有效状态会误冻结首次季度轮换)
 - [ ] **数字 STOP**:三成员门工件+valid 窗数字首次呈报 → codex/CI
       → 用户 merge = 切换完成,观察期起点记录
 - [ ] 既有候选(run 20260721_195924)如实弃置(训窗与错峰算术不符)
