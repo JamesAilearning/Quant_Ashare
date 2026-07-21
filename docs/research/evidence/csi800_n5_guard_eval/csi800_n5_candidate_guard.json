@@ -1,0 +1,71 @@
+{
+  "model": "output/runs/20260721_195924_801348_64b5a26b_d995d43ff26f/artifacts/model.pkl",
+  "profile": "csi800_n5",
+  "profile_knobs": {
+    "instruments": "csi800",
+    "benchmark_code": "SH000906TR",
+    "slippage_bps": 20.0,
+    "rebalance_cadence_days": 5,
+    "rebalance_phase": 0,
+    "rebalance_anchor": "iso_week",
+    "risk_constraint_scope": "rebalance_days",
+    "campaign_constraints": true
+  },
+  "fit_window": [
+    "2018-01-02",
+    "2024-12-18"
+  ],
+  "guard_window": [
+    "2025-07-01",
+    "2026-06-12"
+  ],
+  "n_pred_rows": 183701,
+  "n_pred_dates": 231,
+  "ic_1d": 0.02517702320305513,
+  "ic_5d": 0.028638200396977384,
+  "ic_ir_1d": 0.30781241859265956,
+  "ic_1d_positive_ratio": 0.6122448979591837,
+  "mean_turnover": 0.82,
+  "backtest_excess_with_cost": {
+    "annualized_return": -0.021354729538974174,
+    "max_drawdown": -0.12044544234037459,
+    "information_ratio": -0.19433674929212177,
+    "concentration": {
+      "median_n_holdings": 50.0,
+      "min_n_holdings": 48.0,
+      "median_top10_share": 0.255806276148288,
+      "max_single_name_weight": 0.04387082625821039,
+      "median_hhi": 0.02066476466419244
+    },
+    "gross_annualized_return": 0.008979763258971445
+  },
+  "constraint_veto": null,
+  "degeneracy": {
+    "n_days": 49,
+    "min_unique": 751,
+    "median_unique": 800.0,
+    "median_universe": 800.0,
+    "max_tie_density": 0.0,
+    "median_tie_density": 0.0,
+    "n_cutoff_straddle_days": 0,
+    "max_names_tied_at_cutoff": 0,
+    "max_tie_filled_slots": 0,
+    "cutoff_straddle_veto_min": 10,
+    "n_degenerate_days": 0,
+    "degenerate_days_sample": []
+  },
+  "degeneracy_all_stamps": {
+    "n_days": 231,
+    "min_unique": 751,
+    "median_unique": 800.0,
+    "median_universe": 800.0,
+    "max_tie_density": 0.0,
+    "median_tie_density": 0.0,
+    "n_cutoff_straddle_days": 0,
+    "max_names_tied_at_cutoff": 0,
+    "max_tie_filled_slots": 0,
+    "cutoff_straddle_veto_min": 10,
+    "n_degenerate_days": 0,
+    "degenerate_days_sample": []
+  }
+}

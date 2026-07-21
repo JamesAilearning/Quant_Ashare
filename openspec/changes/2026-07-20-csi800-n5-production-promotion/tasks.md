@@ -38,16 +38,16 @@
       净值从锚上重导，本地未锚定输出拒绝）
 - [x] 训练配置定稿（csi800_n5_candidate.yaml：④ 镜像窗——guard
       洁净约束下"最新可用-embargo"的解；治理窗口 pin 入档）
-- [ ] **训练点火 = 用户执行（GPU，阶段6 先例）**；产物 =
+- [x] **训练点火 = 用户执行（GPU，阶段6 先例，2026-07-21 授权）**；产物 =
       候选 pkl + trainer sidecar（仅训练 provenance——codex #387
       r2：fit_*_for_inference 属 inference meta，由 PR-C 晋升执行
       按 ④ 先例写入；guard eval 以显式 --fit-start/--fit-end 传
       preset 预注册窗，不依赖 inference meta）
 - [x] guard 窗日期跑前钉死：2025-07-01..2026-06-12（= ④ 已提交
       comparison-origin 窗，候选未训未验于此；治理 pin）
-- [ ] frozen guard eval（eval_frozen_model_oos 同族口径升级
+- [x] frozen guard eval（eval_frozen_model_oos 同族口径升级
       csi800/SH000906TR/N5/20bps）跑毕——数字保持未读直至 PR-C
-      数字 STOP
+      数字 STOP（已呈报：gate C-4 净 −2.14% FAIL）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 3. PR-C — 晋升执行（数字 STOP）
@@ -64,7 +64,10 @@
       （含观察期纪律与 73bps 盈亏平衡参考）
 - [ ] **数字 STOP**：guard eval 全部数字首次呈报 → codex/CI →
       用户 merge = 晋升执行完成
-- [ ] 若任一门不过：如实入档不晋升，现任不动，处置另行提案
+- [x] 若任一门不过：如实入档不晋升，现任不动，处置另行提案
+      （**已触发**：gate C-4 冻结候选 guard 窗净 −2.14%≤0；诊断=
+      冻结/协议结构性错配+guard 年协议级弱年；guard eval 工件+
+      简报入库，canonical 零写入；选项 1=协议对齐另行提案）
 
 ## 4. 收束
 - [ ] 观察期起点记录（首季度只记录不回调）
