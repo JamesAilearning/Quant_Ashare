@@ -108,5 +108,76 @@ class LevelTwoServingParamsPin(unittest.TestCase):
         self.assertNotIn("rebalance_anchor", SERVING_ONLY_KEYS)
 
 
+class GuardEvalProfilePin(unittest.TestCase):
+    # Profiles are imported from the PURE scripts/eval_profiles.py
+    # (codex #387 r1): the qlib-bound eval tool must never sit on the
+    # governance import path. The csi300_daily slippage ==
+    # replay_frozen_baseline.SLIPPAGE_BPS equality is cross-pinned in
+    # the qlib-gated tests/logic/test_eval_frozen_model_oos.py.
+
+    def test_csi800_n5_profile_matches_certified_semantics(self) -> None:
+        # PR-B (DP-3): the guard-eval csi800_n5 profile IS the certified
+        # winner's semantics — every knob equal to the iso_week re-check
+        # preset chain. A drifted knob silently changes the promotion
+        # gate; pin each value.
+        from scripts.eval_profiles import resolve_profile
+
+        profile = resolve_profile("csi800_n5")
+        isoweek = _load(
+            _PRESETS / "csi800_cadence5_conservative_isoweek.yaml")
+        for key in ("instruments", "benchmark_code", "slippage_bps",
+                    "rebalance_cadence_days", "rebalance_phase",
+                    "rebalance_anchor", "risk_constraint_scope"):
+            with self.subTest(key=key):
+                self.assertEqual(isoweek[key], profile[key])
+        self.assertIs(True, profile["campaign_constraints"])
+
+    def test_legacy_profile_is_byte_identical_to_history(self) -> None:
+        # The ④ path must stay reproducible: csi300_daily pins the
+        # historical knob set exactly (5.0 bps replay slippage literal —
+        # the replay-constant equality lives in the qlib-gated logic
+        # test — + SH000300TR + daily + no constraints).
+        from scripts.eval_profiles import resolve_profile
+
+        profile = resolve_profile("csi300_daily")
+        self.assertEqual(
+            {"instruments": "csi300", "benchmark_code": "SH000300TR",
+             "slippage_bps": 5.0, "rebalance_cadence_days": 1,
+             "rebalance_phase": 0, "rebalance_anchor": "fold_phase",
+             "risk_constraint_scope": "all_days",
+             "campaign_constraints": False},
+            profile,
+        )
+
+    def test_unknown_profile_refused(self) -> None:
+        from scripts.eval_profiles import resolve_profile
+
+        with self.assertRaises(ValueError):
+            resolve_profile("csi800_daily")
+
+
+class CandidateTrainingPresetPin(unittest.TestCase):
+    def test_candidate_windows_mirror_stage4_arithmetic(self) -> None:
+        # DP-1 (跑前钉死): the candidate trains on the ④-mirror windows —
+        # train/valid untouched by the guard, guard = the committed
+        # comparison-origin window (docs/promotion/). Drift = a
+        # different gate.
+        cand = _load(_PRESETS / "csi800_n5_candidate.yaml")
+        self.assertEqual("csi800", cand["instruments"])
+        self.assertEqual("SH000906TR", cand["benchmark_code"])
+        self.assertEqual("2018-01-02", cand["train_start"])
+        self.assertEqual("2024-12-18", cand["train_end"])
+        self.assertEqual("2025-01-02", cand["valid_start"])
+        self.assertEqual("2025-06-26", cand["valid_end"])
+        self.assertEqual("2025-07-01", cand["test_start"])
+        self.assertEqual("2026-06-12", cand["test_end"])
+        self.assertEqual("gpu", cand["compute_device"])
+        # csi800 mandatory guard trio (config-level rule).
+        self.assertIs(True, cand["attribution_sleeve_grouping"])
+        self.assertIs(True, cand["risk_constraints_enabled"])
+        self.assertEqual("campaign_v1",
+                         cand["risk_constraints_calibration"])
+
+
 if __name__ == "__main__":
     unittest.main()

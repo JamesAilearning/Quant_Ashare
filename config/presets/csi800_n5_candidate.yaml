@@ -1,0 +1,39 @@
+# CSI800 N5 生产候选训练配置（2026-07-20-csi800-n5-production-promotion
+# PR-B/DP-1，跑前钉死）。
+#
+# 训练/验证/guard 窗完全镜像 ④（config.yaml 的已证 embargo 算术）：
+#   train 2018-01-02..2024-12-18 / valid 2025-01-02..2025-06-26（早停）
+#   test  2025-07-01..2026-06-12（= guard 窗，候选未训未验于此）
+# bundle 尾部 2026-06-17（与 ④ 同代，无新数据）——"最新可用-embargo"
+# 在 guard 洁净约束下的解就是 ④ 镜像窗；与现任 canonical 同窗仅换
+# universe，guard eval 的差值干净隔离 universe×cadence 效应。
+#
+# 本 preset 的 pipeline 内嵌 test 回测是【日频诊断】，不是晋升证据；
+# 晋升证据 = eval_frozen_model_oos --profile csi800_n5（N5/iso_week/
+# campaign_v1/20bps guard 语义）。
+#
+# 点火（GPU，操作人执行；单发，绝不与其它重型 run 并发）:
+#     python main.py config/presets/csi800_n5_candidate.yaml
+# 产物: 运行目录下 model.pkl + trainer sidecar(<model>.pkl.meta.json,
+# 仅训练 provenance——model_type/device/best_iteration 等)。
+# 注意(codex #387 r2): trainer sidecar 不含 fit_*_for_inference;
+# 服务所需的 inference meta(<model>.meta.json)按 ④ 先例由 PR-C 晋升
+# 执行步骤写入(含本 preset 钉死的 fit 窗)。guard eval 阶段不依赖
+# inference meta——eval_frozen_model_oos 以显式 --fit-start/--fit-end
+# 传入本文件预注册的训练窗。
+extends: ../../config.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+# csi800 宇宙强制三守卫（v2-csi800-expansion-guards 配置级规则）
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+# 窗口显式钉死（不依赖 config.yaml 未来漂移）
+train_start: "2018-01-02"
+train_end: "2024-12-18"
+valid_start: "2025-01-02"
+valid_end: "2025-06-26"
+test_start: "2025-07-01"
+test_end: "2026-06-12"
+compute_device: "gpu"

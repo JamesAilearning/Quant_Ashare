@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pickle
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Canonical backtest knobs — imported from the SAME module the WF/REGEN replay uses, so
 # the metrics are computed identically (T+1, close exec, ±9.5% limit, costs).
+from scripts.eval_profiles import EVAL_PROFILES, resolve_profile  # noqa: E402
 from scripts.regen.replay_frozen_baseline import (  # noqa: E402
     COMMISSION,
     EXEC_PRICE,
@@ -46,7 +48,10 @@ from scripts.regen.replay_frozen_baseline import (  # noqa: E402
     SLIPPAGE_BPS,
     TOPK,
 )
-from src.core.backtest_runner import BacktestRunner  # noqa: E402
+from src.core.backtest_runner import (  # noqa: E402
+    BacktestRunner,
+    BacktestRunnerError,
+)
 from src.core.canonical_backtest_contract import (  # noqa: E402
     ADJUST_MODE_PRE,
     CN_STAMP_TAX_SCHEDULE_DEFAULT,
@@ -56,6 +61,10 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
     CanonicalExchangeCostModel,
 )
 from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
+from src.core.risk_constraints import (  # noqa: E402
+    RiskConstraintError,
+    campaign_risk_constraints_v1,
+)
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalyzer  # noqa: E402
 from src.core.walk_forward.aggregate import extract_cost_metrics  # noqa: E402
 from src.data.feature_dataset_builder import (  # noqa: E402
@@ -64,6 +73,44 @@ from src.data.feature_dataset_builder import (  # noqa: E402
 )
 
 _BENCHMARK_TR = "SH000300TR"  # canonical total-return basis (PR-2)
+
+# Eval profiles live in the PURE scripts/eval_profiles.py (codex #387
+# r1: governance pins must not drag this qlib-bound module onto their
+# import path). The csi300_daily profile's slippage MUST equal the
+# replay constant — assert it at import time here (the one place both
+# modules are loaded together) and cross-pin in the qlib-gated
+# tests/logic/test_eval_frozen_model_oos.py.
+assert EVAL_PROFILES["csi300_daily"]["slippage_bps"] == SLIPPAGE_BPS, (
+    "eval_profiles.csi300_daily slippage drifted from "
+    "replay_frozen_baseline.SLIPPAGE_BPS")
+
+
+def _executable_stamps(
+    preds: pd.Series, args: argparse.Namespace, profile: dict[str, Any],
+) -> pd.Series:
+    """Thin prediction stamps to the profile's rebalance-day set — via the
+    SAME canonical helper the profiled backtest uses, so the veto-bearing
+    degeneracy scan counts only EXECUTABLE stamps (codex #387 r3: a
+    degenerate score block on a mid-week HOLD stamp never trades under
+    iso_week cadence and must not hard-veto the candidate). Daily profile:
+    returns ``preds`` unchanged (the helper's byte-identical fast path)."""
+    if (profile["rebalance_cadence_days"] == 1
+            and profile["rebalance_anchor"] == "fold_phase"):
+        return preds
+    from qlib.data import D
+
+    cal = list(D.calendar(
+        start_time=args.guard_start, end_time=args.guard_end))
+    thinned = BacktestRunner._thin_predictions(
+        preds,
+        cadence_days=profile["rebalance_cadence_days"],
+        phase=profile["rebalance_phase"],
+        anchor=profile["rebalance_anchor"],
+        trading_calendar=cal,
+    )
+    if not isinstance(thinned, pd.Series):
+        thinned = pd.Series(thinned)
+    return thinned
 
 
 def _predictions_over_window(args: argparse.Namespace) -> pd.Series:
@@ -195,7 +242,9 @@ def _concentration_stats(positions: Any) -> dict[str, float]:
     }
 
 
-def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, Any]:
+def _backtest_metrics(
+    preds: pd.Series, args: argparse.Namespace, profile: dict[str, Any],
+) -> dict[str, Any]:
     request = CanonicalBacktestInput(
         predictions_ref=f"oos_eval:{Path(args.model).name}",
         evaluation_start=args.guard_start,
@@ -207,14 +256,14 @@ def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, A
             cost_model=CanonicalExchangeCostModel(
                 commission_rate=COMMISSION,
                 stamp_tax_schedule=CN_STAMP_TAX_SCHEDULE_DEFAULT,
-                slippage_bps=SLIPPAGE_BPS,
+                slippage_bps=profile["slippage_bps"],
                 min_cost=MIN_COST,
             ),
             limit_threshold=LIMIT_THRESHOLD,
         ),
         adjust_mode=ADJUST_MODE_PRE,
         signal_to_execution_lag=LAG,
-        benchmark_code=_BENCHMARK_TR,
+        benchmark_code=profile["benchmark_code"],
     )
     output = BacktestRunner.run(
         request=request,
@@ -224,22 +273,66 @@ def _backtest_metrics(preds: pd.Series, args: argparse.Namespace) -> dict[str, A
         compute_baselines=False,
         namechange_path=args.namechange,
         require_st_mask=True,  # match the incumbent's single-fold path
+        rebalance_cadence_days=profile["rebalance_cadence_days"],
+        rebalance_phase=profile["rebalance_phase"],
+        rebalance_anchor=profile["rebalance_anchor"],
+        risk_constraint_scope=profile["risk_constraint_scope"],
+        risk_constraints=(
+            campaign_risk_constraints_v1()
+            if profile["campaign_constraints"] else None
+        ),
+        universe_hint=profile["instruments"],
     )
     ann, dd, ir = extract_cost_metrics(output.risk_analysis, 0)
-    return {
+    metrics: dict[str, Any] = {
         "annualized_return": ann,
         "max_drawdown": dd,
         "information_ratio": ir,
         "concentration": _concentration_stats(output.positions),
     }
+    # GROSS leg (a PRE-REGISTERED PR-B diagnostic) — fail CLOSED on any
+    # schema drift (codex #387 r1): a silently absent gross leg would
+    # hand PR-C an eval artifact missing a mandated field instead of
+    # stopping at the producer.
+    gross_block = output.risk_analysis.get("excess_return_without_cost")
+    if not isinstance(gross_block, dict) or (
+            "annualized_return" not in gross_block):
+        raise SystemExit(
+            "risk_analysis is missing excess_return_without_cost."
+            "annualized_return — schema drift; the gross leg is a "
+            "pre-registered PR-B diagnostic, refusing to emit a "
+            "partial eval artifact.")
+    raw_gross = gross_block["annualized_return"]
+    if isinstance(raw_gross, bool) or not isinstance(
+            raw_gross, (int, float)) or not math.isfinite(float(raw_gross)):
+        raise SystemExit(
+            f"excess_return_without_cost.annualized_return is not a "
+            f"finite number ({raw_gross!r}) — refusing.")
+    metrics["gross_annualized_return"] = float(raw_gross)
+    return metrics
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", default="D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl")
+    # No hardcoded default here (codex #387 r5): the incumbent path is
+    # filled in ONLY for the legacy profile — a csi800_n5 eval must name
+    # its model explicitly, or the csi300-era incumbent would be scored
+    # on csi800 (the exact cross-universe pairing DP-1 forbids).
+    p.add_argument(
+        "--model", default=None,
+        help="Frozen model pkl. Default (csi300_daily profile only): "
+             "the incumbent canonical alpha158_lgb_pit.pkl. REQUIRED "
+             "for csi800_n5 — the incumbent must never be scored on "
+             "csi800 (DP-1).")
     p.add_argument("--provider", default="D:/qlib_data/my_cn_data_pit")
     p.add_argument("--namechange", default="D:/qlib_data/tushare_raw/all_namechanges.parquet")
-    p.add_argument("--instruments", default="csi300")
+    p.add_argument(
+        "--profile", choices=sorted(EVAL_PROFILES), default="csi300_daily",
+        help="Pre-registered semantic knob set (universe/benchmark/"
+             "slippage/cadence/constraints). csi300_daily = legacy ④ "
+             "behaviour; csi800_n5 = the certified-winner production "
+             "guard (PR-B of csi800-n5-production-promotion). The "
+             "profile's knobs are NOT individually overridable.")
     p.add_argument("--handler", default="Alpha158")
     # Normalization fit window = the model's OWN training window (canonical model
     # default; the canonical alpha158_lgb_pit.pkl trains 2018-01-02..2024-12-18).
@@ -257,22 +350,89 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--guard-end", default="2026-06-12")
     p.add_argument("--out", default=None, help="JSON output path.")
     args = p.parse_args(argv)
+    profile = resolve_profile(args.profile)
+    # instruments come FROM the profile (pre-registered, not tunable):
+    # the dataset build below reads args.instruments.
+    args.instruments = profile["instruments"]
+    # Model resolution (codex #387 r5): the incumbent default applies to
+    # the LEGACY profile only — a non-daily profile without an explicit
+    # --model is refused (DP-1: the csi300-era incumbent must never be
+    # scored on csi800).
+    if args.model is None:
+        if args.profile != "csi300_daily":
+            raise SystemExit(
+                f"--model is REQUIRED for profile {args.profile!r}: the "
+                "incumbent default is a csi300-era model and DP-1 "
+                "forbids scoring it on the csi800 universe. Pass the "
+                "candidate pkl explicitly.")
+        args.model = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
 
     print(f"[oos-eval] model={args.model}")
+    print(f"[oos-eval] profile={args.profile}  "
+          f"universe={profile['instruments']}  "
+          f"bench={profile['benchmark_code']}  "
+          f"slippage={profile['slippage_bps']}bps  "
+          f"cadence={profile['rebalance_cadence_days']}"
+          f"/{profile['rebalance_anchor']}")
     print(f"[oos-eval] fit={args.fit_start}..{args.fit_end}  guard={args.guard_start}..{args.guard_end}")
     preds = _predictions_over_window(args)
     print(f"[oos-eval] predictions: {preds.shape[0]} rows, "
           f"{preds.index.get_level_values(0).nunique()} dates")
 
+    # EXECUTABLE stamp set first (codex #387 r3+r4): under a cadence
+    # profile every artifact metric that describes traded behaviour —
+    # IC / turnover (SignalAnalyzer, mirroring the walk-forward cadence
+    # path's _traded_predictions_for_fold) and the veto-bearing
+    # degeneracy scan — consumes the thinned series; only the raw
+    # all-stamps degeneracy stays, as an explicitly non-veto diagnostic.
+    # Daily profile: exec_preds IS preds (helper fast path), byte-
+    # identical legacy behaviour.
+    exec_preds = _executable_stamps(preds, args, profile)
+    if exec_preds is not preds:
+        print(f"[oos-eval] executable stamps: "
+              f"{exec_preds.index.get_level_values(0).nunique()} of "
+              f"{preds.index.get_level_values(0).nunique()} prediction dates")
     signal = SignalAnalyzer.analyze(
-        predictions=preds,
+        predictions=exec_preds,
         config=SignalAnalysisConfig(forward_periods=(1, 5), topk=TOPK),
     )
-    degen = _degeneracy_scan(preds)
-    backtest = _backtest_metrics(preds, args)
+    degen = _degeneracy_scan(exec_preds)
+    degen_all: dict[str, Any] | None = None
+    if exec_preds is not preds:
+        degen_all = _degeneracy_scan(preds)
+    # A campaign_v1 constraint breach under the csi800_n5 profile RAISEs
+    # inside BacktestRunner — that is a GUARD VETO, not tool breakage,
+    # and the spec's failure-path obligation (codex #387 r7) requires an
+    # inspectable eval artifact: record the veto in the JSON and exit
+    # non-zero instead of dying with only a stderr traceback. The runner
+    # WRAPS the RiskConstraintError in a BacktestRunnerError with the
+    # original as ``__cause__`` (codex #387 r8 — a bare
+    # ``except RiskConstraintError`` never fires in production), so the
+    # veto is recognised by walking the cause chain; a BacktestRunnerError
+    # WITHOUT a RiskConstraintError cause is tool breakage and re-raises.
+    # Schema drift (the fail-closed gross-leg guard etc.) likewise still
+    # aborts without an artifact — a producer error, not a verdict.
+    constraint_veto: str | None = None
+    backtest: dict[str, Any] | None
+    try:
+        backtest = _backtest_metrics(preds, args, profile)
+    except (RiskConstraintError, BacktestRunnerError) as exc:
+        cause: BaseException | None = exc
+        while cause is not None and not isinstance(
+                cause, RiskConstraintError):
+            cause = cause.__cause__
+        if cause is None:
+            raise  # not a constraint veto — genuine tool failure
+        backtest = None
+        constraint_veto = str(exc)
+        print(f"[oos-eval] CONSTRAINT VETO: {exc}")
 
     result = {
         "model": args.model,
+        # Profile provenance (PR-B): which pre-registered semantics this
+        # eval ran under — downstream gates bind to these values.
+        "profile": args.profile,
+        "profile_knobs": profile,
         "fit_window": [args.fit_start, args.fit_end],
         "guard_window": [args.guard_start, args.guard_end],
         "n_pred_rows": int(preds.shape[0]),
@@ -283,7 +443,13 @@ def main(argv: list[str] | None = None) -> int:
         "ic_1d_positive_ratio": float(signal.ic_summary[1].get("ic_positive_ratio", float("nan"))),
         "mean_turnover": float(signal.turnover_stats.get("mean_turnover", float("nan"))),
         "backtest_excess_with_cost": backtest,
+        # Non-null = the candidate breached campaign_v1 constraints
+        # (RAISE) — a recorded hard veto, exit code 1 (codex #387 r7).
+        "constraint_veto": constraint_veto,
+        # Veto-bearing scan: EXECUTABLE stamps only (profile-thinned).
         "degeneracy": degen,
+        # Non-veto diagnostic (cadence profiles only): every raw stamp.
+        "degeneracy_all_stamps": degen_all,
     }
     print("\n" + "=" * 64)
     print(json.dumps({k: v for k, v in result.items() if k != "degeneracy"}, indent=2, default=str))
@@ -293,11 +459,19 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out) if args.out else (
         PROJECT_ROOT / "output" / "oos_eval"
-        / f"{Path(args.model).stem}_{args.guard_start}_{args.guard_end}.json"
+        # Profile in the default filename (codex #387 r1): the two
+        # profiles are DIFFERENT gates over the same model/window — a
+        # csi800_n5 eval must never overwrite the legacy artifact.
+        / (f"{Path(args.model).stem}_{args.profile}"
+           f"_{args.guard_start}_{args.guard_end}.json")
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     print(f"[oos-eval] wrote {out}")
+    if constraint_veto is not None:
+        print("[oos-eval] RESULT: CONSTRAINT VETO — artifact recorded, "
+              "candidate fails the guard (exit 1).")
+        return 1
     return 0
 
 

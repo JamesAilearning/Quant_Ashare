@@ -144,5 +144,176 @@ class ConcentrationStatsTests(unittest.TestCase):
         self.assertEqual(_concentration_stats(None), {})
 
 
+class MissingModelGuardTests(unittest.TestCase):
+    """codex #387 r6: the DP-1 guard (`--profile csi800_n5` REQUIRES an
+    explicit --model) must be exercised, not just documented — a missed
+    flag scoring the csi300-era incumbent on csi800 is the exact
+    cross-universe pairing DP-1 forbids."""
+
+    def test_non_legacy_profile_without_model_refuses_before_eval(self) -> None:
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+
+        with mock.patch.object(
+            m, "_predictions_over_window",
+            side_effect=AssertionError("heavy eval path reached"),
+        ) as heavy:
+            with self.assertRaises(SystemExit) as ctx:
+                m.main(["--profile", "csi800_n5"])
+        self.assertIn("REQUIRED for profile", str(ctx.exception))
+        heavy.assert_not_called()
+
+    def test_legacy_profile_fills_incumbent_default(self) -> None:
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+
+        class _Sentinel(Exception):
+            pass
+
+        captured: dict[str, str] = {}
+
+        def _stub(args):  # noqa: ANN001 — argparse.Namespace
+            captured["model"] = args.model
+            raise _Sentinel()
+
+        with mock.patch.object(m, "_predictions_over_window", _stub):
+            with self.assertRaises(_Sentinel):
+                m.main(["--profile", "csi300_daily"])
+        self.assertEqual(
+            "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl",
+            captured["model"],
+        )
+
+    def test_non_legacy_profile_with_explicit_model_proceeds(self) -> None:
+        from unittest import mock
+
+        import scripts.eval_frozen_model_oos as m
+
+        class _Sentinel(Exception):
+            pass
+
+        captured: dict[str, str] = {}
+
+        def _stub(args):  # noqa: ANN001
+            captured["model"] = args.model
+            captured["instruments"] = args.instruments
+            raise _Sentinel()
+
+        with mock.patch.object(m, "_predictions_over_window", _stub):
+            with self.assertRaises(_Sentinel):
+                m.main(["--profile", "csi800_n5",
+                        "--model", "D:/tmp/candidate.pkl"])
+        self.assertEqual("D:/tmp/candidate.pkl", captured["model"])
+        self.assertEqual("csi800", captured["instruments"])
+
+
+class ConstraintVetoArtifactTests(unittest.TestCase):
+    """codex #387 r7: a campaign_v1 RAISE inside the profiled backtest is
+    a GUARD VETO — the eval must still write an inspectable artifact
+    (constraint_veto recorded, backtest null) and exit 1, never die with
+    only a stderr traceback."""
+
+    @staticmethod
+    def _stub_ctx(m, backtest_side_effect):  # noqa: ANN001
+        from types import SimpleNamespace
+        from unittest import mock
+
+        idx = pd.MultiIndex.from_product(
+            [pd.to_datetime(["2025-07-01", "2025-07-02"]),
+             [f"S{i}" for i in range(5)]],
+        )
+        preds = pd.Series(range(10), index=idx, dtype=float)
+        signal_stub = SimpleNamespace(
+            ic_summary={1: {"mean_ic": 0.01, "ir": 0.5,
+                            "ic_positive_ratio": 0.6},
+                        5: {"mean_ic": 0.02}},
+            turnover_stats={"mean_turnover": 0.1},
+        )
+        return (
+            mock.patch.object(
+                m, "_predictions_over_window", return_value=preds),
+            mock.patch.object(
+                m, "_executable_stamps", side_effect=lambda p, a, pr: p),
+            mock.patch.object(
+                m.SignalAnalyzer, "analyze", return_value=signal_stub),
+            mock.patch.object(
+                m, "_backtest_metrics", side_effect=backtest_side_effect),
+        )
+
+    def test_wrapped_constraint_veto_writes_artifact_and_exits_nonzero(
+            self) -> None:
+        # codex #387 r8: production raises BacktestRunnerError WRAPPING
+        # the RiskConstraintError as __cause__ — the veto path must fire
+        # on that exact shape, not just a bare RiskConstraintError.
+        import json as _json
+        import tempfile
+
+        import scripts.eval_frozen_model_oos as m
+        from src.core.backtest_runner import BacktestRunnerError
+        from src.core.risk_constraints import RiskConstraintError
+
+        try:
+            raise BacktestRunnerError(
+                "risk constraints rejected the backtest positions map. "
+                "max_per_name 5.04% > 5%"
+            ) from RiskConstraintError("max_per_name 5.04% > 5%")
+        except BacktestRunnerError as wrapped_exc:
+            wrapped = wrapped_exc
+
+        p1, p2, p3, p4 = self._stub_ctx(m, wrapped)
+        with tempfile.TemporaryDirectory() as td:
+            out_path = Path(td) / "veto.json"
+            with p1, p2, p3, p4:
+                rc = m.main([
+                    "--profile", "csi800_n5",
+                    "--model", "D:/tmp/candidate.pkl",
+                    "--out", str(out_path),
+                ])
+            self.assertEqual(1, rc)
+            payload = _json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertIn("max_per_name", payload["constraint_veto"])
+        self.assertIsNone(payload["backtest_excess_with_cost"])
+        self.assertEqual("csi800_n5", payload["profile"])
+
+    def test_runner_error_without_constraint_cause_reraises(self) -> None:
+        # A BacktestRunnerError with NO RiskConstraintError in its cause
+        # chain is tool breakage — it must re-raise, never be recorded
+        # as a candidate veto.
+        import tempfile
+
+        import scripts.eval_frozen_model_oos as m
+        from src.core.backtest_runner import BacktestRunnerError
+
+        p1, p2, p3, p4 = self._stub_ctx(
+            m, BacktestRunnerError("benchmark series unavailable"))
+        with tempfile.TemporaryDirectory() as td:
+            out_path = Path(td) / "never.json"
+            with p1, p2, p3, p4:
+                with self.assertRaises(BacktestRunnerError):
+                    m.main([
+                        "--profile", "csi800_n5",
+                        "--model", "D:/tmp/candidate.pkl",
+                        "--out", str(out_path),
+                    ])
+            self.assertFalse(out_path.exists())
+
+
+class ProfileCrossPinTests(unittest.TestCase):
+    """codex #387 r1: the pure eval_profiles module hardcodes the legacy
+    slippage so governance tests stay off the qlib import path — THIS
+    qlib-gated test owns the equality with the replay constant."""
+
+    def test_legacy_profile_slippage_equals_replay_constant(self) -> None:
+        from scripts.eval_profiles import EVAL_PROFILES
+        from scripts.regen.replay_frozen_baseline import SLIPPAGE_BPS
+
+        self.assertEqual(
+            SLIPPAGE_BPS,
+            EVAL_PROFILES["csi300_daily"]["slippage_bps"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
