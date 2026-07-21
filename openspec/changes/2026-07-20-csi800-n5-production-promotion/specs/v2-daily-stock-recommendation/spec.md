@@ -153,6 +153,16 @@ LOSE 期间轮换路径 SHALL 冻结（升级操作人决策点）。
 判定 = 轮换执行日 > 该日期 + 15 个月，锚日期以
 `git log -1 --format=%cI origin/main -- <侧车路径>` 机读，SHALL
 NOT 依赖操作人断言或本地文件时间戳。
+**LOSE 机读记录（codex #389 r3）**：certify 在 LOSE 时按设计
+拒写侧车，故年度再认证 SHALL 双向留痕——WIN 产新侧车（既有
+路径）；LOSE SHALL 将机读 LOSE 记录（含尝试日期、证据锚、
+判定与原因）提交至钉死路径
+`docs/research/csi800_recert_status.json`（走 PR 入库 = 锚
+成立）。轮换执行器 SHALL 同时机读两锚：`T_win` = 侧车路径的
+主线最新 commit 日期，`T_lose` = LOSE 记录路径的主线最新
+commit 日期（不存在则视为无 LOSE）；冻结判定 =
+`T_lose > T_win` **或** 已过 15 个月有效期——LOSE 记录晚于
+现行侧车即冻结，直至新 WIN 侧车合并（`T_win > T_lose` 恢复）。
 **年度再认证义务**：每年 SHALL 以最新数据重跑战役协议全链
 （walk-forward + pair/attach/certify）产出新 verdict 侧车；再认证
 LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT 承担

@@ -186,8 +186,12 @@ rebalance_days 作用域）接进生产服务路径。
   ④ 先例）。既有已训候选（run 20260721_195924，训至 2024-12-18）
   **不复用**——其训窗与错峰算术不符，如实弃置。
 - **R1-DP-D 年度再认证**：每年 SHALL 以最新数据重跑战役协议
-  （walk-forward 全窗 + pair/attach/certify 全链）并产出新 verdict
-  侧车；再认证 LOSE = 生产降级决策点（回滚现任或停用，操作人
+  （walk-forward 全窗 + pair/attach/certify 全链）并**双向留痕**
+  （codex #389 r3——certify 按设计 LOSE 拒写侧车）：WIN 产新
+  verdict 侧车；LOSE 提交机读 LOSE 记录至钉死路径
+  `docs/research/csi800_recert_status.json`。轮换执行器以
+  `T_lose > T_win`（双锚 git log 机读）判冻结，新 WIN 侧车合并
+  即恢复。再认证 LOSE = 生产降级决策点（回滚现任或停用，操作人
   裁决）。这是净业绩的唯一权威循环——季度门永不承担该职责。
 - **R1-DP-E 观察期沿 DP-6**：首季只记录不回调；季度复盘报告
   （实测 vs 锚上同期折分布）入 runbook 义务；诚实预期 = edge 仅

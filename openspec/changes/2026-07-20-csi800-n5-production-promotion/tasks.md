@@ -92,11 +92,16 @@
       serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
       ensemble+如实入档;连续两季不过=操作人决策点
 - [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
-- [ ] **轮换执行器**(codex #389 r2)：认证有效性前置校验(侧车在库
-      + 有效期锚 = 侧车主线合并 commit 日期 + 15 个月,git log
-      机读;LOSE/过期即冻结零写入+升级决策点) + gate 工件消费 +
-      pre-rotation manifest 备份(单步回退) + 轮换落 manifest；
-      测试:过期冻结/LOSE 冻结/备份在场/回退单步/合法轮换全链
+- [ ] **轮换执行器**(codex #389 r2/r3)：认证有效性前置校验——
+      双锚机读:T_win=侧车主线最新 commit 日期(有效期=+15 个月),
+      T_lose=csi800_recert_status.json 主线最新 commit 日期
+      (T_lose>T_win 或过期即冻结零写入+升级决策点;新 WIN 侧车
+      合并恢复) + gate 工件消费 + pre-rotation manifest 备份
+      (单步回退) + 轮换落 manifest；测试:过期冻结/LOSE 冻结
+      (T_lose>T_win)/WIN 恢复(T_win>T_lose)/备份在场/回退单步/
+      合法轮换全链
+- [ ] **年检双向留痕义务**(codex #389 r3)：LOSE 记录 schema
+      (尝试日期/证据锚/判定/原因)+钉死路径入 runbook 年检操作卡
 - [ ] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
       再认证义务
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
