@@ -184,9 +184,13 @@ rebalance_days 作用域）接进生产服务路径。
   过期/LOSE 期间轮换冻结。
 - **R1-DP-C 首次上线自举**：一次性训练三名错峰成员（训窗终点
   T-6m/T-3m/T，各自 24m 滚动窗+3m valid，GPU 点火在操作人，三发
-  串行），各过 R1-DP-B 门后组成首个生产 ensemble；切换沿 DP-4
-  回滚件义务（pre-promote 备份 + inference meta + baseline json，
-  ④ 先例）。既有已训候选（run 20260721_195924，训至 2024-12-18）
+  串行）。**自举门分级（codex #389 r13/r17）**：R1-DP-B 的
+  成员级门（trainer 完整性、valid 窗 IC>0）对三成员逐一评估；
+  ensemble 级门（退化、约束干跑、serving veto 面）对组装后的
+  三成员 ensemble 整体跑一次——任一级失败 = 自举中止、现任
+  续任、入档、升级决策点（晋升路径中止语义，非轮换的"沿用旧"
+  动作）。全过后切换沿 DP-4 回滚件义务（pre-promote 备份 +
+  inference meta + baseline json，④ 先例）。既有已训候选（run 20260721_195924，训至 2024-12-18）
   **不复用**——其训窗与错峰算术不符，如实弃置。
 - **R1-DP-D 年度再认证**：每年 SHALL 以最新数据重跑战役协议
   （walk-forward 全窗 + pair/attach/certify 全链）。认证状态由
