@@ -101,8 +101,12 @@ SHALL 照常写入，二者不冲突（失败必须留痕，canonical 必须
    veto②/⑤ 数字原样（<80% / <75% / <10%），veto③ = 干跑年化
    换手 ≤ 锚上 iso_week 复核 run 换手均值 ×1.5。**净收益
    SHALL NOT 作为 per-retrain 门**——业绩权威 = 已认证战役证据 +
-   年度再认证；任一门不过 = 该成员不入 ensemble、沿用旧
-   ensemble 并如实入档，连续两季不过 SHALL 升级为操作人决策点；
+   年度再认证。**本晋升路径（自举/策略级变更）下的失败动作**
+   （codex #389 r14——与轮换维护路径的"沿用旧 ensemble/两季
+   升级"动作严格分离，后者仅存在于协议本体 requirement）：任一
+   门不过 = 切换中止、现任 canonical 及其服务语义不变、失败
+   如实入档、升级为操作人决策点，SHALL NOT 出现"沿用旧
+   ensemble"分支（自举时旧 ensemble 不存在）；
 4. **回滚件义务**：替换前 SHALL 写 pre-promote 备份（pkl + meta，
    带时间戳）并在 `docs/promotion/` 落新基线记录，现任基线保留；
    回滚 SHALL 为恢复备份件的单步操作。
@@ -117,12 +121,12 @@ per-retrain 门的全部数字 SHALL 于对应执行 PR 的数字 STOP 首次
 - **THEN** 拒绝执行，canonical 工件（pkl/meta/备份/基线）零
   写入，失败原因记录写入审计档，报错指向缺失的前置
 
-#### Scenario: per-retrain 任一轻门不过
+#### Scenario: 晋升路径下任一轻门不过即中止切换
 
-- **WHEN** 新季度成员在退化/约束干跑/IC 方向/serving veto 面
-  任一门失败
-- **THEN** 该成员不入 ensemble、旧 ensemble 沿用、门工件与结果
-  如实入档、canonical 零写入；连续两季不过升级为操作人决策点
+- **WHEN** 自举（或策略级变更）中任一轻门失败
+- **THEN** 切换中止、现任 canonical 及其服务语义不变、门工件与
+  结果如实入档、升级为操作人决策点（轮换维护路径的"沿用旧
+  ensemble/两季升级"动作不适用于本路径）
 
 #### Scenario: 训练预算耗尽的成员被拒
 
@@ -153,7 +157,11 @@ serving SHALL 经 manifest 消费三成员（pkl + meta 逐一列出，
 SHALL 为且仅为 (a) 现行战役认证有效（已提交 verdict 侧车在库且
 年度再认证未过期、未 LOSE）；(b) 新成员通过 per-retrain 轻门；
 (c) 轮换前 SHALL 写 pre-rotation manifest 备份（单步回退到上一
-ensemble）。轮换 SHALL NOT 重跑侧车 `--verify`/iso_week 门——
+ensemble）。**轮换路径的轻门失败动作**（codex #389 r14——与
+晋升路径的"中止切换"动作严格分离）：新成员任一轻门不过 =
+该成员不入 ensemble、现行 ensemble 沿用、门工件如实入档；
+连续两季不过 SHALL 升级为操作人决策点。轮换 SHALL NOT 重跑
+侧车 `--verify`/iso_week 门——
 它们锚定的是策略语义，成员轮换不改变策略；年度再认证过期或
 LOSE 期间轮换路径 SHALL 冻结（升级操作人决策点）。
 **有效期锚（codex #389 r2/r5，确定性机读）**：认证有效期 =
