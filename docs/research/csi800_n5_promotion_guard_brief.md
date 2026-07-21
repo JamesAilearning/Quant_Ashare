@@ -25,7 +25,7 @@ csi800-n5-production-promotion` DP-3"任一不过如实入档"条款）。
 
 | 门 | 判据 | 实测 | 结果 |
 |---|---|---|---|
-| A 战役资格 | 侧车 `--verify` + `promotion_eligible` | `csi800_campaign_certify.py --verify docs/research/csi800_cadence_verdict.json` 现场复验通过（"sidecar verified OK against anchor 3ffceb4f5ed9"，侧车三锚 = #379 merge commit `3ffceb4`），`promotion_eligible: true`——任何 fresh checkout 重跑同命令即可复验（codex #388 r1：不引用字节摘要，CRLF 位面歧义） | PASS |
+| A 战役资格 | 侧车 `--verify` + `promotion_eligible` | `python scripts/research/csi800_campaign_certify.py --verify docs/research/csi800_cadence_verdict.json`（repo 根执行）现场复验通过（"sidecar verified OK against anchor 3ffceb4f5ed9"，侧车三锚 = #379 merge commit `3ffceb4`），`promotion_eligible: true`——任何 fresh checkout 重跑该命令即可复验（codex #388 r1/r2：可直接运行的完整调用，不引用字节摘要） | PASS |
 | B iso_week 复核 | 锚上证据全窗净 > 0 | **+6.01%**（毛 +9.59%，23/23 折，与 fold_phase 胜者 +6.52%/+9.92% 同量级——锚切片稳健） | PASS |
 | C-1 退化 | 0 degenerate / 0 straddle（可执行 stamp 集） | 0 / 0（min_unique 751/800，全 stamp 集同样干净） | PASS |
 | C-2 约束（≈veto④/①的约束面） | campaign_v1 RAISE 零触发 | `constraint_veto: null`；max_single_name_weight 4.39% < 5% | PASS |
