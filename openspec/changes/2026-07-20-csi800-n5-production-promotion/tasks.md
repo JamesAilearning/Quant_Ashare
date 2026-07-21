@@ -100,10 +100,11 @@
       (单步回退) + 轮换落 manifest；测试:过期冻结/LOSE 冻结/
       WIN 恢复/备份在场/回退单步/合法轮换全链/侧车路径非年检
       触碰不影响判定
-- [ ] **年检状态工件义务**(codex #389 r3/r4)：单一状态工件
+- [ ] **年检状态工件义务**(codex #389 r3/r4/r8)：单一状态工件
       schema(verdict/WIN 侧车内容哈希/证据锚/判定说明)+仅年检
-      流程可改的治理钉守+首次自举写初始 WIN 状态+runbook 年检
-      操作卡
+      流程可改的治理钉守+runbook 年检操作卡——**仅 schema/文档,
+      不写状态文件**(首写专属 PR-C',早写会提前起 15 个月表并让
+      执行器过早读到有效状态)
 - [ ] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
       再认证义务
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
@@ -113,6 +114,10 @@
       跑前钉死具体日期)
 - [ ] **三发 GPU 点火 = 操作人执行,严格串行**
 - [ ] 三成员各过 per-retrain 门(gate 工件入库)
+- [ ] **自举晋升路径全门**(codex #389 r8:首次切换是晋升路径,
+      非维护路径)：侧车 --verify + promotion_eligible 机器前置 +
+      iso_week 复核锚定门(origin/main git show 读证据+config 绑定
+      +净>0 重导)——全过才允许切换执行,任一不过=如实入档中止
 - [ ] 切换执行:pre-promote 备份+三成员 inference meta+serving
       manifest+baseline json(④ 先例)+**初始 WIN 状态工件**
       (codex #389 r7:csi800_recert_status.json 首写——verdict WIN
