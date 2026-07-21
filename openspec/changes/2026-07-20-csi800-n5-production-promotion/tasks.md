@@ -122,7 +122,10 @@
 - [ ] 三名错峰成员训练配置定稿(训窗终点 T-6m/T-3m/T,各 24m+3m,
       跑前钉死具体日期)
 - [ ] **三发 GPU 点火 = 操作人执行,严格串行**
-- [ ] 三成员各过 per-retrain 门(gate 工件入库)
+- [ ] 三成员过自举门(codex #389 r13 语义:成员级门 trainer/IC
+      逐一评估 + ensemble 级门退化/约束干跑/veto 面对三成员组合
+      整体跑一次;任一失败=自举中止不切换现任续任,无"沿用旧
+      ensemble"分支;gate 工件入库)
 - [ ] **自举晋升路径全门**(codex #389 r8:首次切换是晋升路径,
       非维护路径)：侧车 --verify + promotion_eligible 机器前置 +
       iso_week 复核锚定门(origin/main git show 读证据+config 绑定

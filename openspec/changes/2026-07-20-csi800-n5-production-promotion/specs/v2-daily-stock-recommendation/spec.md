@@ -183,8 +183,24 @@ SHALL 仅经 `git show origin/main:<状态工件路径>` 读取该文件——
 WIN 时 certify 产新 verdict 侧车且状态工件携其内容哈希引用；
 LOSE 时 certify 按设计不写侧车，状态工件单独承载 LOSE 判定。
 再认证 LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT
-承担净业绩职责。首次上线 SHALL 以三名错峰成员自举（训窗终点
-T-6m/T-3m/T，各过轻门）。
+承担净业绩职责。
+**首次自举门语义（codex #389 r13——自举时无旧 ensemble 可回退，
+门的对象与失败动作须显式定义）**：首次上线 SHALL 以三名错峰
+成员自举（训窗终点 T-6m/T-3m/T）；**成员级门**（trainer 完整性、
+valid 窗 IC > 0）SHALL 对三名成员逐一评估；**ensemble 级门**
+（退化、约束干跑、serving veto 面②③⑤）SHALL 对组装后的三成员
+ensemble 整体跑一次（trailing quarter 干跑）。任一成员级或
+ensemble 级门失败 = **自举中止**：不执行切换、现任 canonical
+续任、失败如实入档，处置（重训失败成员或另行提案）升级为
+操作人决策点——自举无"沿用旧 ensemble"分支，那是季度轮换
+维护路径的失败动作。
+
+#### Scenario: 自举任一门失败时不切换
+
+- **WHEN** 三成员自举中任一成员级门（trainer/IC）或 ensemble
+  级门（退化/约束干跑/veto 面）失败
+- **THEN** 切换不执行、现任 canonical 与其服务语义不变、失败
+  门工件如实入档、升级为操作人决策点
 
 #### Scenario: ensemble manifest 缺员时拒绝出单
 
