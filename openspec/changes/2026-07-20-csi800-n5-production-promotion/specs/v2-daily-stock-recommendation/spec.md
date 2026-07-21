@@ -63,15 +63,16 @@ SHALL 由交易日历驱动（节假日顺延至该 ISO 周内第一个实际交
 
 ### Requirement: 生产模型晋升 SHALL 以 certify 侧车与 guard eval 双门把守
 
-本 requirement 管辖**晋升路径**：首次生产切换（自举 ensemble
-上线）与任何策略级变更（universe/cadence/约束/成本口径改动）。
+晋升路径的执行 SHALL 满足下列全部前置，缺一即拒绝执行。本
+requirement 管辖**晋升路径**：首次生产切换（自举 ensemble
+上线）与任何策略级变更（universe/cadence/约束/成本口径改动）；
 **季度成员轮换是独立的维护路径**（见"生产打分 SHALL 实现认证
 协议本体"requirement——codex #389 r1：轮换不改策略语义，SHALL
-NOT 重跑侧车/iso_week 门，其前置在彼处定义）。晋升路径的执行
-SHALL 满足全部前置，缺一即拒绝执行——**零写入的范围限于晋升
-执行本体**（canonical pkl/meta 替换、备份件、基线记录），失败
-路径的审计记录（guard eval 产物、如实入档文本）SHALL 照常写入，
-二者不冲突（失败必须留痕，canonical 必须不动）：
+NOT 重跑侧车/iso_week 门，其前置在彼处定义）。**零写入的范围
+限于晋升执行本体**（canonical pkl/meta 替换、备份件、基线
+记录），失败路径的审计记录（guard eval 产物、如实入档文本）
+SHALL 照常写入，二者不冲突（失败必须留痕，canonical 必须
+不动）：
 
 1. **战役资格门**：已提交 verdict 侧车经
    `csi800_campaign_certify.py --verify` 复验通过且
