@@ -153,16 +153,20 @@ LOSE 期间轮换路径 SHALL 冻结（升级操作人决策点）。
 判定 = 轮换执行日 > 该日期 + 15 个月，锚日期以
 `git log -1 --format=%cI origin/main -- <侧车路径>` 机读，SHALL
 NOT 依赖操作人断言或本地文件时间戳。
-**LOSE 机读记录（codex #389 r3）**：certify 在 LOSE 时按设计
-拒写侧车，故年度再认证 SHALL 双向留痕——WIN 产新侧车（既有
-路径）；LOSE SHALL 将机读 LOSE 记录（含尝试日期、证据锚、
-判定与原因）提交至钉死路径
-`docs/research/csi800_recert_status.json`（走 PR 入库 = 锚
-成立）。轮换执行器 SHALL 同时机读两锚：`T_win` = 侧车路径的
-主线最新 commit 日期，`T_lose` = LOSE 记录路径的主线最新
-commit 日期（不存在则视为无 LOSE）；冻结判定 =
-`T_lose > T_win` **或** 已过 15 个月有效期——LOSE 记录晚于
-现行侧车即冻结，直至新 WIN 侧车合并（`T_win > T_lose` 恢复）。
+**认证状态单一单调工件（codex #389 r3/r4）**：certify 在 LOSE
+时按设计拒写侧车，且跨路径 committer 日期比较对乱序合并不
+鲁棒——故认证状态 SHALL 由**单一状态工件**
+`docs/research/csi800_recert_status.json` 唯一承载：每次年度
+再认证（含首次自举）SHALL 将其更新为最新状态并走 PR 入库，
+内容 SHALL 含 `verdict: WIN|LOSE`、对应 verdict 侧车的内容
+哈希引用（WIN 时）、证据锚 commit 与判定说明。轮换执行器
+SHALL 仅经 `git show origin/main:<状态工件路径>` 读取该文件——
+**状态由文件内容直接给出，SHALL NOT 以跨路径日期/拓扑推断**；
+`verdict: LOSE` 即冻结，新 WIN 状态合并即恢复。15 个月有效期
+以状态工件路径在主线的 tip commit committer 日期起算（月级
+粗粒度视界，日级合并乱序无实质影响；状态正确性本身不依赖
+日期）。状态工件 SHALL 仅由年检流程与首次自举修改（治理
+测试钉守——侧车路径的非年检触碰不影响轮换判定）。
 **年度再认证义务**：每年 SHALL 以最新数据重跑战役协议全链
 （walk-forward + pair/attach/certify）产出新 verdict 侧车；再认证
 LOSE = 生产降级决策点（操作人裁决），季度轻门 SHALL NOT 承担
