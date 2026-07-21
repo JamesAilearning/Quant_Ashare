@@ -187,7 +187,7 @@ rebalance_days 作用域）接进生产服务路径。
   **不复用**——其训窗与错峰算术不符，如实弃置。
 - **R1-DP-D 年度再认证**：每年 SHALL 以最新数据重跑战役协议
   （walk-forward 全窗 + pair/attach/certify 全链）。认证状态由
-  **单一单调状态工件** `docs/research/csi800_recert_status.json`
+  **单一单调状态工件** `docs/promotion/csi800_recert_status.json`
   唯一承载（codex #389 r3/r4——certify 按设计 LOSE 拒写侧车，
   且跨路径日期比较对乱序合并不鲁棒）：每次年检（含首次自举）
   更新该文件走 PR 入库，内容含 verdict WIN|LOSE + WIN 侧车内容

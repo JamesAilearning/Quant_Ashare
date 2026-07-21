@@ -150,14 +150,14 @@ LOSE 期间轮换路径 SHALL 冻结（升级操作人决策点）。
 **有效期锚（codex #389 r2/r5，确定性机读）**：认证有效期 =
 **15 个月**（12 个月再认证周期 + 3 个月执行宽限），锚 = **状态
 工件路径**在 `origin/main` 的 tip commit committer 日期（
-`git log -1 --format=%cI origin/main -- docs/research/
+`git log -1 --format=%cI origin/main -- docs/promotion/
 csi800_recert_status.json`），SHALL NOT 锚在侧车路径（其非年检
 触碰会漂移有效期——codex #389 r5）、SHALL NOT 依赖操作人断言
 或本地文件时间戳。
 **认证状态单一单调工件（codex #389 r3/r4）**：certify 在 LOSE
 时按设计拒写侧车，且跨路径 committer 日期比较对乱序合并不
 鲁棒——故认证状态 SHALL 由**单一状态工件**
-`docs/research/csi800_recert_status.json` 唯一承载：每次年度
+`docs/promotion/csi800_recert_status.json` 唯一承载：每次年度
 再认证（含首次自举）SHALL 将其更新为最新状态并走 PR 入库，
 内容 SHALL 含 `verdict: WIN|LOSE`、对应 verdict 侧车的内容
 哈希引用（WIN 时）、证据锚 commit 与判定说明。轮换执行器
