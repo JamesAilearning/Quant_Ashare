@@ -88,6 +88,11 @@
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器
+- [ ] **trainer sidecar schema 扩展**(codex #389 r18)：
+      _write_model_sidecar 增 num_boost_round(训练实际使用值);
+      门仅从 sidecar 读两值,缺字段=完整性门失败(fail-closed 禁
+      回退 preset 默认/跳过);旧 sidecar 无字段的向后处置=同缺
+      字段失败(测试 pin)
 - [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
       serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
       ensemble+如实入档;连续两季不过=操作人决策点

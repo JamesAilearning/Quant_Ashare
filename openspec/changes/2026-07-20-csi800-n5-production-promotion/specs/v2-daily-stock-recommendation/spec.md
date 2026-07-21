@@ -93,7 +93,12 @@ SHALL 照常写入，二者不冲突（失败必须留痕，canonical 必须
    新成员进入生产 ensemble 前 SHALL 全过：(a) trainer 完整性
    （best_iteration/valid loss 有限，且 best_iteration SHALL NOT
    等于 num_boost_round——早停从未触发即训练预算耗尽的边界
-   异常，sidecar 机读，codex #389 r12）；(b) 退化门
+   异常，codex #389 r12）。**num_boost_round 机读源（codex #389
+   r18——现行 sidecar 不含该字段）**：trainer sidecar schema
+   SHALL 扩展携带 `num_boost_round`（训练实际使用值，随 sidecar
+   写盘），门 SHALL 仅从 sidecar 读取两值比较；sidecar 缺
+   `num_boost_round` 字段 = 完整性门失败（fail-closed，SHALL NOT
+   回退到 preset 默认值或跳过边界检查）；(b) 退化门
    （新 ensemble 对 trailing quarter 可执行 stamp 0 degenerate /
    0 straddle）；(c) 约束干跑（trailing quarter N5 回测
    campaign_v1 RAISE 零触发）；(d) IC 方向门（valid 窗
