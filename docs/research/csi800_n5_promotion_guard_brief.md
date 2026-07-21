@@ -25,12 +25,22 @@ csi800-n5-production-promotion` DP-3"任一不过如实入档"条款）。
 
 | 门 | 判据 | 实测 | 结果 |
 |---|---|---|---|
-| A 战役资格 | 侧车 `--verify` + `promotion_eligible` | verified OK（6a2a6409…），eligible=true | PASS |
+| A 战役资格 | 侧车 `--verify` + `promotion_eligible` | `csi800_campaign_certify.py --verify docs/research/csi800_cadence_verdict.json` 现场复验通过（"sidecar verified OK against anchor 3ffceb4f5ed9"，侧车三锚 = #379 merge commit `3ffceb4`），`promotion_eligible: true`——任何 fresh checkout 重跑同命令即可复验（codex #388 r1：不引用字节摘要，CRLF 位面歧义） | PASS |
 | B iso_week 复核 | 锚上证据全窗净 > 0 | **+6.01%**（毛 +9.59%，23/23 折，与 fold_phase 胜者 +6.52%/+9.92% 同量级——锚切片稳健） | PASS |
 | C-1 退化 | 0 degenerate / 0 straddle（可执行 stamp 集） | 0 / 0（min_unique 751/800，全 stamp 集同样干净） | PASS |
-| C-2 约束 | campaign_v1 RAISE 零触发 | `constraint_veto: null`；max_single_name_weight 4.39% < 5% | PASS |
-| C-3 集中度 | 行为参照 | median 50 持仓 / top10 25.6% / HHI 0.0207（分散） | PASS |
-| **C-4 净超额** | **guard 窗净年化 > 0** | **−2.14%**（毛 +0.90%，IC1d +0.0252，IC 正比率 61.2%） | **FAIL** |
+| C-2 约束（≈veto④/①的约束面） | campaign_v1 RAISE 零触发 | `constraint_veto: null`；max_single_name_weight 4.39% < 5% | PASS |
+| C-3 集中度（诊断参照，非 veto⑤） | 行为参照 | median 50 持仓 / top10 25.6% / HHI 0.0207（分散） | PASS |
+| **C-4 净超额（=veto①）** | **guard 窗净年化 > 0** | **−2.14%**（毛 +0.90%，IC1d +0.0252，IC 正比率 61.2%） | **FAIL** |
+| veto② sleeve 依赖 | csi500 sleeve 毛效应占比 ≥80% | **未评估**——eval 工件不承载 sleeve attribution（frozen 单模型路径无分解引擎输出） | N/A（如实披露） |
+| veto③ 同配置换手参照 | > 参照 ×1.5 | **未评估**——本晋升门无同配置冻结参照 run（campaign 级 veto③ 已在侧车认证） | N/A（如实披露） |
+| veto⑤ 时均权重 | csi500 >75% / unknown >10% | **未评估**——同 veto②，需 sleeve 分解 | N/A（如实披露） |
+
+**veto ②③⑤ 未评估的入档说明（codex #388 r1）**：DP-3 文本要求
+五 veto"原样适用于 guard eval 产物"，但 frozen eval 工件结构上不
+承载 sleeve attribution 与同配置参照——该缺口是晋升门设计与
+工具能力的错配之一（与 §3 的 C-4 错配同根）。本次判定不受影响
+（C-4 已 FAIL，任一门不过即中止）；**处置提案（§5 选项 1）必须
+显式重新设计 serving 侧 veto 评估面**，不得笼统沿用战役 veto 表。
 
 ## 3. 诊断（为什么战役 WIN 而 guard FAIL）
 
