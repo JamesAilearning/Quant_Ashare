@@ -138,21 +138,33 @@ class RotationExecutorStates(unittest.TestCase):
         self.candidate_sha = hashlib.sha256(
             self.candidate.read_bytes()).hexdigest()
 
+        self.new_meta_sha = json.loads(
+            self.candidate.read_text(encoding="utf-8"),
+        )["members"][-1]["meta_sha256"]
         self.member_gate = self.tmp / "member_gate.json"
         self.ensemble_gate = self.tmp / "ensemble_gate.json"
         self._write_gate(self.member_gate, SCOPE_MEMBER,
-                         {"pkl_sha256": self.new_pkl_sha})
+                         {"pkl_sha256": self.new_pkl_sha,
+                          "meta_sha256": self.new_meta_sha})
         self._write_gate(self.ensemble_gate, SCOPE_ENSEMBLE,
                          {"manifest_sha256": self.candidate_sha})
 
         self.repo = self.tmp / "mainline"
         _make_mainline_repo(self.repo, status=_win_status())
 
+    _GATES_BY_SCOPE = {
+        SCOPE_MEMBER: ("trainer_integrity", "ic_direction"),
+        SCOPE_ENSEMBLE: ("degeneracy", "constraint_dry_run",
+                         "serving_veto"),
+    }
+
     def _write_gate(self, path: Path, scope: str, subject: dict,
                     overall: str = "PASS") -> None:
         path.write_text(json.dumps({
             "schema_version": GATE_SCHEMA_VERSION,
             "scope": scope, "subject": subject,
+            "gates": {name: {"verdict": overall}
+                      for name in self._GATES_BY_SCOPE[scope]},
             "overall": overall}), encoding="utf-8")
 
     def _execute(self, *, now: str = "2026-08-01T00:00:00+00:00",
@@ -171,6 +183,8 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(self.original_bytes,
                          self.manifest.read_bytes())
         self.assertEqual([], list(self.tmp.glob("*.pre_rotation_*")))
+        # The private staging copy must not survive a refusal either.
+        self.assertEqual([], list(self.tmp.glob("*.swap")))
 
     def test_legal_rotation_full_chain(self) -> None:
         rc = self._execute()
@@ -222,9 +236,50 @@ class RotationExecutorStates(unittest.TestCase):
 
     def test_unbound_member_gate_refused(self) -> None:
         self._write_gate(self.member_gate, SCOPE_MEMBER,
-                         {"pkl_sha256": "de" * 32})
+                         {"pkl_sha256": "de" * 32,
+                          "meta_sha256": self.new_meta_sha})
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
+
+    def test_member_gate_meta_binding_mismatch_refused(self) -> None:
+        # The gate judged a DIFFERENT sidecar than the one rotating in
+        # (adversarial self-review: pkl-only binding would let a
+        # regenerated sidecar ride an old artifact into production).
+        self._write_gate(self.member_gate, SCOPE_MEMBER,
+                         {"pkl_sha256": self.new_pkl_sha,
+                          "meta_sha256": "de" * 32})
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_lying_overall_gate_refused(self) -> None:
+        # overall says PASS but a per-gate block says FAIL — refused.
+        payload = json.loads(self.member_gate.read_text(encoding="utf-8"))
+        payload["gates"]["ic_direction"]["verdict"] = "FAIL"
+        self.member_gate.write_text(json.dumps(payload),
+                                    encoding="utf-8")
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_illegal_plan_produces_no_candidate_file(self) -> None:
+        # Adversarial self-review: an illegal rotation must never even
+        # publish a candidate file at --out (a stale invalid candidate
+        # is an attractive wrong input for the next session).
+        bad_out = self.tmp / "bad_candidate.json"
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(self.manifest),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            # Same quarter as the current newest member — violates the
+            # strictly-increasing fit_end pin in the serving loader.
+            "--fit-start", _CURRENT_WINDOWS[-1][0],
+            "--fit-end", _CURRENT_WINDOWS[-1][1],
+            "--out", str(bad_out),
+        ])
+        self.assertEqual(1, rc)
+        self.assertFalse(bad_out.exists())
+        self.assertFalse(
+            bad_out.with_suffix(bad_out.suffix + ".tmp").exists())
 
     def test_lose_status_freezes(self) -> None:
         lose = _win_status()

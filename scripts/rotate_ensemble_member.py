@@ -134,8 +134,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Validate the PRIVATE tmp BEFORE publishing (adversarial self-
+    # review): an illegal rotation never produces a candidate file at
+    # --out — a stale invalid candidate would sit there as an
+    # attractive wrong input for the next session.
+    try:
+        sha = _validate_candidate(tmp)
+    except RotationRefusal:
+        tmp.unlink(missing_ok=True)
+        raise
     os.replace(tmp, out)
-    sha = _validate_candidate(out)
     print(f"[rotate] candidate manifest written: {out}")
     print(f"[rotate] candidate manifest sha256: {sha}")
     print("[rotate] next: run scripts/retrain_gate.py --scope ensemble "
@@ -162,42 +170,72 @@ def cmd_execute(args: argparse.Namespace) -> int:
     if not allowed:
         raise RotationRefusal(reason)
 
-    # 2. Gate artifacts, bound to what is actually rotating.
-    current = _read_manifest_members(manifest_path)
-    candidate_sha = _validate_candidate(candidate_path)
-    candidate = _read_manifest_members(candidate_path)
-    new_member = candidate[-1]
-    member_gate = _load_json(Path(args.member_gate),
-                             "member gate artifact")
-    check_gate_artifact(member_gate, scope=SCOPE_MEMBER,
-                        expected_subject_sha=str(
-                            new_member.get("pkl_sha256")))
-    ensemble_gate = _load_json(Path(args.ensemble_gate),
-                               "ensemble gate artifact")
-    check_gate_artifact(ensemble_gate, scope=SCOPE_ENSEMBLE,
-                        expected_subject_sha=candidate_sha)
-
-    # 3. Plan integrity: candidate == current[1:] + [gated member].
-    expected = plan_rotated_members(current, new_member)
-    if candidate != expected:
+    # 2. Candidate bytes are read EXACTLY ONCE (adversarial self-
+    # review: the swap must install the same bytes the gate artifact
+    # was verified against — a second read would open a TOCTOU window
+    # where a concurrent `plan` run swaps the file between the digest
+    # check and the write). Every downstream step — digest binding,
+    # structural validation, plan integrity, the swap itself — derives
+    # from THIS buffer.
+    if not candidate_path.is_file():
         raise RotationRefusal(
-            "candidate manifest does not equal the rotation plan "
-            "(current minus oldest plus the gated member) — refusing")
+            f"candidate manifest not found: {candidate_path}")
+    candidate_bytes = candidate_path.read_bytes()
+    candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
 
-    # 4. Backup, then atomic swap.
-    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = manifest_path.with_name(
-        manifest_path.name + f".pre_rotation_{stamp}")
-    if backup.exists():
-        raise RotationRefusal(f"backup path already exists: {backup}")
-    backup.write_bytes(manifest_path.read_bytes())
+    # Structural validation runs on a PRIVATE staging copy of those
+    # bytes (the same file that is later os.replace'd in). All fallible
+    # checks happen BEFORE any production write — a post-swap refusal
+    # would contradict the zero-writes contract.
     tmp = manifest_path.with_suffix(manifest_path.suffix + ".swap")
-    tmp.write_bytes(candidate_path.read_bytes())
+    try:
+        tmp.write_bytes(candidate_bytes)
+        _validate_candidate(tmp)
+
+        # 3. Gate artifacts, bound to what is actually rotating.
+        current = _read_manifest_members(manifest_path)
+        candidate = json.loads(candidate_bytes.decode("utf-8"))["members"]
+        new_member = candidate[-1]
+        member_gate = _load_json(Path(args.member_gate),
+                                 "member gate artifact")
+        check_gate_artifact(
+            member_gate, scope=SCOPE_MEMBER,
+            expected_subject_sha=str(new_member.get("pkl_sha256")),
+            # The trainer-integrity gate judged the SIDECAR — bind it
+            # too, or a regenerated sidecar under the same pickle would
+            # ride an old artifact into production.
+            expected_meta_sha=str(new_member.get("meta_sha256")))
+        ensemble_gate = _load_json(Path(args.ensemble_gate),
+                                   "ensemble gate artifact")
+        check_gate_artifact(ensemble_gate, scope=SCOPE_ENSEMBLE,
+                            expected_subject_sha=candidate_sha)
+
+        # 4. Plan integrity: candidate == current[1:] + [gated member].
+        expected = plan_rotated_members(current, new_member)
+        if candidate != expected:
+            raise RotationRefusal(
+                "candidate manifest does not equal the rotation plan "
+                "(current minus oldest plus the gated member) — "
+                "refusing")
+
+        # 5. Backup — the last fallible step before the swap.
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = manifest_path.with_name(
+            manifest_path.name + f".pre_rotation_{stamp}")
+        if backup.exists():
+            raise RotationRefusal(
+                f"backup path already exists: {backup}")
+        backup.write_bytes(manifest_path.read_bytes())
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+    # 6. Atomic install of the VERIFIED buffer. Nothing after this
+    # point may refuse — only report.
     os.replace(tmp, manifest_path)
-    final_sha = _validate_candidate(manifest_path)
     print(f"[rotate] pre-rotation backup: {backup}")
     print(f"[rotate] manifest rotated: {manifest_path}")
-    print(f"[rotate] manifest sha256: {final_sha}")
+    print(f"[rotate] manifest sha256: {candidate_sha}")
     print("[rotate] rollback (single step): restore the backup file "
           "over the manifest path.")
     return 0

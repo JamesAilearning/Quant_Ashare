@@ -429,11 +429,14 @@ def _ensemble_scope(args: argparse.Namespace,
             ),
             positions=output.positions,
         )
+        # This attribution is produced IN-PROCESS over the sleeve map —
+        # an absent row is a TRUE zero (no holdings in that bucket),
+        # not the omitted-producer-field situation the campaign attach
+        # refuses (there the evidence was a mutable committed file).
         share: float | None = None
-        csi500_weight = float("nan")
+        csi500_weight = 0.0
+        csi500_effect = 0.0
         unknown_weight = 0.0
-        effects_sum = 0.0
-        csi500_effect = float("nan")
         rows = {row.sector: row for row in attribution.sector_attribution}
         row500 = rows.get("csi500_sleeve")
         if row500 is not None:
@@ -547,5 +550,25 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _cli() -> int:
+    """Honor the documented exit-code contract: 0 = all gates PASS,
+    1 = a gate FAILED (artifact written), 2 = producer/tool error (no
+    verdict). ``SystemExit`` raised with a message string would exit 1
+    — indistinguishable from a gate FAIL — so tool errors are remapped
+    to 2 here."""
+    try:
+        return main()
+    except SystemExit as exc:
+        if isinstance(exc.code, int) or exc.code is None:
+            raise
+        print(f"[retrain-gate] TOOL ERROR: {exc.code}", file=sys.stderr)
+        return 2
+    except Exception:  # noqa: BLE001 — traceback preserved on stderr
+        import traceback
+
+        traceback.print_exc()
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_cli())

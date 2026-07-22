@@ -100,15 +100,22 @@ def gate_trainer_integrity(sidecar: Any) -> dict[str, Any]:
         reasons.append(
             f"final_valid_loss {loss!r} is not a finite number")
     if (isinstance(best_iter, int) and not isinstance(best_iter, bool)
-            and isinstance(nbr, int) and not isinstance(nbr, bool)
-            and best_iter == nbr):
-        # codex #389 r12: early stopping never fired — the model ran
-        # out of training budget instead of converging. Checked
-        # independently of the other reasons so the report is complete.
-        reasons.append(
-            f"best_iteration == num_boost_round ({best_iter}) — early "
-            "stopping never triggered (training budget exhausted, "
-            "boundary anomaly)")
+            and isinstance(nbr, int) and not isinstance(nbr, bool)):
+        # Checked independently of the other reasons so the report is
+        # complete.
+        if best_iter == nbr:
+            # codex #389 r12: early stopping never fired — the model
+            # ran out of training budget instead of converging.
+            reasons.append(
+                f"best_iteration == num_boost_round ({best_iter}) — "
+                "early stopping never triggered (training budget "
+                "exhausted, boundary anomaly)")
+        elif best_iter > nbr:
+            # A best iteration BEYOND the budget cannot come from a
+            # real training run — internally inconsistent sidecar.
+            reasons.append(
+                f"best_iteration {best_iter} > num_boost_round {nbr} "
+                "— internally inconsistent sidecar, fail-closed")
     return {
         "verdict": FAIL if reasons else PASS,
         "best_iteration": best_iter if _is_num(best_iter) else None,
@@ -277,6 +284,15 @@ _SCOPE_GATES = {
     SCOPE_MEMBER: ("trainer_integrity", "ic_direction"),
     SCOPE_ENSEMBLE: ("degeneracy", "constraint_dry_run", "serving_veto"),
 }
+
+
+def expected_gates(scope: str) -> tuple[str, ...]:
+    """The exact gate set a scope's artifact must carry — consumed by
+    the rotation executor to re-derive the verdict from the per-gate
+    blocks instead of trusting a bare ``overall`` field."""
+    if scope not in _SCOPE_GATES:
+        raise ValueError(f"unknown gate scope {scope!r}")
+    return _SCOPE_GATES[scope]
 
 
 def assemble_gate_artifact(

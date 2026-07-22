@@ -91,6 +91,17 @@ class TrainerIntegrityGate(unittest.TestCase):
         self.assertEqual(
             FAIL, gate_trainer_integrity(sidecar)["verdict"])
 
+    def test_best_iteration_beyond_budget_fails(self) -> None:
+        # A best iteration BEYOND num_boost_round cannot come from a
+        # real run — internally inconsistent sidecar (adversarial
+        # self-review).
+        sidecar = _good_sidecar()
+        sidecar["best_iteration"] = sidecar["num_boost_round"] + 1
+        block = gate_trainer_integrity(sidecar)
+        self.assertEqual(FAIL, block["verdict"])
+        self.assertTrue(
+            any("inconsistent" in r for r in block["reasons"]))
+
     def test_non_finite_valid_loss_fails(self) -> None:
         for bad in (float("nan"), float("inf"), None, "0.1"):
             sidecar = _good_sidecar()

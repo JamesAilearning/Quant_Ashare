@@ -36,6 +36,7 @@ from scripts.retrain_gate_lib import (
     PASS,
     SCOPE_ENSEMBLE,
     SCOPE_MEMBER,
+    expected_gates,
 )
 
 __all__ = [
@@ -183,14 +184,23 @@ def recert_validity(
 
 def check_gate_artifact(
     artifact: Any, *, scope: str, expected_subject_sha: str,
+    expected_meta_sha: str | None = None,
 ) -> None:
     """Admit a gate artifact for rotation, fail-closed (codex #389
     r11: a gate the tool FAILED — or that never ran — must be a closed
     channel; the executor refuses on absence AND on FAIL).
 
     Binding: member scope binds ``subject.pkl_sha256`` to the incoming
-    member's pickle digest; ensemble scope binds
-    ``subject.manifest_sha256`` to the CANDIDATE manifest digest."""
+    member's pickle digest AND — when ``expected_meta_sha`` is given —
+    ``subject.meta_sha256`` to its sidecar digest (the trainer-
+    integrity gate judged the SIDECAR: a regenerated sidecar under the
+    same pickle must invalidate the artifact); ensemble scope binds
+    ``subject.manifest_sha256`` to the CANDIDATE manifest digest.
+
+    The verdict is RE-DERIVED from the per-gate blocks (every expected
+    gate present, each ``verdict: PASS``) and must AGREE with the
+    ``overall`` field — a hand-edited artifact whose ``overall`` says
+    PASS over failing/absent gates is refused."""
     if scope not in (SCOPE_MEMBER, SCOPE_ENSEMBLE):
         raise ValueError(f"unknown gate scope {scope!r}")
     if not isinstance(artifact, dict):
@@ -214,6 +224,18 @@ def check_gate_artifact(
     if overall != PASS:
         raise RotationRefusal(
             f"{scope} gate artifact overall {overall!r} is not PASS")
+    gates = artifact.get("gates")
+    if not isinstance(gates, dict):
+        raise RotationRefusal(
+            f"{scope} gate artifact carries no gates block — a bare "
+            "overall field is not admissible evidence")
+    for name in expected_gates(scope):
+        block = gates.get(name)
+        if not isinstance(block, dict) or block.get("verdict") != PASS:
+            raise RotationRefusal(
+                f"{scope} gate artifact gate {name!r} is absent or not "
+                "PASS — the overall field disagrees with the per-gate "
+                "verdicts, refusing")
     subject = artifact.get("subject")
     if not isinstance(subject, dict):
         raise RotationRefusal(
@@ -225,6 +247,14 @@ def check_gate_artifact(
             f"{scope} gate artifact subject.{key} {actual!r} does not "
             f"bind to the expected digest {expected_subject_sha} — the "
             "artifact gates something else, refusing")
+    if expected_meta_sha is not None:
+        actual_meta = subject.get("meta_sha256")
+        if actual_meta != expected_meta_sha:
+            raise RotationRefusal(
+                f"{scope} gate artifact subject.meta_sha256 "
+                f"{actual_meta!r} does not bind to the expected sidecar "
+                f"digest {expected_meta_sha} — the trainer-integrity "
+                "verdict belongs to a different sidecar, refusing")
 
 
 def plan_rotated_members(

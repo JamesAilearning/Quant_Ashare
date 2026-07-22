@@ -167,7 +167,9 @@ def _member_gate_artifact(overall: str = "PASS") -> dict:
     return {
         "schema_version": GATE_SCHEMA_VERSION,
         "scope": SCOPE_MEMBER,
-        "subject": {"pkl_sha256": "ab" * 32},
+        "subject": {"pkl_sha256": "ab" * 32, "meta_sha256": "ac" * 32},
+        "gates": {"trainer_integrity": {"verdict": "PASS"},
+                  "ic_direction": {"verdict": "PASS"}},
         "overall": overall,
     }
 
@@ -217,11 +219,52 @@ class GateArtifactConsumption(unittest.TestCase):
                 artifact, scope=SCOPE_MEMBER,
                 expected_subject_sha="ab" * 32)
 
+    def test_lying_overall_refused(self) -> None:
+        # Adversarial self-review: the verdict is re-derived from the
+        # per-gate blocks — a hand-edited artifact whose overall says
+        # PASS over a failing or absent gate is refused.
+        artifact = _member_gate_artifact()
+        artifact["gates"]["ic_direction"]["verdict"] = "FAIL"
+        with self.assertRaises(RotationRefusal) as ctx:
+            check_gate_artifact(
+                artifact, scope=SCOPE_MEMBER,
+                expected_subject_sha="ab" * 32)
+        self.assertIn("disagrees", str(ctx.exception))
+        artifact = _member_gate_artifact()
+        del artifact["gates"]["trainer_integrity"]
+        with self.assertRaises(RotationRefusal):
+            check_gate_artifact(
+                artifact, scope=SCOPE_MEMBER,
+                expected_subject_sha="ab" * 32)
+        artifact = _member_gate_artifact()
+        del artifact["gates"]
+        with self.assertRaises(RotationRefusal):
+            check_gate_artifact(
+                artifact, scope=SCOPE_MEMBER,
+                expected_subject_sha="ab" * 32)
+
+    def test_member_meta_binding_mismatch_refused(self) -> None:
+        # The trainer-integrity gate judged the SIDECAR — a regenerated
+        # sidecar under the same pickle must invalidate the artifact.
+        check_gate_artifact(
+            _member_gate_artifact(), scope=SCOPE_MEMBER,
+            expected_subject_sha="ab" * 32,
+            expected_meta_sha="ac" * 32)
+        with self.assertRaises(RotationRefusal) as ctx:
+            check_gate_artifact(
+                _member_gate_artifact(), scope=SCOPE_MEMBER,
+                expected_subject_sha="ab" * 32,
+                expected_meta_sha="ff" * 32)
+        self.assertIn("sidecar", str(ctx.exception))
+
     def test_ensemble_scope_binds_manifest_sha(self) -> None:
         artifact = {
             "schema_version": GATE_SCHEMA_VERSION,
             "scope": SCOPE_ENSEMBLE,
             "subject": {"manifest_sha256": "cd" * 32},
+            "gates": {"degeneracy": {"verdict": "PASS"},
+                      "constraint_dry_run": {"verdict": "PASS"},
+                      "serving_veto": {"verdict": "PASS"}},
             "overall": "PASS",
         }
         check_gate_artifact(artifact, scope=SCOPE_ENSEMBLE,
