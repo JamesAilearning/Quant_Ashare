@@ -260,6 +260,46 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_bad_manifest_inputs_refused_not_traceback(self) -> None:
+        # codex #391 r4: typo'd/missing/corrupt manifest inputs are
+        # ordinary precondition failures — classified refusal (exit 1),
+        # never an escaping traceback.
+        missing = self.tmp / "no_such_manifest.json"
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(missing),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            "--fit-start", _NEW_WINDOW[0],
+            "--fit-end", _NEW_WINDOW[1],
+            "--out", str(self.tmp / "x.json"),
+        ])
+        self.assertEqual(1, rc)
+        corrupt = self.tmp / "corrupt_manifest.json"
+        corrupt.write_text("not json {", encoding="utf-8")
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(corrupt),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            "--fit-start", _NEW_WINDOW[0],
+            "--fit-end", _NEW_WINDOW[1],
+            "--out", str(self.tmp / "y.json"),
+        ])
+        self.assertEqual(1, rc)
+        # Same class on execute: missing new-member artifacts refuse.
+        self.new_pkl.unlink()
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(self.manifest),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            "--fit-start", _NEW_WINDOW[0],
+            "--fit-end", _NEW_WINDOW[1],
+            "--out", str(self.tmp / "z.json"),
+        ])
+        self.assertEqual(1, rc)
+
     def test_plan_out_aliasing_live_manifest_refused(self) -> None:
         # codex #391 r2: plan --out pointed at the live manifest would
         # overwrite production during PLANNING, before certification/

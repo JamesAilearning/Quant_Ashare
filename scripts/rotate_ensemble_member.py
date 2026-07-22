@@ -76,11 +76,32 @@ MANIFEST_SCHEMA_VERSION = "csi800_n5_ensemble_manifest_v1"
 
 
 def _read_manifest_members(path: Path) -> list[dict[str, Any]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    # A typo'd/missing/corrupt manifest input is an ORDINARY
+    # precondition failure (codex #391 r4) — it must surface through
+    # the classified `[rotate] REFUSED` path like every other
+    # certification/gate precondition, never a raw traceback.
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RotationRefusal(
+            f"manifest unreadable: {path} ({exc})") from exc
+    if not isinstance(payload, dict):
+        raise RotationRefusal(
+            f"{path}: manifest top level is not an object")
     members = payload.get("members")
     if not isinstance(members, list):
         raise RotationRefusal(f"{path}: manifest carries no members list")
     return members
+
+
+def _read_bytes_or_refuse(path: Path, what: str) -> bytes:
+    """Byte reads of operator-supplied paths fail as classified
+    refusals (same class as the manifest read, codex #391 r4)."""
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise RotationRefusal(
+            f"{what} unreadable: {path} ({exc})") from exc
 
 
 def _load_json(path: Path, what: str) -> Any:
@@ -131,11 +152,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
     current = _read_manifest_members(manifest_path)
     new_member = {
         "pkl_path": args.new_pkl,
-        "pkl_sha256": hashlib.sha256(
-            Path(args.new_pkl).read_bytes()).hexdigest(),
+        "pkl_sha256": hashlib.sha256(_read_bytes_or_refuse(
+            Path(args.new_pkl), "new member pkl")).hexdigest(),
         "meta_path": args.new_meta,
-        "meta_sha256": hashlib.sha256(
-            Path(args.new_meta).read_bytes()).hexdigest(),
+        "meta_sha256": hashlib.sha256(_read_bytes_or_refuse(
+            Path(args.new_meta), "new member meta sidecar")).hexdigest(),
         "fit_start": args.fit_start,
         "fit_end": args.fit_end,
     }
@@ -189,10 +210,8 @@ def cmd_execute(args: argparse.Namespace) -> int:
     # check and the write). Every downstream step — digest binding,
     # structural validation, plan integrity, the swap itself — derives
     # from THIS buffer.
-    if not candidate_path.is_file():
-        raise RotationRefusal(
-            f"candidate manifest not found: {candidate_path}")
-    candidate_bytes = candidate_path.read_bytes()
+    candidate_bytes = _read_bytes_or_refuse(
+        candidate_path, "candidate manifest")
     candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
 
     # Structural validation runs on a PRIVATE staging copy of those
@@ -237,7 +256,8 @@ def cmd_execute(args: argparse.Namespace) -> int:
         if backup.exists():
             raise RotationRefusal(
                 f"backup path already exists: {backup}")
-        backup.write_bytes(manifest_path.read_bytes())
+        backup.write_bytes(_read_bytes_or_refuse(
+            manifest_path, "live manifest (for backup)"))
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
