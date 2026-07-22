@@ -44,6 +44,44 @@ _CURRENT_WINDOWS = [
 _NEW_WINDOW = ("2023-09-20", "2025-09-18")   # +92d gap, 729d span
 
 
+class _StubModel:
+    """Pickle-able member stub with the .predict serving requires."""
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+    def predict(self, dataset, segment="infer"):  # noqa: ANN001
+        return None
+
+
+def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
+                        ) -> dict:
+    """A REAL loadable member (pkl + trainer sidecar with the version
+    chain the serving loader enforces) — execute's member-chain
+    re-validation (codex #391 r9) unpickles these."""
+    import hashlib
+    import pickle
+
+    import lightgbm
+
+    pkl = tmp / f"{name}.pkl"
+    pkl.write_bytes(pickle.dumps(_StubModel(name)))
+    meta = tmp / f"{name}.pkl.meta.json"
+    meta.write_text(json.dumps({
+        "schema_version": "v1", "model_type": "LGBModel",
+        "best_iteration": 321, "num_boost_round": 1000,
+        "lightgbm_version": lightgbm.__version__,
+        "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
+    }), encoding="utf-8")
+    return {
+        "pkl_path": str(pkl),
+        "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
+        "meta_path": str(meta),
+        "meta_sha256": hashlib.sha256(meta.read_bytes()).hexdigest(),
+        "fit_start": window[0], "fit_end": window[1],
+    }
+
+
 # Pinned committer instant — the 15-month validity clock in these
 # tests must not depend on the machine's real clock.
 _COMMIT_INSTANT = "2026-07-01T10:00:00+08:00"
@@ -95,30 +133,37 @@ class RotationExecutorStates(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
-        # Current production manifest (member files need not exist —
-        # the loader binds bytes only when models are loaded).
-        members = []
-        for i, (start, end) in enumerate(_CURRENT_WINDOWS):
-            members.append({
-                "pkl_path": f"Z:/prod/member_{i}.pkl",
-                "pkl_sha256": f"{i}{i}" * 32,
-                "meta_path": f"Z:/prod/member_{i}.pkl.meta.json",
-                "meta_sha256": f"{i}a" * 32,
-                "fit_start": start, "fit_end": end,
-            })
+        # Current production manifest. The OLDEST member (dropped by
+        # the rotation) may be a phantom entry — execute's member-chain
+        # re-validation runs over the CANDIDATE members only; members
+        # 1/2 survive into the candidate and must be real loadable
+        # stubs (codex #391 r9).
+        members = [{
+            "pkl_path": "Z:/prod/member_0.pkl",
+            "pkl_sha256": "00" * 32,
+            "meta_path": "Z:/prod/member_0.pkl.meta.json",
+            "meta_sha256": "0a" * 32,
+            "fit_start": _CURRENT_WINDOWS[0][0],
+            "fit_end": _CURRENT_WINDOWS[0][1],
+        }]
+        self.kept_members = [
+            _write_member_files(self.tmp, f"member_{i}",
+                                _CURRENT_WINDOWS[i])
+            for i in (1, 2)
+        ]
+        members.extend(self.kept_members)
         self.manifest = self.tmp / "production_manifest.json"
         self.manifest.write_text(json.dumps({
             "schema_version": "csi800_n5_ensemble_manifest_v1",
             "members": members}, indent=2), encoding="utf-8")
         self.original_bytes = self.manifest.read_bytes()
 
-        # The incoming member's stub artifacts (hashed by `plan`).
-        self.new_pkl = self.tmp / "new_member.pkl"
-        self.new_pkl.write_bytes(b"new-member-model-bytes")
-        self.new_meta = self.tmp / "new_member.pkl.meta.json"
-        self.new_meta.write_text(json.dumps(
-            {"schema_version": "v1", "best_iteration": 321,
-             "num_boost_round": 1000}), encoding="utf-8")
+        # The incoming member: a REAL loadable stub (hashed by `plan`,
+        # unpickled by execute's member-chain re-validation).
+        new_files = _write_member_files(self.tmp, "new_member",
+                                        _NEW_WINDOW)
+        self.new_pkl = Path(new_files["pkl_path"])
+        self.new_meta = Path(new_files["meta_path"])
 
         self.candidate = self.tmp / "candidate_manifest.json"
         rc = rotate_main([
@@ -399,6 +444,24 @@ class RotationExecutorStates(unittest.TestCase):
         _git(repo, "commit", "-q", "-m", "binary status")
         _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
         self.assertEqual(1, self._execute(repo=repo))
+        self._assert_manifest_untouched()
+
+    def test_member_pkl_deleted_after_gates_refused(self) -> None:
+        # codex #391 r9: the gates proved the members were valid when
+        # they RAN — a pkl deleted since then must refuse at execute,
+        # or serving would refuse the freshly installed manifest at
+        # the next morning run.
+        Path(self.kept_members[0]["pkl_path"]).unlink()
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_member_sidecar_replaced_after_gates_refused(self) -> None:
+        # A sidecar rewritten after gate time breaks the digest chain
+        # the candidate manifest declares — refuse, zero writes.
+        Path(self.kept_members[1]["meta_path"]).write_text(
+            json.dumps({"schema_version": "v1",
+                        "model_type": "LGBModel"}), encoding="utf-8")
+        self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
     def test_tampered_candidate_refused(self) -> None:

@@ -29,7 +29,13 @@ Two subcommands:
            3. plan integrity — the candidate manifest must equal
               "current minus oldest plus gated member" exactly and
               re-validate under the serving loader;
-           4. backup — the pre-rotation manifest bytes are copied to a
+           4. member-chain re-validation at execute time — the strict
+              serving loader runs over the staged members (existence,
+              digest chain, sidecar version guard, unpickle,
+              ``.predict``) so a pkl/sidecar deleted or replaced since
+              the gates ran can never be installed into a manifest
+              serving would refuse next morning (codex #391 r9);
+           5. backup — the pre-rotation manifest bytes are copied to a
               timestamped sibling BEFORE the swap; rollback is the
               single step of restoring that file.
 
@@ -70,6 +76,7 @@ from scripts.rotation_lib import (  # noqa: E402
 from src.inference.ensemble_serving import (  # noqa: E402
     EnsembleServingError,
     load_ensemble_manifest,
+    load_member_models,
 )
 
 MANIFEST_SCHEMA_VERSION = "csi800_n5_ensemble_manifest_v1"
@@ -248,7 +255,12 @@ def cmd_execute(args: argparse.Namespace) -> int:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(candidate_bytes)
-        _validate_candidate(tmp)
+        try:
+            staged_members, _staged_sha = load_ensemble_manifest(tmp)
+        except EnsembleServingError as exc:
+            raise RotationRefusal(
+                f"candidate manifest refused by the serving loader: "
+                f"{exc}") from exc
 
         # 3. Gate artifacts, bound to what is actually rotating.
         current = _read_manifest_members(manifest_path)
@@ -276,7 +288,23 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 "(current minus oldest plus the gated member) — "
                 "refusing")
 
-        # 5. Backup — the last fallible step before the swap.
+        # 5. Member-chain re-validation at EXECUTE time (codex #391
+        # r9): the gate artifacts prove the members were valid when
+        # the gates RAN — a pkl/sidecar deleted or replaced since then
+        # would make production serving refuse the freshly installed
+        # manifest at the next morning run. Re-run the STRICT serving
+        # loader (existence + digest chain + sidecar version guard +
+        # unpickle + .predict) over the staged members so what we
+        # install is what serving will accept.
+        try:
+            load_member_models(staged_members)
+        except EnsembleServingError as exc:
+            raise RotationRefusal(
+                f"member chain re-validation failed: {exc} — the "
+                "rotated manifest would be refused by serving; not "
+                "installing") from exc
+
+        # 6. Backup — the last fallible step before the swap.
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = manifest_path.with_name(
             manifest_path.name + f".pre_rotation_{stamp}")
@@ -289,7 +317,7 @@ def cmd_execute(args: argparse.Namespace) -> int:
         tmp.unlink(missing_ok=True)
         raise
 
-    # 6. Atomic install of the VERIFIED buffer. Nothing after this
+    # 7. Atomic install of the VERIFIED buffer. Nothing after this
     # point may refuse — only report.
     os.replace(tmp, manifest_path)
     print(f"[rotate] pre-rotation backup: {backup}")
