@@ -439,8 +439,18 @@ def cmd_execute(args: argparse.Namespace) -> int:
             except OSError as exc:
                 raise RotationRefusal(
                     f"cannot create backup {backup}: {exc}") from exc
-            with os.fdopen(bfd, "wb") as bfh:
-                bfh.write(live_bytes)
+            # The write itself is fallible too (ENOSPC/quota/NFS,
+            # codex #391 r17) — a failed backup write unlinks the
+            # partial rollback file and refuses through the
+            # classified path, zero residue.
+            try:
+                with os.fdopen(bfd, "wb") as bfh:
+                    bfh.write(live_bytes)
+            except OSError as exc:
+                backup.unlink(missing_ok=True)
+                raise RotationRefusal(
+                    f"backup write failed: {backup} ({exc}) — partial "
+                    "rollback file removed, refusing") from exc
             try:
                 # The backup IS the advertised single-step rollback
                 # artifact (codex #391 r15): mirror the live
