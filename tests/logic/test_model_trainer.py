@@ -1100,6 +1100,7 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
             config = MagicMock()
             config.model_type = "LGBModel"
             config.compute_device = "cpu"
+            config.num_boost_round = 1000
             ModelTrainer._write_model_sidecar(
                 model_path, config, best_iter=42, final_val=0.99,
             )
@@ -1114,6 +1115,10 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
             self.assertIsInstance(sidecar["pkl_sha256"], str)
             self.assertEqual(len(sidecar["pkl_sha256"]), 64)
             self.assertEqual(sidecar["best_iteration"], 42)
+            # PR-B' (codex #389 r18): the per-retrain trainer-integrity
+            # gate reads best_iteration AND num_boost_round from this
+            # sidecar ONLY — the training budget must be recorded.
+            self.assertEqual(sidecar["num_boost_round"], 1000)
             self.assertEqual(sidecar["final_valid_loss"], 0.99)
             self.assertEqual(sidecar["model_type"], "LGBModel")
             self.assertEqual(sidecar["compute_device"], "cpu")
@@ -1131,6 +1136,7 @@ class TrainAndPredictHappyPathTests(unittest.TestCase):
             config = MagicMock()
             config.model_type = "XGBModel"
             config.compute_device = "cpu"
+            config.num_boost_round = 500
             ModelTrainer._write_model_sidecar(
                 model_path, config, best_iter=None, final_val=None,
             )

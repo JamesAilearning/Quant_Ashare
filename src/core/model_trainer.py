@@ -435,6 +435,13 @@ class ModelTrainer:
             "python_version": sys.version.split()[0],
             "trained_at": datetime.now(tz=timezone.utc).isoformat(),
             "best_iteration": best_iter,
+            # The training budget actually used — the per-retrain
+            # trainer-integrity gate reads best_iteration AND
+            # num_boost_round from THIS sidecar only (codex #389 r18):
+            # best_iteration == num_boost_round means early stopping
+            # never fired (budget exhausted, boundary anomaly). Legacy
+            # sidecars without the field fail that gate closed.
+            "num_boost_round": config.num_boost_round,
             "final_valid_loss": final_val,
         }
         # Bind the sidecar to the pickle artifact so ensemble loading
