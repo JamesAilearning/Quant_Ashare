@@ -255,6 +255,19 @@ def cmd_execute(args: argparse.Namespace) -> int:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(candidate_bytes)
+        # Mirror the LIVE manifest's permission bits onto the staged
+        # file (codex #391 r10): mkstemp creates 0600, and os.replace
+        # would install that restrictive mode over a group/world-
+        # readable production manifest — serving under another account
+        # would suddenly get permission denied.
+        try:
+            import shutil
+
+            shutil.copymode(manifest_path, tmp)
+        except OSError as exc:
+            raise RotationRefusal(
+                f"cannot mirror live-manifest permissions onto the "
+                f"staged file: {exc}") from exc
         try:
             staged_members, _staged_sha = load_ensemble_manifest(tmp)
         except EnsembleServingError as exc:

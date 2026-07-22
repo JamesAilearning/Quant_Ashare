@@ -233,8 +233,18 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual([], list(self.tmp.glob("*.swap*")))
 
     def test_legal_rotation_full_chain(self) -> None:
+        import os
+        import stat
+
+        pre_mode = stat.S_IMODE(os.stat(self.manifest).st_mode)
         rc = self._execute()
         self.assertEqual(0, rc)
+        # codex #391 r10: the swap must not narrow the manifest's
+        # permission bits to mkstemp's 0600 (on POSIX CI this is a
+        # real 0644-vs-0600 assertion; on Windows it is trivially
+        # equal).
+        self.assertEqual(
+            pre_mode, stat.S_IMODE(os.stat(self.manifest).st_mode))
         # Manifest now equals the candidate; oldest member is gone.
         rotated = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(
