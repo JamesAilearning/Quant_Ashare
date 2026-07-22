@@ -7,6 +7,11 @@ Coverage matrix (>=1 case per dimension):
                      fields / bad ordering / bad stagger / bad window.
   member loading   — missing pkl / sha mismatch / unpickle failure /
                      no .predict — ALL refuse (never partial).
+  sidecar guard    — unparseable / missing pkl_sha256 / sidecar-manifest
+                     contradiction / unknown model_type / missing or
+                     drifted framework version — ALL refuse (the
+                     walk-forward version guard with skip → refuse,
+                     codex #390 r3).
   blend identity   — mean-skipna over aligned series, equal to the
                      walk-forward apply_ensemble math on the same
                      inputs; NaN handled per-member (skipna).
@@ -84,12 +89,18 @@ class _ListModel(_StubModel):
 
 
 def _write_member(tmp: Path, i: int, obj: object) -> dict:
+    # The version guard (codex #390 r3) compares the sidecar's framework
+    # version against the installed one — the fast suite already binds
+    # to lightgbm (tests/logic/test_walk_forward_ensemble.py).
+    import lightgbm
+
     pkl = tmp / f"member_{i}.pkl"
     pkl.write_bytes(pickle.dumps(obj))
     meta = tmp / f"member_{i}.pkl.meta.json"
     meta.write_text(json.dumps({
         "schema_version": "v1", "model_type": "LGBModel",
         "best_iteration": 100 + i, "num_boost_round": 1000,
+        "lightgbm_version": lightgbm.__version__,
         "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
     }), encoding="utf-8")
     return {
@@ -114,6 +125,20 @@ def _happy_manifest(tmp: Path) -> tuple[Path, list[dict]]:
     members = [_write_member(tmp, i, _StubModel(float(i)))
                for i in range(ENSEMBLE_SIZE)]
     return _write_manifest(tmp, members), members
+
+
+def _resync_sidecar(member: dict, text: str) -> None:
+    """Overwrite a member's sidecar and re-sync the manifest entry's
+    meta_sha256 so the corruption reaches the sidecar PARSE/version
+    guard (codex #390 r3) instead of the earlier meta-hash check."""
+    p = Path(member["meta_path"])
+    p.write_text(text, encoding="utf-8")
+    member["meta_sha256"] = hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def _sidecar_payload(member: dict) -> dict:
+    return json.loads(
+        Path(member["meta_path"]).read_text(encoding="utf-8"))
 
 
 def test_happy_manifest_loads_and_hashes(tmp_path: Path) -> None:
@@ -205,6 +230,106 @@ def test_manifest_missing_meta_fields_refused(tmp_path: Path) -> None:
     mp = _write_manifest(tmp_path, members)
     with pytest.raises(EnsembleServingError, match="missing fields"):
         load_ensemble_manifest(mp)
+
+
+# ── sidecar version guard (codex #390 r3) ──────────────────────────
+# Every tolerance of the walk-forward sidecar guard becomes a refusal
+# here: unparseable sidecar / missing pkl_sha256 / sidecar-manifest
+# contradiction / unknown model_type / missing version / version drift.
+
+def test_sidecar_not_json_refuses(tmp_path: Path) -> None:
+    _, members = _happy_manifest(tmp_path)
+    _resync_sidecar(members[0], "not json {")
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="not valid JSON"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_non_object_refuses(tmp_path: Path) -> None:
+    _, members = _happy_manifest(tmp_path)
+    _resync_sidecar(members[1], json.dumps(["a", "list"]))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="not an\\s+object"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_missing_pkl_sha_refuses(tmp_path: Path) -> None:
+    _, members = _happy_manifest(tmp_path)
+    payload = _sidecar_payload(members[0])
+    del payload["pkl_sha256"]
+    _resync_sidecar(members[0], json.dumps(payload))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="no pkl_sha256"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_pkl_sha_contradicts_manifest_refuses(
+        tmp_path: Path) -> None:
+    # Three-way chain: manifest digest == on-disk bytes, but the sidecar
+    # says it belongs to a DIFFERENT pickle — the chain is internally
+    # inconsistent, refuse.
+    _, members = _happy_manifest(tmp_path)
+    payload = _sidecar_payload(members[2])
+    payload["pkl_sha256"] = "0" * 64
+    _resync_sidecar(members[2], json.dumps(payload))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError,
+                       match="describes a\\s+different pickle"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_unknown_model_type_refuses(tmp_path: Path) -> None:
+    # walk-forward falls back to a lightgbm-only check for legacy
+    # sidecars; serving refuses what it cannot version-guard.
+    _, members = _happy_manifest(tmp_path)
+    payload = _sidecar_payload(members[1])
+    payload["model_type"] = "MysteryModel"
+    _resync_sidecar(members[1], json.dumps(payload))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="model_type"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_missing_model_type_refuses(tmp_path: Path) -> None:
+    _, members = _happy_manifest(tmp_path)
+    payload = _sidecar_payload(members[1])
+    del payload["model_type"]
+    _resync_sidecar(members[1], json.dumps(payload))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="model_type"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_missing_framework_version_refuses(
+        tmp_path: Path) -> None:
+    _, members = _happy_manifest(tmp_path)
+    payload = _sidecar_payload(members[0])
+    del payload["lightgbm_version"]
+    _resync_sidecar(members[0], json.dumps(payload))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="no\\s+lightgbm_version"):
+        load_member_models(loaded_members)
+
+
+def test_sidecar_framework_version_drift_refuses(tmp_path: Path) -> None:
+    # A framework minor bump can silently change booster serialisation
+    # semantics — the certified ensemble must not emit recommendations
+    # under a different framework version (codex #390 r3 P1).
+    _, members = _happy_manifest(tmp_path)
+    payload = _sidecar_payload(members[2])
+    payload["lightgbm_version"] = "0.0.0-drifted"
+    _resync_sidecar(members[2], json.dumps(payload))
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="0.0.0-drifted"):
+        load_member_models(loaded_members)
 
 
 def test_non_series_prediction_refused(tmp_path: Path) -> None:
@@ -300,9 +425,13 @@ def test_recommend_refuses_fit_window_mismatch(tmp_path: Path) -> None:
 
 def test_run_meta_carries_ensemble_provenance(tmp_path: Path) -> None:
     # The artifact meta must bind the list to the exact manifest and
-    # member pickles (model_path/sha overridden to the manifest;
-    # members enumerated verbatim). Single-model shape untouched —
-    # pinned by the existing run-meta tests.
+    # member pickles (model_path points at the manifest; members
+    # enumerated verbatim). model_pkl_sha256 is RESERVED for the
+    # single-pickle digest (the decision page cross-checks it against
+    # the trainer sidecar) — an ensemble artifact OMITS it and its
+    # identity is meta.ensemble.manifest_sha256 (codex #390 r3).
+    # Single-model shape untouched — pinned by the existing run-meta
+    # tests.
     from src.inference.daily_recommend import (
         RecommendationConfig,
         _assemble_run_meta,
@@ -317,7 +446,7 @@ def test_run_meta_carries_ensemble_provenance(tmp_path: Path) -> None:
     )
     manifest_sha = hashlib.sha256(mp.read_bytes()).hexdigest()
     meta = _assemble_run_meta(
-        config, model_pkl_sha256=manifest_sha, bundle_tag=None,
+        config, model_pkl_sha256=None, bundle_tag=None,
         generated_at="2026-07-22T09:00:00+08:00",
         ensemble={
             "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -329,10 +458,37 @@ def test_run_meta_carries_ensemble_provenance(tmp_path: Path) -> None:
         },
     )
     assert meta["model_path"] == str(mp)
-    assert meta["model_pkl_sha256"] == manifest_sha
+    assert "model_pkl_sha256" not in meta
+    assert meta["ensemble"]["manifest_sha256"] == manifest_sha
     assert meta["ensemble"]["n_models"] == 3
     assert len(meta["ensemble"]["members"]) == 3
     assert meta["ensemble"]["members"][0]["pkl_sha256"]
+
+
+def test_run_meta_requires_exactly_one_identity_source() -> None:
+    # model_pkl_sha256 XOR ensemble — passing both (or neither) is a
+    # programming error the assembler refuses instead of emitting an
+    # artifact with ambiguous identity (codex #390 r3).
+    from src.inference.daily_recommend import (
+        RecommendationConfig,
+        _assemble_run_meta,
+    )
+
+    config = RecommendationConfig(
+        model_path="Z:/m.pkl",
+        provider_uri="Z:/x", delisted_registry_path="Z:/y",
+        fit_start=_WINDOWS[-1][0], fit_end=_WINDOWS[-1][1],
+    )
+    with pytest.raises(ValueError, match="exactly one identity"):
+        _assemble_run_meta(
+            config, model_pkl_sha256=None, bundle_tag=None,
+            generated_at="2026-07-22T09:00:00+08:00")
+    with pytest.raises(ValueError, match="exactly one identity"):
+        _assemble_run_meta(
+            config, model_pkl_sha256="a" * 64, bundle_tag=None,
+            generated_at="2026-07-22T09:00:00+08:00",
+            ensemble={"manifest_path": "Z:/m.json",
+                      "manifest_sha256": "b" * 64})
 
 
 def test_index_mismatch_refuses(tmp_path: Path) -> None:

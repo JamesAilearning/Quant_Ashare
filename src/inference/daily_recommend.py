@@ -580,7 +580,7 @@ def _load_model(model_path: Path) -> tuple[Any, str]:
 def _assemble_run_meta(
     config: RecommendationConfig,
     *,
-    model_pkl_sha256: str,
+    model_pkl_sha256: str | None,
     bundle_tag: str | None,
     generated_at: str | None = None,
     ensemble: Mapping[str, Any] | None = None,
@@ -611,14 +611,24 @@ def _assemble_run_meta(
         "topk": config.topk,
     }
     # Ensemble provenance (PR-A'): in manifest mode the logical model
-    # IS the manifest — model_path/model_pkl_sha256 identify the
-    # manifest bytes and the members are enumerated verbatim so any
-    # reader can bind this list to the exact three pickles that
-    # produced it. Single-model path: key absent (legacy shape,
-    # byte-identical).
+    # IS the manifest — model_path points at it and the members are
+    # enumerated verbatim so any reader can bind this list to the
+    # exact three pickles that produced it. ``model_pkl_sha256`` is
+    # RESERVED for "digest of the single production pickle" (the
+    # decision page cross-checks it against the trainer sidecar's
+    # pkl_sha256) — an ensemble artifact has no single pickle, so the
+    # key is OMITTED rather than repurposed with the manifest digest
+    # (codex #390 r3: repurposing makes a valid ensemble artifact read
+    # as "other model"). Ensemble identity lives in
+    # ``meta["ensemble"]["manifest_sha256"]``. Single-model path: no
+    # ensemble key (legacy shape, byte-identical).
+    if (model_pkl_sha256 is None) == (ensemble is None):
+        raise ValueError(
+            "exactly one identity source required: model_pkl_sha256 "
+            "(single-model) XOR ensemble (manifest mode)")
     if ensemble is not None:
         meta["model_path"] = str(ensemble["manifest_path"])
-        meta["model_pkl_sha256"] = str(ensemble["manifest_sha256"])
+        del meta["model_pkl_sha256"]
         meta["ensemble"] = dict(ensemble)
     return meta
 
@@ -747,7 +757,7 @@ def recommend(
             raise DailyRecommendationError(str(exc)) from exc
         run_meta = _assemble_run_meta(
             config,
-            model_pkl_sha256=str(ensemble_manifest_sha),
+            model_pkl_sha256=None,
             bundle_tag=bundle_tag,
             ensemble={
                 "schema_version": MANIFEST_SCHEMA_VERSION,

@@ -66,6 +66,18 @@ class EnsembleServingError(RuntimeError):
     list rather than silently degrading (R1-DP-A fail-loud rule)."""
 
 
+# Which sidecar version key guards which framework — the walk-forward
+# ensemble's map (src/core/walk_forward/ensemble.py): ``model_type`` is
+# the canonical "which library produced this pickle?" answer, so only
+# the matching framework's version is compared (a catboost upgrade must
+# not reject an LGB member).
+_FRAMEWORK_KEYS = {
+    "LGBModel": ("lightgbm_version", "lightgbm"),
+    "XGBModel": ("xgboost_version", "xgboost"),
+    "CatBoostModel": ("catboost_version", "catboost"),
+}
+
+
 @dataclass(frozen=True)
 class EnsembleMember:
     pkl_path: str
@@ -179,14 +191,85 @@ def load_ensemble_manifest(
     return tuple(members), manifest_sha
 
 
+def _check_member_sidecar(
+    i: int, meta_path: Path, meta_raw: bytes, member: EnsembleMember,
+) -> None:
+    """Parse the trainer sidecar and version-guard the member BEFORE its
+    pickle is touched (codex #390 r3).
+
+    The walk-forward ensemble parses this same sidecar before unpickling
+    because a framework minor bump can silently change booster
+    serialisation semantics — the pickle loads without error but behaves
+    differently. There the guard SKIPS the prior (research affordance);
+    here every tolerance becomes a refusal: unparseable sidecar, missing
+    ``pkl_sha256``/``model_type``/version fields, an unimportable
+    framework or a version drift all refuse the whole ensemble.
+    """
+    try:
+        sidecar = json.loads(meta_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] meta sidecar is not valid JSON: "
+            f"{meta_path} ({exc}) — cannot version-guard, refusing."
+        ) from exc
+    if not isinstance(sidecar, dict):
+        raise EnsembleServingError(
+            f"ensemble member[{i}] meta sidecar top level is not an "
+            f"object: {meta_path} — cannot version-guard, refusing.")
+    # Three-way chain: the manifest's pkl digest, the sidecar's own
+    # pkl_sha256 (written at training time) and the on-disk bytes
+    # (checked by the caller) must all agree.
+    sidecar_pkl_sha = sidecar.get("pkl_sha256")
+    if not isinstance(sidecar_pkl_sha, str) or not sidecar_pkl_sha:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] meta sidecar carries no pkl_sha256 "
+            "— cannot bind sidecar to pickle, refusing.")
+    if sidecar_pkl_sha != member.pkl_sha256:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] sidecar pkl_sha256 {sidecar_pkl_sha} "
+            f"!= manifest {member.pkl_sha256} — sidecar describes a "
+            "different pickle, refusing.")
+    model_type = sidecar.get("model_type")
+    if model_type not in _FRAMEWORK_KEYS:
+        # walk-forward falls back to a lightgbm-only check for legacy
+        # sidecars; serving members are always freshly trainer-produced
+        # (R1-DP-A quarterly retrains), so an absent/unknown model_type
+        # means the member cannot be version-guarded — refuse.
+        raise EnsembleServingError(
+            f"ensemble member[{i}] meta sidecar model_type "
+            f"{model_type!r} is not one of {sorted(_FRAMEWORK_KEYS)} — "
+            "cannot version-guard, refusing.")
+    version_key, import_name = _FRAMEWORK_KEYS[model_type]
+    sidecar_ver = sidecar.get(version_key)
+    if not isinstance(sidecar_ver, str) or not sidecar_ver:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] meta sidecar carries no "
+            f"{version_key} — cannot version-guard, refusing.")
+    try:
+        module = __import__(import_name)
+    except ImportError as exc:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] was trained with {import_name} "
+            f"{sidecar_ver} but {import_name} is not importable in this "
+            "serving environment — refusing.") from exc
+    current_ver = getattr(module, "__version__", None)
+    if sidecar_ver != current_ver:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] was trained with {import_name} "
+            f"{sidecar_ver} but the serving environment has "
+            f"{current_ver} — serialization semantics may have "
+            "drifted, refusing.")
+
+
 def load_member_models(
     members: tuple[EnsembleMember, ...],
 ) -> list[tuple[EnsembleMember, Any]]:
     """Load every member pickle STRICTLY — any missing file, digest
-    mismatch, unpickle failure or missing ``.predict`` refuses the
-    whole ensemble (never a partial one). The digest is computed from
-    the SAME byte buffer that is unpickled (single read), mirroring
-    the single-model ``_load_model`` discipline."""
+    mismatch, sidecar/version-guard failure, unpickle failure or
+    missing ``.predict`` refuses the whole ensemble (never a partial
+    one). The digest is computed from the SAME byte buffer that is
+    unpickled (single read), mirroring the single-model ``_load_model``
+    discipline."""
     loaded: list[tuple[EnsembleMember, Any]] = []
     for i, member in enumerate(members):
         # Member META chain first (codex #390 r1): the trainer sidecar
@@ -197,13 +280,14 @@ def load_member_models(
             raise EnsembleServingError(
                 f"ensemble member[{i}] meta sidecar not found: "
                 f"{meta_path} — broken member chain, refusing.")
-        meta_actual = hashlib.sha256(
-            _read_bytes(meta_path, f"member[{i}] meta sidecar")).hexdigest()
+        meta_raw = _read_bytes(meta_path, f"member[{i}] meta sidecar")
+        meta_actual = hashlib.sha256(meta_raw).hexdigest()
         if meta_actual != member.meta_sha256:
             raise EnsembleServingError(
                 f"ensemble member[{i}] meta sha256 mismatch: manifest "
                 f"{member.meta_sha256} != on-disk {meta_actual} — "
                 "sidecar replaced or corrupt, refusing.")
+        _check_member_sidecar(i, meta_path, meta_raw, member)
         path = Path(member.pkl_path)
         if not path.exists():
             raise EnsembleServingError(

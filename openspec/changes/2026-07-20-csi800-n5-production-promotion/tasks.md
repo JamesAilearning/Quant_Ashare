@@ -92,6 +92,13 @@
       成员加载四拒绝态/predict 失败与索引失配拒/fit 窗失配拒/
       run_meta ensemble provenance/单模型旧路径字节不变（既有
       测试全绿）
+- [x] codex #390 r3 P1：成员 sidecar 框架版本守卫（walk-forward
+      同语义、serving 全拒绝版：不可解析/缺 pkl_sha256/侧车-
+      manifest 矛盾/未知 model_type/缺版本/版本漂移 → 拒绝出单）
+- [x] codex #390 r3 P2：工件身份字段分离（`model_pkl_sha256`
+      保留单 pkl 摘要语义、ensemble 工件不携带；身份 =
+      `meta.ensemble.manifest_sha256`；决策页 ensemble 感知
+      专用披露 + journal `ensemble:<sha>` 身份）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器
