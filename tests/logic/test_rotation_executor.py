@@ -361,6 +361,23 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute(repo=repo))
         self._assert_manifest_untouched()
 
+    def test_non_utf8_status_bytes_refused(self) -> None:
+        # codex #391 r5: a status artifact whose bytes are not UTF-8
+        # is malformed certification state — classified refusal, not
+        # an escaping UnicodeDecodeError traceback.
+        repo = self.tmp / "mainline_binary"
+        repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(repo)],
+                       check=True, capture_output=True)
+        target = repo / RECERT_STATUS_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"\xff\xfe\x00corrupt")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "binary status")
+        _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual(1, self._execute(repo=repo))
+        self._assert_manifest_untouched()
+
     def test_tampered_candidate_refused(self) -> None:
         # Keep the serving-loader pins satisfied but break the plan
         # equality: slot 0 of the candidate is NOT current[1].

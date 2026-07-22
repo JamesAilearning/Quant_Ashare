@@ -122,7 +122,15 @@ def _git(cmd: list[str], repo: Path) -> str:
             f"{' '.join(cmd)} failed: "
             f"{proc.stderr.decode(errors='replace').strip()} — no "
             "certification state readable from the mainline, refusing")
-    return proc.stdout.decode("utf-8")
+    try:
+        return proc.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # codex #391 r5: a status artifact whose BYTES are not UTF-8 is
+        # malformed certification state — the same classified freeze as
+        # unparseable JSON, never an escaping traceback.
+        raise RotationRefusal(
+            f"{' '.join(cmd)} produced non-UTF-8 bytes ({exc}) — "
+            "malformed certification state, refusing") from exc
 
 
 def _validate_candidate(path: Path) -> str:
