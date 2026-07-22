@@ -250,11 +250,25 @@ def _build_dataset(args: argparse.Namespace, profile: dict[str, Any],
 def _member_scope(args: argparse.Namespace,
                   profile: dict[str, Any]) -> dict[str, Any]:
     """Gates (a) + (d) for one freshly trained member."""
+    # The sidecar bytes are read ONCE: the digest in the subject block
+    # and the parsed payload the integrity gate judges come from the
+    # same buffer. A missing/unreadable sidecar is a GATE FAIL state —
+    # the artifact must still be written (failures leave a trace,
+    # codex #391 r1), so the digest becomes an honest null instead of
+    # a second read raising a tool error after the gate already
+    # concluded FAIL.
     meta_path = Path(args.member_meta)
+    meta_raw: bytes | None
     try:
-        sidecar: Any = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        sidecar = None  # gate lib fails it closed with the reason
+        meta_raw = meta_path.read_bytes()
+    except OSError:
+        meta_raw = None
+    sidecar: Any = None
+    if meta_raw is not None:
+        try:
+            sidecar = json.loads(meta_raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            sidecar = None  # gate lib fails it closed with the reason
     integrity = gate_trainer_integrity(sidecar)
 
     # Gate (d): predict the member's OWN valid window (test segment =
@@ -287,7 +301,12 @@ def _member_scope(args: argparse.Namespace,
         "pkl_path": str(args.member_pkl),
         "pkl_sha256": _sha256_file(Path(args.member_pkl)),
         "meta_path": str(args.member_meta),
-        "meta_sha256": _sha256_file(meta_path),
+        # Honest null when the sidecar was unreadable — the FAIL
+        # artifact still records everything measurable, and the null
+        # digest can never satisfy the rotation executor's meta
+        # binding.
+        "meta_sha256": (hashlib.sha256(meta_raw).hexdigest()
+                        if meta_raw is not None else None),
         "fit_start": args.fit_start, "fit_end": args.fit_end,
     }
     return assemble_gate_artifact(
