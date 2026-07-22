@@ -255,19 +255,28 @@ def cmd_execute(args: argparse.Namespace) -> int:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(candidate_bytes)
-        # Mirror the LIVE manifest's permission bits onto the staged
-        # file (codex #391 r10): mkstemp creates 0600, and os.replace
-        # would install that restrictive mode over a group/world-
-        # readable production manifest — serving under another account
-        # would suddenly get permission denied.
+        # Mirror the LIVE manifest's permission bits AND (on POSIX)
+        # its group onto the staged file (codex #391 r10/r11): mkstemp
+        # creates 0600 under the executor's primary group, and
+        # os.replace would install that over a group-readable
+        # production manifest (e.g. 0640 + serving group) — the
+        # serving account would suddenly get permission denied. When
+        # the group cannot be preserved, fail closed. (Windows has no
+        # chown; there the staged file inherits the directory ACL, so
+        # readability is not narrowed by the swap.)
         try:
             import shutil
 
             shutil.copymode(manifest_path, tmp)
+            if hasattr(os, "chown"):
+                live_stat = os.stat(manifest_path)
+                os.chown(tmp, -1, live_stat.st_gid)
         except OSError as exc:
             raise RotationRefusal(
-                f"cannot mirror live-manifest permissions onto the "
-                f"staged file: {exc}") from exc
+                f"cannot mirror live-manifest permissions/group onto "
+                f"the staged file: {exc} — the installed manifest "
+                "could lose readability for the serving account, "
+                "refusing") from exc
         try:
             staged_members, _staged_sha = load_ensemble_manifest(tmp)
         except EnsembleServingError as exc:

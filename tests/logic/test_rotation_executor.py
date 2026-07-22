@@ -236,15 +236,17 @@ class RotationExecutorStates(unittest.TestCase):
         import os
         import stat
 
-        pre_mode = stat.S_IMODE(os.stat(self.manifest).st_mode)
+        pre_stat = os.stat(self.manifest)
+        pre_mode = stat.S_IMODE(pre_stat.st_mode)
         rc = self._execute()
         self.assertEqual(0, rc)
-        # codex #391 r10: the swap must not narrow the manifest's
-        # permission bits to mkstemp's 0600 (on POSIX CI this is a
-        # real 0644-vs-0600 assertion; on Windows it is trivially
-        # equal).
-        self.assertEqual(
-            pre_mode, stat.S_IMODE(os.stat(self.manifest).st_mode))
+        # codex #391 r10/r11: the swap must not narrow the manifest's
+        # permission bits to mkstemp's 0600 nor change its group (on
+        # POSIX CI the mode check is a real 0644-vs-0600 assertion;
+        # on Windows both are trivially equal).
+        post_stat = os.stat(self.manifest)
+        self.assertEqual(pre_mode, stat.S_IMODE(post_stat.st_mode))
+        self.assertEqual(pre_stat.st_gid, post_stat.st_gid)
         # Manifest now equals the candidate; oldest member is gone.
         rotated = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(
