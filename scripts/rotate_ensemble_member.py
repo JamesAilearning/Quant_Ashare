@@ -327,12 +327,14 @@ def cmd_execute(args: argparse.Namespace) -> int:
         # execute refuses at acquisition instead of racing it.
         with _ManifestLock(manifest_path):
             # Mirror the LIVE manifest's permission bits AND (on
-            # POSIX) its group onto the staged file (codex #391
-            # r10/r11): mkstemp creates 0600 under the executor's
-            # primary group, and os.replace would install that over a
-            # group-readable production manifest (e.g. 0640 + serving
-            # group) — the serving account would suddenly get
-            # permission denied. When the group cannot be preserved,
+            # POSIX) its owner+group onto the staged file (codex #391
+            # r10/r11/r14): mkstemp creates 0600 owned by the
+            # EXECUTOR, and os.replace would install that identity
+            # over production — an owner-only 0600 manifest owned by
+            # the serving account (rotated by root) or a group-
+            # readable 0640 one would lose readability even though the
+            # bits look right. When ownership cannot be preserved
+            # (non-root executor rotating another account's manifest),
             # fail closed. (Windows has no chown; there the staged
             # file inherits the directory ACL, so readability is not
             # narrowed by the swap.)
@@ -342,13 +344,13 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 shutil.copymode(manifest_path, tmp)
                 if hasattr(os, "chown"):
                     live_stat = os.stat(manifest_path)
-                    os.chown(tmp, -1, live_stat.st_gid)
+                    os.chown(tmp, live_stat.st_uid, live_stat.st_gid)
             except OSError as exc:
                 raise RotationRefusal(
-                    f"cannot mirror live-manifest permissions/group "
-                    f"onto the staged file: {exc} — the installed "
-                    "manifest could lose readability for the serving "
-                    "account, refusing") from exc
+                    f"cannot mirror live-manifest permissions/owner/"
+                    f"group onto the staged file: {exc} — the "
+                    "installed manifest could lose readability for "
+                    "the serving account, refusing") from exc
             try:
                 staged_members, _staged_sha = load_ensemble_manifest(tmp)
             except EnsembleServingError as exc:

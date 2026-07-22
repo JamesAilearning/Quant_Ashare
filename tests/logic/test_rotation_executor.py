@@ -251,6 +251,7 @@ class RotationExecutorStates(unittest.TestCase):
         post_stat = os.stat(self.manifest)
         self.assertEqual(pre_mode, stat.S_IMODE(post_stat.st_mode))
         self.assertEqual(pre_stat.st_gid, post_stat.st_gid)
+        self.assertEqual(pre_stat.st_uid, post_stat.st_uid)
         # Manifest now equals the candidate; oldest member is gone.
         rotated = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(
