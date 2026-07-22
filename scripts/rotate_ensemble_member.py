@@ -88,6 +88,15 @@ def _read_manifest_members(path: Path) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         raise RotationRefusal(
             f"{path}: manifest top level is not an object")
+    if payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        # codex #391 r6: an unknown/missing schema on the LIVE manifest
+        # must fail closed — planning over it would silently convert an
+        # unrecognized manifest contract into a fresh v1 candidate.
+        raise RotationRefusal(
+            f"{path}: manifest schema "
+            f"{payload.get('schema_version')!r} != "
+            f"{MANIFEST_SCHEMA_VERSION!r} — refusing to plan/execute "
+            "over an unrecognized manifest contract")
     members = payload.get("members")
     if not isinstance(members, list):
         raise RotationRefusal(f"{path}: manifest carries no members list")

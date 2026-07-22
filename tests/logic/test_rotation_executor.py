@@ -275,6 +275,28 @@ class RotationExecutorStates(unittest.TestCase):
             "--out", str(self.tmp / "x.json"),
         ])
         self.assertEqual(1, rc)
+        # codex #391 r6: a live manifest with a wrong/missing schema
+        # must not be silently converted into a fresh v1 candidate.
+        for schema in ("v0", None):
+            payload = json.loads(self.manifest.read_text(
+                encoding="utf-8"))
+            if schema is None:
+                del payload["schema_version"]
+            else:
+                payload["schema_version"] = schema
+            stale = self.tmp / f"stale_schema_{schema}.json"
+            stale.write_text(json.dumps(payload), encoding="utf-8")
+            rc = rotate_main([
+                "plan",
+                "--manifest", str(stale),
+                "--new-pkl", str(self.new_pkl),
+                "--new-meta", str(self.new_meta),
+                "--fit-start", _NEW_WINDOW[0],
+                "--fit-end", _NEW_WINDOW[1],
+                "--out", str(self.tmp / f"s_{schema}.json"),
+            ])
+            self.assertEqual(1, rc, schema)
+            self.assertFalse((self.tmp / f"s_{schema}.json").exists())
         corrupt = self.tmp / "corrupt_manifest.json"
         corrupt.write_text("not json {", encoding="utf-8")
         rc = rotate_main([
