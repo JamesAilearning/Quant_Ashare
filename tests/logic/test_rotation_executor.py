@@ -36,12 +36,22 @@ from scripts.rotation_lib import (  # noqa: E402
 )
 
 # Staggered quarterly windows satisfying the serving-loader pins.
+# Dated relative to _NOW below: a quarterly retrain at T trains
+# through ~T-3m and validates on the 3 months up to T, so the newest
+# member's fit_end sits about a quarter behind the rotation instant
+# (codex #391 r19 binds the gates' measured windows to this shape).
 _CURRENT_WINDOWS = [
-    ("2022-12-20", "2024-12-18"),
-    ("2023-03-20", "2025-03-18"),
-    ("2023-06-20", "2025-06-18"),
+    ("2023-08-02", "2025-08-01"),
+    ("2023-11-01", "2025-10-31"),
+    ("2024-01-31", "2026-01-30"),
 ]
-_NEW_WINDOW = ("2023-09-20", "2025-09-18")   # +92d gap, 729d span
+_NEW_WINDOW = ("2024-05-02", "2026-05-01")   # +91d gap, 729d span
+_NOW = "2026-08-01T00:00:00+00:00"
+# The member IC gate's valid window: promptly after the training
+# window, ~3 months, ending just before the rotation instant.
+_MEMBER_VALID = ("2026-05-05", "2026-07-30")
+# The ensemble gates' trailing-quarter dry run.
+_TRAILING_QUARTER = ("2026-05-01", "2026-07-31")
 
 
 class _StubModel:
@@ -205,18 +215,28 @@ class RotationExecutorStates(unittest.TestCase):
                          "serving_veto"),
     }
 
+    _DEFAULT_WINDOW = {
+        SCOPE_MEMBER: {"valid_start": _MEMBER_VALID[0],
+                       "valid_end": _MEMBER_VALID[1]},
+        SCOPE_ENSEMBLE: {"window_start": _TRAILING_QUARTER[0],
+                         "window_end": _TRAILING_QUARTER[1]},
+    }
+
     def _write_gate(self, path: Path, scope: str, subject: dict,
                     overall: str = "PASS",
-                    profile: str = "csi800_n5") -> None:
+                    profile: str = "csi800_n5",
+                    window: dict | None = None) -> None:
         path.write_text(json.dumps({
             "schema_version": GATE_SCHEMA_VERSION,
             "profile": profile,
             "scope": scope, "subject": subject,
+            "window": (self._DEFAULT_WINDOW[scope] if window is None
+                       else window),
             "gates": {name: {"verdict": overall}
                       for name in self._GATES_BY_SCOPE[scope]},
             "overall": overall}), encoding="utf-8")
 
-    def _execute(self, *, now: str = "2026-08-01T00:00:00+00:00",
+    def _execute(self, *, now: str = _NOW,
                  repo: Path | None = None) -> int:
         return rotate_main([
             "execute",
@@ -506,6 +526,77 @@ class RotationExecutorStates(unittest.TestCase):
         self._assert_manifest_untouched()
         # Lock released: the same rotation now succeeds.
         self.assertEqual(0, self._execute())
+
+    def test_gate_measured_on_wrong_window_refused(self) -> None:
+        # codex #391 r19: PASS artifacts whose DIGESTS bind correctly
+        # but that were measured on an arbitrary (easier/stale) period
+        # must not authorize a rotation. codex's reproduction: both
+        # windows moved to 1900.
+        self._write_gate(self.member_gate, SCOPE_MEMBER,
+                         {"pkl_sha256": self.new_pkl_sha,
+                          "meta_sha256": self.new_meta_sha,
+                          "fit_start": _NEW_WINDOW[0],
+                          "fit_end": _NEW_WINDOW[1]},
+                         window={"valid_start": "1900-01-01",
+                                 "valid_end": "1900-03-31"})
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_ensemble_gate_stale_window_refused(self) -> None:
+        # The trailing quarter legitimately overlaps training data, so
+        # it is bound by RECENCY: a two-year-old dry run cannot gate
+        # today's rotation.
+        self._write_gate(self.ensemble_gate, SCOPE_ENSEMBLE,
+                         {"manifest_sha256": self.candidate_sha},
+                         window={"window_start": "2024-05-01",
+                                 "window_end": "2024-07-31"})
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_member_gate_window_not_out_of_sample_refused(self) -> None:
+        # The IC gate's valid window must FOLLOW the training window.
+        self._write_gate(self.member_gate, SCOPE_MEMBER,
+                         {"pkl_sha256": self.new_pkl_sha,
+                          "meta_sha256": self.new_meta_sha,
+                          "fit_start": _NEW_WINDOW[0],
+                          "fit_end": _NEW_WINDOW[1]},
+                         window={"valid_start": "2026-02-01",
+                                 "valid_end": "2026-06-01"})
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_missing_window_block_refused(self) -> None:
+        payload = json.loads(
+            self.ensemble_gate.read_text(encoding="utf-8"))
+        del payload["window"]
+        self.ensemble_gate.write_text(json.dumps(payload),
+                                      encoding="utf-8")
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_cleanup_failure_still_classified_refusal(self) -> None:
+        # codex #391 r19: a cleanup that itself raises (read-only
+        # backup on Windows) must not mask the classified refusal with
+        # a raw OSError — the executor still exits 1 and names the
+        # surviving file.
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rem
+
+        real_unlink = Path.unlink
+
+        def stubborn(self, *a, **kw):  # noqa: ANN001, ANN002
+            if ".pre_rotation_" in self.name:
+                raise OSError("read-only rollback artifact")
+            return real_unlink(self, *a, **kw)
+
+        with patch.object(rem.os, "replace",
+                          side_effect=OSError("locked")), \
+                patch.object(Path, "unlink", stubborn):
+            rc = self._execute()
+        self.assertEqual(1, rc)
+        self.assertEqual(self.original_bytes,
+                         self.manifest.read_bytes())
 
     def test_install_failure_refuses_with_zero_residue(self) -> None:
         # codex #391 r18: the final os.replace can fail (Windows/NFS

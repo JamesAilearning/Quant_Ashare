@@ -50,6 +50,7 @@ __all__ = [
     "parse_recert_status",
     "recert_validity",
     "check_gate_artifact",
+    "check_gate_window",
     "plan_rotated_members",
 ]
 
@@ -59,6 +60,30 @@ RECERT_STATUS_PATH = "docs/promotion/csi800_recert_status.json"
 RECERT_STATUS_SCHEMA_VERSION = "csi800_recert_status_v1"
 # 12-month re-certification cycle + 3-month execution grace.
 VALIDITY_MONTHS = 15
+
+# ── gate-window mechanization (codex #391 r19) ──────────────────────
+# The spec defines the member IC gate over the member's VALID window
+# and the ensemble gates over the TRAILING QUARTER. Binding only the
+# digests would let a PASS artifact measured on an arbitrary (easier
+# or stale) period authorize a rotation, so the executor also binds
+# WHEN the gates were measured. Per-scope window keys as the runner
+# writes them:
+GATE_WINDOW_KEYS = {
+    SCOPE_MEMBER: ("valid_start", "valid_end"),
+    SCOPE_ENSEMBLE: ("window_start", "window_end"),
+}
+# A member's valid window SHALL follow its training window promptly
+# (embargo gap) and strictly out of sample.
+MEMBER_VALID_GAP_DAYS_MAX = 45
+# Both scopes: a quarter to a half-year of measured days.
+GATE_WINDOW_SPAN_DAYS_MIN = 60
+GATE_WINDOW_SPAN_DAYS_MAX = 200
+# "Trailing"/current means the measured window ENDS near the rotation
+# instant — two quarters of slack, well beyond any legitimate lag.
+GATE_WINDOW_RECENCY_DAYS_MAX = 180
+# Small grace for a window ending on a quarter boundary the gate ran
+# a few days ahead of; beyond it the artifact claims the future.
+GATE_WINDOW_FUTURE_GRACE_DAYS = 7
 
 _MAINLINE = "origin/main"
 
@@ -183,10 +208,86 @@ def recert_validity(
         f"{tip.date()})")
 
 
+def _parse_day(value: Any, what: str) -> date:
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError) as exc:
+        raise RotationRefusal(
+            f"{what} {value!r} is not a YYYY-MM-DD date") from exc
+
+
+def check_gate_window(
+    artifact: Any, *, scope: str, member_fit_end: str | None,
+    now_iso: str,
+) -> None:
+    """Bind WHEN the gates were measured (codex #391 r19).
+
+    Digest bindings prove WHICH artifacts were gated; without this a
+    PASS artifact measured on a 1900 (or simply stale/easier) period
+    still authorizes the rotation. Per scope:
+
+    * member — the IC gate's valid window SHALL start strictly after
+      the member's training window (out of sample) and promptly after
+      it (embargo gap, not an arbitrary later period);
+    * ensemble — the trailing-quarter dry run legitimately overlaps
+      the newest member's training data (its purpose is behavioral,
+      not performance — R1: no net gate), so only recency and span
+      are bound there.
+
+    Both scopes: a quarter-to-half-year span, ending near the rotation
+    instant and not in the future.
+    """
+    keys = GATE_WINDOW_KEYS[scope]
+    window = artifact.get("window")
+    if not isinstance(window, dict):
+        raise RotationRefusal(
+            f"{scope} gate artifact carries no window block — the "
+            "measured period is unbound, refusing")
+    start = _parse_day(window.get(keys[0]),
+                       f"{scope} gate window {keys[0]}")
+    end = _parse_day(window.get(keys[1]),
+                     f"{scope} gate window {keys[1]}")
+    now = _parse_day(now_iso[:10], "rotation instant")
+    span = (end - start).days
+    if not (GATE_WINDOW_SPAN_DAYS_MIN <= span
+            <= GATE_WINDOW_SPAN_DAYS_MAX):
+        raise RotationRefusal(
+            f"{scope} gate measured window {start}..{end} spans "
+            f"{span}d, outside the pinned "
+            f"[{GATE_WINDOW_SPAN_DAYS_MIN}, "
+            f"{GATE_WINDOW_SPAN_DAYS_MAX}] — refusing")
+    if (now - end).days > GATE_WINDOW_RECENCY_DAYS_MAX:
+        raise RotationRefusal(
+            f"{scope} gate measured window ends {end}, "
+            f"{(now - end).days}d before the rotation instant {now} "
+            f"(max {GATE_WINDOW_RECENCY_DAYS_MAX}d) — a stale gate "
+            "cannot authorize this rotation")
+    if (end - now).days > GATE_WINDOW_FUTURE_GRACE_DAYS:
+        raise RotationRefusal(
+            f"{scope} gate measured window ends {end}, in the future "
+            f"relative to the rotation instant {now} — refusing")
+    if scope == SCOPE_MEMBER:
+        fit_end = _parse_day(member_fit_end,
+                             "candidate member fit_end")
+        if start <= fit_end:
+            raise RotationRefusal(
+                f"member gate valid window starts {start}, not after "
+                f"the member's training window end {fit_end} — the IC "
+                "gate must be out of sample, refusing")
+        if (start - fit_end).days > MEMBER_VALID_GAP_DAYS_MAX:
+            raise RotationRefusal(
+                f"member gate valid window starts {start}, "
+                f"{(start - fit_end).days}d after the training window "
+                f"end {fit_end} (max {MEMBER_VALID_GAP_DAYS_MAX}d) — "
+                "that is not this member's valid window, refusing")
+
+
 def check_gate_artifact(
     artifact: Any, *, scope: str, expected_subject_sha: str,
     expected_meta_sha: str | None = None,
     expected_fit_window: tuple[str, str] | None = None,
+    member_fit_end: str | None = None,
+    now_iso: str | None = None,
 ) -> None:
     """Admit a gate artifact for rotation, fail-closed (codex #389
     r11: a gate the tool FAILED — or that never ran — must be a closed
@@ -290,6 +391,12 @@ def check_gate_artifact(
                 f"{actual_window!r} != the candidate member's "
                 f"{expected_fit_window!r} — the gate evaluated a "
                 "different window, refusing")
+    if now_iso is not None:
+        # codex #391 r19: bind WHEN the gates were measured, not only
+        # WHICH artifacts they gated.
+        check_gate_window(artifact, scope=scope,
+                          member_fit_end=member_fit_end,
+                          now_iso=now_iso)
 
 
 def plan_rotated_members(

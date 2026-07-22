@@ -173,6 +173,21 @@ class _ManifestLock:
             fh.close()
 
 
+def _remove_or_note(path: Path) -> str | None:
+    """Best-effort cleanup; returns a note when the file SURVIVES.
+
+    A cleanup failure must never mask the classified refusal it is
+    cleaning up after (codex #391 r19): on Windows a backup made
+    read-only by ``copymode`` from a read-only manifest can refuse to
+    unlink, which would surface a raw OSError AND leave residue the
+    operator was never told about."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        return f"{path} ({type(exc).__name__}: {exc})"
+    return None
+
+
 def _read_bytes_or_refuse(path: Path, what: str) -> bytes:
     """Byte reads of operator-supplied paths fail as classified
     refusals (same class as the manifest read, codex #391 r4)."""
@@ -386,11 +401,16 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 # the gate must have evaluated the SAME window the
                 # candidate installs.
                 expected_fit_window=(str(new_member.get("fit_start")),
-                                     str(new_member.get("fit_end"))))
+                                     str(new_member.get("fit_end"))),
+                # ...and the gates must have been MEASURED on this
+                # member's valid window, recently (codex #391 r19).
+                member_fit_end=str(new_member.get("fit_end")),
+                now_iso=now_iso)
             ensemble_gate = _load_json(Path(args.ensemble_gate),
                                        "ensemble gate artifact")
             check_gate_artifact(ensemble_gate, scope=SCOPE_ENSEMBLE,
-                                expected_subject_sha=candidate_sha)
+                                expected_subject_sha=candidate_sha,
+                                now_iso=now_iso)
 
             # 4. Plan integrity: candidate == current[1:] + [gated
             # member].
@@ -447,10 +467,14 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 with os.fdopen(bfd, "wb") as bfh:
                     bfh.write(live_bytes)
             except OSError as exc:
-                backup.unlink(missing_ok=True)
+                residue = _remove_or_note(backup)
                 raise RotationRefusal(
-                    f"backup write failed: {backup} ({exc}) — partial "
-                    "rollback file removed, refusing") from exc
+                    f"backup write failed: {backup} ({exc}) — "
+                    + (f"the partial rollback file SURVIVES at "
+                       f"{residue} and must be removed by hand"
+                       if residue else
+                       "partial rollback file removed")
+                    + ", refusing") from exc
             try:
                 # The backup IS the advertised single-step rollback
                 # artifact (codex #391 r15): mirror the live
@@ -478,10 +502,18 @@ def cmd_execute(args: argparse.Namespace) -> int:
                         "adjudicated it (out-of-band manual edit) — "
                         "refusing to clobber the intervening update; "
                         "re-run against the current state")
-            except BaseException:
+            except BaseException as exc:
                 # A refusal after the backup write must not leave a
-                # stray backup either — refusal means zero residue.
-                backup.unlink(missing_ok=True)
+                # stray backup either — refusal means zero residue. If
+                # the cleanup ITSELF fails (read-only backup on
+                # Windows, codex #391 r19) the classified refusal
+                # still stands and names the surviving file.
+                residue = _remove_or_note(backup)
+                if residue and isinstance(exc, RotationRefusal):
+                    raise RotationRefusal(
+                        f"{exc}; additionally the pre-rotation backup "
+                        f"could not be removed and SURVIVES at "
+                        f"{residue}") from exc
                 raise
 
             # 7. Atomic install of the VERIFIED buffer, still under
@@ -496,15 +528,26 @@ def cmd_execute(args: argparse.Namespace) -> int:
             try:
                 os.replace(tmp, manifest_path)
             except OSError as exc:
-                backup.unlink(missing_ok=True)
+                # The cleanup may itself fail (read-only backup on
+                # Windows, codex #391 r19) — the refusal stays
+                # classified either way and says which files remain.
+                residue = _remove_or_note(backup)
                 raise RotationRefusal(
                     f"manifest install failed: {exc} — the live "
-                    f"manifest is UNCHANGED and the pre-rotation "
-                    "backup was removed (no rotation occurred); "
-                    "resolve the filesystem condition and re-run"
+                    f"manifest is UNCHANGED (no rotation occurred); "
+                    + (f"the pre-rotation backup could not be removed "
+                       f"and SURVIVES at {residue} — remove it by hand "
+                       "before re-running"
+                       if residue else
+                       "the pre-rotation backup was removed")
+                    + "; resolve the filesystem condition and re-run"
                 ) from exc
-    except BaseException:
-        tmp.unlink(missing_ok=True)
+    except BaseException as exc:
+        residue = _remove_or_note(tmp)
+        if residue and isinstance(exc, RotationRefusal):
+            raise RotationRefusal(
+                f"{exc}; additionally the staging file could not be "
+                f"removed and SURVIVES at {residue}") from exc
         raise
     print(f"[rotate] pre-rotation backup: {backup}")
     print(f"[rotate] manifest rotated: {manifest_path}")

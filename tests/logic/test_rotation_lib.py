@@ -170,10 +170,16 @@ def _member_gate_artifact(overall: str = "PASS") -> dict:
         "scope": SCOPE_MEMBER,
         "subject": {"pkl_sha256": "ab" * 32, "meta_sha256": "ac" * 32,
                     "fit_start": "2023-09-20", "fit_end": "2025-09-18"},
+        "window": {"valid_start": "2025-09-25",
+                   "valid_end": "2025-12-20"},
         "gates": {"trainer_integrity": {"verdict": "PASS"},
                   "ic_direction": {"verdict": "PASS"}},
         "overall": overall,
     }
+
+
+# The rotation instant these window fixtures are dated against.
+_NOW_ISO = "2025-12-22T00:00:00+00:00"
 
 
 class GateArtifactConsumption(unittest.TestCase):
@@ -288,6 +294,67 @@ class GateArtifactConsumption(unittest.TestCase):
                 expected_subject_sha="ab" * 32,
                 expected_fit_window=("2023-09-21", "2025-09-18"))
         self.assertIn("window", str(ctx.exception))
+
+    def test_measured_window_binding(self) -> None:
+        # codex #391 r19: WHEN the gates were measured is bound too —
+        # digests alone would let a 1900/stale/easier period through.
+        kwargs = {"scope": SCOPE_MEMBER,
+                  "expected_subject_sha": "ab" * 32,
+                  "member_fit_end": "2025-09-18",
+                  "now_iso": _NOW_ISO}
+        check_gate_artifact(_member_gate_artifact(), **kwargs)
+        cases = {
+            "1900": {"valid_start": "1900-01-01",
+                     "valid_end": "1900-03-31"},
+            "in-sample": {"valid_start": "2025-06-01",
+                          "valid_end": "2025-09-10"},
+            "late start": {"valid_start": "2025-11-20",
+                           "valid_end": "2026-02-20"},
+            "too short": {"valid_start": "2025-09-25",
+                          "valid_end": "2025-10-10"},
+            "future": {"valid_start": "2025-09-25",
+                       "valid_end": "2026-03-20"},
+            "garbage": {"valid_start": "not-a-date",
+                        "valid_end": "2025-12-20"},
+        }
+        for label, window in cases.items():
+            artifact = _member_gate_artifact()
+            artifact["window"] = window
+            with self.assertRaises(RotationRefusal, msg=label):
+                check_gate_artifact(artifact, **kwargs)
+        missing = _member_gate_artifact()
+        del missing["window"]
+        with self.assertRaises(RotationRefusal):
+            check_gate_artifact(missing, **kwargs)
+
+    def test_ensemble_window_bound_by_recency_not_sample(self) -> None:
+        # The trailing-quarter dry run legitimately overlaps training
+        # data (its purpose is behavioral, not performance — R1 has no
+        # net gate), so only recency/span are bound there.
+        def artifact(window: dict) -> dict:
+            return {
+                "schema_version": GATE_SCHEMA_VERSION,
+                "profile": "csi800_n5",
+                "scope": SCOPE_ENSEMBLE,
+                "subject": {"manifest_sha256": "cd" * 32},
+                "window": window,
+                "gates": {"degeneracy": {"verdict": "PASS"},
+                          "constraint_dry_run": {"verdict": "PASS"},
+                          "serving_veto": {"verdict": "PASS"}},
+                "overall": "PASS",
+            }
+
+        kwargs = {"scope": SCOPE_ENSEMBLE,
+                  "expected_subject_sha": "cd" * 32,
+                  "now_iso": _NOW_ISO}
+        # Overlapping the newest member's training window is fine.
+        check_gate_artifact(
+            artifact({"window_start": "2025-09-20",
+                      "window_end": "2025-12-19"}), **kwargs)
+        with self.assertRaises(RotationRefusal):   # two years stale
+            check_gate_artifact(
+                artifact({"window_start": "2023-09-20",
+                          "window_end": "2023-12-19"}), **kwargs)
 
     def test_member_meta_binding_mismatch_refused(self) -> None:
         # The trainer-integrity gate judged the SIDECAR — a regenerated
