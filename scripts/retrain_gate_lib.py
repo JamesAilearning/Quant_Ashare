@@ -6,11 +6,14 @@ NO net-return gate (R1: performance authority = the certified campaign
 evidence + annual re-certification, never a single-quarter number):
 
   member scope   (a) trainer integrity — best_iteration / final valid
-                     loss finite AND best_iteration != num_boost_round
-                     (early stopping never fired = training budget
-                     exhausted, a boundary anomaly not a convergence
-                     signal, codex #389 r12). BOTH values come ONLY
-                     from the trainer sidecar; a sidecar missing
+                     loss finite AND the NORMALIZED boost rounds used
+                     != num_boost_round (early stopping never fired =
+                     training budget exhausted, a boundary anomaly not
+                     a convergence signal, codex #389 r12; LGB records
+                     1-based counts while XGB/CatBoost record 0-based
+                     indexes, so the comparison normalizes by
+                     model_type — codex #391 r3). BOTH values come
+                     ONLY from the trainer sidecar; a sidecar missing
                      ``num_boost_round`` (including every legacy
                      sidecar) FAILS the gate — fail-closed, never a
                      fallback to preset defaults (codex #389 r18).
@@ -60,6 +63,15 @@ UNKNOWN_WEIGHT_THRESHOLD = 0.10      # veto5: unknown > 0.10 fails
 PASS = "PASS"
 FAIL = "FAIL"
 
+# best_iteration semantics differ by framework (codex #391 r3;
+# ModelTrainer._metric_index_for_best_iteration is the repo authority):
+# LGB records a 1-BASED iteration count, XGB/CatBoost record a 0-BASED
+# index. The budget-boundary check therefore compares the NORMALIZED
+# "boost rounds actually used" against num_boost_round. Unknown/absent
+# model_type cannot be normalized — fail-closed.
+_ONE_BASED_BEST_ITER = frozenset({"LGBModel"})
+KNOWN_MODEL_TYPES = frozenset({"LGBModel", "XGBModel", "CatBoostModel"})
+
 
 def _is_num(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float))
@@ -83,12 +95,26 @@ def gate_trainer_integrity(sidecar: Any) -> dict[str, Any]:
     best_iter = sidecar.get("best_iteration")
     nbr = sidecar.get("num_boost_round")
     loss = sidecar.get("final_valid_loss")
+    model_type = sidecar.get("model_type")
+    if model_type not in KNOWN_MODEL_TYPES:
+        # best_iteration cannot be normalized without knowing the
+        # framework's indexing convention (codex #391 r3) — refuse.
+        reasons.append(
+            f"model_type {model_type!r} is not one of "
+            f"{sorted(KNOWN_MODEL_TYPES)} — cannot normalize "
+            "best_iteration, fail-closed")
+    one_based = model_type in _ONE_BASED_BEST_ITER
     if not (_is_num(best_iter) and isinstance(best_iter, int)):
         reasons.append(
             f"best_iteration {best_iter!r} is not an int — extraction "
             "failed or sidecar corrupt")
-    elif best_iter <= 0:
-        reasons.append(f"best_iteration {best_iter} is not positive")
+    elif model_type in KNOWN_MODEL_TYPES and (
+            best_iter < (1 if one_based else 0)):
+        # LGB is 1-based (0 is impossible); XGB/CatBoost are 0-based
+        # (0 = first round is a LEGITIMATE best).
+        reasons.append(
+            f"best_iteration {best_iter} below the minimum for "
+            f"{model_type} ({1 if one_based else 0})")
     if not (_is_num(nbr) and isinstance(nbr, int)) or nbr < 1:
         # codex #389 r18: legacy sidecars without the field fail the
         # SAME way — never a fallback to a preset default.
@@ -99,26 +125,36 @@ def gate_trainer_integrity(sidecar: Any) -> dict[str, Any]:
     if not _finite(loss):
         reasons.append(
             f"final_valid_loss {loss!r} is not a finite number")
+    rounds_used: int | None = None
     if (isinstance(best_iter, int) and not isinstance(best_iter, bool)
-            and isinstance(nbr, int) and not isinstance(nbr, bool)):
+            and isinstance(nbr, int) and not isinstance(nbr, bool)
+            and model_type in KNOWN_MODEL_TYPES):
+        # Normalize to "boost rounds actually used" (codex #391 r3:
+        # an exhausted XGB/CatBoost run records num_boost_round - 1 —
+        # the raw equality check would let the boundary anomaly pass).
         # Checked independently of the other reasons so the report is
         # complete.
-        if best_iter == nbr:
+        rounds_used = best_iter if one_based else best_iter + 1
+        if rounds_used == nbr:
             # codex #389 r12: early stopping never fired — the model
             # ran out of training budget instead of converging.
             reasons.append(
-                f"best_iteration == num_boost_round ({best_iter}) — "
-                "early stopping never triggered (training budget "
+                f"best_iteration {best_iter} ({model_type}: "
+                f"{rounds_used} rounds used) == num_boost_round {nbr} "
+                "— early stopping never triggered (training budget "
                 "exhausted, boundary anomaly)")
-        elif best_iter > nbr:
+        elif rounds_used > nbr:
             # A best iteration BEYOND the budget cannot come from a
             # real training run — internally inconsistent sidecar.
             reasons.append(
-                f"best_iteration {best_iter} > num_boost_round {nbr} "
+                f"best_iteration {best_iter} ({model_type}: "
+                f"{rounds_used} rounds used) > num_boost_round {nbr} "
                 "— internally inconsistent sidecar, fail-closed")
     return {
         "verdict": FAIL if reasons else PASS,
+        "model_type": model_type if isinstance(model_type, str) else None,
         "best_iteration": best_iter if _is_num(best_iter) else None,
+        "boost_rounds_used": rounds_used,
         "num_boost_round": nbr if _is_num(nbr) else None,
         "final_valid_loss": loss if _is_num(loss) else None,
         "reasons": reasons,

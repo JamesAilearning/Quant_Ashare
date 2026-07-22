@@ -102,6 +102,54 @@ class TrainerIntegrityGate(unittest.TestCase):
         self.assertTrue(
             any("inconsistent" in r for r in block["reasons"]))
 
+    def test_zero_based_frameworks_normalized(self) -> None:
+        # codex #391 r3: XGB/CatBoost record a 0-BASED best index
+        # (ModelTrainer._metric_index_for_best_iteration) — budget
+        # exhaustion there is best_iteration == num_boost_round - 1,
+        # which the raw equality check would have PASSED.
+        for model_type in ("XGBModel", "CatBoostModel"):
+            exhausted = _good_sidecar()
+            exhausted["model_type"] = model_type
+            exhausted["best_iteration"] = (
+                exhausted["num_boost_round"] - 1)
+            block = gate_trainer_integrity(exhausted)
+            self.assertEqual(FAIL, block["verdict"], model_type)
+            self.assertTrue(
+                any("budget" in r for r in block["reasons"]),
+                model_type)
+            healthy = _good_sidecar()
+            healthy["model_type"] = model_type
+            healthy["best_iteration"] = (
+                healthy["num_boost_round"] - 2)
+            self.assertEqual(
+                PASS, gate_trainer_integrity(healthy)["verdict"],
+                model_type)
+
+    def test_zero_based_first_round_best_is_legitimate(self) -> None:
+        # XGB best_iteration=0 = "round 0 was best" — a valid early
+        # stop, NOT a corrupt sidecar.
+        sidecar = _good_sidecar()
+        sidecar["model_type"] = "XGBModel"
+        sidecar["best_iteration"] = 0
+        self.assertEqual(
+            PASS, gate_trainer_integrity(sidecar)["verdict"])
+        # LGB is 1-based: 0 is impossible there.
+        lgb = _good_sidecar()
+        lgb["best_iteration"] = 0
+        self.assertEqual(FAIL, gate_trainer_integrity(lgb)["verdict"])
+
+    def test_unknown_or_missing_model_type_fails_closed(self) -> None:
+        # Without the framework's indexing convention the boundary
+        # cannot be normalized — refuse.
+        for mutate in (lambda s: s.pop("model_type"),
+                       lambda s: s.update(model_type="MysteryModel")):
+            sidecar = _good_sidecar()
+            mutate(sidecar)
+            block = gate_trainer_integrity(sidecar)
+            self.assertEqual(FAIL, block["verdict"])
+            self.assertTrue(
+                any("model_type" in r for r in block["reasons"]))
+
     def test_non_finite_valid_loss_fails(self) -> None:
         for bad in (float("nan"), float("inf"), None, "0.1"):
             sidecar = _good_sidecar()

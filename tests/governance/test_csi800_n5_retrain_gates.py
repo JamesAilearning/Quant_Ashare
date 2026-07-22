@@ -88,6 +88,16 @@ class SchemaPins(unittest.TestCase):
                           "serving_veto")},
             dict(_SCOPE_GATES))
 
+    def test_known_model_types_match_serving_version_guard(self) -> None:
+        # codex #391 r3: the trainer-integrity gate normalizes
+        # best_iteration by model_type — its known-framework set must
+        # equal the serving loader's version-guard map, or a framework
+        # servable in production could be un-gateable (or vice versa).
+        from scripts.retrain_gate_lib import KNOWN_MODEL_TYPES
+        from src.inference.ensemble_serving import _FRAMEWORK_KEYS
+
+        self.assertEqual(set(_FRAMEWORK_KEYS), set(KNOWN_MODEL_TYPES))
+
 
 class StatusArtifactDiscipline(unittest.TestCase):
     def test_status_artifact_not_written_early_or_parses(self) -> None:
