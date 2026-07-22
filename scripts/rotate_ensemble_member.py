@@ -485,9 +485,24 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 raise
 
             # 7. Atomic install of the VERIFIED buffer, still under
-            # the lock (codex #391 r13). Nothing after this point may
-            # refuse — only report.
-            os.replace(tmp, manifest_path)
+            # the lock (codex #391 r13). The replace is atomic — it
+            # either happened or it did not — but it can still FAIL
+            # (Windows/NFS lock, permission drift, I/O; codex #391
+            # r18). A failure means the manifest was NOT rotated, so
+            # the just-written backup is meaningless residue: remove
+            # it and refuse through the classified path rather than
+            # letting a raw OSError escape with a stray
+            # `.pre_rotation_*` file implying a rotation happened.
+            try:
+                os.replace(tmp, manifest_path)
+            except OSError as exc:
+                backup.unlink(missing_ok=True)
+                raise RotationRefusal(
+                    f"manifest install failed: {exc} — the live "
+                    f"manifest is UNCHANGED and the pre-rotation "
+                    "backup was removed (no rotation occurred); "
+                    "resolve the filesystem condition and re-run"
+                ) from exc
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

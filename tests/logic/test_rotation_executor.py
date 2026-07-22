@@ -507,6 +507,22 @@ class RotationExecutorStates(unittest.TestCase):
         # Lock released: the same rotation now succeeds.
         self.assertEqual(0, self._execute())
 
+    def test_install_failure_refuses_with_zero_residue(self) -> None:
+        # codex #391 r18: the final os.replace can fail (Windows/NFS
+        # lock, permission drift, I/O). The manifest is then UNCHANGED,
+        # so the just-written backup is meaningless residue — refuse
+        # through the classified path and leave nothing behind.
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rem
+
+        with patch.object(rem.os, "replace",
+                          side_effect=OSError("locked by another "
+                                              "process")):
+            rc = self._execute()
+        self.assertEqual(1, rc)
+        self._assert_manifest_untouched()
+
     def test_live_manifest_changed_mid_execute_refused(self) -> None:
         # codex #391 r12: a concurrent rotation/manual edit between
         # adjudication and swap must refuse, not be clobbered. The
