@@ -198,7 +198,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--topk", type=int, default=50, help="Buy-list size (default 50).")
     p.add_argument("--out-dir", default="output/daily_recommend",
                    help="Output directory for csv/json (default output/daily_recommend).")
-    p.add_argument("--model", default=_DEFAULT_MODEL, help="Model artifact path.")
+    p.add_argument(
+        "--model", default=None,
+        help="Model artifact path (single-model mode; default: the "
+             "canonical QUANT_MODEL_PATH). Mutually exclusive with "
+             "--ensemble-manifest.")
+    p.add_argument(
+        "--ensemble-manifest", default=None,
+        help="Serving manifest for the three-member quarterly ensemble "
+             "(PR-A' of csi800-n5-production-promotion, R1-DP-A). "
+             "Scoring becomes the certified mean-skipna blend; the "
+             "inference fit window is resolved from the NEWEST member "
+             "(--model/--fit-start/--fit-end must not be passed). Any "
+             "manifest/member problem refuses to emit a list.")
     p.add_argument("--provider-uri", default=_DEFAULT_PROVIDER, help="PIT qlib provider_uri.")
     p.add_argument("--delisted-registry", default=_DEFAULT_REGISTRY,
                    help="PIT delisted registry parquet.")
@@ -240,16 +252,40 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging()
     args = _build_arg_parser().parse_args(argv)
 
-    try:
-        fit_start, fit_end = _resolve_inference_fit_window(
-            args.model, args.fit_start, args.fit_end
+    if args.ensemble_manifest is not None:
+        # Ensemble mode (PR-A'): the manifest is the model authority —
+        # explicit --model / --fit-* would create two competing sources
+        # for the same decision, so they are refused outright.
+        if args.model is not None or args.fit_start or args.fit_end:
+            _logger.error(
+                "--ensemble-manifest is mutually exclusive with "
+                "--model/--fit-start/--fit-end: the manifest resolves "
+                "the members AND the inference fit window (newest "
+                "member, certified current-fold convention).")
+            return 1
+        from src.inference.ensemble_serving import (
+            EnsembleServingError,
+            load_ensemble_manifest,
         )
-    except DailyRecommendationError as exc:
-        _logger.error("Cannot resolve inference fit window: %s", exc)
-        return 1
+        try:
+            members, _sha = load_ensemble_manifest(args.ensemble_manifest)
+        except EnsembleServingError as exc:
+            _logger.error("Ensemble manifest rejected: %s", exc)
+            return 1
+        fit_start, fit_end = members[-1].fit_start, members[-1].fit_end
+        model_path = args.ensemble_manifest
+    else:
+        model_path = args.model if args.model is not None else _DEFAULT_MODEL
+        try:
+            fit_start, fit_end = _resolve_inference_fit_window(
+                model_path, args.fit_start, args.fit_end
+            )
+        except DailyRecommendationError as exc:
+            _logger.error("Cannot resolve inference fit window: %s", exc)
+            return 1
 
     config = RecommendationConfig(
-        model_path=args.model,
+        model_path=model_path,
         provider_uri=args.provider_uri,
         delisted_registry_path=args.delisted_registry,
         fit_start=fit_start,
@@ -263,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=args.out_dir,
         allow_holey_recommend=args.allow_holey_recommend,
         rebalance_cadence_days=args.rebalance_cadence_days,
+        ensemble_manifest_path=args.ensemble_manifest,
     )
 
     try:

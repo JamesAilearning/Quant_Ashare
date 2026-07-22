@@ -153,7 +153,23 @@ if _meta_status.artifact_is_corrupt_v2:
         f"非 object。文件可能损坏或非本系统产物:{_selected_path}"
     )
     st.stop()
-if _meta_status.artifact_is_v1:
+if _meta_status.artifact_is_ensemble:
+    # Ensemble artifact (PR-A'):identity = manifest sha256,单模型
+    # sidecar 交叉核对是类别错误(codex #390 r3)——不误报"其他模型",
+    # 如实披露形态差异;现任 manifest 交叉核对随 PR-C' 切换落地。
+    if _meta_status.artifact_ensemble_sha:
+        st.info(
+            "ℹ 该工件由 **ensemble(manifest)** 生成:manifest sha256 "
+            f"`{str(_meta_status.artifact_ensemble_sha)[:12]}…`。"
+            "当前生产为单模型形态,单模型 sidecar 交叉核对不适用;"
+            "ensemble 形态的现任 manifest 核对随生产切换(PR-C')落地。"
+        )
+    else:
+        st.warning(
+            "⚠ 该工件标记为 ensemble 生成,但 meta.ensemble 块缺 "
+            "manifest_sha256——无法绑定其身份,请核对工件来源。"
+        )
+elif _meta_status.artifact_is_v1:
     st.warning(
         "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"
         "重跑 scripts/daily_recommend.py 可产出自描述的 v2 工件。"

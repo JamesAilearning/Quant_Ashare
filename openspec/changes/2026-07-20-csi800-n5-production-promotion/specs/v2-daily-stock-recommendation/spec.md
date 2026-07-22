@@ -226,6 +226,34 @@ ensemble 级门失败 = **自举中止**：不执行切换、现任 canonical
 - **THEN** daily_recommend fail-loud 拒绝出单，报错指向缺失
   成员，绝不静默降级为部分 ensemble 或单模型
 
+#### Scenario: manifest 重复成员身份时拒绝出单（codex #390 r4）
+
+- **WHEN** serving manifest 的三成员槽位间任一身份字段重复
+  （`pkl_path`/`pkl_sha256`/`meta_path`/`meta_sha256`——含同一
+  pickle 内容以不同路径拼写出现）
+- **THEN** manifest 加载 fail-loud 拒绝（重复成员会把三成员
+  ensemble 静默退化为均值意义上的单/部分模型），拒绝发生在
+  触碰任何模型字节之前
+
+#### Scenario: 成员框架版本漂移时拒绝出单（codex #390 r3）
+
+- **WHEN** serving 加载某成员时，其 trainer sidecar 记录的训练
+  框架版本（按 sidecar `model_type` 对应的框架）与 serving 环境
+  已安装版本不一致、该框架不可导入、或 sidecar 无法解析/缺
+  `model_type`/缺版本字段/其 `pkl_sha256` 与 manifest 矛盾
+- **THEN** daily_recommend fail-loud 拒绝出单（框架 minor 升级
+  可静默改变 booster 序列化语义——walk-forward ensemble 的
+  sidecar 版本守卫同语义，但 serving 拒绝而非跳过）
+
+#### Scenario: ensemble 工件身份字段语义（codex #390 r3）
+
+- **WHEN** ensemble 模式产出推荐工件
+- **THEN** 工件 meta **不携带** `model_pkl_sha256`（该字段语义
+  保留给单模型 pickle 摘要，决策页以其交叉核对 trainer sidecar
+  的 `pkl_sha256`——挪用会使合法 ensemble 工件被误报为"其他
+  模型"）；ensemble 身份由 `meta.ensemble.manifest_sha256` 承载，
+  `model_path` 指向 manifest，成员三元组逐一列出
+
 #### Scenario: 年度再认证 LOSE 触发降级决策点
 
 - **WHEN** 年度再认证 walk-forward 全链产出 LOSE 判定

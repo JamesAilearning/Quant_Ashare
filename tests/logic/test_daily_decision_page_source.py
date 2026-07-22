@@ -176,6 +176,106 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertFalse(artifact_meta_status(v2, "aa").sha_mismatch)
         self.assertIsNone(artifact_meta_status(v2, None).sha_mismatch)
 
+    def test_artifact_meta_status_ensemble_identity(self) -> None:
+        # codex #390 r3: an ensemble artifact's identity is the manifest
+        # sha256, NOT a single-pickle sha — comparing it against the
+        # trainer sidecar would misreport a valid artifact as "other
+        # model". The status flags ensemble explicitly, keeps mismatch
+        # None, and the page renders a dedicated notice.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            artifact_meta_status,
+        )
+        ens = {"meta": {"model_path": "D:/manifest.json",
+                        "ensemble": {"manifest_sha256": "cc" * 32}}}
+        status = artifact_meta_status(ens, current_model_sha="ab")
+        self.assertTrue(status.artifact_is_ensemble)
+        self.assertEqual("cc" * 32, status.artifact_ensemble_sha)
+        self.assertIsNone(status.sha_mismatch)
+        self.assertIsNone(status.artifact_model_sha)
+        self.assertFalse(status.artifact_is_v1)
+        self.assertFalse(status.artifact_is_corrupt_v2)
+        # Malformed ensemble block (no manifest_sha256): still flagged
+        # ensemble but with no identity — the page warns instead of
+        # showing a bindable sha.
+        broken = artifact_meta_status(
+            {"meta": {"ensemble": {}}}, current_model_sha=None)
+        self.assertTrue(broken.artifact_is_ensemble)
+        self.assertIsNone(broken.artifact_ensemble_sha)
+        # codex #390 r5: key PRESENCE marks the artifact ensemble-
+        # shaped — a non-dict block (plus a stale single sha) is
+        # malformed-ensemble, never a comparable single-pickle
+        # artifact.
+        nondict = artifact_meta_status(
+            {"meta": {"ensemble": "corrupt",
+                      "model_pkl_sha256": "aa"}},
+            current_model_sha="aa")
+        self.assertTrue(nondict.artifact_is_ensemble)
+        self.assertIsNone(nondict.artifact_ensemble_sha)
+        self.assertIsNone(nondict.sha_mismatch)
+        # Single-model artifacts keep the flag off (default path pinned
+        # by test_artifact_meta_status_v1_and_mismatch).
+        single = artifact_meta_status(
+            {"meta": {"model_pkl_sha256": "aa"}}, "aa")
+        self.assertFalse(single.artifact_is_ensemble)
+        # Page renders the dedicated ensemble branch before the v1 /
+        # mismatch branches.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("artifact_is_ensemble", page)
+        self.assertIn("ensemble(manifest)", page)
+
+    def test_journal_model_id_ensemble_prefix(self) -> None:
+        # codex #390 r3: ensemble journal identity = "ensemble:<manifest
+        # sha>" — content-bound and impossible to confuse with a pickle
+        # digest.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            journal_model_id,
+        )
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_path": "D:/manifest.json",
+                "ensemble": {"manifest_sha256": "cc" * 32}}}),
+            "ensemble:" + "cc" * 32,
+        )
+        # Malformed ensemble block falls through to the honest
+        # path-based fallback rather than fabricating an id.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_path": "D:/manifest.json", "ensemble": {}}}),
+            "D:/manifest.json",
+        )
+        # codex #390 r4: a malformed ensemble block NEVER falls through
+        # to model_pkl_sha256 — a hand-edited artifact carrying both
+        # would re-enter the single-pickle identity namespace.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_path": "D:/manifest.json",
+                "model_pkl_sha256": "aa" * 32,
+                "ensemble": {}}}),
+            "D:/manifest.json",
+        )
+        # No path either: dedicated sentinel, never a bare sha.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_pkl_sha256": "aa" * 32, "ensemble": {}}}),
+            "unknown(malformed-ensemble-artifact)",
+        )
+        # codex #390 r5: a NON-DICT ensemble value is still ensemble-
+        # shaped (key presence decides) — the stale sha stays out of
+        # the journal namespace.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_path": "D:/manifest.json",
+                "model_pkl_sha256": "aa" * 32,
+                "ensemble": "corrupt"}}),
+            "D:/manifest.json",
+        )
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_pkl_sha256": "aa" * 32,
+                "ensemble": ["corrupt"]}}),
+            "unknown(malformed-ensemble-artifact)",
+        )
+
     def test_v2_marker_without_meta_is_corrupt_not_legacy(self) -> None:
         # codex P2 on #330: the producer ALWAYS writes a dict meta for v2 —
         # a v2-marked file with missing/non-dict meta is corrupt and must not

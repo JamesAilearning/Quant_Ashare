@@ -140,6 +140,17 @@ class RecommendationConfig:
     # two values are legal; the production switch itself happens at the
     # PR-C promotion execution, this field is the machinery.
     rebalance_cadence_days: int = 1
+    # Ensemble serving (PR-A' of csi800-n5-production-promotion,
+    # R1-DP-A). None = single-model path, byte-identical current
+    # behaviour. Set = the serving manifest declaring the three
+    # quarterly members; scoring becomes the certified apply_ensemble
+    # blend (mean-skipna over one dataset), manifest/member problems
+    # fail loud (never a partial ensemble). In manifest mode
+    # ``fit_start``/``fit_end`` MUST equal the NEWEST member's window
+    # (the walk-forward "current fold" normalization convention) and
+    # ``model_path`` is ignored for scoring (provenance records the
+    # manifest + members instead).
+    ensemble_manifest_path: str | None = None
     # P3-4c Layer 2: refuse to recommend from a bundle stamped
     # built-from-holey-fetch (or lacking a fetch-integrity stamp) unless the
     # operator explicitly opts in HERE. This is SEPARATE from the build override
@@ -569,9 +580,10 @@ def _load_model(model_path: Path) -> tuple[Any, str]:
 def _assemble_run_meta(
     config: RecommendationConfig,
     *,
-    model_pkl_sha256: str,
+    model_pkl_sha256: str | None,
     bundle_tag: str | None,
     generated_at: str | None = None,
+    ensemble: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the artifact-contract-v2 generation context (pure; unit-testable).
 
@@ -583,7 +595,7 @@ def _assemble_run_meta(
     post-resolution values; the CLI-side resolution lives in
     ``scripts/daily_recommend._resolve_inference_fit_window``).
     """
-    return {
+    meta: dict[str, Any] = {
         "generated_at": (
             generated_at
             if generated_at is not None
@@ -598,6 +610,27 @@ def _assemble_run_meta(
         "instruments": config.instruments,
         "topk": config.topk,
     }
+    # Ensemble provenance (PR-A'): in manifest mode the logical model
+    # IS the manifest — model_path points at it and the members are
+    # enumerated verbatim so any reader can bind this list to the
+    # exact three pickles that produced it. ``model_pkl_sha256`` is
+    # RESERVED for "digest of the single production pickle" (the
+    # decision page cross-checks it against the trainer sidecar's
+    # pkl_sha256) — an ensemble artifact has no single pickle, so the
+    # key is OMITTED rather than repurposed with the manifest digest
+    # (codex #390 r3: repurposing makes a valid ensemble artifact read
+    # as "other model"). Ensemble identity lives in
+    # ``meta["ensemble"]["manifest_sha256"]``. Single-model path: no
+    # ensemble key (legacy shape, byte-identical).
+    if (model_pkl_sha256 is None) == (ensemble is None):
+        raise ValueError(
+            "exactly one identity source required: model_pkl_sha256 "
+            "(single-model) XOR ensemble (manifest mode)")
+    if ensemble is not None:
+        meta["model_path"] = str(ensemble["manifest_path"])
+        del meta["model_pkl_sha256"]
+        meta["ensemble"] = dict(ensemble)
+    return meta
 
 
 # --------------------------------------------------------------------------
@@ -620,6 +653,34 @@ def recommend(
             f"(certified N5 weekly); got {cadence!r} "
             f"({type(cadence).__name__})."
         )
+    # Ensemble manifest resolution (PR-A', pure precondition — file IO
+    # only, no qlib): load + validate the manifest and pin the config's
+    # fit window to the NEWEST member's (the walk-forward current-fold
+    # normalization convention). Any manifest/member problem refuses
+    # the run here, before features are built.
+    ensemble_members = None
+    ensemble_manifest_sha: str | None = None
+    if config.ensemble_manifest_path is not None:
+        from src.inference.ensemble_serving import (
+            EnsembleServingError,
+            load_ensemble_manifest,
+        )
+        try:
+            ensemble_members, ensemble_manifest_sha = load_ensemble_manifest(
+                config.ensemble_manifest_path)
+        except EnsembleServingError as exc:
+            raise DailyRecommendationError(str(exc)) from exc
+        newest = ensemble_members[-1]
+        if (config.fit_start, config.fit_end) != (
+                newest.fit_start, newest.fit_end):
+            raise DailyRecommendationError(
+                "ensemble mode requires the config fit window to equal "
+                "the NEWEST member's "
+                f"({newest.fit_start}..{newest.fit_end}); got "
+                f"{config.fit_start}..{config.fit_end}. The CLI resolves "
+                "this from the manifest — a mismatch means the dataset "
+                "normalization would not match the certified "
+                "current-fold convention.")
     # Fail loud on a missing / misconfigured bundle BEFORE qlib touches it: a
     # non-existent provider_uri otherwise surfaces as an obscure qlib error at
     # the first ``D.calendar()`` below, not a clear "set QUANT_PROVIDER_URI".
@@ -673,19 +734,51 @@ def recommend(
         as_of_date, entry_date, config.instruments, config.topk,
     )
 
-    # 1. Load the trained model. _load_model hashes the SAME byte buffer it
-    # unpickles (artifact contract v2), so provenance cannot disagree with the
-    # scores even if the model file is atomically swapped mid-run.
-    model, model_pkl_sha256 = _load_model(Path(config.model_path))
-    run_meta = _assemble_run_meta(
-        config,
-        model_pkl_sha256=model_pkl_sha256,
-        bundle_tag=(
-            integrity.identity.tag
-            if integrity is not None and integrity.identity is not None
-            else None
-        ),
+    # 1. Load the model(s). Single path: _load_model hashes the SAME
+    # byte buffer it unpickles (artifact contract v2). Ensemble path
+    # (PR-A'): every member loaded STRICTLY (digest + unpickle +
+    # .predict, single read each) — any problem refuses the run, never
+    # a partial ensemble.
+    bundle_tag = (
+        integrity.identity.tag
+        if integrity is not None and integrity.identity is not None
+        else None
     )
+    if ensemble_members is not None:
+        from src.inference.ensemble_serving import (
+            BLEND,
+            MANIFEST_SCHEMA_VERSION,
+            EnsembleServingError,
+            load_member_models,
+        )
+        try:
+            loaded_members = load_member_models(ensemble_members)
+        except EnsembleServingError as exc:
+            raise DailyRecommendationError(str(exc)) from exc
+        run_meta = _assemble_run_meta(
+            config,
+            model_pkl_sha256=None,
+            bundle_tag=bundle_tag,
+            ensemble={
+                "schema_version": MANIFEST_SCHEMA_VERSION,
+                "manifest_path": str(config.ensemble_manifest_path),
+                "manifest_sha256": str(ensemble_manifest_sha),
+                "blend": BLEND,
+                "n_models": len(loaded_members),
+                "members": [
+                    {"pkl_path": m.pkl_path, "pkl_sha256": m.pkl_sha256,
+                     "fit_start": m.fit_start, "fit_end": m.fit_end}
+                    for m, _model in loaded_members
+                ],
+            },
+        )
+    else:
+        model, model_pkl_sha256 = _load_model(Path(config.model_path))
+        run_meta = _assemble_run_meta(
+            config,
+            model_pkl_sha256=model_pkl_sha256,
+            bundle_tag=bundle_tag,
+        )
 
     # 2. Build as-of-T features ONCE (dataset reused for predict below).
     dataset, feature_frame = _build_asof_dataset(config, as_of_date)
@@ -698,8 +791,21 @@ def recommend(
     assert_no_lookahead(feature_frame, as_of_date)
 
     # model.predict stays on the canonical qlib path (uses DK_I +
-    # col_set="feature" internally) against the same dataset.
-    scores = model.predict(dataset, segment="infer")
+    # col_set="feature" internally) against the same dataset. Ensemble
+    # mode: every member predicts the SAME dataset and the certified
+    # mean-skipna blend combines them (strict — any member failure
+    # refuses the run).
+    if ensemble_members is not None:
+        from src.inference.ensemble_serving import (
+            EnsembleServingError,
+            ensemble_predict,
+        )
+        try:
+            scores = ensemble_predict(loaded_members, dataset)
+        except EnsembleServingError as exc:
+            raise DailyRecommendationError(str(exc)) from exc
+    else:
+        scores = model.predict(dataset, segment="infer")
     scores = pd.Series(scores) if not isinstance(scores, pd.Series) else scores
     # Drop NaN SCORES (feature-derived; NOT label). This is the safe
     # dropna — it removes names whose features could not be computed, and

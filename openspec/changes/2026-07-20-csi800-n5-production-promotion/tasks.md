@@ -82,13 +82,27 @@
 ## 5. R1 协议对齐分段（2026-07-21 签，替代 §3 执行路径）
 
 ### PR-A' — ensemble 服务机制（runtime 触点）
-- [ ] daily_recommend 多模型 ensemble 消费（serving manifest 列
-      三成员 pkl+meta，apply_ensemble 同语义打分；缺员/断链
-      fail-loud 拒绝出单，绝不静默降级）
-- [ ] serving manifest schema + 治理绑定扩展（manifest 成员窗口
-      算术 pin：24m 滚动+3m valid+错峰终点）
-- [ ] 测试：三成员合成 ensemble 等价性/缺员拒绝/断链拒绝/单模型
-      旧路径字节不变
+- [x] daily_recommend 多模型 ensemble 消费（src/inference/
+      ensemble_serving.py 严格加载器+mean_skipna blend；缺员/断链/
+      unpickle/无 predict/索引失配全 fail-loud，绝不部分 ensemble）
+- [x] serving manifest schema（csi800_n5_ensemble_manifest_v1，
+      恰 3 成员/fit_end 严格递增/季度错峰 75-100d/24m 窗 700-745d，
+      load 时 fail-closed）+ 治理常量 pin
+- [x] 测试：blend 与 apply_ensemble 数学等价/manifest 七拒绝态/
+      成员加载四拒绝态/predict 失败与索引失配拒/fit 窗失配拒/
+      run_meta ensemble provenance/单模型旧路径字节不变（既有
+      测试全绿）
+- [x] codex #390 r3 P1：成员 sidecar 框架版本守卫（walk-forward
+      同语义、serving 全拒绝版：不可解析/缺 pkl_sha256/侧车-
+      manifest 矛盾/未知 model_type/缺版本/版本漂移 → 拒绝出单）
+- [x] codex #390 r3 P2：工件身份字段分离（`model_pkl_sha256`
+      保留单 pkl 摘要语义、ensemble 工件不携带；身份 =
+      `meta.ensemble.manifest_sha256`；决策页 ensemble 感知
+      专用披露 + journal `ensemble:<sha>` 身份）
+- [x] codex #390 r4 P1：manifest 重复成员身份拒绝（四身份字段
+      槽位间去重，含同内容异路径——防三成员静默退化为均值单模型）
+- [x] codex #390 r4 P2：畸形 ensemble 块的 journal 身份永不落入
+      单 pkl sha 命名空间（路径级回退 + 专用 sentinel）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器
