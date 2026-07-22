@@ -426,10 +426,21 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 "%Y%m%dT%H%M%SZ")
             backup = manifest_path.with_name(
                 manifest_path.name + f".pre_rotation_{stamp}")
-            if backup.exists():
+            # The backup is born 0600 via an exclusive descriptor
+            # (codex #391 r16): Path.write_bytes would create it at
+            # 0666&umask for a window before copymode/chown runs — a
+            # privileged rotation of a restricted manifest must never
+            # expose the rollback bytes, even transiently. O_EXCL also
+            # makes the already-exists check race-free.
+            try:
+                bfd = os.open(str(backup),
+                              os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                              0o600)
+            except OSError as exc:
                 raise RotationRefusal(
-                    f"backup path already exists: {backup}")
-            backup.write_bytes(live_bytes)
+                    f"cannot create backup {backup}: {exc}") from exc
+            with os.fdopen(bfd, "wb") as bfh:
+                bfh.write(live_bytes)
             try:
                 # The backup IS the advertised single-step rollback
                 # artifact (codex #391 r15): mirror the live
