@@ -243,6 +243,20 @@ class GateArtifactConsumption(unittest.TestCase):
                 artifact, scope=SCOPE_MEMBER,
                 expected_subject_sha="ab" * 32)
 
+    def test_extra_gate_block_refused(self) -> None:
+        # codex #391 r7: an EXTRA gate block — even a failing one —
+        # would be ignored by an expected-names-only loop; the gate set
+        # must match exactly (extra PASS blocks refuse too: this
+        # executor does not adjudicate gates it does not know).
+        for verdict in ("FAIL", "PASS"):
+            artifact = _member_gate_artifact()
+            artifact["gates"]["surprise_gate"] = {"verdict": verdict}
+            with self.assertRaises(RotationRefusal, msg=verdict) as ctx:
+                check_gate_artifact(
+                    artifact, scope=SCOPE_MEMBER,
+                    expected_subject_sha="ab" * 32)
+            self.assertIn("gate set", str(ctx.exception))
+
     def test_member_meta_binding_mismatch_refused(self) -> None:
         # The trainer-integrity gate judged the SIDECAR — a regenerated
         # sidecar under the same pickle must invalidate the artifact.

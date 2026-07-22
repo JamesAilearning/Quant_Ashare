@@ -229,6 +229,16 @@ def check_gate_artifact(
         raise RotationRefusal(
             f"{scope} gate artifact carries no gates block — a bare "
             "overall field is not admissible evidence")
+    if set(gates) != set(expected_gates(scope)):
+        # codex #391 r7: the gate set must match EXACTLY — an extra
+        # block (e.g. a hand-edit, or a future producer adding a gate
+        # without updating this consumer) could carry a FAIL the
+        # expected-names loop would silently ignore.
+        raise RotationRefusal(
+            f"{scope} gate artifact gate set {sorted(gates)} != "
+            f"expected {sorted(expected_gates(scope))} — refusing an "
+            "artifact whose gate set this executor does not fully "
+            "adjudicate")
     for name in expected_gates(scope):
         block = gates.get(name)
         if not isinstance(block, dict) or block.get("verdict") != PASS:
