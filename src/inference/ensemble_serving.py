@@ -70,6 +70,11 @@ class EnsembleServingError(RuntimeError):
 class EnsembleMember:
     pkl_path: str
     pkl_sha256: str
+    # Trainer sidecar (<model>.pkl.meta.json) — part of the member's
+    # hash chain (codex #390 r1: the spec's manifest scenario requires
+    # missing member pkl/META or a broken chain to fail loud).
+    meta_path: str
+    meta_sha256: str
     fit_start: str
     fit_end: str
 
@@ -122,6 +127,7 @@ def load_ensemble_manifest(
             raise EnsembleServingError(
                 f"manifest member[{i}] is not an object.")
         missing = [k for k in ("pkl_path", "pkl_sha256",
+                               "meta_path", "meta_sha256",
                                "fit_start", "fit_end") if not m.get(k)]
         if missing:
             raise EnsembleServingError(
@@ -129,6 +135,8 @@ def load_ensemble_manifest(
         members.append(EnsembleMember(
             pkl_path=str(m["pkl_path"]),
             pkl_sha256=str(m["pkl_sha256"]),
+            meta_path=str(m["meta_path"]),
+            meta_sha256=str(m["meta_sha256"]),
             fit_start=str(m["fit_start"]),
             fit_end=str(m["fit_end"]),
         ))
@@ -168,6 +176,20 @@ def load_member_models(
     the single-model ``_load_model`` discipline."""
     loaded: list[tuple[EnsembleMember, Any]] = []
     for i, member in enumerate(members):
+        # Member META chain first (codex #390 r1): the trainer sidecar
+        # is part of the declared hash chain — absent or drifted meta
+        # refuses the whole ensemble before any pickle is touched.
+        meta_path = Path(member.meta_path)
+        if not meta_path.exists():
+            raise EnsembleServingError(
+                f"ensemble member[{i}] meta sidecar not found: "
+                f"{meta_path} — broken member chain, refusing.")
+        meta_actual = hashlib.sha256(meta_path.read_bytes()).hexdigest()
+        if meta_actual != member.meta_sha256:
+            raise EnsembleServingError(
+                f"ensemble member[{i}] meta sha256 mismatch: manifest "
+                f"{member.meta_sha256} != on-disk {meta_actual} — "
+                "sidecar replaced or corrupt, refusing.")
         path = Path(member.pkl_path)
         if not path.exists():
             raise EnsembleServingError(
@@ -218,7 +240,16 @@ def ensemble_predict(
                 f"ensemble member[{i}] predict failed: "
                 f"{type(exc).__name__}: {exc}") from exc
         if not isinstance(pred, pd.Series):
-            pred = pd.Series(pred)
+            # Coercing a list/ndarray would FABRICATE a default integer
+            # index detached from (datetime, instrument) — the blend
+            # would mix values across unrelated rows and downstream
+            # consumers would see flat numbers instead of stock codes.
+            # walk-forward rejects non-Series priors; serving fail-loud
+            # policy refuses outright (codex #390 r1).
+            raise EnsembleServingError(
+                f"ensemble member[{i}] predict returned "
+                f"{type(pred).__name__}, expected pd.Series — refusing "
+                "to fabricate an index.")
         if reference_index is None:
             reference_index = pred.index
         elif not pred.index.equals(reference_index):

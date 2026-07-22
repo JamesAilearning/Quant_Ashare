@@ -76,12 +76,27 @@ class _OtherIndexModel(_StubModel):
         return pd.Series([1.0, 2.0, 3.0], index=idx)
 
 
+class _ListModel(_StubModel):
+    """Pickle-able member returning a bare list (no index)."""
+
+    def predict(self, dataset, segment="infer"):  # noqa: ANN001
+        return [1.0, 2.0, 3.0]
+
+
 def _write_member(tmp: Path, i: int, obj: object) -> dict:
     pkl = tmp / f"member_{i}.pkl"
     pkl.write_bytes(pickle.dumps(obj))
+    meta = tmp / f"member_{i}.pkl.meta.json"
+    meta.write_text(json.dumps({
+        "schema_version": "v1", "model_type": "LGBModel",
+        "best_iteration": 100 + i, "num_boost_round": 1000,
+        "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
+    }), encoding="utf-8")
     return {
         "pkl_path": str(pkl),
         "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
+        "meta_path": str(meta),
+        "meta_sha256": hashlib.sha256(meta.read_bytes()).hexdigest(),
         "fit_start": _WINDOWS[i][0],
         "fit_end": _WINDOWS[i][1],
     }
@@ -155,6 +170,45 @@ def test_bad_train_window_refused(tmp_path: Path) -> None:
     mp = _write_manifest(tmp_path, members)
     with pytest.raises(EnsembleServingError, match="24-month"):
         load_ensemble_manifest(mp)
+
+
+def test_missing_meta_sidecar_refuses(tmp_path: Path) -> None:
+    # codex #390 r1: the member META is part of the declared hash
+    # chain — an absent sidecar refuses the whole ensemble.
+    mp, members = _happy_manifest(tmp_path)
+    Path(members[0]["meta_path"]).unlink()
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="meta sidecar not found"):
+        load_member_models(loaded_members)
+
+
+def test_meta_sha_mismatch_refuses(tmp_path: Path) -> None:
+    mp, members = _happy_manifest(tmp_path)
+    Path(members[1]["meta_path"]).write_text("{}", encoding="utf-8")
+    loaded_members, _ = load_ensemble_manifest(mp)
+    with pytest.raises(EnsembleServingError, match="meta sha256 mismatch"):
+        load_member_models(loaded_members)
+
+
+def test_manifest_missing_meta_fields_refused(tmp_path: Path) -> None:
+    _, members = _happy_manifest(tmp_path)
+    del members[2]["meta_sha256"]
+    mp = _write_manifest(tmp_path, members)
+    with pytest.raises(EnsembleServingError, match="missing fields"):
+        load_ensemble_manifest(mp)
+
+
+def test_non_series_prediction_refused(tmp_path: Path) -> None:
+    # codex #390 r1: coercing a list/ndarray fabricates a default
+    # integer index detached from (datetime, instrument) — refuse.
+    members = [_write_member(tmp_path, 0, _StubModel(0.0)),
+               _write_member(tmp_path, 1, _ListModel(1.0)),
+               _write_member(tmp_path, 2, _StubModel(2.0))]
+    mp = _write_manifest(tmp_path, members)
+    loaded_members, _ = load_ensemble_manifest(mp)
+    loaded = load_member_models(loaded_members)
+    with pytest.raises(EnsembleServingError, match="expected pd.Series"):
+        ensemble_predict(loaded, dataset=None)
 
 
 def test_missing_pkl_refuses_whole_ensemble(tmp_path: Path) -> None:
