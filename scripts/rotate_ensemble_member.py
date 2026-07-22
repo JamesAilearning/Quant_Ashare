@@ -275,10 +275,24 @@ def cmd_plan(args: argparse.Namespace) -> int:
     # attractive wrong input for the next session.
     try:
         sha = _validate_candidate(tmp)
-    except RotationRefusal:
-        tmp.unlink(missing_ok=True)
+    except RotationRefusal as exc:
+        # Same discipline as execute (codex #391 r19/r20): a cleanup
+        # that itself fails must not mask the classified refusal —
+        # keep the refusal and name any surviving temp file.
+        residue = _remove_or_note(tmp)
+        if residue:
+            raise RotationRefusal(
+                f"{exc}; additionally the staging file could not be "
+                f"removed and SURVIVES at {residue}") from exc
         raise
-    os.replace(tmp, out)
+    try:
+        os.replace(tmp, out)
+    except OSError as exc:
+        residue = _remove_or_note(tmp)
+        raise RotationRefusal(
+            f"cannot publish the candidate manifest to {out}: {exc}"
+            + (f"; the staging file SURVIVES at {residue}"
+               if residue else "")) from exc
     print(f"[rotate] candidate manifest written: {out}")
     print(f"[rotate] candidate manifest sha256: {sha}")
     print("[rotate] next: run scripts/retrain_gate.py --scope ensemble "

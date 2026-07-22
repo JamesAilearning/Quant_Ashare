@@ -574,6 +574,35 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_plan_cleanup_failure_still_classified_refusal(self) -> None:
+        # codex #391 r20: plan's staging cleanup follows the same
+        # discipline — an unlink that itself fails must not mask the
+        # classified refusal with a raw OSError.
+        from unittest.mock import patch
+
+        real_unlink = Path.unlink
+
+        def stubborn(self, *a, **kw):  # noqa: ANN001, ANN002
+            if ".tmp" in self.name:
+                raise OSError("locked staging file")
+            return real_unlink(self, *a, **kw)
+
+        bad_out = self.tmp / "bad_candidate.json"
+        with patch.object(Path, "unlink", stubborn):
+            rc = rotate_main([
+                "plan",
+                "--manifest", str(self.manifest),
+                "--new-pkl", str(self.new_pkl),
+                "--new-meta", str(self.new_meta),
+                # Same fit_end as the current newest member — violates
+                # the strictly-increasing pin, so validation refuses.
+                "--fit-start", _CURRENT_WINDOWS[-1][0],
+                "--fit-end", _CURRENT_WINDOWS[-1][1],
+                "--out", str(bad_out),
+            ])
+        self.assertEqual(1, rc)
+        self.assertFalse(bad_out.exists())
+
     def test_cleanup_failure_still_classified_refusal(self) -> None:
         # codex #391 r19: a cleanup that itself raises (read-only
         # backup on Windows) must not mask the classified refusal with
