@@ -55,6 +55,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -339,8 +340,6 @@ def cmd_execute(args: argparse.Namespace) -> int:
             # file inherits the directory ACL, so readability is not
             # narrowed by the swap.)
             try:
-                import shutil
-
                 shutil.copymode(manifest_path, tmp)
                 if hasattr(os, "chown"):
                     live_stat = os.stat(manifest_path)
@@ -432,6 +431,24 @@ def cmd_execute(args: argparse.Namespace) -> int:
                     f"backup path already exists: {backup}")
             backup.write_bytes(live_bytes)
             try:
+                # The backup IS the advertised single-step rollback
+                # artifact (codex #391 r15): mirror the live
+                # manifest's mode/owner/group onto it too, or a
+                # privileged rotation of a 0600/0640 serving-owned
+                # manifest would leave a broader-readable or
+                # wrong-owned rollback file — and restoring it would
+                # reinstall those wrong permissions.
+                try:
+                    shutil.copymode(manifest_path, backup)
+                    if hasattr(os, "chown"):
+                        bstat = os.stat(manifest_path)
+                        os.chown(backup, bstat.st_uid, bstat.st_gid)
+                except OSError as exc:
+                    raise RotationRefusal(
+                        f"cannot mirror live-manifest permissions/"
+                        f"owner/group onto the backup: {exc} — the "
+                        "rollback artifact would carry wrong "
+                        "permissions, refusing") from exc
                 recheck = _read_bytes_or_refuse(
                     manifest_path, "live manifest (pre-swap recheck)")
                 if hashlib.sha256(recheck).hexdigest() != live_sha:

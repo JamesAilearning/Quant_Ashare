@@ -267,6 +267,13 @@ class RotationExecutorStates(unittest.TestCase):
             "production_manifest.json.pre_rotation_*"))
         self.assertEqual(1, len(backups))
         self.assertEqual(self.original_bytes, backups[0].read_bytes())
+        # codex #391 r15: the backup is the rollback artifact — it
+        # must carry the live manifest's mode/owner/group, not the
+        # executor's umask defaults.
+        bstat = os.stat(backups[0])
+        self.assertEqual(pre_mode, stat.S_IMODE(bstat.st_mode))
+        self.assertEqual(pre_stat.st_gid, bstat.st_gid)
+        self.assertEqual(pre_stat.st_uid, bstat.st_uid)
         backups[0].replace(self.manifest)          # single-step rollback
         self.assertEqual(self.original_bytes,
                          self.manifest.read_bytes())
