@@ -283,8 +283,13 @@ def _member_scope(args: argparse.Namespace,
         test_start=args.valid_start, test_end=args.valid_end)
     import pickle
 
-    with Path(args.member_pkl).open("rb") as fh:
-        model = pickle.load(fh)
+    # Pickle bytes are read ONCE (codex #391 r2): the object the IC
+    # gate scores and the digest the artifact binds must come from the
+    # same buffer — a second file read could hash bytes that were
+    # never scored, and the rotation executor trusts that binding.
+    # (A missing pickle is a TOOL error: there is nothing to gate.)
+    pkl_raw = Path(args.member_pkl).read_bytes()
+    model = pickle.loads(pkl_raw)
     if not hasattr(model, "predict"):
         raise SystemExit(
             f"loaded object {type(model).__name__} has no .predict")
@@ -299,7 +304,7 @@ def _member_scope(args: argparse.Namespace,
 
     subject = {
         "pkl_path": str(args.member_pkl),
-        "pkl_sha256": _sha256_file(Path(args.member_pkl)),
+        "pkl_sha256": hashlib.sha256(pkl_raw).hexdigest(),
         "meta_path": str(args.member_meta),
         # Honest null when the sidecar was unreadable — the FAIL
         # artifact still records everything measurable, and the null

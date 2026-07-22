@@ -116,7 +116,19 @@ def _validate_candidate(path: Path) -> str:
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
-    current = _read_manifest_members(Path(args.manifest))
+    # The plan step may ONLY create an inert candidate artifact — an
+    # --out that aliases the live manifest would overwrite production
+    # during planning, before certification/gates/backup ever ran
+    # (codex #391 r2). Path.resolve() also catches symlink and
+    # case-differing spellings of the same file.
+    manifest_path = Path(args.manifest)
+    out_path = Path(args.out)
+    if out_path.resolve() == manifest_path.resolve():
+        raise RotationRefusal(
+            "plan --out must not alias the live manifest "
+            f"({manifest_path}) — the plan step only creates an inert "
+            "candidate; the swap belongs to `execute` after the gates")
+    current = _read_manifest_members(manifest_path)
     new_member = {
         "pkl_path": args.new_pkl,
         "pkl_sha256": hashlib.sha256(
@@ -130,7 +142,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     planned = plan_rotated_members(current, new_member)
     payload = {"schema_version": MANIFEST_SCHEMA_VERSION,
                "members": planned}
-    out = Path(args.out)
+    out = out_path
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")

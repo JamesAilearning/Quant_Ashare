@@ -260,6 +260,23 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_plan_out_aliasing_live_manifest_refused(self) -> None:
+        # codex #391 r2: plan --out pointed at the live manifest would
+        # overwrite production during PLANNING, before certification/
+        # gates/backup — refused with the manifest untouched.
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(self.manifest),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            "--fit-start", _NEW_WINDOW[0],
+            "--fit-end", _NEW_WINDOW[1],
+            "--out", str(self.manifest),
+        ])
+        self.assertEqual(1, rc)
+        self.assertEqual(self.original_bytes,
+                         self.manifest.read_bytes())
+
     def test_illegal_plan_produces_no_candidate_file(self) -> None:
         # Adversarial self-review: an illegal rotation must never even
         # publish a candidate file at --out (a stale invalid candidate
