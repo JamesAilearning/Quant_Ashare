@@ -201,6 +201,17 @@ class HelpersRuntimeTests(unittest.TestCase):
             {"meta": {"ensemble": {}}}, current_model_sha=None)
         self.assertTrue(broken.artifact_is_ensemble)
         self.assertIsNone(broken.artifact_ensemble_sha)
+        # codex #390 r5: key PRESENCE marks the artifact ensemble-
+        # shaped — a non-dict block (plus a stale single sha) is
+        # malformed-ensemble, never a comparable single-pickle
+        # artifact.
+        nondict = artifact_meta_status(
+            {"meta": {"ensemble": "corrupt",
+                      "model_pkl_sha256": "aa"}},
+            current_model_sha="aa")
+        self.assertTrue(nondict.artifact_is_ensemble)
+        self.assertIsNone(nondict.artifact_ensemble_sha)
+        self.assertIsNone(nondict.sha_mismatch)
         # Single-model artifacts keep the flag off (default path pinned
         # by test_artifact_meta_status_v1_and_mismatch).
         single = artifact_meta_status(
@@ -246,6 +257,22 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertEqual(
             journal_model_id({"meta": {
                 "model_pkl_sha256": "aa" * 32, "ensemble": {}}}),
+            "unknown(malformed-ensemble-artifact)",
+        )
+        # codex #390 r5: a NON-DICT ensemble value is still ensemble-
+        # shaped (key presence decides) — the stale sha stays out of
+        # the journal namespace.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_path": "D:/manifest.json",
+                "model_pkl_sha256": "aa" * 32,
+                "ensemble": "corrupt"}}),
+            "D:/manifest.json",
+        )
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_pkl_sha256": "aa" * 32,
+                "ensemble": ["corrupt"]}}),
             "unknown(malformed-ensemble-artifact)",
         )
 

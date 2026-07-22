@@ -168,14 +168,22 @@ def artifact_meta_status(
             current_model_sha=current_model_sha,
             sha_mismatch=None,
         )
-    ensemble_block = meta.get("ensemble")
-    if isinstance(ensemble_block, dict):
+    if "ensemble" in meta:
         # Ensemble artifact: identity = manifest sha256 (the producer
         # omits model_pkl_sha256 — that field is reserved for the
         # single-pickle digest, codex #390 r3). The single-model
         # sidecar cross-check does not apply; None mismatch + the
-        # dedicated flag lets the page say so honestly.
-        ens_sha_raw = ensemble_block.get("manifest_sha256")
+        # dedicated flag lets the page say so honestly. PRESENCE of the
+        # key is what marks the artifact ensemble-shaped (codex #390
+        # r5): a non-dict value is a MALFORMED ensemble block, not a
+        # single-pickle artifact — it must not fall back into the
+        # single-model identity namespace.
+        ensemble_block = meta.get("ensemble")
+        ens_sha_raw = (
+            ensemble_block.get("manifest_sha256")
+            if isinstance(ensemble_block, dict)
+            else None
+        )
         return ArtifactMetaStatus(
             artifact_is_v1=False,
             artifact_is_corrupt_v2=False,
@@ -225,11 +233,15 @@ def journal_model_id(payload: dict[str, Any]) -> str:
         # edited artifact carrying both would re-enter the single-
         # pickle namespace this path exists to avoid — the honest
         # fallback is the path identity, then a dedicated sentinel.
-        ensemble_block = meta.get("ensemble")
-        if isinstance(ensemble_block, dict):
-            ens_sha = ensemble_block.get("manifest_sha256")
-            if isinstance(ens_sha, str) and ens_sha:
-                return f"ensemble:{ens_sha}"
+        # Key PRESENCE marks the artifact ensemble-shaped (codex #390
+        # r5): a non-dict block is malformed-ensemble, never a
+        # single-pickle artifact.
+        if "ensemble" in meta:
+            ensemble_block = meta.get("ensemble")
+            if isinstance(ensemble_block, dict):
+                ens_sha = ensemble_block.get("manifest_sha256")
+                if isinstance(ens_sha, str) and ens_sha:
+                    return f"ensemble:{ens_sha}"
             path = meta.get("model_path")
             if isinstance(path, str) and path:
                 return path
