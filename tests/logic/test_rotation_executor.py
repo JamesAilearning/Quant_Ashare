@@ -183,8 +183,9 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(self.original_bytes,
                          self.manifest.read_bytes())
         self.assertEqual([], list(self.tmp.glob("*.pre_rotation_*")))
-        # The private staging copy must not survive a refusal either.
-        self.assertEqual([], list(self.tmp.glob("*.swap")))
+        # The private staging copy (unique mkstemp name) must not
+        # survive a refusal either.
+        self.assertEqual([], list(self.tmp.glob("*.swap*")))
 
     def test_legal_rotation_full_chain(self) -> None:
         rc = self._execute()

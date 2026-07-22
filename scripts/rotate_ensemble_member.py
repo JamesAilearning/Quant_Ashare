@@ -232,12 +232,22 @@ def cmd_execute(args: argparse.Namespace) -> int:
     candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
 
     # Structural validation runs on a PRIVATE staging copy of those
-    # bytes (the same file that is later os.replace'd in). All fallible
-    # checks happen BEFORE any production write — a post-swap refusal
-    # would contradict the zero-writes contract.
-    tmp = manifest_path.with_suffix(manifest_path.suffix + ".swap")
+    # bytes (the same file that is later os.replace'd in). The staging
+    # file is EXCLUSIVELY created with a unique name (codex #391 r8:
+    # a predictable `.swap` path would let two concurrent executes
+    # overwrite each other's staging between validation and the final
+    # replace — installing bytes whose digest was never adjudicated).
+    # All fallible checks happen BEFORE any production write — a
+    # post-swap refusal would contradict the zero-writes contract.
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=manifest_path.name + ".swap.",
+        dir=str(manifest_path.parent))
+    tmp = Path(tmp_name)
     try:
-        tmp.write_bytes(candidate_bytes)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(candidate_bytes)
         _validate_candidate(tmp)
 
         # 3. Gate artifacts, bound to what is actually rotating.
