@@ -124,6 +124,15 @@ def test_happy_manifest_loads_and_hashes(tmp_path: Path) -> None:
     assert members[-1].fit_end == _WINDOWS[-1][1]
 
 
+def test_directory_as_manifest_refused_with_serving_error(
+        tmp_path: Path) -> None:
+    # codex #390 r2: a path that exists but is not a readable file
+    # (directory / permission problem) must surface as the serving
+    # error, never a raw IsADirectoryError/OSError traceback.
+    with pytest.raises(EnsembleServingError, match="cannot read"):
+        load_ensemble_manifest(tmp_path)
+
+
 def test_wrong_schema_version_refused(tmp_path: Path) -> None:
     mp, members = _happy_manifest(tmp_path)
     mp.write_text(json.dumps({"schema_version": "v0",

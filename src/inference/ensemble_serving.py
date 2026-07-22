@@ -79,6 +79,19 @@ class EnsembleMember:
     fit_end: str
 
 
+def _read_bytes(path: Path, what: str) -> bytes:
+    """Filesystem read wrapped in the serving error (codex #390 r2):
+    a directory passed as a path, a permission problem or any other
+    OSError must surface as the intended fail-loud refusal, not an
+    uncaught traceback the CLI/recommend() cannot classify."""
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise EnsembleServingError(
+            f"cannot read {what} {path}: "
+            f"{type(exc).__name__}: {exc}") from exc
+
+
 def _parse_day(value: Any, field: str) -> date:
     try:
         return date.fromisoformat(str(value))
@@ -100,7 +113,7 @@ def load_ensemble_manifest(
     p = Path(manifest_path)
     if not p.exists():
         raise EnsembleServingError(f"ensemble manifest not found: {p}")
-    raw = p.read_bytes()
+    raw = _read_bytes(p, "ensemble manifest")
     manifest_sha = hashlib.sha256(raw).hexdigest()
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -184,7 +197,8 @@ def load_member_models(
             raise EnsembleServingError(
                 f"ensemble member[{i}] meta sidecar not found: "
                 f"{meta_path} — broken member chain, refusing.")
-        meta_actual = hashlib.sha256(meta_path.read_bytes()).hexdigest()
+        meta_actual = hashlib.sha256(
+            _read_bytes(meta_path, f"member[{i}] meta sidecar")).hexdigest()
         if meta_actual != member.meta_sha256:
             raise EnsembleServingError(
                 f"ensemble member[{i}] meta sha256 mismatch: manifest "
@@ -195,7 +209,7 @@ def load_member_models(
             raise EnsembleServingError(
                 f"ensemble member[{i}] pkl not found: {path} — refusing "
                 "to serve a partial ensemble.")
-        raw = path.read_bytes()
+        raw = _read_bytes(path, f"member[{i}] pkl")
         actual = hashlib.sha256(raw).hexdigest()
         if actual != member.pkl_sha256:
             raise EnsembleServingError(
