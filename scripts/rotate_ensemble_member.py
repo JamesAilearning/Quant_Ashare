@@ -37,7 +37,12 @@ Two subcommands:
               serving would refuse next morning (codex #391 r9);
            5. backup — the pre-rotation manifest bytes are copied to a
               timestamped sibling BEFORE the swap; rollback is the
-              single step of restoring that file.
+              single step of restoring that file;
+           6. serialization — an exclusive advisory lock
+              (``<manifest>.rotation.lock``) spans the whole
+              adjudication INCLUDING the final replace, so concurrent
+              executes refuse at acquisition instead of racing the
+              digest recheck (codex #391 r13).
 
 The executor never trains, never scores, never touches canonical
 model artifacts — it moves ONE manifest file after the protocol's
@@ -113,6 +118,58 @@ def _members_from_bytes(raw: bytes, what: str) -> list[dict[str, Any]]:
 def _read_manifest_members(path: Path) -> list[dict[str, Any]]:
     return _members_from_bytes(
         _read_bytes_or_refuse(path, "manifest"), str(path))
+
+
+class _ManifestLock:
+    """Exclusive advisory lock serializing rotations on one manifest
+    (codex #391 r13): the digest recheck alone leaves a window between
+    check and ``os.replace`` — under the lock, executor-vs-executor
+    races are closed entirely (the loser refuses instead of clobbering)
+    and the recheck retains its role against out-of-band manual edits
+    made before the lock was taken. The lockfile persists next to the
+    manifest (deleting it would be racy); only the LOCK is released."""
+
+    def __init__(self, manifest_path: Path) -> None:
+        self._path = manifest_path.with_name(
+            manifest_path.name + ".rotation.lock")
+        self._fh: Any = None
+
+    def __enter__(self) -> _ManifestLock:
+        fh = open(self._path, "a+b")  # noqa: SIM115 — held past scope
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            fh.close()
+            raise RotationRefusal(
+                f"another rotation holds the manifest lock "
+                f"({self._path}): {exc} — refusing to run "
+                "concurrently") from exc
+        self._fh = fh
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 def _read_bytes_or_refuse(path: Path, what: str) -> bytes:
@@ -258,124 +315,142 @@ def cmd_execute(args: argparse.Namespace) -> int:
         dir=str(manifest_path.parent))
     tmp = Path(tmp_name)
     try:
+        # Staging bytes are written (and the fd CLOSED) before the
+        # lock: a lock-acquisition refusal must leave no open handle
+        # on the temp file, or the cleanup unlink fails on Windows.
         with os.fdopen(fd, "wb") as fh:
             fh.write(candidate_bytes)
-        # Mirror the LIVE manifest's permission bits AND (on POSIX)
-        # its group onto the staged file (codex #391 r10/r11): mkstemp
-        # creates 0600 under the executor's primary group, and
-        # os.replace would install that over a group-readable
-        # production manifest (e.g. 0640 + serving group) — the
-        # serving account would suddenly get permission denied. When
-        # the group cannot be preserved, fail closed. (Windows has no
-        # chown; there the staged file inherits the directory ACL, so
-        # readability is not narrowed by the swap.)
-        try:
-            import shutil
+        # The exclusive manifest lock spans the ENTIRE adjudication —
+        # snapshot, gate checks, backup, recheck AND the final
+        # os.replace (codex #391 r13): the recheck alone left a window
+        # between check and replace; under the lock a concurrent
+        # execute refuses at acquisition instead of racing it.
+        with _ManifestLock(manifest_path):
+            # Mirror the LIVE manifest's permission bits AND (on
+            # POSIX) its group onto the staged file (codex #391
+            # r10/r11): mkstemp creates 0600 under the executor's
+            # primary group, and os.replace would install that over a
+            # group-readable production manifest (e.g. 0640 + serving
+            # group) — the serving account would suddenly get
+            # permission denied. When the group cannot be preserved,
+            # fail closed. (Windows has no chown; there the staged
+            # file inherits the directory ACL, so readability is not
+            # narrowed by the swap.)
+            try:
+                import shutil
 
-            shutil.copymode(manifest_path, tmp)
-            if hasattr(os, "chown"):
-                live_stat = os.stat(manifest_path)
-                os.chown(tmp, -1, live_stat.st_gid)
-        except OSError as exc:
-            raise RotationRefusal(
-                f"cannot mirror live-manifest permissions/group onto "
-                f"the staged file: {exc} — the installed manifest "
-                "could lose readability for the serving account, "
-                "refusing") from exc
-        try:
-            staged_members, _staged_sha = load_ensemble_manifest(tmp)
-        except EnsembleServingError as exc:
-            raise RotationRefusal(
-                f"candidate manifest refused by the serving loader: "
-                f"{exc}") from exc
-
-        # 3. Gate artifacts, bound to what is actually rotating. The
-        # LIVE manifest is snapshot ONCE (codex #391 r12): the same
-        # bytes serve as plan-integrity baseline and as the backup
-        # payload, and the swap re-checks the live digest right before
-        # installing — a concurrent rotation/manual edit between
-        # adjudication and swap refuses instead of being clobbered.
-        live_bytes = _read_bytes_or_refuse(manifest_path,
-                                           "live manifest")
-        live_sha = hashlib.sha256(live_bytes).hexdigest()
-        current = _members_from_bytes(live_bytes, str(manifest_path))
-        candidate = json.loads(candidate_bytes.decode("utf-8"))["members"]
-        new_member = candidate[-1]
-        member_gate = _load_json(Path(args.member_gate),
-                                 "member gate artifact")
-        check_gate_artifact(
-            member_gate, scope=SCOPE_MEMBER,
-            expected_subject_sha=str(new_member.get("pkl_sha256")),
-            # The trainer-integrity gate judged the SIDECAR — bind it
-            # too, or a regenerated sidecar under the same pickle would
-            # ride an old artifact into production.
-            expected_meta_sha=str(new_member.get("meta_sha256")),
-            # Serving derives the inference normalization window from
-            # the newest member's dates (codex #391 r12) — the gate
-            # must have evaluated the SAME window the candidate
-            # installs.
-            expected_fit_window=(str(new_member.get("fit_start")),
-                                 str(new_member.get("fit_end"))))
-        ensemble_gate = _load_json(Path(args.ensemble_gate),
-                                   "ensemble gate artifact")
-        check_gate_artifact(ensemble_gate, scope=SCOPE_ENSEMBLE,
-                            expected_subject_sha=candidate_sha)
-
-        # 4. Plan integrity: candidate == current[1:] + [gated member].
-        expected = plan_rotated_members(current, new_member)
-        if candidate != expected:
-            raise RotationRefusal(
-                "candidate manifest does not equal the rotation plan "
-                "(current minus oldest plus the gated member) — "
-                "refusing")
-
-        # 5. Member-chain re-validation at EXECUTE time (codex #391
-        # r9): the gate artifacts prove the members were valid when
-        # the gates RAN — a pkl/sidecar deleted or replaced since then
-        # would make production serving refuse the freshly installed
-        # manifest at the next morning run. Re-run the STRICT serving
-        # loader (existence + digest chain + sidecar version guard +
-        # unpickle + .predict) over the staged members so what we
-        # install is what serving will accept.
-        try:
-            load_member_models(staged_members)
-        except EnsembleServingError as exc:
-            raise RotationRefusal(
-                f"member chain re-validation failed: {exc} — the "
-                "rotated manifest would be refused by serving; not "
-                "installing") from exc
-
-        # 6. Backup — writes the SNAPSHOT bytes the whole adjudication
-        # ran against (single-read discipline), then the live digest
-        # is re-checked as the last fallible step before the swap.
-        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = manifest_path.with_name(
-            manifest_path.name + f".pre_rotation_{stamp}")
-        if backup.exists():
-            raise RotationRefusal(
-                f"backup path already exists: {backup}")
-        backup.write_bytes(live_bytes)
-        try:
-            recheck = _read_bytes_or_refuse(
-                manifest_path, "live manifest (pre-swap recheck)")
-            if hashlib.sha256(recheck).hexdigest() != live_sha:
+                shutil.copymode(manifest_path, tmp)
+                if hasattr(os, "chown"):
+                    live_stat = os.stat(manifest_path)
+                    os.chown(tmp, -1, live_stat.st_gid)
+            except OSError as exc:
                 raise RotationRefusal(
-                    "live manifest changed since this execution "
-                    "adjudicated it (concurrent rotation or manual "
-                    "edit) — refusing to clobber the intervening "
-                    "update; re-run against the current state")
-        except BaseException:
-            # A refusal after the backup write must not leave a stray
-            # backup either — refusal means zero residue.
-            backup.unlink(missing_ok=True)
-            raise
+                    f"cannot mirror live-manifest permissions/group "
+                    f"onto the staged file: {exc} — the installed "
+                    "manifest could lose readability for the serving "
+                    "account, refusing") from exc
+            try:
+                staged_members, _staged_sha = load_ensemble_manifest(tmp)
+            except EnsembleServingError as exc:
+                raise RotationRefusal(
+                    f"candidate manifest refused by the serving "
+                    f"loader: {exc}") from exc
+
+            # 3. Gate artifacts, bound to what is actually rotating.
+            # The LIVE manifest is snapshot ONCE (codex #391 r12): the
+            # same bytes serve as plan-integrity baseline and as the
+            # backup payload, and the live digest is re-checked before
+            # the swap — under the lock this closes executor-vs-
+            # executor races entirely, and the recheck still catches
+            # out-of-band manual edits made before the lock was taken.
+            live_bytes = _read_bytes_or_refuse(manifest_path,
+                                               "live manifest")
+            live_sha = hashlib.sha256(live_bytes).hexdigest()
+            current = _members_from_bytes(live_bytes,
+                                          str(manifest_path))
+            candidate = json.loads(
+                candidate_bytes.decode("utf-8"))["members"]
+            new_member = candidate[-1]
+            member_gate = _load_json(Path(args.member_gate),
+                                     "member gate artifact")
+            check_gate_artifact(
+                member_gate, scope=SCOPE_MEMBER,
+                expected_subject_sha=str(new_member.get("pkl_sha256")),
+                # The trainer-integrity gate judged the SIDECAR — bind
+                # it too, or a regenerated sidecar under the same
+                # pickle would ride an old artifact into production.
+                expected_meta_sha=str(new_member.get("meta_sha256")),
+                # Serving derives the inference normalization window
+                # from the newest member's dates (codex #391 r12) —
+                # the gate must have evaluated the SAME window the
+                # candidate installs.
+                expected_fit_window=(str(new_member.get("fit_start")),
+                                     str(new_member.get("fit_end"))))
+            ensemble_gate = _load_json(Path(args.ensemble_gate),
+                                       "ensemble gate artifact")
+            check_gate_artifact(ensemble_gate, scope=SCOPE_ENSEMBLE,
+                                expected_subject_sha=candidate_sha)
+
+            # 4. Plan integrity: candidate == current[1:] + [gated
+            # member].
+            expected = plan_rotated_members(current, new_member)
+            if candidate != expected:
+                raise RotationRefusal(
+                    "candidate manifest does not equal the rotation "
+                    "plan (current minus oldest plus the gated "
+                    "member) — refusing")
+
+            # 5. Member-chain re-validation at EXECUTE time (codex
+            # #391 r9): the gate artifacts prove the members were
+            # valid when the gates RAN — a pkl/sidecar deleted or
+            # replaced since then would make production serving refuse
+            # the freshly installed manifest at the next morning run.
+            # Re-run the STRICT serving loader (existence + digest
+            # chain + sidecar version guard + unpickle + .predict)
+            # over the staged members so what we install is what
+            # serving will accept.
+            try:
+                load_member_models(staged_members)
+            except EnsembleServingError as exc:
+                raise RotationRefusal(
+                    f"member chain re-validation failed: {exc} — the "
+                    "rotated manifest would be refused by serving; "
+                    "not installing") from exc
+
+            # 6. Backup — writes the SNAPSHOT bytes the whole
+            # adjudication ran against (single-read discipline), then
+            # the live digest is re-checked as the last fallible step
+            # before the swap.
+            stamp = datetime.now(tz=timezone.utc).strftime(
+                "%Y%m%dT%H%M%SZ")
+            backup = manifest_path.with_name(
+                manifest_path.name + f".pre_rotation_{stamp}")
+            if backup.exists():
+                raise RotationRefusal(
+                    f"backup path already exists: {backup}")
+            backup.write_bytes(live_bytes)
+            try:
+                recheck = _read_bytes_or_refuse(
+                    manifest_path, "live manifest (pre-swap recheck)")
+                if hashlib.sha256(recheck).hexdigest() != live_sha:
+                    raise RotationRefusal(
+                        "live manifest changed since this execution "
+                        "adjudicated it (out-of-band manual edit) — "
+                        "refusing to clobber the intervening update; "
+                        "re-run against the current state")
+            except BaseException:
+                # A refusal after the backup write must not leave a
+                # stray backup either — refusal means zero residue.
+                backup.unlink(missing_ok=True)
+                raise
+
+            # 7. Atomic install of the VERIFIED buffer, still under
+            # the lock (codex #391 r13). Nothing after this point may
+            # refuse — only report.
+            os.replace(tmp, manifest_path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-
-    # 7. Atomic install of the VERIFIED buffer. Nothing after this
-    # point may refuse — only report.
-    os.replace(tmp, manifest_path)
     print(f"[rotate] pre-rotation backup: {backup}")
     print(f"[rotate] manifest rotated: {manifest_path}")
     print(f"[rotate] manifest sha256: {candidate_sha}")

@@ -486,6 +486,19 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_concurrent_lock_holder_refuses_second_execute(self) -> None:
+        # codex #391 r13: the exclusive manifest lock serializes
+        # rotations — a second execute refuses at acquisition while
+        # the lock is held, closing the recheck->replace window for
+        # executor-vs-executor races.
+        from scripts.rotate_ensemble_member import _ManifestLock
+
+        with _ManifestLock(self.manifest):
+            self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+        # Lock released: the same rotation now succeeds.
+        self.assertEqual(0, self._execute())
+
     def test_live_manifest_changed_mid_execute_refused(self) -> None:
         # codex #391 r12: a concurrent rotation/manual edit between
         # adjudication and swap must refuse, not be clobbered. The
