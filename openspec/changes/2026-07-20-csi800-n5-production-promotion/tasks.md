@@ -99,6 +99,10 @@
       保留单 pkl 摘要语义、ensemble 工件不携带；身份 =
       `meta.ensemble.manifest_sha256`；决策页 ensemble 感知
       专用披露 + journal `ensemble:<sha>` 身份）
+- [x] codex #390 r4 P1：manifest 重复成员身份拒绝（四身份字段
+      槽位间去重，含同内容异路径——防三成员静默退化为均值单模型）
+- [x] codex #390 r4 P2：畸形 ensemble 块的 journal 身份永不落入
+      单 pkl sha 命名空间（路径级回退 + 专用 sentinel）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器

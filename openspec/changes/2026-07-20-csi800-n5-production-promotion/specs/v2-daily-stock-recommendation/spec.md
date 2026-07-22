@@ -226,6 +226,15 @@ ensemble 级门失败 = **自举中止**：不执行切换、现任 canonical
 - **THEN** daily_recommend fail-loud 拒绝出单，报错指向缺失
   成员，绝不静默降级为部分 ensemble 或单模型
 
+#### Scenario: manifest 重复成员身份时拒绝出单（codex #390 r4）
+
+- **WHEN** serving manifest 的三成员槽位间任一身份字段重复
+  （`pkl_path`/`pkl_sha256`/`meta_path`/`meta_sha256`——含同一
+  pickle 内容以不同路径拼写出现）
+- **THEN** manifest 加载 fail-loud 拒绝（重复成员会把三成员
+  ensemble 静默退化为均值意义上的单/部分模型），拒绝发生在
+  触碰任何模型字节之前
+
 #### Scenario: 成员框架版本漂移时拒绝出单（codex #390 r3）
 
 - **WHEN** serving 加载某成员时，其 trainer sidecar 记录的训练

@@ -232,6 +232,22 @@ class HelpersRuntimeTests(unittest.TestCase):
                 "model_path": "D:/manifest.json", "ensemble": {}}}),
             "D:/manifest.json",
         )
+        # codex #390 r4: a malformed ensemble block NEVER falls through
+        # to model_pkl_sha256 — a hand-edited artifact carrying both
+        # would re-enter the single-pickle identity namespace.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_path": "D:/manifest.json",
+                "model_pkl_sha256": "aa" * 32,
+                "ensemble": {}}}),
+            "D:/manifest.json",
+        )
+        # No path either: dedicated sentinel, never a bare sha.
+        self.assertEqual(
+            journal_model_id({"meta": {
+                "model_pkl_sha256": "aa" * 32, "ensemble": {}}}),
+            "unknown(malformed-ensemble-artifact)",
+        )
 
     def test_v2_marker_without_meta_is_corrupt_not_legacy(self) -> None:
         # codex P2 on #330: the producer ALWAYS writes a dict meta for v2 —

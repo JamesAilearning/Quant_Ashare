@@ -166,6 +166,21 @@ def load_ensemble_manifest(
             fit_end=str(m["fit_end"]),
         ))
 
+    # Member identities must be pairwise DISTINCT (codex #390 r4): a
+    # manifest repeating the same pickle/sidecar across slots (with
+    # staggered windows pasted in) would silently degrade the mandated
+    # three-member ensemble into an averaged single/partial model.
+    # pkl_sha256 is the content-level catchall (two path spellings of
+    # one file share it); the path/meta fields close the rest.
+    for field in ("pkl_path", "pkl_sha256", "meta_path", "meta_sha256"):
+        values = [getattr(m, field) for m in members]
+        if len(set(values)) != ENSEMBLE_SIZE:
+            dupes = sorted({v for v in values if values.count(v) > 1})
+            raise EnsembleServingError(
+                f"manifest members must have distinct {field}; "
+                f"duplicated: {dupes} — a repeated member degrades the "
+                "ensemble to fewer effective models, refusing.")
+
     # Window arithmetic pins (R1-DP-A/C), all fail-closed:
     ends = [_parse_day(m.fit_end, "fit_end") for m in members]
     starts = [_parse_day(m.fit_start, "fit_start") for m in members]

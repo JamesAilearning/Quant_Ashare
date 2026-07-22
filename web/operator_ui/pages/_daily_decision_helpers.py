@@ -219,12 +219,21 @@ def journal_model_id(payload: dict[str, Any]) -> str:
     if isinstance(meta, dict):
         # Ensemble artifact first (codex #390 r3): its content-bound
         # identity is the manifest sha256; the prefix keeps it from
-        # ever being confused with a single-pickle digest.
+        # ever being confused with a single-pickle digest. An ensemble
+        # block WITHOUT that sha never falls through to the
+        # model_pkl_sha256 branch (codex #390 r4): a malformed/hand-
+        # edited artifact carrying both would re-enter the single-
+        # pickle namespace this path exists to avoid — the honest
+        # fallback is the path identity, then a dedicated sentinel.
         ensemble_block = meta.get("ensemble")
         if isinstance(ensemble_block, dict):
             ens_sha = ensemble_block.get("manifest_sha256")
             if isinstance(ens_sha, str) and ens_sha:
                 return f"ensemble:{ens_sha}"
+            path = meta.get("model_path")
+            if isinstance(path, str) and path:
+                return path
+            return "unknown(malformed-ensemble-artifact)"
         sha = meta.get("model_pkl_sha256")
         if isinstance(sha, str) and sha:
             return sha

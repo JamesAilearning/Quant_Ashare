@@ -206,6 +206,33 @@ def test_bad_train_window_refused(tmp_path: Path) -> None:
         load_ensemble_manifest(mp)
 
 
+def test_duplicate_member_identity_refused(tmp_path: Path) -> None:
+    # codex #390 r4: repeating one pickle/sidecar across slots (with
+    # staggered windows pasted in) would degrade the three-member
+    # ensemble to an averaged single model — refuse at manifest load.
+    _, members = _happy_manifest(tmp_path)
+    members[1] = {**members[0],
+                  "fit_start": _WINDOWS[1][0], "fit_end": _WINDOWS[1][1]}
+    mp = _write_manifest(tmp_path, members)
+    with pytest.raises(EnsembleServingError, match="distinct"):
+        load_ensemble_manifest(mp)
+
+
+def test_duplicate_pkl_content_refused(tmp_path: Path) -> None:
+    # Same pickle BYTES under two different paths: the path fields
+    # differ but pkl_sha256 (content identity) repeats — refuse.
+    _, members = _happy_manifest(tmp_path)
+    src = Path(members[0]["pkl_path"])
+    clone = tmp_path / "member_1_clone.pkl"
+    clone.write_bytes(src.read_bytes())
+    members[1]["pkl_path"] = str(clone)
+    members[1]["pkl_sha256"] = members[0]["pkl_sha256"]
+    mp = _write_manifest(tmp_path, members)
+    with pytest.raises(EnsembleServingError,
+                       match="distinct pkl_sha256"):
+        load_ensemble_manifest(mp)
+
+
 def test_missing_meta_sidecar_refuses(tmp_path: Path) -> None:
     # codex #390 r1: the member META is part of the declared hash
     # chain — an absent sidecar refuses the whole ensemble.
