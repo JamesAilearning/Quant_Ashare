@@ -82,13 +82,16 @@
 ## 5. R1 协议对齐分段（2026-07-21 签，替代 §3 执行路径）
 
 ### PR-A' — ensemble 服务机制（runtime 触点）
-- [ ] daily_recommend 多模型 ensemble 消费（serving manifest 列
-      三成员 pkl+meta，apply_ensemble 同语义打分；缺员/断链
-      fail-loud 拒绝出单，绝不静默降级）
-- [ ] serving manifest schema + 治理绑定扩展（manifest 成员窗口
-      算术 pin：24m 滚动+3m valid+错峰终点）
-- [ ] 测试：三成员合成 ensemble 等价性/缺员拒绝/断链拒绝/单模型
-      旧路径字节不变
+- [x] daily_recommend 多模型 ensemble 消费（src/inference/
+      ensemble_serving.py 严格加载器+mean_skipna blend；缺员/断链/
+      unpickle/无 predict/索引失配全 fail-loud，绝不部分 ensemble）
+- [x] serving manifest schema（csi800_n5_ensemble_manifest_v1，
+      恰 3 成员/fit_end 严格递增/季度错峰 75-100d/24m 窗 700-745d，
+      load 时 fail-closed）+ 治理常量 pin
+- [x] 测试：blend 与 apply_ensemble 数学等价/manifest 七拒绝态/
+      成员加载四拒绝态/predict 失败与索引失配拒/fit 窗失配拒/
+      run_meta ensemble provenance/单模型旧路径字节不变（既有
+      测试全绿）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器

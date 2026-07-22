@@ -108,6 +108,36 @@ class LevelTwoServingParamsPin(unittest.TestCase):
         self.assertNotIn("rebalance_anchor", SERVING_ONLY_KEYS)
 
 
+class EnsembleServingSchemaPin(unittest.TestCase):
+    """PR-A' (R1-DP-A): the serving-manifest schema constants ARE the
+    certified protocol arithmetic — drift silently changes what counts
+    as a legal production ensemble."""
+
+    def test_manifest_constants_match_r1_arithmetic(self) -> None:
+        from src.inference.ensemble_serving import (
+            BLEND,
+            ENSEMBLE_SIZE,
+            MANIFEST_SCHEMA_VERSION,
+            MEMBER_SPACING_DAYS_MAX,
+            MEMBER_SPACING_DAYS_MIN,
+            TRAIN_WINDOW_DAYS_MAX,
+            TRAIN_WINDOW_DAYS_MIN,
+        )
+
+        self.assertEqual("csi800_n5_ensemble_manifest_v1",
+                         MANIFEST_SCHEMA_VERSION)
+        self.assertEqual(3, ENSEMBLE_SIZE)          # ensemble_window=3
+        self.assertEqual("mean_skipna", BLEND)      # apply_ensemble math
+        # Quarterly stagger (R1-DP-C: fit_end terminals one quarter
+        # apart, trading-calendar drift tolerated).
+        self.assertEqual((75, 100),
+                         (MEMBER_SPACING_DAYS_MIN,
+                          MEMBER_SPACING_DAYS_MAX))
+        # 24-month rolling train window (config_walk train_months=24).
+        self.assertEqual((700, 745),
+                         (TRAIN_WINDOW_DAYS_MIN, TRAIN_WINDOW_DAYS_MAX))
+
+
 class GuardEvalProfilePin(unittest.TestCase):
     # Profiles are imported from the PURE scripts/eval_profiles.py
     # (codex #387 r1): the qlib-bound eval tool must never sit on the
