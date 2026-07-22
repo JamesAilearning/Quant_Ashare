@@ -1,7 +1,11 @@
 # Tasks: 2026-07-20-csi800-n5-production-promotion
 
-## 0. 提案签署（本 PR）
-- [ ] 操作人签 DP-1..DP-6（proposal.md 决策账），签字后冻结
+## 0. 提案签署
+- [x] 操作人签 DP-1..DP-6（proposal.md 决策账，#385 merge =
+      签署），签字后冻结
+- [ ] **操作人签 R1-DP-A..E**（R1 修订决策账——取代 §3 晋升门的
+      协议对齐决策；本 R1 提案 PR merge = 签署，签字后冻结；
+      codex #389 r19：R1 决策集须显式签署项）
 
 ## 1. PR-A — 服务节奏机制 + 两级绑定链工件（唯一 runtime 触点）
 - [x] iso-week 再平衡日判定（交易日历驱动：ISO 周第一个交易日；
@@ -50,7 +54,8 @@
       数字 STOP（已呈报：gate C-4 净 −2.14% FAIL）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
-## 3. PR-C — 晋升执行（数字 STOP）
+## 3. PR-C — 晋升执行（数字 STOP）【R1 废止：gate C-4 FAIL 实证
+（PR #388 入档），本节由 §5 R1 分段取代；下列未勾项不再执行】
 - [ ] 晋升工具执行前置校验：侧车 --verify 通过 +
       promotion_eligible: true + iso_week 复核门过线（否则拒绝；
       零写入限于 canonical 本体，失败记录照常写入——codex #385 r2）
@@ -72,3 +77,77 @@
 ## 4. 收束
 - [ ] 观察期起点记录（首季度只记录不回调）
 - [ ] 战役记忆/runbook 终稿同步 → `/opsx:archive`
+
+
+## 5. R1 协议对齐分段（2026-07-21 签，替代 §3 执行路径）
+
+### PR-A' — ensemble 服务机制（runtime 触点）
+- [ ] daily_recommend 多模型 ensemble 消费（serving manifest 列
+      三成员 pkl+meta，apply_ensemble 同语义打分；缺员/断链
+      fail-loud 拒绝出单，绝不静默降级）
+- [ ] serving manifest schema + 治理绑定扩展（manifest 成员窗口
+      算术 pin：24m 滚动+3m valid+错峰终点）
+- [ ] 测试：三成员合成 ensemble 等价性/缺员拒绝/断链拒绝/单模型
+      旧路径字节不变
+- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+
+### PR-B' — per-retrain 门工装 + 轮换执行器
+- [ ] **trainer sidecar schema 扩展**(codex #389 r18)：
+      _write_model_sidecar 增 num_boost_round(训练实际使用值);
+      门仅从 sidecar 读两值,缺字段=完整性门失败(fail-closed 禁
+      回退 preset 默认/跳过);旧 sidecar 无字段的向后处置=同缺
+      字段失败(测试 pin)
+- [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
+      serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
+      ensemble+如实入档;连续两季不过=操作人决策点
+- [ ] **逐门失败验收测试**(codex #389 r10/r11:缺此项实现可静默
+      弱化任一门仍满足清单)：每门至少一个拒绝态——坏 trainer
+      sidecar(best_iteration/valid loss 非有限)拒 + **早停边界拒**
+      (best_iteration == num_boost_round 即早停从未触发,训练预算
+      耗尽的边界异常,r11)/退化或 straddle 输出拒/约束干跑 RAISE
+      拒/valid IC≤0 拒/serving veto ②③⑤ 各越界拒;另加全过放行态
+      +gate 工件内容 pin(逐门 verdict 与数值入档)
+- [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
+- [ ] **轮换执行器**(codex #389 r2/r3/r4)：认证有效性前置校验——
+      仅 git show 读单一状态工件 csi800_recert_status.json 内容
+      判 verdict(LOSE 即冻结零写入+升级决策点;WIN 状态合并恢复;
+      零日期/拓扑推断);有效期=状态工件路径主线 tip commit 日期
+      +15 个月 + gate 工件消费 + pre-rotation manifest 备份
+      (单步回退) + 轮换落 manifest；测试:过期冻结/LOSE 冻结/
+      WIN 恢复/备份在场/回退单步/合法轮换全链/侧车路径非年检
+      触碰不影响判定/**gate 工件缺失拒轮换+gate 工件 FAIL 拒轮换**
+      (codex #389 r11:门工具拒了但执行器无视=成员照样入生产的
+      通道必须封死,两态均 manifest 零写入)
+- [ ] **年检状态工件义务**(codex #389 r3/r4/r8)：单一状态工件
+      schema(verdict/WIN 侧车内容哈希/证据锚/判定说明)+仅年检
+      流程可改的治理钉守+runbook 年检操作卡——**仅 schema/文档,
+      不写状态文件**(首写专属 PR-C',早写会提前起 15 个月表并让
+      执行器过早读到有效状态)
+- [ ] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
+      再认证义务
+- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+
+### PR-C' — 自举点火 + 切换执行（数字 STOP）
+- [ ] 三名错峰成员训练配置定稿(训窗终点 T-6m/T-3m/T,各 24m+3m,
+      跑前钉死具体日期)
+- [ ] **三发 GPU 点火 = 操作人执行,严格串行**
+- [ ] 三成员过自举门(codex #389 r13 语义:成员级门 trainer/IC
+      逐一评估 + ensemble 级门退化/约束干跑/veto 面对三成员组合
+      整体跑一次;任一失败=自举中止不切换现任续任,无"沿用旧
+      ensemble"分支;gate 工件入库)
+- [ ] **自举晋升路径全门**(codex #389 r8:首次切换是晋升路径,
+      非维护路径)：侧车 --verify + promotion_eligible 机器前置 +
+      iso_week 复核锚定门(origin/main git show 读证据+config 绑定
+      +净>0 重导)——全过才允许切换执行,任一不过=如实入档中止
+- [ ] 切换执行:pre-promote 备份+三成员 inference meta+serving
+      manifest+baseline json(④ 先例)+**初始 WIN 状态工件**
+      (codex #389 r7:csi800_recert_status.json 首写——verdict WIN
+      +现行 #383 verdict 侧车内容哈希引用+证据锚,与切换同 PR 入库;
+      缺此项轮换执行器读无有效状态会误冻结首次季度轮换)
+- [ ] **数字 STOP**:三成员门工件+valid 窗数字首次呈报 → codex/CI
+      → 用户 merge = 切换完成,观察期起点记录
+- [ ] 既有候选(run 20260721_195924)如实弃置(训窗与错峰算术不符)
+
+### 收束
+- [ ] 首季观察期报告义务入 runbook;年度再认证日历锚定
+- [ ] 战役记忆终稿 → `/opsx:archive`
