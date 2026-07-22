@@ -166,8 +166,10 @@ class GitCommandPins(unittest.TestCase):
 def _member_gate_artifact(overall: str = "PASS") -> dict:
     return {
         "schema_version": GATE_SCHEMA_VERSION,
+        "profile": "csi800_n5",
         "scope": SCOPE_MEMBER,
-        "subject": {"pkl_sha256": "ab" * 32, "meta_sha256": "ac" * 32},
+        "subject": {"pkl_sha256": "ab" * 32, "meta_sha256": "ac" * 32,
+                    "fit_start": "2023-09-20", "fit_end": "2025-09-18"},
         "gates": {"trainer_integrity": {"verdict": "PASS"},
                   "ic_direction": {"verdict": "PASS"}},
         "overall": overall,
@@ -257,6 +259,36 @@ class GateArtifactConsumption(unittest.TestCase):
                     expected_subject_sha="ab" * 32)
             self.assertIn("gate set", str(ctx.exception))
 
+    def test_wrong_profile_refused(self) -> None:
+        # codex #391 r12: a gate measured under different semantics
+        # (e.g. csi300_daily) must never authorize this rotation.
+        for profile in ("csi300_daily", None):
+            artifact = _member_gate_artifact()
+            if profile is None:
+                del artifact["profile"]
+            else:
+                artifact["profile"] = profile
+            with self.assertRaises(RotationRefusal, msg=profile) as ctx:
+                check_gate_artifact(
+                    artifact, scope=SCOPE_MEMBER,
+                    expected_subject_sha="ab" * 32)
+            self.assertIn("profile", str(ctx.exception))
+
+    def test_fit_window_binding_mismatch_refused(self) -> None:
+        # codex #391 r12: serving derives the inference normalization
+        # window from the newest member's manifest dates — the gate
+        # must have evaluated the SAME window.
+        check_gate_artifact(
+            _member_gate_artifact(), scope=SCOPE_MEMBER,
+            expected_subject_sha="ab" * 32,
+            expected_fit_window=("2023-09-20", "2025-09-18"))
+        with self.assertRaises(RotationRefusal) as ctx:
+            check_gate_artifact(
+                _member_gate_artifact(), scope=SCOPE_MEMBER,
+                expected_subject_sha="ab" * 32,
+                expected_fit_window=("2023-09-21", "2025-09-18"))
+        self.assertIn("window", str(ctx.exception))
+
     def test_member_meta_binding_mismatch_refused(self) -> None:
         # The trainer-integrity gate judged the SIDECAR — a regenerated
         # sidecar under the same pickle must invalidate the artifact.
@@ -274,6 +306,7 @@ class GateArtifactConsumption(unittest.TestCase):
     def test_ensemble_scope_binds_manifest_sha(self) -> None:
         artifact = {
             "schema_version": GATE_SCHEMA_VERSION,
+            "profile": "csi800_n5",
             "scope": SCOPE_ENSEMBLE,
             "subject": {"manifest_sha256": "cd" * 32},
             "gates": {"degeneracy": {"verdict": "PASS"},

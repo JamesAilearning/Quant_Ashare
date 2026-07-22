@@ -32,6 +32,7 @@ from typing import Any
 
 from scripts.retrain_gate_lib import (
     FAIL,
+    GATE_PROFILE,
     GATE_SCHEMA_VERSION,
     PASS,
     SCOPE_ENSEMBLE,
@@ -185,6 +186,7 @@ def recert_validity(
 def check_gate_artifact(
     artifact: Any, *, scope: str, expected_subject_sha: str,
     expected_meta_sha: str | None = None,
+    expected_fit_window: tuple[str, str] | None = None,
 ) -> None:
     """Admit a gate artifact for rotation, fail-closed (codex #389
     r11: a gate the tool FAILED — or that never ran — must be a closed
@@ -211,6 +213,16 @@ def check_gate_artifact(
             f"{scope} gate artifact schema "
             f"{artifact.get('schema_version')!r} != "
             f"{GATE_SCHEMA_VERSION!r}")
+    if artifact.get("profile") != GATE_PROFILE:
+        # codex #391 r12: a gate measured under different semantics
+        # (e.g. csi300_daily) must never authorize a csi800_n5
+        # rotation — the artifact stamps its profile and this consumer
+        # refuses anything else.
+        raise RotationRefusal(
+            f"{scope} gate artifact profile "
+            f"{artifact.get('profile')!r} != {GATE_PROFILE!r} — gates "
+            "measured under different semantics cannot authorize this "
+            "rotation")
     if artifact.get("scope") != scope:
         raise RotationRefusal(
             f"gate artifact scope {artifact.get('scope')!r} != "
@@ -265,6 +277,19 @@ def check_gate_artifact(
                 f"{actual_meta!r} does not bind to the expected sidecar "
                 f"digest {expected_meta_sha} — the trainer-integrity "
                 "verdict belongs to a different sidecar, refusing")
+    if expected_fit_window is not None:
+        # codex #391 r12: serving derives the inference normalization
+        # window from the manifest's newest-member dates — a candidate
+        # whose fit window differs from what the member gate evaluated
+        # would install dates the IC gate never judged.
+        actual_window = (subject.get("fit_start"),
+                         subject.get("fit_end"))
+        if actual_window != expected_fit_window:
+            raise RotationRefusal(
+                f"{scope} gate artifact subject fit window "
+                f"{actual_window!r} != the candidate member's "
+                f"{expected_fit_window!r} — the gate evaluated a "
+                "different window, refusing")
 
 
 def plan_rotated_members(

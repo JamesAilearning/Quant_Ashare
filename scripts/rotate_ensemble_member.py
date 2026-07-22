@@ -82,32 +82,37 @@ from src.inference.ensemble_serving import (  # noqa: E402
 MANIFEST_SCHEMA_VERSION = "csi800_n5_ensemble_manifest_v1"
 
 
-def _read_manifest_members(path: Path) -> list[dict[str, Any]]:
+def _members_from_bytes(raw: bytes, what: str) -> list[dict[str, Any]]:
     # A typo'd/missing/corrupt manifest input is an ORDINARY
     # precondition failure (codex #391 r4) — it must surface through
     # the classified `[rotate] REFUSED` path like every other
     # certification/gate precondition, never a raw traceback.
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        payload = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise RotationRefusal(
-            f"manifest unreadable: {path} ({exc})") from exc
+            f"manifest unreadable: {what} ({exc})") from exc
     if not isinstance(payload, dict):
         raise RotationRefusal(
-            f"{path}: manifest top level is not an object")
+            f"{what}: manifest top level is not an object")
     if payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
         # codex #391 r6: an unknown/missing schema on the LIVE manifest
         # must fail closed — planning over it would silently convert an
         # unrecognized manifest contract into a fresh v1 candidate.
         raise RotationRefusal(
-            f"{path}: manifest schema "
+            f"{what}: manifest schema "
             f"{payload.get('schema_version')!r} != "
             f"{MANIFEST_SCHEMA_VERSION!r} — refusing to plan/execute "
             "over an unrecognized manifest contract")
     members = payload.get("members")
     if not isinstance(members, list):
-        raise RotationRefusal(f"{path}: manifest carries no members list")
+        raise RotationRefusal(f"{what}: manifest carries no members list")
     return members
+
+
+def _read_manifest_members(path: Path) -> list[dict[str, Any]]:
+    return _members_from_bytes(
+        _read_bytes_or_refuse(path, "manifest"), str(path))
 
 
 def _read_bytes_or_refuse(path: Path, what: str) -> bytes:
@@ -284,8 +289,16 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 f"candidate manifest refused by the serving loader: "
                 f"{exc}") from exc
 
-        # 3. Gate artifacts, bound to what is actually rotating.
-        current = _read_manifest_members(manifest_path)
+        # 3. Gate artifacts, bound to what is actually rotating. The
+        # LIVE manifest is snapshot ONCE (codex #391 r12): the same
+        # bytes serve as plan-integrity baseline and as the backup
+        # payload, and the swap re-checks the live digest right before
+        # installing — a concurrent rotation/manual edit between
+        # adjudication and swap refuses instead of being clobbered.
+        live_bytes = _read_bytes_or_refuse(manifest_path,
+                                           "live manifest")
+        live_sha = hashlib.sha256(live_bytes).hexdigest()
+        current = _members_from_bytes(live_bytes, str(manifest_path))
         candidate = json.loads(candidate_bytes.decode("utf-8"))["members"]
         new_member = candidate[-1]
         member_gate = _load_json(Path(args.member_gate),
@@ -296,7 +309,13 @@ def cmd_execute(args: argparse.Namespace) -> int:
             # The trainer-integrity gate judged the SIDECAR — bind it
             # too, or a regenerated sidecar under the same pickle would
             # ride an old artifact into production.
-            expected_meta_sha=str(new_member.get("meta_sha256")))
+            expected_meta_sha=str(new_member.get("meta_sha256")),
+            # Serving derives the inference normalization window from
+            # the newest member's dates (codex #391 r12) — the gate
+            # must have evaluated the SAME window the candidate
+            # installs.
+            expected_fit_window=(str(new_member.get("fit_start")),
+                                 str(new_member.get("fit_end"))))
         ensemble_gate = _load_json(Path(args.ensemble_gate),
                                    "ensemble gate artifact")
         check_gate_artifact(ensemble_gate, scope=SCOPE_ENSEMBLE,
@@ -326,15 +345,30 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 "rotated manifest would be refused by serving; not "
                 "installing") from exc
 
-        # 6. Backup — the last fallible step before the swap.
+        # 6. Backup — writes the SNAPSHOT bytes the whole adjudication
+        # ran against (single-read discipline), then the live digest
+        # is re-checked as the last fallible step before the swap.
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = manifest_path.with_name(
             manifest_path.name + f".pre_rotation_{stamp}")
         if backup.exists():
             raise RotationRefusal(
                 f"backup path already exists: {backup}")
-        backup.write_bytes(_read_bytes_or_refuse(
-            manifest_path, "live manifest (for backup)"))
+        backup.write_bytes(live_bytes)
+        try:
+            recheck = _read_bytes_or_refuse(
+                manifest_path, "live manifest (pre-swap recheck)")
+            if hashlib.sha256(recheck).hexdigest() != live_sha:
+                raise RotationRefusal(
+                    "live manifest changed since this execution "
+                    "adjudicated it (concurrent rotation or manual "
+                    "edit) — refusing to clobber the intervening "
+                    "update; re-run against the current state")
+        except BaseException:
+            # A refusal after the backup write must not leave a stray
+            # backup either — refusal means zero residue.
+            backup.unlink(missing_ok=True)
+            raise
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

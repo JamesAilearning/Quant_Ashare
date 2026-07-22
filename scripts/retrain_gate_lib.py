@@ -48,6 +48,11 @@ import math
 from typing import Any
 
 GATE_SCHEMA_VERSION = "csi800_n5_retrain_gate_v1"
+# The ONLY profile these gates exist for (codex #391 r12): the
+# artifact stamps it and the rotation executor refuses anything else —
+# a gate measured under different semantics (e.g. csi300_daily) must
+# never authorize a csi800_n5 rotation.
+GATE_PROFILE = "csi800_n5"
 
 SCOPE_MEMBER = "member"
 SCOPE_ENSEMBLE = "ensemble"
@@ -363,6 +368,7 @@ def assemble_gate_artifact(
         v == PASS for v in verdicts.values())) else FAIL
     artifact: dict[str, Any] = {
         "schema_version": GATE_SCHEMA_VERSION,
+        "profile": GATE_PROFILE,
         "scope": scope,
         "generated_at": generated_at,
         "subject": dict(subject),

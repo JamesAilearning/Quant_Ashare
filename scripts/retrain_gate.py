@@ -520,7 +520,14 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scope", choices=(SCOPE_MEMBER, SCOPE_ENSEMBLE),
                    required=True)
-    p.add_argument("--profile", default="csi800_n5",
+    # choices pinned to the ONE profile these gates exist for (codex
+    # #391 r12): a csi300_daily measurement stamped into a v1 gate
+    # artifact would be accepted by the rotation executor on
+    # scope/digest alone — the CLI refuses the combination outright
+    # and the artifact additionally stamps its profile for the
+    # executor to verify.
+    p.add_argument("--profile", choices=("csi800_n5",),
+                   default="csi800_n5",
                    help="Pre-registered semantic knob set; the retrain "
                         "gates exist only for the csi800_n5 protocol.")
     p.add_argument("--provider", default="D:/qlib_data/my_cn_data_pit")

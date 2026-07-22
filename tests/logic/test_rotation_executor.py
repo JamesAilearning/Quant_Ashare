@@ -190,7 +190,9 @@ class RotationExecutorStates(unittest.TestCase):
         self.ensemble_gate = self.tmp / "ensemble_gate.json"
         self._write_gate(self.member_gate, SCOPE_MEMBER,
                          {"pkl_sha256": self.new_pkl_sha,
-                          "meta_sha256": self.new_meta_sha})
+                          "meta_sha256": self.new_meta_sha,
+                          "fit_start": _NEW_WINDOW[0],
+                          "fit_end": _NEW_WINDOW[1]})
         self._write_gate(self.ensemble_gate, SCOPE_ENSEMBLE,
                          {"manifest_sha256": self.candidate_sha})
 
@@ -204,9 +206,11 @@ class RotationExecutorStates(unittest.TestCase):
     }
 
     def _write_gate(self, path: Path, scope: str, subject: dict,
-                    overall: str = "PASS") -> None:
+                    overall: str = "PASS",
+                    profile: str = "csi800_n5") -> None:
         path.write_text(json.dumps({
             "schema_version": GATE_SCHEMA_VERSION,
+            "profile": profile,
             "scope": scope, "subject": subject,
             "gates": {name: {"verdict": overall}
                       for name in self._GATES_BY_SCOPE[scope]},
@@ -457,6 +461,59 @@ class RotationExecutorStates(unittest.TestCase):
         _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
         self.assertEqual(1, self._execute(repo=repo))
         self._assert_manifest_untouched()
+
+    def test_wrong_profile_gate_refused(self) -> None:
+        # codex #391 r12: a gate artifact measured under csi300_daily
+        # semantics must not authorize a csi800_n5 rotation.
+        self._write_gate(self.member_gate, SCOPE_MEMBER,
+                         {"pkl_sha256": self.new_pkl_sha,
+                          "meta_sha256": self.new_meta_sha,
+                          "fit_start": _NEW_WINDOW[0],
+                          "fit_end": _NEW_WINDOW[1]},
+                         profile="csi300_daily")
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_fit_window_gate_mismatch_refused(self) -> None:
+        # codex #391 r12: the member gate evaluated a different fit
+        # window than the candidate installs — refuse (serving derives
+        # the inference normalization window from these dates).
+        self._write_gate(self.member_gate, SCOPE_MEMBER,
+                         {"pkl_sha256": self.new_pkl_sha,
+                          "meta_sha256": self.new_meta_sha,
+                          "fit_start": "2023-09-21",
+                          "fit_end": _NEW_WINDOW[1]})
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_live_manifest_changed_mid_execute_refused(self) -> None:
+        # codex #391 r12: a concurrent rotation/manual edit between
+        # adjudication and swap must refuse, not be clobbered. The
+        # member-chain re-validation hook is the deterministic
+        # injection point for the mid-run edit.
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rem
+
+        real = rem.load_member_models
+        edited = json.dumps({"schema_version":
+                             "csi800_n5_ensemble_manifest_v1",
+                             "members": []})
+
+        def sneaky(members):  # noqa: ANN001
+            self.manifest.write_text(edited, encoding="utf-8")
+            return real(members)
+
+        with patch.object(rem, "load_member_models",
+                          side_effect=sneaky):
+            rc = self._execute()
+        self.assertEqual(1, rc)
+        # The intervening edit survives (not clobbered by the
+        # candidate), and no backup/staging residue remains.
+        self.assertEqual(edited,
+                         self.manifest.read_text(encoding="utf-8"))
+        self.assertEqual([], list(self.tmp.glob("*.pre_rotation_*")))
+        self.assertEqual([], list(self.tmp.glob("*.swap*")))
 
     def test_member_pkl_deleted_after_gates_refused(self) -> None:
         # codex #391 r9: the gates proved the members were valid when
