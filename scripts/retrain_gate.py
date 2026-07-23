@@ -325,25 +325,42 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
     }
 
 
-def _build_dataset(args: argparse.Namespace, profile: dict[str, Any],
-                   fit_start: str, fit_end: str,
-                   valid_start: str, valid_end: str,
-                   test_start: str, test_end: str) -> Any:
-    from src.data.feature_dataset_builder import (
-        FeatureDatasetBuilder,
-        FeatureDatasetConfig,
-    )
+def _scoring_dataset(args: argparse.Namespace, profile: dict[str, Any],
+                     *, fit_start: str, fit_end: str,
+                     score_start: str, score_end: str) -> Any:
+    """A SCORING dataset in the PRODUCTION INFERENCE shape: one
+    ``infer`` segment over the window being scored, with normalization
+    pinned to the model's training window (mirrors
+    ``daily_recommend._build_asof_dataset``).
+
+    Deliberately NOT ``FeatureDatasetBuilder`` (codex #391 r33/r34):
+    that builder enforces the train < valid < test ORDERING contract
+    of a training split, which the gates' scoring windows cannot and
+    need not satisfy — the member gate scores the valid window that
+    directly follows the training window, and the spec explicitly
+    allows the ensemble dry run's trailing quarter to OVERLAP the
+    newest member's training data (its purpose is behavioural, not
+    performance — R1 has no net gate). Routing a frozen-model scoring
+    pass through a split validator refused both shapes outright.
+    Leakage is not a concern here: nothing is trained, and the
+    normalization fit window is exactly the one the model was trained
+    with — the same discipline production serving uses every morning.
+    """
+    from qlib.contrib.data.handler import Alpha158
+    from qlib.data.dataset import DatasetH
 
     init_qlib_canonical(QlibRuntimeConfig(
         provider_uri=args.provider, region="cn",
         data_adjust_mode=ADJUST_MODE_PRE))
-    return FeatureDatasetBuilder.build(FeatureDatasetConfig(
+    handler = Alpha158(
         instruments=profile["instruments"],
-        feature_handler=args.handler,
-        train_start=fit_start, train_end=fit_end,
-        valid_start=valid_start, valid_end=valid_end,
-        test_start=test_start, test_end=test_end,
-    ))
+        start_time=fit_start,        # history back to the fit window
+        end_time=score_end,          # no bar later than the window
+        fit_start_time=fit_start,
+        fit_end_time=fit_end,        # normalization = training window
+    )
+    return DatasetH(handler=handler,
+                    segments={"infer": [score_start, score_end]})
 
 
 def _member_scope(args: argparse.Namespace,
@@ -379,11 +396,10 @@ def _member_scope(args: argparse.Namespace,
     # valid window as the test segment is rejected outright by
     # FeatureDatasetBuilder — ``valid_end >= test_start`` is a leakage
     # violation — so that shape could never have scored anything).
-    build = _build_dataset(
+    dataset = _scoring_dataset(
         args, profile,
         fit_start=args.fit_start, fit_end=args.fit_end,
-        valid_start=args.valid_start, valid_end=args.valid_end,
-        test_start=args.test_start, test_end=args.test_end)
+        score_start=args.valid_start, score_end=args.valid_end)
     import pickle
 
     # Pickle bytes are read ONCE (codex #391 r2): the object the IC
@@ -396,7 +412,7 @@ def _member_scope(args: argparse.Namespace,
     if not hasattr(model, "predict"):
         raise SystemExit(
             f"loaded object {type(model).__name__} has no .predict")
-    preds = model.predict(build.dataset, segment="valid")
+    preds = model.predict(dataset, segment="infer")
     if not isinstance(preds, pd.Series):
         preds = pd.Series(preds)
     preds = preds.dropna()
@@ -442,15 +458,15 @@ def _ensemble_scope(args: argparse.Namespace,
     except EnsembleServingError as exc:
         raise SystemExit(f"candidate manifest refused: {exc}") from exc
     newest = members[-1]
-    build = _build_dataset(
+    dataset = _scoring_dataset(
         args, profile,
-        # Serving parity: the dataset fit window is the NEWEST member's
-        # training window (daily_recommend forces the same equality).
+        # Serving parity: the normalization fit window is the NEWEST
+        # member's training window (daily_recommend forces the same
+        # equality).
         fit_start=newest.fit_start, fit_end=newest.fit_end,
-        valid_start=args.valid_start, valid_end=args.valid_end,
-        test_start=args.window_start, test_end=args.window_end)
+        score_start=args.window_start, score_end=args.window_end)
     try:
-        preds = ensemble_predict(loaded, build.dataset, segment="test")
+        preds = ensemble_predict(loaded, dataset, segment="infer")
     except EnsembleServingError as exc:
         raise SystemExit(f"ensemble dry-run predict refused: {exc}") from exc
     preds = preds.dropna()
@@ -654,21 +670,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--provider", default="D:/qlib_data/my_cn_data_pit")
     p.add_argument("--namechange",
                    default="D:/qlib_data/tushare_raw/all_namechanges.parquet")
-    p.add_argument("--handler", default="Alpha158")
+    p.add_argument("--handler", choices=("Alpha158",), default="Alpha158",
+                   help="Feature handler; the certified csi800_n5 "
+                        "protocol is Alpha158-only.")
     # member scope: the member's own windows (mirror its preset).
     p.add_argument("--member-pkl", default=None)
     p.add_argument("--member-meta", default=None)
     p.add_argument("--fit-start", default=None)
     p.add_argument("--fit-end", default=None)
+    # member scope: the window the IC gate scores (the member's own
+    # valid window). The scoring dataset needs no placeholder split
+    # segments (codex #391 r33/r34).
     p.add_argument("--valid-start", default=None)
     p.add_argument("--valid-end", default=None)
-    # member scope: the member's OWN test window — the dataset is built
-    # in the SAME shape its training run used, and the valid window is
-    # scored as the `valid` segment (codex #391 r33). No derived
-    # default: a guessed window would silently change the gate's
-    # dataset shape.
-    p.add_argument("--test-start", default=None)
-    p.add_argument("--test-end", default=None)
     # ensemble scope: candidate manifest + trailing-quarter window.
     p.add_argument("--manifest", default=None)
     p.add_argument("--window-start", default=None)
@@ -680,10 +694,9 @@ def main(argv: list[str] | None = None) -> int:
     required: tuple[str, ...]
     if args.scope == SCOPE_MEMBER:
         required = ("member_pkl", "member_meta", "fit_start", "fit_end",
-                    "valid_start", "valid_end", "test_start", "test_end")
-    else:
-        required = ("manifest", "window_start", "window_end",
                     "valid_start", "valid_end")
+    else:
+        required = ("manifest", "window_start", "window_end")
     missing = [name for name in required
                if getattr(args, name) in (None, "")]
     if missing:

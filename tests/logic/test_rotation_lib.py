@@ -327,8 +327,12 @@ class GateArtifactConsumption(unittest.TestCase):
                            "valid_end": "2026-02-20"},
             "too short": {"valid_start": "2025-09-25",
                           "valid_end": "2025-10-10"},
+            # Ends after the rotation instant — the measured period
+            # has not finished happening (codex #391 r34: no grace).
             "future": {"valid_start": "2025-09-25",
                        "valid_end": "2026-03-20"},
+            "one day future": {"valid_start": "2025-09-25",
+                               "valid_end": "2025-12-23"},
             "garbage": {"valid_start": "not-a-date",
                         "valid_end": "2025-12-20"},
         }

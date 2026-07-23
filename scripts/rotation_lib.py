@@ -82,9 +82,6 @@ GATE_WINDOW_SPAN_DAYS_MAX = 200
 # "Trailing"/current means the measured window ENDS near the rotation
 # instant — two quarters of slack, well beyond any legitimate lag.
 GATE_WINDOW_RECENCY_DAYS_MAX = 180
-# Small grace for a window ending on a quarter boundary the gate ran
-# a few days ahead of; beyond it the artifact claims the future.
-GATE_WINDOW_FUTURE_GRACE_DAYS = 7
 
 _MAINLINE = "origin/main"
 
@@ -275,10 +272,14 @@ def check_gate_window(
             f"{(now - end).days}d before the rotation instant {now} "
             f"(max {GATE_WINDOW_RECENCY_DAYS_MAX}d) — a stale gate "
             "cannot authorize this rotation")
-    if (end - now).days > GATE_WINDOW_FUTURE_GRACE_DAYS:
+    if end > now:
+        # No grace (codex #391 r34): a window ending in the future is
+        # a period that has not finished happening — the evidence the
+        # gate claims to have measured does not exist yet.
         raise RotationRefusal(
-            f"{scope} gate measured window ends {end}, in the future "
-            f"relative to the rotation instant {now} — refusing")
+            f"{scope} gate measured window ends {end}, after the "
+            f"rotation instant {now} — the measured period is not "
+            "complete, refusing")
     if scope == SCOPE_MEMBER:
         fit_end = _parse_day(member_fit_end,
                              "candidate member fit_end")
