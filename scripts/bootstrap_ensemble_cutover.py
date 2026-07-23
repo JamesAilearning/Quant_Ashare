@@ -57,6 +57,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     build_inference_meta,
     build_initial_status,
     check_campaign_eligibility,
+    check_cutover_paths,
     check_isoweek_anchor,
 )
 from scripts.retrain_gate_lib import (  # noqa: E402
@@ -175,14 +176,40 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     """Run every promotion gate; return the evidence block for the
     baseline record. Raises :class:`CutoverRefusal` on any failure —
     before a single production byte is written."""
-    # ── 1. campaign eligibility ──────────────────────────────────
+    # ── 0. path preconditions (adversarial self-review) ─────────
+    # Adjudicated WITH the gates so --dry-run covers them and a
+    # refusal stays zero-write.
+    status_path = repo / RECERT_STATUS_PATH
+    check_cutover_paths(
+        incumbent_exists=Path(args.incumbent).is_file(),
+        manifest_out_exists=Path(args.manifest_out).exists(),
+        status_exists=status_path.exists(),
+        incumbent=str(args.incumbent),
+        manifest_out=str(args.manifest_out),
+        status_path=str(status_path))
+
+    # ── 1. campaign eligibility, at ONE pinned mainline revision ──
+    # The sidecar bytes adjudicated here MUST be the same bytes
+    # `--verify` validated: certify reads the sidecar THROUGH the
+    # mainline anchor on purpose ("an unmerged local sidecar must
+    # never verify as a promotion verdict"), so reading the working
+    # tree here would adjudicate — and freeze into the 15-month
+    # status artifact — bytes nobody verified (adversarial
+    # self-review).
+    rev = _resolve_mainline(repo)
     _certify_verify(repo)
-    sidecar_bytes = _read_bytes_or_refuse(
-        repo / VERDICT_SIDECAR_PATH, "verdict sidecar")
+    # A fetch landing between certify's own resolution and ours would
+    # split the two reads; re-resolve and refuse on movement.
+    if _resolve_mainline(repo) != rev:
+        raise CutoverRefusal(
+            "the mainline moved while the campaign verification ran — "
+            "re-run so every gate reads ONE revision")
+    sidecar_bytes = _show(repo, rev, VERDICT_SIDECAR_PATH)
     sidecar = check_campaign_eligibility(
         sidecar_bytes.decode("utf-8"))
     campaign = {
         "verdict_sidecar_path": VERDICT_SIDECAR_PATH,
+        "read_at_rev": rev,
         "verdict_sidecar_sha256": hashlib.sha256(
             sidecar_bytes).hexdigest(),
         "evidence_anchor_commit": sidecar["anchors"]["evidence_anchor"],
@@ -191,8 +218,7 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         "gross_retention": sidecar["verdict"].get("gross_retention"),
     }
 
-    # ── 2. iso_week anchor (single pinned revision) ──────────────
-    rev = _resolve_mainline(repo)
+    # ── 2. iso_week anchor (SAME pinned revision) ───────────────
     aggregate = json.loads(_show(
         repo, rev,
         f"{ISOWEEK_EVIDENCE_DIR}/walk_forward_report.json"
@@ -296,10 +322,6 @@ def _backup_incumbent(incumbent: Path, stamp: str) -> dict[str, str]:
     """DP-4 rollback kit: copy the incumbent canonical pkl and its
     metas beside themselves, timestamped. Missing metas are recorded
     honestly rather than fabricated."""
-    if not incumbent.is_file():
-        raise CutoverRefusal(
-            f"incumbent canonical not found: {incumbent} — refusing to "
-            "switch without a rollback kit")
     record: dict[str, str] = {}
     targets = [incumbent,
                incumbent.with_suffix(".meta.json"),
@@ -407,13 +429,11 @@ def main(argv: list[str] | None = None) -> int:
                   "the certified csi800 N5 quarterly-retrain ensemble "
                   f"(3 staggered members, manifest "
                   f"{evidence['manifest_sha256'][:12]})"))
+        # Existence was adjudicated in the gate phase; the WRITE
+        # stays last so the 15-month validity clock only starts once
+        # production has actually switched (R1-DP-D).
         status_path = repo / RECERT_STATUS_PATH
         status_path.parent.mkdir(parents=True, exist_ok=True)
-        if status_path.exists():
-            raise CutoverRefusal(
-                f"{RECERT_STATUS_PATH} already exists — the initial "
-                "status is written ONCE, by this bootstrap; a later "
-                "state belongs to the annual re-certification flow")
         status_path.write_text(
             json.dumps(status, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")

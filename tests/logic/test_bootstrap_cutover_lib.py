@@ -55,6 +55,72 @@ def _aggregate(net: float = 0.0601) -> dict:
             "aggregate_metrics": {"mean_annualized_return": net}}
 
 
+class CutoverPathPreconditions(unittest.TestCase):
+    """Adversarial self-review: these are adjudicated WITH the gates,
+    so a refusal is zero-write and ``--dry-run`` covers them."""
+
+    _OK = dict(incumbent_exists=True, manifest_out_exists=False,
+               status_exists=False, incumbent="Z:/incumbent.pkl",
+               manifest_out="Z:/prod_manifest.json",
+               status_path="docs/promotion/csi800_recert_status.json")
+
+    def test_clean_slate_admits(self) -> None:
+        from scripts.bootstrap_cutover_lib import check_cutover_paths
+
+        check_cutover_paths(**self._OK)  # type: ignore[arg-type]
+
+    def test_missing_incumbent_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import check_cutover_paths
+
+        with self.assertRaises(CutoverRefusal) as ctx:
+            check_cutover_paths(
+                **{**self._OK, "incumbent_exists": False})  # type: ignore[arg-type]
+        self.assertIn("rollback kit", str(ctx.exception))
+
+    def test_existing_production_manifest_refused(self) -> None:
+        # A re-run must NOT reinstall the bootstrap trio over a
+        # manifest a quarterly rotation already moved forward.
+        from scripts.bootstrap_cutover_lib import check_cutover_paths
+
+        with self.assertRaises(CutoverRefusal) as ctx:
+            check_cutover_paths(
+                **{**self._OK, "manifest_out_exists": True})  # type: ignore[arg-type]
+        self.assertIn("silently revert", str(ctx.exception))
+
+    def test_existing_status_artifact_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import check_cutover_paths
+
+        with self.assertRaises(CutoverRefusal) as ctx:
+            check_cutover_paths(
+                **{**self._OK, "status_exists": True})  # type: ignore[arg-type]
+        self.assertIn("written ONCE", str(ctx.exception))
+
+
+class ExecutorReadDiscipline(unittest.TestCase):
+    """Source pins for the two adversarial-self-review P1s."""
+
+    _SRC = (_PROJECT_ROOT / "scripts"
+            / "bootstrap_ensemble_cutover.py").read_text(encoding="utf-8")
+
+    def test_sidecar_is_read_at_the_pinned_revision(self) -> None:
+        # `--verify` validates the MAINLINE-anchored sidecar, so the
+        # bytes adjudicated (and frozen into the 15-month status
+        # artifact) must come from that same revision — never the
+        # working tree.
+        self.assertIn("_show(repo, rev, VERDICT_SIDECAR_PATH)", self._SRC)
+        self.assertNotIn("repo / VERDICT_SIDECAR_PATH", self._SRC)
+        # One revision for every gate, with movement refused.
+        self.assertIn("the mainline moved while the campaign "
+                      "verification ran", self._SRC)
+
+    def test_path_preconditions_run_in_the_gate_phase(self) -> None:
+        gate_phase, write_phase = self._SRC.split("def main(", 1)
+        self.assertIn("check_cutover_paths", gate_phase)
+        # The write phase must NOT carry its own late existence guard
+        # (that was the post-write refusal this pins against).
+        self.assertNotIn("already exists — the initial", write_phase)
+
+
 class CampaignEligibility(unittest.TestCase):
     def test_eligible_sidecar_admits(self) -> None:
         payload = check_campaign_eligibility(json.dumps(_sidecar()))

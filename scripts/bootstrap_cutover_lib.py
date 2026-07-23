@@ -40,6 +40,7 @@ __all__ = [
     "RECERT_STATUS_SCHEMA_VERSION",
     "BASELINE_SCHEMA_VERSION",
     "CutoverRefusal",
+    "check_cutover_paths",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
     "build_initial_status",
@@ -64,6 +65,48 @@ def _finite(value: Any) -> bool:
     return (not isinstance(value, bool)
             and isinstance(value, (int, float))
             and math.isfinite(float(value)))
+
+
+def check_cutover_paths(
+    *, incumbent_exists: bool, manifest_out_exists: bool,
+    status_exists: bool, incumbent: str, manifest_out: str,
+    status_path: str,
+) -> None:
+    """Path preconditions, adjudicated with the OTHER gates — i.e.
+    BEFORE any production write (adversarial self-review).
+
+    The bootstrap is a once-ever switch, so:
+
+    * the incumbent must exist (no rollback kit, no switch);
+    * the production manifest must NOT exist yet — if it does, either
+      a previous bootstrap already ran or a quarterly rotation owns
+      it, and re-installing the bootstrap trio would silently revert
+      production;
+    * the certification-status artifact must NOT exist — its first
+      write belongs to THIS path and a later state belongs to the
+      annual re-certification flow (R1-DP-D).
+
+    Checking these here (rather than mid-write) is what keeps
+    ``--dry-run`` honest and the refusal zero-write: the prior art's
+    rule is that every fallible check precedes the first byte
+    (``rotate_ensemble_member``)."""
+    if not incumbent_exists:
+        raise CutoverRefusal(
+            f"incumbent canonical not found: {incumbent} — refusing to "
+            "switch without a rollback kit")
+    if manifest_out_exists:
+        raise CutoverRefusal(
+            f"production manifest already exists: {manifest_out} — the "
+            "bootstrap CREATES it once; an existing manifest means a "
+            "previous bootstrap or a quarterly rotation owns "
+            "production, and re-installing the bootstrap trio would "
+            "silently revert it. Refusing.")
+    if status_exists:
+        raise CutoverRefusal(
+            f"certification status artifact already exists: "
+            f"{status_path} — the initial WIN is written ONCE by this "
+            "bootstrap; a later state belongs to the annual "
+            "re-certification flow. Refusing.")
 
 
 def check_campaign_eligibility(sidecar_text: str) -> dict[str, Any]:
