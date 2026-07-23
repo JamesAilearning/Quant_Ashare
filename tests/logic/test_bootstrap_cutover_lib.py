@@ -50,9 +50,13 @@ def _sidecar() -> dict:
     }
 
 
-def _aggregate(net: float = 0.0601) -> dict:
-    return {"num_folds": 23,
-            "aggregate_metrics": {"mean_annualized_return": net}}
+def _aggregate(net: float = 0.0601, n: int = 23) -> dict:
+    """A well-formed anchored aggregate: the summary MUST be the fold
+    rows' own mean (the promotion net is re-derived, codex #392 r1)."""
+    folds = [{"fold_index": i, "annualized_return": net} for i in range(n)]
+    return {"num_folds": n, "folds": folds,
+            "aggregate_metrics": {"mean_annualized_return": net,
+                                  "valid_folds_annualized_return": n}}
 
 
 class CutoverPathPreconditions(unittest.TestCase):
@@ -181,6 +185,58 @@ class IsoweekAnchor(unittest.TestCase):
                 check_isoweek_anchor(
                     bad, expected_config_sha256="ab" * 32,
                     actual_config_sha256="ab" * 32)
+
+    def test_net_is_rederived_from_the_fold_rows(self) -> None:
+        # codex #392 r1: the promotion net authority must not be an
+        # asserted summary number. A torn report whose summary stayed
+        # positive while its folds went missing / duplicated /
+        # negative must refuse.
+        cases = {
+            "no folds": lambda a: a.pop("folds"),
+            "empty folds": lambda a: a.update(folds=[]),
+            "count mismatch": lambda a: a["folds"].pop(),
+            "duplicate index": lambda a: a["folds"][1].update(
+                fold_index=0),
+            "shifted indexes": lambda a: [
+                row.update(fold_index=row["fold_index"] + 1)
+                for row in a["folds"]],
+            "non-finite fold": lambda a: a["folds"][3].update(
+                annualized_return=float("nan")),
+            "row not an object": lambda a: a["folds"].__setitem__(
+                2, "torn"),
+            "partial scoring": lambda a: a["aggregate_metrics"].update(
+                valid_folds_annualized_return=22),
+            # The summary says +6% while the folds actually average
+            # NEGATIVE — the exact scenario the re-derivation exists
+            # for.
+            "summary lies": lambda a: [
+                row.update(annualized_return=-0.02)
+                for row in a["folds"]],
+        }
+        for label, mutate in cases.items():
+            aggregate = _aggregate()
+            mutate(aggregate)
+            with self.assertRaises(CutoverRefusal, msg=label):
+                check_isoweek_anchor(
+                    aggregate, expected_config_sha256="ab" * 32,
+                    actual_config_sha256="ab" * 32)
+
+    def test_committed_evidence_reproduces_exactly(self) -> None:
+        # The REAL anchored evidence: fold mean == serialized summary.
+        import json
+
+        path = (_PROJECT_ROOT / "docs" / "research" / "evidence"
+                / "csi800_n5_runs"
+                / "csi800_cadence5_conservative_isoweek"
+                / "walk_forward_report.json")
+        aggregate = json.loads(path.read_text(encoding="utf-8"))
+        out = check_isoweek_anchor(
+            aggregate, expected_config_sha256="ab" * 32,
+            actual_config_sha256="ab" * 32)
+        self.assertEqual(23, out["num_folds"])
+        self.assertEqual(out["net_annualized_serialized"],
+                         out["net_annualized"])
+        self.assertGreater(out["net_annualized"], 0.0)
 
 
 class InitialStatus(unittest.TestCase):

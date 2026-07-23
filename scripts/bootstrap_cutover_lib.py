@@ -186,14 +186,68 @@ def check_isoweek_anchor(
         raise CutoverRefusal(
             f"iso_week aggregate mean_annualized_return {raw_net!r} is "
             "not a finite number — corrupted anchor evidence")
-    net = float(raw_net)  # type: ignore[arg-type]  # _finite narrows
-    if net <= 0.0:
+    serialized = float(raw_net)  # type: ignore[arg-type]  # _finite narrows
+
+    # RE-DERIVE the promotion net from the fold rows (codex #392 r1):
+    # this number is the net authority for the switch, so a torn or
+    # hand-edited report whose summary stayed positive while its folds
+    # went missing / duplicated / negative must not promote. On the
+    # committed evidence the fold mean reproduces the serialized value
+    # exactly.
+    folds = aggregate.get("folds")
+    num_folds = aggregate.get("num_folds")
+    if not isinstance(folds, list) or not folds:
         raise CutoverRefusal(
-            f"iso_week re-check net excess {net:.4%} <= 0 — the "
+            "iso_week aggregate declares no folds — cannot re-derive "
+            "the promotion net, refusing")
+    if not isinstance(num_folds, int) or num_folds != len(folds):
+        raise CutoverRefusal(
+            f"iso_week aggregate declares num_folds={num_folds!r} but "
+            f"carries {len(folds)} fold rows — torn evidence, refusing")
+    valid_folds = metrics.get("valid_folds_annualized_return")
+    if valid_folds != num_folds:
+        raise CutoverRefusal(
+            f"iso_week aggregate scored only {valid_folds!r} of "
+            f"{num_folds} folds for annualized return — a partial "
+            "aggregate cannot authorize promotion, refusing")
+    seen: set[int] = set()
+    values: list[float] = []
+    for i, row in enumerate(folds):
+        if not isinstance(row, dict):
+            raise CutoverRefusal(
+                f"iso_week fold row[{i}] is not an object — refusing")
+        idx = row.get("fold_index")
+        if not isinstance(idx, int) or isinstance(idx, bool) or idx in seen:
+            raise CutoverRefusal(
+                f"iso_week fold row[{i}] fold_index {idx!r} is missing "
+                "or duplicated — torn evidence, refusing")
+        seen.add(idx)
+        value = row.get("annualized_return")
+        if not _finite(value):
+            raise CutoverRefusal(
+                f"iso_week fold {idx} annualized_return {value!r} is "
+                "not a finite number — corrupted anchor evidence")
+        values.append(float(value))  # type: ignore[arg-type]
+    if seen != set(range(num_folds)):
+        raise CutoverRefusal(
+            f"iso_week fold indexes are not 0..{num_folds - 1} — torn "
+            "evidence, refusing")
+    rederived = math.fsum(values) / len(values)
+    if not math.isclose(rederived, serialized, rel_tol=1e-9,
+                        abs_tol=1e-12):
+        raise CutoverRefusal(
+            f"iso_week aggregate mean_annualized_return "
+            f"{serialized!r} disagrees with the fold rows' mean "
+            f"{rederived!r} — the summary was not produced by these "
+            "folds, refusing")
+    if rederived <= 0.0:
+        raise CutoverRefusal(
+            f"iso_week re-check net excess {rederived:.4%} <= 0 — the "
             "production anchor (iso-week) does not reproduce the "
             "certified winner's edge, refusing to switch")
-    return {"net_annualized": net,
-            "num_folds": aggregate.get("num_folds")}
+    return {"net_annualized": rederived,
+            "net_annualized_serialized": serialized,
+            "num_folds": num_folds}
 
 
 def build_initial_status(

@@ -402,9 +402,22 @@ def main(argv: list[str] | None = None) -> int:
             })
         out = Path(args.manifest_out)
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(out.suffix + ".install")
-        tmp.write_bytes(evidence["manifest_bytes"])
-        os.replace(tmp, out)
+        # EXCLUSIVE unique staging (codex #392 r1, the rotation
+        # executor's pattern): a predictable `<manifest>.install` that
+        # already exists as a symlink/hardlink would be followed and
+        # truncated before the replace.
+        import tempfile
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=out.name + ".install.", dir=str(out.parent))
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(evidence["manifest_bytes"])
+        try:
+            os.replace(tmp, out)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
         baseline = build_baseline_record(
             manifest_path=str(out),
