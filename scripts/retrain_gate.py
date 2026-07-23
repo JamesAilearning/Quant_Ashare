@@ -20,8 +20,10 @@ r13) and the quarterly rotation alike:
 veto3's reference is ANCHORED: the iso_week re-check run's pooled
 daily one-way turnover, recomputed from the positions series committed
 under ``docs/research/evidence/.../csi800_cadence5_conservative_isoweek``
-as read from ``origin/main`` via ``git show`` (never the working tree),
-with each series bound to its fold report's ``positions_sha256``.
+as read via ``git show`` (never the working tree) at a SINGLE commit
+id resolved once from ``origin/main`` (codex #391 r28 — a moving ref
+could pool the anchor from mixed revisions), with each series bound to
+its fold report's ``positions_sha256``.
 
 NO net-return measurement exists in this tool by design (R1: the
 per-retrain gates carry no performance authority).
@@ -147,6 +149,25 @@ def _git_show(ref_path: str) -> bytes:
     return proc.stdout
 
 
+def _resolve_anchor_rev() -> str:
+    """Pin the anchor ref to ONE commit id (codex #391 r28).
+
+    ``origin/main`` moves: enumerating the fold reports through it and
+    then reading each report/positions blob through it again lets a
+    concurrent fetch pool the veto3 turnover anchor from MIXED
+    revisions — an anchor that never existed as a certified artifact.
+    Every anchor read below uses the id returned here."""
+    proc = subprocess.run(
+        ["git", "rev-parse", f"{_ANCHOR_REF}^{{commit}}"],
+        cwd=PROJECT_ROOT, capture_output=True, check=False)
+    rev = proc.stdout.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0 or not rev:
+        raise SystemExit(
+            f"cannot resolve {_ANCHOR_REF} to a commit: "
+            f"{proc.stderr.decode(errors='replace').strip()}")
+    return rev
+
+
 def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
     """Pooled daily one-way turnover of the anchored iso_week re-check
     run: for every fold report on ``origin/main``, resolve its
@@ -154,13 +175,14 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
     recompute single-bucket one-way turnover with the SAME pure
     function the campaign attach used, and pool
     ``sum(total) / sum(transitions)``."""
+    rev = _resolve_anchor_rev()
     listing = subprocess.run(
-        ["git", "ls-tree", "--name-only", _ANCHOR_REF,
+        ["git", "ls-tree", "--name-only", rev,
          f"{ISOWEEK_EVIDENCE_DIR}/"],
         cwd=PROJECT_ROOT, capture_output=True, check=False)
     if listing.returncode != 0:
         raise SystemExit(
-            f"git ls-tree {_ANCHOR_REF}:{ISOWEEK_EVIDENCE_DIR} failed: "
+            f"git ls-tree {rev}:{ISOWEEK_EVIDENCE_DIR} failed: "
             f"{listing.stderr.decode(errors='replace').strip()}")
     names = [ln.strip() for ln in
              listing.stdout.decode("utf-8").splitlines() if ln.strip()]
@@ -170,14 +192,14 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
         and n.endswith("_report.json"))
     if not report_names:
         raise SystemExit(
-            f"no fold reports under {_ANCHOR_REF}:{ISOWEEK_EVIDENCE_DIR}"
+            f"no fold reports under {rev}:{ISOWEEK_EVIDENCE_DIR}"
             " — anchored evidence missing.")
     total = 0.0
     transitions = 0.0
     folds = 0
     for name in report_names:
         rep = json.loads(
-            _git_show(f"{_ANCHOR_REF}:{name}").decode("utf-8"))
+            _git_show(f"{rev}:{name}").decode("utf-8"))
         declared = rep.get("positions_path")
         recorded_digest = rep.get("positions_sha256")
         if not isinstance(declared, str) or not declared:
@@ -190,7 +212,7 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
                 "the turnover reference, refusing.")
         pos_name = declared.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         raw = _git_show(
-            f"{_ANCHOR_REF}:{ISOWEEK_EVIDENCE_DIR}/{pos_name}")
+            f"{rev}:{ISOWEEK_EVIDENCE_DIR}/{pos_name}")
         actual_digest = hashlib.sha256(raw).hexdigest()
         if actual_digest != recorded_digest:
             raise SystemExit(
@@ -219,6 +241,10 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
     daily_mean = total / transitions
     return daily_mean, {
         "ref": _ANCHOR_REF,
+        # The RESOLVED commit every anchor read used (codex #391 r28)
+        # — the audit trail must name the exact evidence revision,
+        # not the moving ref it came from.
+        "rev": rev,
         "evidence_dir": ISOWEEK_EVIDENCE_DIR,
         "folds_pooled": folds,
         "total_oneway": total,
