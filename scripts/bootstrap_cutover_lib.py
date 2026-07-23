@@ -42,6 +42,7 @@ __all__ = [
     "CutoverRefusal",
     "check_cutover_paths",
     "check_write_targets",
+    "check_evidence_provenance",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
     "build_initial_status",
@@ -173,6 +174,27 @@ def check_campaign_eligibility(sidecar_text: str) -> dict[str, Any]:
                 f"verdict sidecar anchors.{key} {value!r} is not a "
                 "40-hex commit id")
     return payload
+
+
+def check_evidence_provenance(aggregate: Any) -> None:
+    """The anchored run's provenance must be EXPLICITLY clean (codex
+    #392 r5).
+
+    Refusing only a literal ``true`` would let a report with the field
+    missing, ``null``, or a non-boolean truthy value authorize
+    production on unbound provenance. The repo's other provenance
+    consumers fail closed on anything that is not ``False``; so does
+    this promotion gate."""
+    if not isinstance(aggregate, dict):
+        raise CutoverRefusal(
+            "iso_week aggregate report is not an object")
+    dirty = aggregate.get("git_dirty")
+    if dirty is not False:
+        raise CutoverRefusal(
+            f"anchored iso_week run declares git_dirty={dirty!r} — "
+            "promotion requires an EXPLICITLY clean-tree provenance "
+            "(False); anything else leaves the evidence unbound, "
+            "refusing")
 
 
 def check_isoweek_anchor(

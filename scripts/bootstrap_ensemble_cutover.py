@@ -59,6 +59,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     build_initial_status,
     check_campaign_eligibility,
     check_cutover_paths,
+    check_evidence_provenance,
     check_isoweek_anchor,
     check_write_targets,
 )
@@ -225,10 +226,7 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         repo, rev,
         f"{ISOWEEK_EVIDENCE_DIR}/walk_forward_report.json"
     ).decode("utf-8"))
-    if aggregate.get("git_dirty") is True:
-        raise CutoverRefusal(
-            "the anchored iso_week re-check run was produced from a "
-            "DIRTY tree — unreproducible evidence, refusing")
+    check_evidence_provenance(aggregate)
     import yaml
 
     preset = yaml.safe_load(
@@ -314,6 +312,14 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
             Path(member.pkl_path).with_suffix(".meta.json").resolve())
         targets[f"member[{i}] pkl"] = str(
             Path(member.pkl_path).resolve())
+        # The TRAINER sidecar is read and hash-validated, never
+        # written — including it here means nothing we write may land
+        # on it (codex #392 r5: the `model.pkl.meta.json` vs
+        # `model.meta.json` confusion would otherwise let the
+        # inference-meta write clobber a validated sidecar and break
+        # the manifest's meta chain on the next serving load).
+        targets[f"member[{i}] trainer sidecar"] = str(
+            Path(member.meta_path).resolve())
     check_write_targets(targets)
 
     # ── 4. serving validity of what we are about to install ─────

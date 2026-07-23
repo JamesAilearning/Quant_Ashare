@@ -137,6 +137,31 @@ class WriteTargetCollisions(unittest.TestCase):
             self.assertIn("collision", str(ctx.exception))
 
 
+class EvidenceProvenance(unittest.TestCase):
+    """codex #392 r5: promotion needs EXPLICITLY clean provenance."""
+
+    def test_explicit_clean_admits(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_evidence_provenance,
+        )
+
+        check_evidence_provenance({"git_dirty": False})
+
+    def test_anything_but_false_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_evidence_provenance,
+        )
+
+        for dirty in (True, None, "false", 0, 1, "no"):
+            payload = {"git_dirty": dirty}
+            with self.assertRaises(CutoverRefusal, msg=dirty):
+                check_evidence_provenance(payload)
+        with self.assertRaises(CutoverRefusal):   # field absent
+            check_evidence_provenance({})
+        with self.assertRaises(CutoverRefusal):   # not an object
+            check_evidence_provenance(["torn"])
+
+
 class ExecutorReadDiscipline(unittest.TestCase):
     """Source pins for the two adversarial-self-review P1s."""
 
@@ -153,6 +178,12 @@ class ExecutorReadDiscipline(unittest.TestCase):
         # One revision for every gate, with movement refused.
         self.assertIn("the mainline moved while the campaign "
                       "verification ran", self._SRC)
+
+    def test_trainer_sidecars_are_protected_write_targets(self) -> None:
+        # The trainer sidecar is READ and hash-validated; nothing the
+        # cutover writes may land on it (codex #392 r5).
+        self.assertIn("member.meta_path", self._SRC)
+        self.assertIn("trainer sidecar", self._SRC)
 
     def test_path_preconditions_run_in_the_gate_phase(self) -> None:
         gate_phase, write_phase = self._SRC.split("def main(", 1)
