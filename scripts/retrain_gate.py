@@ -196,8 +196,9 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
             f"anchored aggregate declares num_folds={num_folds!r} but "
             f"carries {len(declared)} fold rows — torn evidence, "
             "refusing.")
-    report_names: list[str] = []
+    report_names: list[tuple[int, str]] = []
     seen_indexes: set[int] = set()
+    seen_names: set[str] = set()
     for row in declared:
         if not isinstance(row, dict):
             raise SystemExit(
@@ -218,13 +219,29 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
         # committed evidence lives under the evidence dir by basename
         # (the campaign's confined-resolution convention).
         base = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        report_names.append(f"{ISOWEEK_EVIDENCE_DIR}/{base}")
+        if base in seen_names:
+            # Two unique fold_index rows pointing at ONE report would
+            # pool that fold twice and move the anchor (codex #391
+            # r30) — the index checks above cannot see it.
+            raise SystemExit(
+                f"anchored aggregate declares {base!r} for more than "
+                "one fold_index — torn evidence, refusing.")
+        seen_names.add(base)
+        report_names.append((idx, f"{ISOWEEK_EVIDENCE_DIR}/{base}"))
     total = 0.0
     transitions = 0.0
     folds = 0
-    for name in report_names:
+    for idx, name in report_names:
         rep = json.loads(
             _git_show(f"{rev}:{name}").decode("utf-8"))
+        # The fold report must be the one the aggregate declared for
+        # THIS index (codex #391 r30): a renamed/misdeclared file
+        # cannot silently substitute a different fold.
+        if rep.get("fold_index") != idx:
+            raise SystemExit(
+                f"{name}: fold report declares fold_index "
+                f"{rep.get('fold_index')!r} but the aggregate lists it "
+                f"as fold {idx} — torn evidence, refusing.")
         declared = rep.get("positions_path")
         recorded_digest = rep.get("positions_sha256")
         if not isinstance(declared, str) or not declared:
