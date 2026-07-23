@@ -14,6 +14,7 @@ States (codex #389 r2/r3/r4/r11 + tasks §PR-B'):
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -574,6 +575,54 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_plan_staging_is_unique_not_predictable(self) -> None:
+        # codex #391 r22: a PREDICTABLE `<out>.tmp` that already
+        # exists as a link to the live manifest would be followed and
+        # truncated during the supposedly inert plan step. Staging is
+        # now an exclusively-created unique file, so a pre-placed
+        # `<out>.tmp` is left completely untouched.
+        out = self.tmp / "unique_stage_candidate.json"
+        decoy = out.with_suffix(out.suffix + ".tmp")
+        decoy.write_bytes(b"decoy-must-not-be-touched")
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(self.manifest),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            "--fit-start", _NEW_WINDOW[0],
+            "--fit-end", _NEW_WINDOW[1],
+            "--out", str(out),
+        ])
+        self.assertEqual(0, rc)
+        self.assertEqual(b"decoy-must-not-be-touched",
+                         decoy.read_bytes())
+        self.assertTrue(out.is_file())
+        # No staging residue on the success path either.
+        self.assertEqual([], list(self.tmp.glob("*.stage.*")))
+
+    def test_plan_out_hardlinked_to_manifest_refused(self) -> None:
+        # The alias guard is inode-level: a HARDLINK resolves to a
+        # distinct path but names the same file (codex #391 r22).
+        import os as _os
+
+        linked = self.tmp / "hardlinked_out.json"
+        try:
+            _os.link(self.manifest, linked)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hardlinks unavailable here: {exc}")
+        rc = rotate_main([
+            "plan",
+            "--manifest", str(self.manifest),
+            "--new-pkl", str(self.new_pkl),
+            "--new-meta", str(self.new_meta),
+            "--fit-start", _NEW_WINDOW[0],
+            "--fit-end", _NEW_WINDOW[1],
+            "--out", str(linked),
+        ])
+        self.assertEqual(1, rc)
+        self.assertEqual(self.original_bytes,
+                         self.manifest.read_bytes())
+
     def test_plan_staging_write_failure_refused(self) -> None:
         # codex #391 r21: a staging write that fails partway
         # (ENOSPC/quota/late I/O) must refuse through the classified
@@ -581,9 +630,18 @@ class RotationExecutorStates(unittest.TestCase):
         # OSError leaving an unnamed artifact.
         from unittest.mock import patch
 
+        import scripts.rotate_ensemble_member as rem
+
+        real_close = os.close
+
+        def boom(fd, *a, **kw):  # noqa: ANN001, ANN002
+            # Model a write failure with the handle already gone (a
+            # leaked fd would keep the file locked on Windows).
+            real_close(fd)
+            raise OSError("no space left")
+
         out = self.tmp / "staged_candidate.json"
-        with patch.object(Path, "write_text",
-                          side_effect=OSError("no space left")):
+        with patch.object(rem.os, "fdopen", side_effect=boom):
             rc = rotate_main([
                 "plan",
                 "--manifest", str(self.manifest),
@@ -595,7 +653,7 @@ class RotationExecutorStates(unittest.TestCase):
             ])
         self.assertEqual(1, rc)
         self.assertFalse(out.exists())
-        self.assertEqual([], list(self.tmp.glob("*.tmp")))
+        self.assertEqual([], list(self.tmp.glob("*.stage.*")))
 
     def test_plan_cleanup_failure_still_classified_refusal(self) -> None:
         # codex #391 r20: plan's staging cleanup follows the same

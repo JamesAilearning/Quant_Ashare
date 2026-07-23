@@ -173,6 +173,23 @@ class _ManifestLock:
             fh.close()
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    """Do these paths name the same file? (codex #391 r22)
+
+    ``resolve()`` equality catches symlink aliases; ``os.path.samefile``
+    additionally catches HARDLINKS, which resolve to distinct paths
+    while sharing an inode."""
+    try:
+        if a.resolve() == b.resolve():
+            return True
+    except OSError:
+        pass
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def _remove_or_note(path: Path) -> str | None:
     """Best-effort cleanup; returns a note when the file SURVIVES.
 
@@ -246,7 +263,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     # case-differing spellings of the same file.
     manifest_path = Path(args.manifest)
     out_path = Path(args.out)
-    if out_path.resolve() == manifest_path.resolve():
+    if _same_file(out_path, manifest_path):
         raise RotationRefusal(
             "plan --out must not alias the live manifest "
             f"({manifest_path}) — the plan step only creates an inert "
@@ -266,19 +283,33 @@ def cmd_plan(args: argparse.Namespace) -> int:
     payload = {"schema_version": MANIFEST_SCHEMA_VERSION,
                "members": planned}
     out = out_path
-    tmp = out.with_suffix(out.suffix + ".tmp")
-    # Directory creation and the staging WRITE are fallible too
-    # (missing parent, ENOSPC/quota, late I/O — codex #391 r21): a
-    # partial `.tmp` escaping as a raw OSError would bypass the
-    # classified refusal AND leave an unnamed artifact for the next
-    # operator.
+    # Staging is an EXCLUSIVELY created unique file (codex #391 r22):
+    # a predictable `<out>.tmp` that already exists as a symlink or
+    # hardlink to the live manifest would be followed and truncated
+    # here — during the step that is supposed to be inert. Directory
+    # creation and the write are fallible too (missing parent,
+    # ENOSPC/quota, late I/O — codex #391 r21): a partial file
+    # escaping as a raw OSError would bypass the classified refusal
+    # and leave an unnamed artifact for the next operator.
+    import tempfile
+
+    tmp: Path | None = None
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=out.name + ".stage.", dir=str(out.parent))
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2))
+        # The published candidate keeps mkstemp's 0600 deliberately:
+        # it is an inert operator-local artifact consumed by the gate
+        # runner and `execute` (both run by the same operator per the
+        # runbook), and the production manifest's own mode comes from
+        # the live file at install time, never from this one.
     except OSError as exc:
-        residue = _remove_or_note(tmp)
+        residue = _remove_or_note(tmp) if tmp is not None else None
         raise RotationRefusal(
-            f"cannot stage the candidate manifest at {tmp}: {exc}"
+            f"cannot stage the candidate manifest for {out}: {exc}"
             + (f"; a partial staging file SURVIVES at {residue}"
                if residue else "")) from exc
     # Validate the PRIVATE tmp BEFORE publishing (adversarial self-
