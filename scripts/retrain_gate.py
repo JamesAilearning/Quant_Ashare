@@ -585,17 +585,24 @@ def _ensemble_scope(args: argparse.Namespace,
         # an absent row is a TRUE zero (no holdings in that bucket),
         # not the omitted-producer-field situation the campaign attach
         # refuses (there the evidence was a mutable committed file).
-        csi500_weight = 0.0
-        csi500_effect = 0.0
-        unknown_weight = 0.0
         rows = {row.sector: row for row in attribution.sector_attribution}
         row500 = rows.get("csi500_sleeve")
-        if row500 is not None:
+        if row500 is None:
+            # The mid-cap sleeve is the veto's SUBJECT — an absent row
+            # is MISSING EVIDENCE, not zero exposure (codex #391 r35;
+            # the campaign attach refuses the same omission). NaN fails
+            # veto2 and veto5 closed.
+            csi500_weight = math.nan
+            csi500_effect = math.nan
+        else:
             csi500_weight = float(row500.portfolio_weight)
             csi500_effect = float(row500.total_effect)
+        # The `unknown` bucket only exists when some instrument was
+        # unmapped, so its ABSENCE genuinely means zero unmapped
+        # weight — that asymmetry with csi500 is deliberate.
         row_unknown = rows.get("unknown")
-        if row_unknown is not None:
-            unknown_weight = float(row_unknown.portfolio_weight)
+        unknown_weight = (float(row_unknown.portfolio_weight)
+                          if row_unknown is not None else 0.0)
         # The denominator is the PRODUCER's exact
         # ``sector_effects_sum`` (codex #391 r27) — the same field the
         # campaign attach reads. Summing the per-sector rows would use
@@ -615,6 +622,10 @@ def _ensemble_scope(args: argparse.Namespace,
             dryrun_daily_mean_oneway=dry_daily_mean,
             anchor_daily_mean_oneway=anchor_daily_mean,
         )
+        if row500 is None:
+            veto["notes"].append(
+                "veto2/veto5 unmeasurable: the dry-run attribution "
+                "carries no csi500_sleeve row — failed closed")
         if dry_trans <= 0:
             veto["notes"].append(
                 "veto3 unmeasurable: the dry-run positions series has "

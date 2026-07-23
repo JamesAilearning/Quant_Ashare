@@ -126,6 +126,17 @@ class CertificationValidity(unittest.TestCase):
             "2027-02-01T00:00:00+00:00")
         self.assertTrue(ok)
 
+    def test_future_dated_tip_freezes(self) -> None:
+        # codex #391 r35: a future-dated status commit (clock skew or a
+        # crafted committer date) would start the 15-month window in
+        # the future and authorize rotations before the certification
+        # state happened.
+        ok, reason = recert_validity(
+            _win_status(), "2027-01-01T00:00:00+08:00",
+            "2026-08-01T00:00:00+00:00")
+        self.assertFalse(ok)
+        self.assertIn("future-dated", reason)
+
     def test_naive_or_garbage_timestamps_freeze(self) -> None:
         for tip, now in (
             ("2026-07-01T10:00:00", "2026-08-01T00:00:00+00:00"),

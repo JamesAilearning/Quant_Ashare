@@ -206,6 +206,15 @@ def recert_validity(
         return False, (
             "validity anchor dates must be timezone-aware ISO "
             f"timestamps (tip={status_tip_iso!r}, now={now_iso!r})")
+    if tip.date() > now.date():
+        # A future-dated status commit (clock skew, or a crafted
+        # committer date) would start the 15-month window in the
+        # future and authorize rotations before the certification
+        # state has actually happened (codex #391 r35).
+        return False, (
+            f"certification status tip {tip.date()} is AFTER the "
+            f"rotation instant {now.date()} — a future-dated anchor "
+            "cannot validate the current state, refusing")
     expiry_day = _add_months(tip.date(), VALIDITY_MONTHS)
     if now.date() > expiry_day:
         return False, (
