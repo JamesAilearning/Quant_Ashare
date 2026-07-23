@@ -73,6 +73,7 @@ from scripts.retrain_gate_lib import (  # noqa: E402
 from scripts.rotation_lib import (  # noqa: E402
     RotationRefusal,
     check_gate_artifact,
+    git_resolve_mainline_cmd,
     git_show_status_cmd,
     git_status_tip_cmd,
     parse_recert_status,
@@ -136,7 +137,16 @@ class _ManifestLock:
         self._fh: Any = None
 
     def __enter__(self) -> _ManifestLock:
-        fh = open(self._path, "a+b")  # noqa: SIM115 — held past scope
+        try:
+            # noqa: SIM115 — the handle is held past this scope
+            fh = open(self._path, "a+b")  # noqa: SIM115
+        except OSError as exc:
+            # The lock path being a directory / unwritable is an
+            # operator-filesystem precondition, not a crash (codex
+            # #391 r25).
+            raise RotationRefusal(
+                f"cannot open the rotation lockfile {self._path}: "
+                f"{exc}") from exc
         try:
             if sys.platform == "win32":
                 import msvcrt
@@ -348,10 +358,20 @@ def cmd_execute(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest)
     candidate_path = Path(args.candidate)
 
-    # 1. Certification state — content-only, mainline-only.
-    status_text = _git(git_show_status_cmd(), repo)
+    # 1. Certification state — content-only, mainline-only, and read
+    # at ONE pinned revision (codex #391 r25): origin/main is a moving
+    # ref, so a concurrent fetch between the content read and the
+    # anchor-date read could pair an old WIN body with a newer commit
+    # that already carries LOSE.
+    rev = _git(git_resolve_mainline_cmd(), repo).strip()
+    if not rev:
+        raise RotationRefusal(
+            "cannot resolve the mainline to a commit — no certification "
+            "state readable, refusing")
+    print(f"[rotate] certification revision: {rev}")
+    status_text = _git(git_show_status_cmd(rev), repo)
     status = parse_recert_status(status_text)
-    tip_iso = _git(git_status_tip_cmd(), repo).strip()
+    tip_iso = _git(git_status_tip_cmd(rev), repo).strip()
     if not tip_iso:
         raise RotationRefusal(
             "status artifact has no mainline tip commit — cannot anchor "

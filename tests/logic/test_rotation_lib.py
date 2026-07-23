@@ -38,6 +38,7 @@ from scripts.rotation_lib import (  # noqa: E402
     VALIDITY_MONTHS,
     RotationRefusal,
     check_gate_artifact,
+    git_resolve_mainline_cmd,
     git_show_status_cmd,
     git_status_tip_cmd,
     parse_recert_status,
@@ -139,24 +140,38 @@ class CertificationValidity(unittest.TestCase):
         self.assertEqual(15, VALIDITY_MONTHS)
 
 
+_REV = "a" * 40
+
+
 class GitCommandPins(unittest.TestCase):
-    def test_status_read_is_mainline_content_only(self) -> None:
+    def test_mainline_resolved_to_one_commit(self) -> None:
+        # codex #391 r25: origin/main is a MOVING ref — it is resolved
+        # ONCE and every subsequent read is pinned to that commit id.
         self.assertEqual(
-            ["git", "show", f"origin/main:{RECERT_STATUS_PATH}"],
-            git_show_status_cmd())
+            ["git", "rev-parse", "origin/main^{commit}"],
+            git_resolve_mainline_cmd())
+
+    def test_status_read_is_pinned_content_only(self) -> None:
+        cmd = git_show_status_cmd(_REV)
+        self.assertEqual(
+            ["git", "show", f"{_REV}:{RECERT_STATUS_PATH}"], cmd)
+        # The moving ref must not appear in the pinned read.
+        self.assertNotIn("origin/main", " ".join(cmd))
 
     def test_validity_anchor_is_status_path_tip(self) -> None:
         # codex #389 r5: the anchor follows the STATUS artifact path —
         # a non-recert touch of the verdict SIDECAR path can never
         # drift the validity window because the sidecar path simply
-        # does not appear in the command.
-        cmd = git_status_tip_cmd()
+        # does not appear in the command. codex #391 r25: and it reads
+        # the SAME pinned revision as the content.
+        cmd = git_status_tip_cmd(_REV)
         self.assertEqual(
-            ["git", "log", "-1", "--format=%cI", "origin/main", "--",
+            ["git", "log", "-1", "--format=%cI", _REV, "--",
              RECERT_STATUS_PATH],
             cmd)
         self.assertNotIn("docs/research/csi800_cadence_verdict.json",
                          cmd)
+        self.assertNotIn("origin/main", " ".join(cmd))
 
     def test_status_path_pin(self) -> None:
         self.assertEqual("docs/promotion/csi800_recert_status.json",

@@ -575,6 +575,41 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_recert_reads_pinned_to_one_revision(self) -> None:
+        # codex #391 r25: origin/main is a MOVING ref — the executor
+        # resolves it once and every later read carries that commit
+        # id, so a concurrent fetch cannot pair an old WIN body with a
+        # newer commit's anchor date.
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rem
+
+        real_git = rem._git
+        calls: list[list[str]] = []
+
+        def spy(cmd, repo):  # noqa: ANN001
+            calls.append(list(cmd))
+            return real_git(cmd, repo)
+
+        with patch.object(rem, "_git", side_effect=spy):
+            rc = self._execute()
+        self.assertEqual(0, rc)
+        self.assertIn("rev-parse", calls[0])
+        self.assertTrue(
+            any("origin/main" in part for part in calls[0]),
+            "the resolution step must name the mainline")
+        # Every read AFTER the resolution is pinned to a commit id.
+        for cmd in calls[1:]:
+            self.assertNotIn("origin/main", " ".join(cmd), cmd)
+
+    def test_unusable_lockfile_refused(self) -> None:
+        # codex #391 r25: the lock path being a directory (or
+        # otherwise unopenable) is an operator/filesystem precondition
+        # — classified refusal, not a raw traceback.
+        (self.tmp / "production_manifest.json.rotation.lock").mkdir()
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
     def test_execute_staging_creation_failure_refused(self) -> None:
         # codex #391 r24: an operator path mistake (manifest under a
         # directory that does not exist) must surface as the

@@ -45,6 +45,7 @@ __all__ = [
     "RECERT_STATUS_SCHEMA_VERSION",
     "VALIDITY_MONTHS",
     "RotationRefusal",
+    "git_resolve_mainline_cmd",
     "git_show_status_cmd",
     "git_status_tip_cmd",
     "parse_recert_status",
@@ -92,19 +93,31 @@ class RotationRefusal(RuntimeError):
     """A precondition failed — the executor refuses with ZERO writes."""
 
 
-def git_show_status_cmd() -> list[str]:
-    """The exact argv that reads the status artifact CONTENT from the
-    mainline — pinned so tests can assert the executor never reads the
-    working tree or another path."""
-    return ["git", "show", f"{_MAINLINE}:{RECERT_STATUS_PATH}"]
+def git_resolve_mainline_cmd() -> list[str]:
+    """Resolve the mainline to ONE commit id (codex #391 r25).
+
+    ``origin/main`` is a MOVING ref: reading the status content and
+    the validity-anchor date through it separately lets a concurrent
+    fetch serve them from different commits — e.g. an old ``WIN``
+    body with the tip date of a newer commit that already carries
+    ``LOSE``. Every subsequent read is pinned to the id this returns."""
+    return ["git", "rev-parse", f"{_MAINLINE}^{{commit}}"]
 
 
-def git_status_tip_cmd() -> list[str]:
+def git_show_status_cmd(rev: str) -> list[str]:
+    """The exact argv that reads the status artifact CONTENT at a
+    PINNED revision — so tests can assert the executor never reads the
+    working tree, another path, or a moving ref."""
+    return ["git", "show", f"{rev}:{RECERT_STATUS_PATH}"]
+
+
+def git_status_tip_cmd(rev: str) -> list[str]:
     """The exact argv for the validity anchor: tip commit committer
-    date of the STATUS-ARTIFACT PATH on the mainline (codex #389 r5 —
-    never the sidecar path, whose non-recert touches would drift the
-    validity window)."""
-    return ["git", "log", "-1", "--format=%cI", _MAINLINE, "--",
+    date of the STATUS-ARTIFACT PATH at the PINNED revision (codex
+    #389 r5 — never the sidecar path, whose non-recert touches would
+    drift the validity window; codex #391 r25 — never the moving ref,
+    which could disagree with the content read)."""
+    return ["git", "log", "-1", "--format=%cI", rev, "--",
             RECERT_STATUS_PATH]
 
 
