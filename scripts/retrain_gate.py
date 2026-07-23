@@ -228,6 +228,18 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
                 "one fold_index — torn evidence, refusing.")
         seen_names.add(base)
         report_names.append((idx, f"{ISOWEEK_EVIDENCE_DIR}/{base}"))
+    # The declared indexes must be EXACTLY 0..num_folds-1 (codex #391
+    # r31): unique-and-present admits a shifted (1..23) or torn
+    # (0..21 plus a stale 99) set, which would pool a different
+    # evidence set and move the production threshold.
+    expected_indexes = set(range(num_folds))
+    if seen_indexes != expected_indexes:
+        missing = sorted(expected_indexes - seen_indexes)
+        extra = sorted(seen_indexes - expected_indexes)
+        raise SystemExit(
+            f"anchored aggregate fold indexes are not 0..{num_folds - 1} "
+            f"(missing {missing}, unexpected {extra}) — torn evidence, "
+            "refusing.")
     total = 0.0
     transitions = 0.0
     folds = 0
