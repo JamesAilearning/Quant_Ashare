@@ -574,6 +574,29 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_plan_staging_write_failure_refused(self) -> None:
+        # codex #391 r21: a staging write that fails partway
+        # (ENOSPC/quota/late I/O) must refuse through the classified
+        # path and clean up the partial file, not escape as a raw
+        # OSError leaving an unnamed artifact.
+        from unittest.mock import patch
+
+        out = self.tmp / "staged_candidate.json"
+        with patch.object(Path, "write_text",
+                          side_effect=OSError("no space left")):
+            rc = rotate_main([
+                "plan",
+                "--manifest", str(self.manifest),
+                "--new-pkl", str(self.new_pkl),
+                "--new-meta", str(self.new_meta),
+                "--fit-start", _NEW_WINDOW[0],
+                "--fit-end", _NEW_WINDOW[1],
+                "--out", str(out),
+            ])
+        self.assertEqual(1, rc)
+        self.assertFalse(out.exists())
+        self.assertEqual([], list(self.tmp.glob("*.tmp")))
+
     def test_plan_cleanup_failure_still_classified_refusal(self) -> None:
         # codex #391 r20: plan's staging cleanup follows the same
         # discipline — an unlink that itself fails must not mask the

@@ -266,9 +266,21 @@ def cmd_plan(args: argparse.Namespace) -> int:
     payload = {"schema_version": MANIFEST_SCHEMA_VERSION,
                "members": planned}
     out = out_path
-    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Directory creation and the staging WRITE are fallible too
+    # (missing parent, ENOSPC/quota, late I/O — codex #391 r21): a
+    # partial `.tmp` escaping as a raw OSError would bypass the
+    # classified refusal AND leave an unnamed artifact for the next
+    # operator.
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        residue = _remove_or_note(tmp)
+        raise RotationRefusal(
+            f"cannot stage the candidate manifest at {tmp}: {exc}"
+            + (f"; a partial staging file SURVIVES at {residue}"
+               if residue else "")) from exc
     # Validate the PRIVATE tmp BEFORE publishing (adversarial self-
     # review): an illegal rotation never produces a candidate file at
     # --out — a stale invalid candidate would sit there as an
