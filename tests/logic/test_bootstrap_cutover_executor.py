@@ -47,6 +47,42 @@ class _Member:
         self.fit_start, self.fit_end = window
 
 
+class MemberRunConfigResolution(unittest.TestCase):
+    """codex #392 r9: the semantic gate must read the PRODUCER's run
+    config (``<run>/config.yaml``), never a stray copy in the
+    artifacts dir that an upward search would hit first."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.run_dir = Path(self._tmp.name) / "run_x"
+        (self.run_dir / "artifacts").mkdir(parents=True)
+        self.pkl = self.run_dir / "artifacts" / "model.pkl"
+        self.pkl.write_bytes(b"model")
+        (self.run_dir / "config.yaml").write_text(
+            "instruments: csi800\n", encoding="utf-8")
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_reads_the_run_root_config(self) -> None:
+        cfg = bc._member_run_config(self.pkl)
+        self.assertEqual("csi800", cfg["instruments"])
+
+    def test_stray_artifacts_config_is_ambiguous_and_refuses(self) -> None:
+        # The scenario: a copied/stale config in artifacts/ that an
+        # upward search would have validated INSTEAD of the real one.
+        (self.run_dir / "artifacts" / "config.yaml").write_text(
+            "instruments: csi300\n", encoding="utf-8")
+        self.assertIsNone(bc._member_run_config(self.pkl))
+
+    def test_unknown_layout_refuses(self) -> None:
+        flat = Path(self._tmp.name) / "model.pkl"
+        flat.write_bytes(b"model")
+        self.assertIsNone(bc._member_run_config(flat))
+
+    def test_missing_run_config_refuses(self) -> None:
+        (self.run_dir / "config.yaml").unlink()
+        self.assertIsNone(bc._member_run_config(self.pkl))
+
+
 class CutoverWritePhase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
