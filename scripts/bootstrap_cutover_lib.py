@@ -282,6 +282,7 @@ def build_initial_status(
 
 def build_baseline_record(
     *, manifest_path: str, manifest_sha256: str,
+    manifest_mode: str = "",
     members: list[dict[str, Any]], incumbent_backup: dict[str, str],
     campaign: dict[str, Any], isoweek: dict[str, Any],
     gate_artifacts: dict[str, str], generated_at: str,
@@ -299,6 +300,10 @@ def build_baseline_record(
             "mode": "ensemble_manifest",
             "manifest_path": manifest_path,
             "manifest_sha256": manifest_sha256,
+            # The permission bits the manifest was installed with —
+            # mirrored from the incumbent so the serving account keeps
+            # its read access (codex #392 r2).
+            "manifest_mode": manifest_mode,
             "members": members,
         },
         "incumbent_backup": dict(incumbent_backup),

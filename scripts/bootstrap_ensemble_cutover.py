@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -414,13 +415,32 @@ def main(argv: list[str] | None = None) -> int:
         with os.fdopen(fd, "wb") as fh:
             fh.write(evidence["manifest_bytes"])
         try:
+            # mkstemp creates 0600 owned by the EXECUTOR. The
+            # bootstrap CREATES the production manifest, so there is
+            # no live file to mirror (the rotation executor's case) —
+            # the closest true statement of "what the serving account
+            # can read" is the INCUMBENT canonical, the artifact
+            # production reads today. Mirror its mode, and its
+            # owner/group on POSIX; a failure to preserve ownership
+            # refuses rather than installing a manifest the morning
+            # run cannot open (codex #392 r2).
+            incumbent_stat = os.stat(args.incumbent)
+            manifest_mode = stat.S_IMODE(incumbent_stat.st_mode)
+            os.chmod(tmp, manifest_mode)
+            if hasattr(os, "chown"):
+                os.chown(tmp, incumbent_stat.st_uid,
+                         incumbent_stat.st_gid)
             os.replace(tmp, out)
-        except OSError:
+        except OSError as exc:
             tmp.unlink(missing_ok=True)
-            raise
+            raise CutoverRefusal(
+                f"cannot install the production manifest with the "
+                f"incumbent's readability ({exc}) — the morning run "
+                "could not open it; nothing installed") from exc
 
         baseline = build_baseline_record(
             manifest_path=str(out),
+            manifest_mode=oct(manifest_mode),
             manifest_sha256=evidence["manifest_sha256"],
             members=member_records, incumbent_backup=backup,
             campaign=evidence["campaign"], isoweek=evidence["isoweek"],
