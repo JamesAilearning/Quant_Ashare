@@ -569,10 +569,17 @@ def _ensemble_scope(args: argparse.Namespace,
                           else math.nan)
 
         # The engine call mirrors the walk-forward fold path exactly
-        # (sleeve grouping = Brinson over membership sleeves).
+        # (sleeve grouping = Brinson over membership sleeves), INCLUDING
+        # its cadence discipline (codex #391 r37 / #336): attribution
+        # sees the signal set ACTUALLY TRADED — the executable N5
+        # stamps — not the dense daily scores, or the Brinson universe
+        # would include names that only appear on skipped no-signal
+        # days and could never trade, computing veto2/5 on a different
+        # universe than the dry run they are meant to describe. (The
+        # backtest above thins internally, same as walk-forward.)
         attribution = PerformanceAttribution.analyze(
             return_series=output.return_series,
-            predictions=preds,
+            predictions=exec_preds,
             config=AttributionConfig(
                 start_date=args.window_start,
                 end_date=args.window_end,
