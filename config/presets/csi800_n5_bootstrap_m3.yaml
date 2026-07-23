@@ -1,0 +1,35 @@
+# CSI800 N5 生产自举成员 3/3（T 终点）—— PR-C' 预注册，跑前钉死。
+#
+# R1-DP-C：首次上线以三名【错峰】季度成员自举（训窗终点 T-6m/T-3m/T，
+# 各 24 个月滚动训窗 + 3 个月 valid）。三份 preset 除窗口外逐字相同。
+#
+# 本成员窗口（交易日历实算，bundle 尾 2026-06-17）:
+#   train 2024-02-19..2026-02-13（725 天，24 个月滚动窗）
+#   valid 2026-02-26..2026-05-26（89 天 ≈ 3 个月；起点距训窗终点 13 天，
+#         embargo 合规）
+#   test  2026-05-29..2026-06-17（管线内嵌【日频诊断】回测，非晋升证据）
+#
+# manifest 算术自检（PR-A' 的 serving pins）：三成员 fit_end 间隔
+# 92/92 天 ∈ [75,100]；训窗跨度 730/731/725 天 ∈ [700,745]。
+#
+# 点火（GPU，操作人执行；三发【严格串行】，绝不并发）:
+#     python main.py config/presets/csi800_n5_bootstrap_m3.yaml
+# 产物: 运行目录下 model.pkl + trainer sidecar(<model>.pkl.meta.json)。
+# inference meta(<model>.meta.json) 由切换执行器写入（④ 先例），
+# 不在训练阶段产生。
+extends: ../../config.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+# csi800 宇宙强制三守卫（v2-csi800-expansion-guards 配置级规则）
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+# 窗口显式钉死（不依赖 config.yaml 未来漂移）
+train_start: "2024-02-19"
+train_end: "2026-02-13"
+valid_start: "2026-02-26"
+valid_end: "2026-05-26"
+test_start: "2026-05-29"
+test_end: "2026-06-17"
+compute_device: "gpu"

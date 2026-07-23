@@ -1,0 +1,530 @@
+"""Pure bootstrap-cutover logic (PR-C' of
+2026-07-20-csi800-n5-production-promotion).
+
+The FIRST production switch is a PROMOTION path, not the quarterly
+maintenance path (codex #389 r8): its preconditions are the full
+promotion gate set —
+
+  1. campaign eligibility — the committed verdict sidecar passes
+     ``csi800_campaign_certify.py --verify`` and carries
+     ``promotion_eligible: true``;
+  2. iso_week re-check anchor — the committed re-check evidence, read
+     from the mainline at a pinned revision, binds the committed
+     iso_week preset and re-derives a POSITIVE full-window net
+     excess;
+  3. bootstrap gates — three member-scope artifacts (one per
+     staggered member) and one ensemble-scope artifact, every one
+     PASS and bound to what it gated;
+  4. rollback kit — pre-promote backup of the incumbent + a committed
+     baseline record.
+
+Any failure = the switch does not execute, the incumbent canonical
+and its serving semantics stay unchanged, and the failure is filed
+(R1-DP-C: the bootstrap has no "keep the old ensemble" branch — that
+action belongs to the quarterly maintenance path).
+
+This module is PURE stdlib: the executor
+(``scripts/bootstrap_ensemble_cutover.py``) wires git, the filesystem
+and the serving loader around these decisions so every rule is
+unit-testable without a bundle.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from typing import Any
+
+__all__ = [
+    "BOOTSTRAP_MEMBER_COUNT",
+    "RECERT_STATUS_SCHEMA_VERSION",
+    "BASELINE_SCHEMA_VERSION",
+    "CutoverRefusal",
+    "check_cutover_paths",
+    "check_write_targets",
+    "check_evidence_provenance",
+    "check_preregistered_windows",
+    "check_preregistered_gate_windows",
+    "SAME_FAMILY_KEYS",
+    "check_member_training_config",
+    "check_campaign_eligibility",
+    "check_isoweek_anchor",
+    "build_initial_status",
+    "build_baseline_record",
+    "build_inference_meta",
+]
+
+BOOTSTRAP_MEMBER_COUNT = 3
+# Written by THIS path only (first write; the quarterly executor reads
+# it and never writes it — R1-DP-D).
+RECERT_STATUS_SCHEMA_VERSION = "csi800_recert_status_v1"
+BASELINE_SCHEMA_VERSION = "csi800_n5_bootstrap_baseline_v1"
+
+_VERDICT_SCHEMA_VERSION = "csi800_cadence_verdict_v1"
+
+
+class CutoverRefusal(RuntimeError):
+    """A promotion precondition failed — ZERO production writes."""
+
+
+def _finite(value: Any) -> bool:
+    return (not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(float(value)))
+
+
+def check_cutover_paths(
+    *, incumbent_exists: bool, manifest_out_exists: bool,
+    status_exists: bool, incumbent: str, manifest_out: str,
+    status_path: str,
+) -> None:
+    """Path preconditions, adjudicated with the OTHER gates — i.e.
+    BEFORE any production write (adversarial self-review).
+
+    The bootstrap is a once-ever switch, so:
+
+    * the incumbent must exist (no rollback kit, no switch);
+    * the production manifest must NOT exist yet — if it does, either
+      a previous bootstrap already ran or a quarterly rotation owns
+      it, and re-installing the bootstrap trio would silently revert
+      production;
+    * the certification-status artifact must NOT exist — its first
+      write belongs to THIS path and a later state belongs to the
+      annual re-certification flow (R1-DP-D).
+
+    Checking these here (rather than mid-write) is what keeps
+    ``--dry-run`` honest and the refusal zero-write: the prior art's
+    rule is that every fallible check precedes the first byte
+    (``rotate_ensemble_member``)."""
+    if not incumbent_exists:
+        raise CutoverRefusal(
+            f"incumbent canonical not found: {incumbent} — refusing to "
+            "switch without a rollback kit")
+    if manifest_out_exists:
+        raise CutoverRefusal(
+            f"production manifest already exists: {manifest_out} — the "
+            "bootstrap CREATES it once; an existing manifest means a "
+            "previous bootstrap or a quarterly rotation owns "
+            "production, and re-installing the bootstrap trio would "
+            "silently revert it. Refusing.")
+    if status_exists:
+        raise CutoverRefusal(
+            f"certification status artifact already exists: "
+            f"{status_path} — the initial WIN is written ONCE by this "
+            "bootstrap; a later state belongs to the annual "
+            "re-certification flow. Refusing.")
+
+
+def check_write_targets(targets: dict[str, str]) -> None:
+    """Every artifact this cutover writes must have its OWN path
+    (codex #392 r4).
+
+    ``--manifest-out`` accidentally pointed at the status artifact (or
+    the baseline, or a member's inference meta) would install the
+    manifest there and then let the later write overwrite it — exiting
+    0 with a valid-looking status file where the serving manifest was
+    supposed to be, and no manifest for the morning run. The caller
+    passes RESOLVED paths so ``./x`` and ``x`` collide."""
+    seen: dict[str, str] = {}
+    for label, path in targets.items():
+        if path in seen:
+            raise CutoverRefusal(
+                f"write-target collision: {label} and {seen[path]} "
+                f"both resolve to {path} — one write would silently "
+                "overwrite the other, refusing")
+        seen[path] = label
+
+
+def check_campaign_eligibility(sidecar_text: str) -> dict[str, Any]:
+    """Gate 1: the committed verdict sidecar must be a well-formed
+    ``csi800_cadence_verdict_v1`` granting ``promotion_eligible``.
+
+    ``--verify`` (byte/anchor re-validation) runs in the executor
+    against the real repo; this is the CONTENT half — a sidecar that
+    verifies but does not grant eligibility must not promote."""
+    try:
+        payload = json.loads(sidecar_text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise CutoverRefusal(
+            f"verdict sidecar is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CutoverRefusal("verdict sidecar top level is not an object")
+    if payload.get("schema_version") != _VERDICT_SCHEMA_VERSION:
+        raise CutoverRefusal(
+            f"verdict sidecar schema "
+            f"{payload.get('schema_version')!r} != "
+            f"{_VERDICT_SCHEMA_VERSION!r}")
+    verdict = payload.get("verdict")
+    if not isinstance(verdict, dict):
+        raise CutoverRefusal("verdict sidecar carries no verdict block")
+    if verdict.get("promotion_eligible") is not True:
+        raise CutoverRefusal(
+            f"verdict sidecar promotion_eligible is "
+            f"{verdict.get('promotion_eligible')!r}, not true — the "
+            "campaign did not grant promotion eligibility")
+    net = verdict.get("conservative_net_annualized")
+    if not _finite(net):
+        raise CutoverRefusal(
+            f"verdict sidecar conservative_net_annualized {net!r} is "
+            "not a finite number")
+    anchors = payload.get("anchors")
+    if not isinstance(anchors, dict):
+        raise CutoverRefusal("verdict sidecar carries no anchors block")
+    for key in ("pair_anchor", "evidence_anchor", "n1_anchor"):
+        value = anchors.get(key)
+        if (not isinstance(value, str) or len(value) != 40
+                or any(c not in "0123456789abcdef" for c in value.lower())):
+            raise CutoverRefusal(
+                f"verdict sidecar anchors.{key} {value!r} is not a "
+                "40-hex commit id")
+    return payload
+
+
+def check_preregistered_windows(
+    member_windows: list[tuple[str, str]],
+    preset_windows: list[tuple[str, str]],
+) -> None:
+    """The installed trio must be the PRE-REGISTERED one (codex #392
+    r6).
+
+    Every other gate checks internal consistency — the manifest binds
+    its own gate artifacts, the serving pins accept any legal
+    quarterly stagger. None of that distinguishes the trio whose
+    windows were frozen before ignition from a differently-windowed
+    (e.g. one-day-shifted, or simply re-tuned) run that also satisfies
+    the broad arithmetic. Pre-registration is the whole point of
+    ``跑前钉死``, so the switch compares the manifest's fit windows,
+    in order, against the committed bootstrap presets."""
+    if len(member_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} manifest members, got "
+            f"{len(member_windows)}")
+    if len(preset_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} pre-registered preset "
+            f"windows, got {len(preset_windows)}")
+    for i, (actual, expected) in enumerate(
+            zip(member_windows, preset_windows, strict=True)):
+        if actual != expected:
+            raise CutoverRefusal(
+                f"manifest member[{i}] train window "
+                f"{actual[0]}..{actual[1]} != the pre-registered "
+                f"bootstrap preset {expected[0]}..{expected[1]} — this "
+                "is not the trio whose windows were frozen before "
+                "ignition, refusing")
+
+
+def check_preregistered_gate_windows(
+    member_gate_windows: list[tuple[Any, Any]],
+    preset_valid_windows: list[tuple[str, str]],
+    ensemble_gate_window: tuple[Any, Any],
+    expected_ensemble_window: tuple[str, str],
+) -> None:
+    """The gates must have been MEASURED on the pre-registered windows
+    (codex #392 r7).
+
+    Binding the train windows alone leaves the measurement windows
+    free: a member gate re-run on a different (still span/gap-legal)
+    valid window, or a dry run over a different quarter, would still
+    authorize the switch. The bootstrap froze those windows too, so
+    the switch compares them verbatim."""
+    if len(member_gate_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} member gate windows, "
+            f"got {len(member_gate_windows)}")
+    if len(preset_valid_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} pre-registered valid "
+            f"windows, got {len(preset_valid_windows)}")
+    for i, (actual, expected) in enumerate(
+            zip(member_gate_windows, preset_valid_windows,
+                strict=True)):
+        if (str(actual[0]), str(actual[1])) != expected:
+            raise CutoverRefusal(
+                f"member[{i}] gate was measured on "
+                f"{actual[0]}..{actual[1]}, not the pre-registered "
+                f"valid window {expected[0]}..{expected[1]} — refusing")
+    if ((str(ensemble_gate_window[0]), str(ensemble_gate_window[1]))
+            != expected_ensemble_window):
+        raise CutoverRefusal(
+            f"the ensemble dry run was measured on "
+            f"{ensemble_gate_window[0]}..{ensemble_gate_window[1]}, "
+            f"not the pre-registered trailing quarter "
+            f"{expected_ensemble_window[0]}.."
+            f"{expected_ensemble_window[1]} — refusing")
+
+
+# The "same-family configuration" surface (R1-DP-A): everything that
+# defines WHAT was trained, beyond the windows. Values come from the
+# mainline base config; a member trained with a locally retuned
+# hyperparameter is not the pre-registered protocol.
+SAME_FAMILY_KEYS = (
+    "feature_handler", "model_type", "num_boost_round",
+    "early_stopping_rounds", "learning_rate", "max_depth",
+    "num_leaves", "lambda_l1", "lambda_l2", "min_data_in_leaf",
+    "feature_fraction", "bagging_fraction", "bagging_freq",
+    "topk", "n_drop",
+)
+
+
+def check_member_training_config(
+    label: str, run_config: Any, preset_declared: dict[str, Any],
+    base_config: dict[str, Any],
+) -> None:
+    """Bind a member to the FROZEN configuration, not just its dates
+    (codex #392 r8).
+
+    Reducing the pinned presets to date pairs left the semantics free:
+    a member trained on the same windows but a different universe, no
+    guard trio, or retuned hyperparameters would install as official
+    production. Every training run persists its fully resolved config
+    beside the model, so the switch compares it against
+
+    * every key the pinned preset DECLARES (universe, benchmark, the
+      csi800 guard trio, windows, device) — verbatim; and
+    * the same-family keys from the mainline BASE config
+      (handler/model/hyperparameters/topk) — so nothing was retuned
+      locally.
+
+    A run whose config cannot be read at all refuses: an unbindable
+    member cannot become production."""
+    if not isinstance(run_config, dict):
+        raise CutoverRefusal(
+            f"{label}: training run config is unreadable — an "
+            "unbindable member cannot become production, refusing")
+    for key, expected in preset_declared.items():
+        if key == "extends":
+            continue
+        actual = run_config.get(key, _MISSING)
+        if actual != expected:
+            raise CutoverRefusal(
+                f"{label}: training config {key}={actual!r} != the "
+                f"pre-registered preset's {expected!r} — this member "
+                "was not trained under the frozen configuration, "
+                "refusing")
+    for key in SAME_FAMILY_KEYS:
+        if key not in base_config:
+            continue
+        expected = base_config[key]
+        actual = run_config.get(key, _MISSING)
+        if actual != expected:
+            raise CutoverRefusal(
+                f"{label}: training config {key}={actual!r} != the "
+                f"mainline base config's {expected!r} — retuned "
+                "same-family semantics are not the pre-registered "
+                "protocol, refusing")
+
+
+class _Missing:
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return "<absent>"
+
+
+_MISSING = _Missing()
+
+
+def check_evidence_provenance(aggregate: Any) -> None:
+    """The anchored run's provenance must be EXPLICITLY clean (codex
+    #392 r5).
+
+    Refusing only a literal ``true`` would let a report with the field
+    missing, ``null``, or a non-boolean truthy value authorize
+    production on unbound provenance. The repo's other provenance
+    consumers fail closed on anything that is not ``False``; so does
+    this promotion gate."""
+    if not isinstance(aggregate, dict):
+        raise CutoverRefusal(
+            "iso_week aggregate report is not an object")
+    dirty = aggregate.get("git_dirty")
+    if dirty is not False:
+        raise CutoverRefusal(
+            f"anchored iso_week run declares git_dirty={dirty!r} — "
+            "promotion requires an EXPLICITLY clean-tree provenance "
+            "(False); anything else leaves the evidence unbound, "
+            "refusing")
+
+
+def check_isoweek_anchor(
+    aggregate: Any, *, expected_config_sha256: str,
+    actual_config_sha256: str,
+) -> dict[str, Any]:
+    """Gate 2: the ANCHORED iso_week re-check evidence.
+
+    Two independent bindings (spec: 晋升门第 2 条):
+
+    * the run's embedded config must be the committed iso_week
+      re-check preset (content hash equality — the caller supplies
+      both digests so this stays pure);
+    * the full-window net excess must be RE-DERIVED positive from the
+      anchored aggregate, never taken from an operator assertion.
+    """
+    if actual_config_sha256 != expected_config_sha256:
+        raise CutoverRefusal(
+            f"iso_week re-check run's embedded config sha256 "
+            f"{actual_config_sha256} != the committed preset "
+            f"{expected_config_sha256} — the anchored evidence does "
+            "not bind the certified serving semantics, refusing")
+    if not isinstance(aggregate, dict):
+        raise CutoverRefusal(
+            "iso_week aggregate report is not an object")
+    metrics = aggregate.get("aggregate_metrics")
+    if not isinstance(metrics, dict):
+        raise CutoverRefusal(
+            "iso_week aggregate carries no aggregate_metrics block")
+    raw_net = metrics.get("mean_annualized_return")
+    if not _finite(raw_net):
+        raise CutoverRefusal(
+            f"iso_week aggregate mean_annualized_return {raw_net!r} is "
+            "not a finite number — corrupted anchor evidence")
+    serialized = float(raw_net)  # type: ignore[arg-type]  # _finite narrows
+
+    # RE-DERIVE the promotion net from the fold rows (codex #392 r1):
+    # this number is the net authority for the switch, so a torn or
+    # hand-edited report whose summary stayed positive while its folds
+    # went missing / duplicated / negative must not promote. On the
+    # committed evidence the fold mean reproduces the serialized value
+    # exactly.
+    folds = aggregate.get("folds")
+    num_folds = aggregate.get("num_folds")
+    if not isinstance(folds, list) or not folds:
+        raise CutoverRefusal(
+            "iso_week aggregate declares no folds — cannot re-derive "
+            "the promotion net, refusing")
+    if not isinstance(num_folds, int) or num_folds != len(folds):
+        raise CutoverRefusal(
+            f"iso_week aggregate declares num_folds={num_folds!r} but "
+            f"carries {len(folds)} fold rows — torn evidence, refusing")
+    valid_folds = metrics.get("valid_folds_annualized_return")
+    if valid_folds != num_folds:
+        raise CutoverRefusal(
+            f"iso_week aggregate scored only {valid_folds!r} of "
+            f"{num_folds} folds for annualized return — a partial "
+            "aggregate cannot authorize promotion, refusing")
+    seen: set[int] = set()
+    values: list[float] = []
+    for i, row in enumerate(folds):
+        if not isinstance(row, dict):
+            raise CutoverRefusal(
+                f"iso_week fold row[{i}] is not an object — refusing")
+        idx = row.get("fold_index")
+        if not isinstance(idx, int) or isinstance(idx, bool) or idx in seen:
+            raise CutoverRefusal(
+                f"iso_week fold row[{i}] fold_index {idx!r} is missing "
+                "or duplicated — torn evidence, refusing")
+        seen.add(idx)
+        value = row.get("annualized_return")
+        if not _finite(value):
+            raise CutoverRefusal(
+                f"iso_week fold {idx} annualized_return {value!r} is "
+                "not a finite number — corrupted anchor evidence")
+        values.append(float(value))  # type: ignore[arg-type]
+    if seen != set(range(num_folds)):
+        raise CutoverRefusal(
+            f"iso_week fold indexes are not 0..{num_folds - 1} — torn "
+            "evidence, refusing")
+    rederived = math.fsum(values) / len(values)
+    if not math.isclose(rederived, serialized, rel_tol=1e-9,
+                        abs_tol=1e-12):
+        raise CutoverRefusal(
+            f"iso_week aggregate mean_annualized_return "
+            f"{serialized!r} disagrees with the fold rows' mean "
+            f"{rederived!r} — the summary was not produced by these "
+            "folds, refusing")
+    if rederived <= 0.0:
+        raise CutoverRefusal(
+            f"iso_week re-check net excess {rederived:.4%} <= 0 — the "
+            "production anchor (iso-week) does not reproduce the "
+            "certified winner's edge, refusing to switch")
+    return {"net_annualized": rederived,
+            "net_annualized_serialized": serialized,
+            "num_folds": num_folds}
+
+
+def build_initial_status(
+    *, verdict_sidecar_path: str, verdict_sidecar_sha256: str,
+    evidence_anchor_commit: str, note: str,
+) -> dict[str, Any]:
+    """The FIRST write of the single monotonic certification-state
+    artifact (R1-DP-D / codex #389 r7). Its absence is why the
+    quarterly executor would freeze the first rotation; its presence
+    starts the 15-month validity window — which is exactly why it is
+    written HERE, at the cutover, and nowhere earlier."""
+    if (not isinstance(verdict_sidecar_sha256, str)
+            or len(verdict_sidecar_sha256) != 64):
+        raise CutoverRefusal(
+            "initial status needs the verdict sidecar's 64-hex content "
+            "hash")
+    if (not isinstance(evidence_anchor_commit, str)
+            or len(evidence_anchor_commit) != 40):
+        raise CutoverRefusal(
+            "initial status needs a 40-hex evidence anchor commit")
+    if not isinstance(note, str) or not note.strip():
+        raise CutoverRefusal("initial status needs an adjudication note")
+    return {
+        "schema_version": RECERT_STATUS_SCHEMA_VERSION,
+        "verdict": "WIN",
+        "verdict_sidecar_path": verdict_sidecar_path,
+        "verdict_sidecar_sha256": verdict_sidecar_sha256,
+        "evidence_anchor_commit": evidence_anchor_commit,
+        "note": note.strip(),
+    }
+
+
+def build_baseline_record(
+    *, manifest_path: str, manifest_sha256: str,
+    manifest_mode: str = "",
+    members: list[dict[str, Any]], incumbent_backup: dict[str, str],
+    campaign: dict[str, Any], isoweek: dict[str, Any],
+    gate_artifacts: dict[str, str], generated_at: str,
+) -> dict[str, Any]:
+    """The committed rollback/baseline record (DP-4, ④ precedent):
+    what production was BEFORE, what it became, and every piece of
+    evidence that authorized the change."""
+    if len(members) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"baseline needs exactly {BOOTSTRAP_MEMBER_COUNT} members")
+    return {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "serving": {
+            "mode": "ensemble_manifest",
+            "manifest_path": manifest_path,
+            "manifest_sha256": manifest_sha256,
+            # The permission bits the manifest was installed with —
+            # mirrored from the incumbent so the serving account keeps
+            # its read access (codex #392 r2).
+            "manifest_mode": manifest_mode,
+            "members": members,
+        },
+        "incumbent_backup": dict(incumbent_backup),
+        "authorized_by": {
+            "campaign": dict(campaign),
+            "isoweek_recheck": dict(isoweek),
+            "gate_artifacts": dict(gate_artifacts),
+        },
+    }
+
+
+def build_inference_meta(
+    *, model_path: str, fit_start: str, fit_end: str,
+    model_type: str, promoted_at: str,
+) -> dict[str, Any]:
+    """Per-member inference meta (``<model>.meta.json``, ④ precedent).
+
+    Serving derives its normalization window from these values, so the
+    fit window written here is the member's TRAINING window verbatim —
+    the same pair the manifest declares and the member gate bound."""
+    for name, value in (("fit_start", fit_start), ("fit_end", fit_end),
+                        ("model_type", model_type),
+                        ("promoted_at", promoted_at)):
+        if not isinstance(value, str) or not value.strip():
+            raise CutoverRefusal(
+                f"inference meta needs a non-empty {name}")
+    return {
+        "model_path": model_path,
+        "model_type": model_type,
+        "fit_start_for_inference": fit_start,
+        "fit_end_for_inference": fit_end,
+        "train_window": f"{fit_start}..{fit_end}",
+        "promoted_at": promoted_at,
+    }
