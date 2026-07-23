@@ -137,6 +137,23 @@ class CertificationValidity(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("future-dated", reason)
 
+    def test_tip_ordering_compares_instants_not_calendar_dates(
+            self) -> None:
+        # codex #391 r36: the guard compares AWARE INSTANTS. A +08:00
+        # tip whose calendar date is "tomorrow" can still be in the
+        # past...
+        ok, reason = recert_validity(
+            _win_status(), "2026-08-02T00:30:00+08:00",
+            "2026-08-01T18:00:00+00:00")
+        self.assertTrue(ok, reason)
+        # ...and a same-calendar-date timestamp west of UTC can still
+        # be in the future.
+        ok, reason = recert_validity(
+            _win_status(), "2026-08-01T13:00:00-05:00",
+            "2026-08-01T17:00:00+00:00")
+        self.assertFalse(ok)
+        self.assertIn("future-dated", reason)
+
     def test_naive_or_garbage_timestamps_freeze(self) -> None:
         for tip, now in (
             ("2026-07-01T10:00:00", "2026-08-01T00:00:00+00:00"),
