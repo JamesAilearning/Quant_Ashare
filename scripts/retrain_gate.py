@@ -469,9 +469,13 @@ def _ensemble_scope(args: argparse.Namespace,
         row_unknown = rows.get("unknown")
         if row_unknown is not None:
             unknown_weight = float(row_unknown.portfolio_weight)
-        effects_sum = float(
-            sum(row.total_effect for row in
-                attribution.sector_attribution))
+        # The denominator is the PRODUCER's exact
+        # ``sector_effects_sum`` (codex #391 r27) — the same field the
+        # campaign attach reads. Summing the per-sector rows would use
+        # their ROUNDED display values and could move a
+        # threshold-adjacent candidate across the 0.80 / <= 0 branch
+        # relative to the certified semantics.
+        effects_sum = float(attribution.sector_effects_sum)
         # Corrupted (non-finite) attribution must FAIL the veto, never
         # borrow the "gross effect <= 0 → cannot trigger" semantics
         # (codex #391 r26) — the distinction lives in the pure lib.
