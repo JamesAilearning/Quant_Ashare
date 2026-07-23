@@ -106,23 +106,28 @@
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器
-- [ ] **trainer sidecar schema 扩展**(codex #389 r18)：
+- [x] **trainer sidecar schema 扩展**(codex #389 r18)：
       _write_model_sidecar 增 num_boost_round(训练实际使用值);
       门仅从 sidecar 读两值,缺字段=完整性门失败(fail-closed 禁
       回退 preset 默认/跳过);旧 sidecar 无字段的向后处置=同缺
       字段失败(测试 pin)
-- [ ] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
+- [x] retrain gate 工具：五门(trainer 完整性/退化/约束干跑/IC 方向/
       serving veto 面②③⑤)产出机读 gate 工件；任一不过=成员不入
       ensemble+如实入档;连续两季不过=操作人决策点
-- [ ] **逐门失败验收测试**(codex #389 r10/r11:缺此项实现可静默
+      （scripts/retrain_gate.py 测量 runner + 纯逻辑
+      scripts/retrain_gate_lib.py，member/ensemble 双 scope 对应
+      自举分级门语义；干跑走严格 serving 加载器+blend）
+- [x] **逐门失败验收测试**(codex #389 r10/r11:缺此项实现可静默
       弱化任一门仍满足清单)：每门至少一个拒绝态——坏 trainer
       sidecar(best_iteration/valid loss 非有限)拒 + **早停边界拒**
       (best_iteration == num_boost_round 即早停从未触发,训练预算
       耗尽的边界异常,r11)/退化或 straddle 输出拒/约束干跑 RAISE
       拒/valid IC≤0 拒/serving veto ②③⑤ 各越界拒;另加全过放行态
       +gate 工件内容 pin(逐门 verdict 与数值入档)
-- [ ] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取)
-- [ ] **轮换执行器**(codex #389 r2/r3/r4)：认证有效性前置校验——
+      （tests/logic/test_retrain_gate_lib.py）
+- [x] veto③ 参照:锚上 isoweek 复核换手均值(git show 读取,
+      positions_sha256 绑定逐折重算,同 attach 纯函数)
+- [x] **轮换执行器**(codex #389 r2/r3/r4)：认证有效性前置校验——
       仅 git show 读单一状态工件 csi800_recert_status.json 内容
       判 verdict(LOSE 即冻结零写入+升级决策点;WIN 状态合并恢复;
       零日期/拓扑推断);有效期=状态工件路径主线 tip commit 日期
@@ -132,13 +137,19 @@
       触碰不影响判定/**gate 工件缺失拒轮换+gate 工件 FAIL 拒轮换**
       (codex #389 r11:门工具拒了但执行器无视=成员照样入生产的
       通道必须封死,两态均 manifest 零写入)
-- [ ] **年检状态工件义务**(codex #389 r3/r4/r8)：单一状态工件
+      （scripts/rotate_ensemble_member.py + scripts/rotation_lib.py;
+      tests/logic/test_rotation_lib.py + test_rotation_executor.py
+      scratch git repo 全链）
+- [x] **年检状态工件义务**(codex #389 r3/r4/r8)：单一状态工件
       schema(verdict/WIN 侧车内容哈希/证据锚/判定说明)+仅年检
       流程可改的治理钉守+runbook 年检操作卡——**仅 schema/文档,
       不写状态文件**(首写专属 PR-C',早写会提前起 15 个月表并让
       执行器过早读到有效状态)
-- [ ] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
-      再认证义务
+      （schema=rotation_lib.parse_recert_status;治理钉守=
+      tests/governance/test_csi800_n5_retrain_gates.py）
+- [x] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
+      再认证义务（docs/csi800-n5-production-runbook.md,20bps/73bps
+      预期管理基准入档,治理锚测试钉守）
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-C' — 自举点火 + 切换执行（数字 STOP）
