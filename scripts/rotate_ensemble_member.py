@@ -114,6 +114,14 @@ def _members_from_bytes(raw: bytes, what: str) -> list[dict[str, Any]]:
     members = payload.get("members")
     if not isinstance(members, list):
         raise RotationRefusal(f"{what}: manifest carries no members list")
+    for i, row in enumerate(members):
+        # Non-object rows would reach plan_rotated_members' dict(m) as
+        # an uncaught TypeError (codex #391 r33) — refuse here so a
+        # malformed manifest stays on the classified path.
+        if not isinstance(row, dict):
+            raise RotationRefusal(
+                f"{what}: manifest member[{i}] is "
+                f"{type(row).__name__}, not an object — refusing")
     return members
 
 

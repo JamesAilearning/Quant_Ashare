@@ -370,16 +370,20 @@ def _member_scope(args: argparse.Namespace,
             sidecar = None  # gate lib fails it closed with the reason
     integrity = gate_trainer_integrity(sidecar)
 
-    # Gate (d): predict the member's OWN valid window (test segment =
-    # valid window; normalization fit = the member's training window)
-    # and read the plain daily IC(1d) mean — the spec's degeneracy gate
-    # names executable stamps explicitly, the IC gate does not: it is a
-    # trainer-level directional sanity check on the valid segment.
+    # Gate (d): score the member's OWN VALID segment and read the
+    # plain daily IC(1d) mean — a trainer-level directional sanity
+    # check (the spec names executable stamps for the degeneracy gate
+    # only). The dataset is built with the member's OWN three windows,
+    # i.e. the SAME shape its training run used, and the valid window
+    # is scored as the ``valid`` SEGMENT (codex #391 r33: reusing the
+    # valid window as the test segment is rejected outright by
+    # FeatureDatasetBuilder — ``valid_end >= test_start`` is a leakage
+    # violation — so that shape could never have scored anything).
     build = _build_dataset(
         args, profile,
         fit_start=args.fit_start, fit_end=args.fit_end,
         valid_start=args.valid_start, valid_end=args.valid_end,
-        test_start=args.valid_start, test_end=args.valid_end)
+        test_start=args.test_start, test_end=args.test_end)
     import pickle
 
     # Pickle bytes are read ONCE (codex #391 r2): the object the IC
@@ -392,10 +396,14 @@ def _member_scope(args: argparse.Namespace,
     if not hasattr(model, "predict"):
         raise SystemExit(
             f"loaded object {type(model).__name__} has no .predict")
-    preds = model.predict(build.dataset, segment="test")
+    preds = model.predict(build.dataset, segment="valid")
     if not isinstance(preds, pd.Series):
         preds = pd.Series(preds)
     preds = preds.dropna()
+    if preds.empty:
+        raise SystemExit(
+            "member scoring produced no predictions on the valid "
+            "segment — check the declared valid window.")
     signal = SignalAnalyzer.analyze(
         predictions=preds,
         config=SignalAnalysisConfig(forward_periods=(1,), topk=TOPK))
@@ -654,6 +662,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fit-end", default=None)
     p.add_argument("--valid-start", default=None)
     p.add_argument("--valid-end", default=None)
+    # member scope: the member's OWN test window — the dataset is built
+    # in the SAME shape its training run used, and the valid window is
+    # scored as the `valid` segment (codex #391 r33). No derived
+    # default: a guessed window would silently change the gate's
+    # dataset shape.
+    p.add_argument("--test-start", default=None)
+    p.add_argument("--test-end", default=None)
     # ensemble scope: candidate manifest + trailing-quarter window.
     p.add_argument("--manifest", default=None)
     p.add_argument("--window-start", default=None)
@@ -665,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
     required: tuple[str, ...]
     if args.scope == SCOPE_MEMBER:
         required = ("member_pkl", "member_meta", "fit_start", "fit_end",
-                    "valid_start", "valid_end")
+                    "valid_start", "valid_end", "test_start", "test_end")
     else:
         required = ("manifest", "window_start", "window_end",
                     "valid_start", "valid_end")
