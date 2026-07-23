@@ -45,6 +45,8 @@ __all__ = [
     "check_evidence_provenance",
     "check_preregistered_windows",
     "check_preregistered_gate_windows",
+    "SAME_FAMILY_KEYS",
+    "check_member_training_config",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
     "build_initial_status",
@@ -250,6 +252,75 @@ def check_preregistered_gate_windows(
             f"not the pre-registered trailing quarter "
             f"{expected_ensemble_window[0]}.."
             f"{expected_ensemble_window[1]} — refusing")
+
+
+# The "same-family configuration" surface (R1-DP-A): everything that
+# defines WHAT was trained, beyond the windows. Values come from the
+# mainline base config; a member trained with a locally retuned
+# hyperparameter is not the pre-registered protocol.
+SAME_FAMILY_KEYS = (
+    "feature_handler", "model_type", "num_boost_round",
+    "early_stopping_rounds", "learning_rate", "max_depth",
+    "num_leaves", "lambda_l1", "lambda_l2", "min_data_in_leaf",
+    "feature_fraction", "bagging_fraction", "bagging_freq",
+    "topk", "n_drop",
+)
+
+
+def check_member_training_config(
+    label: str, run_config: Any, preset_declared: dict[str, Any],
+    base_config: dict[str, Any],
+) -> None:
+    """Bind a member to the FROZEN configuration, not just its dates
+    (codex #392 r8).
+
+    Reducing the pinned presets to date pairs left the semantics free:
+    a member trained on the same windows but a different universe, no
+    guard trio, or retuned hyperparameters would install as official
+    production. Every training run persists its fully resolved config
+    beside the model, so the switch compares it against
+
+    * every key the pinned preset DECLARES (universe, benchmark, the
+      csi800 guard trio, windows, device) — verbatim; and
+    * the same-family keys from the mainline BASE config
+      (handler/model/hyperparameters/topk) — so nothing was retuned
+      locally.
+
+    A run whose config cannot be read at all refuses: an unbindable
+    member cannot become production."""
+    if not isinstance(run_config, dict):
+        raise CutoverRefusal(
+            f"{label}: training run config is unreadable — an "
+            "unbindable member cannot become production, refusing")
+    for key, expected in preset_declared.items():
+        if key == "extends":
+            continue
+        actual = run_config.get(key, _MISSING)
+        if actual != expected:
+            raise CutoverRefusal(
+                f"{label}: training config {key}={actual!r} != the "
+                f"pre-registered preset's {expected!r} — this member "
+                "was not trained under the frozen configuration, "
+                "refusing")
+    for key in SAME_FAMILY_KEYS:
+        if key not in base_config:
+            continue
+        expected = base_config[key]
+        actual = run_config.get(key, _MISSING)
+        if actual != expected:
+            raise CutoverRefusal(
+                f"{label}: training config {key}={actual!r} != the "
+                f"mainline base config's {expected!r} — retuned "
+                "same-family semantics are not the pre-registered "
+                "protocol, refusing")
+
+
+class _Missing:
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return "<absent>"
+
+
+_MISSING = _Missing()
 
 
 def check_evidence_provenance(aggregate: Any) -> None:

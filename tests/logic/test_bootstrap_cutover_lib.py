@@ -252,6 +252,81 @@ class PreRegisteredGateWindows(unittest.TestCase):
                            newest_fit_end)
 
 
+class MemberTrainingConfigBinding(unittest.TestCase):
+    """codex #392 r8: same dates + different config must not install."""
+
+    _PRESET = {
+        "extends": "../../config.yaml",
+        "instruments": "csi800",
+        "benchmark_code": "SH000906TR",
+        "attribution_sleeve_grouping": True,
+        "risk_constraints_enabled": True,
+        "risk_constraints_calibration": "campaign_v1",
+        "train_start": "2024-02-19", "train_end": "2026-02-13",
+        "valid_start": "2026-02-26", "valid_end": "2026-05-26",
+        "test_start": "2026-05-29", "test_end": "2026-06-17",
+        "compute_device": "gpu",
+    }
+    _BASE = {"feature_handler": "Alpha158", "model_type": "LGBModel",
+             "num_boost_round": 1000, "learning_rate": 0.005,
+             "topk": 50, "n_drop": 5}
+
+    def _run_config(self, **overrides: object) -> dict:
+        cfg = {k: v for k, v in self._PRESET.items() if k != "extends"}
+        cfg.update(self._BASE)
+        cfg.update(overrides)
+        return cfg
+
+    def _check(self, run_config: object) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_member_training_config,
+        )
+
+        check_member_training_config(
+            "member[2]", run_config, self._PRESET, self._BASE)
+
+    def test_frozen_config_admits(self) -> None:
+        self._check(self._run_config())
+
+    def test_same_dates_different_semantics_refused(self) -> None:
+        # The exact scenario: windows reused, semantics retuned.
+        cases = {
+            "wrong universe": {"instruments": "csi300"},
+            "guards off": {"risk_constraints_enabled": False},
+            "no sleeve grouping": {
+                "attribution_sleeve_grouping": False},
+            "other calibration": {
+                "risk_constraints_calibration": "other_v9"},
+            "retuned lr": {"learning_rate": 0.05},
+            "retuned budget": {"num_boost_round": 300},
+            "other handler": {"feature_handler": "MinedFactor"},
+            "other topk": {"topk": 30},
+        }
+        for label, override in cases.items():
+            with self.assertRaises(CutoverRefusal, msg=label):
+                self._check(self._run_config(**override))
+
+    def test_missing_key_refused(self) -> None:
+        cfg = self._run_config()
+        del cfg["risk_constraints_calibration"]
+        with self.assertRaises(CutoverRefusal):
+            self._check(cfg)
+
+    def test_unreadable_config_refused(self) -> None:
+        for bad in (None, "not-a-mapping", ["x"]):
+            with self.assertRaises(CutoverRefusal, msg=bad):
+                self._check(bad)
+
+    def test_preset_fixture_matches_the_committed_m3(self) -> None:
+        import yaml
+
+        cfg = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "presets"
+             / "csi800_n5_bootstrap_m3.yaml").read_text(
+                encoding="utf-8"))
+        self.assertEqual(self._PRESET, cfg)
+
+
 class EvidenceProvenance(unittest.TestCase):
     """codex #392 r5: promotion needs EXPLICITLY clean provenance."""
 

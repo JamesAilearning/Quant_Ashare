@@ -63,6 +63,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     check_cutover_paths,
     check_evidence_provenance,
     check_isoweek_anchor,
+    check_member_training_config,
     check_preregistered_gate_windows,
     check_preregistered_windows,
     check_write_targets,
@@ -138,6 +139,23 @@ def _resolve_mainline(repo: Path) -> str:
 
 def _show(repo: Path, rev: str, relpath: str) -> bytes:
     return _git(["git", "show", f"{rev}:{relpath}"], repo)
+
+
+def _member_run_config(pkl_path: Path) -> Any:
+    """The resolved config a training run persisted beside its model
+    (``<run_dir>/config.yaml``; the model lives in
+    ``<run_dir>/artifacts/``). Searched upward a couple of levels so
+    the convention can move without silently unbinding the member —
+    if no config is found the caller refuses."""
+    for parent in list(pkl_path.parents)[:3]:
+        candidate = parent / "config.yaml"
+        if candidate.is_file():
+            try:
+                return yaml.safe_load(
+                    candidate.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                return None
+    return None
 
 
 def _binding_subset(config: Any, what: str) -> dict[str, Any]:
@@ -321,12 +339,19 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     # ── 3a. the trio must be the PRE-REGISTERED one (codex #392 r6)
     preset_windows: list[tuple[str, str]] = []
     preset_valid_windows: list[tuple[str, str]] = []
+    preset_declared: list[dict[str, Any]] = []
+    base_config = yaml.safe_load(
+        _show(repo, rev, "config.yaml").decode("utf-8"))
+    if not isinstance(base_config, dict):
+        raise CutoverRefusal(
+            f"config.yaml at {rev[:12]} is not a mapping")
     for preset_path in BOOTSTRAP_PRESET_PATHS:
         cfg = yaml.safe_load(
             _show(repo, rev, preset_path).decode("utf-8"))
         if not isinstance(cfg, dict):
             raise CutoverRefusal(
                 f"{preset_path} at {rev[:12]} is not a mapping")
+        preset_declared.append(cfg)
         try:
             preset_windows.append(
                 (str(cfg["train_start"]), str(cfg["train_end"])))
@@ -345,6 +370,14 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         member_gate_windows, preset_valid_windows,
         (ens_window.get("window_start"), ens_window.get("window_end")),
         BOOTSTRAP_DRYRUN_WINDOW)
+    # ...and each member must have been TRAINED under that frozen
+    # configuration, not merely on its dates (codex #392 r8). Every
+    # run persists its resolved config beside the model.
+    for i, (member, declared) in enumerate(
+            zip(members, preset_declared, strict=True)):
+        check_member_training_config(
+            f"member[{i}]", _member_run_config(Path(member.pkl_path)),
+            declared, base_config)
 
     # ── 3b. every write target must own its path (codex #392 r4) ─
     targets = {
