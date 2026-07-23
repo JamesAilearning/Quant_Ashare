@@ -44,6 +44,7 @@ __all__ = [
     "check_write_targets",
     "check_evidence_provenance",
     "check_preregistered_windows",
+    "check_preregistered_gate_windows",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
     "build_initial_status",
@@ -209,6 +210,46 @@ def check_preregistered_windows(
                 f"bootstrap preset {expected[0]}..{expected[1]} — this "
                 "is not the trio whose windows were frozen before "
                 "ignition, refusing")
+
+
+def check_preregistered_gate_windows(
+    member_gate_windows: list[tuple[Any, Any]],
+    preset_valid_windows: list[tuple[str, str]],
+    ensemble_gate_window: tuple[Any, Any],
+    expected_ensemble_window: tuple[str, str],
+) -> None:
+    """The gates must have been MEASURED on the pre-registered windows
+    (codex #392 r7).
+
+    Binding the train windows alone leaves the measurement windows
+    free: a member gate re-run on a different (still span/gap-legal)
+    valid window, or a dry run over a different quarter, would still
+    authorize the switch. The bootstrap froze those windows too, so
+    the switch compares them verbatim."""
+    if len(member_gate_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} member gate windows, "
+            f"got {len(member_gate_windows)}")
+    if len(preset_valid_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} pre-registered valid "
+            f"windows, got {len(preset_valid_windows)}")
+    for i, (actual, expected) in enumerate(
+            zip(member_gate_windows, preset_valid_windows,
+                strict=True)):
+        if (str(actual[0]), str(actual[1])) != expected:
+            raise CutoverRefusal(
+                f"member[{i}] gate was measured on "
+                f"{actual[0]}..{actual[1]}, not the pre-registered "
+                f"valid window {expected[0]}..{expected[1]} — refusing")
+    if ((str(ensemble_gate_window[0]), str(ensemble_gate_window[1]))
+            != expected_ensemble_window):
+        raise CutoverRefusal(
+            f"the ensemble dry run was measured on "
+            f"{ensemble_gate_window[0]}..{ensemble_gate_window[1]}, "
+            f"not the pre-registered trailing quarter "
+            f"{expected_ensemble_window[0]}.."
+            f"{expected_ensemble_window[1]} — refusing")
 
 
 def check_evidence_provenance(aggregate: Any) -> None:

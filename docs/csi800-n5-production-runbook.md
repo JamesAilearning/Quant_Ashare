@@ -63,7 +63,9 @@ manifest 的错峰与 24 月窗 pins。
    直接写三成员（oldest→newest），随后由切换执行器以严格加载器验证。
 4. **ensemble 级门 ×1**（退化/约束干跑/veto 面）：
    `--window-start 2026-03-17 --window-end 2026-06-17`（trailing
-   quarter，对三名成员全样本外）。
+   quarter，对三名成员全样本外）。该窗口与三份 preset 的 valid 窗
+   一样是**预注册值**：切换执行器会逐一比对 gate 工件的被测窗口，
+   改动即拒（`BOOTSTRAP_DRYRUN_WINDOW`，治理测试钉守）。
 5. **切换执行**（晋升路径全门→零写入拒绝；先 `--dry-run` 看门）：
    ```bash
    python scripts/bootstrap_ensemble_cutover.py --dry-run      --manifest <候选 manifest>      --member-gate <m1 gate> --member-gate <m2 gate>      --member-gate <m3 gate> --ensemble-gate <ensemble gate>      --incumbent D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl      --manifest-out <生产 manifest 路径>

@@ -63,6 +63,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     check_cutover_paths,
     check_evidence_provenance,
     check_isoweek_anchor,
+    check_preregistered_gate_windows,
     check_preregistered_windows,
     check_write_targets,
 )
@@ -95,6 +96,11 @@ BOOTSTRAP_PRESET_PATHS = (
     "config/presets/csi800_n5_bootstrap_m2.yaml",
     "config/presets/csi800_n5_bootstrap_m3.yaml",
 )
+# The PRE-REGISTERED ensemble dry-run window (trailing quarter, fully
+# out of sample for all three members: m3's training ends 2026-02-13).
+# Frozen here with the presets and pinned by governance — the runbook
+# quotes the same pair.
+BOOTSTRAP_DRYRUN_WINDOW = ("2026-03-17", "2026-06-17")
 BASELINE_PATH = "docs/promotion/csi800_n5_bootstrap_baseline.json"
 _MAINLINE = "origin/main"
 
@@ -279,11 +285,15 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
             f"artifacts (oldest->newest), got "
             f"{len(args.member_gate)}")
     gate_paths: dict[str, str] = {}
+    member_gate_windows: list[tuple[Any, Any]] = []
     try:
         for i, (member, gate_path) in enumerate(
                 zip(members, args.member_gate, strict=True)):
             artifact = _load_json(Path(gate_path),
                                   f"member[{i}] gate artifact")
+            window = artifact.get("window") or {}
+            member_gate_windows.append(
+                (window.get("valid_start"), window.get("valid_end")))
             check_gate_artifact(
                 artifact, scope=SCOPE_MEMBER,
                 expected_subject_sha=member.pkl_sha256,
@@ -308,9 +318,9 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         gate_paths["ensemble"] = str(args.ensemble_gate)
     except RotationRefusal as exc:
         raise CutoverRefusal(f"bootstrap gate refused: {exc}") from exc
-
     # ── 3a. the trio must be the PRE-REGISTERED one (codex #392 r6)
     preset_windows: list[tuple[str, str]] = []
+    preset_valid_windows: list[tuple[str, str]] = []
     for preset_path in BOOTSTRAP_PRESET_PATHS:
         cfg = yaml.safe_load(
             _show(repo, rev, preset_path).decode("utf-8"))
@@ -320,12 +330,21 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         try:
             preset_windows.append(
                 (str(cfg["train_start"]), str(cfg["train_end"])))
+            preset_valid_windows.append(
+                (str(cfg["valid_start"]), str(cfg["valid_end"])))
         except KeyError as exc:
             raise CutoverRefusal(
                 f"{preset_path} declares no {exc} — cannot bind the "
                 "pre-registered windows") from exc
     check_preregistered_windows(
         [(m.fit_start, m.fit_end) for m in members], preset_windows)
+    # ...and the gates must have been MEASURED on the pre-registered
+    # windows, not merely on span/gap-legal ones (codex #392 r7).
+    ens_window = ensemble_artifact.get("window") or {}
+    check_preregistered_gate_windows(
+        member_gate_windows, preset_valid_windows,
+        (ens_window.get("window_start"), ens_window.get("window_end")),
+        BOOTSTRAP_DRYRUN_WINDOW)
 
     # ── 3b. every write target must own its path (codex #392 r4) ─
     targets = {

@@ -189,6 +189,69 @@ class PreRegisteredWindows(unittest.TestCase):
                                         self._PINNED[:1])
 
 
+class PreRegisteredGateWindows(unittest.TestCase):
+    """codex #392 r7: the gates must have been MEASURED on the frozen
+    windows — binding the train windows alone left the measurement
+    windows free."""
+
+    _VALID = [("2025-08-18", "2025-11-18"),
+              ("2025-11-18", "2026-02-13"),
+              ("2026-02-26", "2026-05-26")]
+    _DRY = ("2026-03-17", "2026-06-17")
+
+    def _check(self, members=None, dry=None):  # noqa: ANN001
+        from scripts.bootstrap_cutover_lib import (
+            check_preregistered_gate_windows,
+        )
+
+        check_preregistered_gate_windows(
+            members if members is not None else list(self._VALID),
+            list(self._VALID), dry or self._DRY, self._DRY)
+
+    def test_frozen_windows_admit(self) -> None:
+        self._check()
+
+    def test_matches_the_committed_presets(self) -> None:
+        import yaml
+
+        actual = []
+        for name in ("m1", "m2", "m3"):
+            cfg = yaml.safe_load(
+                (_PROJECT_ROOT / "config" / "presets"
+                 / f"csi800_n5_bootstrap_{name}.yaml").read_text(
+                    encoding="utf-8"))
+            actual.append((cfg["valid_start"], cfg["valid_end"]))
+        self.assertEqual(self._VALID, actual)
+
+    def test_retuned_member_window_refused(self) -> None:
+        retuned = [("2025-08-19", "2025-11-18"), *self._VALID[1:]]
+        with self.assertRaises(CutoverRefusal) as ctx:
+            self._check(members=retuned)
+        self.assertIn("pre-registered valid window", str(ctx.exception))
+
+    def test_missing_member_window_refused(self) -> None:
+        with self.assertRaises(CutoverRefusal):
+            self._check(members=[(None, None), *self._VALID[1:]])
+
+    def test_retuned_dry_run_window_refused(self) -> None:
+        with self.assertRaises(CutoverRefusal) as ctx:
+            self._check(dry=("2026-03-16", "2026-06-17"))
+        self.assertIn("trailing quarter", str(ctx.exception))
+
+    def test_dry_run_window_is_out_of_sample_for_every_member(self) -> None:
+        # The pre-registered quarter must start after the NEWEST
+        # member's training end (2026-02-13) — that is why this pair
+        # was chosen.
+        from datetime import date
+
+        import scripts.bootstrap_ensemble_cutover as bc
+
+        self.assertEqual(self._DRY, bc.BOOTSTRAP_DRYRUN_WINDOW)
+        newest_fit_end = date.fromisoformat("2026-02-13")
+        self.assertGreater(date.fromisoformat(self._DRY[0]),
+                           newest_fit_end)
+
+
 class EvidenceProvenance(unittest.TestCase):
     """codex #392 r5: promotion needs EXPLICITLY clean provenance."""
 
