@@ -170,30 +170,55 @@ def _resolve_anchor_rev() -> str:
 
 def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
     """Pooled daily one-way turnover of the anchored iso_week re-check
-    run: for every fold report on ``origin/main``, resolve its
-    positions series (bound by the report's ``positions_sha256``),
+    run: for every fold the run's AGGREGATE report declares, resolve
+    its positions series (bound by the report's ``positions_sha256``),
     recompute single-bucket one-way turnover with the SAME pure
     function the campaign attach used, and pool
-    ``sum(total) / sum(transitions)``."""
+    ``sum(total) / sum(transitions)``.
+
+    The fold set comes from ``walk_forward_report.json``'s ``folds[]``
+    (codex #391 r29) — NOT from globbing fold-shaped filenames: a
+    stale or accidentally committed extra ``fold_*_report.json`` beside
+    the certified run would otherwise silently move the veto3
+    threshold."""
     rev = _resolve_anchor_rev()
-    listing = subprocess.run(
-        ["git", "ls-tree", "--name-only", rev,
-         f"{ISOWEEK_EVIDENCE_DIR}/"],
-        cwd=PROJECT_ROOT, capture_output=True, check=False)
-    if listing.returncode != 0:
+    aggregate = json.loads(_git_show(
+        f"{rev}:{ISOWEEK_EVIDENCE_DIR}/walk_forward_report.json"
+    ).decode("utf-8"))
+    declared = aggregate.get("folds")
+    num_folds = aggregate.get("num_folds")
+    if not isinstance(declared, list) or not declared:
         raise SystemExit(
-            f"git ls-tree {rev}:{ISOWEEK_EVIDENCE_DIR} failed: "
-            f"{listing.stderr.decode(errors='replace').strip()}")
-    names = [ln.strip() for ln in
-             listing.stdout.decode("utf-8").splitlines() if ln.strip()]
-    report_names = sorted(
-        n for n in names
-        if n.rsplit("/", 1)[-1].startswith("fold_")
-        and n.endswith("_report.json"))
-    if not report_names:
+            f"{ISOWEEK_EVIDENCE_DIR}/walk_forward_report.json declares "
+            "no folds — anchored evidence missing.")
+    if not isinstance(num_folds, int) or num_folds != len(declared):
         raise SystemExit(
-            f"no fold reports under {rev}:{ISOWEEK_EVIDENCE_DIR}"
-            " — anchored evidence missing.")
+            f"anchored aggregate declares num_folds={num_folds!r} but "
+            f"carries {len(declared)} fold rows — torn evidence, "
+            "refusing.")
+    report_names: list[str] = []
+    seen_indexes: set[int] = set()
+    for row in declared:
+        if not isinstance(row, dict):
+            raise SystemExit(
+                "anchored aggregate fold row is not an object — "
+                "refusing.")
+        idx = row.get("fold_index")
+        path = row.get("report_path")
+        if not isinstance(idx, int) or idx in seen_indexes:
+            raise SystemExit(
+                f"anchored aggregate fold_index {idx!r} is missing or "
+                "duplicated — refusing.")
+        seen_indexes.add(idx)
+        if not isinstance(path, str) or not path:
+            raise SystemExit(
+                f"anchored aggregate fold {idx} declares no "
+                "report_path — refusing.")
+        # The declared path is the PRODUCER's output location; the
+        # committed evidence lives under the evidence dir by basename
+        # (the campaign's confined-resolution convention).
+        base = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        report_names.append(f"{ISOWEEK_EVIDENCE_DIR}/{base}")
     total = 0.0
     transitions = 0.0
     folds = 0
@@ -465,7 +490,12 @@ def _ensemble_scope(args: argparse.Namespace,
         dry_total = sum(r["total_oneway"] for r in turn_block.values())
         dry_trans = max(float(v["n_transitions"])
                         for v in turn_block.values())
-        dry_daily_mean = (dry_total / dry_trans) if dry_trans else 0.0
+        # A single dated snapshot has NO transition to measure —
+        # veto3 is then unmeasurable, which must fail closed rather
+        # than read as "zero turnover, clean pass" (codex #391 r29;
+        # the anchor side already refuses transition-less evidence).
+        dry_daily_mean = ((dry_total / dry_trans) if dry_trans > 0
+                          else math.nan)
 
         # The engine call mirrors the walk-forward fold path exactly
         # (sleeve grouping = Brinson over membership sleeves).
@@ -514,6 +544,10 @@ def _ensemble_scope(args: argparse.Namespace,
             dryrun_daily_mean_oneway=dry_daily_mean,
             anchor_daily_mean_oneway=anchor_daily_mean,
         )
+        if dry_trans <= 0:
+            veto["notes"].append(
+                "veto3 unmeasurable: the dry-run positions series has "
+                "no transition (single dated snapshot) — failed closed")
     else:
         anchor_info = None
         veto = gate_serving_veto(
