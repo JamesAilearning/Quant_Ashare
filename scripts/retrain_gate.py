@@ -243,6 +243,7 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
     total = 0.0
     transitions = 0.0
     folds = 0
+    seen_positions: set[str] = set()
     for idx, name in report_names:
         rep = json.loads(
             _git_show(f"{rev}:{name}").decode("utf-8"))
@@ -265,6 +266,23 @@ def _anchor_turnover_daily_mean() -> tuple[float, dict[str, Any]]:
                 "positions_sha256 — unattested series cannot anchor "
                 "the turnover reference, refusing.")
         pos_name = declared.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        # OWNERSHIP: the positions series must be THIS fold's, by the
+        # producer's naming convention (codex #391 r32). A torn report
+        # keeping a unique fold_index while pointing at another fold's
+        # positions would pool that series twice and drop the real
+        # one, moving the anchor even though every per-row check
+        # passes. (Verified against the committed evidence: all 23
+        # folds declare fold_{idx:02d}_positions.json.)
+        expected_pos = f"fold_{idx:02d}_positions.json"
+        if pos_name != expected_pos:
+            raise SystemExit(
+                f"{name}: declares positions {pos_name!r}, not this "
+                f"fold's {expected_pos!r} — torn evidence, refusing.")
+        if pos_name in seen_positions:
+            raise SystemExit(
+                f"{name}: positions {pos_name!r} already pooled for "
+                "another fold — torn evidence, refusing.")
+        seen_positions.add(pos_name)
         raw = _git_show(
             f"{rev}:{ISOWEEK_EVIDENCE_DIR}/{pos_name}")
         actual_digest = hashlib.sha256(raw).hexdigest()
