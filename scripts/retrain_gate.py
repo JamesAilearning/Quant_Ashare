@@ -519,6 +519,10 @@ def _ensemble_scope(args: argparse.Namespace,
     try:
         output = BacktestRunner.run(
             request=request,
+            # DENSE series here on purpose: the runner thins
+            # internally from the cadence knobs (same as walk-forward
+            # and eval_frozen_model_oos). Only the analyzer-side
+            # consumers take the pre-thinned set.
             predictions=preds,
             topk=TOPK,
             n_drop=N_DROP,
