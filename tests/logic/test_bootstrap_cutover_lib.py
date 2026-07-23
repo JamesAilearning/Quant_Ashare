@@ -100,6 +100,43 @@ class CutoverPathPreconditions(unittest.TestCase):
         self.assertIn("written ONCE", str(ctx.exception))
 
 
+class WriteTargetCollisions(unittest.TestCase):
+    """codex #392 r4: every artifact the cutover writes owns its path,
+    or a later write silently overwrites an earlier one."""
+
+    def test_distinct_targets_admit(self) -> None:
+        from scripts.bootstrap_cutover_lib import check_write_targets
+
+        check_write_targets({
+            "manifest_out": "/prod/manifest.json",
+            "status_artifact": "/repo/docs/promotion/status.json",
+            "baseline": "/repo/docs/promotion/baseline.json",
+            "member[0] inference meta": "/models/m0.meta.json",
+        })
+
+    def test_collisions_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import check_write_targets
+
+        cases = {
+            "manifest == status": {
+                "manifest_out": "/repo/docs/promotion/status.json",
+                "status_artifact": "/repo/docs/promotion/status.json"},
+            "manifest == baseline": {
+                "manifest_out": "/repo/docs/promotion/baseline.json",
+                "baseline": "/repo/docs/promotion/baseline.json"},
+            "manifest == member meta": {
+                "manifest_out": "/models/m0.meta.json",
+                "member[0] inference meta": "/models/m0.meta.json"},
+            "two members share a meta": {
+                "member[0] inference meta": "/models/m.meta.json",
+                "member[1] inference meta": "/models/m.meta.json"},
+        }
+        for label, targets in cases.items():
+            with self.assertRaises(CutoverRefusal, msg=label) as ctx:
+                check_write_targets(targets)
+            self.assertIn("collision", str(ctx.exception))
+
+
 class ExecutorReadDiscipline(unittest.TestCase):
     """Source pins for the two adversarial-self-review P1s."""
 

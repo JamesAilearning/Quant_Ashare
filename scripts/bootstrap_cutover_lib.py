@@ -41,6 +41,7 @@ __all__ = [
     "BASELINE_SCHEMA_VERSION",
     "CutoverRefusal",
     "check_cutover_paths",
+    "check_write_targets",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
     "build_initial_status",
@@ -107,6 +108,26 @@ def check_cutover_paths(
             f"{status_path} — the initial WIN is written ONCE by this "
             "bootstrap; a later state belongs to the annual "
             "re-certification flow. Refusing.")
+
+
+def check_write_targets(targets: dict[str, str]) -> None:
+    """Every artifact this cutover writes must have its OWN path
+    (codex #392 r4).
+
+    ``--manifest-out`` accidentally pointed at the status artifact (or
+    the baseline, or a member's inference meta) would install the
+    manifest there and then let the later write overwrite it — exiting
+    0 with a valid-looking status file where the serving manifest was
+    supposed to be, and no manifest for the morning run. The caller
+    passes RESOLVED paths so ``./x`` and ``x`` collide."""
+    seen: dict[str, str] = {}
+    for label, path in targets.items():
+        if path in seen:
+            raise CutoverRefusal(
+                f"write-target collision: {label} and {seen[path]} "
+                f"both resolve to {path} — one write would silently "
+                "overwrite the other, refusing")
+        seen[path] = label
 
 
 def check_campaign_eligibility(sidecar_text: str) -> dict[str, Any]:

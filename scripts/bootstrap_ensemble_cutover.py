@@ -60,6 +60,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     check_campaign_eligibility,
     check_cutover_paths,
     check_isoweek_anchor,
+    check_write_targets,
 )
 from scripts.retrain_gate_lib import (  # noqa: E402
     SCOPE_ENSEMBLE,
@@ -301,6 +302,20 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     except RotationRefusal as exc:
         raise CutoverRefusal(f"bootstrap gate refused: {exc}") from exc
 
+    # ── 3b. every write target must own its path (codex #392 r4) ─
+    targets = {
+        "manifest_out": str(Path(args.manifest_out).resolve()),
+        "status_artifact": str(status_path.resolve()),
+        "baseline": str((repo / BASELINE_PATH).resolve()),
+        "incumbent": str(Path(args.incumbent).resolve()),
+    }
+    for i, member in enumerate(members):
+        targets[f"member[{i}] inference meta"] = str(
+            Path(member.pkl_path).with_suffix(".meta.json").resolve())
+        targets[f"member[{i}] pkl"] = str(
+            Path(member.pkl_path).resolve())
+    check_write_targets(targets)
+
     # ── 4. serving validity of what we are about to install ─────
     try:
         load_member_models(members)
@@ -412,8 +427,15 @@ def main(argv: list[str] | None = None) -> int:
         fd, tmp_name = tempfile.mkstemp(
             prefix=out.name + ".install.", dir=str(out.parent))
         tmp = Path(tmp_name)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(evidence["manifest_bytes"])
+        try:
+            # The staging WRITE is fallible too (ENOSPC/quota/handle
+            # errors, codex #392 r4) — its own failure must not leave
+            # an `.install.*` file in the production directory.
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(evidence["manifest_bytes"])
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         try:
             # mkstemp creates 0600 owned by the EXECUTOR. The
             # bootstrap CREATES the production manifest, so there is
