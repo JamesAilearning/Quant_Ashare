@@ -662,9 +662,14 @@ class RotationExecutorStates(unittest.TestCase):
         from unittest.mock import patch
 
         real_unlink = Path.unlink
+        # Match the ACTUAL staging name (codex #391 r23: the stub used
+        # to match the retired `<out>.tmp`, so it exercised the normal
+        # cleanup path and would have missed a regression here).
+        refused: list[str] = []
 
         def stubborn(self, *a, **kw):  # noqa: ANN001, ANN002
-            if ".tmp" in self.name:
+            if ".stage." in self.name:
+                refused.append(self.name)
                 raise OSError("locked staging file")
             return real_unlink(self, *a, **kw)
 
@@ -683,6 +688,13 @@ class RotationExecutorStates(unittest.TestCase):
             ])
         self.assertEqual(1, rc)
         self.assertFalse(bad_out.exists())
+        # The stub MUST have fired — otherwise this test silently
+        # stops covering the cleanup-failure path.
+        self.assertTrue(refused, "cleanup-failure stub never fired")
+        # The surviving staging file is the one the refusal names; the
+        # test owns the temp dir, so remove it here.
+        for leftover in self.tmp.glob("*.stage.*"):
+            leftover.unlink()
 
     def test_cleanup_failure_still_classified_refusal(self) -> None:
         # codex #391 r19: a cleanup that itself raises (read-only
@@ -694,9 +706,11 @@ class RotationExecutorStates(unittest.TestCase):
         import scripts.rotate_ensemble_member as rem
 
         real_unlink = Path.unlink
+        refused: list[str] = []
 
         def stubborn(self, *a, **kw):  # noqa: ANN001, ANN002
             if ".pre_rotation_" in self.name:
+                refused.append(self.name)
                 raise OSError("read-only rollback artifact")
             return real_unlink(self, *a, **kw)
 
@@ -707,6 +721,11 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, rc)
         self.assertEqual(self.original_bytes,
                          self.manifest.read_bytes())
+        # The stub MUST have fired (codex #391 r23: a stale predicate
+        # would silently reduce this to the normal cleanup path).
+        self.assertTrue(refused, "cleanup-failure stub never fired")
+        for leftover in self.tmp.glob("*.pre_rotation_*"):
+            leftover.unlink()
 
     def test_install_failure_refuses_with_zero_residue(self) -> None:
         # codex #391 r18: the final os.replace can fail (Windows/NFS
