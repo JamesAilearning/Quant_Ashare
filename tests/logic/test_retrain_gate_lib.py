@@ -286,6 +286,41 @@ class ServingVetoGate(unittest.TestCase):
                 FAIL, gate_serving_veto(**inputs)["verdict"], field)
 
 
+class ServingVetoShare(unittest.TestCase):
+    """codex #391 r26: corrupted attribution must NOT borrow the
+    legitimate "gross effect <= 0 → cannot trigger" semantics."""
+
+    def test_ratio_when_gross_positive(self) -> None:
+        from scripts.retrain_gate_lib import serving_veto_share
+
+        self.assertAlmostEqual(0.5, serving_veto_share(0.05, 0.10))
+
+    def test_non_positive_gross_is_undefined(self) -> None:
+        from scripts.retrain_gate_lib import serving_veto_share
+
+        for gross in (0.0, -0.02):
+            self.assertIsNone(serving_veto_share(0.01, gross), gross)
+
+    def test_non_finite_is_nan_and_fails_the_gate(self) -> None:
+        import math as _math
+
+        from scripts.retrain_gate_lib import serving_veto_share
+
+        for effect, gross in ((float("nan"), 0.10),
+                              (0.05, float("nan")),
+                              (float("inf"), 0.10),
+                              (0.05, float("inf")),
+                              (None, 0.10),
+                              (0.05, "0.1")):
+            share = serving_veto_share(effect, gross)
+            self.assertTrue(_math.isnan(share), (effect, gross))
+            # ...and the gate fails closed on it (the whole point).
+            inputs = _good_veto_inputs()
+            inputs["csi500_effect_share"] = share
+            self.assertEqual(FAIL,
+                             gate_serving_veto(**inputs)["verdict"])
+
+
 class GateArtifactAssembly(unittest.TestCase):
     def _member_gates(self, *, fail_ic: bool = False) -> dict:
         return {

@@ -223,6 +223,26 @@ def gate_constraint_dry_run(constraint_veto: Any) -> dict[str, Any]:
     }
 
 
+def serving_veto_share(csi500_effect: Any, effects_sum: Any) -> Any:
+    """veto2's dependence share — distinguishing CORRUPTED evidence
+    from a legitimately non-positive gross effect (codex #391 r26).
+
+    * either input non-finite → ``nan``, which
+      :func:`gate_serving_veto` fails closed on. Collapsing this into
+      ``None`` would borrow the cannot-trigger semantics meant for a
+      real market outcome and let corrupted attribution pass;
+    * gross effect sum <= 0 → ``None`` (the campaign's cannot-trigger
+      case: a negative-effect quarter is a legitimate outcome, not
+      corruption);
+    * otherwise the ratio.
+    """
+    if not (_finite(csi500_effect) and _finite(effects_sum)):
+        return math.nan
+    if float(effects_sum) <= 0.0:
+        return None
+    return float(csi500_effect) / float(effects_sum)
+
+
 def gate_serving_veto(
     *,
     csi500_effect_share: Any,

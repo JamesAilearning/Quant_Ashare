@@ -70,6 +70,7 @@ from scripts.retrain_gate_lib import (  # noqa: E402
     gate_ic_direction,
     gate_serving_veto,
     gate_trainer_integrity,
+    serving_veto_share,
 )
 from src.core.attribution_sleeve_loader import (  # noqa: E402
     SleeveResolutionError,
@@ -457,7 +458,6 @@ def _ensemble_scope(args: argparse.Namespace,
         # an absent row is a TRUE zero (no holdings in that bucket),
         # not the omitted-producer-field situation the campaign attach
         # refuses (there the evidence was a mutable committed file).
-        share: float | None = None
         csi500_weight = 0.0
         csi500_effect = 0.0
         unknown_weight = 0.0
@@ -472,8 +472,10 @@ def _ensemble_scope(args: argparse.Namespace,
         effects_sum = float(
             sum(row.total_effect for row in
                 attribution.sector_attribution))
-        if math.isfinite(csi500_effect) and effects_sum > 0:
-            share = csi500_effect / effects_sum
+        # Corrupted (non-finite) attribution must FAIL the veto, never
+        # borrow the "gross effect <= 0 → cannot trigger" semantics
+        # (codex #391 r26) — the distinction lives in the pure lib.
+        share = serving_veto_share(csi500_effect, effects_sum)
         anchor_daily_mean, anchor_info = _anchor_turnover_daily_mean()
         veto = gate_serving_veto(
             csi500_effect_share=share,
