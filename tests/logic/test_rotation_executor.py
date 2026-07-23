@@ -575,6 +575,38 @@ class RotationExecutorStates(unittest.TestCase):
         self.assertEqual(1, self._execute())
         self._assert_manifest_untouched()
 
+    def test_execute_staging_creation_failure_refused(self) -> None:
+        # codex #391 r24: an operator path mistake (manifest under a
+        # directory that does not exist) must surface as the
+        # classified refusal, not a raw FileNotFoundError traceback.
+        rc = rotate_main([
+            "execute",
+            "--manifest", str(self.tmp / "no_such_dir" / "m.json"),
+            "--candidate", str(self.candidate),
+            "--member-gate", str(self.member_gate),
+            "--ensemble-gate", str(self.ensemble_gate),
+            "--repo", str(self.repo),
+            "--now", _NOW,
+        ])
+        self.assertEqual(1, rc)
+        self._assert_manifest_untouched()
+
+    def test_execute_staging_write_failure_refused(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rem
+
+        real_close = os.close
+
+        def boom(fd, *a, **kw):  # noqa: ANN001, ANN002
+            real_close(fd)
+            raise OSError("no space left")
+
+        with patch.object(rem.os, "fdopen", side_effect=boom):
+            rc = self._execute()
+        self.assertEqual(1, rc)
+        self._assert_manifest_untouched()
+
     def test_plan_staging_is_unique_not_predictable(self) -> None:
         # codex #391 r22: a PREDICTABLE `<out>.tmp` that already
         # exists as a link to the live manifest would be followed and

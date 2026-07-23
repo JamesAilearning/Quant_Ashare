@@ -383,16 +383,30 @@ def cmd_execute(args: argparse.Namespace) -> int:
     # post-swap refusal would contradict the zero-writes contract.
     import tempfile
 
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=manifest_path.name + ".swap.",
-        dir=str(manifest_path.parent))
+    # Staging CREATION is fallible (missing/unwritable manifest parent
+    # — an operator path mistake, codex #391 r24): classify it like
+    # plan does instead of leaking a raw FileNotFoundError/
+    # PermissionError traceback out of the zero-write path.
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=manifest_path.name + ".swap.",
+            dir=str(manifest_path.parent))
+    except OSError as exc:
+        raise RotationRefusal(
+            f"cannot create the staging file next to {manifest_path}: "
+            f"{exc} — check the manifest path and its directory") from exc
     tmp = Path(tmp_name)
     try:
         # Staging bytes are written (and the fd CLOSED) before the
         # lock: a lock-acquisition refusal must leave no open handle
         # on the temp file, or the cleanup unlink fails on Windows.
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(candidate_bytes)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(candidate_bytes)
+        except OSError as exc:
+            raise RotationRefusal(
+                f"cannot stage the candidate manifest at {tmp}: "
+                f"{exc}") from exc
         # The exclusive manifest lock spans the ENTIRE adjudication —
         # snapshot, gate checks, backup, recheck AND the final
         # os.replace (codex #391 r13): the recheck alone left a window
