@@ -137,6 +137,58 @@ class WriteTargetCollisions(unittest.TestCase):
             self.assertIn("collision", str(ctx.exception))
 
 
+class PreRegisteredWindows(unittest.TestCase):
+    """codex #392 r6: only the trio frozen BEFORE ignition installs."""
+
+    _PINNED = [("2023-08-14", "2025-08-13"),
+               ("2023-11-13", "2025-11-13"),
+               ("2024-02-19", "2026-02-13")]
+
+    def test_the_pinned_trio_admits(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_preregistered_windows,
+        )
+
+        check_preregistered_windows(list(self._PINNED),
+                                    list(self._PINNED))
+
+    def test_matches_the_committed_presets(self) -> None:
+        # The fixture above IS what the committed presets declare —
+        # if a preset is edited without updating the governance pin,
+        # this catches the drift here too.
+        import yaml
+
+        actual = []
+        for name in ("m1", "m2", "m3"):
+            cfg = yaml.safe_load(
+                (_PROJECT_ROOT / "config" / "presets"
+                 / f"csi800_n5_bootstrap_{name}.yaml").read_text(
+                    encoding="utf-8"))
+            actual.append((cfg["train_start"], cfg["train_end"]))
+        self.assertEqual(self._PINNED, actual)
+
+    def test_unregistered_trio_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_preregistered_windows,
+        )
+
+        cases = {
+            "one day shifted": [("2023-08-15", "2025-08-13"),
+                                *self._PINNED[1:]],
+            "different terminal": [*self._PINNED[:2],
+                                   ("2024-02-19", "2026-02-12")],
+            "reordered": list(reversed(self._PINNED)),
+            "wrong count": self._PINNED[:2],
+        }
+        for label, members in cases.items():
+            with self.assertRaises(CutoverRefusal, msg=label):
+                check_preregistered_windows(members,
+                                            list(self._PINNED))
+        with self.assertRaises(CutoverRefusal):   # torn preset side
+            check_preregistered_windows(list(self._PINNED),
+                                        self._PINNED[:1])
+
+
 class EvidenceProvenance(unittest.TestCase):
     """codex #392 r5: promotion needs EXPLICITLY clean provenance."""
 

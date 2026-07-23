@@ -43,6 +43,7 @@ __all__ = [
     "check_cutover_paths",
     "check_write_targets",
     "check_evidence_provenance",
+    "check_preregistered_windows",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
     "build_initial_status",
@@ -174,6 +175,40 @@ def check_campaign_eligibility(sidecar_text: str) -> dict[str, Any]:
                 f"verdict sidecar anchors.{key} {value!r} is not a "
                 "40-hex commit id")
     return payload
+
+
+def check_preregistered_windows(
+    member_windows: list[tuple[str, str]],
+    preset_windows: list[tuple[str, str]],
+) -> None:
+    """The installed trio must be the PRE-REGISTERED one (codex #392
+    r6).
+
+    Every other gate checks internal consistency — the manifest binds
+    its own gate artifacts, the serving pins accept any legal
+    quarterly stagger. None of that distinguishes the trio whose
+    windows were frozen before ignition from a differently-windowed
+    (e.g. one-day-shifted, or simply re-tuned) run that also satisfies
+    the broad arithmetic. Pre-registration is the whole point of
+    ``跑前钉死``, so the switch compares the manifest's fit windows,
+    in order, against the committed bootstrap presets."""
+    if len(member_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} manifest members, got "
+            f"{len(member_windows)}")
+    if len(preset_windows) != BOOTSTRAP_MEMBER_COUNT:
+        raise CutoverRefusal(
+            f"expected {BOOTSTRAP_MEMBER_COUNT} pre-registered preset "
+            f"windows, got {len(preset_windows)}")
+    for i, (actual, expected) in enumerate(
+            zip(member_windows, preset_windows, strict=True)):
+        if actual != expected:
+            raise CutoverRefusal(
+                f"manifest member[{i}] train window "
+                f"{actual[0]}..{actual[1]} != the pre-registered "
+                f"bootstrap preset {expected[0]}..{expected[1]} — this "
+                "is not the trio whose windows were frozen before "
+                "ignition, refusing")
 
 
 def check_evidence_provenance(aggregate: Any) -> None:

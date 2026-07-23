@@ -47,6 +47,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -61,6 +63,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     check_cutover_paths,
     check_evidence_provenance,
     check_isoweek_anchor,
+    check_preregistered_windows,
     check_write_targets,
 )
 from scripts.retrain_gate_lib import (  # noqa: E402
@@ -84,6 +87,14 @@ ISOWEEK_EVIDENCE_DIR = (
     "csi800_cadence5_conservative_isoweek")
 ISOWEEK_PRESET_PATH = (
     "config/presets/csi800_cadence5_conservative_isoweek.yaml")
+# The PRE-REGISTERED bootstrap trio (R1-DP-C, windows frozen before
+# ignition). Read at the pinned mainline revision: a locally edited
+# preset must not be able to authorize a differently-windowed trio.
+BOOTSTRAP_PRESET_PATHS = (
+    "config/presets/csi800_n5_bootstrap_m1.yaml",
+    "config/presets/csi800_n5_bootstrap_m2.yaml",
+    "config/presets/csi800_n5_bootstrap_m3.yaml",
+)
 BASELINE_PATH = "docs/promotion/csi800_n5_bootstrap_baseline.json"
 _MAINLINE = "origin/main"
 
@@ -227,8 +238,6 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         f"{ISOWEEK_EVIDENCE_DIR}/walk_forward_report.json"
     ).decode("utf-8"))
     check_evidence_provenance(aggregate)
-    import yaml
-
     preset = yaml.safe_load(
         _show(repo, rev, ISOWEEK_PRESET_PATH).decode("utf-8"))
     base = yaml.safe_load(
@@ -299,6 +308,24 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         gate_paths["ensemble"] = str(args.ensemble_gate)
     except RotationRefusal as exc:
         raise CutoverRefusal(f"bootstrap gate refused: {exc}") from exc
+
+    # ── 3a. the trio must be the PRE-REGISTERED one (codex #392 r6)
+    preset_windows: list[tuple[str, str]] = []
+    for preset_path in BOOTSTRAP_PRESET_PATHS:
+        cfg = yaml.safe_load(
+            _show(repo, rev, preset_path).decode("utf-8"))
+        if not isinstance(cfg, dict):
+            raise CutoverRefusal(
+                f"{preset_path} at {rev[:12]} is not a mapping")
+        try:
+            preset_windows.append(
+                (str(cfg["train_start"]), str(cfg["train_end"])))
+        except KeyError as exc:
+            raise CutoverRefusal(
+                f"{preset_path} declares no {exc} — cannot bind the "
+                "pre-registered windows") from exc
+    check_preregistered_windows(
+        [(m.fit_start, m.fit_end) for m in members], preset_windows)
 
     # ── 3b. every write target must own its path (codex #392 r4) ─
     targets = {
