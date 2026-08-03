@@ -373,6 +373,19 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     if not isinstance(base_config, dict):
         raise CutoverRefusal(
             f"config.yaml at {rev[:12]} is not a mapping")
+    # The base config's provider_uri is an ENV-VAR TEMPLATE
+    # (`${QUANT_PROVIDER_URI:-...}`); the run config persists the
+    # RESOLVED path. Expand with the SAME loader function the
+    # pipeline uses so the data-configuration binding (codex #392
+    # r12) compares like with like — and refuses if the environment
+    # points the template at a different bundle than the member
+    # trained on.
+    from src.core._yaml_loader import expand_env_vars
+
+    raw_provider = base_config.get("provider_uri")
+    if isinstance(raw_provider, str):
+        base_config["provider_uri"] = expand_env_vars(
+            raw_provider, source_path=f"config.yaml@{rev[:12]}")
     for preset_path in BOOTSTRAP_PRESET_PATHS:
         cfg = yaml.safe_load(
             _show(repo, rev, preset_path).decode("utf-8"))
@@ -447,10 +460,14 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     }
 
 
-def _backup_incumbent(incumbent: Path, stamp: str) -> dict[str, str]:
+def _backup_incumbent(incumbent: Path, stamp: str,
+                      created: list[Path]) -> dict[str, str]:
     """DP-4 rollback kit: copy the incumbent canonical pkl and its
     metas beside themselves, timestamped. Missing metas are recorded
-    honestly rather than fabricated."""
+    honestly rather than fabricated. Every destination is registered
+    in ``created`` BEFORE its copy starts (codex #392 r12) so a copy
+    that fails partway leaves its partial file inside the rollback
+    set."""
     record: dict[str, str] = {}
     targets = [incumbent,
                incumbent.with_suffix(".meta.json"),
@@ -462,6 +479,7 @@ def _backup_incumbent(incumbent: Path, stamp: str) -> dict[str, str]:
         dst = src.with_name(src.name + f".pre_bootstrap_{stamp}")
         if dst.exists():
             raise CutoverRefusal(f"backup path already exists: {dst}")
+        created.append(dst)
         shutil.copy2(src, dst)
         record[src.name] = str(dst)
     return record
@@ -521,9 +539,7 @@ def main(argv: list[str] | None = None) -> int:
     created: list[Path] = []
     residue_notes: list[str] = []
     try:
-        backup = _backup_incumbent(Path(args.incumbent), stamp)
-        created.extend(Path(dst) for dst in backup.values()
-                       if dst != "absent")
+        backup = _backup_incumbent(Path(args.incumbent), stamp, created)
         member_records: list[dict[str, Any]] = []
         for member in members:
             meta_path = Path(member.pkl_path).with_suffix(".meta.json")
@@ -531,10 +547,14 @@ def main(argv: list[str] | None = None) -> int:
                 model_path=member.pkl_path,
                 fit_start=member.fit_start, fit_end=member.fit_end,
                 model_type="LGBModel", promoted_at=now_iso)
+            # Registered BEFORE the write (codex #392 r12): a write
+            # that fails partway must leave its partial file inside
+            # the rollback set, and unlink(missing_ok) makes the
+            # never-created case harmless.
+            created.append(meta_path)
             meta_path.write_text(
                 json.dumps(meta, indent=2, ensure_ascii=False),
                 encoding="utf-8")
-            created.append(meta_path)
             member_records.append({
                 "pkl_path": member.pkl_path,
                 "pkl_sha256": member.pkl_sha256,
@@ -618,10 +638,10 @@ def main(argv: list[str] | None = None) -> int:
             generated_at=now_iso)
         baseline_path = repo / BASELINE_PATH
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        created.append(baseline_path)   # before the write (r12)
         baseline_path.write_text(
             json.dumps(baseline, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
-        created.append(baseline_path)
 
         status = build_initial_status(
             verdict_sidecar_path=VERDICT_SIDECAR_PATH,
@@ -642,9 +662,17 @@ def main(argv: list[str] | None = None) -> int:
         # state that appeared since the gate phase (same TOCTOU class
         # as the manifest, codex #392 r10).
         with open(status_path, "x", encoding="utf-8") as fh:
+            # Registered the moment the exclusive create SUCCEEDS
+            # (codex #392 r12): if the write/close then fails
+            # (ENOSPC, quota, delayed I/O), the partial status is in
+            # the rollback set instead of surviving as an
+            # apparently-valid WIN that blocks retries. A
+            # FileExistsError above never reaches this line, so a
+            # FOREIGN status is never registered and never rolled
+            # back.
+            created.append(status_path)
             fh.write(json.dumps(status, indent=2,
                                 ensure_ascii=False) + "\n")
-        created.append(status_path)
     except (CutoverRefusal, OSError) as exc:
         # ROLLBACK (codex #392 r11): delete everything THIS RUN
         # created, newest first — the incumbent canonical was never

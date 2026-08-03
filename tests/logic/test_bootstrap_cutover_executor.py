@@ -234,6 +234,56 @@ class CutoverWritePhase(unittest.TestCase):
         self.assertEqual(b"incumbent-model",
                          self.incumbent.read_bytes())
 
+    def test_status_write_failure_after_exclusive_create_rolls_back(
+            self) -> None:
+        # codex #392 r12: the exclusive create can succeed and the
+        # WRITE then fail (ENOSPC, quota, delayed I/O). The status
+        # file exists at that moment — it must already be in the
+        # rollback set, or the rollback removes the manifest and
+        # metas while leaving a partial (empty but apparently
+        # installable) status behind, blocking any retry.
+        import builtins
+        real_open = builtins.open
+        status_path = self.tmp / RECERT_STATUS_PATH
+
+        class _DiskFull:
+            def __init__(self, fh):  # noqa: ANN001
+                self._fh = fh
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):  # noqa: ANN002
+                self._fh.close()
+                return False
+
+            def write(self, data):  # noqa: ANN001
+                raise OSError(28, "No space left on device")
+
+        def failing(file, *a, **kw):  # noqa: ANN001, ANN002
+            fh = real_open(file, *a, **kw)
+            if a and "x" in str(a[0]) and Path(str(file)) == status_path:
+                return _DiskFull(fh)
+            return fh
+
+        with patch.object(builtins, "open", failing):
+            rc = self._run()
+        self.assertEqual(1, rc)
+        # The half-written status did NOT survive the rollback...
+        self.assertFalse(status_path.exists())
+        # ...nor did any other artifact of this run...
+        self.assertFalse(self.manifest_out.exists())
+        self.assertFalse((self.tmp / bc.BASELINE_PATH).exists())
+        for member in self.members:
+            self.assertFalse(
+                Path(member.pkl_path).with_suffix(".meta.json").exists())
+        self.assertEqual([], list(self.tmp.glob("*.pre_bootstrap_*")))
+        self.assertEqual([], list(self.manifest_out.parent
+                                  .glob("*.install*")))
+        # ...and the incumbent was never modified.
+        self.assertEqual(b"incumbent-model",
+                         self.incumbent.read_bytes())
+
     def test_post_link_cleanup_failure_is_not_a_failed_install(self) -> None:
         # codex #392 r11: once os.link succeeded the manifest IS
         # installed — a failing staging unlink must not surface as

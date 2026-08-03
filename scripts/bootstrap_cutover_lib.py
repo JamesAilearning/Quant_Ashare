@@ -271,6 +271,13 @@ SAME_FAMILY_KEYS = (
     # pinned default", never "skip" — a five-day-label or reseeded
     # member reusing the pinned dates is not the frozen protocol.
     "label_horizon_days", "seed",
+    # The DATA configuration (codex #392 r12): a member trained
+    # against a different bundle, region or adjustment mode keeps the
+    # pinned windows and hyperparameters yet is a different model
+    # family. provider_uri is compared AFTER the executor expands the
+    # base config's env-var template with the same loader function
+    # the pipeline uses.
+    "provider_uri", "region", "adjust_mode",
 )
 # Pinned PipelineConfig defaults for same-family keys the base config
 # may legitimately omit (governance cross-pins these against the real
@@ -278,6 +285,11 @@ SAME_FAMILY_KEYS = (
 SAME_FAMILY_DEFAULTS: dict[str, Any] = {
     "label_horizon_days": 1,
     "seed": 42,
+    "region": "cn",
+    "adjust_mode": "pre_adjusted",
+    # provider_uri has NO default on purpose: it must come from the
+    # mainline base config (expanded by the executor) — a base config
+    # without it is unadjudicable and refuses.
 }
 
 

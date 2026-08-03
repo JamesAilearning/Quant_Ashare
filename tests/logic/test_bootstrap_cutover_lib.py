@@ -273,14 +273,19 @@ class MemberTrainingConfigBinding(unittest.TestCase):
              "lambda_l1": 0.0, "lambda_l2": 1.0,
              "min_data_in_leaf": 50, "feature_fraction": 0.8,
              "bagging_fraction": 0.8, "bagging_freq": 5,
-             "topk": 50, "n_drop": 5}
+             "topk": 50, "n_drop": 5,
+             # The executor pre-expands the env-var template before
+             # handing the base config over (codex #392 r12).
+             "provider_uri": "D:/qlib_data/my_cn_data_pit",
+             "region": "cn"}
 
     def _run_config(self, **overrides: object) -> dict:
         cfg = {k: v for k, v in self._PRESET.items() if k != "extends"}
         cfg.update(self._BASE)
         # The pipeline resolves these from PipelineConfig defaults —
-        # the base config omits them (codex #392 r10).
-        cfg.update({"label_horizon_days": 1, "seed": 42})
+        # the base config omits them (codex #392 r10/r12).
+        cfg.update({"label_horizon_days": 1, "seed": 42,
+                    "adjust_mode": "pre_adjusted"})
         cfg.update(overrides)
         return cfg
 
@@ -312,6 +317,14 @@ class MemberTrainingConfigBinding(unittest.TestCase):
             # training-affecting fields are frozen too.
             "five-day labels": {"label_horizon_days": 5},
             "reseeded": {"seed": 7},
+            # codex #392 r12: data provenance is family identity — a
+            # member trained on another bundle/region/adjustment is a
+            # different model family even with identical windows and
+            # hyperparameters.
+            "other bundle": {
+                "provider_uri": "D:/qlib_data/other_bundle"},
+            "other region": {"region": "us"},
+            "raw prices": {"adjust_mode": "none"},
         }
         for label, override in cases.items():
             with self.assertRaises(CutoverRefusal, msg=label):
@@ -327,6 +340,23 @@ class MemberTrainingConfigBinding(unittest.TestCase):
 
         base = {k: v for k, v in self._BASE.items()
                 if k != "num_boost_round"}
+        with self.assertRaises(CutoverRefusal) as ctx:
+            check_member_training_config(
+                "member[0]", self._run_config(), self._PRESET, base)
+        self.assertIn("no pinned default", str(ctx.exception))
+
+    def test_provider_uri_has_no_default_by_design(self) -> None:
+        # codex #392 r12: provider_uri is machine-local — there is no
+        # correct universal pin. A base config that fails to state it
+        # must be unadjudicable (refuse), never silently admitted.
+        from scripts.bootstrap_cutover_lib import (
+            SAME_FAMILY_DEFAULTS,
+            check_member_training_config,
+        )
+
+        self.assertNotIn("provider_uri", SAME_FAMILY_DEFAULTS)
+        base = {k: v for k, v in self._BASE.items()
+                if k != "provider_uri"}
         with self.assertRaises(CutoverRefusal) as ctx:
             check_member_training_config(
                 "member[0]", self._run_config(), self._PRESET, base)
