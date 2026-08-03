@@ -357,6 +357,50 @@ def test_external_model_copy_brings_the_sidecar(tmp_path):
     assert "run_config_sha256" not in src_sidecar
 
 
+def test_sidecar_copy_failure_is_a_binding_failure(tmp_path, monkeypatch):
+    # codex #392 r17: a failing sidecar COPY (ENOSPC, permissions)
+    # must not escape as a raw OSError — Pipeline.run's non-fatal
+    # artifact handler would swallow it and the run would exit 0 with
+    # an unbindable model. It must ride the SidecarBindingError
+    # fail-loud carve-out.
+    import shutil as _shutil
+
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"model")
+    model_src.with_suffix(".pkl.meta.json").write_text(
+        json.dumps({"schema_version": "v1"}), encoding="utf-8")
+    real_copy2 = _shutil.copy2
+
+    def failing_copy2(src, dst, **kw):
+        if str(src).endswith(".meta.json"):
+            raise OSError(28, "No space left on device")
+        return real_copy2(src, dst, **kw)
+
+    monkeypatch.setattr(
+        "src.core.pipeline_result_artifacts.shutil.copy2",
+        failing_copy2)
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="cannot copy"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
 def test_model_without_sidecar_fails_loud(tmp_path):
     # codex #392 r15: the trainer's sidecar write is best-effort — if
     # it failed, the model is UNPROMOTABLE (no run_config_sha256, no

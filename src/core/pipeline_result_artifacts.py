@@ -278,8 +278,20 @@ def _copy_model_artifact(source: Path, target: Path) -> None:
     # and the binding still fails loud, as intended.
     source_sidecar = source.with_suffix(source.suffix + ".meta.json")
     if source_sidecar.is_file():
-        shutil.copy2(source_sidecar,
-                     target.with_suffix(target.suffix + ".meta.json"))
+        try:
+            shutil.copy2(source_sidecar,
+                         target.with_suffix(target.suffix + ".meta.json"))
+        except OSError as exc:
+            # A raw OSError would be swallowed by Pipeline.run's
+            # non-fatal artifact handler (codex #392 r17) — but a
+            # model without its copied sidecar is unpromotable, so
+            # this failure must ride the same fail-loud carve-out as
+            # the binding itself.
+            raise SidecarBindingError(
+                f"cannot copy the trainer sidecar {source_sidecar} "
+                f"beside the copied model: {exc} — the run provenance "
+                "cannot be bound, failing loud."
+            ) from exc
 
 
 def _build_metrics(
