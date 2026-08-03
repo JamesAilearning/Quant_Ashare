@@ -64,9 +64,12 @@ class CutoverPathPreconditions(unittest.TestCase):
     so a refusal is zero-write and ``--dry-run`` covers them."""
 
     _OK = dict(incumbent_exists=True, manifest_out_exists=False,
-               status_exists=False, incumbent="Z:/incumbent.pkl",
+               status_exists=False, baseline_exists=False,
+               incumbent="Z:/incumbent.pkl",
                manifest_out="Z:/prod_manifest.json",
-               status_path="docs/promotion/csi800_recert_status.json")
+               status_path="docs/promotion/csi800_recert_status.json",
+               baseline="docs/promotion/csi800_n5_bootstrap_baseline"
+                        ".json")
 
     def test_clean_slate_admits(self) -> None:
         from scripts.bootstrap_cutover_lib import check_cutover_paths
@@ -98,6 +101,16 @@ class CutoverPathPreconditions(unittest.TestCase):
             check_cutover_paths(
                 **{**self._OK, "status_exists": True})  # type: ignore[arg-type]
         self.assertIn("written ONCE", str(ctx.exception))
+
+    def test_existing_baseline_refused(self) -> None:
+        # codex #392 r14: a baseline survivor from an aborted run is
+        # not ours to truncate — nor to roll-back-delete later.
+        from scripts.bootstrap_cutover_lib import check_cutover_paths
+
+        with self.assertRaises(CutoverRefusal) as ctx:
+            check_cutover_paths(
+                **{**self._OK, "baseline_exists": True})  # type: ignore[arg-type]
+        self.assertIn("does not own", str(ctx.exception))
 
 
 class WriteTargetCollisions(unittest.TestCase):
@@ -422,6 +435,51 @@ class EvidenceProvenance(unittest.TestCase):
             check_evidence_provenance(["torn"])
 
 
+class RunConfigProvenance(unittest.TestCase):
+    """codex #392 r14: the run config is a mutable, uncommitted file
+    — the sidecar (digest-bound end-to-end) carries the digest of the
+    config the run persisted, and the cutover closes the loop."""
+
+    _SHA = "ab" * 32
+    _DEFAULT = object()
+
+    def _check(self, *, run_sha: str | None = None,
+               sidecar: object = _DEFAULT) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_run_config_provenance,
+        )
+
+        check_run_config_provenance(
+            "member[1]",
+            run_config_sha256=self._SHA if run_sha is None else run_sha,
+            sidecar={"run_config_sha256": self._SHA}
+            if sidecar is self._DEFAULT else sidecar)
+
+    def test_matching_digest_admits(self) -> None:
+        self._check()
+
+    def test_post_training_edit_refused(self) -> None:
+        # The exact r14 scenario: retuned training, YAML edited back
+        # to the pre-registered values afterwards.
+        with self.assertRaises(CutoverRefusal) as ctx:
+            self._check(run_sha="cd" * 32)
+        self.assertIn("do not\nre-authorize".replace("\n", " "),
+                      str(ctx.exception).replace("\n", " "))
+
+    def test_unbound_sidecar_refused(self) -> None:
+        # No run_config_sha256 = the run config cannot be trusted —
+        # fail closed, never "skip the check for old runs".
+        for label, sidecar in (
+                ("absent field", {"model_type": "LGBModel"}),
+                ("short sha", {"run_config_sha256": "abc"}),
+                ("non-hex sha", {"run_config_sha256": "z" * 64}),
+                ("non-string", {"run_config_sha256": 7}),
+                ("non-dict sidecar", ["x"]),
+                ("none sidecar", None)):
+            with self.assertRaises(CutoverRefusal, msg=label):
+                self._check(sidecar=sidecar)
+
+
 class ExecutorReadDiscipline(unittest.TestCase):
     """Source pins for the two adversarial-self-review P1s."""
 
@@ -456,6 +514,19 @@ class ExecutorReadDiscipline(unittest.TestCase):
         # the write phase keeps only the TOCTOU re-check (open "x").
         self.assertIn("inference meta target already exists",
                       gate_phase)
+
+    def test_run_config_is_bound_to_the_sidecar_chain(self) -> None:
+        # codex #392 r14: the semantic gate's run config must be
+        # digest-bound to the manifest-declared sidecar bytes — both
+        # the sidecar-sha equality and the provenance check live in
+        # the GATE phase.
+        gate_phase, write_phase = self._SRC.split("def main(", 1)
+        self.assertIn("check_run_config_provenance", gate_phase)
+        self.assertIn("!= member.meta_sha256", gate_phase)
+        # The baseline write is an exclusive create, never a
+        # truncating write (codex #392 r14).
+        self.assertIn('open(baseline_path, "x"', write_phase)
+        self.assertNotIn("baseline_path.write_text", write_phase)
 
 
 class CampaignEligibility(unittest.TestCase):

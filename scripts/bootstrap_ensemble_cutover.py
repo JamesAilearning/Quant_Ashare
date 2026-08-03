@@ -66,6 +66,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     check_member_training_config,
     check_preregistered_gate_windows,
     check_preregistered_windows,
+    check_run_config_provenance,
     check_write_targets,
 )
 from scripts.retrain_gate_lib import (  # noqa: E402
@@ -148,8 +149,9 @@ _RUN_ARTIFACTS_DIRNAME = "artifacts"
 _RUN_CONFIG_NAME = "config.yaml"
 
 
-def _member_run_config(pkl_path: Path) -> Any:
-    """The PRODUCER's resolved config for this member's training run.
+def _member_run_config(pkl_path: Path) -> tuple[Any, str] | None:
+    """The PRODUCER's resolved config for this member's training run,
+    with the sha256 of its exact bytes.
 
     Resolved from the exact known layout, never by searching upward
     (codex #392 r9): an upward search hits
@@ -159,7 +161,10 @@ def _member_run_config(pkl_path: Path) -> Any:
     through. A model outside the layout, a missing run config, or a
     second config sitting in the artifacts dir all return ``None``,
     which the caller turns into a refusal (an unbindable member cannot
-    become production)."""
+    become production).
+
+    Single read (codex #392 r14): the parsed config and the digest
+    the provenance check binds come from the SAME bytes."""
     artifacts_dir = pkl_path.parent
     if artifacts_dir.name != _RUN_ARTIFACTS_DIRNAME:
         return None
@@ -170,8 +175,10 @@ def _member_run_config(pkl_path: Path) -> Any:
     if not candidate.is_file():
         return None
     try:
-        return yaml.safe_load(candidate.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        raw = candidate.read_bytes()
+        return (yaml.safe_load(raw.decode("utf-8")),
+                hashlib.sha256(raw).hexdigest())
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return None
 
 
@@ -258,13 +265,16 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     # Adjudicated WITH the gates so --dry-run covers them and a
     # refusal stays zero-write.
     status_path = repo / RECERT_STATUS_PATH
+    baseline_target = repo / BASELINE_PATH
     check_cutover_paths(
         incumbent_exists=Path(args.incumbent).is_file(),
         manifest_out_exists=Path(args.manifest_out).exists(),
         status_exists=status_path.exists(),
+        baseline_exists=baseline_target.exists(),
         incumbent=str(args.incumbent),
         manifest_out=str(args.manifest_out),
-        status_path=str(status_path))
+        status_path=str(status_path),
+        baseline=str(baseline_target))
     # The manifest DIRECTORY must be pre-provisioned (codex #392 r10):
     # creating it here under a restrictive umask (e.g. 077) would
     # yield operator-owned 0700 directories — mirroring the file mode
@@ -445,10 +455,37 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     # run persists its resolved config beside the model.
     for i, (member, declared) in enumerate(
             zip(members, preset_declared, strict=True)):
+        resolved_run = _member_run_config(Path(member.pkl_path))
+        run_config: Any = None
+        if resolved_run is not None:
+            run_config, run_config_sha = resolved_run
+            # The run config is a mutable, uncommitted file — bind it
+            # to the digest chain the gates verified (codex #392 r14):
+            # the trainer sidecar (whose sha256 the manifest declares
+            # and the member gate re-validated) carries the digest of
+            # the config the RUN persisted. Read the sidecar ONCE,
+            # verify it is the manifest-bound bytes, then require the
+            # config digest to match — a post-training YAML edit
+            # cannot re-authorize a retuned member.
+            sidecar_bytes = _read_bytes_or_refuse(
+                Path(member.meta_path), f"member[{i}] trainer sidecar")
+            if (hashlib.sha256(sidecar_bytes).hexdigest()
+                    != member.meta_sha256):
+                raise CutoverRefusal(
+                    f"member[{i}] trainer sidecar on disk does not "
+                    "match the manifest's declared sha256 — refusing")
+            try:
+                sidecar_payload = json.loads(
+                    sidecar_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise CutoverRefusal(
+                    f"member[{i}] trainer sidecar unreadable: "
+                    f"{exc}") from exc
+            check_run_config_provenance(
+                f"member[{i}]", run_config_sha256=run_config_sha,
+                sidecar=sidecar_payload)
         check_member_training_config(
-            f"member[{i}]",
-            _canonicalize_provider_uri(
-                _member_run_config(Path(member.pkl_path))),
+            f"member[{i}]", _canonicalize_provider_uri(run_config),
             declared, base_config)
 
     # ── 3b. every write target must own its path (codex #392 r4) ─
@@ -507,10 +544,12 @@ def _backup_incumbent(incumbent: Path, stamp: str,
                       created: list[Path]) -> dict[str, str]:
     """DP-4 rollback kit: copy the incumbent canonical pkl and its
     metas beside themselves, timestamped. Missing metas are recorded
-    honestly rather than fabricated. Every destination is registered
-    in ``created`` BEFORE its copy starts (codex #392 r12) so a copy
+    honestly rather than fabricated. Every destination is born via an
+    exclusive descriptor (codex #392 r14) and registered in
+    ``created`` before its first byte (codex #392 r12), so a copy
     that fails partway leaves its partial file inside the rollback
-    set."""
+    set — and a file that already exists is someone else's, refused
+    and never registered."""
     record: dict[str, str] = {}
     targets = [incumbent,
                incumbent.with_suffix(".meta.json"),
@@ -520,10 +559,33 @@ def _backup_incumbent(incumbent: Path, stamp: str,
             record[src.name] = "absent"
             continue
         dst = src.with_name(src.name + f".pre_bootstrap_{stamp}")
-        if dst.exists():
-            raise CutoverRefusal(f"backup path already exists: {dst}")
+        # Race-free exclusive birth (codex #392 r14, the rotation
+        # executor's convention): two overlapping cutovers inside the
+        # same timestamp second would both pass an exists() check —
+        # copy2 would then truncate the shared destination and the
+        # losing run's rollback would unlink the WINNING run's only
+        # rollback kit. O_EXCL makes creation itself the
+        # adjudication; born 0600, then the source's mode (and
+        # owner/group on POSIX) is mirrored once the bytes are in
+        # place. Registration sits between the successful create and
+        # the first byte (r12) — a foreign file is never registered.
+        try:
+            bfd = os.open(str(dst),
+                          os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise CutoverRefusal(
+                f"backup path already exists: {dst} — an overlapping "
+                "cutover owns it; refusing") from exc
+        except OSError as exc:
+            raise CutoverRefusal(
+                f"cannot create backup {dst}: {exc}") from exc
         created.append(dst)
-        shutil.copy2(src, dst)
+        with os.fdopen(bfd, "wb") as bf, open(src, "rb") as sf:
+            shutil.copyfileobj(sf, bf)
+        shutil.copymode(src, dst)
+        if hasattr(os, "chown"):
+            src_stat = os.stat(src)
+            os.chown(dst, src_stat.st_uid, src_stat.st_gid)
         record[src.name] = str(dst)
     return record
 
@@ -692,10 +754,23 @@ def main(argv: list[str] | None = None) -> int:
             generated_at=now_iso)
         baseline_path = repo / BASELINE_PATH
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
-        created.append(baseline_path)   # before the write (r12)
-        baseline_path.write_text(
-            json.dumps(baseline, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8")
+        # EXCLUSIVE create (codex #392 r14): existence was adjudicated
+        # in the gate phase, but a baseline APPEARING since must
+        # refuse — write_text would truncate a canonical record this
+        # run does not own, and the rollback would then DELETE it
+        # (O_EXCL also refuses a symlink planted at this path).
+        # Registration sits between the successful create and the
+        # first byte (r12).
+        try:
+            with open(baseline_path, "x", encoding="utf-8") as fh:
+                created.append(baseline_path)
+                fh.write(json.dumps(baseline, indent=2,
+                                    ensure_ascii=False) + "\n")
+        except FileExistsError as exc:
+            raise CutoverRefusal(
+                f"baseline record APPEARED after the gate phase: "
+                f"{baseline_path} — an overlapping cutover owns it; "
+                "refusing to clobber") from exc
 
         status = build_initial_status(
             verdict_sidecar_path=VERDICT_SIDECAR_PATH,

@@ -232,6 +232,73 @@ def test_write_pipeline_result_artifacts_writes_all_files(tmp_path):
     assert meta["status"] == "completed"
     assert "config_hash" in meta
     assert meta["artifact_paths"]["metrics"].endswith("metrics.json")
+    # No sidecar in the run → the config-binding step is a no-op and
+    # must not fabricate one (codex #392 r14).
+    assert not (tmp_path / "out" / "artifacts" / "model.pkl.meta.json").exists()
+
+
+def test_run_config_digest_is_stamped_into_the_model_sidecar(tmp_path):
+    # codex #392 r14: ``<run>/config.yaml`` is mutable and unhashed —
+    # the promotion gate can only trust it if the run itself bound its
+    # digest into the trainer sidecar (which IS digest-chained via the
+    # manifest / member gate / serving loader).
+    import hashlib
+
+    out_dir = tmp_path / "out"
+    sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel"}),
+        encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+    )
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    # The pre-existing provenance fields survive the update...
+    assert sidecar["model_type"] == "LGBModel"
+    # ...and the stamped digest is over the EXACT persisted bytes.
+    assert sidecar["run_config_sha256"] == hashlib.sha256(
+        (out_dir / "config.yaml").read_bytes()).hexdigest()
+
+
+def test_corrupt_sidecar_fails_loud_instead_of_unbound(tmp_path):
+    # A sidecar that exists but cannot be updated must raise — for a
+    # promotion-bound run the binding is load-bearing, and a silent
+    # skip would surface only as a cutover refusal months later.
+    out_dir = tmp_path / "out"
+    sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text("not json {", encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(PipelineResultArtifactError, match="sidecar"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+        )
 
 
 def test_write_pipeline_result_artifacts_metrics_section(tmp_path):

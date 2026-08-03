@@ -63,8 +63,20 @@ class MemberRunConfigResolution(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_reads_the_run_root_config(self) -> None:
-        cfg = bc._member_run_config(self.pkl)
+        resolved = bc._member_run_config(self.pkl)
+        assert resolved is not None
+        cfg, sha = resolved
         self.assertEqual("csi800", cfg["instruments"])
+        # The digest is over the SAME bytes the parse consumed
+        # (codex #392 r14) — what the provenance check binds is what
+        # the semantic gate read.
+        import hashlib
+
+        self.assertEqual(
+            hashlib.sha256(
+                (self.run_dir / "config.yaml").read_bytes()
+            ).hexdigest(),
+            sha)
 
     def test_stray_artifacts_config_is_ambiguous_and_refuses(self) -> None:
         # The scenario: a copied/stale config in artifacts/ that an
@@ -81,6 +93,39 @@ class MemberRunConfigResolution(unittest.TestCase):
     def test_missing_run_config_refuses(self) -> None:
         (self.run_dir / "config.yaml").unlink()
         self.assertIsNone(bc._member_run_config(self.pkl))
+
+
+class BackupExclusiveCreation(unittest.TestCase):
+    """codex #392 r14: backups are born O_EXCL — creation itself is
+    the adjudication, so overlapping cutovers can never share (and
+    then roll-back-destroy) one rollback kit."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.incumbent = self.tmp / "alpha158_lgb_pit.pkl"
+        self.incumbent.write_bytes(b"incumbent-model")
+
+    def test_existing_backup_refuses_and_is_not_registered(self) -> None:
+        foreign = self.incumbent.with_name(
+            self.incumbent.name + ".pre_bootstrap_STAMP")
+        foreign.write_bytes(b"the-winning-runs-rollback-kit")
+        created: list[Path] = []
+        with self.assertRaises(bc.CutoverRefusal):
+            bc._backup_incumbent(self.incumbent, "STAMP", created)
+        # The foreign kit was neither truncated nor registered for
+        # rollback deletion.
+        self.assertEqual(b"the-winning-runs-rollback-kit",
+                         foreign.read_bytes())
+        self.assertEqual([], created)
+
+    def test_backup_copies_bytes_and_registers(self) -> None:
+        created: list[Path] = []
+        record = bc._backup_incumbent(self.incumbent, "STAMP", created)
+        dst = Path(record[self.incumbent.name])
+        self.assertEqual(b"incumbent-model", dst.read_bytes())
+        self.assertIn(dst, created)
 
 
 class ProviderUriCanonicalization(unittest.TestCase):
@@ -327,6 +372,28 @@ class CutoverWritePhase(unittest.TestCase):
         self.assertEqual([], list(self.manifest_out.parent
                                   .glob("*.install*")))
         # ...and the incumbent was never modified.
+        self.assertEqual(b"incumbent-model",
+                         self.incumbent.read_bytes())
+
+    def test_foreign_baseline_is_never_truncated(self) -> None:
+        # codex #392 r14 P1: a baseline survivor (aborted run whose
+        # rollback could not finish, or an overlapping cutover) must
+        # not be truncated by our write nor deleted by our rollback.
+        baseline_path = self.tmp / bc.BASELINE_PATH
+        baseline_path.parent.mkdir(parents=True)
+        baseline_path.write_text('{"owner": "someone-else"}',
+                                 encoding="utf-8")
+        rc = self._run()
+        self.assertEqual(1, rc)
+        self.assertEqual('{"owner": "someone-else"}',
+                         baseline_path.read_text(encoding="utf-8"))
+        # Everything this run created before the refusal rolled back.
+        self.assertFalse(self.manifest_out.exists())
+        self.assertFalse((self.tmp / RECERT_STATUS_PATH).exists())
+        for member in self.members:
+            self.assertFalse(
+                Path(member.pkl_path).with_suffix(".meta.json").exists())
+        self.assertEqual([], list(self.tmp.glob("*.pre_bootstrap_*")))
         self.assertEqual(b"incumbent-model",
                          self.incumbent.read_bytes())
 

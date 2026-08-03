@@ -8,8 +8,10 @@ analyzers, or metric helpers: official metric values are copied from
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import platform
 import shutil
 from collections.abc import Mapping
@@ -99,6 +101,7 @@ def write_pipeline_result_artifacts(
     )
     if model_artifact_path:
         _copy_model_artifact(Path(model_artifact_path), model_path)
+    _bind_run_config_to_sidecar(config_path, model_path)
 
     metadata = _build_metadata(
         output_dir=output_dir,
@@ -173,6 +176,52 @@ def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
 
 def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
+
+
+def _bind_run_config_to_sidecar(config_path: Path, model_path: Path) -> None:
+    """Stamp the persisted run config's digest into the model sidecar.
+
+    ``<run>/config.yaml`` is otherwise a mutable, unhashed file: the
+    bootstrap cutover adjudicates the frozen-family semantics against
+    it, so an operator could train with retuned settings and edit the
+    YAML back to the pre-registered values afterwards (codex #392
+    r14). The trainer sidecar IS digest-bound end-to-end (manifest
+    ``meta_sha256`` → member gate → serving loader), so carrying the
+    config digest here makes the run config tamper-evident on that
+    same chain — the promotion gate recomputes the digest of the
+    bytes on disk and refuses a mismatch or an absent field.
+
+    A missing sidecar skips silently (non-production layouts, and the
+    sidecar's own writer is best-effort); a sidecar that exists but
+    cannot be updated raises — for a promotion-bound run the binding
+    is load-bearing, and surfacing the failure at run time beats a
+    cutover refusal months later.
+    """
+    sidecar_path = model_path.with_suffix(model_path.suffix + ".meta.json")
+    if not sidecar_path.is_file():
+        return
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        if not isinstance(sidecar, dict):
+            raise PipelineResultArtifactError(
+                f"model sidecar is not an object: {sidecar_path}."
+            )
+        sidecar["run_config_sha256"] = hashlib.sha256(
+            config_path.read_bytes()
+        ).hexdigest()
+        # Atomic via write-to-temp + replace — the sidecar write
+        # convention (ModelTrainer._write_model_sidecar).
+        tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(sidecar, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(tmp, sidecar_path)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PipelineResultArtifactError(
+            f"cannot bind the run config digest into the model sidecar "
+            f"{sidecar_path}: {exc}"
+        ) from exc
 
 
 def _copy_model_artifact(source: Path, target: Path) -> None:

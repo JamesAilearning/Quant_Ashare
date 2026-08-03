@@ -76,8 +76,9 @@ def _finite(value: Any) -> bool:
 
 def check_cutover_paths(
     *, incumbent_exists: bool, manifest_out_exists: bool,
-    status_exists: bool, incumbent: str, manifest_out: str,
-    status_path: str,
+    status_exists: bool, baseline_exists: bool,
+    incumbent: str, manifest_out: str, status_path: str,
+    baseline: str,
 ) -> None:
     """Path preconditions, adjudicated with the OTHER gates — i.e.
     BEFORE any production write (adversarial self-review).
@@ -91,7 +92,10 @@ def check_cutover_paths(
       production;
     * the certification-status artifact must NOT exist — its first
       write belongs to THIS path and a later state belongs to the
-      annual re-certification flow (R1-DP-D).
+      annual re-certification flow (R1-DP-D);
+    * the baseline record must NOT exist — a survivor from an aborted
+      run (or a previous bootstrap) is not ours to truncate or to
+      roll-back-delete (codex #392 r14).
 
     Checking these here (rather than mid-write) is what keeps
     ``--dry-run`` honest and the refusal zero-write: the prior art's
@@ -114,6 +118,13 @@ def check_cutover_paths(
             f"{status_path} — the initial WIN is written ONCE by this "
             "bootstrap; a later state belongs to the annual "
             "re-certification flow. Refusing.")
+    if baseline_exists:
+        raise CutoverRefusal(
+            f"baseline record already exists: {baseline} — either a "
+            "previous bootstrap wrote it or an aborted run's rollback "
+            "could not remove it (codex #392 r14); truncating it would "
+            "destroy a canonical record this run does not own, and a "
+            "later failure would roll-back-DELETE it. Refusing.")
 
 
 def check_write_targets(targets: dict[str, str]) -> None:
@@ -356,6 +367,39 @@ class _Missing:
 
 
 _MISSING = _Missing()
+
+
+def check_run_config_provenance(
+    label: str, *, run_config_sha256: str, sidecar: Any,
+) -> None:
+    """Bind the run config the semantic gate reads to the gated chain.
+
+    ``<run>/config.yaml`` is a mutable, uncommitted file (codex #392
+    r14): an operator could train with retuned settings and edit the
+    YAML back to the pre-registered values afterwards. The run's own
+    result serializer therefore stamps the persisted config's digest
+    into the trainer sidecar — which IS digest-bound end-to-end
+    (manifest ``meta_sha256`` → member gate → serving loader). This
+    check closes the loop: the config bytes on disk must be exactly
+    the ones the run persisted, or the member cannot be promoted."""
+    if not isinstance(sidecar, dict):
+        raise CutoverRefusal(
+            f"{label}: trainer sidecar is not an object — cannot bind "
+            "the run config to the gated chain, refusing")
+    declared = sidecar.get("run_config_sha256")
+    if (not isinstance(declared, str) or len(declared) != 64
+            or any(c not in "0123456789abcdef" for c in declared)):
+        raise CutoverRefusal(
+            f"{label}: trainer sidecar carries no run_config_sha256 — "
+            "the run predates the config-binding serializer or was not "
+            "produced by the pipeline; its run config cannot be "
+            "trusted, refusing")
+    if declared != run_config_sha256:
+        raise CutoverRefusal(
+            f"{label}: the run config on disk (sha256 "
+            f"{run_config_sha256}) is NOT the config the run persisted "
+            f"({declared}) — post-training edits to config.yaml do not "
+            "re-authorize a member, refusing")
 
 
 def check_evidence_provenance(aggregate: Any) -> None:
