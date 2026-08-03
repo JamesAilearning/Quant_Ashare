@@ -271,6 +271,15 @@ def _copy_model_artifact(source: Path, target: Path) -> None:
     if source.resolve() == target.resolve():
         return
     shutil.copy2(source, target)
+    # The trainer writes its provenance sidecar BESIDE the model — an
+    # external-source copy must bring it along (codex #392 r16), or
+    # the provenance binding below would refuse a perfectly valid
+    # trainer-produced model. A source with no sidecar copies nothing
+    # and the binding still fails loud, as intended.
+    source_sidecar = source.with_suffix(source.suffix + ".meta.json")
+    if source_sidecar.is_file():
+        shutil.copy2(source_sidecar,
+                     target.with_suffix(target.suffix + ".meta.json"))
 
 
 def _build_metrics(

@@ -309,6 +309,54 @@ def test_absent_git_provenance_is_stamped_as_none(tmp_path):
     assert sidecar["source_git_dirty"] is None
 
 
+def test_external_model_copy_brings_the_sidecar(tmp_path):
+    # codex #392 r16: a model trained OUTSIDE the run dir carries its
+    # trainer sidecar beside it — the copy branch must bring both, so
+    # the provenance binding lands on the copied sidecar instead of
+    # refusing a valid trainer-produced model.
+    import hashlib
+
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"model")
+    model_src.with_suffix(".pkl.meta.json").write_text(
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel"}),
+        encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+        model_artifact_path=str(model_src),
+        git_provenance={"commit": "cd" * 20, "dirty": False},
+    )
+    copied = json.loads(
+        (out_dir / "artifacts" / "model.pkl.meta.json").read_text(
+            encoding="utf-8"))
+    # The copied sidecar carries the trainer fields AND the binding.
+    assert copied["model_type"] == "LGBModel"
+    assert copied["run_config_sha256"] == hashlib.sha256(
+        (out_dir / "config.yaml").read_bytes()).hexdigest()
+    assert copied["source_git_commit"] == "cd" * 20
+    # The SOURCE sidecar is untouched (the run's own artifact set is
+    # what promotion consumes).
+    src_sidecar = json.loads(
+        model_src.with_suffix(".pkl.meta.json").read_text(
+            encoding="utf-8"))
+    assert "run_config_sha256" not in src_sidecar
+
+
 def test_model_without_sidecar_fails_loud(tmp_path):
     # codex #392 r15: the trainer's sidecar write is best-effort — if
     # it failed, the model is UNPROMOTABLE (no run_config_sha256, no
