@@ -606,6 +606,10 @@ class ExecutorReadDiscipline(unittest.TestCase):
         self.assertIn("cwd=wt", self._SRC)
         _, write_phase = self._SRC.split("def main(", 1)
         self.assertIn("pre-install recheck", write_phase)
+        # ...and the AUTHORITATIVE pass runs after the link (codex
+        # #392 r23): the sequential pre-link read leaves early
+        # members exposed while later files hash.
+        self.assertIn("post-install recheck", write_phase)
 
 
 class CampaignEligibility(unittest.TestCase):

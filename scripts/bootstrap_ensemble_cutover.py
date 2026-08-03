@@ -646,6 +646,33 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     }
 
 
+def _recheck_members(members: list[Any], moment: str) -> None:
+    """Refuse unless every member's pkl + trainer sidecar still hash
+    to the manifest's declared digests (codex #392 r22/r23, the
+    rotation executor's pre-swap discipline). Called BEFORE the
+    manifest link (no-churn refusal: the production path is never
+    created) and again AFTER it — the post-link pass runs after the
+    install sequence's last mutation point, so "success" certifies
+    the members were byte-stable at a moment strictly after the
+    manifest became visible. Drift after that is post-install drift,
+    which any path-referencing manifest is exposed to for its whole
+    life and the serving loader's fail-loud chain refuses before a
+    single recommendation is produced."""
+    for i, member in enumerate(members):
+        for what, spath, expected in (
+                ("pkl", Path(member.pkl_path), member.pkl_sha256),
+                ("trainer sidecar", Path(member.meta_path),
+                 member.meta_sha256)):
+            data = _read_bytes_or_refuse(
+                spath, f"member[{i}] {what} ({moment})")
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise CutoverRefusal(
+                    f"member[{i}] {what} changed since the gate "
+                    f"phase: {spath} — the manifest's hashes would "
+                    "not match disk and serving would refuse the "
+                    f"ensemble ({moment}). Refusing.")
+
+
 def _backup_incumbent(incumbent: Path, stamp: str,
                       created: list[Path]) -> dict[str, str]:
     """DP-4 rollback kit: copy the incumbent canonical pkl and its
@@ -786,27 +813,10 @@ def main(argv: list[str] | None = None) -> int:
                 "fit_start": member.fit_start,
                 "fit_end": member.fit_end,
             })
-        # Pre-install recheck (codex #392 r22, the rotation
-        # executor's pre-swap discipline): the member bytes were
-        # validated in the gate phase, but a retrain or operator
-        # overwrite landing between then and NOW would install a
-        # manifest whose hashes no longer match disk — serving would
-        # refuse the new canonical at the next morning load. Recheck
-        # every member at the last moment before the point of no
-        # return; drift refuses and rolls back, production unchanged.
-        for i, member in enumerate(members):
-            for what, spath, expected in (
-                    ("pkl", Path(member.pkl_path), member.pkl_sha256),
-                    ("trainer sidecar", Path(member.meta_path),
-                     member.meta_sha256)):
-                data = _read_bytes_or_refuse(
-                    spath, f"member[{i}] {what} (pre-install recheck)")
-                if hashlib.sha256(data).hexdigest() != expected:
-                    raise CutoverRefusal(
-                        f"member[{i}] {what} changed since the gate "
-                        f"phase: {spath} — the manifest's hashes would "
-                        "not match disk and serving would refuse the "
-                        "ensemble. Refusing.")
+        # Members must still be the gated bytes before we touch the
+        # production manifest path at all (codex #392 r22) — a
+        # refusal here is zero-churn.
+        _recheck_members(members, "pre-install recheck")
         out = Path(args.manifest_out)
         # EXCLUSIVE unique staging (codex #392 r1, the rotation
         # executor's pattern): a predictable `<manifest>.install` that
@@ -872,6 +882,14 @@ def main(argv: list[str] | None = None) -> int:
             residue_notes.append(
                 f"staging file survives at {tmp} ({exc}) — remove by "
                 "hand; the installed manifest is unaffected")
+        # AUTHORITATIVE recheck (codex #392 r23): the pre-link pass
+        # reads members sequentially, so an early member could drift
+        # while later (large) files were still being hashed. This
+        # pass runs after the install sequence's last mutation point
+        # — a failure here declares the install FAILED, the rollback
+        # removes the just-linked manifest (it is in `created`), and
+        # production stays on the incumbent.
+        _recheck_members(members, "post-install recheck")
 
         baseline = build_baseline_record(
             manifest_path=str(out),

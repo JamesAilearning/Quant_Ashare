@@ -508,6 +508,30 @@ class CutoverWritePhase(unittest.TestCase):
         self.assertEqual(b"incumbent-model",
                          self.incumbent.read_bytes())
 
+    def test_drift_during_install_is_caught_after_the_link(self) -> None:
+        # codex #392 r23: a member overwritten AFTER the pre-link
+        # recheck passed (while later files were hashing / the link
+        # ran) must still fail the install — the post-link pass is
+        # the authority, and the just-linked manifest rolls back.
+        real_link = os.link
+
+        def mutating_link(src, dst, *a, **kw):  # noqa: ANN001, ANN002
+            Path(self.members[0].pkl_path).write_bytes(
+                b"retrained-mid-install")
+            return real_link(src, dst, *a, **kw)
+
+        with patch.object(bc.os, "link", mutating_link):
+            rc = self._run()
+        self.assertEqual(1, rc)
+        self.assertFalse(self.manifest_out.exists())
+        self.assertFalse((self.tmp / bc.BASELINE_PATH).exists())
+        self.assertFalse((self.tmp / RECERT_STATUS_PATH).exists())
+        self.assertEqual([], list(self.tmp.glob("*.pre_bootstrap_*")))
+        self.assertEqual([], list(self.manifest_out.parent
+                                  .glob("*.install*")))
+        self.assertEqual(b"incumbent-model",
+                         self.incumbent.read_bytes())
+
     def test_foreign_baseline_is_never_truncated(self) -> None:
         # codex #392 r14 P1: a baseline survivor (aborted run whose
         # rollback could not finish, or an overlapping cutover) must
