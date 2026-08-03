@@ -266,45 +266,46 @@ def _bind_run_provenance_to_sidecar(
 
 
 def _copy_model_artifact(source: Path, target: Path) -> None:
-    if not source.is_file():
-        raise PipelineResultArtifactError(
-            f"model_artifact_path does not exist: {source}."
-        )
-    if source.resolve() == target.resolve():
-        return
+    """Copy a supplied model — and its trainer sidecar — into the
+    run's artifact set.
+
+    EVERY failure mode here raises :class:`SidecarBindingError`
+    (codex #392 r16-r19): a supplied model that goes missing, a
+    failing model copy, or a failing sidecar copy each leave the run
+    without a promotable artifact set, and a raw
+    ``PipelineResultArtifactError``/``OSError`` would be swallowed by
+    ``Pipeline.run``'s non-fatal artifact handler — the run would
+    exit 0 with exactly the unbound state the fail-loud path exists
+    to prevent."""
     try:
-        shutil.copy2(source, target)
-    except OSError as exc:
-        # Same fail-loud translation as the sidecar copy (codex #392
-        # r18): a raw OSError here would be swallowed by Pipeline.run's
-        # non-fatal artifact handler and the run would exit 0 with no
-        # copied model and no bound provenance.
-        raise SidecarBindingError(
-            f"cannot copy the model artifact {source} into the run's "
-            f"artifact set: {exc} — the run would end with no copied "
-            "model and no bound provenance, failing loud."
-        ) from exc
-    # The trainer writes its provenance sidecar BESIDE the model — an
-    # external-source copy must bring it along (codex #392 r16), or
-    # the provenance binding below would refuse a perfectly valid
-    # trainer-produced model. A source with no sidecar copies nothing
-    # and the binding still fails loud, as intended.
-    source_sidecar = source.with_suffix(source.suffix + ".meta.json")
-    if source_sidecar.is_file():
-        try:
-            shutil.copy2(source_sidecar,
-                         target.with_suffix(target.suffix + ".meta.json"))
-        except OSError as exc:
-            # A raw OSError would be swallowed by Pipeline.run's
-            # non-fatal artifact handler (codex #392 r17) — but a
-            # model without its copied sidecar is unpromotable, so
-            # this failure must ride the same fail-loud carve-out as
-            # the binding itself.
+        if not source.is_file():
             raise SidecarBindingError(
-                f"cannot copy the trainer sidecar {source_sidecar} "
-                f"beside the copied model: {exc} — the run provenance "
-                "cannot be bound, failing loud."
-            ) from exc
+                f"model_artifact_path does not exist: {source} — a "
+                "supplied model that cannot be copied leaves the run "
+                "with no model and no bound provenance, failing loud."
+            )
+        if source.resolve() == target.resolve():
+            return
+        shutil.copy2(source, target)
+        # The trainer writes its provenance sidecar BESIDE the model
+        # — an external-source copy must bring it along (codex #392
+        # r16), or the provenance binding below would refuse a
+        # perfectly valid trainer-produced model. A source with no
+        # sidecar copies nothing and the binding still fails loud, as
+        # intended.
+        source_sidecar = source.with_suffix(source.suffix + ".meta.json")
+        if source_sidecar.is_file():
+            shutil.copy2(
+                source_sidecar,
+                target.with_suffix(target.suffix + ".meta.json"))
+    except SidecarBindingError:
+        raise
+    except OSError as exc:
+        raise SidecarBindingError(
+            f"cannot copy the model artifact set from {source}: {exc} "
+            "— the run would end with no copied model or unbound "
+            "provenance, failing loud."
+        ) from exc
 
 
 def _build_metrics(

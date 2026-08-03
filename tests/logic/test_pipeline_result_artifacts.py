@@ -437,6 +437,32 @@ def test_model_copy_failure_is_a_binding_failure(tmp_path, monkeypatch):
         )
 
 
+def test_vanished_model_source_is_a_binding_failure(tmp_path):
+    # codex #392 r19: a supplied model that is deleted/inaccessible
+    # before serialization used to raise the BASE error, which the
+    # Pipeline.run carve-out does not re-raise — the run would exit 0
+    # with no model and no bound provenance. It must ride the same
+    # fail-loud class.
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="does not exist"):
+        write_pipeline_result_artifacts(
+            tmp_path / "out",
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(tmp_path / "gone.pkl"),
+        )
+
+
 def test_model_without_sidecar_fails_loud(tmp_path):
     # codex #392 r15: the trainer's sidecar write is best-effort — if
     # it failed, the model is UNPROMOTABLE (no run_config_sha256, no
