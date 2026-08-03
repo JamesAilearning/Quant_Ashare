@@ -153,18 +153,25 @@
 - [ ] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-C' — 自举点火 + 切换执行（数字 STOP）
-- [ ] 三名错峰成员训练配置定稿(训窗终点 T-6m/T-3m/T,各 24m+3m,
-      跑前钉死具体日期)
+- [x] 三名错峰成员训练配置定稿(训窗终点 T-6m/T-3m/T,各 24m+3m,
+      跑前钉死具体日期)——csi800_n5_bootstrap_m{1,2,3}.yaml:
+      训窗终点 2025-08-13/2025-11-13/2026-02-13(间隔 92/92 天),
+      训窗跨度 730/731/725 天,valid 92/87/89 天;治理测试钉死窗口
+      与 serving/gate 两套 pins 的相容性;三份除窗口外逐字相同
 - [ ] **三发 GPU 点火 = 操作人执行,严格串行**
 - [ ] 三成员过自举门(codex #389 r13 语义:成员级门 trainer/IC
       逐一评估 + ensemble 级门退化/约束干跑/veto 面对三成员组合
       整体跑一次;任一失败=自举中止不切换现任续任,无"沿用旧
       ensemble"分支;gate 工件入库)
-- [ ] **自举晋升路径全门**(codex #389 r8:首次切换是晋升路径,
+- [x] **自举晋升路径全门**(codex #389 r8:首次切换是晋升路径,
       非维护路径)：侧车 --verify + promotion_eligible 机器前置 +
       iso_week 复核锚定门(origin/main git show 读证据+config 绑定
       +净>0 重导)——全过才允许切换执行,任一不过=如实入档中止
-- [ ] 切换执行:pre-promote 备份+三成员 inference meta+serving
+      (scripts/bootstrap_cutover_lib.py 纯判据 + 
+      scripts/bootstrap_ensemble_cutover.py 执行器;锚读取钉死单一
+      revision;dirty 树证据拒;自举成员窗口豁免时效界而 ensemble
+      干跑窗仍受时效界——治理测试钉守该分歧)
+- [x] 切换执行工装:pre-promote 备份+三成员 inference meta+serving
       manifest+baseline json(④ 先例)+**初始 WIN 状态工件**
       (codex #389 r7:csi800_recert_status.json 首写——verdict WIN
       +现行 #383 verdict 侧车内容哈希引用+证据锚,与切换同 PR 入库;

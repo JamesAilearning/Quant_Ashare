@@ -37,6 +37,7 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
 )
 from src.core.pipeline_result_artifacts import (  # noqa: E402
     PipelineResultArtifactError,
+    SidecarBindingError,
     _compound_return,
     _config_to_dict,
     _finite_float,
@@ -232,6 +233,410 @@ def test_write_pipeline_result_artifacts_writes_all_files(tmp_path):
     assert meta["status"] == "completed"
     assert "config_hash" in meta
     assert meta["artifact_paths"]["metrics"].endswith("metrics.json")
+    # No sidecar in the run → the config-binding step is a no-op and
+    # must not fabricate one (codex #392 r14).
+    assert not (tmp_path / "out" / "artifacts" / "model.pkl.meta.json").exists()
+
+
+def test_run_config_digest_is_stamped_into_the_model_sidecar(tmp_path):
+    # codex #392 r14: ``<run>/config.yaml`` is mutable and unhashed —
+    # the promotion gate can only trust it if the run itself bound its
+    # digest into the trainer sidecar (which IS digest-chained via the
+    # manifest / member gate / serving loader).
+    import hashlib
+    import hashlib as _hl
+
+    out_dir = tmp_path / "out"
+    sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
+    sidecar_path.parent.mkdir(parents=True)
+    (out_dir / "artifacts" / "model.pkl").write_bytes(b"model")
+    sidecar_path.write_text(
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel",
+                    "pkl_sha256": _hl.sha256(b"model").hexdigest()}),
+        encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+        git_provenance={"commit": "ab" * 20, "dirty": False},
+    )
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    # The pre-existing provenance fields survive the update...
+    assert sidecar["model_type"] == "LGBModel"
+    # ...and the stamped digest is over the EXACT persisted bytes.
+    assert sidecar["run_config_sha256"] == hashlib.sha256(
+        (out_dir / "config.yaml").read_bytes()).hexdigest()
+    # Source provenance is copied VERBATIM from the run-start capture
+    # (codex #392 r15) — the promotion gate adjudicates it later.
+    assert sidecar["source_git_commit"] == "ab" * 20
+    assert sidecar["source_git_dirty"] is False
+
+
+def test_absent_git_provenance_is_stamped_as_none(tmp_path):
+    # No capture -> None recorded honestly (never omitted, never
+    # fabricated); the promotion gate fails closed on None.
+    import hashlib as _hl
+
+    out_dir = tmp_path / "out"
+    sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
+    sidecar_path.parent.mkdir(parents=True)
+    (out_dir / "artifacts" / "model.pkl").write_bytes(b"model")
+    sidecar_path.write_text(
+        json.dumps({"schema_version": "v1",
+                    "pkl_sha256": _hl.sha256(b"model").hexdigest()}),
+        encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+    )
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["source_git_commit"] is None
+    assert sidecar["source_git_dirty"] is None
+
+
+def test_external_model_copy_brings_the_sidecar(tmp_path):
+    # codex #392 r16: a model trained OUTSIDE the run dir carries its
+    # trainer sidecar beside it — the copy branch must bring both, so
+    # the provenance binding lands on the copied sidecar instead of
+    # refusing a valid trainer-produced model.
+    import hashlib
+
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"model")
+    model_src.with_suffix(".pkl.meta.json").write_text(
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel",
+                    "pkl_sha256": hashlib.sha256(b"model").hexdigest()}),
+        encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+        model_artifact_path=str(model_src),
+        git_provenance={"commit": "cd" * 20, "dirty": False},
+    )
+    copied = json.loads(
+        (out_dir / "artifacts" / "model.pkl.meta.json").read_text(
+            encoding="utf-8"))
+    # The copied sidecar carries the trainer fields AND the binding.
+    assert copied["model_type"] == "LGBModel"
+    assert copied["run_config_sha256"] == hashlib.sha256(
+        (out_dir / "config.yaml").read_bytes()).hexdigest()
+    assert copied["source_git_commit"] == "cd" * 20
+    # The SOURCE sidecar is untouched (the run's own artifact set is
+    # what promotion consumes).
+    src_sidecar = json.loads(
+        model_src.with_suffix(".pkl.meta.json").read_text(
+            encoding="utf-8"))
+    assert "run_config_sha256" not in src_sidecar
+
+
+def test_sidecar_copy_failure_is_a_binding_failure(tmp_path, monkeypatch):
+    # codex #392 r17: a failing sidecar COPY (ENOSPC, permissions)
+    # must not escape as a raw OSError — Pipeline.run's non-fatal
+    # artifact handler would swallow it and the run would exit 0 with
+    # an unbindable model. It must ride the SidecarBindingError
+    # fail-loud carve-out.
+    import shutil as _shutil
+
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"model")
+    model_src.with_suffix(".pkl.meta.json").write_text(
+        json.dumps({"schema_version": "v1"}), encoding="utf-8")
+    real_copy2 = _shutil.copy2
+
+    def failing_copy2(src, dst, **kw):
+        if str(src).endswith(".meta.json"):
+            raise OSError(28, "No space left on device")
+        return real_copy2(src, dst, **kw)
+
+    monkeypatch.setattr(
+        "src.core.pipeline_result_artifacts.shutil.copy2",
+        failing_copy2)
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="cannot copy"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
+def test_model_copy_failure_is_a_binding_failure(tmp_path, monkeypatch):
+    # codex #392 r18: the PRIMARY model copy failing (ENOSPC,
+    # destination permissions) must ride the same fail-loud carve-out
+    # — a run with no copied model and no bound provenance must not
+    # exit 0.
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"model")
+
+    def failing_copy2(src, dst, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(
+        "src.core.pipeline_result_artifacts.shutil.copy2",
+        failing_copy2)
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="cannot copy the model"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
+def test_vanished_model_source_is_a_binding_failure(tmp_path):
+    # codex #392 r19: a supplied model that is deleted/inaccessible
+    # before serialization used to raise the BASE error, which the
+    # Pipeline.run carve-out does not re-raise — the run would exit 0
+    # with no model and no bound provenance. It must ride the same
+    # fail-loud class.
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="does not exist"):
+        write_pipeline_result_artifacts(
+            tmp_path / "out",
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(tmp_path / "gone.pkl"),
+        )
+
+
+def _one_prediction():
+    return pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+
+
+def test_stale_target_sidecar_cannot_masquerade(tmp_path):
+    # codex #392 r20: reused output dir + external model WITHOUT a
+    # source sidecar — the stale artifacts/model.pkl.meta.json from an
+    # earlier run must not receive this run's provenance stamp (it
+    # describes the OLD pickle; the pkl_sha256 mismatch would only
+    # surface at the promotion gate).
+    out_dir = tmp_path / "out"
+    stale = out_dir / "artifacts" / "model.pkl.meta.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"pkl_sha256": "old" * 21 + "x"}),
+                     encoding="utf-8")
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"new-model")
+    with pytest.raises(SidecarBindingError, match="stale sidecar"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=_one_prediction(),
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
+def test_stale_target_sidecar_is_overwritten_by_the_source(tmp_path):
+    # The healthy variant: the source DOES carry its sidecar — the
+    # copy replaces the stale target wholesale, and the binding lands
+    # on the fresh copy.
+    out_dir = tmp_path / "out"
+    stale = out_dir / "artifacts" / "model.pkl.meta.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"model_type": "OLD"}),
+                     encoding="utf-8")
+    import hashlib as _hl
+
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"new-model")
+    model_src.with_suffix(".pkl.meta.json").write_text(
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel",
+                    "pkl_sha256":
+                        _hl.sha256(b"new-model").hexdigest()}),
+        encoding="utf-8")
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=_one_prediction(),
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+        model_artifact_path=str(model_src),
+    )
+    bound = json.loads(stale.read_text(encoding="utf-8"))
+    assert bound["model_type"] == "LGBModel"
+    assert "run_config_sha256" in bound
+
+
+def test_sidecar_describing_another_model_refused(tmp_path):
+    # codex #392 r21: a source sidecar that exists but describes a
+    # DIFFERENT pickle (stale pkl_sha256, or none at all) must refuse
+    # at serialization time — ensemble serving would reject the
+    # artifact at promotion anyway, months later.
+    import hashlib as _hl
+
+    for label, sidecar in (
+            ("mismatched", {"schema_version": "v1",
+                            "pkl_sha256":
+                                _hl.sha256(b"other").hexdigest()}),
+            ("absent", {"schema_version": "v1"})):
+        out_dir = tmp_path / f"out_{label}"
+        model_src = tmp_path / f"src_{label}" / "model.pkl"
+        model_src.parent.mkdir()
+        model_src.write_bytes(b"model")
+        model_src.with_suffix(".pkl.meta.json").write_text(
+            json.dumps(sidecar), encoding="utf-8")
+        with pytest.raises(SidecarBindingError,
+                           match="does not describe"):
+            write_pipeline_result_artifacts(
+                out_dir,
+                config=_TinyConfig(),
+                backtest_output=_make_backtest_output(),
+                predictions=_one_prediction(),
+                started_at="2024-01-01T00:00:00+00:00",
+                report_path="output/wf/pipeline_report.json",
+                model_artifact_path=str(model_src),
+            )
+
+
+def test_model_without_sidecar_fails_loud(tmp_path):
+    # codex #392 r15: the trainer's sidecar write is best-effort — if
+    # it failed, the model is UNPROMOTABLE (no run_config_sha256, no
+    # source provenance). The run must fail loud at training time,
+    # not after three expensive bootstrap runs at the cutover gate.
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "model.pkl"
+    model_src.write_bytes(b"model")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="no sidecar"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
+def test_pipeline_propagates_sidecar_binding_failures(tmp_path):
+    # Source pin (codex #392 r15): Pipeline.run downgrades result-
+    # artifact failures to warnings — the promotion-critical sidecar
+    # binding must be carved OUT of that swallow and re-raised.
+    src = (PROJECT_ROOT / "src" / "core" / "pipeline.py").read_text(
+        encoding="utf-8")
+    assert "except SidecarBindingError:" in src
+    swallow = src.split("except SidecarBindingError:", 1)[1]
+    assert swallow.split("except Exception", 1)[0].count("raise") == 1
+
+
+def test_corrupt_sidecar_fails_loud_instead_of_unbound(tmp_path):
+    # A sidecar that exists but cannot be updated must raise — for a
+    # promotion-bound run the binding is load-bearing, and a silent
+    # skip would surface only as a cutover refusal months later.
+    out_dir = tmp_path / "out"
+    sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text("not json {", encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(PipelineResultArtifactError, match="sidecar"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+        )
 
 
 def test_write_pipeline_result_artifacts_metrics_section(tmp_path):

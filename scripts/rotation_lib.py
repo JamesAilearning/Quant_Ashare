@@ -245,7 +245,7 @@ def _parse_day(value: Any, what: str) -> date:
 
 def check_gate_window(
     artifact: Any, *, scope: str, member_fit_end: str | None,
-    now_iso: str,
+    now_iso: str, enforce_recency: bool = True,
 ) -> None:
     """Bind WHEN the gates were measured (codex #391 r19).
 
@@ -263,6 +263,15 @@ def check_gate_window(
 
     Both scopes: a quarter-to-half-year span, ending near the rotation
     instant and not in the future.
+
+    ``enforce_recency=False`` drops ONLY the "ends near the instant"
+    bound, for the BOOTSTRAP path (PR-C'): its three members are
+    deliberately staggered into the past (training terminals
+    T-6m/T-3m/T per R1-DP-C), so the oldest member's valid window is
+    months old BY PROTOCOL — staleness there is the design, not a
+    stale artifact. Everything else still binds, and the bootstrap's
+    ENSEMBLE artifact keeps the recency bound: the trailing-quarter
+    dry run must describe the present.
     """
     keys = GATE_WINDOW_KEYS[scope]
     window = artifact.get("window")
@@ -283,7 +292,7 @@ def check_gate_window(
             f"{span}d, outside the pinned "
             f"[{GATE_WINDOW_SPAN_DAYS_MIN}, "
             f"{GATE_WINDOW_SPAN_DAYS_MAX}] — refusing")
-    if (now - end).days > GATE_WINDOW_RECENCY_DAYS_MAX:
+    if enforce_recency and (now - end).days > GATE_WINDOW_RECENCY_DAYS_MAX:
         raise RotationRefusal(
             f"{scope} gate measured window ends {end}, "
             f"{(now - end).days}d before the rotation instant {now} "
@@ -319,6 +328,7 @@ def check_gate_artifact(
     expected_fit_window: tuple[str, str] | None = None,
     member_fit_end: str | None = None,
     now_iso: str | None = None,
+    enforce_recency: bool = True,
 ) -> None:
     """Admit a gate artifact for rotation, fail-closed (codex #389
     r11: a gate the tool FAILED — or that never ran — must be a closed
@@ -427,7 +437,8 @@ def check_gate_artifact(
         # WHICH artifacts they gated.
         check_gate_window(artifact, scope=scope,
                           member_fit_end=member_fit_end,
-                          now_iso=now_iso)
+                          now_iso=now_iso,
+                          enforce_recency=enforce_recency)
 
 
 def plan_rotated_members(

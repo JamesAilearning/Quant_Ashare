@@ -8,8 +8,10 @@ analyzers, or metric helpers: official metric values are copied from
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import platform
 import shutil
 from collections.abc import Mapping
@@ -34,6 +36,18 @@ PREDICTION_COLUMNS = ("date", "stock", "score")
 
 class PipelineResultArtifactError(RuntimeError):
     """Raised when structured pipeline result artifacts cannot be written."""
+
+
+class SidecarBindingError(PipelineResultArtifactError):
+    """A promotion-critical model/provenance artifact failed to land.
+
+    Split from the base error (codex #392 r15) so ``Pipeline.run``
+    can let THIS failure propagate — a model artifact whose sidecar
+    lacks ``run_config_sha256``/source provenance is unpromotable,
+    and an operator must learn that at training time, not after all
+    three expensive bootstrap runs at the cutover gate. Covers the
+    binding itself and the model/sidecar copies it depends on
+    (codex #392 r16-r18)."""
 
 
 def write_pipeline_result_artifacts(
@@ -99,6 +113,8 @@ def write_pipeline_result_artifacts(
     )
     if model_artifact_path:
         _copy_model_artifact(Path(model_artifact_path), model_path)
+    _bind_run_provenance_to_sidecar(config_path, model_path,
+                                    git_provenance)
 
     metadata = _build_metadata(
         output_dir=output_dir,
@@ -175,14 +191,154 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _copy_model_artifact(source: Path, target: Path) -> None:
-    if not source.is_file():
-        raise PipelineResultArtifactError(
-            f"model_artifact_path does not exist: {source}."
-        )
-    if source.resolve() == target.resolve():
+def _bind_run_provenance_to_sidecar(
+    config_path: Path,
+    model_path: Path,
+    git_provenance: Mapping[str, Any] | None,
+) -> None:
+    """Stamp the run config digest AND source provenance into the
+    model sidecar.
+
+    ``<run>/config.yaml`` is otherwise a mutable, unhashed file: the
+    bootstrap cutover adjudicates the frozen-family semantics against
+    it, so an operator could train with retuned settings and edit the
+    YAML back to the pre-registered values afterwards (codex #392
+    r14). The trainer sidecar IS digest-bound end-to-end (manifest
+    ``meta_sha256`` → member gate → serving loader), so carrying the
+    config digest here makes the run config tamper-evident on that
+    same chain — the promotion gate recomputes the digest of the
+    bytes on disk and refuses a mismatch or an absent field.
+
+    The same chain carries the SOURCE provenance (codex #392 r15):
+    a matching config proves nothing about the CODE that trained the
+    member — a dirty checkout or an unmerged revision is unregistered
+    implementation semantics. ``source_git_commit`` /
+    ``source_git_dirty`` are copied VERBATIM from the run-start
+    capture the report uses (never re-probed at write time, codex P2
+    on #313); ``None`` is recorded honestly and the promotion gate
+    fails closed on it.
+
+    Failure semantics (codex #392 r15): when a model artifact exists,
+    the binding is load-bearing — a MISSING sidecar (the trainer's
+    best-effort write failed) and a sidecar that cannot be updated
+    both raise :class:`SidecarBindingError`, which ``Pipeline.run``
+    deliberately propagates. Surfacing the failure at training time
+    beats finishing three expensive bootstrap runs only to have every
+    member refused at the cutover gate. Only a run with NO model
+    artifact skips silently.
+    """
+    sidecar_path = model_path.with_suffix(model_path.suffix + ".meta.json")
+    if not sidecar_path.is_file():
+        if model_path.is_file():
+            raise SidecarBindingError(
+                f"model artifact {model_path} has no sidecar to bind "
+                "the run provenance into — the trainer's sidecar write "
+                "must have failed; without run_config_sha256 and "
+                "source provenance the member is unpromotable, so the "
+                "run fails loud now."
+            )
         return
-    shutil.copy2(source, target)
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        if not isinstance(sidecar, dict):
+            raise SidecarBindingError(
+                f"model sidecar is not an object: {sidecar_path}."
+            )
+        # The sidecar must DESCRIBE the model it sits beside (codex
+        # #392 r21): a stale or incomplete sidecar — absent
+        # pkl_sha256, or the digest of some OTHER pickle — would
+        # otherwise take fresh run provenance and exit 0, deferring
+        # the inevitable serving-loader rejection to the promotion
+        # gate.
+        if not model_path.is_file():
+            raise SidecarBindingError(
+                f"sidecar {sidecar_path} exists but its model does "
+                f"not: {model_path} — nothing to bind, failing loud."
+            )
+        actual_pkl_sha = hashlib.sha256(
+            model_path.read_bytes()
+        ).hexdigest()
+        if sidecar.get("pkl_sha256") != actual_pkl_sha:
+            raise SidecarBindingError(
+                f"sidecar {sidecar_path} declares pkl_sha256="
+                f"{sidecar.get('pkl_sha256')!r} but the model on disk "
+                f"hashes to {actual_pkl_sha} — the sidecar does not "
+                "describe this model, failing loud."
+            )
+        sidecar["run_config_sha256"] = hashlib.sha256(
+            config_path.read_bytes()
+        ).hexdigest()
+        gp = git_provenance or {}
+        sidecar["source_git_commit"] = gp.get("commit")
+        sidecar["source_git_dirty"] = gp.get("dirty")
+        # Atomic via write-to-temp + replace — the sidecar write
+        # convention (ModelTrainer._write_model_sidecar).
+        tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(sidecar, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(tmp, sidecar_path)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SidecarBindingError(
+            f"cannot bind the run provenance into the model sidecar "
+            f"{sidecar_path}: {exc}"
+        ) from exc
+
+
+def _copy_model_artifact(source: Path, target: Path) -> None:
+    """Copy a supplied model — and its trainer sidecar — into the
+    run's artifact set.
+
+    EVERY failure mode here raises :class:`SidecarBindingError`
+    (codex #392 r16-r19): a supplied model that goes missing, a
+    failing model copy, or a failing sidecar copy each leave the run
+    without a promotable artifact set, and a raw
+    ``PipelineResultArtifactError``/``OSError`` would be swallowed by
+    ``Pipeline.run``'s non-fatal artifact handler — the run would
+    exit 0 with exactly the unbound state the fail-loud path exists
+    to prevent."""
+    try:
+        if not source.is_file():
+            raise SidecarBindingError(
+                f"model_artifact_path does not exist: {source} — a "
+                "supplied model that cannot be copied leaves the run "
+                "with no model and no bound provenance, failing loud."
+            )
+        if source.resolve() == target.resolve():
+            return
+        shutil.copy2(source, target)
+        # The trainer writes its provenance sidecar BESIDE the model
+        # — an external-source copy must bring it along (codex #392
+        # r16), or the provenance binding below would refuse a
+        # perfectly valid trainer-produced model. A source with no
+        # sidecar copies nothing and the binding still fails loud, as
+        # intended.
+        source_sidecar = source.with_suffix(source.suffix + ".meta.json")
+        target_sidecar = target.with_suffix(target.suffix + ".meta.json")
+        if source_sidecar.is_file():
+            shutil.copy2(source_sidecar, target_sidecar)
+        elif target_sidecar.is_file():
+            # A reused output dir can hold a sidecar from a PREVIOUS
+            # run's model (codex #392 r20). With no source sidecar to
+            # overwrite it, the binding below would stamp fresh
+            # provenance into a sidecar describing the OLD pickle —
+            # the run would exit 0 with an artifact set doomed to a
+            # pkl_sha256 mismatch at the promotion gate.
+            raise SidecarBindingError(
+                f"the copied model {source} has no trainer sidecar, "
+                f"but a stale sidecar survives at {target_sidecar} "
+                "from an earlier run — refusing to let it masquerade "
+                "as this model's provenance."
+            )
+    except SidecarBindingError:
+        raise
+    except OSError as exc:
+        raise SidecarBindingError(
+            f"cannot copy the model artifact set from {source}: {exc} "
+            "— the run would end with no copied model or unbound "
+            "provenance, failing loud."
+        ) from exc
 
 
 def _build_metrics(

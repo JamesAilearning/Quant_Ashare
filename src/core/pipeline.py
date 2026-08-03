@@ -56,7 +56,10 @@ from src.core.performance_attribution import (
     PerformanceAttribution,
     PerformanceAttributionError,
 )
-from src.core.pipeline_result_artifacts import write_pipeline_result_artifacts
+from src.core.pipeline_result_artifacts import (
+    SidecarBindingError,
+    write_pipeline_result_artifacts,
+)
 from src.core.qlib_runtime import (
     QlibRuntimeConfig,
     init_qlib_canonical,
@@ -840,6 +843,14 @@ class Pipeline:
                 "  Result artifacts: %s",
                 ", ".join(sorted(Path(path).name for path in artifact_paths.values())),
             )
+        except SidecarBindingError:
+            # The promotion-critical provenance binding failed (codex
+            # #392 r15): a model whose sidecar lacks run_config_sha256
+            # / source provenance is unpromotable — fail the run loud
+            # NOW instead of after three expensive bootstrap runs at
+            # the cutover gate. Dashboard-artifact failures below stay
+            # non-fatal; this one is not a dashboard nicety.
+            raise
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Structured result artifact generation skipped after "
