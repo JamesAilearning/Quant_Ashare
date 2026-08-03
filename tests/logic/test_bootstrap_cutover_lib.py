@@ -451,6 +451,11 @@ class ExecutorReadDiscipline(unittest.TestCase):
         # The write phase must NOT carry its own late existence guard
         # (that was the post-write refusal this pins against).
         self.assertNotIn("already exists — the initial", write_phase)
+        # A pre-existing inference-meta target refuses in the GATE
+        # phase (codex #392 r13) so --dry-run reports it zero-write;
+        # the write phase keeps only the TOCTOU re-check (open "x").
+        self.assertIn("inference meta target already exists",
+                      gate_phase)
 
 
 class CampaignEligibility(unittest.TestCase):
@@ -605,13 +610,39 @@ class BaselineRecord(unittest.TestCase):
             manifest_path="Z:/manifest.json", manifest_sha256="cd" * 32,
             members=self._members(), incumbent_backup={"a.pkl": "a.bak"},
             campaign={"x": 1}, isoweek={"y": 2},
-            gate_artifacts={"ensemble": "g.json"},
+            gate_artifacts={"ensemble": {"path": "g.json",
+                                         "sha256": "7c" * 32}},
             generated_at="2026-07-23T00:00:00+00:00")
         self.assertEqual(BASELINE_SCHEMA_VERSION,
                          record["schema_version"])
         self.assertEqual("ensemble_manifest", record["serving"]["mode"])
         self.assertEqual(3, len(record["serving"]["members"]))
         self.assertIn("campaign", record["authorized_by"])
+        # The audit binding (codex #392 r13): content digest, not
+        # just a mutable local pathname.
+        self.assertEqual(
+            "7c" * 32,
+            record["authorized_by"]["gate_artifacts"]["ensemble"]
+            ["sha256"])
+
+    def test_digestless_gate_record_refused(self) -> None:
+        # codex #392 r13: a bare pathname cannot establish which
+        # bytes authorized production once the local file mutates.
+        cases: dict[str, object] = {
+            "bare path string": "g.json",
+            "no sha": {"path": "g.json"},
+            "short sha": {"path": "g.json", "sha256": "abc"},
+            "non-hex sha": {"path": "g.json", "sha256": "z" * 64},
+            "empty path": {"path": "  ", "sha256": "7c" * 32},
+        }
+        for label, entry in cases.items():
+            with self.assertRaises(CutoverRefusal, msg=label):
+                build_baseline_record(
+                    manifest_path="Z:/m.json", manifest_sha256="cd" * 32,
+                    members=self._members(), incumbent_backup={},
+                    campaign={}, isoweek={},
+                    gate_artifacts={"ensemble": entry},  # type: ignore[dict-item]
+                    generated_at="2026-07-23T00:00:00+00:00")
 
     def test_wrong_member_count_refused(self) -> None:
         for n in (2, 4):

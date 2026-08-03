@@ -175,6 +175,24 @@ def _member_run_config(pkl_path: Path) -> Any:
         return None
 
 
+def _canonicalize_provider_uri(config: Any) -> Any:
+    """Normalize ``config["provider_uri"]`` in place to the canonical
+    runtime spelling (codex #392 r13). Training persisted whatever
+    spelling the run was launched with — ``~/bundle`` vs its absolute
+    path, a symlink vs its target, Windows drive-letter/separator
+    variants. Both sides of the family binding go through the SAME
+    normalizer ``init_qlib_canonical`` applies, so equality after
+    normalization is exactly "qlib treated them as the same bundle"
+    — and inequality is a genuinely different bundle, refused."""
+    if isinstance(config, dict) and isinstance(
+            config.get("provider_uri"), str):
+        from src.core.qlib_runtime import _normalize_provider_uri
+
+        config["provider_uri"] = _normalize_provider_uri(
+            config["provider_uri"])
+    return config
+
+
 def _binding_subset(config: Any, what: str) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise CutoverRefusal(f"{what} config block is not an object")
@@ -203,12 +221,17 @@ def _read_bytes_or_refuse(path: Path, what: str) -> bytes:
             f"{what} unreadable: {path} ({exc})") from exc
 
 
-def _load_json(path: Path, what: str) -> Any:
+def _load_json_with_digest(path: Path, what: str) -> tuple[Any, str]:
+    """Single read: the parsed artifact and the digest come from the
+    SAME bytes, so what the baseline attests (codex #392 r13) is
+    byte-identical to what the gate check adjudicated."""
     if not path.is_file():
         raise CutoverRefusal(f"{what} not found: {path}")
+    data = _read_bytes_or_refuse(path, what)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return (json.loads(data.decode("utf-8")),
+                hashlib.sha256(data).hexdigest())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise CutoverRefusal(f"{what} unreadable: {path} ({exc})") from exc
 
 
@@ -330,13 +353,13 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
             f"expected {BOOTSTRAP_MEMBER_COUNT} --member-gate "
             f"artifacts (oldest->newest), got "
             f"{len(args.member_gate)}")
-    gate_paths: dict[str, str] = {}
+    gate_records: dict[str, dict[str, str]] = {}
     member_gate_windows: list[tuple[Any, Any]] = []
     try:
         for i, (member, gate_path) in enumerate(
                 zip(members, args.member_gate, strict=True)):
-            artifact = _load_json(Path(gate_path),
-                                  f"member[{i}] gate artifact")
+            artifact, gate_sha = _load_json_with_digest(
+                Path(gate_path), f"member[{i}] gate artifact")
             window = artifact.get("window") or {}
             member_gate_windows.append(
                 (window.get("valid_start"), window.get("valid_end")))
@@ -352,16 +375,21 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
                 # maintenance path's recency bound does not apply to
                 # them. Every other binding still does.
                 enforce_recency=False)
-            gate_paths[f"member[{i}]"] = str(gate_path)
-        ensemble_artifact = _load_json(Path(args.ensemble_gate),
-                                       "ensemble gate artifact")
+            # Path AND content digest (codex #392 r13): the baseline
+            # must bind the exact bytes that authorized production —
+            # the local gate file is mutable after the cutover.
+            gate_records[f"member[{i}]"] = {
+                "path": str(gate_path), "sha256": gate_sha}
+        ensemble_artifact, ensemble_gate_sha = _load_json_with_digest(
+            Path(args.ensemble_gate), "ensemble gate artifact")
         check_gate_artifact(
             ensemble_artifact, scope=SCOPE_ENSEMBLE,
             expected_subject_sha=manifest_sha,
             # The trailing-quarter dry run DOES have to describe the
             # present, so its recency bound stays.
             now_iso=now_iso)
-        gate_paths["ensemble"] = str(args.ensemble_gate)
+        gate_records["ensemble"] = {
+            "path": str(args.ensemble_gate), "sha256": ensemble_gate_sha}
     except RotationRefusal as exc:
         raise CutoverRefusal(f"bootstrap gate refused: {exc}") from exc
     # ── 3a. the trio must be the PRE-REGISTERED one (codex #392 r6)
@@ -386,6 +414,7 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     if isinstance(raw_provider, str):
         base_config["provider_uri"] = expand_env_vars(
             raw_provider, source_path=f"config.yaml@{rev[:12]}")
+    _canonicalize_provider_uri(base_config)
     for preset_path in BOOTSTRAP_PRESET_PATHS:
         cfg = yaml.safe_load(
             _show(repo, rev, preset_path).decode("utf-8"))
@@ -417,7 +446,9 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     for i, (member, declared) in enumerate(
             zip(members, preset_declared, strict=True)):
         check_member_training_config(
-            f"member[{i}]", _member_run_config(Path(member.pkl_path)),
+            f"member[{i}]",
+            _canonicalize_provider_uri(
+                _member_run_config(Path(member.pkl_path))),
             declared, base_config)
 
     # ── 3b. every write target must own its path (codex #392 r4) ─
@@ -428,8 +459,20 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         "incumbent": str(Path(args.incumbent).resolve()),
     }
     for i, member in enumerate(members):
+        meta_target = Path(member.pkl_path).with_suffix(".meta.json")
+        # The inference meta must be OURS to create (codex #392 r13):
+        # a file already at this path belongs to another serving
+        # setup, or survived an aborted run whose rollback could not
+        # complete. Writing would truncate it, and a later rollback
+        # would DELETE it — refuse here, still zero-write, and let
+        # the operator move it aside explicitly if it is stale.
+        if meta_target.exists():
+            raise CutoverRefusal(
+                f"member[{i}] inference meta target already exists: "
+                f"{meta_target} — this run does not own it; move it "
+                "aside explicitly if it is stale")
         targets[f"member[{i}] inference meta"] = str(
-            Path(member.pkl_path).with_suffix(".meta.json").resolve())
+            meta_target.resolve())
         targets[f"member[{i}] pkl"] = str(
             Path(member.pkl_path).resolve())
         # The TRAINER sidecar is read and hash-validated, never
@@ -453,7 +496,7 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     return {
         "campaign": campaign,
         "isoweek": isoweek,
-        "gate_artifacts": gate_paths,
+        "gate_artifacts": gate_records,
         "members": members,
         "manifest_sha256": manifest_sha,
         "manifest_bytes": manifest_bytes,
@@ -547,14 +590,25 @@ def main(argv: list[str] | None = None) -> int:
                 model_path=member.pkl_path,
                 fit_start=member.fit_start, fit_end=member.fit_end,
                 model_type="LGBModel", promoted_at=now_iso)
-            # Registered BEFORE the write (codex #392 r12): a write
-            # that fails partway must leave its partial file inside
-            # the rollback set, and unlink(missing_ok) makes the
-            # never-created case harmless.
-            created.append(meta_path)
-            meta_path.write_text(
-                json.dumps(meta, indent=2, ensure_ascii=False),
-                encoding="utf-8")
+            # EXCLUSIVE create (codex #392 r13): existence was
+            # adjudicated in the gate phase, but a file APPEARING
+            # since (an overlapping cutover, another serving setup)
+            # must refuse — write_text would truncate the foreign
+            # artifact and the rollback would then DELETE it.
+            # Registration sits between the successful create and the
+            # first byte (r12): a failed write leaves the partial
+            # file inside the rollback set, while a FileExistsError
+            # never reaches the registration line.
+            try:
+                with open(meta_path, "x", encoding="utf-8") as fh:
+                    created.append(meta_path)
+                    fh.write(json.dumps(meta, indent=2,
+                                        ensure_ascii=False))
+            except FileExistsError as exc:
+                raise CutoverRefusal(
+                    f"member inference meta APPEARED after the gate "
+                    f"phase: {meta_path} — another process owns it; "
+                    "refusing to clobber") from exc
             member_records.append({
                 "pkl_path": member.pkl_path,
                 "pkl_sha256": member.pkl_sha256,

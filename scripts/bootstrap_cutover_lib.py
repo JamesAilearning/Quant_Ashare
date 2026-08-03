@@ -510,7 +510,7 @@ def build_baseline_record(
     manifest_mode: str = "",
     members: list[dict[str, Any]], incumbent_backup: dict[str, str],
     campaign: dict[str, Any], isoweek: dict[str, Any],
-    gate_artifacts: dict[str, str], generated_at: str,
+    gate_artifacts: dict[str, dict[str, str]], generated_at: str,
 ) -> dict[str, Any]:
     """The committed rollback/baseline record (DP-4, ④ precedent):
     what production was BEFORE, what it became, and every piece of
@@ -518,6 +518,21 @@ def build_baseline_record(
     if len(members) != BOOTSTRAP_MEMBER_COUNT:
         raise CutoverRefusal(
             f"baseline needs exactly {BOOTSTRAP_MEMBER_COUNT} members")
+    # Every gate record binds CONTENT, not just a pathname (codex
+    # #392 r13): the gate files live on the operator's disk and are
+    # mutable/replaceable after the cutover — the committed baseline
+    # must be able to establish which exact bytes authorized
+    # production.
+    for name, entry in gate_artifacts.items():
+        path = (str(entry.get("path", "")).strip()
+                if isinstance(entry, dict) else "")
+        sha = entry.get("sha256") if isinstance(entry, dict) else None
+        if (not path or not isinstance(sha, str) or len(sha) != 64
+                or any(c not in "0123456789abcdef" for c in sha)):
+            raise CutoverRefusal(
+                f"gate artifact record '{name}' must carry a path AND "
+                "the 64-hex sha256 of the adjudicated bytes — a bare "
+                "pathname cannot establish what authorized production")
     return {
         "schema_version": BASELINE_SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -535,7 +550,8 @@ def build_baseline_record(
         "authorized_by": {
             "campaign": dict(campaign),
             "isoweek_recheck": dict(isoweek),
-            "gate_artifacts": dict(gate_artifacts),
+            "gate_artifacts": {k: dict(v)
+                               for k, v in gate_artifacts.items()},
         },
     }
 

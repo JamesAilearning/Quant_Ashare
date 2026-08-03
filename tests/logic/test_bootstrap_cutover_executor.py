@@ -83,6 +83,45 @@ class MemberRunConfigResolution(unittest.TestCase):
         self.assertIsNone(bc._member_run_config(self.pkl))
 
 
+class ProviderUriCanonicalization(unittest.TestCase):
+    """codex #392 r13: the family binding must not refuse two
+    spellings of the SAME bundle (``~`` vs absolute, separators,
+    case), and must still refuse genuinely different bundles."""
+
+    def test_home_and_absolute_spellings_converge(self) -> None:
+        a = bc._canonicalize_provider_uri(
+            {"provider_uri": "~/bundle_r13"})
+        b = bc._canonicalize_provider_uri(
+            {"provider_uri": os.path.join(
+                os.path.expanduser("~"), "bundle_r13")})
+        self.assertEqual(a["provider_uri"], b["provider_uri"])
+
+    def test_different_bundles_stay_different(self) -> None:
+        a = bc._canonicalize_provider_uri(
+            {"provider_uri": "~/bundle_r13"})
+        b = bc._canonicalize_provider_uri(
+            {"provider_uri": "~/bundle_other"})
+        self.assertNotEqual(a["provider_uri"], b["provider_uri"])
+
+    def test_uses_the_canonical_runtime_normalizer(self) -> None:
+        # Same helper init_qlib_canonical applies — "equal after
+        # normalization" must mean "qlib treated them as the same
+        # bundle", not a private approximation of it.
+        from src.core.qlib_runtime import _normalize_provider_uri
+
+        raw = "~/bundle_r13"
+        out = bc._canonicalize_provider_uri({"provider_uri": raw})
+        self.assertEqual(_normalize_provider_uri(raw),
+                         out["provider_uri"])
+
+    def test_non_dict_and_absent_key_pass_through(self) -> None:
+        self.assertIsNone(bc._canonicalize_provider_uri(None))
+        self.assertEqual({}, bc._canonicalize_provider_uri({}))
+        cfg = {"provider_uri": 7}
+        self.assertEqual({"provider_uri": 7},
+                         bc._canonicalize_provider_uri(cfg))
+
+
 class CutoverWritePhase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
@@ -123,7 +162,8 @@ class CutoverWritePhase(unittest.TestCase):
             },
             "isoweek": {"net_annualized": 0.0601, "num_folds": 23,
                         "rev": "ab" * 20},
-            "gate_artifacts": {"ensemble": "g.json"},
+            "gate_artifacts": {"ensemble": {"path": "g.json",
+                                            "sha256": "7c" * 32}},
             "members": self.members,
             "manifest_sha256": "cd" * 32,
             "manifest_bytes": self.manifest_bytes,
@@ -186,6 +226,12 @@ class CutoverWritePhase(unittest.TestCase):
                          baseline["serving"]["manifest_mode"])
         self.assertEqual(3, len(baseline["serving"]["members"]))
         self.assertIn("incumbent_backup", baseline)
+        # codex #392 r13: the committed baseline binds the gate
+        # artifacts by CONTENT digest, not just pathname.
+        self.assertEqual(
+            "7c" * 32,
+            baseline["authorized_by"]["gate_artifacts"]["ensemble"]
+            ["sha256"])
 
     def test_switch_leaves_the_full_artifact_set(self) -> None:
         self.assertEqual(0, self._run())
@@ -281,6 +327,31 @@ class CutoverWritePhase(unittest.TestCase):
         self.assertEqual([], list(self.manifest_out.parent
                                   .glob("*.install*")))
         # ...and the incumbent was never modified.
+        self.assertEqual(b"incumbent-model",
+                         self.incumbent.read_bytes())
+
+    def test_foreign_inference_meta_is_never_truncated(self) -> None:
+        # codex #392 r13 P1: a pre-existing `<model>.meta.json`
+        # (another serving setup reusing the artifact, or an
+        # overlapping cutover) must NOT be truncated by our write nor
+        # deleted by our rollback — the exclusive create refuses, the
+        # foreign bytes survive, and everything WE created rolls back.
+        foreign = Path(self.members[1].pkl_path).with_suffix(
+            ".meta.json")
+        foreign.write_text('{"owner": "someone-else"}',
+                           encoding="utf-8")
+        rc = self._run()
+        self.assertEqual(1, rc)
+        self.assertEqual('{"owner": "someone-else"}',
+                         foreign.read_text(encoding="utf-8"))
+        # Everything this run created before the refusal rolled back.
+        self.assertFalse(self.manifest_out.exists())
+        self.assertFalse((self.tmp / bc.BASELINE_PATH).exists())
+        self.assertFalse((self.tmp / RECERT_STATUS_PATH).exists())
+        self.assertFalse(
+            Path(self.members[0].pkl_path).with_suffix(
+                ".meta.json").exists())
+        self.assertEqual([], list(self.tmp.glob("*.pre_bootstrap_*")))
         self.assertEqual(b"incumbent-model",
                          self.incumbent.read_bytes())
 
