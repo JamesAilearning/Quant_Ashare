@@ -39,13 +39,15 @@ class PipelineResultArtifactError(RuntimeError):
 
 
 class SidecarBindingError(PipelineResultArtifactError):
-    """The promotion-critical sidecar binding could not be written.
+    """A promotion-critical model/provenance artifact failed to land.
 
     Split from the base error (codex #392 r15) so ``Pipeline.run``
     can let THIS failure propagate — a model artifact whose sidecar
     lacks ``run_config_sha256``/source provenance is unpromotable,
     and an operator must learn that at training time, not after all
-    three expensive bootstrap runs at the cutover gate."""
+    three expensive bootstrap runs at the cutover gate. Covers the
+    binding itself and the model/sidecar copies it depends on
+    (codex #392 r16-r18)."""
 
 
 def write_pipeline_result_artifacts(
@@ -270,7 +272,18 @@ def _copy_model_artifact(source: Path, target: Path) -> None:
         )
     if source.resolve() == target.resolve():
         return
-    shutil.copy2(source, target)
+    try:
+        shutil.copy2(source, target)
+    except OSError as exc:
+        # Same fail-loud translation as the sidecar copy (codex #392
+        # r18): a raw OSError here would be swallowed by Pipeline.run's
+        # non-fatal artifact handler and the run would exit 0 with no
+        # copied model and no bound provenance.
+        raise SidecarBindingError(
+            f"cannot copy the model artifact {source} into the run's "
+            f"artifact set: {exc} — the run would end with no copied "
+            "model and no bound provenance, failing loud."
+        ) from exc
     # The trainer writes its provenance sidecar BESIDE the model — an
     # external-source copy must bring it along (codex #392 r16), or
     # the provenance binding below would refuse a perfectly valid
