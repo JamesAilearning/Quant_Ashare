@@ -41,10 +41,16 @@ _WINDOWS = [("2023-08-14", "2025-08-13"),
 class _Member:
     def __init__(self, pkl: Path, meta: Path,
                  window: tuple[str, str]) -> None:
+        import hashlib
+
         self.pkl_path = str(pkl)
-        self.pkl_sha256 = "aa" * 32
+        # Real digests of the fixture bytes — the write phase now
+        # rechecks members against the manifest hashes right before
+        # the install (codex #392 r22).
+        self.pkl_sha256 = hashlib.sha256(pkl.read_bytes()).hexdigest()
         self.meta_path = str(meta)
-        self.meta_sha256 = "bb" * 32
+        self.meta_sha256 = hashlib.sha256(
+            meta.read_bytes()).hexdigest()
         self.fit_start, self.fit_end = window
 
 
@@ -482,6 +488,23 @@ class CutoverWritePhase(unittest.TestCase):
         self.assertEqual([], list(self.manifest_out.parent
                                   .glob("*.install*")))
         # ...and the incumbent was never modified.
+        self.assertEqual(b"incumbent-model",
+                         self.incumbent.read_bytes())
+
+    def test_member_drift_after_gates_refuses_and_rolls_back(self) -> None:
+        # codex #392 r22: a retrain landing between the gate phase and
+        # the manifest install must refuse — installing the earlier
+        # hashes would make serving refuse the new canonical at the
+        # next morning load.
+        Path(self.members[2].pkl_path).write_bytes(b"retrained!")
+        rc = self._run()
+        self.assertEqual(1, rc)
+        self.assertFalse(self.manifest_out.exists())
+        self.assertFalse((self.tmp / bc.BASELINE_PATH).exists())
+        self.assertFalse((self.tmp / RECERT_STATUS_PATH).exists())
+        self.assertEqual([], list(self.tmp.glob("*.pre_bootstrap_*")))
+        self.assertEqual([], list(self.manifest_out.parent
+                                  .glob("*.install*")))
         self.assertEqual(b"incumbent-model",
                          self.incumbent.read_bytes())
 

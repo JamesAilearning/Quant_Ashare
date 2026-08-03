@@ -311,18 +311,44 @@ def _load_json_with_digest(path: Path, what: str) -> tuple[Any, str]:
         raise CutoverRefusal(f"{what} unreadable: {path} ({exc})") from exc
 
 
-def _certify_verify(repo: Path) -> None:
+def _certify_verify(repo: Path, rev: str) -> None:
     """Gate 1a: the sidecar's own ``--verify`` (anchor + byte
-    re-validation) must pass in THIS repo."""
-    proc = subprocess.run(
-        [sys.executable, "scripts/research/csi800_campaign_certify.py",
-         "--verify", VERDICT_SIDECAR_PATH],
-        cwd=repo, capture_output=True, check=False)
-    if proc.returncode != 0:
-        raise CutoverRefusal(
-            "campaign certify --verify FAILED: "
-            f"{proc.stdout.decode(errors='replace').strip()} "
-            f"{proc.stderr.decode(errors='replace').strip()}")
+    re-validation) — executed from a PINNED-REVISION worktree.
+
+    The verifier owns the recomputation logic and thresholds (codex
+    #392 r22): a locally modified working-tree copy could return
+    success under semantics that do not exist at ``rev``, while every
+    OTHER gate reads mainline bytes. A temporary detached worktree at
+    ``rev`` shares the repo's object store and remotes, so the
+    verifier's own mainline-anchored reads resolve identically — but
+    the CODE that runs is the registered code."""
+    import tempfile
+
+    wt = Path(tempfile.mkdtemp(prefix="cutover_certify_"))
+    try:
+        _git(["git", "worktree", "add", "--detach", str(wt), rev],
+             repo)
+        proc = subprocess.run(
+            [sys.executable,
+             "scripts/research/csi800_campaign_certify.py",
+             "--verify", VERDICT_SIDECAR_PATH],
+            cwd=wt, capture_output=True, check=False)
+        if proc.returncode != 0:
+            raise CutoverRefusal(
+                f"campaign certify --verify FAILED (pinned worktree "
+                f"{rev[:12]}): "
+                f"{proc.stdout.decode(errors='replace').strip()} "
+                f"{proc.stderr.decode(errors='replace').strip()}")
+    finally:
+        # Best-effort cleanup — a refusal above must surface, not a
+        # cleanup hiccup. `worktree remove` unregisters and deletes;
+        # `prune` sweeps anything a failed remove left registered.
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(wt)],
+            cwd=repo, capture_output=True, check=False)
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=repo, capture_output=True, check=False)
 
 
 def _gate_promotion(args: argparse.Namespace, repo: Path,
@@ -368,7 +394,7 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     # status artifact — bytes nobody verified (adversarial
     # self-review).
     rev = _resolve_mainline(repo)
-    _certify_verify(repo)
+    _certify_verify(repo, rev)
     # A fetch landing between certify's own resolution and ours would
     # split the two reads; re-resolve and refuse on movement.
     if _resolve_mainline(repo) != rev:
@@ -760,6 +786,27 @@ def main(argv: list[str] | None = None) -> int:
                 "fit_start": member.fit_start,
                 "fit_end": member.fit_end,
             })
+        # Pre-install recheck (codex #392 r22, the rotation
+        # executor's pre-swap discipline): the member bytes were
+        # validated in the gate phase, but a retrain or operator
+        # overwrite landing between then and NOW would install a
+        # manifest whose hashes no longer match disk — serving would
+        # refuse the new canonical at the next morning load. Recheck
+        # every member at the last moment before the point of no
+        # return; drift refuses and rolls back, production unchanged.
+        for i, member in enumerate(members):
+            for what, spath, expected in (
+                    ("pkl", Path(member.pkl_path), member.pkl_sha256),
+                    ("trainer sidecar", Path(member.meta_path),
+                     member.meta_sha256)):
+                data = _read_bytes_or_refuse(
+                    spath, f"member[{i}] {what} (pre-install recheck)")
+                if hashlib.sha256(data).hexdigest() != expected:
+                    raise CutoverRefusal(
+                        f"member[{i}] {what} changed since the gate "
+                        f"phase: {spath} — the manifest's hashes would "
+                        "not match disk and serving would refuse the "
+                        "ensemble. Refusing.")
         out = Path(args.manifest_out)
         # EXCLUSIVE unique staging (codex #392 r1, the rotation
         # executor's pattern): a predictable `<manifest>.install` that

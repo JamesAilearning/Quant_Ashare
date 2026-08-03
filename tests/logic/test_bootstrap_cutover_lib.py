@@ -596,6 +596,17 @@ class ExecutorReadDiscipline(unittest.TestCase):
         self.assertGreaterEqual(
             gate_phase.count("_validate_injected_now"), 2)
 
+    def test_verifier_runs_from_the_pinned_revision(self) -> None:
+        # codex #392 r22: certify --verify owns the recomputation
+        # logic — it must execute from a detached worktree at the
+        # pinned revision, never from the (possibly locally modified)
+        # working tree. And the write phase rechecks member bytes
+        # against the manifest hashes right before the install.
+        self.assertIn('"worktree", "add", "--detach"', self._SRC)
+        self.assertIn("cwd=wt", self._SRC)
+        _, write_phase = self._SRC.split("def main(", 1)
+        self.assertIn("pre-install recheck", write_phase)
+
 
 class CampaignEligibility(unittest.TestCase):
     def test_eligible_sidecar_admits(self) -> None:
