@@ -463,6 +463,72 @@ def test_vanished_model_source_is_a_binding_failure(tmp_path):
         )
 
 
+def _one_prediction():
+    return pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+
+
+def test_stale_target_sidecar_cannot_masquerade(tmp_path):
+    # codex #392 r20: reused output dir + external model WITHOUT a
+    # source sidecar — the stale artifacts/model.pkl.meta.json from an
+    # earlier run must not receive this run's provenance stamp (it
+    # describes the OLD pickle; the pkl_sha256 mismatch would only
+    # surface at the promotion gate).
+    out_dir = tmp_path / "out"
+    stale = out_dir / "artifacts" / "model.pkl.meta.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"pkl_sha256": "old" * 21 + "x"}),
+                     encoding="utf-8")
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"new-model")
+    with pytest.raises(SidecarBindingError, match="stale sidecar"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=_one_prediction(),
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
+def test_stale_target_sidecar_is_overwritten_by_the_source(tmp_path):
+    # The healthy variant: the source DOES carry its sidecar — the
+    # copy replaces the stale target wholesale, and the binding lands
+    # on the fresh copy.
+    out_dir = tmp_path / "out"
+    stale = out_dir / "artifacts" / "model.pkl.meta.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"model_type": "OLD"}),
+                     encoding="utf-8")
+    model_src = tmp_path / "elsewhere" / "model.pkl"
+    model_src.parent.mkdir()
+    model_src.write_bytes(b"new-model")
+    model_src.with_suffix(".pkl.meta.json").write_text(
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel"}),
+        encoding="utf-8")
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=_one_prediction(),
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+        model_artifact_path=str(model_src),
+    )
+    bound = json.loads(stale.read_text(encoding="utf-8"))
+    assert bound["model_type"] == "LGBModel"
+    assert "run_config_sha256" in bound
+
+
 def test_model_without_sidecar_fails_loud(tmp_path):
     # codex #392 r15: the trainer's sidecar write is best-effort — if
     # it failed, the model is UNPROMOTABLE (no run_config_sha256, no

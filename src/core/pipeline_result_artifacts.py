@@ -294,10 +294,22 @@ def _copy_model_artifact(source: Path, target: Path) -> None:
         # sidecar copies nothing and the binding still fails loud, as
         # intended.
         source_sidecar = source.with_suffix(source.suffix + ".meta.json")
+        target_sidecar = target.with_suffix(target.suffix + ".meta.json")
         if source_sidecar.is_file():
-            shutil.copy2(
-                source_sidecar,
-                target.with_suffix(target.suffix + ".meta.json"))
+            shutil.copy2(source_sidecar, target_sidecar)
+        elif target_sidecar.is_file():
+            # A reused output dir can hold a sidecar from a PREVIOUS
+            # run's model (codex #392 r20). With no source sidecar to
+            # overwrite it, the binding below would stamp fresh
+            # provenance into a sidecar describing the OLD pickle —
+            # the run would exit 0 with an artifact set doomed to a
+            # pkl_sha256 mismatch at the promotion gate.
+            raise SidecarBindingError(
+                f"the copied model {source} has no trainer sidecar, "
+                f"but a stale sidecar survives at {target_sidecar} "
+                "from an earlier run — refusing to let it masquerade "
+                "as this model's provenance."
+            )
     except SidecarBindingError:
         raise
     except OSError as exc:
