@@ -421,12 +421,15 @@ class PipelineDatasetReuseTests(unittest.TestCase):
                 # mocked here, so the dir need only exist, not be a real bundle).
                 provider_dir = Path(tmp) / "provider"
                 provider_dir.mkdir()
+                import hashlib as _hl
                 import json as _json
 
                 model_src = Path(tmp) / "model.pkl"
                 model_src.write_bytes(b"model")
                 model_src.with_suffix(".pkl.meta.json").write_text(
-                    _json.dumps({"schema_version": "v1"}),
+                    _json.dumps({"schema_version": "v1",
+                                 "pkl_sha256":
+                                     _hl.sha256(b"model").hexdigest()}),
                     encoding="utf-8")
                 fake_model_result.model_artifact_path = str(model_src)
                 cfg = PipelineConfig(

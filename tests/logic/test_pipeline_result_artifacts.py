@@ -244,12 +244,15 @@ def test_run_config_digest_is_stamped_into_the_model_sidecar(tmp_path):
     # digest into the trainer sidecar (which IS digest-chained via the
     # manifest / member gate / serving loader).
     import hashlib
+    import hashlib as _hl
 
     out_dir = tmp_path / "out"
     sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
     sidecar_path.parent.mkdir(parents=True)
+    (out_dir / "artifacts" / "model.pkl").write_bytes(b"model")
     sidecar_path.write_text(
-        json.dumps({"schema_version": "v1", "model_type": "LGBModel"}),
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel",
+                    "pkl_sha256": _hl.sha256(b"model").hexdigest()}),
         encoding="utf-8")
     predictions = pd.Series(
         [0.1],
@@ -283,11 +286,16 @@ def test_run_config_digest_is_stamped_into_the_model_sidecar(tmp_path):
 def test_absent_git_provenance_is_stamped_as_none(tmp_path):
     # No capture -> None recorded honestly (never omitted, never
     # fabricated); the promotion gate fails closed on None.
+    import hashlib as _hl
+
     out_dir = tmp_path / "out"
     sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
     sidecar_path.parent.mkdir(parents=True)
-    sidecar_path.write_text(json.dumps({"schema_version": "v1"}),
-                            encoding="utf-8")
+    (out_dir / "artifacts" / "model.pkl").write_bytes(b"model")
+    sidecar_path.write_text(
+        json.dumps({"schema_version": "v1",
+                    "pkl_sha256": _hl.sha256(b"model").hexdigest()}),
+        encoding="utf-8")
     predictions = pd.Series(
         [0.1],
         index=pd.MultiIndex.from_product(
@@ -321,7 +329,8 @@ def test_external_model_copy_brings_the_sidecar(tmp_path):
     model_src.parent.mkdir()
     model_src.write_bytes(b"model")
     model_src.with_suffix(".pkl.meta.json").write_text(
-        json.dumps({"schema_version": "v1", "model_type": "LGBModel"}),
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel",
+                    "pkl_sha256": hashlib.sha256(b"model").hexdigest()}),
         encoding="utf-8")
     predictions = pd.Series(
         [0.1],
@@ -509,11 +518,15 @@ def test_stale_target_sidecar_is_overwritten_by_the_source(tmp_path):
     stale.parent.mkdir(parents=True)
     stale.write_text(json.dumps({"model_type": "OLD"}),
                      encoding="utf-8")
+    import hashlib as _hl
+
     model_src = tmp_path / "elsewhere" / "model.pkl"
     model_src.parent.mkdir()
     model_src.write_bytes(b"new-model")
     model_src.with_suffix(".pkl.meta.json").write_text(
-        json.dumps({"schema_version": "v1", "model_type": "LGBModel"}),
+        json.dumps({"schema_version": "v1", "model_type": "LGBModel",
+                    "pkl_sha256":
+                        _hl.sha256(b"new-model").hexdigest()}),
         encoding="utf-8")
     write_pipeline_result_artifacts(
         out_dir,
@@ -527,6 +540,37 @@ def test_stale_target_sidecar_is_overwritten_by_the_source(tmp_path):
     bound = json.loads(stale.read_text(encoding="utf-8"))
     assert bound["model_type"] == "LGBModel"
     assert "run_config_sha256" in bound
+
+
+def test_sidecar_describing_another_model_refused(tmp_path):
+    # codex #392 r21: a source sidecar that exists but describes a
+    # DIFFERENT pickle (stale pkl_sha256, or none at all) must refuse
+    # at serialization time — ensemble serving would reject the
+    # artifact at promotion anyway, months later.
+    import hashlib as _hl
+
+    for label, sidecar in (
+            ("mismatched", {"schema_version": "v1",
+                            "pkl_sha256":
+                                _hl.sha256(b"other").hexdigest()}),
+            ("absent", {"schema_version": "v1"})):
+        out_dir = tmp_path / f"out_{label}"
+        model_src = tmp_path / f"src_{label}" / "model.pkl"
+        model_src.parent.mkdir()
+        model_src.write_bytes(b"model")
+        model_src.with_suffix(".pkl.meta.json").write_text(
+            json.dumps(sidecar), encoding="utf-8")
+        with pytest.raises(SidecarBindingError,
+                           match="does not describe"):
+            write_pipeline_result_artifacts(
+                out_dir,
+                config=_TinyConfig(),
+                backtest_output=_make_backtest_output(),
+                predictions=_one_prediction(),
+                started_at="2024-01-01T00:00:00+00:00",
+                report_path="output/wf/pipeline_report.json",
+                model_artifact_path=str(model_src),
+            )
 
 
 def test_model_without_sidecar_fails_loud(tmp_path):

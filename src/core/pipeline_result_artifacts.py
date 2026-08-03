@@ -244,6 +244,27 @@ def _bind_run_provenance_to_sidecar(
             raise SidecarBindingError(
                 f"model sidecar is not an object: {sidecar_path}."
             )
+        # The sidecar must DESCRIBE the model it sits beside (codex
+        # #392 r21): a stale or incomplete sidecar — absent
+        # pkl_sha256, or the digest of some OTHER pickle — would
+        # otherwise take fresh run provenance and exit 0, deferring
+        # the inevitable serving-loader rejection to the promotion
+        # gate.
+        if not model_path.is_file():
+            raise SidecarBindingError(
+                f"sidecar {sidecar_path} exists but its model does "
+                f"not: {model_path} — nothing to bind, failing loud."
+            )
+        actual_pkl_sha = hashlib.sha256(
+            model_path.read_bytes()
+        ).hexdigest()
+        if sidecar.get("pkl_sha256") != actual_pkl_sha:
+            raise SidecarBindingError(
+                f"sidecar {sidecar_path} declares pkl_sha256="
+                f"{sidecar.get('pkl_sha256')!r} but the model on disk "
+                f"hashes to {actual_pkl_sha} — the sidecar does not "
+                "describe this model, failing loud."
+            )
         sidecar["run_config_sha256"] = hashlib.sha256(
             config_path.read_bytes()
         ).hexdigest()
