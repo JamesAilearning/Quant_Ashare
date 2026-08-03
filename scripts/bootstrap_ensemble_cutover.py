@@ -510,8 +510,20 @@ def main(argv: list[str] | None = None) -> int:
 
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     members = evidence["members"]
+    # Every path this run CREATES, in write order (codex #392 r11).
+    # The incumbent canonical is never modified — the backup is a
+    # copy, everything else is a new file — so the correct treatment
+    # of a mid-write failure is to DELETE what this run created,
+    # restoring the exact pre-run state, and to REPORT that state
+    # accurately (production keeps serving the incumbent; nothing
+    # points at the manifest until the operator switches the morning
+    # command).
+    created: list[Path] = []
+    residue_notes: list[str] = []
     try:
         backup = _backup_incumbent(Path(args.incumbent), stamp)
+        created.extend(Path(dst) for dst in backup.values()
+                       if dst != "absent")
         member_records: list[dict[str, Any]] = []
         for member in members:
             meta_path = Path(member.pkl_path).with_suffix(".meta.json")
@@ -522,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             meta_path.write_text(
                 json.dumps(meta, indent=2, ensure_ascii=False),
                 encoding="utf-8")
+            created.append(meta_path)
             member_records.append({
                 "pkl_path": member.pkl_path,
                 "pkl_sha256": member.pkl_sha256,
@@ -571,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
             # with FileExistsError if the destination exists — same
             # volume by construction (mkstemp in out.parent).
             os.link(tmp, out)
-            tmp.unlink(missing_ok=True)
+            created.append(out)
         except FileExistsError as exc:
             tmp.unlink(missing_ok=True)
             raise CutoverRefusal(
@@ -584,6 +597,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"cannot install the production manifest with the "
                 f"incumbent's readability ({exc}) — the morning run "
                 "could not open it; nothing installed") from exc
+        # Post-link staging cleanup is SEPARATE from the install
+        # (codex #392 r11): the manifest is already in place, so a
+        # failing unlink must not raise into a path that reports
+        # "nothing installed" — it is benign residue, noted honestly.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as exc:
+            residue_notes.append(
+                f"staging file survives at {tmp} ({exc}) — remove by "
+                "hand; the installed manifest is unaffected")
 
         baseline = build_baseline_record(
             manifest_path=str(out),
@@ -598,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_path.write_text(
             json.dumps(baseline, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
+        created.append(baseline_path)
 
         status = build_initial_status(
             verdict_sidecar_path=VERDICT_SIDECAR_PATH,
@@ -620,13 +644,33 @@ def main(argv: list[str] | None = None) -> int:
         with open(status_path, "x", encoding="utf-8") as fh:
             fh.write(json.dumps(status, indent=2,
                                 ensure_ascii=False) + "\n")
+        created.append(status_path)
     except (CutoverRefusal, OSError) as exc:
+        # ROLLBACK (codex #392 r11): delete everything THIS RUN
+        # created, newest first — the incumbent canonical was never
+        # modified, so removing our artifacts restores the exact
+        # pre-run state and the report below matches reality
+        # (production keeps serving the incumbent; the morning
+        # command was never switched).
+        survivors: list[str] = []
+        for path in reversed(created):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as rb_exc:
+                survivors.append(f"{path} ({rb_exc})")
         print(f"[cutover] WRITE FAILED after gates passed: {exc}",
               file=sys.stderr)
-        print("[cutover] restore the incumbent from the backup above "
-              "and re-run once resolved.", file=sys.stderr)
+        print(f"[cutover] rolled back {len(created) - len(survivors)} "
+              f"artifact(s) created by this run; production is "
+              "UNCHANGED (the incumbent canonical was never "
+              "modified).", file=sys.stderr)
+        if survivors:
+            print("[cutover] could NOT remove (delete by hand): "
+                  + "; ".join(survivors), file=sys.stderr)
         return 1
 
+    for note in residue_notes:
+        print(f"[cutover] NOTE: {note}")
     print(f"[cutover] incumbent backup: {backup}")
     print(f"[cutover] serving manifest installed: {out}")
     print(f"[cutover] baseline record: {baseline_path}")

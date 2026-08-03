@@ -208,6 +208,55 @@ class CutoverWritePhase(unittest.TestCase):
         self.assertEqual("WIN", status["verdict"])
         self.assertEqual("6a" * 32, status["verdict_sidecar_sha256"])
 
+    def test_late_write_failure_rolls_back_everything(self) -> None:
+        # codex #392 r11: a failure AFTER the manifest/baseline landed
+        # (here: the once-only status appeared post-gates) must not
+        # leave production half-switched. The incumbent canonical is
+        # never modified, so the correct treatment is to DELETE every
+        # artifact this run created — and report that state honestly.
+        status_path = self.tmp / RECERT_STATUS_PATH
+        status_path.parent.mkdir(parents=True)
+        status_path.write_text("{}", encoding="utf-8")
+        rc = self._run()
+        self.assertEqual(1, rc)
+        # Everything the run created was rolled back...
+        self.assertFalse(self.manifest_out.exists())
+        self.assertFalse((self.tmp / bc.BASELINE_PATH).exists())
+        for member in self.members:
+            self.assertFalse(
+                Path(member.pkl_path).with_suffix(".meta.json").exists())
+        self.assertEqual([], list(self.tmp.glob("*.pre_bootstrap_*")))
+        self.assertEqual([], list(self.manifest_out.parent
+                                  .glob("*.install*")))
+        # ...the pre-existing status (NOT ours) survives untouched...
+        self.assertEqual("{}", status_path.read_text(encoding="utf-8"))
+        # ...and the incumbent was never modified.
+        self.assertEqual(b"incumbent-model",
+                         self.incumbent.read_bytes())
+
+    def test_post_link_cleanup_failure_is_not_a_failed_install(self) -> None:
+        # codex #392 r11: once os.link succeeded the manifest IS
+        # installed — a failing staging unlink must not surface as
+        # "nothing installed"; it is benign residue, noted on the
+        # success path.
+        real_unlink = Path.unlink
+
+        def stubborn(self, *a, **kw):  # noqa: ANN001, ANN002
+            if ".install." in self.name:
+                raise OSError("blocked by filesystem software")
+            return real_unlink(self, *a, **kw)
+
+        with patch.object(Path, "unlink", stubborn):
+            rc = self._run()
+        self.assertEqual(0, rc)
+        self.assertTrue(self.manifest_out.is_file())
+        self.assertEqual(self.manifest_bytes,
+                         self.manifest_out.read_bytes())
+        # The residue is real (unlink was blocked) — and documented.
+        residue = list(self.manifest_out.parent.glob("*.install*"))
+        self.assertEqual(1, len(residue))
+        residue[0].unlink()  # test owns the temp dir
+
     def test_manifest_appearing_after_gates_is_not_clobbered(self) -> None:
         # codex #392 r10: the once-only precondition is racy — a
         # manifest that APPEARS between the (stubbed) gate phase and
