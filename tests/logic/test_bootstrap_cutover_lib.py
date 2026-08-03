@@ -480,6 +480,54 @@ class RunConfigProvenance(unittest.TestCase):
                 self._check(sidecar=sidecar)
 
 
+class MemberSourceProvenance(unittest.TestCase):
+    """codex #392 r15: a matching config proves nothing about the
+    CODE — the training tree must be explicitly clean and the commit
+    well-formed (the executor then requires mainline ancestry)."""
+
+    _COMMIT = "ab" * 20
+
+    def test_clean_registered_sidecar_admits(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_member_source_provenance,
+        )
+
+        commit = check_member_source_provenance(
+            "member[0]", {"source_git_dirty": False,
+                          "source_git_commit": self._COMMIT})
+        self.assertEqual(self._COMMIT, commit)
+
+    def test_dirty_or_unknown_tree_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_member_source_provenance,
+        )
+
+        for label, sidecar in (
+                ("dirty", {"source_git_dirty": True,
+                           "source_git_commit": self._COMMIT}),
+                ("unknown (None)", {"source_git_dirty": None,
+                                    "source_git_commit": self._COMMIT}),
+                ("absent", {"source_git_commit": self._COMMIT}),
+                ("stringly false", {"source_git_dirty": "False",
+                                    "source_git_commit": self._COMMIT}),
+                ("non-dict", ["x"])):
+            with self.assertRaises(CutoverRefusal, msg=label):
+                check_member_source_provenance("member[0]", sidecar)
+
+    def test_malformed_commit_refused(self) -> None:
+        from scripts.bootstrap_cutover_lib import (
+            check_member_source_provenance,
+        )
+
+        for label, commit in (
+                ("absent", None), ("short", "abc123"),
+                ("non-hex", "z" * 40), ("non-string", 7)):
+            with self.assertRaises(CutoverRefusal, msg=label):
+                check_member_source_provenance(
+                    "member[0]", {"source_git_dirty": False,
+                                  "source_git_commit": commit})
+
+
 class ExecutorReadDiscipline(unittest.TestCase):
     """Source pins for the two adversarial-self-review P1s."""
 
@@ -523,10 +571,30 @@ class ExecutorReadDiscipline(unittest.TestCase):
         gate_phase, write_phase = self._SRC.split("def main(", 1)
         self.assertIn("check_run_config_provenance", gate_phase)
         self.assertIn("!= member.meta_sha256", gate_phase)
+        # ...and the training SOURCE is adjudicated there too (codex
+        # #392 r15): clean-tree + well-formed commit via the lib,
+        # mainline ancestry via git under the same pinned revision.
+        self.assertIn("check_member_source_provenance", gate_phase)
+        self.assertIn('"merge-base", "--is-ancestor"', self._SRC)
         # The baseline write is an exclusive create, never a
         # truncating write (codex #392 r14).
         self.assertIn('open(baseline_path, "x"', write_phase)
         self.assertNotIn("baseline_path.write_text", write_phase)
+
+    def test_environment_and_clock_cannot_author_the_gates(self) -> None:
+        # codex #392 r15: the expected provider identity is the
+        # COMMITTED template default (the live env would let the same
+        # wrong QUANT_PROVIDER_URI that mis-trained a member fabricate
+        # the expected value), and an injected --now must sit near the
+        # wall clock (else it is an evidence-recency bypass).
+        gate_phase, _ = self._SRC.split("def main(", 1)
+        # >= 2 occurrences = the definition AND at least one call
+        # inside the gate phase.
+        self.assertGreaterEqual(
+            gate_phase.count("_expand_registered_default"), 2)
+        self.assertNotIn("expand_env_vars", self._SRC)
+        self.assertGreaterEqual(
+            gate_phase.count("_validate_injected_now"), 2)
 
 
 class CampaignEligibility(unittest.TestCase):

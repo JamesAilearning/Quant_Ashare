@@ -37,6 +37,7 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
 )
 from src.core.pipeline_result_artifacts import (  # noqa: E402
     PipelineResultArtifactError,
+    SidecarBindingError,
     _compound_return,
     _config_to_dict,
     _finite_float,
@@ -265,6 +266,7 @@ def test_run_config_digest_is_stamped_into_the_model_sidecar(tmp_path):
         predictions=predictions,
         started_at="2024-01-01T00:00:00+00:00",
         report_path="output/wf/pipeline_report.json",
+        git_provenance={"commit": "ab" * 20, "dirty": False},
     )
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     # The pre-existing provenance fields survive the update...
@@ -272,6 +274,78 @@ def test_run_config_digest_is_stamped_into_the_model_sidecar(tmp_path):
     # ...and the stamped digest is over the EXACT persisted bytes.
     assert sidecar["run_config_sha256"] == hashlib.sha256(
         (out_dir / "config.yaml").read_bytes()).hexdigest()
+    # Source provenance is copied VERBATIM from the run-start capture
+    # (codex #392 r15) — the promotion gate adjudicates it later.
+    assert sidecar["source_git_commit"] == "ab" * 20
+    assert sidecar["source_git_dirty"] is False
+
+
+def test_absent_git_provenance_is_stamped_as_none(tmp_path):
+    # No capture -> None recorded honestly (never omitted, never
+    # fabricated); the promotion gate fails closed on None.
+    out_dir = tmp_path / "out"
+    sidecar_path = out_dir / "artifacts" / "model.pkl.meta.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(json.dumps({"schema_version": "v1"}),
+                            encoding="utf-8")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    write_pipeline_result_artifacts(
+        out_dir,
+        config=_TinyConfig(),
+        backtest_output=_make_backtest_output(),
+        predictions=predictions,
+        started_at="2024-01-01T00:00:00+00:00",
+        report_path="output/wf/pipeline_report.json",
+    )
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["source_git_commit"] is None
+    assert sidecar["source_git_dirty"] is None
+
+
+def test_model_without_sidecar_fails_loud(tmp_path):
+    # codex #392 r15: the trainer's sidecar write is best-effort — if
+    # it failed, the model is UNPROMOTABLE (no run_config_sha256, no
+    # source provenance). The run must fail loud at training time,
+    # not after three expensive bootstrap runs at the cutover gate.
+    out_dir = tmp_path / "out"
+    model_src = tmp_path / "model.pkl"
+    model_src.write_bytes(b"model")
+    predictions = pd.Series(
+        [0.1],
+        index=pd.MultiIndex.from_product(
+            [pd.to_datetime(["2024-01-03"]), ["SH600000"]],
+            names=["datetime", "instrument"],
+        ),
+        name="score",
+    )
+    with pytest.raises(SidecarBindingError, match="no sidecar"):
+        write_pipeline_result_artifacts(
+            out_dir,
+            config=_TinyConfig(),
+            backtest_output=_make_backtest_output(),
+            predictions=predictions,
+            started_at="2024-01-01T00:00:00+00:00",
+            report_path="output/wf/pipeline_report.json",
+            model_artifact_path=str(model_src),
+        )
+
+
+def test_pipeline_propagates_sidecar_binding_failures(tmp_path):
+    # Source pin (codex #392 r15): Pipeline.run downgrades result-
+    # artifact failures to warnings — the promotion-critical sidecar
+    # binding must be carved OUT of that swallow and re-raised.
+    src = (PROJECT_ROOT / "src" / "core" / "pipeline.py").read_text(
+        encoding="utf-8")
+    assert "except SidecarBindingError:" in src
+    swallow = src.split("except SidecarBindingError:", 1)[1]
+    assert swallow.split("except Exception", 1)[0].count("raise") == 1
 
 
 def test_corrupt_sidecar_fails_loud_instead_of_unbound(tmp_path):

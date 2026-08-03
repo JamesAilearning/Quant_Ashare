@@ -38,6 +38,16 @@ class PipelineResultArtifactError(RuntimeError):
     """Raised when structured pipeline result artifacts cannot be written."""
 
 
+class SidecarBindingError(PipelineResultArtifactError):
+    """The promotion-critical sidecar binding could not be written.
+
+    Split from the base error (codex #392 r15) so ``Pipeline.run``
+    can let THIS failure propagate — a model artifact whose sidecar
+    lacks ``run_config_sha256``/source provenance is unpromotable,
+    and an operator must learn that at training time, not after all
+    three expensive bootstrap runs at the cutover gate."""
+
+
 def write_pipeline_result_artifacts(
     output_dir: Path,
     *,
@@ -101,7 +111,8 @@ def write_pipeline_result_artifacts(
     )
     if model_artifact_path:
         _copy_model_artifact(Path(model_artifact_path), model_path)
-    _bind_run_config_to_sidecar(config_path, model_path)
+    _bind_run_provenance_to_sidecar(config_path, model_path,
+                                    git_provenance)
 
     metadata = _build_metadata(
         output_dir=output_dir,
@@ -178,8 +189,13 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _bind_run_config_to_sidecar(config_path: Path, model_path: Path) -> None:
-    """Stamp the persisted run config's digest into the model sidecar.
+def _bind_run_provenance_to_sidecar(
+    config_path: Path,
+    model_path: Path,
+    git_provenance: Mapping[str, Any] | None,
+) -> None:
+    """Stamp the run config digest AND source provenance into the
+    model sidecar.
 
     ``<run>/config.yaml`` is otherwise a mutable, unhashed file: the
     bootstrap cutover adjudicates the frozen-family semantics against
@@ -191,24 +207,47 @@ def _bind_run_config_to_sidecar(config_path: Path, model_path: Path) -> None:
     same chain — the promotion gate recomputes the digest of the
     bytes on disk and refuses a mismatch or an absent field.
 
-    A missing sidecar skips silently (non-production layouts, and the
-    sidecar's own writer is best-effort); a sidecar that exists but
-    cannot be updated raises — for a promotion-bound run the binding
-    is load-bearing, and surfacing the failure at run time beats a
-    cutover refusal months later.
+    The same chain carries the SOURCE provenance (codex #392 r15):
+    a matching config proves nothing about the CODE that trained the
+    member — a dirty checkout or an unmerged revision is unregistered
+    implementation semantics. ``source_git_commit`` /
+    ``source_git_dirty`` are copied VERBATIM from the run-start
+    capture the report uses (never re-probed at write time, codex P2
+    on #313); ``None`` is recorded honestly and the promotion gate
+    fails closed on it.
+
+    Failure semantics (codex #392 r15): when a model artifact exists,
+    the binding is load-bearing — a MISSING sidecar (the trainer's
+    best-effort write failed) and a sidecar that cannot be updated
+    both raise :class:`SidecarBindingError`, which ``Pipeline.run``
+    deliberately propagates. Surfacing the failure at training time
+    beats finishing three expensive bootstrap runs only to have every
+    member refused at the cutover gate. Only a run with NO model
+    artifact skips silently.
     """
     sidecar_path = model_path.with_suffix(model_path.suffix + ".meta.json")
     if not sidecar_path.is_file():
+        if model_path.is_file():
+            raise SidecarBindingError(
+                f"model artifact {model_path} has no sidecar to bind "
+                "the run provenance into — the trainer's sidecar write "
+                "must have failed; without run_config_sha256 and "
+                "source provenance the member is unpromotable, so the "
+                "run fails loud now."
+            )
         return
     try:
         sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
         if not isinstance(sidecar, dict):
-            raise PipelineResultArtifactError(
+            raise SidecarBindingError(
                 f"model sidecar is not an object: {sidecar_path}."
             )
         sidecar["run_config_sha256"] = hashlib.sha256(
             config_path.read_bytes()
         ).hexdigest()
+        gp = git_provenance or {}
+        sidecar["source_git_commit"] = gp.get("commit")
+        sidecar["source_git_dirty"] = gp.get("dirty")
         # Atomic via write-to-temp + replace — the sidecar write
         # convention (ModelTrainer._write_model_sidecar).
         tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
@@ -218,8 +257,8 @@ def _bind_run_config_to_sidecar(config_path: Path, model_path: Path) -> None:
         )
         os.replace(tmp, sidecar_path)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise PipelineResultArtifactError(
-            f"cannot bind the run config digest into the model sidecar "
+        raise SidecarBindingError(
+            f"cannot bind the run provenance into the model sidecar "
             f"{sidecar_path}: {exc}"
         ) from exc
 

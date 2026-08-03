@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -63,6 +64,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     check_cutover_paths,
     check_evidence_provenance,
     check_isoweek_anchor,
+    check_member_source_provenance,
     check_member_training_config,
     check_preregistered_gate_windows,
     check_preregistered_windows,
@@ -182,6 +184,73 @@ def _member_run_config(pkl_path: Path) -> tuple[Any, str] | None:
         return None
 
 
+# `--now` exists for deterministic tests. In a real promotion the
+# injected instant must sit NEAR the true present, or it becomes an
+# evidence-recency bypass (codex #392 r15): pinning it beside the
+# frozen dry-run window would admit stale gate artifacts years later.
+_MAX_NOW_SKEW_SECONDS = 24 * 3600
+
+
+def _validate_injected_now(now_iso: str, wall_now: datetime) -> None:
+    try:
+        injected = datetime.fromisoformat(now_iso)
+    except ValueError as exc:
+        raise CutoverRefusal(
+            f"--now is not ISO-8601: {now_iso!r}") from exc
+    if injected.tzinfo is None:
+        raise CutoverRefusal(
+            f"--now must be timezone-aware: {now_iso!r}")
+    skew = abs((injected - wall_now).total_seconds())
+    if skew > _MAX_NOW_SKEW_SECONDS:
+        raise CutoverRefusal(
+            f"--now {now_iso} deviates {skew / 3600.0:.1f}h from the "
+            "wall clock — the injected instant exists for test "
+            "determinism, not evidence time travel; the recency gates "
+            "must measure the true present. Refusing.")
+
+
+def _expand_registered_default(raw: str, what: str) -> str:
+    """Expand a ``${VAR:-default}`` template using ONLY the committed
+    default (codex #392 r15). The live environment is mutable process
+    state: the same wrong ``QUANT_PROVIDER_URI`` that mis-trained a
+    member would also fabricate the expected value at cutover time,
+    collapsing the comparison into a tautology. The default committed
+    at the pinned revision IS the pre-registered bundle identity; a
+    template with no default is unadjudicable — refuse."""
+    from src.core._yaml_loader import _ENV_VAR_PATTERN
+
+    def _take_default(match: re.Match[str]) -> str:
+        default = match.group("default")
+        if default is None:
+            raise CutoverRefusal(
+                f"{what}: template ${{{match.group('name')}}} declares "
+                "no committed default — there is no pre-registered "
+                "bundle identity to bind, refusing")
+        return default
+
+    return _ENV_VAR_PATTERN.sub(_take_default, raw)
+
+
+def _require_registered_commit(repo: Path, commit: str, rev: str,
+                               label: str) -> None:
+    """The member's training code must be REGISTERED history (codex
+    #392 r15): an ancestor of (or equal to) the pinned mainline
+    revision every other gate reads. A clean tree at an unmerged,
+    rewritten, or unknown commit is still unregistered implementation
+    semantics — refuse."""
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, rev],
+        cwd=repo, capture_output=True, check=False)
+    if proc.returncode != 0:
+        detail = (proc.stderr.decode(errors="replace").strip()
+                  or "not in mainline history")
+        raise CutoverRefusal(
+            f"{label}: training commit {commit[:12]} is not an "
+            f"ancestor of the pinned mainline {rev[:12]} ({detail}) — "
+            "the member was trained from unregistered source, "
+            "refusing")
+
+
 def _canonicalize_provider_uri(config: Any) -> Any:
     """Normalize ``config["provider_uri"]`` in place to the canonical
     runtime spelling (codex #392 r13). Training persisted whatever
@@ -264,6 +333,9 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
     # ── 0. path preconditions (adversarial self-review) ─────────
     # Adjudicated WITH the gates so --dry-run covers them and a
     # refusal stays zero-write.
+    if args.now:
+        _validate_injected_now(now_iso,
+                               datetime.now(tz=timezone.utc))
     status_path = repo / RECERT_STATUS_PATH
     baseline_target = repo / BASELINE_PATH
     check_cutover_paths(
@@ -413,17 +485,17 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
             f"config.yaml at {rev[:12]} is not a mapping")
     # The base config's provider_uri is an ENV-VAR TEMPLATE
     # (`${QUANT_PROVIDER_URI:-...}`); the run config persists the
-    # RESOLVED path. Expand with the SAME loader function the
-    # pipeline uses so the data-configuration binding (codex #392
-    # r12) compares like with like — and refuses if the environment
-    # points the template at a different bundle than the member
-    # trained on.
-    from src.core._yaml_loader import expand_env_vars
-
+    # RESOLVED path. The expected value comes from the COMMITTED
+    # default at the pinned revision, never from the live environment
+    # (codex #392 r15): expanding the env var here would let the same
+    # wrong QUANT_PROVIDER_URI that mis-trained a member fabricate
+    # the expected value too. The data-configuration binding (codex
+    # #392 r12) then compares the member's actual trained path
+    # against the pre-registered identity.
     raw_provider = base_config.get("provider_uri")
     if isinstance(raw_provider, str):
-        base_config["provider_uri"] = expand_env_vars(
-            raw_provider, source_path=f"config.yaml@{rev[:12]}")
+        base_config["provider_uri"] = _expand_registered_default(
+            raw_provider, f"config.yaml@{rev[:12]}")
     _canonicalize_provider_uri(base_config)
     for preset_path in BOOTSTRAP_PRESET_PATHS:
         cfg = yaml.safe_load(
@@ -484,6 +556,14 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
             check_run_config_provenance(
                 f"member[{i}]", run_config_sha256=run_config_sha,
                 sidecar=sidecar_payload)
+            # ...and the CODE that trained it must be registered,
+            # clean source (codex #392 r15): explicitly clean tree,
+            # at a commit that is mainline ancestry under the same
+            # pinned revision every other gate reads.
+            member_commit = check_member_source_provenance(
+                f"member[{i}]", sidecar_payload)
+            _require_registered_commit(
+                repo, member_commit, rev, f"member[{i}]")
         check_member_training_config(
             f"member[{i}]", _canonicalize_provider_uri(run_config),
             declared, base_config)
@@ -606,7 +686,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="Production serving manifest path to CREATE.")
     p.add_argument("--repo", default=None)
     p.add_argument("--now", default=None,
-                   help="Injectable instant (ISO, tz-aware) — tests.")
+                   help="Injectable instant (ISO, tz-aware) — test "
+                        "determinism only; must sit within 24h of the "
+                        "wall clock (codex #392 r15).")
     p.add_argument("--dry-run", action="store_true",
                    help="Run every gate and report, writing NOTHING.")
     args = p.parse_args(argv)

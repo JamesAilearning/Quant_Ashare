@@ -140,6 +140,13 @@ class PipelineResultArtifactTests(unittest.TestCase):
             model_path = out / "artifacts" / "model.pkl"
             model_path.parent.mkdir(parents=True)
             model_path.write_bytes(b"model")
+            # The real trainer always writes a sidecar beside the
+            # model; without one the writer now fails loud (codex
+            # #392 r15 — an unpromotable model must not serialize
+            # silently).
+            model_path.with_suffix(".pkl.meta.json").write_text(
+                json.dumps({"schema_version": "v1"}),
+                encoding="utf-8")
             paths = write_pipeline_result_artifacts(
                 out,
                 config=PipelineConfig(provider_uri="/tmp/fake"),

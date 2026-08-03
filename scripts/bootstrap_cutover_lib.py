@@ -402,6 +402,36 @@ def check_run_config_provenance(
             "re-authorize a member, refusing")
 
 
+def check_member_source_provenance(label: str, sidecar: Any) -> str:
+    """The member's training CODE must be registered, clean source
+    (codex #392 r15): a config that matches every pre-registered
+    value proves nothing about a locally modified feature builder or
+    trainer. The run stamps ``source_git_commit``/``source_git_dirty``
+    into the sidecar verbatim from its run-start capture; here the
+    tree must be EXPLICITLY clean and the commit well-formed — the
+    executor then requires the commit to be mainline ancestry.
+    Returns the commit for that ancestry check."""
+    if not isinstance(sidecar, dict):
+        raise CutoverRefusal(
+            f"{label}: trainer sidecar is not an object — cannot bind "
+            "the training source, refusing")
+    dirty = sidecar.get("source_git_dirty")
+    if dirty is not False:
+        raise CutoverRefusal(
+            f"{label}: source_git_dirty={dirty!r} — the member must "
+            "be trained from an explicitly CLEAN tree; a dirty or "
+            "unknown checkout is unregistered implementation "
+            "semantics, refusing")
+    commit = sidecar.get("source_git_commit")
+    if (not isinstance(commit, str) or len(commit) != 40
+            or any(c not in "0123456789abcdef" for c in commit)):
+        raise CutoverRefusal(
+            f"{label}: source_git_commit={commit!r} is not a full "
+            "40-hex commit — cannot adjudicate the training source, "
+            "refusing")
+    return commit
+
+
 def check_evidence_provenance(aggregate: Any) -> None:
     """The anchored run's provenance must be EXPLICITLY clean (codex
     #392 r5).

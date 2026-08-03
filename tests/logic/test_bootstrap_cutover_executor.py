@@ -18,6 +18,7 @@ import os
 import stat
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -93,6 +94,115 @@ class MemberRunConfigResolution(unittest.TestCase):
     def test_missing_run_config_refuses(self) -> None:
         (self.run_dir / "config.yaml").unlink()
         self.assertIsNone(bc._member_run_config(self.pkl))
+
+
+class InjectedNowValidation(unittest.TestCase):
+    """codex #392 r15: `--now` is test determinism, not evidence time
+    travel — it must sit within 24h of the wall clock."""
+
+    _WALL = datetime.fromisoformat("2026-08-03T12:00:00+00:00")
+
+    def test_near_present_admits(self) -> None:
+        for iso in ("2026-08-03T00:00:00+00:00",
+                    "2026-08-04T11:00:00+00:00",
+                    "2026-08-03T20:00:00+08:00"):
+            bc._validate_injected_now(iso, self._WALL)
+
+    def test_time_travel_refused(self) -> None:
+        # The exact abuse: pin --now beside the frozen dry-run window
+        # long after the fact.
+        for iso in ("2026-06-17T00:00:00+00:00",
+                    "2027-08-03T12:00:00+00:00"):
+            with self.assertRaises(bc.CutoverRefusal, msg=iso):
+                bc._validate_injected_now(iso, self._WALL)
+
+    def test_naive_or_garbage_refused(self) -> None:
+        for iso in ("2026-08-03T12:00:00", "not-a-time", ""):
+            with self.assertRaises(bc.CutoverRefusal, msg=iso):
+                bc._validate_injected_now(iso, self._WALL)
+
+
+class RegisteredDefaultExpansion(unittest.TestCase):
+    """codex #392 r15: the expected provider identity comes from the
+    COMMITTED template default, never from the live environment."""
+
+    def test_committed_default_wins_over_live_env(self) -> None:
+        with patch.dict(os.environ,
+                        {"QUANT_PROVIDER_URI": "Z:/wrong_bundle"}):
+            out = bc._expand_registered_default(
+                "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}",
+                "config.yaml@abc")
+        self.assertEqual("D:/qlib_data/my_cn_data_pit", out)
+
+    def test_defaultless_template_refused(self) -> None:
+        with self.assertRaises(bc.CutoverRefusal) as ctx:
+            bc._expand_registered_default(
+                "${QUANT_PROVIDER_URI}", "config.yaml@abc")
+        self.assertIn("no committed default", str(ctx.exception))
+
+    def test_literal_passes_through(self) -> None:
+        self.assertEqual(
+            "D:/qlib_data/my_cn_data_pit",
+            bc._expand_registered_default(
+                "D:/qlib_data/my_cn_data_pit", "config.yaml@abc"))
+
+
+class RegisteredCommitCheck(unittest.TestCase):
+    """codex #392 r15: the training commit must be mainline ancestry
+    under the pinned revision — adjudicated by real git."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import subprocess
+
+        cls._tmp = TemporaryDirectory()
+        cls.repo = Path(cls._tmp.name)
+        # Hermetic fixture repo: blank out global/system git config so
+        # the user's settings (gpgsign, hooks, templates) cannot leak
+        # into — or fail — the fixture commits.
+        env = {**os.environ,
+               "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_SYSTEM": os.devnull,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+        def git(*args: str) -> str:
+            proc = subprocess.run(
+                ["git", *args], cwd=cls.repo, capture_output=True,
+                check=True, text=True, env=env)
+            return proc.stdout.strip()
+
+        git("init", "-q")
+        (cls.repo / "a.txt").write_text("1", encoding="utf-8")
+        git("add", "a.txt")
+        git("commit", "-q", "-m", "c1")
+        cls.c1 = git("rev-parse", "HEAD")
+        (cls.repo / "a.txt").write_text("2", encoding="utf-8")
+        git("commit", "-q", "-am", "c2")
+        cls.c2 = git("rev-parse", "HEAD")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def test_ancestor_commit_admits(self) -> None:
+        bc._require_registered_commit(
+            self.repo, self.c1, self.c2, "member[0]")
+        bc._require_registered_commit(
+            self.repo, self.c2, self.c2, "member[0]")
+
+    def test_descendant_of_pin_refused(self) -> None:
+        # Trained on code NEWER than the pinned mainline snapshot —
+        # not registered under the revision the gates read.
+        with self.assertRaises(bc.CutoverRefusal) as ctx:
+            bc._require_registered_commit(
+                self.repo, self.c2, self.c1, "member[0]")
+        self.assertIn("unregistered source", str(ctx.exception))
+
+    def test_unknown_commit_refused(self) -> None:
+        with self.assertRaises(bc.CutoverRefusal):
+            bc._require_registered_commit(
+                self.repo, "de" * 20, self.c2, "member[0]")
 
 
 class BackupExclusiveCreation(unittest.TestCase):
