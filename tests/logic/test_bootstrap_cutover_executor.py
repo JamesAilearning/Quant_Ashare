@@ -108,6 +108,9 @@ class CutoverWritePhase(unittest.TestCase):
         self.manifest_bytes = json.dumps({
             "schema_version": "csi800_n5_ensemble_manifest_v1",
             "members": []}).encode("utf-8")
+        # Pre-provisioned manifest directory (codex #392 r10: the
+        # cutover refuses to create it with umask-dependent perms).
+        (self.tmp / "prod").mkdir()
         self.manifest_out = self.tmp / "prod" / "manifest.json"
         self.evidence = {
             "campaign": {
@@ -204,6 +207,18 @@ class CutoverWritePhase(unittest.TestCase):
         status = parse_recert_status(status_text)
         self.assertEqual("WIN", status["verdict"])
         self.assertEqual("6a" * 32, status["verdict_sidecar_sha256"])
+
+    def test_manifest_appearing_after_gates_is_not_clobbered(self) -> None:
+        # codex #392 r10: the once-only precondition is racy — a
+        # manifest that APPEARS between the (stubbed) gate phase and
+        # the install must refuse, never be overwritten.
+        self.manifest_out.write_bytes(b"appeared-after-gates")
+        rc = self._run()
+        self.assertEqual(1, rc)
+        self.assertEqual(b"appeared-after-gates",
+                         self.manifest_out.read_bytes())
+        self.assertEqual([], list(self.manifest_out.parent
+                                  .glob("*.install*")))
 
     def test_dry_run_writes_nothing(self) -> None:
         with patch.object(bc, "_gate_promotion",

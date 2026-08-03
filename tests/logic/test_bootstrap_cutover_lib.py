@@ -268,12 +268,19 @@ class MemberTrainingConfigBinding(unittest.TestCase):
         "compute_device": "gpu",
     }
     _BASE = {"feature_handler": "Alpha158", "model_type": "LGBModel",
-             "num_boost_round": 1000, "learning_rate": 0.005,
+             "num_boost_round": 1000, "early_stopping_rounds": 50,
+             "learning_rate": 0.005, "max_depth": 6, "num_leaves": 64,
+             "lambda_l1": 0.0, "lambda_l2": 1.0,
+             "min_data_in_leaf": 50, "feature_fraction": 0.8,
+             "bagging_fraction": 0.8, "bagging_freq": 5,
              "topk": 50, "n_drop": 5}
 
     def _run_config(self, **overrides: object) -> dict:
         cfg = {k: v for k, v in self._PRESET.items() if k != "extends"}
         cfg.update(self._BASE)
+        # The pipeline resolves these from PipelineConfig defaults —
+        # the base config omits them (codex #392 r10).
+        cfg.update({"label_horizon_days": 1, "seed": 42})
         cfg.update(overrides)
         return cfg
 
@@ -301,10 +308,43 @@ class MemberTrainingConfigBinding(unittest.TestCase):
             "retuned budget": {"num_boost_round": 300},
             "other handler": {"feature_handler": "MinedFactor"},
             "other topk": {"topk": 30},
+            # codex #392 r10: base-config-omitted, default-resolved
+            # training-affecting fields are frozen too.
+            "five-day labels": {"label_horizon_days": 5},
+            "reseeded": {"seed": 7},
         }
         for label, override in cases.items():
             with self.assertRaises(CutoverRefusal, msg=label):
                 self._check(self._run_config(**override))
+
+    def test_unadjudicable_family_key_refused(self) -> None:
+        # A frozen-family key with neither a base value nor a pinned
+        # default cannot be skipped (codex #392 r10 — the skip was the
+        # hole): refuse.
+        from scripts.bootstrap_cutover_lib import (
+            check_member_training_config,
+        )
+
+        base = {k: v for k, v in self._BASE.items()
+                if k != "num_boost_round"}
+        with self.assertRaises(CutoverRefusal) as ctx:
+            check_member_training_config(
+                "member[0]", self._run_config(), self._PRESET, base)
+        self.assertIn("no pinned default", str(ctx.exception))
+
+    def test_defaults_match_pipeline_config(self) -> None:
+        # The pinned defaults must equal the REAL PipelineConfig
+        # defaults — a drifted pipeline default would silently change
+        # what "frozen" means.
+        try:
+            from src.core.pipeline import PipelineConfig
+        except Exception as exc:  # noqa: BLE001 — import needs qlib
+            self.skipTest(f"pipeline import unavailable: {exc}")
+        from scripts.bootstrap_cutover_lib import SAME_FAMILY_DEFAULTS
+
+        cfg = PipelineConfig(provider_uri="Z:/x")
+        for key, pinned in SAME_FAMILY_DEFAULTS.items():
+            self.assertEqual(getattr(cfg, key), pinned, key)
 
     def test_missing_key_refused(self) -> None:
         cfg = self._run_config()

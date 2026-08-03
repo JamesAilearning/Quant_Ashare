@@ -46,6 +46,7 @@ __all__ = [
     "check_preregistered_windows",
     "check_preregistered_gate_windows",
     "SAME_FAMILY_KEYS",
+    "SAME_FAMILY_DEFAULTS",
     "check_member_training_config",
     "check_campaign_eligibility",
     "check_isoweek_anchor",
@@ -264,7 +265,20 @@ SAME_FAMILY_KEYS = (
     "num_leaves", "lambda_l1", "lambda_l2", "min_data_in_leaf",
     "feature_fraction", "bagging_fraction", "bagging_freq",
     "topk", "n_drop",
+    # Training-affecting fields the mainline base config OMITS (codex
+    # #392 r10): the pipeline resolves them from PipelineConfig
+    # defaults, so "absent from base" must mean "compare against the
+    # pinned default", never "skip" — a five-day-label or reseeded
+    # member reusing the pinned dates is not the frozen protocol.
+    "label_horizon_days", "seed",
 )
+# Pinned PipelineConfig defaults for same-family keys the base config
+# may legitimately omit (governance cross-pins these against the real
+# dataclass).
+SAME_FAMILY_DEFAULTS: dict[str, Any] = {
+    "label_horizon_days": 1,
+    "seed": 42,
+}
 
 
 def check_member_training_config(
@@ -303,14 +317,23 @@ def check_member_training_config(
                 "was not trained under the frozen configuration, "
                 "refusing")
     for key in SAME_FAMILY_KEYS:
-        if key not in base_config:
-            continue
-        expected = base_config[key]
+        if key in base_config:
+            expected = base_config[key]
+        elif key in SAME_FAMILY_DEFAULTS:
+            expected = SAME_FAMILY_DEFAULTS[key]
+        else:
+            # A frozen-family key with NEITHER a base value nor a
+            # pinned default cannot be adjudicated — skipping it is
+            # the hole codex #392 r10 found, so refuse instead.
+            raise CutoverRefusal(
+                f"{label}: same-family key {key!r} is absent from the "
+                "mainline base config and has no pinned default — "
+                "cannot adjudicate the frozen semantics, refusing")
         actual = run_config.get(key, _MISSING)
         if actual != expected:
             raise CutoverRefusal(
                 f"{label}: training config {key}={actual!r} != the "
-                f"mainline base config's {expected!r} — retuned "
+                f"frozen protocol's {expected!r} — retuned "
                 "same-family semantics are not the pre-registered "
                 "protocol, refusing")
 

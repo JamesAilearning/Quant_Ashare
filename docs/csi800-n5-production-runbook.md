@@ -70,6 +70,8 @@ manifest 的错峰与 24 月窗 pins。
    ```bash
    python scripts/bootstrap_ensemble_cutover.py --dry-run      --manifest <候选 manifest>      --member-gate <m1 gate> --member-gate <m2 gate>      --member-gate <m3 gate> --ensemble-gate <ensemble gate>      --incumbent D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl      --manifest-out <生产 manifest 路径>
    ```
+   注意：`--manifest-out` 的**目录须预先建好**（含服务账户的访问
+   权限）——执行器拒绝以 umask 依赖的权限临时创建目录。
    门全过后去掉 `--dry-run` 实跑：写现任备份 → 三成员 inference
    meta → 生产 manifest → baseline 记录 → **初始 WIN 状态工件**
    （`docs/promotion/csi800_recert_status.json` 的**首写**，此后由

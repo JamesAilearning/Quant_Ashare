@@ -242,6 +242,17 @@ def _gate_promotion(args: argparse.Namespace, repo: Path,
         incumbent=str(args.incumbent),
         manifest_out=str(args.manifest_out),
         status_path=str(status_path))
+    # The manifest DIRECTORY must be pre-provisioned (codex #392 r10):
+    # creating it here under a restrictive umask (e.g. 077) would
+    # yield operator-owned 0700 directories — mirroring the file mode
+    # cannot restore traversal for the serving account.
+    out_parent = Path(args.manifest_out).parent
+    if not out_parent.is_dir():
+        raise CutoverRefusal(
+            f"the production manifest directory does not exist: "
+            f"{out_parent} — pre-provision it with the serving "
+            "account's access (the cutover will not create it with "
+            "umask-dependent permissions)")
 
     # ── 1. campaign eligibility, at ONE pinned mainline revision ──
     # The sidecar bytes adjudicated here MUST be the same bytes
@@ -519,7 +530,6 @@ def main(argv: list[str] | None = None) -> int:
                 "fit_end": member.fit_end,
             })
         out = Path(args.manifest_out)
-        out.parent.mkdir(parents=True, exist_ok=True)
         # EXCLUSIVE unique staging (codex #392 r1, the rotation
         # executor's pattern): a predictable `<manifest>.install` that
         # already exists as a symlink/hardlink would be followed and
@@ -554,7 +564,20 @@ def main(argv: list[str] | None = None) -> int:
             if hasattr(os, "chown"):
                 os.chown(tmp, incumbent_stat.st_uid,
                          incumbent_stat.st_gid)
-            os.replace(tmp, out)
+            # NO-CLOBBER install (codex #392 r10): os.replace would
+            # overwrite a manifest that APPEARED after the gate-phase
+            # existence check (an overlapping cutover). A hard link
+            # from the fully-written staging file is atomic AND fails
+            # with FileExistsError if the destination exists — same
+            # volume by construction (mkstemp in out.parent).
+            os.link(tmp, out)
+            tmp.unlink(missing_ok=True)
+        except FileExistsError as exc:
+            tmp.unlink(missing_ok=True)
+            raise CutoverRefusal(
+                f"the production manifest APPEARED after the gate "
+                f"phase: {out} — an overlapping cutover or another "
+                "process owns it now; refusing to clobber") from exc
         except OSError as exc:
             tmp.unlink(missing_ok=True)
             raise CutoverRefusal(
@@ -591,9 +614,12 @@ def main(argv: list[str] | None = None) -> int:
         # production has actually switched (R1-DP-D).
         status_path = repo / RECERT_STATUS_PATH
         status_path.parent.mkdir(parents=True, exist_ok=True)
-        status_path.write_text(
-            json.dumps(status, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8")
+        # Exclusive create — the once-only status must never clobber a
+        # state that appeared since the gate phase (same TOCTOU class
+        # as the manifest, codex #392 r10).
+        with open(status_path, "x", encoding="utf-8") as fh:
+            fh.write(json.dumps(status, indent=2,
+                                ensure_ascii=False) + "\n")
     except (CutoverRefusal, OSError) as exc:
         print(f"[cutover] WRITE FAILED after gates passed: {exc}",
               file=sys.stderr)
