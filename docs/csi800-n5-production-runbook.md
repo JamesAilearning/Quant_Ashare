@@ -66,8 +66,9 @@ manifest 的错峰与 24 月窗 pins。
    （自举时无现行 manifest）——按 `csi800_n5_ensemble_manifest_v1`
    直接写三成员（oldest→newest），随后由切换执行器以严格加载器验证。
 4. **ensemble 级门 ×1**（退化/约束干跑/veto 面）：
-   `--window-start 2026-05-06 --window-end 2026-08-03`（trailing
-   quarter，对三名成员全样本外）。该窗口与三份 preset 的 valid 窗
+   `--window-start 2026-05-06 --window-end 2026-07-31`（trailing
+   quarter，对三名成员全样本外；终点=bundle 尾前最后一个交易日，
+   qlib 回测需 T+1 结算日）。该窗口与三份 preset 的 valid 窗
    一样是**预注册值**：切换执行器会逐一比对 gate 工件的被测窗口，
    改动即拒（`BOOTSTRAP_DRYRUN_WINDOW`，治理测试钉守）。
 5. **切换执行**（晋升路径全门→零写入拒绝；先 `--dry-run` 看门）：

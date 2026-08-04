@@ -210,7 +210,7 @@ class PreRegisteredGateWindows(unittest.TestCase):
     _VALID = [("2025-10-10", "2026-01-09"),
               ("2026-01-06", "2026-04-03"),
               ("2026-04-07", "2026-07-07")]
-    _DRY = ("2026-05-06", "2026-08-03")
+    _DRY = ("2026-05-06", "2026-07-31")
 
     def _check(self, members=None, dry=None):  # noqa: ANN001
         from scripts.bootstrap_cutover_lib import (
@@ -248,7 +248,7 @@ class PreRegisteredGateWindows(unittest.TestCase):
 
     def test_retuned_dry_run_window_refused(self) -> None:
         with self.assertRaises(CutoverRefusal) as ctx:
-            self._check(dry=("2026-05-05", "2026-08-03"))
+            self._check(dry=("2026-05-05", "2026-07-31"))
         self.assertIn("trailing quarter", str(ctx.exception))
 
     def test_dry_run_window_is_out_of_sample_for_every_member(self) -> None:
@@ -277,7 +277,7 @@ class MemberTrainingConfigBinding(unittest.TestCase):
         "risk_constraints_calibration": "campaign_v1",
         "train_start": "2024-04-01", "train_end": "2026-04-01",
         "valid_start": "2026-04-07", "valid_end": "2026-07-07",
-        "test_start": "2026-07-10", "test_end": "2026-08-03",
+        "test_start": "2026-07-10", "test_end": "2026-07-31",
         "compute_device": "gpu",
     }
     _BASE = {"feature_handler": "Alpha158", "model_type": "LGBModel",
