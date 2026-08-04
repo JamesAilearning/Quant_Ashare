@@ -153,9 +153,9 @@ class WriteTargetCollisions(unittest.TestCase):
 class PreRegisteredWindows(unittest.TestCase):
     """codex #392 r6: only the trio frozen BEFORE ignition installs."""
 
-    _PINNED = [("2023-08-14", "2025-08-13"),
-               ("2023-11-13", "2025-11-13"),
-               ("2024-02-19", "2026-02-13")]
+    _PINNED = [("2023-09-28", "2025-09-29"),
+               ("2023-12-29", "2025-12-30"),
+               ("2024-04-01", "2026-04-01")]
 
     def test_the_pinned_trio_admits(self) -> None:
         from scripts.bootstrap_cutover_lib import (
@@ -186,10 +186,10 @@ class PreRegisteredWindows(unittest.TestCase):
         )
 
         cases = {
-            "one day shifted": [("2023-08-15", "2025-08-13"),
+            "one day shifted": [("2023-09-29", "2025-09-29"),
                                 *self._PINNED[1:]],
             "different terminal": [*self._PINNED[:2],
-                                   ("2024-02-19", "2026-02-12")],
+                                   ("2024-04-01", "2026-03-31")],
             "reordered": list(reversed(self._PINNED)),
             "wrong count": self._PINNED[:2],
         }
@@ -207,10 +207,10 @@ class PreRegisteredGateWindows(unittest.TestCase):
     windows — binding the train windows alone left the measurement
     windows free."""
 
-    _VALID = [("2025-08-18", "2025-11-18"),
-              ("2025-11-18", "2026-02-13"),
-              ("2026-02-26", "2026-05-26")]
-    _DRY = ("2026-03-17", "2026-06-17")
+    _VALID = [("2025-10-10", "2026-01-09"),
+              ("2026-01-06", "2026-04-03"),
+              ("2026-04-07", "2026-07-07")]
+    _DRY = ("2026-05-06", "2026-08-03")
 
     def _check(self, members=None, dry=None):  # noqa: ANN001
         from scripts.bootstrap_cutover_lib import (
@@ -237,7 +237,7 @@ class PreRegisteredGateWindows(unittest.TestCase):
         self.assertEqual(self._VALID, actual)
 
     def test_retuned_member_window_refused(self) -> None:
-        retuned = [("2025-08-19", "2025-11-18"), *self._VALID[1:]]
+        retuned = [("2025-10-13", "2026-01-09"), *self._VALID[1:]]
         with self.assertRaises(CutoverRefusal) as ctx:
             self._check(members=retuned)
         self.assertIn("pre-registered valid window", str(ctx.exception))
@@ -248,19 +248,19 @@ class PreRegisteredGateWindows(unittest.TestCase):
 
     def test_retuned_dry_run_window_refused(self) -> None:
         with self.assertRaises(CutoverRefusal) as ctx:
-            self._check(dry=("2026-03-16", "2026-06-17"))
+            self._check(dry=("2026-05-05", "2026-08-03"))
         self.assertIn("trailing quarter", str(ctx.exception))
 
     def test_dry_run_window_is_out_of_sample_for_every_member(self) -> None:
         # The pre-registered quarter must start after the NEWEST
-        # member's training end (2026-02-13) — that is why this pair
+        # member's training end (2026-04-01) — that is why this pair
         # was chosen.
         from datetime import date
 
         import scripts.bootstrap_ensemble_cutover as bc
 
         self.assertEqual(self._DRY, bc.BOOTSTRAP_DRYRUN_WINDOW)
-        newest_fit_end = date.fromisoformat("2026-02-13")
+        newest_fit_end = date.fromisoformat("2026-04-01")
         self.assertGreater(date.fromisoformat(self._DRY[0]),
                            newest_fit_end)
 
@@ -275,9 +275,9 @@ class MemberTrainingConfigBinding(unittest.TestCase):
         "attribution_sleeve_grouping": True,
         "risk_constraints_enabled": True,
         "risk_constraints_calibration": "campaign_v1",
-        "train_start": "2024-02-19", "train_end": "2026-02-13",
-        "valid_start": "2026-02-26", "valid_end": "2026-05-26",
-        "test_start": "2026-05-29", "test_end": "2026-06-17",
+        "train_start": "2024-04-01", "train_end": "2026-04-01",
+        "valid_start": "2026-04-07", "valid_end": "2026-07-07",
+        "test_start": "2026-07-10", "test_end": "2026-08-03",
         "compute_device": "gpu",
     }
     _BASE = {"feature_handler": "Alpha158", "model_type": "LGBModel",

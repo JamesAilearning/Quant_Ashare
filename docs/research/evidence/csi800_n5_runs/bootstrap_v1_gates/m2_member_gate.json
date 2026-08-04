@@ -1,0 +1,39 @@
+{
+  "schema_version": "csi800_n5_retrain_gate_v1",
+  "profile": "csi800_n5",
+  "scope": "member",
+  "generated_at": "2026-08-03T14:07:28.230769+00:00",
+  "subject": {
+    "pkl_path": "output/runs/20260803_202157_110779_dd313057_1b6cdeef9bf5/artifacts/model.pkl",
+    "pkl_sha256": "93a0a3c6a36334fdadac6df9ee84b571a795efc884f7b8e8eb5b1035b1373c8d",
+    "meta_path": "output/runs/20260803_202157_110779_dd313057_1b6cdeef9bf5/artifacts/model.pkl.meta.json",
+    "meta_sha256": "766bace7866bbe16795a5d1bc0161a72441661f39098b7022b01af05e78a8733",
+    "fit_start": "2023-11-13",
+    "fit_end": "2025-11-13"
+  },
+  "window": {
+    "valid_start": "2025-11-18",
+    "valid_end": "2026-02-13"
+  },
+  "anchor": null,
+  "gates": {
+    "trainer_integrity": {
+      "verdict": "PASS",
+      "model_type": "LGBModel",
+      "best_iteration": 104,
+      "boost_rounds_used": 104,
+      "num_boost_round": 1000,
+      "final_valid_loss": 0.9985487439971855,
+      "reasons": []
+    },
+    "ic_direction": {
+      "verdict": "FAIL",
+      "ic_1d": -0.016345950535759626,
+      "reasons": [
+        "valid-window ic_1d -0.016346 <= 0"
+      ]
+    }
+  },
+  "missing_gates": [],
+  "overall": "FAIL"
+}
