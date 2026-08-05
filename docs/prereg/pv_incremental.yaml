@@ -1,0 +1,112 @@
+# pv_incremental_v1 冻结预注册计划（PV-DP-1..8 签署件的机器可读形态）
+# 签署 = #398 merge（2026-08-05）；本文件 merge 后不可修改——任何偏离
+# 走新提案。评估器/FWER/裁决器在启动时加载并校验本文件，字段缺失或
+# 值漂移一律 fail-loud。
+protocol_id: pv_incremental_v1
+signed_at_pr: 398
+
+universe:
+  instruments: csi800            # PIT membership spans 含退市
+  ex_financials: false           # 与 Gate-4A 的刻意差异（PV-DP-1 明示）
+
+fields:                          # 表达式输入恰七字段（PV-DP-1）
+  - open
+  - high
+  - low
+  - close
+  - volume
+  - money
+  - turnover_rate
+
+operators:                       # 恰 28，逐字=grammar.REGISTRY（PV-DP-4）
+  - abs
+  - add
+  - cs_demean
+  - cs_rank
+  - cs_winsorize
+  - cs_zscore
+  - div_safe
+  - log_safe
+  - mul
+  - neg
+  - sign
+  - sqrt_safe
+  - sub
+  - ts_argmax
+  - ts_argmin
+  - ts_corr
+  - ts_decay_linear
+  - ts_delta
+  - ts_kurt
+  - ts_max
+  - ts_min
+  - ts_mean
+  - ts_pctchange
+  - ts_rank
+  - ts_skew
+  - ts_std
+  - ts_sum
+  - where
+ts_cov_excluded: true            # 基线明令排除（复权尺度污染）
+
+gp:
+  max_depth: 6                   # = gp_engine 设计常数（治理测试 cross-pin）
+  min_depth: 2
+
+windows:                         # PV-DP-2
+  is_start: "2018-01-01"         # GP 唯一可见窗
+  is_end: "2022-12-31"
+  oos_start: "2023-01-01"        # 幸存者一次性评估
+  oos_end: "2024-12-31"
+  holdout_year: 2025             # 盲态；单向揭盲仅限晋升终裁
+  forbidden_from: "2026-01-01"   # 与生产重叠段，挖掘全程禁用
+
+metric:                          # PV-DP-3（Gate-4A 同源 lag 语义的日频形态）
+  kind: daily_cross_sectional_rank_ic
+  signal_to_execution_lag: 1     # t 信号 -> t+1 执行
+  forward_return: close_exec_to_close_next   # close[t+1] -> close[t+2]
+  min_names_per_day: 300         # 截面窄于此的交易日 drop+count
+  aggregate: [ic_mean, ic_ir]
+
+fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3）
+  parsimony_lambda_per_node: 0.002
+  orthogonality:                 # 对 Alpha158 基线预测的日截面 Spearman
+    fitness_band_abs_rho: 0.30   # 超带部分线性罚
+    fitness_penalty_weight: 2.0
+    oos_hard_band_mean_abs_rho: 0.50   # OOS 通过的必要条件（增量判据）
+    min_coverage_of_ic_days: 0.95      # 基线须覆盖 ≥95% 的合格 IC 日,
+                                       # 否则评估 run fail-loud(部分重叠
+                                       # 不得静默判定增量性)
+  baseline:                      # 基线预测生成 run 的绑定义务
+    model: alpha158_lgb_csi800_walkforward
+    provenance_required: true    # run_config_sha256/source_git 全绿入 ledger
+
+fwer:                            # PV-DP-5
+  family: all_oos_evaluated_candidates
+  method: full_batch_block_bootstrap_max_statistic
+  statistic: one_sided_max_t     # Gate-4A 同源:带符号 t 的单侧 max,
+                                 # 非 |t|——晋升判据是 t>=双门槛的单侧
+                                 # 事件,|t| 会让负向波动抬高正向门槛
+  n_boot: 10000
+  block_len_days: 21
+  quantile: 0.95
+  hard_floor_t: 2.85
+  per_trial_min_n_days: 120      # n 低于此的 trial 出族单报不参与裁决
+  tri_state:
+    clean_negative: reject_iff   # 全族观测 t < 双门槛且无幸存者
+    survivors: promote_gate      # 幸存者进 PV-DP-7 晋升门
+    significant_non_incremental: operator_decision
+                                 # 有族员过双门槛但败于正交硬带——
+                                 # 信号存在但非增量:不晋升也不构成
+                                 # 方向关门,升级操作人裁决
+    sparse_only: no_verdict      # 仅稀疏 trial 有信号不构成裁决
+
+slices:                          # PV-DP-6：注册时冻结几何+probe 前置
+  registered: []                 # 切片随批次注册，注册项含 stamp 几何与 probe 结果
+
+promotion:                       # PV-DP-7（scope 边界）
+  path: [fwer_survivor, phase6_handler, walkforward_paired_vs_baseline,
+         net_basis_improvement, operator_signature, separate_production_proposal]
+  production_wiring_in_scope: false
+
+holdout_unblinded: false         # 单向标志；翻转仅限晋升终裁签字

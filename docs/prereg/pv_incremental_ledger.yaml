@@ -1,0 +1,12 @@
+# pv_incremental_v1 run ledger（成对登记：每次决策级 run 前登记意图、
+# run 后登记结果；FAIL/阴性照录永不删除——Gate-4A 纪律沿袭）。
+protocol_id: pv_incremental_v1
+plan: docs/prereg/pv_incremental.yaml
+entries: []
+# entry 形态（登记时按此结构追加）：
+#   - id: E001
+#     when: <ISO8601>
+#     kind: intent | result
+#     what: <一句话>
+#     artifacts: [<路径+sha256>]
+#     numbers: <原样数字或 null>
