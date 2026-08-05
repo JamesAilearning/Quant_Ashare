@@ -163,6 +163,21 @@ class CandidateIdTests(unittest.TestCase):
         for ok in ("c1", "pv_batch1-c07", "X"):
             ev.check_candidate_id(ok)
 
+    def test_preflight_refuses_before_any_write(self) -> None:
+        # codex #399 r12: a bad id AFTER a valid one must refuse the
+        # whole manifest up front — mid-loop discovery would leave a
+        # dirty, unadjudicable batch (artifacts without a stamp).
+        with self.assertRaises(ev.PVEvalError):
+            ev.preflight_candidates(
+                [{"candidate_id": "ok1"},
+                 {"candidate_id": "../escape"}])
+        with self.assertRaises(ev.PVEvalError) as ctx:
+            ev.preflight_candidates(
+                [{"candidate_id": "dup"}, {"candidate_id": "dup"}])
+        self.assertIn("more than once", str(ctx.exception))
+        ev.preflight_candidates(
+            [{"candidate_id": "a"}, {"candidate_id": "b"}])
+
 
 class BaselineProvenanceTests(unittest.TestCase):
     # codex #399 r10: the frozen plan requires the LEDGERED Alpha158
@@ -472,6 +487,25 @@ class FwerTests(unittest.TestCase):
         with self.assertRaises(fw.PVFwerError) as ctx:
             fw.adjudicate(self._plan(), [art], seed=7)
         self.assertIn("non-finite observed t", str(ctx.exception))
+
+    def test_degenerate_sparse_trial_reaches_sparse_bucket(self) -> None:
+        # codex #399 r12: the r9 refusal is scoped to FAMILY-ELIGIBLE
+        # series — a sparse trial leaves the family per the frozen
+        # per_trial_min_n_days and reports separately (undefined t as
+        # null); it must never abort the whole batch.
+        rng = np.random.default_rng(21)
+        arts = [self._artifact("dense", rng.normal(0, 0.05, 300)),
+                self._artifact("flat5", np.full(5, 0.01))]
+        out = fw.adjudicate(self._plan(), arts, seed=7)
+        self.assertEqual(["flat5"], out["sparse_excluded"])
+        flat_row = next(r for r in out["trials"]
+                        if r["candidate_id"] == "flat5")
+        self.assertIsNone(flat_row["t_stat"])
+        # Sparse-only degenerate batch: no_verdict, not an abort.
+        only = fw.adjudicate(
+            self._plan(), [self._artifact("flat5", np.full(5, 0.01))],
+            seed=7)
+        self.assertEqual("no_verdict", only["verdict"])
 
     def test_duplicate_daily_ic_dates_refused(self) -> None:
         # codex #399 r7: repeated dates would silently collapse the

@@ -101,7 +101,7 @@ def check_window_discipline(plan: dict[str, Any], start: str,
         raise PVEvalError("window touches the blinded holdout year.")
 
 
-def check_candidate_id(cid: str) -> None:
+def check_candidate_id(cid: object) -> str:
     """candidate_id becomes a FILENAME under the sealed batch
     directory (codex #399 r11): an id carrying path separators or an
     absolute prefix (`../escape`, `/tmp/escape`) would escape
@@ -114,6 +114,25 @@ def check_candidate_id(cid: str) -> None:
             f"candidate_id {cid!r} is not a safe filename slug "
             "([A-Za-z0-9][A-Za-z0-9_-]*) — refusing before any "
             "artifact is written.")
+    return cid
+
+
+def preflight_candidates(candidates: list[dict[str, Any]]) -> None:
+    """Validate the whole registered manifest BEFORE the first
+    artifact write (codex #399 r12): a bad id found mid-loop leaves
+    earlier `<id>.json` files on disk with no completion stamp — a
+    dirty batch a retry cannot reuse (exclusive create) and the
+    adjudicator cannot accept. All ids safe + unique, or nothing is
+    written."""
+    seen: set[str] = set()
+    for cand in candidates:
+        cid = check_candidate_id(cand.get("candidate_id"))
+        if cid in seen:
+            raise PVEvalError(
+                f"candidate_id {cid!r} appears more than once in the "
+                "registered manifest — refusing before any artifact "
+                "is written.")
+        seen.add(cid)
 
 
 def check_baseline_provenance(plan: dict[str, Any], baseline_path: Path,
@@ -338,8 +357,14 @@ def main(argv: list[str] | None = None) -> int:
         written: list[str] = []
         from src.factor_mining.grammar import ExprType, GrammarError
 
+        # Preflight the WHOLE manifest before the first write (codex
+        # #399 r12): an unsafe/duplicate id discovered mid-loop would
+        # leave earlier artifacts on disk with no completion stamp —
+        # a dirty, unadjudicable batch directory for exactly the
+        # bad-manifest case the slug check exists to refuse.
+        preflight_candidates(candidates)
+
         for cand in candidates:
-            check_candidate_id(cand["candidate_id"])
             # The factor-mining root contract (codex #399 r6): a
             # candidate must parse under the frozen grammar (taint
             # rules refuse at parse time) AND its root must be a

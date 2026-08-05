@@ -262,14 +262,20 @@ def adjudicate(plan: dict[str, Any],
         # disagrees is a stale/hand-edited artifact — refuse rather
         # than let an unverified scalar clear the binding threshold.
         t_recomputed = t_stat(series.to_numpy())
-        if not np.isfinite(t_recomputed):
-            # codex #399 r9: a zero-variance (or <2-day) daily series
-            # recomputes to an UNDEFINED observed t. The mismatch
-            # guard below only fires when both scalars are finite, so
-            # the trial would slip into the family on n_days alone and
-            # the bootstrap would drop its degenerate draws —
-            # laundering an undefined statistic into a clean-negative
-            # verdict. Refuse before any family/sparse bucketing.
+        family_eligible = series.shape[0] >= min_n
+        if family_eligible and not np.isfinite(t_recomputed):
+            # codex #399 r9: a zero-variance daily series recomputes
+            # to an UNDEFINED observed t. The mismatch guard below
+            # only fires when both scalars are finite, so the trial
+            # would slip into the family on n_days alone and the
+            # bootstrap would drop its degenerate draws — laundering
+            # an undefined statistic into a clean-negative verdict.
+            # Scoped to FAMILY-ELIGIBLE series (codex #399 r12): a
+            # sparse trial leaves the family per the frozen
+            # per_trial_min_n_days and is reported separately — an
+            # undefined sparse t is reported honestly as null, never
+            # allowed to abort the whole batch (sparse_only would
+            # otherwise never reach no_verdict).
             raise PVFwerError(
                 f"artifact {art['candidate_id']!r} recomputes a "
                 f"non-finite observed t from its daily series "
@@ -277,6 +283,7 @@ def adjudicate(plan: dict[str, Any],
                 "series has no defined statistic, refusing.")
         declared = art.get("t_stat")
         if (isinstance(declared, (int, float)) and np.isfinite(declared)
+                and np.isfinite(t_recomputed)
                 and abs(float(declared) - t_recomputed) > 1e-9):
             raise PVFwerError(
                 f"artifact {art['candidate_id']!r} declares t_stat="
@@ -312,10 +319,14 @@ def adjudicate(plan: dict[str, Any],
         row = {"candidate_id": art["candidate_id"],
                "n_days": int(series.shape[0]),
                "ic_mean": float(series.mean()),
-               "t_stat": t_recomputed,
+               # A sparse trial's undefined t reports honestly as
+               # null (codex #399 r12) — family-eligible non-finite
+               # t was already refused above.
+               "t_stat": (t_recomputed if np.isfinite(t_recomputed)
+                          else None),
                "orth_mean_abs_rho": rho,
                "orth_within_hard_band": within_band}
-        if series.shape[0] < min_n:
+        if not family_eligible:
             row["family_member"] = False
             sparse.append(row)
         else:
