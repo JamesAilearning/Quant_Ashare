@@ -124,6 +124,69 @@ class FrozenIcTermTests(unittest.TestCase):
                             novelty_penalty=0.0,
                             config=FitnessConfig(ic_term="typo"))
 
+    def test_breeding_metric_drops_the_frozen_thin_days(self) -> None:
+        # codex #401 r6: the generic evaluator only drops days with
+        # <3 names, while the frozen metric (and the OOS evaluator)
+        # drop days below min_names_per_day. Without threading the
+        # floor, thin-day ICs steer GP selection and then vanish at
+        # adjudication — the breeding metric is not the registered one.
+        from src.factor_mining.evaluator import _ic_per_day
+        dates = pd.date_range("2023-01-02", periods=2, freq="B")
+        # Day 0 has 5 names, day 1 has 3 (thin under a floor of 5).
+        factor = pd.DataFrame(
+            [[1.0, 2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, np.nan, np.nan]],
+            index=dates, columns=list("abcde"))
+        fwd = pd.DataFrame(
+            [[5.0, 4.0, 3.0, 2.0, 1.0], [1.0, 2.0, 3.0, np.nan, np.nan]],
+            index=dates, columns=list("abcde"))
+        both = _ic_per_day(factor, fwd, method="rank")
+        self.assertEqual(2, len(both))          # legacy: both days
+        floored = _ic_per_day(factor, fwd, method="rank",
+                              min_names_per_day=5)
+        self.assertEqual(1, len(floored))       # thin day dropped
+        self.assertEqual(dates[0], floored.index[0])
+
+    def test_engine_forwards_floor_only_when_set(self) -> None:
+        # Legacy call shape must stay literally unchanged (no new
+        # keyword) when no campaign floor is configured.
+        import src.factor_mining.gp_engine as ge
+        from src.factor_mining.expression import parse_expression
+        seen: list[dict] = []
+
+        def recorder(expr, panel, fwd, **kw):
+            seen.append(kw)
+            raise RuntimeError("stop after recording")
+
+        original = ge.evaluate_factor
+        ge.evaluate_factor = recorder
+        try:
+            expr = parse_expression("cs_rank(ts_pctchange($close, 20))")
+            panel = {"$close": pd.DataFrame(
+                1.0, index=pd.date_range("2023-01-02", periods=3,
+                                         freq="B"),
+                columns=["a", "b", "c"])}
+            fwd = panel["$close"]
+            ge.GPEngine(ge.GPConfig(seed=1),
+                        FitnessConfig()).evaluate_individual(
+                expr, panel, fwd)
+            self.assertNotIn("min_names_per_day", seen[-1])
+            ge.GPEngine(ge.GPConfig(seed=1),
+                        FitnessConfig(min_names_per_day=300)
+                        ).evaluate_individual(expr, panel, fwd)
+            self.assertEqual(300, seen[-1]["min_names_per_day"])
+        finally:
+            ge.evaluate_factor = original
+
+    def test_frozen_min_names_is_expressible(self) -> None:
+        # The plan's metric floor must map onto a FitnessConfig field
+        # the engine passes down — not exist only in YAML.
+        plan_floor = _plan()["metric"]["min_names_per_day"]
+        self.assertEqual(300, plan_floor)
+        cfg = FitnessConfig(ic_term="abs_rank_ic",
+                            min_names_per_day=plan_floor)
+        self.assertEqual(300, cfg.min_names_per_day)
+        self.assertEqual(0, FitnessConfig().min_names_per_day)
+
     def test_plan_ic_term_is_a_recognised_mode(self) -> None:
         # The YAML value and the code's vocabulary must agree — a
         # frozen term the engine cannot consume is the whole defect.
@@ -494,6 +557,38 @@ class BaselineExporterTests(unittest.TestCase):
                   / "pv_incremental_baseline.yaml")
         with self.assertRaises(bx.PVBaselineError):
             bx.check_run_config_binding(_plan(), {}, preset)
+
+    def test_sibling_preset_refuses_via_resolved_inheritance(self) -> None:
+        # codex #401 r6: a sibling preset declares the same overlapping
+        # keys but OMITS overall_end, inheriting 2025-12-31 — comparing
+        # only declared keys let it pass and the sidecar would name the
+        # wrong config in a later provenance dispute.
+        sibling = (_PROJECT_ROOT / "config" / "presets"
+                   / "csi800_campaign_base.yaml")
+        resolved = bx.resolve_preset(sibling)
+        # Inheritance really does supply the holdout-year tail here.
+        self.assertEqual("2025-12-31", resolved["overall_end"])
+        with self.assertRaises(bx.PVBaselineError) as ctx:
+            bx.check_run_config_binding(
+                _plan(), {"config": self._run_config()}, sibling)
+        self.assertIn("did not drive this run", str(ctx.exception))
+
+    def test_frozen_preset_resolves_and_passes(self) -> None:
+        frozen = (_PROJECT_ROOT / "config" / "presets"
+                  / "pv_incremental_baseline.yaml")
+        resolved = bx.resolve_preset(frozen)
+        self.assertEqual("2024-12-31", resolved["overall_end"])
+        self.assertEqual("csi800", resolved["instruments"])
+        # Inherited (not declared in the child) fields are present.
+        self.assertEqual(3, resolved["ensemble_window"])
+        self.assertEqual("Alpha158", resolved["feature_handler"])
+        identity = bx.check_run_config_binding(
+            _plan(), {"config": self._run_config(
+                **{k: v for k, v in resolved.items()
+                   if k in ("train_months", "valid_months",
+                            "test_months", "step_months")})},
+            frozen)
+        self.assertEqual("csi800", identity["instruments"])
 
     def test_wrong_run_config_flag_refuses(self) -> None:
         # The supplied --run-config must be the preset that actually

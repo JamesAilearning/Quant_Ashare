@@ -61,6 +61,13 @@ class FitnessConfig:
     # diverge from the pre-registered metric that is supposed to be
     # selecting factors (codex #401 r1).
     ic_term: str = "v1_composite"
+    # Thin-day floor for the BREEDING metric. 0 keeps the legacy
+    # behaviour (only the IC primitive's own 3-name floor). A campaign
+    # whose frozen metric drops days below ``min_names_per_day`` must
+    # set it here too (codex #401 r6) — otherwise thin days steer GP
+    # selection and then vanish at adjudication, so the breeding
+    # metric is not the pre-registered one.
+    min_names_per_day: int = 0
 
     # ---- Campaign orthogonality penalty (pv_incremental_v1) ----
     # INERT BY DEFAULT (weight 0.0): the v1 formula and every existing

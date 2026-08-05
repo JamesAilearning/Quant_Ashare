@@ -256,9 +256,18 @@ class GPEngine:
             # (w_ic·|rank| + w_rankic·|rank|). The constant lives at module
             # scope so checkpoint payloads can tag stored scores with the
             # method that produced them — see ``save_checkpoint``.
+            # The thin-day floor is passed ONLY when a campaign sets
+            # one (codex #401 r6): the breeding metric must drop the
+            # same thin days the adjudicating metric drops. The legacy
+            # call stays literally unchanged when the floor is 0, so
+            # no existing caller/stub sees a new keyword.
+            extra_kw = (
+                {"min_names_per_day": self.fitness_config.min_names_per_day}
+                if self.fitness_config.min_names_per_day > 0 else {}
+            )
             result = evaluate_factor(
                 expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD,
-                universe_mask=self._universe_mask,
+                universe_mask=self._universe_mask, **extra_kw,
             )
         except KeyError as exc:
             # The evaluator raises KeyError only when a Terminal references

@@ -136,6 +136,44 @@ def config_chain_sha256(preset_path: Path) -> dict[str, str]:
         current = (current.parent / str(parent)).resolve()
 
 
+def resolve_preset(preset_path: Path) -> dict[str, Any]:
+    """Merge a preset with everything it inherits via ``extends``.
+
+    Comparing only the child's declared keys is not enough (codex #401
+    r6): a sibling preset such as ``csi800_campaign_base.yaml``
+    declares the same overlapping keys but omits ``overall_end``, so
+    the check passed while that preset would in fact inherit
+    ``2025-12-31`` — the sidecar would then name the wrong config and
+    a later provenance dispute would blame the wrong file. Parents
+    are merged first, the child overrides.
+    """
+    chain: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    current = preset_path.resolve()
+    while True:
+        if current in seen:
+            raise PVBaselineError(
+                f"config extends chain cycles at {current}; refusing.")
+        seen.add(current)
+        if not current.is_file():
+            raise PVBaselineError(
+                f"config chain references {current} which does not "
+                "exist; refusing.")
+        doc = yaml.safe_load(current.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            raise PVBaselineError(
+                f"config {current} is not a mapping; refusing.")
+        chain.append(doc)
+        parent = doc.get("extends")
+        if not parent:
+            break
+        current = (current.parent / str(parent)).resolve()
+    merged: dict[str, Any] = {}
+    for doc in reversed(chain):            # parents first
+        merged.update({k: v for k, v in doc.items() if k != "extends"})
+    return merged
+
+
 def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
                              preset_path: Path) -> dict[str, Any]:
     """The RUN's own captured config must be the frozen baseline run.
@@ -181,14 +219,16 @@ def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
     # its declared keys (it inherits the rest) must agree with the
     # captured config, so the sidecar's run_config_sha256 binds to the
     # file that actually drove these numbers.
-    preset = yaml.safe_load(preset_path.read_text(encoding="utf-8"))
-    if not isinstance(preset, dict):
-        raise PVBaselineError(
-            f"run config {preset_path} is not a mapping; refusing.")
+    preset = resolve_preset(preset_path)
     preset_drift = {
         key: {"run": cfg.get(key), "preset": val}
         for key, val in preset.items()
-        if key in cfg and key not in ("output_dir",) and cfg.get(key) != val
+        if key in cfg and key not in ("output_dir",)
+        # Env-var placeholders (``${QUANT_PROVIDER_URI}``) are expanded
+        # at load time; the captured config holds the expansion, so
+        # comparing the raw template would false-positive.
+        and not (isinstance(val, str) and "${" in val)
+        and cfg.get(key) != val
     }
     if preset_drift:
         raise PVBaselineError(
