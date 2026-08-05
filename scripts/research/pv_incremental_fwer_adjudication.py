@@ -115,6 +115,14 @@ def check_family_manifest(artifacts: list[dict[str, Any]],
     by whatever files happen to sit in a directory (codex #399 r3):
     a partial evaluator batch or leftovers from a previous batch
     would silently shrink or contaminate the max-statistic bar."""
+    if len(manifest_ids) != len(set(manifest_ids)):
+        dupes = sorted({c for c in manifest_ids
+                        if manifest_ids.count(c) > 1})
+        raise PVFwerError(
+            f"the registered manifest itself repeats candidate ids "
+            f"{dupes} — one artifact would satisfy two registered "
+            "trials and silently shrink the family; fix the "
+            "registration, refusing.")
     got = [str(a.get("candidate_id")) for a in artifacts]
     if sorted(got) != sorted(set(got)):
         raise PVFwerError("duplicate candidate artifacts — refusing.")
@@ -168,12 +176,28 @@ def adjudicate(plan: dict[str, Any],
                 f"{declared} but its daily series recomputes to "
                 f"{t_recomputed:.9f} — inconsistent artifact, "
                 "refusing.")
+        # The orthogonality BOOLEAN is likewise derived, never copied
+        # (codex #399 r4): the frozen band lives in the plan, so the
+        # scalar rho is the record and a disagreeing boolean is a
+        # stale/hand-edited artifact.
+        band = float(
+            plan["fitness"]["orthogonality"]["oos_hard_band_mean_abs_rho"])
+        rho = art["orth_mean_abs_rho"]
+        within_band = bool(
+            isinstance(rho, (int, float)) and np.isfinite(rho)
+            and rho <= band)
+        if bool(art.get("orth_within_hard_band")) != within_band:
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} declares "
+                f"orth_within_hard_band={art.get('orth_within_hard_band')} "
+                f"but rho={rho} vs frozen band {band} derives "
+                f"{within_band} — inconsistent artifact, refusing.")
         row = {"candidate_id": art["candidate_id"],
                "n_days": int(series.shape[0]),
                "ic_mean": float(series.mean()),
                "t_stat": t_recomputed,
-               "orth_mean_abs_rho": art["orth_mean_abs_rho"],
-               "orth_within_hard_band": art["orth_within_hard_band"]}
+               "orth_mean_abs_rho": rho,
+               "orth_within_hard_band": within_band}
         if series.shape[0] < min_n:
             row["family_member"] = False
             sparse.append(row)

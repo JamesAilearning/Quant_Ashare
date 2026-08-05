@@ -281,6 +281,25 @@ class FwerTests(unittest.TestCase):
             with self.assertRaises(fw.PVFwerError, msg=label):
                 fw.check_family_manifest(arts, ids)
 
+    def test_stale_orthogonality_boolean_refused(self) -> None:
+        # codex #399 r4: the boolean is DERIVED from rho vs the frozen
+        # band — a stale True over an out-of-band rho refuses.
+        art = self._artifact("stale_orth", np.random.default_rng(9)
+                             .normal(0, 0.05, 300))
+        art["orth_mean_abs_rho"] = 0.9      # > band 0.5
+        art["orth_within_hard_band"] = True  # stale claim
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.adjudicate(self._plan(), [art], seed=7)
+        self.assertIn("inconsistent", str(ctx.exception))
+
+    def test_duplicate_manifest_ids_refused(self) -> None:
+        # codex #399 r4: a manifest repeating an id would let one
+        # artifact satisfy two registered trials via set collapse.
+        a = self._artifact("a", np.zeros(300) + 0.01)
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.check_family_manifest([a], ["a", "a"])
+        self.assertIn("repeats", str(ctx.exception))
+
     def test_non_finite_ic_artifact_refused(self) -> None:
         art = self._artifact("bad", np.zeros(300))
         art["daily_ic"][5]["ic"] = float("nan")
