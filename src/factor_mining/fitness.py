@@ -18,6 +18,11 @@ from .evaluator import EvaluationResult
 
 ANNUALISATION_DAYS = 252
 
+# Recognised fitness shapes. An unknown value must never silently fall
+# through to the v1 mixture — that is how a campaign ends up breeding
+# against a metric other than the pre-registered one.
+_IC_TERMS = frozenset({"v1_composite", "abs_rank_ic"})
+
 
 @dataclass(frozen=True)
 class FitnessConfig:
@@ -45,6 +50,17 @@ class FitnessConfig:
     variance_min: float = 1e-6
     extreme_outlier_frac_max: float = 0.05
     extreme_outlier_magnitude: float = 1e8
+
+    # ---- Campaign IC term (pv_incremental_v1) ----
+    # ``"v1_composite"`` (default) = the §5.1 mixture below, unchanged.
+    # ``"abs_rank_ic"`` = the FROZEN pv_incremental_v1 breeding
+    # criterion: |daily cross-sectional rank-IC mean| MINUS parsimony
+    # and orthogonality, and NOTHING else. Selecting the mode switches
+    # the formula's SHAPE rather than asking an operator to zero six
+    # legacy weights by hand — a hand-zeroed config would silently
+    # diverge from the pre-registered metric that is supposed to be
+    # selecting factors (codex #401 r1).
+    ic_term: str = "v1_composite"
 
     # ---- Campaign orthogonality penalty (pv_incremental_v1) ----
     # INERT BY DEFAULT (weight 0.0): the v1 formula and every existing
@@ -164,6 +180,10 @@ def compute_fitness(
     no valid observations, which also gives ``-inf``.
     """
     cfg = config if config is not None else FitnessConfig()
+    if cfg.ic_term not in _IC_TERMS:
+        raise ValueError(
+            f"unknown ic_term {cfg.ic_term!r}; expected one of "
+            f"{sorted(_IC_TERMS)}")
     if not passes_validity(result, cfg):
         return float("-inf")
     if (
@@ -171,6 +191,17 @@ def compute_fitness(
         or not np.isfinite(result.rank_ic_mean)
     ):
         return float("-inf")
+    if cfg.ic_term == "abs_rank_ic":
+        # The frozen pv_incremental_v1 breeding criterion, verbatim:
+        # |daily cross-sectional rank-IC mean| − parsimony −
+        # orthogonality. The v1 IR / turnover-cost / within-generation
+        # novelty terms deliberately do NOT participate — the
+        # pre-registered metric is exactly this and nothing else.
+        return float(
+            abs(result.rank_ic_mean)
+            - cfg.w_complexity * float(expr_size)
+            - orthogonality_penalty(baseline_mean_abs_rho, cfg)
+        )
     ir_term = 0.0 if not np.isfinite(result.ir) else result.ir
     cost_term = result.turnover_daily * ANNUALISATION_DAYS * cfg.cost_rate
     novelty = float(novelty_penalty) if np.isfinite(novelty_penalty) else 0.0

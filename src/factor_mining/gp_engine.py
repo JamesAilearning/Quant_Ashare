@@ -621,6 +621,17 @@ class GPEngine:
         self._baseline_stack = None
         self._orthogonality_uncovered = 0
         self._orthogonality_scored = 0
+        # SETUP validation before a single expression is scored (codex
+        # #401 r1): a baseline whose instrument namespace or date range
+        # does not meet the panel is a configuration error, not the
+        # legitimate "IS window starts before the first out-of-fold
+        # date" gap. Left unchecked it would make EVERY candidate
+        # score as uncovered — silently disabling the campaign's only
+        # incremental criterion while the run looked healthy. Raised
+        # here (not inside evaluate_individual, whose broad except
+        # would swallow it into a -inf score).
+        if baseline is not None and self.fitness_config.w_orthogonality != 0.0:
+            _assert_baseline_meets_panel(baseline, panel)
         run_baseline_key = _baseline_key_for(baseline)
         if (
             self._baseline_key is not None
@@ -845,6 +856,48 @@ def _frame_fingerprint(frame: pd.DataFrame) -> str:
     h.update(np.ascontiguousarray(
         frame.to_numpy(dtype=float, na_value=np.nan)).tobytes())
     return h.hexdigest()[:16]
+
+
+def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel) -> None:
+    """Refuse a baseline that cannot measure the panel at all.
+
+    Distinguishes a CONFIGURATION error from the campaign's accepted
+    coverage gap (codex #401 r1):
+
+    * fewer than 2 instruments in common — a different instrument
+      namespace (e.g. ``SH600000`` vs ``600000.SH``): no cross-section
+      can ever be correlated, so every candidate would score
+      unpenalised;
+    * zero dates in common — the baseline does not overlap the mining
+      window at all (a wrong export), as opposed to overlapping only
+      part of it, which is the expected and disclosed geometry.
+
+    Partial overlap is NOT an error: the frozen
+    ``is_coverage_policy = penalize_covered_days_only`` accepts it and
+    the run record discloses the counts.
+    """
+    frames = list(panel.values()) if hasattr(panel, "values") else list(panel)
+    if not frames:
+        raise ValueError(
+            "orthogonality penalty is enabled but the panel is empty — "
+            "cannot bind the baseline; refusing.")
+    ref = frames[0]
+    common_cols = ref.columns.intersection(baseline.columns)
+    if len(common_cols) < 2:
+        raise ValueError(
+            f"baseline shares {len(common_cols)} instrument(s) with the "
+            f"panel (panel e.g. {list(ref.columns[:3])}, baseline e.g. "
+            f"{list(baseline.columns[:3])}) — an instrument-namespace "
+            "mismatch would score EVERY candidate unpenalised and "
+            "silently disable the incremental criterion; refusing.")
+    common_dates = ref.index.intersection(baseline.index)
+    if len(common_dates) == 0:
+        raise ValueError(
+            f"baseline dates {str(baseline.index.min())[:10]}.."
+            f"{str(baseline.index.max())[:10]} do not overlap the panel "
+            f"{str(ref.index.min())[:10]}..{str(ref.index.max())[:10]} — "
+            "the orthogonality penalty could never fire; refusing "
+            "(partial overlap is expected and allowed, zero is not).")
 
 
 def _baseline_key_for(baseline: pd.DataFrame | None) -> str:

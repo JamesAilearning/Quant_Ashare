@@ -10,6 +10,7 @@ import sys
 import unittest
 from pathlib import Path
 
+import pandas as _PD
 import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -99,6 +100,37 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # stop before the blinded holdout year.
         self.assertEqual("2024-12-31", base["overall_end"])
         self.assertEqual(_PLAN["windows"]["oos_end"], base["overall_end"])
+
+    def test_frozen_fitness_is_expressible_and_consumed(self) -> None:
+        # codex #401 r1: the frozen breeding criterion must map onto
+        # REAL FitnessConfig fields the engine consumes — a plan value
+        # no code reads would let the GP select factors by a metric
+        # other than the pre-registered one.
+        from src.factor_mining.fitness import FitnessConfig, compute_fitness
+        f = _PLAN["fitness"]
+        cfg = FitnessConfig(
+            ic_term=f["ic_term"],
+            w_complexity=f["parsimony_lambda_per_node"],
+            w_orthogonality=f["orthogonality"]["fitness_penalty_weight"],
+            orthogonality_band=f["orthogonality"]["fitness_band_abs_rho"],
+        )
+        self.assertEqual("abs_rank_ic", cfg.ic_term)
+        self.assertEqual(0.002, cfg.w_complexity)
+        self.assertEqual(2.0, cfg.w_orthogonality)
+        self.assertEqual(0.30, cfg.orthogonality_band)
+        # And the formula actually honours them.
+        from src.factor_mining.evaluator import EvaluationResult
+        result = EvaluationResult(
+            factor_values=_PD.DataFrame(
+                {"a": [1.0], "b": [2.0]},
+                index=_PD.DatetimeIndex(["2023-01-02"])),
+            ic_mean=0.9, ic_std=0.1, ir=5.0, rank_ic_mean=0.05,
+            rank_ic_std=0.1, rank_ir=0.5, turnover_daily=0.9,
+            coverage=1.0, n_obs_per_day_min=2)
+        score = compute_fitness(result, expr_size=10, novelty_penalty=0.9,
+                                config=cfg, baseline_mean_abs_rho=0.40)
+        # |0.05| − 0.002×10 − 2.0×(0.40−0.30); no IR/turnover/novelty.
+        self.assertAlmostEqual(0.05 - 0.02 - 0.2, score)
 
     def test_baseline_preset_matches_frozen_tail(self) -> None:
         # The preset that drives the baseline run must pin the frozen

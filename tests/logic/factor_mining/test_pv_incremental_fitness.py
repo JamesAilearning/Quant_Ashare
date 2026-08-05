@@ -66,6 +66,114 @@ class OrthogonalityHingeTests(unittest.TestCase):
                          orth["is_coverage_policy"])
 
 
+class FrozenIcTermTests(unittest.TestCase):
+    """codex #401 r1: the frozen breeding criterion must be CONSUMED
+    by the fitness function, not merely pinned in YAML — otherwise
+    candidates are selected by a metric other than the registered one."""
+
+    @staticmethod
+    def _result(**kw):
+        from src.factor_mining.evaluator import EvaluationResult
+        base = dict(
+            factor_values=pd.DataFrame(
+                {"a": [1.0, 2.0], "b": [3.0, 4.0]},
+                index=pd.DatetimeIndex(["2023-01-02", "2023-01-03"])),
+            ic_mean=0.9, ic_std=0.1, ir=5.0, rank_ic_mean=0.04,
+            rank_ic_std=0.1, rank_ir=0.4, turnover_daily=0.5,
+            coverage=1.0, n_obs_per_day_min=2)
+        base.update(kw)
+        return EvaluationResult(**base)
+
+    def test_default_stays_v1_composite(self) -> None:
+        self.assertEqual("v1_composite", FitnessConfig().ic_term)
+
+    def test_abs_rank_ic_is_rankic_minus_parsimony_only(self) -> None:
+        from src.factor_mining.fitness import compute_fitness
+        cfg = FitnessConfig(ic_term="abs_rank_ic", w_complexity=0.002)
+        score = compute_fitness(
+            self._result(), expr_size=5, novelty_penalty=0.8, config=cfg)
+        # |rank_ic| - 0.002*5; the v1 IR / turnover-cost / novelty
+        # terms must NOT participate (their values above are large and
+        # would visibly move the score).
+        self.assertAlmostEqual(0.04 - 0.01, score)
+
+    def test_abs_rank_ic_uses_absolute_value(self) -> None:
+        # Decision ③: direction is a degree of freedom of the
+        # expression — a sign-flipped factor is the same factor.
+        from src.factor_mining.fitness import compute_fitness
+        cfg = FitnessConfig(ic_term="abs_rank_ic", w_complexity=0.0)
+        pos = compute_fitness(self._result(rank_ic_mean=0.04),
+                              expr_size=3, novelty_penalty=0.0, config=cfg)
+        neg = compute_fitness(self._result(rank_ic_mean=-0.04),
+                              expr_size=3, novelty_penalty=0.0, config=cfg)
+        self.assertAlmostEqual(pos, neg)
+
+    def test_abs_rank_ic_subtracts_orthogonality(self) -> None:
+        from src.factor_mining.fitness import compute_fitness
+        cfg = FitnessConfig(ic_term="abs_rank_ic", w_complexity=0.0,
+                            w_orthogonality=2.0, orthogonality_band=0.30)
+        score = compute_fitness(
+            self._result(), expr_size=3, novelty_penalty=0.0, config=cfg,
+            baseline_mean_abs_rho=0.50)
+        self.assertAlmostEqual(0.04 - 0.4, score)
+
+    def test_unknown_ic_term_refuses(self) -> None:
+        from src.factor_mining.fitness import compute_fitness
+        with self.assertRaises(ValueError):
+            compute_fitness(self._result(), expr_size=1,
+                            novelty_penalty=0.0,
+                            config=FitnessConfig(ic_term="typo"))
+
+    def test_plan_ic_term_is_a_recognised_mode(self) -> None:
+        # The YAML value and the code's vocabulary must agree — a
+        # frozen term the engine cannot consume is the whole defect.
+        from src.factor_mining.fitness import _IC_TERMS
+        self.assertIn(_plan()["fitness"]["ic_term"], _IC_TERMS)
+
+
+class BaselinePanelBindingTests(unittest.TestCase):
+    """codex #401 r1: an instrument-namespace or date mismatch is a
+    CONFIG error that must refuse before scoring — not an 'uncovered'
+    expression that silently disables the incremental criterion."""
+
+    @staticmethod
+    def _panel(cols, dates):
+        return {"$close": pd.DataFrame(
+            1.0, index=pd.DatetimeIndex(dates), columns=list(cols))}
+
+    def test_namespace_mismatch_refuses(self) -> None:
+        from src.factor_mining.gp_engine import _assert_baseline_meets_panel
+        dates = pd.date_range("2023-01-02", periods=3, freq="B")
+        panel = self._panel(["SH600000", "SZ000001"], dates)
+        baseline = pd.DataFrame(
+            0.5, index=dates, columns=["600000.SH", "000001.SZ"])
+        with self.assertRaises(ValueError) as ctx:
+            _assert_baseline_meets_panel(baseline, panel)
+        self.assertIn("instrument", str(ctx.exception))
+
+    def test_zero_date_overlap_refuses(self) -> None:
+        from src.factor_mining.gp_engine import _assert_baseline_meets_panel
+        panel = self._panel(
+            ["a", "b"], pd.date_range("2018-01-02", periods=3, freq="B"))
+        baseline = pd.DataFrame(
+            0.5, index=pd.date_range("2023-01-02", periods=3, freq="B"),
+            columns=["a", "b"])
+        with self.assertRaises(ValueError) as ctx:
+            _assert_baseline_meets_panel(baseline, panel)
+        self.assertIn("overlap", str(ctx.exception))
+
+    def test_partial_overlap_is_allowed(self) -> None:
+        # The accepted geometry (decision A): the baseline starts
+        # later than the mining window — allowed and disclosed.
+        from src.factor_mining.gp_engine import _assert_baseline_meets_panel
+        panel = self._panel(
+            ["a", "b"], pd.date_range("2018-01-02", periods=500, freq="B"))
+        baseline = pd.DataFrame(
+            0.5, index=pd.date_range("2019-06-03", periods=100, freq="B"),
+            columns=["a", "b"])
+        _assert_baseline_meets_panel(baseline, panel)
+
+
 class EngineBaselineWiringTests(unittest.TestCase):
     @staticmethod
     def _engine(**fit_kw):
@@ -355,6 +463,23 @@ class BaselineExporterTests(unittest.TestCase):
             # overwrite a baseline other scores are keyed to).
             self.assertEqual(2, bx.main(["--run-dir", str(run_dir),
                                          "--out-dir", str(out)]))
+
+    def test_stray_row_outside_declared_window_refuses(self) -> None:
+        # codex #401 r1 (sacred invariant): a report may declare an
+        # in-range test window while the pickle carries extra rows —
+        # the sha check passes (the file is unmodified since the run)
+        # yet blinded/forbidden rows would enter the baseline.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(
+                run_dir, 0, "2024-10-01", "2024-12-31",
+                dates=pd.DatetimeIndex(
+                    ["2024-10-01", "2024-12-31", "2025-01-02"]))
+            self._agg(run_dir, n_folds=1)
+            self.assertEqual(2, bx.main(
+                ["--run-dir", str(run_dir),
+                 "--out-dir", str(Path(d) / "out")]))
 
     def test_tampered_fold_pickle_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as d:

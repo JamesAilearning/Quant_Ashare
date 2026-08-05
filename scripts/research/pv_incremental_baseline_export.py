@@ -148,11 +148,32 @@ def _load_fold(run_dir: Path, report_path: Path) -> dict[str, Any]:
             f"fold {fold_index}: unexpected index names "
             f"{list(scores.index.names)}; refusing.")
     windows = report["windows"]
+    test_start = str(windows["test"]["start"])[:10]
+    test_end = str(windows["test"]["end"])[:10]
+    # Trust the ROWS, not only the declaration (codex #401 r1): a
+    # report can declare an in-range test window while the pickle
+    # carries extra rows — those would pass the sha check (it verifies
+    # the file is unmodified since the run, not that the run's
+    # geometry was right) and land blinded/forbidden predictions in
+    # the baseline. Verify every exported date against the fold's own
+    # declared window.
+    row_dates = pd.to_datetime(
+        scores.index.get_level_values("datetime")).normalize()
+    lo, hi = pd.Timestamp(test_start), pd.Timestamp(test_end)
+    stray = sorted({str(d)[:10] for d in row_dates[(row_dates < lo)
+                                                   | (row_dates > hi)]})
+    if stray:
+        raise PVBaselineError(
+            f"fold {fold_index}: prediction rows dated {stray[:3]} fall "
+            f"outside the fold's own test window {test_start}.."
+            f"{test_end} — the artifact's geometry disagrees with its "
+            "report; refusing (a stray blinded/forbidden row must "
+            "never reach the baseline).")
     return {
         "fold_index": fold_index,
         "scores": scores,
-        "test_start": str(windows["test"]["start"])[:10],
-        "test_end": str(windows["test"]["end"])[:10],
+        "test_start": test_start,
+        "test_end": test_end,
         "ensemble_window": ens.get("window"),
         "prediction_artifact_sha256": declared_sha,
     }
@@ -284,6 +305,22 @@ def main(argv: list[str] | None = None) -> int:
         ensemble_window = check_ensemble_semantics(plan, folds)
         check_fold_windows(plan, folds)
         wide = assemble_wide(folds)
+        # Defence in depth after assembly: per-fold row checks already
+        # ran, so anything out of span here means a fold declared a
+        # window outside the campaign that slipped both gates. Refuse
+        # before writing a single byte.
+        w = plan["windows"]
+        span_lo, span_hi = pd.Timestamp(w["is_start"]), pd.Timestamp(
+            w["oos_end"])
+        out_of_span = sorted(
+            {str(d)[:10] for d in wide.index
+             if d < span_lo or d > span_hi})
+        if out_of_span:
+            raise PVBaselineError(
+                f"assembled baseline carries rows outside "
+                f"{w['is_start']}..{w['oos_end']} (e.g. "
+                f"{out_of_span[:3]}) — blinded holdout / forbidden "
+                "period rows must never be exported; refusing.")
 
         config_path = _REPO_ROOT / args.run_config
         if not config_path.is_file():
