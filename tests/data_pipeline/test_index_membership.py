@@ -166,6 +166,89 @@ class RunBuildingTests(unittest.TestCase):
         self.assertEqual(r.run_count, 2)
 
 
+class CoverageStampTests(unittest.TestCase):
+    """2026-08-05-membership-coverage-stamp: the resolver persists the
+    demonstrated snapshot coverage beside the span files."""
+
+    def _resolve_into(self, tmp_path: Path,
+                      indices: tuple[str, ...]) -> None:
+        for code in indices:
+            _write_index_weight_parquet(
+                tmp_path / "index_weight" / f"{code}.parquet",
+                code,
+                [("20200131", ["600519.SH"]),
+                 ("20200229", ["600519.SH"])],
+            )
+        IndexMembershipResolver(
+            tushare_dir=tmp_path,
+            output_dir=tmp_path / "out",
+            indices=indices,
+        ).resolve()
+
+    def _stamp(self, tmp_path: Path) -> dict:
+        import json
+
+        return json.loads(
+            (tmp_path / "out" / "instruments"
+             / "membership_coverage.json").read_text(encoding="utf-8"))
+
+    def test_stamp_records_latest_snapshot_per_sleeve(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_path = Path(tmp.name)
+        self._resolve_into(tmp_path, ("000300.SH", "000905.SH"))
+        stamp = self._stamp(tmp_path)
+        self.assertEqual(stamp["schema_version"],
+                         "membership_coverage_v1")
+        self.assertEqual(
+            stamp["sleeves"]["csi300.txt"]["last_snapshot"],
+            "2020-02-29")
+        self.assertEqual(
+            stamp["sleeves"]["csi500.txt"]["last_snapshot"],
+            "2020-02-29")
+
+    def test_partial_reresolve_merges_existing_entries(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_path = Path(tmp.name)
+        self._resolve_into(tmp_path, ("000300.SH", "000905.SH"))
+        # Re-resolve ONLY csi300 with a longer snapshot tail.
+        _write_index_weight_parquet(
+            tmp_path / "index_weight" / "000300.SH.parquet",
+            "000300.SH",
+            [("20200131", ["600519.SH"]),
+             ("20200331", ["600519.SH"])],
+        )
+        IndexMembershipResolver(
+            tushare_dir=tmp_path,
+            output_dir=tmp_path / "out",
+            indices=("000300.SH",),
+        ).resolve()
+        stamp = self._stamp(tmp_path)
+        self.assertEqual(
+            stamp["sleeves"]["csi300.txt"]["last_snapshot"],
+            "2020-03-31")
+        # The untouched sleeve keeps its entry.
+        self.assertEqual(
+            stamp["sleeves"]["csi500.txt"]["last_snapshot"],
+            "2020-02-29")
+
+    def test_corrupt_existing_stamp_is_rebuilt(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_path = Path(tmp.name)
+        (tmp_path / "out" / "instruments").mkdir(parents=True)
+        (tmp_path / "out" / "instruments"
+         / "membership_coverage.json").write_text(
+            "not json {", encoding="utf-8")
+        self._resolve_into(tmp_path, ("000300.SH",))
+        stamp = self._stamp(tmp_path)
+        self.assertEqual(
+            stamp["sleeves"]["csi300.txt"]["last_snapshot"],
+            "2020-02-29")
+        self.assertNotIn("csi500.txt", stamp["sleeves"])
+
+
 class ReferenceValidationTests(unittest.TestCase):
 
     def _setup(self, snapshots, refs):

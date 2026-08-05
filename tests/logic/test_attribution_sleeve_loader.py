@@ -134,6 +134,101 @@ def test_bad_as_of_and_empty_sleeve_fail_loud():
             resolve_sleeve_map(root, "2015-01-05")
 
 
+def _stamp(root: Path, sleeves: dict[str, str] | str) -> None:
+    import json
+
+    path = root / "instruments" / "membership_coverage.json"
+    if isinstance(sleeves, str):
+        path.write_text(sleeves, encoding="utf-8")
+        return
+    path.write_text(json.dumps({
+        "schema_version": "membership_coverage_v1",
+        "sleeves": {k: {"last_snapshot": v} for k, v in sleeves.items()},
+    }), encoding="utf-8")
+
+
+def test_stamp_admits_churn_free_tail():
+    # 2026-08-05-membership-coverage-stamp: the resolver demonstrably
+    # SAW snapshots through the stamp date — an as_of past the last
+    # change but inside the stamp is covered fact, not synthesis.
+    # (The exact m3' scenario: change 06-30, snapshots seen to 07-31,
+    # as_of 07-10.)
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        # last changes: csi300 2021-06-01, csi500 2020-12-31.
+        _stamp(root, {"csi300.txt": "2021-09-30",
+                      "csi500.txt": "2021-09-30"})
+        r = resolve_sleeve_map(root, "2021-08-02")
+        assert r.coverage_end == "2021-09-30"
+        assert r.sleeve_map["SH600000"] == SLEEVE_CSI300
+        # ...and the stamp is still a bound, not a waiver.
+        with pytest.raises(SleeveResolutionError):
+            resolve_sleeve_map(root, "2021-10-01")
+
+
+def test_absent_stamp_keeps_legacy_last_change_semantics():
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        with pytest.raises(SleeveResolutionError) as exc:
+            resolve_sleeve_map(root, "2021-01-04")
+        assert "last change" in str(exc.value)
+
+
+def test_partially_stamped_bundle_uses_min_across_sources():
+    # Only csi300 re-resolved with a stamp: csi500 keeps its legacy
+    # last-change bound (2020-12-31), which still binds the min.
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        _stamp(root, {"csi300.txt": "2021-09-30"})
+        with pytest.raises(SleeveResolutionError) as exc:
+            resolve_sleeve_map(root, "2021-01-04")
+        assert "csi500_sleeve" in str(exc.value)
+        r = resolve_sleeve_map(root, "2020-12-31")
+        assert r.coverage_end == "2020-12-31"
+
+
+def test_contradictory_stamp_fails_loud():
+    # Stamp claims coverage OLDER than an observed change — the
+    # artifact contradicts itself; never resolve from it.
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        _stamp(root, {"csi300.txt": "2021-05-01",
+                      "csi500.txt": "2021-09-30"})
+        with pytest.raises(SleeveResolutionError) as exc:
+            resolve_sleeve_map(root, "2020-06-15")
+        assert "contradicts" in str(exc.value)
+
+
+def test_malformed_stamp_fails_loud_never_falls_back():
+    # ABSENT stamp = legitimate legacy; a MALFORMED one is corruption
+    # — silent fallback would launder it into conservatism.
+    for _label, content in (
+            ("not json", "not json {"),
+            ("wrong schema", '{"schema_version": "v0", "sleeves": {}}'),
+            ("bad entry", '{"schema_version": "membership_coverage_v1",'
+                          ' "sleeves": {"csi300.txt": {"last_snapshot": 7}}}'),
+            ("bad date", '{"schema_version": "membership_coverage_v1",'
+                         ' "sleeves": {"csi300.txt":'
+                         ' {"last_snapshot": "20210930"}}}')):
+        with tempfile.TemporaryDirectory() as t:
+            root = _bundle(Path(t), _CSI300, _CSI500)
+            _stamp(root, content)
+            with pytest.raises(SleeveResolutionError):
+                resolve_sleeve_map(root, "2020-06-15")
+
+
+def test_stamp_constants_match_the_resolver():
+    # The loader deliberately duplicates the resolver's constants
+    # (importing would invert the layering) — pin them equal.
+    from src.core import attribution_sleeve_loader as loader
+    from src.data.pit import index_membership as resolver
+
+    assert (loader._COVERAGE_STAMP_FILENAME
+            == resolver.MEMBERSHIP_COVERAGE_FILENAME)
+    assert (loader._COVERAGE_STAMP_SCHEMA
+            == resolver.MEMBERSHIP_COVERAGE_SCHEMA_VERSION)
+
+
 def test_resolution_feeds_attribution_config_verbatim():
     # The whole point of the loader: the engine's existing override
     # interface accepts the sleeve grouping with no engine change.

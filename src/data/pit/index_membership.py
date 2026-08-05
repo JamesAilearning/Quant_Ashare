@@ -49,6 +49,8 @@ Out of scope for Phase A.4
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -70,6 +72,14 @@ DEFAULT_INDEX_FILE_MAP: dict[str, str] = {
 }
 
 MEMBERSHIP_DATE_TOLERANCE_DAYS = 35
+
+# Demonstrated-coverage stamp (2026-08-05-membership-coverage-stamp):
+# the span files cannot express "the resolver saw snapshots through X
+# with no membership change", so that fact used to be LOST and the
+# sleeve guard fell back to the last-change proxy, refusing churn-free
+# tails. The stamp persists what the resolver demonstrably saw.
+MEMBERSHIP_COVERAGE_FILENAME = "membership_coverage.json"
+MEMBERSHIP_COVERAGE_SCHEMA_VERSION = "membership_coverage_v1"
 
 
 # Consolidated into ``src.data.pit._common`` (bug.md P2-4). The
@@ -155,7 +165,61 @@ class IndexMembershipResolver:
                 results[-1].earliest_snapshot, results[-1].latest_snapshot,
                 ref_matched,
             )
+        self._update_coverage_stamp(
+            out_dir,
+            {f"{DEFAULT_INDEX_FILE_MAP[r.index_code]}.txt":
+                r.latest_snapshot for r in results},
+        )
         return results
+
+    def _update_coverage_stamp(
+        self, out_dir: Path, updates: dict[str, str],
+    ) -> None:
+        """Atomically write/merge the demonstrated-coverage stamp.
+
+        A partial re-resolution (``--indices`` subset) merges with the
+        existing entries so the untouched sleeves keep their stamps. A
+        corrupt existing stamp is WARNed and rebuilt from this
+        invocation's entries — the resolver OWNS this artifact, and
+        regeneration is the repair path (the sleeve loader, by
+        contrast, refuses corrupt stamps: it is a consumer)."""
+        path = out_dir / MEMBERSHIP_COVERAGE_FILENAME
+        sleeves: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if (isinstance(existing, dict)
+                        and existing.get("schema_version")
+                        == MEMBERSHIP_COVERAGE_SCHEMA_VERSION
+                        and isinstance(existing.get("sleeves"), dict)):
+                    sleeves = dict(existing["sleeves"])
+                else:
+                    _logger.warning(
+                        "Existing %s has an unexpected shape — "
+                        "rebuilding from this invocation's entries.",
+                        path,
+                    )
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                _logger.warning(
+                    "Existing %s is unreadable — rebuilding from this "
+                    "invocation's entries.", path,
+                )
+        for filename, latest in updates.items():
+            sleeves[filename] = {"last_snapshot": latest}
+        payload: dict[str, Any] = {
+            "schema_version": MEMBERSHIP_COVERAGE_SCHEMA_VERSION,
+            "sleeves": {k: sleeves[k] for k in sorted(sleeves)},
+        }
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        os.replace(tmp_path, path)
+        _logger.info(
+            "Coverage stamp updated: %s (%s)", path,
+            ", ".join(f"{k}={v['last_snapshot']}"
+                      for k, v in payload["sleeves"].items()),
+        )
 
     # ------------------------------------------------------------------
     # Loaders
