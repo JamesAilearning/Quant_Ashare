@@ -233,6 +233,38 @@ class CoverageStampTests(unittest.TestCase):
             stamp["sleeves"]["csi500.txt"]["last_snapshot"],
             "2020-02-29")
 
+    def test_malformed_sleeve_entries_dropped_on_merge(self) -> None:
+        # codex #394 r1: a stamp with a VALID top level can still
+        # carry corrupt sleeve entries — merging must validate each
+        # entry, or the "repair" rerun re-emits invalid JSON (and the
+        # summary log crashes on entry['last_snapshot']).
+        import json
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tmp_path = Path(tmp.name)
+        (tmp_path / "out" / "instruments").mkdir(parents=True)
+        (tmp_path / "out" / "instruments"
+         / "membership_coverage.json").write_text(json.dumps({
+            "schema_version": "membership_coverage_v1",
+            "sleeves": {
+                "csi500.txt": 7,                          # not a dict
+                "csi800.txt": {"x": 1},                   # no last_snapshot
+                "csi300.txt": {"last_snapshot": "20200131"},  # bad shape
+            },
+         }), encoding="utf-8")
+        self._resolve_into(tmp_path, ("000300.SH",))
+        stamp = self._stamp(tmp_path)
+        # The re-resolved sleeve got a fresh valid entry; every
+        # malformed entry was dropped, never copied verbatim.
+        self.assertEqual(
+            stamp["sleeves"]["csi300.txt"]["last_snapshot"],
+            "2020-02-29")
+        self.assertNotIn("csi500.txt", stamp["sleeves"])
+        self.assertNotIn("csi800.txt", stamp["sleeves"])
+        # ...and a VALID untouched entry would have survived: covered
+        # by test_partial_reresolve_merges_existing_entries.
+
     def test_corrupt_existing_stamp_is_rebuilt(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

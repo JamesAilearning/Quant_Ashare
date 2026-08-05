@@ -52,6 +52,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import date as _dt_date
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,19 @@ MEMBERSHIP_DATE_TOLERANCE_DAYS = 35
 # tails. The stamp persists what the resolver demonstrably saw.
 MEMBERSHIP_COVERAGE_FILENAME = "membership_coverage.json"
 MEMBERSHIP_COVERAGE_SCHEMA_VERSION = "membership_coverage_v1"
+
+
+def _is_dashed_iso_date(value: Any) -> bool:
+    """True iff ``value`` is a ``YYYY-MM-DD`` string (the stamp's date
+    shape — same dashed-only strictness as the sleeve loader)."""
+    if (not isinstance(value, str) or len(value) != 10
+            or value[4] != "-" or value[7] != "-"):
+        return False
+    try:
+        _dt_date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 # Consolidated into ``src.data.pit._common`` (bug.md P2-4). The
@@ -192,7 +206,25 @@ class IndexMembershipResolver:
                         and existing.get("schema_version")
                         == MEMBERSHIP_COVERAGE_SCHEMA_VERSION
                         and isinstance(existing.get("sleeves"), dict)):
-                    sleeves = dict(existing["sleeves"])
+                    # Per-ENTRY validation (codex #394 r1): a stamp
+                    # with a valid top level can still carry a corrupt
+                    # sleeve entry; copying it verbatim would re-emit
+                    # invalid JSON the consumer refuses — the repair
+                    # path must actually repair. Malformed entries are
+                    # dropped (their sleeve falls back to the legacy
+                    # last-change bound until re-resolved).
+                    for fname, entry in existing["sleeves"].items():
+                        if (isinstance(entry, dict)
+                                and _is_dashed_iso_date(
+                                    entry.get("last_snapshot"))):
+                            sleeves[fname] = {
+                                "last_snapshot": entry["last_snapshot"]}
+                        else:
+                            _logger.warning(
+                                "Dropping malformed sleeve entry %r "
+                                "from %s — re-resolve that index to "
+                                "restore its stamp.", fname, path,
+                            )
                 else:
                     _logger.warning(
                         "Existing %s has an unexpected shape — "
