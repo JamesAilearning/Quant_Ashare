@@ -83,7 +83,10 @@ fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3�
 
 fwer:                            # PV-DP-5
   family: all_oos_evaluated_candidates
-  method: full_batch_block_bootstrap_min_statistic
+  method: full_batch_block_bootstrap_max_statistic
+  statistic: one_sided_max_t     # Gate-4A 同源:带符号 t 的单侧 max,
+                                 # 非 |t|——晋升判据是 t>=双门槛的单侧
+                                 # 事件,|t| 会让负向波动抬高正向门槛
   n_boot: 10000
   block_len_days: 21
   quantile: 0.95

@@ -101,6 +101,46 @@ def check_window_discipline(plan: dict[str, Any], start: str,
         raise PVEvalError("window touches the blinded holdout year.")
 
 
+def check_baseline_provenance(plan: dict[str, Any], baseline_path: Path,
+                              baseline_sha256: str) -> dict[str, Any]:
+    """The frozen plan requires the ledgered Alpha158 walk-forward
+    baseline, not any parquet that happens to load (codex #399 r10):
+    an ad hoc/stale file would key the ONLY incremental gate
+    (orthogonality) to the wrong baseline. Refuse before any
+    artifact is written unless a provenance sidecar binds THIS file
+    to the frozen baseline model with full run provenance."""
+    frozen = plan["fitness"]["baseline"]
+    if not frozen.get("provenance_required"):
+        return {}
+    sidecar = baseline_path.with_name(
+        baseline_path.name + ".provenance.json")
+    if not sidecar.exists():
+        raise PVEvalError(
+            f"baseline provenance sidecar {sidecar.name!r} not found "
+            "next to the baseline parquet — the frozen plan requires "
+            f"the ledgered {frozen['model']!r} baseline; refusing "
+            "before any artifact is written.")
+    prov: dict[str, Any] = json.loads(
+        sidecar.read_text(encoding="utf-8"))
+    if prov.get("model") != frozen["model"]:
+        raise PVEvalError(
+            f"baseline provenance declares model {prov.get('model')!r} "
+            f"— not the frozen {frozen['model']!r}; refusing.")
+    if prov.get("file_sha256") != baseline_sha256:
+        raise PVEvalError(
+            "baseline provenance sidecar file_sha256 does not match "
+            "the parquet on disk — stale/mismatched sidecar; "
+            "refusing.")
+    for key in ("run_config_sha256", "source_git"):
+        val = prov.get(key)
+        if not isinstance(val, str) or not val.strip():
+            raise PVEvalError(
+                f"baseline provenance is missing {key!r} — the frozen "
+                "plan requires full run provenance in the ledger; "
+                "refusing.")
+    return prov
+
+
 def forward_returns(close: pd.DataFrame, lag: int = 1) -> pd.DataFrame:
     """Frozen lag semantics: signal at t, execution close[t+lag],
     forward return close[t+lag] -> close[t+lag+1], aligned to t."""
@@ -245,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_path = Path(args.baseline_preds)
         baseline_sha = hashlib.sha256(
             baseline_path.read_bytes()).hexdigest()
+        check_baseline_provenance(plan, baseline_path, baseline_sha)
         baseline = _load_wide_parquet(baseline_path, "baseline preds")
 
         from src.core.pit_wiring import build_pit_provider

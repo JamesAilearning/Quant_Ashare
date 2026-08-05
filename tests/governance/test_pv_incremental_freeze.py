@@ -58,6 +58,12 @@ class PvIncrementalFreezePins(unittest.TestCase):
 
     def test_fwer_mechanism_pins(self) -> None:
         f = _PLAN["fwer"]
+        # codex #399 r10: sidedness is FROZEN — survival is the
+        # one-sided event t >= threshold, so the null statistic is
+        # the signed max-t (Gate-4A-sourced), never |t|.
+        self.assertEqual("one_sided_max_t", f["statistic"])
+        self.assertEqual("full_batch_block_bootstrap_max_statistic",
+                         f["method"])
         self.assertEqual(2.85, f["hard_floor_t"])
         self.assertEqual(0.95, f["quantile"])
         self.assertEqual(120, f["per_trial_min_n_days"])

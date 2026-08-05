@@ -151,6 +151,50 @@ class MetricSemanticsTests(unittest.TestCase):
         self.assertIs(True, art["orth_within_hard_band"])
 
 
+class BaselineProvenanceTests(unittest.TestCase):
+    # codex #399 r10: the frozen plan requires the LEDGERED Alpha158
+    # walk-forward baseline — an ad hoc/stale parquet would key the
+    # only incremental gate to the wrong baseline. Refusal predicates:
+    # missing sidecar / wrong model / stale sha / missing provenance
+    # fields; a fully bound sidecar passes.
+
+    def _setup(self, tmp: str) -> tuple[Path, str, dict]:
+        import hashlib
+        path = Path(tmp) / "baseline_preds.parquet"
+        path.write_bytes(b"parquet-bytes")
+        sha = hashlib.sha256(b"parquet-bytes").hexdigest()
+        good = {"model": _plan()["fitness"]["baseline"]["model"],
+                "file_sha256": sha,
+                "run_config_sha256": "cafe" * 16,
+                "source_git": "abc1234"}
+        return path, sha, good
+
+    def test_refusal_predicates_and_pass(self) -> None:
+        import json as jsonlib
+        import tempfile
+        plan = _plan()
+        with tempfile.TemporaryDirectory() as tmp:
+            path, sha, good = self._setup(tmp)
+            sidecar = path.with_name(path.name + ".provenance.json")
+            with self.assertRaises(ev.PVEvalError) as ctx:
+                ev.check_baseline_provenance(plan, path, sha)
+            self.assertIn("sidecar", str(ctx.exception))
+            for label, mutate in (
+                    ("wrong model", {"model": "adhoc_lgb"}),
+                    ("stale sha", {"file_sha256": "0" * 64}),
+                    ("missing run_config", {"run_config_sha256": ""}),
+                    ("missing source_git", {"source_git": None})):
+                prov = dict(good)
+                prov.update(mutate)
+                sidecar.write_text(jsonlib.dumps(prov),
+                                   encoding="utf-8")
+                with self.assertRaises(ev.PVEvalError, msg=label):
+                    ev.check_baseline_provenance(plan, path, sha)
+            sidecar.write_text(jsonlib.dumps(good), encoding="utf-8")
+            out = ev.check_baseline_provenance(plan, path, sha)
+            self.assertEqual(good["model"], out["model"])
+
+
 class FwerTests(unittest.TestCase):
     @staticmethod
     def _artifact(cid: str, series: np.ndarray, *,
@@ -373,6 +417,38 @@ class FwerTests(unittest.TestCase):
         art2["window"] = {"start": "2023-01-01", "end": "2025-12-31"}
         with self.assertRaises(fw.PVFwerError):
             fw.adjudicate(self._plan(), [art2], seed=7)
+
+    def test_bootstrap_statistic_is_one_sided(self) -> None:
+        # codex #399 r10: the frozen statistic is the SIGNED max-t
+        # (Gate-4A-sourced) — survival is one-sided, so |t| would let
+        # negative excursions inflate the positive bar. Discriminator:
+        # for a single-member demeaned null the signed-t draw
+        # distribution is roughly symmetric, so a LOW quantile of the
+        # max is negative — an abs-statistic can never go below zero.
+        rng = np.random.default_rng(11)
+        series = pd.Series(
+            rng.normal(0, 0.05, 300),
+            index=pd.date_range("2023-01-02", periods=300, freq="B"))
+        bar = fw.block_bootstrap_bar(
+            {"solo": series}, n_boot=400, block_len=21,
+            quantile=0.10, seed=7)
+        self.assertLess(bar, 0.0)
+
+    def test_bootstrap_redraw_budget_fails_loud(self) -> None:
+        # codex #399 r10 (Gate-4A redraw semantics): a member whose
+        # draws are always degenerate must exhaust the redraw budget
+        # and refuse — never silently shrink the family max.
+        rng = np.random.default_rng(12)
+        dense = pd.Series(
+            rng.normal(0, 0.05, 300),
+            index=pd.date_range("2023-01-02", periods=300, freq="B"))
+        lone = pd.Series(
+            [0.5], index=pd.DatetimeIndex(["2023-06-01"]))
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.block_bootstrap_bar(
+                {"dense": dense, "lone": lone}, n_boot=10,
+                block_len=21, quantile=0.95, seed=7)
+        self.assertIn("redraw budget", str(ctx.exception))
 
     def test_zero_variance_ic_series_refused(self) -> None:
         # codex #399 r9: a zero-variance daily series recomputes an

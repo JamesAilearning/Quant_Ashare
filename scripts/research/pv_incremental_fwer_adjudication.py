@@ -70,20 +70,29 @@ def t_stat(series: np.ndarray[Any, np.dtype[np.float64]]) -> float:
 def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
                         block_len: int, quantile: float,
                         seed: int) -> float:
-    """q-quantile of the null max-|t| across the family — JOINT
-    moving-block bootstrap (codex #399 r2, the Gate-4A template's
-    semantics): every resample draws ONE set of block positions on
-    the family's union date axis and applies the SAME positions to
-    every member, preserving family co-movement. Independent per-
-    member draws would break the dependence structure the
-    max-statistic bar exists to respect and can flip verdicts for
-    clusters of correlated expressions.
+    """q-quantile of the null ONE-SIDED max-t across the family —
+    JOINT moving-block bootstrap (codex #399 r2, the Gate-4A
+    template's semantics): every resample draws ONE set of block
+    positions on the family's union date axis and applies the SAME
+    positions to every member, preserving family co-movement.
+    Independent per-member draws would break the dependence
+    structure the max-statistic bar exists to respect and can flip
+    verdicts for clusters of correlated expressions.
+
+    The per-member statistic is the SIGNED t and the draw statistic
+    is its plain max (codex #399 r10, Gate-4A-sourced): survival is
+    the one-sided event t >= threshold, so |t| would let negative
+    excursions inflate the positive promotion bar and launder a
+    valid positive incremental factor into clean_negative.
 
     Members are aligned on the union axis (NaN where a member lacks
     a day — legitimate: ts-window warmups differ per expression);
     each member's t is computed over its non-NaN picks of the shared
-    draw. Series are DEMEANED per member (null: zero mean).
-    Deterministic under the frozen seed."""
+    draw. A draw leaving any member with < 2 observations or zero
+    variance is REDRAWN whole (Gate-4A semantics — silently dropping
+    the member would compute the family max over a smaller family);
+    exceeding the redraw budget fails loud. Series are DEMEANED per
+    member (null: zero mean). Deterministic under the frozen seed."""
     rng = np.random.default_rng(seed)
     axis = sorted(set().union(*(set(s.index) for s in family.values())))
     n = len(axis)
@@ -93,19 +102,31 @@ def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
         matrix[:, j] = (aligned - aligned.mean()).to_numpy(dtype=float)
     n_blocks = int(np.ceil(n / block_len))
     maxima = np.empty(n_boot)
+    redraws = 0
     for b in range(n_boot):
-        starts = rng.integers(0, n, size=n_blocks)      # ONE draw
-        idx = ((starts[:, None] + np.arange(block_len)[None, :]) % n
-               ).ravel()[:n]
-        picked = matrix[idx, :]                          # shared axis
-        best = 0.0
-        for j in range(picked.shape[1]):
-            col = picked[:, j]
-            col = col[np.isfinite(col)]
-            t = t_stat(col)
-            if np.isfinite(t):
-                best = max(best, abs(t))
-        maxima[b] = best
+        while True:
+            starts = rng.integers(0, n, size=n_blocks)  # ONE draw
+            idx = ((starts[:, None] + np.arange(block_len)[None, :])
+                   % n).ravel()[:n]
+            picked = matrix[idx, :]                      # shared axis
+            per_member: list[float] = []
+            for j in range(picked.shape[1]):
+                col = picked[:, j]
+                col = col[np.isfinite(col)]
+                t = t_stat(col)
+                if not np.isfinite(t):
+                    break                                # redraw whole
+                per_member.append(t)
+            if len(per_member) == picked.shape[1]:
+                maxima[b] = max(per_member)
+                break
+            redraws += 1
+            if redraws > n_boot * 10:
+                raise PVFwerError(
+                    "bootstrap redraw budget exceeded — a family "
+                    "member is too sparse/degenerate on the union "
+                    "axis to resample; refusing rather than "
+                    "computing the bar over a smaller family.")
     return float(np.quantile(maxima, quantile))
 
 
