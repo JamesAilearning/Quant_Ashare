@@ -1,0 +1,186 @@
+"""pv_incremental_v1 three-piece protocol tests (pure cores).
+
+Dimensions: window discipline (frozen-only / holdout / 2026) ×
+IC semantics (lag alignment / thin-day drop) × orthogonality (band) ×
+FWER (min_n exclusion / dual threshold / tri-state / determinism /
+foreign-protocol refusal) × plan loading (drift refusals).
+"""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import scripts.research.pv_incremental_eval as ev  # noqa: E402
+import scripts.research.pv_incremental_fwer_adjudication as fw  # noqa: E402
+
+
+def _plan() -> dict:
+    return ev.load_frozen_plan()
+
+
+class FrozenPlanTests(unittest.TestCase):
+    def test_committed_plan_loads(self) -> None:
+        plan = _plan()
+        self.assertEqual("pv_incremental_v1", plan["protocol_id"])
+        self.assertIs(False, plan["holdout_unblinded"])
+
+    def test_drifted_plan_refused(self) -> None:
+        import tempfile
+
+        import yaml
+
+        for label, mutate in (
+                ("wrong protocol", {"protocol_id": "other"}),
+                ("unblinded", {"holdout_unblinded": True})):
+            plan = dict(_plan())
+            plan.update(mutate)
+            with tempfile.TemporaryDirectory() as t:
+                p = Path(t) / "plan.yaml"
+                p.write_text(yaml.safe_dump(plan), encoding="utf-8")
+                with self.assertRaises(ev.PVEvalError, msg=label):
+                    ev.load_frozen_plan(p)
+
+
+class WindowDisciplineTests(unittest.TestCase):
+    def test_frozen_oos_window_admits(self) -> None:
+        ev.check_window_discipline(_plan(), "2023-01-01", "2024-12-31")
+
+    def test_any_other_window_refused(self) -> None:
+        plan = _plan()
+        for label, (s, e) in (
+                ("shifted start", ("2023-01-02", "2024-12-31")),
+                ("holdout touch", ("2023-01-01", "2025-06-30")),
+                ("2026 cross", ("2023-01-01", "2026-01-02")),
+                ("IS window", ("2018-01-01", "2022-12-31"))):
+            with self.assertRaises(ev.PVEvalError, msg=label):
+                ev.check_window_discipline(plan, s, e)
+
+
+class MetricSemanticsTests(unittest.TestCase):
+    def _frames(self):
+        dates = pd.date_range("2023-01-02", periods=6, freq="B")
+        cols = [f"S{i}" for i in range(4)]
+        close = pd.DataFrame(
+            np.cumprod(1 + np.arange(24).reshape(6, 4) * 0.001, axis=0),
+            index=dates, columns=cols)
+        return dates, cols, close
+
+    def test_forward_return_lag_alignment(self) -> None:
+        dates, cols, close = self._frames()
+        fwd = ev.forward_returns(close, lag=1)
+        # Signal at t uses close[t+1] -> close[t+2]; verify one cell.
+        expect = close.iloc[2, 0] / close.iloc[1, 0] - 1.0
+        self.assertAlmostEqual(expect, fwd.iloc[0, 0])
+        # Last two signal days have no complete forward path.
+        self.assertTrue(fwd.iloc[-2:].isna().all().all())
+
+    def test_daily_rank_ic_and_thin_day_drop(self) -> None:
+        dates, cols, _ = self._frames()
+        factor = pd.DataFrame(
+            [[1, 2, 3, 4]] * 6, index=dates, columns=cols, dtype=float)
+        fwd = pd.DataFrame(
+            [[0.1, 0.2, 0.3, 0.4]] * 6, index=dates, columns=cols)
+        ic, dropped = ev.daily_rank_ic(factor, fwd, min_names=4)
+        self.assertEqual(0, dropped)
+        self.assertTrue(np.allclose(ic.values, 1.0))
+        # Thin the cross-section below min_names on one day.
+        factor.iloc[0, :2] = np.nan
+        ic2, dropped2 = ev.daily_rank_ic(factor, fwd, min_names=4)
+        self.assertEqual(1, dropped2)
+        self.assertEqual(ic.shape[0] - 1, ic2.shape[0])
+
+    def test_orthogonality_series_detects_clone(self) -> None:
+        dates, cols, _ = self._frames()
+        base = pd.DataFrame(
+            np.random.default_rng(0).normal(size=(6, 4)),
+            index=dates, columns=cols)
+        orth = ev.orthogonality_series(base, base.copy(), min_names=4)
+        self.assertTrue(np.allclose(orth.values, 1.0))
+
+
+class FwerTests(unittest.TestCase):
+    @staticmethod
+    def _artifact(cid: str, series: np.ndarray, *,
+                  within_band: bool = True,
+                  protocol: str = "pv_incremental_v1") -> dict:
+        stats = ev.summarize(pd.Series(series))
+        return {"protocol_id": protocol, "candidate_id": cid,
+                "daily_ic": [{"date": "2023-01-01", "ic": float(v)}
+                             for v in series],
+                "ic_mean": stats["ic_mean"], "t_stat": stats["t_stat"],
+                "orth_mean_abs_rho": 0.1 if within_band else 0.9,
+                "orth_within_hard_band": within_band}
+
+    def _plan(self) -> dict:
+        plan = _plan()
+        plan = dict(plan)
+        plan["fwer"] = dict(plan["fwer"])
+        plan["fwer"]["n_boot"] = 200   # test-speed; mechanism identical
+        return plan
+
+    def test_sparse_trial_excluded_and_reported(self) -> None:
+        rng = np.random.default_rng(1)
+        arts = [self._artifact("dense", rng.normal(0, 0.05, 300)),
+                self._artifact("sparse", rng.normal(0.5, 0.05, 10))]
+        out = fw.adjudicate(self._plan(), arts, seed=7)
+        self.assertEqual(["sparse"], out["sparse_excluded"])
+        self.assertEqual(1, out["family_size"])
+        # The sparse trial's numbers are still reported honestly.
+        self.assertTrue(any(r["candidate_id"] == "sparse"
+                            for r in out["trials"]))
+
+    def test_clean_negative_when_family_all_below(self) -> None:
+        rng = np.random.default_rng(2)
+        arts = [self._artifact(f"c{i}", rng.normal(0, 0.05, 300))
+                for i in range(3)]
+        out = fw.adjudicate(self._plan(), arts, seed=7)
+        self.assertEqual("clean_negative", out["verdict"])
+        self.assertEqual([], out["survivors"])
+
+    def test_survivor_requires_orthogonality_too(self) -> None:
+        rng = np.random.default_rng(3)
+        strong = rng.normal(0.06, 0.05, 480)   # t >> floor
+        arts = [self._artifact("hi_orth", strong, within_band=False),
+                self._artifact("noise", rng.normal(0, 0.05, 480))]
+        out = fw.adjudicate(self._plan(), arts, seed=7)
+        # Standalone significance is NOT a pass (incremental criterion).
+        self.assertNotIn("hi_orth", out["survivors"])
+        arts2 = [self._artifact("ok", strong, within_band=True),
+                 self._artifact("noise", rng.normal(0, 0.05, 480))]
+        out2 = fw.adjudicate(self._plan(), arts2, seed=7)
+        self.assertIn("ok", out2["survivors"])
+        self.assertEqual("survivors", out2["verdict"])
+
+    def test_only_sparse_gives_no_verdict(self) -> None:
+        arts = [self._artifact("s", np.full(5, 0.5))]
+        out = fw.adjudicate(self._plan(), arts, seed=7)
+        self.assertEqual("no_verdict", out["verdict"])
+
+    def test_foreign_protocol_refused(self) -> None:
+        arts = [self._artifact("x", np.zeros(300),
+                               protocol="quality_profitability_v1")]
+        with self.assertRaises(fw.PVFwerError):
+            fw.adjudicate(self._plan(), arts, seed=7)
+
+    def test_bootstrap_bar_is_deterministic_under_seed(self) -> None:
+        rng = np.random.default_rng(4)
+        fam = {"a": rng.normal(0, 1, 260), "b": rng.normal(0, 1, 260)}
+        b1 = fw.block_bootstrap_bar(fam, n_boot=100, block_len=21,
+                                    quantile=0.95, seed=42)
+        b2 = fw.block_bootstrap_bar(fam, n_boot=100, block_len=21,
+                                    quantile=0.95, seed=42)
+        self.assertEqual(b1, b2)
+        self.assertGreater(b1, 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
