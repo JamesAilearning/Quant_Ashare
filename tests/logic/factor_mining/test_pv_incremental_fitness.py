@@ -273,14 +273,28 @@ class MinerBaselineLoadingTests(unittest.TestCase):
     incremental criterion the campaign has."""
 
     @staticmethod
-    def _config(tmp: str, *, path: str, model: str):
+    def _config(tmp: str, *, path: str, model: str, w_orth: float = 0.0):
         from src.factor_mining.gp_engine import GPConfig
         from src.factor_mining.miner import DataConfig, MinerConfig
         return MinerConfig(
             data=DataConfig(baseline_preds_path=path,
                             baseline_model=model),
-            gp=GPConfig(seed=1), fitness=FitnessConfig(),
+            gp=GPConfig(seed=1),
+            fitness=FitnessConfig(w_orthogonality=w_orth,
+                                  orthogonality_band=0.30),
             output_dir=Path(tmp))
+
+    def test_enabled_penalty_without_baseline_refuses(self) -> None:
+        # codex #401 r2 — the symmetric failure to a namespace
+        # mismatch: a campaign config that enables the penalty but
+        # forgets to bind the baseline would breed with NO incremental
+        # criterion while looking like a healthy legacy run.
+        from src.factor_mining.miner import load_baseline_predictions
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._config(d, path="", model="", w_orth=2.0)
+            with self.assertRaises(ValueError) as ctx:
+                load_baseline_predictions(cfg)
+            self.assertIn("w_orthogonality", str(ctx.exception))
 
     def _write_baseline(self, tmp: str) -> tuple[Path, str]:
         frame = pd.DataFrame(
@@ -363,10 +377,53 @@ class BaselineExporterTests(unittest.TestCase):
 
     @staticmethod
     def _agg(run_dir: Path, *, n_folds: int, commit: str = "a" * 40,
-             dirty: bool = False):
+             dirty: bool = False, fold_indices=None):
+        indices = (list(range(n_folds)) if fold_indices is None
+                   else list(fold_indices))
         (run_dir / "walk_forward_report.json").write_text(
-            json.dumps({"git_commit": commit, "git_dirty": dirty,
-                        "num_folds": n_folds}), encoding="utf-8")
+            json.dumps({
+                "git_commit": commit, "git_dirty": dirty,
+                "num_folds": n_folds,
+                "folds": [
+                    {"fold_index": i,
+                     "report_path": str(
+                         run_dir / f"fold_{i:02d}_report.json")}
+                    for i in indices
+                ],
+            }), encoding="utf-8")
+
+    def test_stale_extra_fold_refuses_even_when_count_matches(self) -> None:
+        # codex #401 r2: a run dir missing one declared fold while
+        # carrying a stale fold from ANOTHER run has the same file
+        # count — the count check passes and the stray fold would be
+        # exported. The aggregate report's folds[] is the authority.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            self._fold(run_dir, 9, "2023-04-03", "2023-06-30")  # stray
+            # Aggregate declares folds 0 and 1 — fold 1 is missing,
+            # fold 9 is a leftover; the COUNT still matches (2 == 2).
+            self._agg(run_dir, n_folds=2, fold_indices=[0, 1])
+            self.assertEqual(2, bx.main(
+                ["--run-dir", str(run_dir),
+                 "--out-dir", str(Path(d) / "out")]))
+
+    def test_mismatched_fold_index_payload_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            # Rewrite the payload's own index so file name and content
+            # disagree — a stale/renamed report.
+            rp = run_dir / "fold_00_report.json"
+            payload = json.loads(rp.read_text(encoding="utf-8"))
+            payload["fold_index"] = 7
+            rp.write_text(json.dumps(payload), encoding="utf-8")
+            self._agg(run_dir, n_folds=1)
+            self.assertEqual(2, bx.main(
+                ["--run-dir", str(run_dir),
+                 "--out-dir", str(Path(d) / "out")]))
 
     def test_frozen_plan_loads_and_refuses_unblinded(self) -> None:
         import yaml

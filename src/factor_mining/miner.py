@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ import yaml
 from .factor_pool import FactorPool
 from .fitness import FitnessConfig
 from .gp_engine import GenerationStats, GPConfig, GPEngine
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Config types
@@ -196,7 +199,31 @@ def load_baseline_predictions(config: MinerConfig):
 
     path_str = config.data.baseline_preds_path
     if not path_str:
+        # The symmetric failure to a namespace mismatch (codex #401
+        # r2): a campaign config that ENABLES the orthogonality
+        # penalty but forgets to bind the exported baseline would
+        # breed with a zero penalty on every candidate — no
+        # incremental criterion at all — while looking exactly like a
+        # healthy legacy run. Refuse before any scoring.
+        if config.fitness.w_orthogonality != 0.0:
+            raise ValueError(
+                "fitness.w_orthogonality is enabled "
+                f"({config.fitness.w_orthogonality}) but "
+                "data.baseline_preds_path is empty — the campaign's "
+                "only incremental criterion would silently contribute "
+                "nothing to every score; bind the exported baseline "
+                "or disable the penalty; refusing."
+            )
         return None
+    if config.fitness.w_orthogonality == 0.0:
+        # Inverse mismatch: a baseline is bound but the penalty is
+        # off. Not silently wrong (no candidate is mis-certified), but
+        # the intent and the behaviour disagree — say so out loud.
+        _log.warning(
+            "baseline_preds_path is set but fitness.w_orthogonality "
+            "is 0.0 — the baseline will be loaded and IGNORED; no "
+            "orthogonality penalty will apply to this run."
+        )
     path = Path(path_str)
     if not path.is_file():
         raise ValueError(

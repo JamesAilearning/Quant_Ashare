@@ -113,11 +113,76 @@ def check_fold_windows(plan: dict[str, Any],
     return {"span_start": lo, "span_end": hi}
 
 
-def _load_fold(run_dir: Path, report_path: Path) -> dict[str, Any]:
+def resolve_fold_reports(run_dir: Path,
+                         agg: dict[str, Any]) -> list[tuple[int, Path]]:
+    """Resolve the AUTHORITATIVE fold list from the aggregate report.
+
+    Globbing the directory is not evidence (codex #401 r2): a run dir
+    missing one declared fold while carrying a stale
+    ``fold_99_report.json`` from another run has the same file COUNT,
+    so a count check passes and the stray fold is exported — keying
+    downstream orthogonality to rows the run never declared. The
+    aggregate report's ``folds[]`` is the record of what the run
+    actually produced; every entry must exist, its payload's
+    ``fold_index`` must match, and nothing outside the list may be
+    exported.
+    """
+    declared = agg.get("folds")
+    if not isinstance(declared, list) or not declared:
+        raise PVBaselineError(
+            "walk_forward_report.json carries no folds[] list — cannot "
+            "establish which folds this run produced; refusing.")
+    resolved: list[tuple[int, Path]] = []
+    seen: set[int] = set()
+    for entry in declared:
+        if not isinstance(entry, dict) or "fold_index" not in entry:
+            raise PVBaselineError(
+                f"malformed folds[] entry {entry!r}; refusing.")
+        idx = int(entry["fold_index"])
+        if idx in seen:
+            raise PVBaselineError(
+                f"aggregate report declares fold {idx} twice; refusing.")
+        seen.add(idx)
+        # Prefer the declared path; fall back to the canonical name so
+        # a run dir moved wholesale still resolves.
+        candidates = []
+        declared_path = entry.get("report_path")
+        if isinstance(declared_path, str) and declared_path:
+            candidates.append(Path(declared_path))
+            candidates.append(run_dir / Path(declared_path).name)
+        candidates.append(run_dir / f"fold_{idx:02d}_report.json")
+        report_path = next((c for c in candidates if c.is_file()), None)
+        if report_path is None:
+            raise PVBaselineError(
+                f"aggregate report declares fold {idx} but none of "
+                f"{[str(c) for c in candidates]} exists — incomplete run "
+                "directory; refusing.")
+        resolved.append((idx, report_path))
+    # Anything on disk beyond the declared set is a leftover from
+    # another run: refuse rather than quietly ignore it, because the
+    # same directory is the evidence base for the ledger entry.
+    on_disk = {int(p.name.split("_")[1])
+               for p in run_dir.glob("fold_*_report.json")}
+    stray = sorted(on_disk - seen)
+    if stray:
+        raise PVBaselineError(
+            f"run directory carries fold reports {stray} that the "
+            "aggregate report does not declare — leftovers from another "
+            "run; export from a clean directory; refusing.")
+    return resolved
+
+
+def _load_fold(run_dir: Path, report_path: Path,
+               expected_index: int) -> dict[str, Any]:
     """Read one fold's predictions, verifying the pickle against the
     sha256 the fold report recorded at write time."""
     report = json.loads(report_path.read_text(encoding="utf-8"))
     fold_index = int(report["fold_index"])
+    if fold_index != expected_index:
+        raise PVBaselineError(
+            f"{report_path.name} carries fold_index={fold_index} but the "
+            f"aggregate report declares {expected_index} at this slot — "
+            "mismatched/stale fold report; refusing.")
     ens = report.get("ensemble") or {}
     declared_sha = ens.get("prediction_artifact_sha256")
     if not isinstance(declared_sha, str) or not re.fullmatch(
@@ -291,17 +356,16 @@ def main(argv: list[str] | None = None) -> int:
         agg = json.loads(agg_path.read_text(encoding="utf-8"))
         provenance = check_run_provenance(agg)
 
-        report_paths = sorted(run_dir.glob("fold_*_report.json"))
-        if not report_paths:
-            raise PVBaselineError(
-                f"no fold reports under {run_dir}; refusing.")
-        folds = [_load_fold(run_dir, rp) for rp in report_paths]
+        # Authoritative fold list from the aggregate report — never
+        # the directory listing (codex #401 r2).
+        resolved = resolve_fold_reports(run_dir, agg)
+        folds = [_load_fold(run_dir, rp, idx) for idx, rp in resolved]
         declared_folds = agg.get("num_folds")
         if isinstance(declared_folds, int) and declared_folds != len(folds):
             raise PVBaselineError(
-                f"walk-forward report declares {declared_folds} folds "
-                f"but {len(folds)} fold reports are present — partial "
-                "or contaminated run directory; refusing.")
+                f"walk-forward report declares num_folds="
+                f"{declared_folds} but folds[] resolved {len(folds)} "
+                "entries — inconsistent aggregate report; refusing.")
         ensemble_window = check_ensemble_semantics(plan, folds)
         check_fold_windows(plan, folds)
         wide = assemble_wide(folds)
