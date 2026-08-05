@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -610,9 +611,23 @@ def _resolve_model_universe(model_path: str) -> tuple[str, str | None]:
                 f"string (got {universe!r}). Fix the meta — refusing "
                 "to guess the training universe."
             )
-        sidecar_sha = meta.get("pkl_sha256")
-        return universe, (sidecar_sha if isinstance(sidecar_sha, str)
-                          and sidecar_sha else None)
+        # ABSENT pkl_sha256 = a deliberately hashless promotion meta
+        # (no binding to check). PRESENT but malformed = corrupt/
+        # hand-edited sidecar — fail closed (codex #400 r2): silently
+        # collapsing it to "unbound" would re-open the exact stale-
+        # sidecar trust gap the load-time binding exists to close.
+        if "pkl_sha256" not in meta:
+            return universe, None
+        sidecar_sha = meta["pkl_sha256"]
+        if (not isinstance(sidecar_sha, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", sidecar_sha)):
+            raise DailyRecommendationError(
+                f"Model meta {meta_path}: pkl_sha256 is present but "
+                f"not a 64-hex sha256 (got {sidecar_sha!r}) — corrupt "
+                "sidecar; refusing to treat the universe claim as "
+                "unbound. Fix or remove the field."
+            )
+        return universe, sidecar_sha
     raise DailyRecommendationError(
         f"No meta sidecar of model {model_path} carries a "
         f"`universe` field (checked: "

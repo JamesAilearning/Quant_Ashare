@@ -272,6 +272,22 @@ class ModelUniverseGuardTests(unittest.TestCase):
                 ("csi300", "ab" * 32),
                 _assert_model_universe_match(model, "csi300"))
 
+    def test_malformed_sidecar_hash_refuses_not_unbound(self) -> None:
+        # codex #400 r2: pkl_sha256 PRESENT but malformed must fail
+        # closed — silently collapsing to "unbound" would re-open the
+        # stale-sidecar trust gap. Absent key stays legitimate
+        # (hashless promotion meta).
+        from src.inference.daily_recommend import _resolve_model_universe
+        with tempfile.TemporaryDirectory() as d:
+            for bad in (123, "", "zz" * 32, "abc", "AB" * 32, None):
+                model = self._write(
+                    d, "m.meta.json",
+                    {"universe": "csi300", "pkl_sha256": bad})
+                with self.assertRaises(DailyRecommendationError,
+                                       msg=repr(bad)) as ctx:
+                    _resolve_model_universe(model)
+                self.assertIn("pkl_sha256", str(ctx.exception))
+
     def test_stale_sidecar_hash_refuses_at_load_binding(self) -> None:
         # codex #400 r1: a swapped pickle with a left-behind sidecar
         # must not lend its universe to a different model — the
