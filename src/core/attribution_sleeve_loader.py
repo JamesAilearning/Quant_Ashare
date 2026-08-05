@@ -170,8 +170,19 @@ def _load_coverage_stamp(root: Path) -> dict[str, date]:
     into conservatism, and the repair path (re-run
     ``03_resolve_index_membership``) is cheap and explicit."""
     path = root / _COVERAGE_STAMP_FILENAME
-    if not path.is_file():
+    # ABSENT and NOT-A-REGULAR-FILE are different states (codex #394
+    # r2): a directory or dangling/dir-pointing symlink at this path
+    # is a PRESENT-but-malformed artifact — treating it as absent
+    # would silently fall back to legacy bounds, laundering the
+    # malformation the moment the legacy bound happens to cover as_of.
+    if not path.exists() and not path.is_symlink():
         return {}
+    if not path.is_file():
+        raise SleeveResolutionError(
+            f"coverage stamp path exists but is not a regular file: "
+            f"{path} — remove it and re-resolve membership "
+            "(03_resolve_index_membership) to rebuild the stamp."
+        )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:

@@ -217,6 +217,18 @@ def test_malformed_stamp_fails_loud_never_falls_back():
                 resolve_sleeve_map(root, "2020-06-15")
 
 
+def test_non_file_stamp_path_refuses_even_when_legacy_would_admit():
+    # codex #394 r2: a directory (or dir-pointing symlink) at the
+    # stamp path is PRESENT-but-malformed — it must refuse, not be
+    # treated as absent, even for an as_of the legacy bound covers.
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        (root / "instruments" / "membership_coverage.json").mkdir()
+        with pytest.raises(SleeveResolutionError) as exc:
+            resolve_sleeve_map(root, "2019-06-03")
+        assert "not a regular file" in str(exc.value)
+
+
 def test_stamp_constants_match_the_resolver():
     # The loader deliberately duplicates the resolver's constants
     # (importing would invert the layering) — pin them equal.
