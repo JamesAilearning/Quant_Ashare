@@ -51,6 +51,7 @@ brief consumes this loader post-hoc.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -83,7 +84,10 @@ class SleeveResolution:
     sleeve_map: dict[str, str]
     taxonomy_id: str
     as_of: str
-    coverage_end: str  # BINDING bound: min across per-sleeve last changes
+    # BINDING bound: min across per-sleeve demonstrated coverage —
+    # the resolver's stamp where present, else the legacy last-change
+    # proxy (2026-08-05-membership-coverage-stamp).
+    coverage_end: str
     n_csi300: int
     n_csi500: int
 
@@ -139,10 +143,83 @@ def _coverage_bound(spans: list[tuple[str, date, date]]) -> date | None:
     """Last date membership DEMONSTRABLY changed: max over span starts
     and non-sentinel ends. The ``2099-12-31`` sentinel is excluded — it
     is the resolver's synthetic "active at the last snapshot" marker,
-    not evidence of coverage (codex P1 on #366)."""
+    not evidence of coverage (codex P1 on #366). This is the LEGACY
+    per-sleeve bound; when the resolver has persisted a
+    demonstrated-coverage stamp (2026-08-05-membership-coverage-stamp)
+    the stamp's last-snapshot date supersedes it — the resolver
+    provably SAW snapshots through that date, so a churn-free tail
+    inside it is covered fact, not synthesis."""
     real_dates = [s for _, s, _ in spans]
     real_dates += [e for _, _, e in spans if e != _OPEN_END_SENTINEL]
     return max(real_dates) if real_dates else None
+
+
+# Written by src.data.pit.index_membership (the resolver OWNS the
+# artifact); names imported here would invert the layering, so the two
+# constants are deliberately duplicated and pinned equal by test.
+_COVERAGE_STAMP_FILENAME = "membership_coverage.json"
+_COVERAGE_STAMP_SCHEMA = "membership_coverage_v1"
+
+
+def _load_coverage_stamp(root: Path) -> dict[str, date]:
+    """Parse the demonstrated-coverage stamp into ``{label: date}``.
+
+    An ABSENT stamp is legitimate legacy (returns ``{}`` — the caller
+    falls back to the last-change bound). A stamp that exists but is
+    malformed REFUSES: silently falling back would launder corruption
+    into conservatism, and the repair path (re-run
+    ``03_resolve_index_membership``) is cheap and explicit."""
+    path = root / _COVERAGE_STAMP_FILENAME
+    # ABSENT and NOT-A-REGULAR-FILE are different states (codex #394
+    # r2): a directory or dangling/dir-pointing symlink at this path
+    # is a PRESENT-but-malformed artifact — treating it as absent
+    # would silently fall back to legacy bounds, laundering the
+    # malformation the moment the legacy bound happens to cover as_of.
+    if not path.exists() and not path.is_symlink():
+        return {}
+    if not path.is_file():
+        raise SleeveResolutionError(
+            f"coverage stamp path exists but is not a regular file: "
+            f"{path} — remove it and re-resolve membership "
+            "(03_resolve_index_membership) to rebuild the stamp."
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SleeveResolutionError(
+            f"coverage stamp unreadable: {path} ({exc}) — re-resolve "
+            "membership (03_resolve_index_membership) to rebuild it."
+        ) from exc
+    if (not isinstance(payload, dict)
+            or payload.get("schema_version") != _COVERAGE_STAMP_SCHEMA
+            or not isinstance(payload.get("sleeves"), dict)):
+        raise SleeveResolutionError(
+            f"coverage stamp has an unexpected shape: {path} — expected "
+            f"schema_version {_COVERAGE_STAMP_SCHEMA!r} with a "
+            "'sleeves' object; re-resolve membership to rebuild it."
+        )
+    # EVERY entry is validated before ANY value is trusted (codex
+    # #394 r3): the stamp is one artifact — a malformed entry for a
+    # sleeve this loader does not consume (e.g. csi800.txt, written
+    # by the same resolver) is still corruption of the artifact, and
+    # admitting stamp-extended as_of on the strength of the two
+    # consumed entries would accept a corrupt stamp.
+    stamps: dict[str, date] = {}
+    label_by_file = dict(_SLEEVE_FILES)
+    for filename, entry in payload["sleeves"].items():
+        if not isinstance(entry, dict) or not isinstance(
+                entry.get("last_snapshot"), str):
+            raise SleeveResolutionError(
+                f"coverage stamp entry for {filename!r} is malformed "
+                f"in {path} — re-resolve membership to rebuild it."
+            )
+        parsed = _parse_iso(
+            entry["last_snapshot"],
+            f"{path} sleeves[{filename}].last_snapshot")
+        label = label_by_file.get(filename)
+        if label is not None:
+            stamps[label] = parsed
+    return stamps
 
 
 def sleeve_turnover(
@@ -203,24 +280,42 @@ def resolve_sleeve_map(provider_dir: Path | str,
     # re-resolved SEPARATELY (03_resolve_index_membership --indices), so
     # a global max would let the STALER sleeve silently resolve outdated
     # composition. Every sleeve must individually cover as_of.
-    bounds = {label: _coverage_bound(spans)
-              for label, spans in spans_by_label.items()}
+    change_bounds = {label: _coverage_bound(spans)
+                     for label, spans in spans_by_label.items()}
+    stamps = _load_coverage_stamp(root)
+    bounds: dict[str, date | None] = {}
+    for label, changed in change_bounds.items():
+        stamped = stamps.get(label)
+        if stamped is not None and changed is not None and stamped < changed:
+            raise SleeveResolutionError(
+                f"coverage stamp for {label} claims last_snapshot "
+                f"{stamped.isoformat()} but the span file shows a "
+                f"membership change on {changed.isoformat()} — the "
+                "artifact contradicts itself; re-resolve membership "
+                "(03_resolve_index_membership) to rebuild both."
+            )
+        # Stamp = what the resolver demonstrably SAW (supersedes the
+        # last-change proxy — a churn-free tail inside it is covered
+        # fact); absent stamp = legacy last-change semantics.
+        bounds[label] = stamped if stamped is not None else changed
     stale = sorted(label for label, b in bounds.items()
                    if b is None or as_of_date > b)
     if stale:
         detail = ", ".join(
             f"{label}: {b.isoformat() if b else 'none'}"
+            + (" (stamp)" if label in stamps else " (last change)")
             for label, b in sorted(bounds.items()))
         raise SleeveResolutionError(
             f"as_of {as_of} is beyond the demonstrated membership coverage "
-            f"of {', '.join(stale)} (last real change per sleeve: {detail}) "
+            f"of {', '.join(stale)} (per-sleeve bound: {detail}) "
             f"— the {QLIB_OPEN_END_DATE} end date is a synthetic 'active at "
             "the last snapshot' marker, not knowledge of the future; "
             "resolving past a sleeve's coverage would silently attribute "
             "with STALE composition. Re-resolve membership snapshots "
-            "(03_resolve_index_membership) for the stale sleeve(s) first. "
-            "The bound is deliberately conservative (last CHANGE): a "
-            "churn-free covered tail is refused too."
+            "(03_resolve_index_membership) for the stale sleeve(s) first — "
+            "the resolver stamps its demonstrated snapshot coverage, so a "
+            "churn-free tail it has actually seen is admitted; without a "
+            "stamp the bound stays the conservative last CHANGE."
         )
     coverage = min(b for b in bounds.values() if b is not None)
     sleeve_map: dict[str, str] = {}
