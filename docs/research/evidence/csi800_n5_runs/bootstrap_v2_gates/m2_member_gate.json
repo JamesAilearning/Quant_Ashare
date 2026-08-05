@@ -1,0 +1,37 @@
+{
+  "schema_version": "csi800_n5_retrain_gate_v1",
+  "profile": "csi800_n5",
+  "scope": "member",
+  "generated_at": "2026-08-05T01:46:24.514747+00:00",
+  "subject": {
+    "pkl_path": "output/runs/20260805_081443_810493_db54e48b_82d6d77f3dc0/artifacts/model.pkl",
+    "pkl_sha256": "5430a65396842330dcb7308befa6479ee6d044de2484fd0237b9f0747bc5fc46",
+    "meta_path": "output/runs/20260805_081443_810493_db54e48b_82d6d77f3dc0/artifacts/model.pkl.meta.json",
+    "meta_sha256": "02010af030085bfc34dd9243f0162989fccb8483716101f1f3072f2f3f170b44",
+    "fit_start": "2023-12-29",
+    "fit_end": "2025-12-30"
+  },
+  "window": {
+    "valid_start": "2026-01-06",
+    "valid_end": "2026-04-03"
+  },
+  "anchor": null,
+  "gates": {
+    "trainer_integrity": {
+      "verdict": "PASS",
+      "model_type": "LGBModel",
+      "best_iteration": 500,
+      "boost_rounds_used": 500,
+      "num_boost_round": 1000,
+      "final_valid_loss": 0.9970206605879597,
+      "reasons": []
+    },
+    "ic_direction": {
+      "verdict": "PASS",
+      "ic_1d": 0.044052962388446,
+      "reasons": []
+    }
+  },
+  "missing_gates": [],
+  "overall": "PASS"
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": "csi800_n5_bootstrap_baseline_v1",
+  "generated_at": "2026-08-05T02:39:24.313621+00:00",
+  "serving": {
+    "mode": "ensemble_manifest",
+    "manifest_path": "D:\\stock\\phase_b_artifacts\\csi800_n5_ensemble_manifest.json",
+    "manifest_sha256": "ce42bdb7c65e27a36c86f162076ec0333381871b6188c20d4b845bf9a74df260",
+    "manifest_mode": "0o666",
+    "members": [
+      {
+        "pkl_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_081311_513091_75bda253_dbf0450447a1/artifacts/model.pkl",
+        "pkl_sha256": "5a10cd56721308d16235c5e2836cd6c72bc8724d6be66d3b7875804b6bb68eac",
+        "inference_meta_path": "D:\\stock\\Claude\\qlib_trading_system_v2\\output\\runs\\20260805_081311_513091_75bda253_dbf0450447a1\\artifacts\\model.meta.json",
+        "fit_start": "2023-09-28",
+        "fit_end": "2025-09-29"
+      },
+      {
+        "pkl_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_081443_810493_db54e48b_82d6d77f3dc0/artifacts/model.pkl",
+        "pkl_sha256": "5430a65396842330dcb7308befa6479ee6d044de2484fd0237b9f0747bc5fc46",
+        "inference_meta_path": "D:\\stock\\Claude\\qlib_trading_system_v2\\output\\runs\\20260805_081443_810493_db54e48b_82d6d77f3dc0\\artifacts\\model.meta.json",
+        "fit_start": "2023-12-29",
+        "fit_end": "2025-12-30"
+      },
+      {
+        "pkl_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_094309_265470_cdfdb033_91f434349725/artifacts/model.pkl",
+        "pkl_sha256": "43ffe00eea8746dd998910409f85286b91fe6f00eeb62a5b8e8515c55c92c7a6",
+        "inference_meta_path": "D:\\stock\\Claude\\qlib_trading_system_v2\\output\\runs\\20260805_094309_265470_cdfdb033_91f434349725\\artifacts\\model.meta.json",
+        "fit_start": "2024-04-01",
+        "fit_end": "2026-04-01"
+      }
+    ]
+  },
+  "incumbent_backup": {
+    "alpha158_lgb_pit.pkl": "D:\\stock\\phase_b_artifacts\\alpha158_lgb_pit.pkl.pre_bootstrap_20260805T023934Z",
+    "alpha158_lgb_pit.meta.json": "D:\\stock\\phase_b_artifacts\\alpha158_lgb_pit.meta.json.pre_bootstrap_20260805T023934Z",
+    "alpha158_lgb_pit.pkl.meta.json": "D:\\stock\\phase_b_artifacts\\alpha158_lgb_pit.pkl.meta.json.pre_bootstrap_20260805T023934Z"
+  },
+  "authorized_by": {
+    "campaign": {
+      "verdict_sidecar_path": "docs/research/csi800_cadence_verdict.json",
+      "read_at_rev": "07414d25901cf2e59fc0a0b3092be42e9bc306f2",
+      "verdict_sidecar_sha256": "1136dde4160724f0d71dca5bb30b2fe79254818185ae09a9b72183ae13572bb5",
+      "evidence_anchor_commit": "3ffceb4f5ed924704f62e63327c7203fb570f2ef",
+      "conservative_net_annualized": 0.06519304205234885,
+      "gross_retention": 0.7881068580079059
+    },
+    "isoweek_recheck": {
+      "net_annualized": 0.06007862163336804,
+      "net_annualized_serialized": 0.06007862163336804,
+      "num_folds": 23,
+      "evidence_dir": "docs/research/evidence/csi800_n5_runs/csi800_cadence5_conservative_isoweek",
+      "rev": "07414d25901cf2e59fc0a0b3092be42e9bc306f2",
+      "preset_path": "config/presets/csi800_cadence5_conservative_isoweek.yaml",
+      "config_binding_sha256": "22e72b48b89494364beab23f8015b08c8702d17ebb06f98bdb1ee6478b20dd34"
+    },
+    "gate_artifacts": {
+      "member[0]": {
+        "path": "output/retrain_gates/bootstrap_v2_m1_member_gate.json",
+        "sha256": "259b88ecd71296fad9ef6ca7240fd98b2bc9f2c3045266236ab6e17c6d221613"
+      },
+      "member[1]": {
+        "path": "output/retrain_gates/bootstrap_v2_m2_member_gate.json",
+        "sha256": "b1a3c5a89cd0c4ad4019faf31ea23d71902362caf5d8c9cb9c2e370eb81b81da"
+      },
+      "member[2]": {
+        "path": "output/retrain_gates/bootstrap_v2_m3_member_gate.json",
+        "sha256": "2c55e4d14618a9f4e60fcc7d7fc9e7e63ce6a7f054537af2e300a92fc8a19aeb"
+      },
+      "ensemble": {
+        "path": "output/retrain_gates/bootstrap_v2_ensemble_gate.json",
+        "sha256": "936846e8c550520ad24ad39a802dadb3c2cc42e1db77183dd9dc8eaf4ced0eaf"
+      }
+    }
+  }
+}
