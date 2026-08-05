@@ -217,6 +217,29 @@ def test_malformed_stamp_fails_loud_never_falls_back():
                 resolve_sleeve_map(root, "2020-06-15")
 
 
+def test_malformed_unconsumed_entry_poisons_the_whole_stamp():
+    # codex #394 r3: the stamp is ONE artifact — a corrupt entry for
+    # a sleeve this loader does not consume (csi800.txt, same
+    # resolver) must refuse; valid csi300/csi500 entries are not
+    # licence to trust a corrupt file.
+    import json
+
+    with tempfile.TemporaryDirectory() as t:
+        root = _bundle(Path(t), _CSI300, _CSI500)
+        (root / "instruments" / "membership_coverage.json").write_text(
+            json.dumps({
+                "schema_version": "membership_coverage_v1",
+                "sleeves": {
+                    "csi300.txt": {"last_snapshot": "2021-09-30"},
+                    "csi500.txt": {"last_snapshot": "2021-09-30"},
+                    "csi800.txt": 7,
+                },
+            }), encoding="utf-8")
+        with pytest.raises(SleeveResolutionError) as exc:
+            resolve_sleeve_map(root, "2021-08-02")
+        assert "csi800.txt" in str(exc.value)
+
+
 def test_non_file_stamp_path_refuses_even_when_legacy_would_admit():
     # codex #394 r2: a directory (or dir-pointing symlink) at the
     # stamp path is PRESENT-but-malformed — it must refuse, not be

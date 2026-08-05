@@ -198,20 +198,27 @@ def _load_coverage_stamp(root: Path) -> dict[str, date]:
             f"schema_version {_COVERAGE_STAMP_SCHEMA!r} with a "
             "'sleeves' object; re-resolve membership to rebuild it."
         )
+    # EVERY entry is validated before ANY value is trusted (codex
+    # #394 r3): the stamp is one artifact — a malformed entry for a
+    # sleeve this loader does not consume (e.g. csi800.txt, written
+    # by the same resolver) is still corruption of the artifact, and
+    # admitting stamp-extended as_of on the strength of the two
+    # consumed entries would accept a corrupt stamp.
     stamps: dict[str, date] = {}
-    for filename, label in _SLEEVE_FILES:
-        entry = payload["sleeves"].get(filename)
-        if entry is None:
-            continue
+    label_by_file = dict(_SLEEVE_FILES)
+    for filename, entry in payload["sleeves"].items():
         if not isinstance(entry, dict) or not isinstance(
                 entry.get("last_snapshot"), str):
             raise SleeveResolutionError(
-                f"coverage stamp entry for {filename} is malformed in "
-                f"{path} — re-resolve membership to rebuild it."
+                f"coverage stamp entry for {filename!r} is malformed "
+                f"in {path} — re-resolve membership to rebuild it."
             )
-        stamps[label] = _parse_iso(
+        parsed = _parse_iso(
             entry["last_snapshot"],
             f"{path} sleeves[{filename}].last_snapshot")
+        label = label_by_file.get(filename)
+        if label is not None:
+            stamps[label] = parsed
     return stamps
 
 
