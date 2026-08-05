@@ -101,10 +101,15 @@ BOOTSTRAP_PRESET_PATHS = (
     "config/presets/csi800_n5_bootstrap_m3.yaml",
 )
 # The PRE-REGISTERED ensemble dry-run window (trailing quarter, fully
-# out of sample for all three members: m3's training ends 2026-02-13).
+# out of sample for all three members: m3's training ends 2026-04-01).
 # Frozen here with the presets and pinned by governance — the runbook
-# quotes the same pair.
-BOOTSTRAP_DRYRUN_WINDOW = ("2026-03-17", "2026-06-17")
+# quotes the same pair. Re-anchored with the trio (RA-DP-2 of
+# 2026-08-04-csi800-n5-bootstrap-reanchor). The end sits one session
+# BEFORE the bundle tail 2026-08-03: the qlib backtest needs a T+1
+# settlement session after the window end — v1's windows were pinned
+# to the tail itself and were physically unbacktestable (codex #393
+# r1).
+BOOTSTRAP_DRYRUN_WINDOW = ("2026-05-06", "2026-07-31")
 BASELINE_PATH = "docs/promotion/csi800_n5_bootstrap_baseline.json"
 _MAINLINE = "origin/main"
 
