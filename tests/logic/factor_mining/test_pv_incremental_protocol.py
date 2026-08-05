@@ -281,6 +281,39 @@ class FwerTests(unittest.TestCase):
             with self.assertRaises(fw.PVFwerError, msg=label):
                 fw.check_family_manifest(arts, ids)
 
+    def test_out_of_domain_rho_refused(self) -> None:
+        # codex #399 r5: mean ABSOLUTE rho lives in [0,1] — negative/
+        # bool/non-finite scalars are corrupt, never "within band".
+        for label, rho in (("negative", -0.5), ("bool", False),
+                           ("nan", float("nan")), ("gt1", 1.5)):
+            art = self._artifact(
+                "bad_rho", np.random.default_rng(10).normal(0, 0.05, 300))
+            art["orth_mean_abs_rho"] = rho
+            art["orth_within_hard_band"] = True
+            with self.assertRaises(fw.PVFwerError, msg=label) as ctx:
+                fw.adjudicate(self._plan(), [art], seed=7)
+            self.assertIn("domain", str(ctx.exception))
+
+    def test_run_identity_binding(self) -> None:
+        # codex #399 r5: the family binds to ONE completed run.
+        a = self._artifact("a", np.zeros(300) + 0.01)
+        b = self._artifact("b", np.zeros(300) + 0.01)
+        a["run_id"] = b["run_id"] = "r1"
+        good = {"protocol_id": "pv_incremental_v1", "run_id": "r1",
+                "candidate_ids": ["a", "b"]}
+        fw.check_run_identity([a, b], good)          # sealed: OK
+        for label, arts, comp in (
+                ("mixed run", [a, dict(b, run_id="r0")], good),
+                ("partial stamp", [a, b],
+                 dict(good, candidate_ids=["a"])),
+                ("foreign protocol", [a, b],
+                 dict(good, protocol_id="other")),
+                ("no run_id", [a, b],
+                 {"protocol_id": "pv_incremental_v1",
+                  "candidate_ids": ["a", "b"]})):
+            with self.assertRaises(fw.PVFwerError, msg=label):
+                fw.check_run_identity(arts, comp)
+
     def test_stale_orthogonality_boolean_refused(self) -> None:
         # codex #399 r4: the boolean is DERIVED from rho vs the frozen
         # band — a stale True over an out-of-band rho refuses.

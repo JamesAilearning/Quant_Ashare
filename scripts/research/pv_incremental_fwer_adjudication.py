@@ -109,6 +109,34 @@ def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
     return float(np.quantile(maxima, quantile))
 
 
+def check_run_identity(artifacts: list[dict[str, Any]],
+                       completion: dict[str, Any]) -> None:
+    """Bind the family to ONE completed evaluator run (codex #399
+    r5): a rerun into a used directory (or leftovers from an earlier
+    batch) passes the ID check but mixes runs — the completion stamp
+    seals a batch, and every artifact must carry its run_id."""
+    if completion.get("protocol_id") != PROTOCOL_ID:
+        raise PVFwerError(
+            "completion stamp carries a foreign protocol_id — "
+            "refusing.")
+    rid = completion.get("run_id")
+    if not isinstance(rid, str) or not rid:
+        raise PVFwerError("completion stamp lacks run_id — refusing.")
+    mixed = sorted(str(a.get("candidate_id")) for a in artifacts
+                   if a.get("run_id") != rid)
+    if mixed:
+        raise PVFwerError(
+            f"artifacts {mixed} carry a run_id other than the "
+            f"completion stamp's {rid!r} — mixed evaluator runs; "
+            "re-run the FULL batch into a fresh dir, refusing.")
+    stamped = sorted(str(c) for c in completion.get("candidate_ids", []))
+    got = sorted(str(a.get("candidate_id")) for a in artifacts)
+    if stamped != got:
+        raise PVFwerError(
+            f"completion stamp lists {stamped} but the artifact set "
+            f"is {got} — partial or contaminated batch, refusing.")
+
+
 def check_family_manifest(artifacts: list[dict[str, Any]],
                           manifest_ids: list[str]) -> None:
     """The family is defined by the REGISTERED batch manifest, never
@@ -183,9 +211,19 @@ def adjudicate(plan: dict[str, Any],
         band = float(
             plan["fitness"]["orthogonality"]["oos_hard_band_mean_abs_rho"])
         rho = art["orth_mean_abs_rho"]
-        within_band = bool(
-            isinstance(rho, (int, float)) and np.isfinite(rho)
-            and rho <= band)
+        # Domain validation before derivation (codex #399 r5): a mean
+        # ABSOLUTE rho lives in [0, 1] and is a real number — a
+        # negative/bool/non-finite scalar is a corrupt artifact, and
+        # deriving "within band" from it would satisfy the one
+        # incremental gate with garbage.
+        if (isinstance(rho, bool) or not isinstance(rho, (int, float))
+                or not np.isfinite(rho) or rho < 0.0 or rho > 1.0):
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} carries "
+                f"orth_mean_abs_rho={rho!r} outside the [0, 1] domain "
+                "of a mean absolute correlation — corrupt artifact, "
+                "refusing.")
+        within_band = bool(rho <= band)
         if bool(art.get("orth_within_hard_band")) != within_band:
             raise PVFwerError(
                 f"artifact {art['candidate_id']!r} declares "
@@ -266,7 +304,17 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     try:
         plan, plan_sha = load_plan()
-        paths = sorted(Path(args.artifacts_dir).glob("*.json"))
+        art_dir = Path(args.artifacts_dir)
+        completion_path = art_dir / "_batch_complete.json"
+        if not completion_path.is_file():
+            raise PVFwerError(
+                f"no _batch_complete.json in {art_dir} — the "
+                "evaluator batch did not finish; a partial batch is "
+                "never adjudicated.")
+        completion = json.loads(
+            completion_path.read_text(encoding="utf-8"))
+        paths = sorted(p for p in art_dir.glob("*.json")
+                       if p.name != "_batch_complete.json")
         if not paths:
             raise PVFwerError(
                 f"no candidate artifacts in {args.artifacts_dir}")
@@ -275,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             raw = path.read_bytes()
             artifacts.append(json.loads(raw.decode("utf-8")))
             shas[path.name] = hashlib.sha256(raw).hexdigest()
+        check_run_identity(artifacts, completion)
         manifest = json.loads(
             Path(args.candidates).read_text(encoding="utf-8"))
         check_family_manifest(

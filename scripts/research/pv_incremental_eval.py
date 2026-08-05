@@ -256,6 +256,13 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.candidates).read_text(encoding="utf-8"))
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # ONE run identity per invocation (codex #399 r5): every
+        # artifact carries it and the completion stamp seals the
+        # batch — the adjudicator refuses mixed old/new families.
+        import uuid
+
+        run_id = uuid.uuid4().hex
+        written: list[str] = []
         for cand in candidates:
             expr = parse_expression(cand["expression"])
             factor = evaluate_expression(expr, panel)
@@ -265,18 +272,43 @@ def main(argv: list[str] | None = None) -> int:
                     "scalar, not a panel — degenerate expression, "
                     "refusing.")
             ic, dropped = daily_rank_ic(factor, fwd, min_names)
+            if ic.shape[0] == 0:
+                raise PVEvalError(
+                    f"{cand['candidate_id']}: zero eligible IC days "
+                    "— the candidate is not evaluable on the frozen "
+                    "window; refusing (a zero-day artifact would "
+                    "carry undefined orthogonality).")
             orth = orthogonality_series(factor, baseline, min_names)
             artifact = build_artifact(
                 plan, cand["candidate_id"], cand["expression"], ic,
                 dropped, orth, baseline_sha)
+            artifact["run_id"] = run_id
             out = out_dir / f"{cand['candidate_id']}.json"
-            out.write_text(
-                json.dumps(artifact, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8")
+            try:
+                with open(out, "x", encoding="utf-8") as fh:
+                    fh.write(json.dumps(artifact, indent=2,
+                                        ensure_ascii=False) + "\n")
+            except FileExistsError as exc:
+                raise PVEvalError(
+                    f"artifact already exists: {out} — reruns use a "
+                    "FRESH artifacts dir (mixed-batch adjudication is "
+                    "refused downstream); refusing to clobber."
+                ) from exc
+            written.append(cand["candidate_id"])
             print(f"[pv-eval] {cand['candidate_id']}: n_days="
                   f"{artifact['n_days']} ic_mean={artifact['ic_mean']:+.6f} "
                   f"t={artifact['t_stat']:+.3f} "
                   f"orth={artifact['orth_mean_abs_rho']:.4f} -> {out}")
+        completion = {
+            "protocol_id": PROTOCOL_ID, "run_id": run_id,
+            "candidate_ids": written,
+            "baseline_preds_sha256": baseline_sha,
+        }
+        (out_dir / "_batch_complete.json").write_text(
+            json.dumps(completion, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        print(f"[pv-eval] batch complete: run_id={run_id} "
+              f"({len(written)} artifacts)")
     except PVEvalError as exc:
         print(f"[pv-eval] REFUSED: {exc}", file=sys.stderr)
         return 1
