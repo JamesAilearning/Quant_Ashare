@@ -151,6 +151,19 @@ class MetricSemanticsTests(unittest.TestCase):
         self.assertIs(True, art["orth_within_hard_band"])
 
 
+class CandidateIdTests(unittest.TestCase):
+    def test_unsafe_ids_refused_safe_pass(self) -> None:
+        # codex #399 r11: candidate_id becomes a filename under the
+        # sealed batch dir — separators/absolute prefixes would write
+        # outside --out-dir and make the batch unadjudicable.
+        for bad in ("../escape", "/tmp/escape", "a/b", "a\\b",
+                    ".hidden", "", "a b"):
+            with self.assertRaises(ev.PVEvalError, msg=repr(bad)):
+                ev.check_candidate_id(bad)
+        for ok in ("c1", "pv_batch1-c07", "X"):
+            ev.check_candidate_id(ok)
+
+
 class BaselineProvenanceTests(unittest.TestCase):
     # codex #399 r10: the frozen plan requires the LEDGERED Alpha158
     # walk-forward baseline — an ad hoc/stale parquet would key the

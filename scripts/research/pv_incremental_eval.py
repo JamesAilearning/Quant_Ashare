@@ -101,6 +101,21 @@ def check_window_discipline(plan: dict[str, Any], start: str,
         raise PVEvalError("window touches the blinded holdout year.")
 
 
+def check_candidate_id(cid: str) -> None:
+    """candidate_id becomes a FILENAME under the sealed batch
+    directory (codex #399 r11): an id carrying path separators or an
+    absolute prefix (`../escape`, `/tmp/escape`) would escape
+    --out-dir — the stray artifact lands elsewhere on disk while the
+    completion stamp seals out_dir, so the batch can never
+    adjudicate. Safe-slug only, refused before any write."""
+    if not isinstance(cid, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_-]*", cid):
+        raise PVEvalError(
+            f"candidate_id {cid!r} is not a safe filename slug "
+            "([A-Za-z0-9][A-Za-z0-9_-]*) — refusing before any "
+            "artifact is written.")
+
+
 def check_baseline_provenance(plan: dict[str, Any], baseline_path: Path,
                               baseline_sha256: str) -> dict[str, Any]:
     """The frozen plan requires the ledgered Alpha158 walk-forward
@@ -324,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         from src.factor_mining.grammar import ExprType, GrammarError
 
         for cand in candidates:
+            check_candidate_id(cand["candidate_id"])
             # The factor-mining root contract (codex #399 r6): a
             # candidate must parse under the frozen grammar (taint
             # rules refuse at parse time) AND its root must be a
