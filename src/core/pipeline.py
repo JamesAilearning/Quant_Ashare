@@ -555,7 +555,11 @@ class Pipeline:
         _logger.info("Training model...")
         model_artifact_path = str(output_dir / "artifacts" / "model.pkl")
         model_result = ModelTrainer.train_and_predict(
-            config=build_model_train_config(config),
+            # ``universe`` threaded explicitly (provenance, not a
+            # hyperparameter) — the sidecar records the training
+            # universe for the serving-side consistency guard.
+            config=build_model_train_config(
+                config, universe=config.instruments),
             dataset=feature_result.dataset,
             model_artifact_path=model_artifact_path,
         )

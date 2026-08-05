@@ -542,6 +542,102 @@ def _validate_st_snapshot(
     return snapshot_date, df
 
 
+def _model_meta_paths(model_path: str) -> list[Path]:
+    """Both sidecar conventions that can carry model metadata, in
+    priority order:
+
+    1. ``<stem>.meta.json``     — the hand-curated PROMOTION meta
+       (carries ``fit_*_for_inference``; written at promotion time).
+    2. ``<model>.pkl.meta.json`` — the ModelTrainer sidecar
+       (``src/core/model_trainer.py`` writes / ``ensemble.py`` reads
+       this name).
+
+    The CLI's fit-window resolver and the universe guard below both
+    consume this list, so the two lookups can never disagree on which
+    sidecars exist.
+    """
+    p = Path(model_path)
+    return [p.with_suffix(".meta.json"), p.with_name(p.name + ".meta.json")]
+
+
+def _resolve_model_universe(model_path: str) -> str:
+    """Resolve the model's TRAINING universe from its meta sidecars.
+
+    Fail-closed (universe-consistency guard): the requested
+    ``--instruments`` is a free parameter, and a universe the model was
+    never trained on would silently produce an uncertified,
+    cross-sectionally out-of-distribution list. The universe therefore
+    comes from the model's own metadata — never from a code default:
+
+    * the FIRST sidecar (promotion meta preferred, same precedence as
+      the fit-window resolver) carrying ``universe`` wins;
+    * a sidecar that exists but is unreadable/not an object -> raise;
+    * a ``universe`` value that is not a non-empty string -> raise;
+    * NO sidecar carries the field (or none exists) -> raise with the
+      backfill remedy. Silent defaulting is exactly the hole this
+      guard closes.
+    """
+    existing = [p for p in _model_meta_paths(model_path) if p.is_file()]
+    for meta_path in existing:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise DailyRecommendationError(
+                f"Model meta {meta_path} exists but could not be "
+                f"read/parsed ({type(exc).__name__}: {exc}). Cannot "
+                "determine the model's training universe — fix the "
+                "meta."
+            ) from exc
+        if not isinstance(meta, dict):
+            raise DailyRecommendationError(
+                f"Model meta {meta_path} is not a JSON object (got "
+                f"{type(meta).__name__}). Cannot read the training "
+                "universe."
+            )
+        if "universe" not in meta:
+            continue  # this sidecar doesn't carry it — try the next
+        universe = meta["universe"]
+        if not isinstance(universe, str) or not universe:
+            raise DailyRecommendationError(
+                f"Model meta {meta_path}: universe is not a non-empty "
+                f"string (got {universe!r}). Fix the meta — refusing "
+                "to guess the training universe."
+            )
+        return universe
+    raise DailyRecommendationError(
+        f"No meta sidecar of model {model_path} carries a "
+        f"`universe` field (checked: "
+        f"{', '.join(str(p) for p in _model_meta_paths(model_path))}). "
+        "The universe-consistency guard refuses to run a model whose "
+        "training universe is unrecorded — backfill the promotion "
+        "meta with the universe the model was certified on (e.g. "
+        '"universe": "csi300"), or retrain via the canonical pipeline '
+        "(the trainer sidecar now records it). Silent defaulting is "
+        "not available."
+    )
+
+
+def _assert_model_universe_match(model_path: str, instruments: str) -> str:
+    """Refuse a model↔universe mismatch; return the model universe.
+
+    Domain error carries the three things an operator needs: the two
+    values, why the combination is refused (zero certification
+    evidence + cross-sectional distribution shift), and the remedy.
+    """
+    model_universe = _resolve_model_universe(model_path)
+    if model_universe != instruments:
+        raise DailyRecommendationError(
+            f"universe mismatch: model {model_path} was trained on "
+            f"`{model_universe}` but --instruments requests "
+            f"`{instruments}`. This combination has no certification "
+            "evidence and the model's learned cross-sectional ranking "
+            "is out-of-distribution on a different universe — "
+            "refusing. Fix --instruments to match the model, or load "
+            "the model actually certified for this universe."
+        )
+    return model_universe
+
+
 def _load_model(model_path: Path) -> tuple[Any, str]:
     """Load the pickled qlib model, failing closed with a domain error.
 
@@ -584,6 +680,7 @@ def _assemble_run_meta(
     bundle_tag: str | None,
     generated_at: str | None = None,
     ensemble: Mapping[str, Any] | None = None,
+    model_universe: str | None = None,
 ) -> dict[str, Any]:
     """Build the artifact-contract-v2 generation context (pure; unit-testable).
 
@@ -630,6 +727,13 @@ def _assemble_run_meta(
         meta["model_path"] = str(ensemble["manifest_path"])
         del meta["model_pkl_sha256"]
         meta["ensemble"] = dict(ensemble)
+    # Universe-consistency guard provenance (single-model path): the
+    # model's OWN training universe, resolved from its sidecar — so an
+    # auditor can see which model produced a list for which universe
+    # without re-deriving it. Ensemble artifacts carry identity via
+    # the manifest instead; shape unchanged there.
+    if model_universe is not None:
+        meta["model_universe"] = model_universe
     return meta
 
 
@@ -687,6 +791,17 @@ def recommend(
     guard_message = provider_uri_guard_message(config.provider_uri)
     if guard_message is not None:
         raise DailyRecommendationError(guard_message)
+    # Model↔universe consistency guard (single-model path; pure file
+    # IO, no qlib). ``--instruments`` is a free parameter and the
+    # single-model path had no check that the model was ever trained
+    # on it — a mismatched pair silently produced an uncertified,
+    # cross-sectionally out-of-distribution list. The ensemble path
+    # is already guarded (manifest binding + member-index refusal),
+    # so the guard applies exactly where the hole was.
+    model_universe: str | None = None
+    if ensemble_members is None:
+        model_universe = _assert_model_universe_match(
+            config.model_path, config.instruments)
     init_qlib_canonical(QlibRuntimeConfig(
         provider_uri=config.provider_uri,
         region=config.region,
@@ -778,6 +893,7 @@ def recommend(
             config,
             model_pkl_sha256=model_pkl_sha256,
             bundle_tag=bundle_tag,
+            model_universe=model_universe,
         )
 
     # 2. Build as-of-T features ONCE (dataset reused for predict below).

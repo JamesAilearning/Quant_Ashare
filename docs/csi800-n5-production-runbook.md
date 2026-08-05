@@ -96,7 +96,11 @@ manifest 的错峰与 24 月窗 pins。
    显式传 `--instruments`/`--rebalance-cadence-days`/`--topk` 仍
    允许但必须与绑定值相等，不等即拒；绑定源缺失/畸形也拒（绝不
    回退 CLI 缺省）。fit 窗由 manifest 最新成员自动解析，无须再传
-   `--fit-*`。单模型 legacy 路径缺省（csi300/日频/50）逐字不变。
+   `--fit-*`。单模型 legacy 路径缺省（csi300/日频/50）逐字不变，
+   但受模型↔宇宙一致性守卫把守：请求的 `--instruments` 必须等于
+   模型 sidecar 记录的训练宇宙，不等/缺记录即拒（新拒绝类型见
+   `docs/daily-recommend-runbook.md` 的 "When it refuses" 表）——
+   按旧习惯给 legacy 单模型误传 csi800 不再静默出单。
    随后提交 baseline 与状态工件，进入观察期（首季只记录不回调）。
 
 **任一门不过 = 自举中止**：不切换、现任 canonical 续任、失败如实

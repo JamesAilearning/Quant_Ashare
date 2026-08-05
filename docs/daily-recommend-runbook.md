@@ -227,6 +227,8 @@ ones and their fix:
 | `ST snapshot … is stale` / `is INCONSISTENT with the price bundle` | `active_stocks.parquet` was not refreshed with the prices. | Re-fetch tushare `stock_basic` (refreshes the snapshot), then recommend. |
 | `as-of date … is the last day in the PIT calendar; there is no next trading day (T+1)` | T has no entry session in the bundle. | Use an earlier `--as-of`, or extend the bundle. |
 | `as-of date … is not a trading day` | Bad explicit `--as-of`. | Pass a real trading day. |
+| `universe mismatch: model … was trained on … but --instruments requests …` | Single-model run with a universe the model was never trained on — zero certification evidence, cross-sectionally out-of-distribution. | Fix `--instruments` to the model's universe, or load the model actually certified for the requested universe. |
+| `No meta sidecar of model … carries a `universe` field` | The model's sidecar/promotion meta predates the universe-consistency guard. | Backfill the promotion meta with the certified universe (e.g. `"universe": "csi300"`) — an operator-signed edit, never a code default. |
 
 A refusal is the system doing its job — fix the underlying data and re-run, do
 **not** reach for an override to silence it unless you genuinely intend a

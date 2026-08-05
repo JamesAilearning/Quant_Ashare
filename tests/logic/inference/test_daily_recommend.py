@@ -234,6 +234,131 @@ class ResolveInferenceFitWindowTests(unittest.TestCase):
             )
 
 
+class ModelUniverseGuardTests(unittest.TestCase):
+    """Model↔universe consistency guard (add-serving-universe-
+    consistency-guard). FAIL-CLOSED: the single-model path must never
+    silently score a universe the model was not trained on, and must
+    never guess a universe the sidecar does not record."""
+
+    @staticmethod
+    def _write(d: str, name: str, payload) -> str:
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        (Path(d) / name).write_text(text, encoding="utf-8")
+        return str(Path(d) / "m.pkl")
+
+    def test_mismatch_refuses_naming_both_universes(self) -> None:
+        from src.inference.daily_recommend import _assert_model_universe_match
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write(d, "m.meta.json", {"universe": "csi300"})
+            with self.assertRaises(DailyRecommendationError) as ctx:
+                _assert_model_universe_match(model, "csi800")
+            msg = str(ctx.exception)
+            self.assertIn("csi300", msg)
+            self.assertIn("csi800", msg)
+
+    def test_match_passes_and_returns_universe(self) -> None:
+        from src.inference.daily_recommend import _assert_model_universe_match
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write(d, "m.meta.json", {"universe": "csi300"})
+            self.assertEqual(
+                "csi300", _assert_model_universe_match(model, "csi300"))
+
+    def test_missing_universe_field_refuses_with_backfill_remedy(self) -> None:
+        # A sidecar EXISTS but carries no universe — refuse with the
+        # backfill guidance, never default (the exact silent-wrong
+        # hole this guard closes).
+        from src.inference.daily_recommend import _resolve_model_universe
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write(d, "m.pkl.meta.json", {
+                "schema_version": "v1", "model_type": "LGBModel"})
+            with self.assertRaises(DailyRecommendationError) as ctx:
+                _resolve_model_universe(model)
+            self.assertIn("backfill", str(ctx.exception))
+
+    def test_no_sidecar_at_all_refuses(self) -> None:
+        from src.inference.daily_recommend import _resolve_model_universe
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(DailyRecommendationError):
+                _resolve_model_universe(str(Path(d) / "m.pkl"))
+
+    def test_promotion_meta_preferred_over_trainer_sidecar(self) -> None:
+        # Same precedence as the fit-window resolver: <stem>.meta.json
+        # (promotion) wins over <model>.pkl.meta.json (trainer).
+        from src.inference.daily_recommend import _resolve_model_universe
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d, "m.pkl.meta.json", {"universe": "csi800"})
+            model = self._write(d, "m.meta.json", {"universe": "csi300"})
+            self.assertEqual("csi300", _resolve_model_universe(model))
+
+    def test_non_string_universe_refuses(self) -> None:
+        from src.inference.daily_recommend import _resolve_model_universe
+        with tempfile.TemporaryDirectory() as d:
+            for bad in (300, "", None, ["csi300"]):
+                model = self._write(d, "m.meta.json", {"universe": bad})
+                with self.assertRaises(DailyRecommendationError,
+                                       msg=repr(bad)):
+                    _resolve_model_universe(model)
+
+    def test_unreadable_sidecar_refuses(self) -> None:
+        from src.inference.daily_recommend import _resolve_model_universe
+        with tempfile.TemporaryDirectory() as d:
+            model = self._write(d, "m.meta.json", "{not valid json")
+            with self.assertRaises(DailyRecommendationError):
+                _resolve_model_universe(model)
+
+    def test_trainer_sidecar_records_universe(self) -> None:
+        # The canonical training path self-records the universe
+        # (threaded EXPLICITLY at the call sites — provenance, not a
+        # hyperparameter); the sidecar writes it — no field when
+        # unknown (None), never a fabricated default.
+        from src.core.model_trainer import ModelTrainConfig, ModelTrainer
+        with tempfile.TemporaryDirectory() as d:
+            pkl = Path(d) / "m.pkl"
+            pkl.write_bytes(b"not-a-real-pickle")  # sha binding only
+            ModelTrainer._write_model_sidecar(
+                pkl,
+                ModelTrainConfig(model_type="LGBModel",
+                                 universe="csi800"),
+                119, 0.5)
+            sidecar = json.loads(
+                (Path(d) / "m.pkl.meta.json").read_text(encoding="utf-8"))
+            self.assertEqual("csi800", sidecar["universe"])
+            ModelTrainer._write_model_sidecar(
+                pkl, ModelTrainConfig(model_type="LGBModel"), 119, 0.5)
+            sidecar = json.loads(
+                (Path(d) / "m.pkl.meta.json").read_text(encoding="utf-8"))
+            self.assertNotIn("universe", sidecar)
+
+    def test_universe_is_explicit_not_auto_projected(self) -> None:
+        # ``universe`` must NOT ride the name-matching projection off
+        # runtime configs (that would break the "explicit = default"
+        # hyperparameter identity and silently stamp provenance);
+        # call sites pass it explicitly.
+        from src.core.model_config_projection import build_model_train_config
+        cfg = build_model_train_config(
+            {"model_type": "LGBModel", "instruments": "csi800"})
+        self.assertIsNone(cfg.universe)
+        cfg = build_model_train_config(
+            {"model_type": "LGBModel", "instruments": "csi800"},
+            universe="csi800")
+        self.assertEqual("csi800", cfg.universe)
+
+    def test_run_meta_records_model_universe(self) -> None:
+        from src.inference.daily_recommend import _assemble_run_meta
+        config = RecommendationConfig(
+            model_path="m.pkl", provider_uri="p",
+            delisted_registry_path="d", fit_start="2018-01-02",
+            fit_end="2024-12-18", instruments="csi300")
+        meta = _assemble_run_meta(
+            config, model_pkl_sha256="ab", bundle_tag=None,
+            model_universe="csi300")
+        self.assertEqual("csi300", meta["model_universe"])
+        # Ensemble artifacts keep their shape (identity via manifest).
+        meta = _assemble_run_meta(
+            config, model_pkl_sha256="ab", bundle_tag=None)
+        self.assertNotIn("model_universe", meta)
+
+
 class AssertNoLookaheadTests(unittest.TestCase):
     def test_passes_when_max_equals_as_of(self) -> None:
         frame = _frame_for([("2025-06-30", "SH600000"), ("2025-06-30", "SZ000001")])
