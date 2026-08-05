@@ -257,6 +257,30 @@ class FwerTests(unittest.TestCase):
                                        seed=42)
         self.assertAlmostEqual(b_one, b_two, places=12)
 
+    def test_inconsistent_scalar_t_refused(self) -> None:
+        # codex #399 r3: the daily series is canonical — a stale or
+        # hand-edited scalar t must never clear the threshold.
+        art = self._artifact("stale", np.random.default_rng(6).normal(
+            0, 0.05, 300))
+        art["t_stat"] = 9.99
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.adjudicate(self._plan(), [art], seed=7)
+        self.assertIn("inconsistent", str(ctx.exception))
+
+    def test_family_manifest_binding(self) -> None:
+        # codex #399 r3: the registered batch manifest defines the
+        # family — missing/extra/duplicate artifact sets refuse.
+        rng = np.random.default_rng(8)
+        a = self._artifact("a", rng.normal(0, 0.05, 300))
+        b = self._artifact("b", rng.normal(0, 0.05, 300))
+        fw.check_family_manifest([a, b], ["a", "b"])   # exact: OK
+        for label, arts, ids in (
+                ("missing", [a], ["a", "b"]),
+                ("extra", [a, b], ["a"]),
+                ("duplicate", [a, a], ["a"])):
+            with self.assertRaises(fw.PVFwerError, msg=label):
+                fw.check_family_manifest(arts, ids)
+
     def test_non_finite_ic_artifact_refused(self) -> None:
         art = self._artifact("bad", np.zeros(300))
         art["daily_ic"][5]["ic"] = float("nan")

@@ -109,6 +109,26 @@ def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
     return float(np.quantile(maxima, quantile))
 
 
+def check_family_manifest(artifacts: list[dict[str, Any]],
+                          manifest_ids: list[str]) -> None:
+    """The family is defined by the REGISTERED batch manifest, never
+    by whatever files happen to sit in a directory (codex #399 r3):
+    a partial evaluator batch or leftovers from a previous batch
+    would silently shrink or contaminate the max-statistic bar."""
+    got = [str(a.get("candidate_id")) for a in artifacts]
+    if sorted(got) != sorted(set(got)):
+        raise PVFwerError("duplicate candidate artifacts — refusing.")
+    missing = sorted(set(manifest_ids) - set(got))
+    extra = sorted(set(got) - set(manifest_ids))
+    if missing or extra:
+        raise PVFwerError(
+            "artifact set does not match the registered batch "
+            f"manifest — missing: {missing or 'none'}; unregistered "
+            f"extras: {extra or 'none'}. Re-run the evaluator over "
+            "the FULL registered batch (or clean foreign leftovers) "
+            "before adjudication.")
+
+
 def adjudicate(plan: dict[str, Any],
                artifacts: list[dict[str, Any]],
                *, seed: int) -> dict[str, Any]:
@@ -134,9 +154,24 @@ def adjudicate(plan: dict[str, Any],
             raise PVFwerError(
                 f"artifact {art['candidate_id']!r} carries non-finite "
                 "daily IC values — corrupt artifact, refusing.")
+        # The daily series is the CANONICAL record (codex #399 r3):
+        # observed t is RECOMPUTED from it, and a scalar summary that
+        # disagrees is a stale/hand-edited artifact — refuse rather
+        # than let an unverified scalar clear the binding threshold.
+        t_recomputed = t_stat(series.to_numpy())
+        declared = art.get("t_stat")
+        if (isinstance(declared, (int, float)) and np.isfinite(declared)
+                and np.isfinite(t_recomputed)
+                and abs(float(declared) - t_recomputed) > 1e-9):
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} declares t_stat="
+                f"{declared} but its daily series recomputes to "
+                f"{t_recomputed:.9f} — inconsistent artifact, "
+                "refusing.")
         row = {"candidate_id": art["candidate_id"],
                "n_days": int(series.shape[0]),
-               "ic_mean": art["ic_mean"], "t_stat": art["t_stat"],
+               "ic_mean": float(series.mean()),
+               "t_stat": t_recomputed,
                "orth_mean_abs_rho": art["orth_mean_abs_rho"],
                "orth_within_hard_band": art["orth_within_hard_band"]}
         if series.shape[0] < min_n:
@@ -197,6 +232,10 @@ def adjudicate(plan: dict[str, Any],
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--artifacts-dir", required=True)
+    p.add_argument("--candidates", required=True,
+                   help="The registered batch manifest (same JSON the "
+                        "evaluator consumed) — the family definition "
+                        "authority; a mismatched artifact set refuses.")
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=20260805,
                    help="Frozen bootstrap seed (deterministic bar).")
@@ -212,6 +251,10 @@ def main(argv: list[str] | None = None) -> int:
             raw = path.read_bytes()
             artifacts.append(json.loads(raw.decode("utf-8")))
             shas[path.name] = hashlib.sha256(raw).hexdigest()
+        manifest = json.loads(
+            Path(args.candidates).read_text(encoding="utf-8"))
+        check_family_manifest(
+            artifacts, [c["candidate_id"] for c in manifest])
         result = adjudicate(plan, artifacts, seed=args.seed)
         result["plan_sha256"] = plan_sha
         result["input_sha256"] = shas
