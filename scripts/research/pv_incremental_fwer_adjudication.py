@@ -195,6 +195,15 @@ def adjudicate(plan: dict[str, Any],
                 f"artifact {art.get('candidate_id')!r} carries "
                 f"protocol_id {art.get('protocol_id')!r} — foreign "
                 "protocol, refusing (never silently skipped).")
+        dates = [d["date"] for d in art["daily_ic"]]
+        if len(dates) != len(set(dates)):
+            # The daily series is the canonical FWER record (codex
+            # #399 r7): a repeated date would silently collapse to
+            # the last value and recompute everything from a
+            # DIFFERENT series — corruption, refuse.
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} repeats daily_ic "
+                "dates — corrupt artifact, refusing.")
         series = pd.Series(
             {d["date"]: float(d["ic"]) for d in art["daily_ic"]},
             dtype=float).sort_index()

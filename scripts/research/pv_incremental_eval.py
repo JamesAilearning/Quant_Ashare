@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,22 @@ def load_frozen_plan(path: Path = PLAN_PATH) -> dict[str, Any]:
         if section not in plan:
             raise PVEvalError(f"frozen plan lacks {section!r} — refusing.")
     return plan
+
+
+def check_pv_terminals(expression: str, fields: list[str]) -> None:
+    """PV-DP-1 enforcement (codex #399 r7): the frozen plan registers
+    exactly seven PV fields — a CSF/PURE-rooted expression over a
+    non-PV terminal (``$pe`` etc., valuation fields the freeze
+    explicitly EXCLUDES) must refuse as a registration error, not
+    die as a raw KeyError mid-batch."""
+    terminals = set(re.findall(r"\$[a-z_0-9]+", expression))
+    allowed = {f"${f}" for f in fields}
+    foreign = sorted(terminals - allowed)
+    if foreign:
+        raise PVEvalError(
+            f"expression uses non-PV terminals {foreign} — the "
+            f"frozen plan registers exactly {sorted(allowed)}; fix "
+            "the registration, refusing.")
 
 
 def check_window_discipline(plan: dict[str, Any], start: str,
@@ -272,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
             # PURE cross-sectional factor — a parser-valid raw/
             # price-level root (e.g. `$close`) would bypass the
             # adjustment-purity guarantees the grammar enforces.
+            check_pv_terminals(cand["expression"],
+                               list(plan["fields"]))
             try:
                 expr = parse_expression(cand["expression"])
             except (GrammarError, ValueError, KeyError) as exc:

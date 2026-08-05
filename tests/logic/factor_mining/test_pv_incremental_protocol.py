@@ -345,6 +345,27 @@ class FwerTests(unittest.TestCase):
                 [a], self._manifest(a) + self._manifest(a))
         self.assertIn("repeats", str(ctx.exception))
 
+    def test_pv_terminal_whitelist(self) -> None:
+        # codex #399 r7: PV-DP-1 enforcement — a CSF/PURE root over a
+        # non-PV terminal ($pe: valuation, explicitly excluded by the
+        # freeze) refuses as a registration error.
+        fields = ["open", "high", "low", "close", "volume", "money",
+                  "turnover_rate"]
+        ev.check_pv_terminals(
+            "cs_rank(ts_pctchange($close, 20))", fields)   # OK
+        with self.assertRaises(ev.PVEvalError) as ctx:
+            ev.check_pv_terminals("cs_rank(ts_rank($pe, 20))", fields)
+        self.assertIn("$pe", str(ctx.exception))
+
+    def test_duplicate_daily_ic_dates_refused(self) -> None:
+        # codex #399 r7: repeated dates would silently collapse the
+        # canonical series to a different one.
+        art = self._artifact("dup", np.zeros(300) + 0.01)
+        art["daily_ic"][1]["date"] = art["daily_ic"][0]["date"]
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.adjudicate(self._plan(), [art], seed=7)
+        self.assertIn("repeats daily_ic", str(ctx.exception))
+
     def test_candidate_root_type_contract(self) -> None:
         # codex #399 r6: the refusal predicates — a raw price-level
         # root is NOT ExprType('CSF','PURE'); tainted input into
