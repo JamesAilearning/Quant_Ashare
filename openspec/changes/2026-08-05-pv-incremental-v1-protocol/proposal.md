@@ -41,10 +41,16 @@ veto② 空转（干跑窗毛效应和 ≤ 0）再次实证 alpha 厚度是当�
   增量，不给"重新发明动量"留活路。基线预测 = csi800 Alpha158+LGB
   逐折 walk-forward 生成（IS+OOS 一次性，≈1-2 GPU 小时，点火在
   操作人），生成 run 的 provenance 三件套须全绿并入 ledger。
-- **PV-DP-4 算子集**：沿用 factor_mining 既有冻结白名单（ts_rank/
-  delay/delta/corr/cov/stddev/decay_linear/rank/sign/abs/log/
-  min/max 族），表达式深度/长度上限沿 Phase 设计常数；实现 PR 把
-  白名单与上限逐项列死，任何扩充 = 新提案。
+- **PV-DP-4 算子集**：**恰为基线注册表的 28 算子，逐字一致零扩充**
+  （`v2-factor-mining-foundations` / `scale_invariance.md` §4）：
+  四算术 `add/sub/mul/div_safe`；五一元 `neg/abs/sign/log_safe/
+  sqrt_safe`；十四时序 `ts_mean/ts_std/ts_max/ts_min/ts_sum/
+  ts_delta/ts_pctchange/ts_rank/ts_argmax/ts_argmin/ts_corr/
+  ts_skew/ts_kurt/ts_decay_linear`；四截面 `cs_rank/cs_zscore/
+  cs_demean/cs_winsorize`；一条件 `where`。**`ts_cov` 依基线
+  明令排除**（`cov(a·x,y)=a·cov(x,y)` 重引入复权尺度污染，v1 以
+  `ts_corr` 覆盖）。表达式深度/长度上限沿 Phase 设计常数；任何
+  算子扩充 = 独立新提案，不得随实现 PR 夹带。
 - **PV-DP-5 FWER 机制**：family = 全部进入 OOS 评估的候选；块
   bootstrap q95 bar + **2.85 硬地板双门槛**（Gate-4A 同源）；
   **per-trial 最小 n 约束与稀疏 trial 处置写进冻结件**（Gate-4A
