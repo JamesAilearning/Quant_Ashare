@@ -51,6 +51,14 @@ _log = logging.getLogger(__name__)
 
 FITNESS_EVALUATOR_METHOD = "normal"
 
+# Minimum names a day needs before its cross-sectional correlation is
+# meaningful. The SETUP guard and the per-day scorer MUST use the same
+# floor (codex #401 r4): a baseline sharing exactly two instruments
+# passed a ``< 2`` setup check and then had every single day skipped
+# by the scorer's ``< 3``, recording the whole run as uncovered and
+# zeroing the campaign's incremental criterion.
+_MIN_ORTHOGONALITY_CROSS_SECTION = 3
+
 
 # ---------------------------------------------------------------------------
 # Configs and stats
@@ -334,7 +342,7 @@ class GPEngine:
             return float("nan")
         common_cols = factor_values.columns.intersection(
             self._baseline.columns)
-        if len(common_cols) < 2:
+        if len(common_cols) < _MIN_ORTHOGONALITY_CROSS_SECTION:
             self._orthogonality_uncovered += 1
             return float("nan")
         f = factor_values.loc[common_dates, common_cols]
@@ -342,7 +350,7 @@ class GPEngine:
         rhos: list[float] = []
         for dt in common_dates:
             pair = pd.DataFrame({"f": f.loc[dt], "b": b.loc[dt]}).dropna()
-            if pair.shape[0] < 3:
+            if pair.shape[0] < _MIN_ORTHOGONALITY_CROSS_SECTION:
                 continue
             # Degenerate cross-sections (constant on either side) have
             # an undefined rank correlation — skip the day rather than
@@ -883,13 +891,15 @@ def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel) -> None:
             "cannot bind the baseline; refusing.")
     ref = frames[0]
     common_cols = ref.columns.intersection(baseline.columns)
-    if len(common_cols) < 2:
+    if len(common_cols) < _MIN_ORTHOGONALITY_CROSS_SECTION:
         raise ValueError(
             f"baseline shares {len(common_cols)} instrument(s) with the "
             f"panel (panel e.g. {list(ref.columns[:3])}, baseline e.g. "
-            f"{list(baseline.columns[:3])}) — an instrument-namespace "
-            "mismatch would score EVERY candidate unpenalised and "
-            "silently disable the incremental criterion; refusing.")
+            f"{list(baseline.columns[:3])}) — fewer than the "
+            f"{_MIN_ORTHOGONALITY_CROSS_SECTION} names the daily "
+            "correlation needs, so EVERY candidate would score "
+            "unpenalised and silently disable the incremental "
+            "criterion; refusing.")
     common_dates = ref.index.intersection(baseline.index)
     if len(common_dates) == 0:
         raise ValueError(

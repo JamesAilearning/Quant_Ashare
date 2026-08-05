@@ -86,6 +86,70 @@ def check_run_provenance(agg_report: dict[str, Any]) -> dict[str, Any]:
     return {"source_git": commit, "source_git_dirty": False}
 
 
+def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
+                             preset_path: Path) -> dict[str, Any]:
+    """The RUN's own captured config must be the frozen baseline run.
+
+    Hashing the operator-supplied ``--run-config`` proves only that
+    the named file is unmodified — not that it drove THIS run (codex
+    #401 r4). Without this check a clean run directory produced by a
+    different preset (another universe, another tail, single-model
+    instead of the frozen warm ensemble) could be exported with a
+    sidecar claiming the frozen csi800 Alpha158+LGB baseline and the
+    hash of the default preset — certifying the WRONG baseline as the
+    campaign's incremental reference, which every downstream
+    orthogonality number would then be measured against.
+
+    Compares the aggregate report's embedded ``config`` against both
+    the frozen plan and the supplied preset.
+    """
+    cfg = agg.get("config")
+    if not isinstance(cfg, dict):
+        raise PVBaselineError(
+            "walk_forward_report.json carries no embedded config — "
+            "cannot verify which preset produced this run; refusing.")
+    base = plan["fitness"]["baseline"]
+    expected = {
+        "instruments": plan["universe"]["instruments"],
+        "overall_end": base["overall_end"],
+        "ensemble_window": base["ensemble_window"],
+        "feature_handler": "Alpha158",
+        "model_type": "LGBModel",
+    }
+    drift = {
+        key: {"run": cfg.get(key), "frozen": want}
+        for key, want in expected.items() if cfg.get(key) != want
+    }
+    if drift:
+        raise PVBaselineError(
+            f"the run's captured config does not match the frozen "
+            f"baseline definition: {drift} — this run directory was "
+            "produced by a different preset/universe/tail; exporting "
+            "it would certify the WRONG baseline as the campaign's "
+            "incremental reference; refusing.")
+    # The supplied preset must also be the one that produced the run:
+    # its declared keys (it inherits the rest) must agree with the
+    # captured config, so the sidecar's run_config_sha256 binds to the
+    # file that actually drove these numbers.
+    preset = yaml.safe_load(preset_path.read_text(encoding="utf-8"))
+    if not isinstance(preset, dict):
+        raise PVBaselineError(
+            f"run config {preset_path} is not a mapping; refusing.")
+    preset_drift = {
+        key: {"run": cfg.get(key), "preset": val}
+        for key, val in preset.items()
+        if key in cfg and key not in ("output_dir",) and cfg.get(key) != val
+    }
+    if preset_drift:
+        raise PVBaselineError(
+            f"--run-config {preset_path.name} disagrees with the run's "
+            f"captured config on {preset_drift} — the supplied preset "
+            "did not drive this run; refusing (the sidecar's "
+            "run_config_sha256 must bind the config that produced "
+            "these numbers).")
+    return {k: cfg.get(k) for k in expected}
+
+
 def check_fold_windows(plan: dict[str, Any],
                        folds: list[dict[str, Any]]) -> dict[str, Any]:
     """Window discipline for the baseline run itself.
@@ -316,7 +380,8 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
                   file_sha256: str, run_config_rel: str,
                   run_config_sha256: str, provenance: dict[str, Any],
                   ensemble_window: int, run_dir: str,
-                  folds: list[dict[str, Any]]) -> dict[str, Any]:
+                  folds: list[dict[str, Any]],
+                  run_identity: dict[str, Any]) -> dict[str, Any]:
     """The provenance sidecar the miner and the OOS evaluator verify.
 
     ``model`` / ``file_sha256`` / ``run_config_sha256`` / ``source_git``
@@ -339,6 +404,10 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
         "source_git": provenance["source_git"],
         "source_git_dirty": provenance["source_git_dirty"],
         "walk_forward_run_dir": run_dir,
+        # The run's OWN captured config values, verified equal to the
+        # frozen baseline definition (codex #401 r4) — evidence, not a
+        # restatement of what the operator claimed on the CLI.
+        "run_config_captured": run_identity,
         "ensemble_window": ensemble_window,
         "n_folds": len(folds),
         "fold_prediction_sha256": {
@@ -382,6 +451,13 @@ def main(argv: list[str] | None = None) -> int:
                 "walk-forward run; refusing.")
         agg = json.loads(agg_path.read_text(encoding="utf-8"))
         provenance = check_run_provenance(agg)
+        config_path = _REPO_ROOT / args.run_config
+        if not config_path.is_file():
+            raise PVBaselineError(
+                f"run config {config_path} not found; refusing.")
+        # Bind the run to the FROZEN baseline definition and to the
+        # supplied preset before anything else is read (codex #401 r4).
+        run_identity = check_run_config_binding(plan, agg, config_path)
 
         # Authoritative fold list from the aggregate report — never
         # the directory listing (codex #401 r2).
@@ -407,10 +483,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"{out_of_span[:3]}) — blinded holdout / forbidden "
                 "period rows must never be exported; refusing.")
 
-        config_path = _REPO_ROOT / args.run_config
-        if not config_path.is_file():
-            raise PVBaselineError(
-                f"run config {config_path} not found; refusing.")
         run_config_sha = hashlib.sha256(
             config_path.read_bytes()).hexdigest()
 
@@ -431,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
             run_config_rel=args.run_config,
             run_config_sha256=run_config_sha, provenance=provenance,
             ensemble_window=ensemble_window, run_dir=str(run_dir),
-            folds=folds)
+            folds=folds, run_identity=run_identity)
         (out_dir / "baseline_preds.parquet.provenance.json").write_text(
             json.dumps(sidecar, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")

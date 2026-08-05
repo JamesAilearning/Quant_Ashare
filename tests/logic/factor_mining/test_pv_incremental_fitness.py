@@ -141,6 +141,27 @@ class BaselinePanelBindingTests(unittest.TestCase):
         return {"$close": pd.DataFrame(
             1.0, index=pd.DatetimeIndex(dates), columns=list(cols))}
 
+    def test_two_shared_names_refuse_matching_scorer_floor(self) -> None:
+        # codex #401 r4: the setup guard's floor must equal the
+        # scorer's. With exactly two shared names the old `< 2` guard
+        # passed and then the scorer's `< 3` skipped every single day —
+        # the whole run recorded as uncovered, penalty zeroed.
+        from src.factor_mining.gp_engine import (
+            _MIN_ORTHOGONALITY_CROSS_SECTION,
+            _assert_baseline_meets_panel,
+        )
+        self.assertEqual(3, _MIN_ORTHOGONALITY_CROSS_SECTION)
+        dates = pd.date_range("2023-01-02", periods=3, freq="B")
+        panel = self._panel(["a", "b", "c"], dates)
+        baseline = pd.DataFrame(0.5, index=dates, columns=["a", "b"])
+        with self.assertRaises(ValueError) as ctx:
+            _assert_baseline_meets_panel(baseline, panel)
+        self.assertIn("instrument", str(ctx.exception))
+        # Three shared names is the boundary that passes.
+        _assert_baseline_meets_panel(
+            pd.DataFrame(0.5, index=dates, columns=["a", "b", "c"]),
+            panel)
+
     def test_namespace_mismatch_refuses(self) -> None:
         from src.factor_mining.gp_engine import _assert_baseline_meets_panel
         dates = pd.date_range("2023-01-02", periods=3, freq="B")
@@ -154,10 +175,11 @@ class BaselinePanelBindingTests(unittest.TestCase):
     def test_zero_date_overlap_refuses(self) -> None:
         from src.factor_mining.gp_engine import _assert_baseline_meets_panel
         panel = self._panel(
-            ["a", "b"], pd.date_range("2018-01-02", periods=3, freq="B"))
+            ["a", "b", "c"],
+            pd.date_range("2018-01-02", periods=3, freq="B"))
         baseline = pd.DataFrame(
             0.5, index=pd.date_range("2023-01-02", periods=3, freq="B"),
-            columns=["a", "b"])
+            columns=["a", "b", "c"])
         with self.assertRaises(ValueError) as ctx:
             _assert_baseline_meets_panel(baseline, panel)
         self.assertIn("overlap", str(ctx.exception))
@@ -167,10 +189,11 @@ class BaselinePanelBindingTests(unittest.TestCase):
         # later than the mining window — allowed and disclosed.
         from src.factor_mining.gp_engine import _assert_baseline_meets_panel
         panel = self._panel(
-            ["a", "b"], pd.date_range("2018-01-02", periods=500, freq="B"))
+            ["a", "b", "c"],
+            pd.date_range("2018-01-02", periods=500, freq="B"))
         baseline = pd.DataFrame(
             0.5, index=pd.date_range("2019-06-03", periods=100, freq="B"),
-            columns=["a", "b"])
+            columns=["a", "b", "c"])
         _assert_baseline_meets_panel(baseline, panel)
 
 
@@ -376,14 +399,28 @@ class BaselineExporterTests(unittest.TestCase):
             }), encoding="utf-8")
 
     @staticmethod
-    def _agg(run_dir: Path, *, n_folds: int, commit: str = "a" * 40,
-             dirty: bool = False, fold_indices=None):
+    def _run_config(**overrides):
+        cfg = {"instruments": "csi800", "overall_end": "2024-12-31",
+               "ensemble_window": 3, "feature_handler": "Alpha158",
+               "model_type": "LGBModel", "benchmark_code": "SH000906TR",
+               "attribution_sleeve_grouping": True,
+               "risk_constraints_enabled": True,
+               "risk_constraints_calibration": "campaign_v1",
+               "slippage_bps": 5.0}
+        cfg.update(overrides)
+        return cfg
+
+    @classmethod
+    def _agg(cls, run_dir: Path, *, n_folds: int, commit: str = "a" * 40,
+             dirty: bool = False, fold_indices=None, config=None):
         indices = (list(range(n_folds)) if fold_indices is None
                    else list(fold_indices))
         (run_dir / "walk_forward_report.json").write_text(
             json.dumps({
                 "git_commit": commit, "git_dirty": dirty,
                 "num_folds": n_folds,
+                "config": config if config is not None
+                else cls._run_config(),
                 "folds": [
                     {"fold_index": i,
                      "report_path": str(
@@ -391,6 +428,47 @@ class BaselineExporterTests(unittest.TestCase):
                     for i in indices
                 ],
             }), encoding="utf-8")
+
+    def test_foreign_preset_run_refuses(self) -> None:
+        # codex #401 r4: a CLEAN run directory from another
+        # preset/universe (e.g. the csi300 reference run) must not be
+        # exportable with a sidecar claiming the frozen csi800
+        # baseline — that certifies the WRONG incremental reference.
+        plan = _plan()
+        preset = (_PROJECT_ROOT / "config" / "presets"
+                  / "pv_incremental_baseline.yaml")
+        for label, override in (
+                ("other universe", {"instruments": "csi300"}),
+                ("holdout tail", {"overall_end": "2025-12-31"}),
+                ("single model", {"ensemble_window": 1}),
+                ("other handler", {"feature_handler": "Alpha360"})):
+            agg = {"config": self._run_config(**override)}
+            with self.assertRaises(bx.PVBaselineError, msg=label) as ctx:
+                bx.check_run_config_binding(plan, agg, preset)
+            self.assertIn("frozen baseline definition",
+                          str(ctx.exception))
+        # The frozen combination passes and is returned as evidence.
+        identity = bx.check_run_config_binding(
+            plan, {"config": self._run_config()}, preset)
+        self.assertEqual("csi800", identity["instruments"])
+        self.assertEqual("2024-12-31", identity["overall_end"])
+
+    def test_missing_captured_config_refuses(self) -> None:
+        preset = (_PROJECT_ROOT / "config" / "presets"
+                  / "pv_incremental_baseline.yaml")
+        with self.assertRaises(bx.PVBaselineError):
+            bx.check_run_config_binding(_plan(), {}, preset)
+
+    def test_wrong_run_config_flag_refuses(self) -> None:
+        # The supplied --run-config must be the preset that actually
+        # drove the run, else run_config_sha256 binds the wrong file.
+        with tempfile.TemporaryDirectory() as d:
+            other = Path(d) / "other.yaml"
+            other.write_text("instruments: csi300\n", encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.check_run_config_binding(
+                    _plan(), {"config": self._run_config()}, other)
+            self.assertIn("did not drive this run", str(ctx.exception))
 
     def test_stale_extra_fold_refuses_even_when_count_matches(self) -> None:
         # codex #401 r2: a run dir missing one declared fold while
