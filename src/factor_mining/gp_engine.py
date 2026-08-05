@@ -344,6 +344,7 @@ class GPEngine:
         if (self._baseline is None
                 or self.fitness_config.w_orthogonality == 0.0):
             return float("nan")
+        floor = _orthogonality_floor(self.fitness_config)
         common_dates = factor_values.index.intersection(self._baseline.index)
         self._orthogonality_scored += 1
         if len(common_dates) == 0:
@@ -351,7 +352,7 @@ class GPEngine:
             return float("nan")
         common_cols = factor_values.columns.intersection(
             self._baseline.columns)
-        if len(common_cols) < _MIN_ORTHOGONALITY_CROSS_SECTION:
+        if len(common_cols) < floor:
             self._orthogonality_uncovered += 1
             return float("nan")
         f = factor_values.loc[common_dates, common_cols]
@@ -359,7 +360,12 @@ class GPEngine:
         rhos: list[float] = []
         for dt in common_dates:
             pair = pd.DataFrame({"f": f.loc[dt], "b": b.loc[dt]}).dropna()
-            if pair.shape[0] < _MIN_ORTHOGONALITY_CROSS_SECTION:
+            # The frozen thin-day floor applies to the orthogonality
+            # days too (codex #401 r7): the OOS evaluator's
+            # orthogonality_series skips days below min_names_per_day,
+            # so a breeding penalty computed over days adjudication
+            # discards would again diverge from the registered gate.
+            if pair.shape[0] < floor:
                 continue
             # Degenerate cross-sections (constant on either side) have
             # an undefined rank correlation — skip the day rather than
@@ -648,7 +654,9 @@ class GPEngine:
         # here (not inside evaluate_individual, whose broad except
         # would swallow it into a -inf score).
         if baseline is not None and self.fitness_config.w_orthogonality != 0.0:
-            _assert_baseline_meets_panel(baseline, panel)
+            _assert_baseline_meets_panel(
+                baseline, panel,
+                floor=_orthogonality_floor(self.fitness_config))
         run_baseline_key = _baseline_key_for(baseline)
         if (
             self._baseline_key is not None
@@ -875,7 +883,21 @@ def _frame_fingerprint(frame: pd.DataFrame) -> str:
     return h.hexdigest()[:16]
 
 
-def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel) -> None:
+def _orthogonality_floor(fitness_config) -> int:
+    """Per-day name floor for the orthogonality penalty.
+
+    Legacy runs keep the bare correlation minimum; a campaign that
+    froze ``min_names_per_day`` must use ITS floor here too (codex
+    #401 r7) so the breeding penalty is measured over exactly the days
+    the OOS evaluator will adjudicate.
+    """
+    return max(_MIN_ORTHOGONALITY_CROSS_SECTION,
+               int(getattr(fitness_config, "min_names_per_day", 0) or 0))
+
+
+def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel,
+                                 floor: int = _MIN_ORTHOGONALITY_CROSS_SECTION,
+                                 ) -> None:
     """Refuse a baseline that cannot measure the panel at all.
 
     Distinguishes a CONFIGURATION error from the campaign's accepted
@@ -900,15 +922,14 @@ def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel) -> None:
             "cannot bind the baseline; refusing.")
     ref = frames[0]
     common_cols = ref.columns.intersection(baseline.columns)
-    if len(common_cols) < _MIN_ORTHOGONALITY_CROSS_SECTION:
+    if len(common_cols) < floor:
         raise ValueError(
             f"baseline shares {len(common_cols)} instrument(s) with the "
             f"panel (panel e.g. {list(ref.columns[:3])}, baseline e.g. "
-            f"{list(baseline.columns[:3])}) — fewer than the "
-            f"{_MIN_ORTHOGONALITY_CROSS_SECTION} names the daily "
-            "correlation needs, so EVERY candidate would score "
-            "unpenalised and silently disable the incremental "
-            "criterion; refusing.")
+            f"{list(baseline.columns[:3])}) — fewer than the {floor} "
+            "names the daily correlation needs under this campaign's "
+            "floor, so EVERY candidate would score unpenalised and "
+            "silently disable the incremental criterion; refusing.")
     common_dates = ref.index.intersection(baseline.index)
     if len(common_dates) == 0:
         raise ValueError(

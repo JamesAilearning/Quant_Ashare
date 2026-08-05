@@ -225,6 +225,55 @@ class BaselinePanelBindingTests(unittest.TestCase):
             pd.DataFrame(0.5, index=dates, columns=["a", "b", "c"]),
             panel)
 
+    def test_campaign_floor_applies_to_orthogonality_days(self) -> None:
+        # codex #401 r7: the r6 fix threaded the frozen floor into the
+        # rank-IC path but the orthogonality penalty still admitted
+        # 3-name days, while the OOS evaluator's orthogonality_series
+        # skips days below min_names_per_day — the breeding penalty
+        # would again be measured over days adjudication discards.
+        from src.factor_mining.gp_engine import (
+            GPConfig,
+            GPEngine,
+            _orthogonality_floor,
+        )
+        self.assertEqual(3, _orthogonality_floor(FitnessConfig()))
+        self.assertEqual(300, _orthogonality_floor(
+            FitnessConfig(min_names_per_day=300)))
+        dates = pd.date_range("2023-01-02", periods=2, freq="B")
+        cols = [f"n{i}" for i in range(6)]
+        rng = np.random.default_rng(31)
+        factor = pd.DataFrame(rng.normal(size=(2, 6)), index=dates,
+                              columns=cols)
+        baseline = pd.DataFrame(rng.normal(size=(2, 6)), index=dates,
+                                columns=cols)
+        # Legacy floor (3): both 6-name days score.
+        eng = GPEngine(GPConfig(seed=1),
+                       FitnessConfig(w_orthogonality=2.0,
+                                     orthogonality_band=0.30))
+        eng._baseline = baseline
+        self.assertTrue(np.isfinite(eng._baseline_orthogonality(factor)))
+        # Campaign floor of 10 > 6 names: no day qualifies, so the
+        # expression is UNCOVERED (no penalty) rather than penalised
+        # on days the OOS gate would drop.
+        eng2 = GPEngine(GPConfig(seed=1),
+                        FitnessConfig(w_orthogonality=2.0,
+                                      orthogonality_band=0.30,
+                                      min_names_per_day=10))
+        eng2._baseline = baseline
+        self.assertTrue(np.isnan(eng2._baseline_orthogonality(factor)))
+        self.assertEqual(1, eng2._orthogonality_uncovered)
+
+    def test_setup_guard_uses_campaign_floor(self) -> None:
+        from src.factor_mining.gp_engine import _assert_baseline_meets_panel
+        dates = pd.date_range("2023-01-02", periods=3, freq="B")
+        cols = [f"n{i}" for i in range(5)]
+        panel = self._panel(cols, dates)
+        baseline = pd.DataFrame(0.5, index=dates, columns=cols)
+        _assert_baseline_meets_panel(baseline, panel)          # floor 3
+        with self.assertRaises(ValueError) as ctx:
+            _assert_baseline_meets_panel(baseline, panel, floor=300)
+        self.assertIn("300", str(ctx.exception))
+
     def test_namespace_mismatch_refuses(self) -> None:
         from src.factor_mining.gp_engine import _assert_baseline_meets_panel
         dates = pd.date_range("2023-01-02", periods=3, freq="B")
