@@ -241,9 +241,21 @@ def adjudicate(plan: dict[str, Any],
         # disagrees is a stale/hand-edited artifact — refuse rather
         # than let an unverified scalar clear the binding threshold.
         t_recomputed = t_stat(series.to_numpy())
+        if not np.isfinite(t_recomputed):
+            # codex #399 r9: a zero-variance (or <2-day) daily series
+            # recomputes to an UNDEFINED observed t. The mismatch
+            # guard below only fires when both scalars are finite, so
+            # the trial would slip into the family on n_days alone and
+            # the bootstrap would drop its degenerate draws —
+            # laundering an undefined statistic into a clean-negative
+            # verdict. Refuse before any family/sparse bucketing.
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} recomputes a "
+                f"non-finite observed t from its daily series "
+                f"({series.shape[0]} days) — zero-variance/degenerate "
+                "series has no defined statistic, refusing.")
         declared = art.get("t_stat")
         if (isinstance(declared, (int, float)) and np.isfinite(declared)
-                and np.isfinite(t_recomputed)
                 and abs(float(declared) - t_recomputed) > 1e-9):
             raise PVFwerError(
                 f"artifact {art['candidate_id']!r} declares t_stat="

@@ -215,7 +215,8 @@ class FwerTests(unittest.TestCase):
         self.assertEqual("survivors", out2["verdict"])
 
     def test_only_sparse_gives_no_verdict(self) -> None:
-        arts = [self._artifact("s", np.full(5, 0.5))]
+        arts = [self._artifact(
+            "s", np.array([0.5, 0.42, 0.58, 0.47, 0.53]))]
         out = fw.adjudicate(self._plan(), arts, seed=7)
         self.assertEqual("no_verdict", out["verdict"])
 
@@ -372,6 +373,16 @@ class FwerTests(unittest.TestCase):
         art2["window"] = {"start": "2023-01-01", "end": "2025-12-31"}
         with self.assertRaises(fw.PVFwerError):
             fw.adjudicate(self._plan(), [art2], seed=7)
+
+    def test_zero_variance_ic_series_refused(self) -> None:
+        # codex #399 r9: a zero-variance daily series recomputes an
+        # UNDEFINED observed t; the finite-both mismatch guard skips
+        # it, so without this refusal the trial would join the family
+        # on n_days alone and launder into a clean-negative verdict.
+        art = self._artifact("flat", np.zeros(300) + 0.01)
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.adjudicate(self._plan(), [art], seed=7)
+        self.assertIn("non-finite observed t", str(ctx.exception))
 
     def test_duplicate_daily_ic_dates_refused(self) -> None:
         # codex #399 r7: repeated dates would silently collapse the
