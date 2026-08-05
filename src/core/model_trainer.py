@@ -115,6 +115,16 @@ class ModelTrainConfig:
     # behaviour. ``gpu`` is currently approved only for qlib LGBModel
     # and is passed through to LightGBM as ``device_type='gpu'``.
     compute_device: str = "cpu"
+    # Training universe (e.g. "csi300"/"csi800") — PROVENANCE, not a
+    # hyperparameter: call sites thread it EXPLICITLY
+    # (``universe=config.instruments``); it is deliberately NOT named
+    # ``instruments`` so the projection never auto-pulls it and the
+    # "explicit = default" hyperparameter identity across dataclasses
+    # stays intact. Recorded in the model sidecar so the serving-side
+    # universe-consistency guard can bind a model to the universe it
+    # was trained on. ``None`` writes no sidecar field — serving then
+    # refuses until the promotion meta is backfilled, by design.
+    universe: str | None = None
 
 
 @dataclass(frozen=True)
@@ -444,6 +454,14 @@ class ModelTrainer:
             "num_boost_round": config.num_boost_round,
             "final_valid_loss": final_val,
         }
+        # Training universe for the serving-side universe-consistency
+        # guard (add-serving-universe-consistency-guard): recorded only
+        # when the config knows it — never a fabricated default. A
+        # sidecar without the field makes serving refuse until the
+        # promotion meta is backfilled with the certified universe.
+        universe = getattr(config, "universe", None)
+        if isinstance(universe, str) and universe:
+            sidecar["universe"] = universe
         # Bind the sidecar to the pickle artifact so ensemble loading
         # can detect a replacement that left the sidecar untouched.
         if artifact_path.is_file():

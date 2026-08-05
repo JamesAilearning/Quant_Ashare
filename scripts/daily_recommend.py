@@ -45,6 +45,7 @@ from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.inference.daily_recommend import (  # noqa: E402
     DailyRecommendationError,
     RecommendationConfig,
+    _model_meta_paths,
     recommend,
     write_outputs,
 )
@@ -130,22 +131,10 @@ _DEFAULT_REGISTRY = os.environ.get(
 _DEFAULT_NAME_SOURCE = os.environ.get(
     "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet"
 )
-def _model_meta_paths(model_path: str) -> list[Path]:
-    """Both sidecar conventions that can carry the inference fit window, in
-    priority order:
-
-    1. ``<stem>.meta.json``     — the hand-curated PROMOTION meta (carries
-       ``fit_*_for_inference``; written at promotion time).
-    2. ``<model>.pkl.meta.json`` — the ModelTrainer sidecar
-       (``src/core/model_trainer.py`` writes / ``ensemble.py`` reads this name).
-       It does NOT currently carry the fit window, but a model produced by the
-       pipeline ships ONLY this file — so we must inspect it to decide between
-       "meta exists but lacks the window" (fail-loud) and "no meta at all"
-       (fallback). Checking both stops the resolver from silently falling back
-       to a stale window just because the promotion meta wasn't hand-written.
-    """
-    p = Path(model_path)
-    return [p.with_suffix(".meta.json"), p.with_name(p.name + ".meta.json")]
+# _model_meta_paths moved to src.inference.daily_recommend (imported
+# above): the universe-consistency guard and this CLI's fit-window
+# resolver must agree on which sidecars exist, so the two-path
+# convention lives in ONE place.
 
 
 def _resolve_inference_fit_window(
