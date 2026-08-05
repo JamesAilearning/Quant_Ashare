@@ -19,7 +19,11 @@ PR #389 签署；PR-A' #390 服务机制；PR-B' 门工装 + 轮换执行器）�
 ## 周节奏服务卡（每交易日早晨）
 
 1. `python scripts/daily_recommend.py --ensemble-manifest <生产 manifest>`
-   （PR-C' 切换后；切换前仍为单模型 `--model` 路径）。
+   （PR-C' 切换后；切换前仍为单模型 `--model` 路径）。ensemble 模式
+   下宇宙/节奏/topk **自动从钉死的
+   `config/serving/csi800_n5_production.yaml` 绑定**
+   （2026-08-05-ensemble-serving-bound-params）；显式传参仍允许但
+   必须与绑定值相等，不等即拒——CLI 不是绕过绑定链的通道。
 2. 输出工件携 `rebalance_day: true|false` 与 `next_rebalance_date`：
    - `rebalance_day: true`（ISO 周第一交易日）→ 可执行 T+1 入场清单；
    - `rebalance_day: false` → **HOLD 监控视图**，不构成入场指令；
@@ -81,16 +85,18 @@ manifest 的错峰与 24 月窗 pins。
    meta → 生产 manifest → baseline 记录 → **初始 WIN 状态工件**
    （`docs/promotion/csi800_recert_status.json` 的**首写**，此后由
    年检流程维护；缺它则季度轮换会因读不到有效状态而冻结）。
-6. **切换后：改晨跑命令**——`--ensemble-manifest` 只接管"用哪个
-   模型"，**宇宙与节奏必须一并显式传入**（CLI 默认仍是 csi300/日频，
-   漏传会产出 csi300 日频工件、且无 `rebalance_day`/
-   `next_rebalance_date` 字段，与 N5 iso-week 协议相悖）：
+6. **切换后：改晨跑命令**——`--ensemble-manifest` 接管"用哪个
+   模型"，宇宙/节奏/topk **自动从
+   `config/serving/csi800_n5_production.yaml` 绑定**（两级绑定链
+   第二级，治理测试钉死其与认证胜者的同值性；
+   2026-08-05-ensemble-serving-bound-params）：
    ```bash
-   python scripts/daily_recommend.py      --ensemble-manifest <生产 manifest>      --instruments csi800      --rebalance-cadence-days 5      --topk 50
+   python scripts/daily_recommend.py --ensemble-manifest <生产 manifest>
    ```
-   三个显式值取自 `config/serving/csi800_n5_production.yaml`（两级
-   绑定链第二级，治理测试钉死其与认证胜者的同值性）；fit 窗由
-   manifest 最新成员自动解析，无须再传 `--fit-*`。
+   显式传 `--instruments`/`--rebalance-cadence-days`/`--topk` 仍
+   允许但必须与绑定值相等，不等即拒；绑定源缺失/畸形也拒（绝不
+   回退 CLI 缺省）。fit 窗由 manifest 最新成员自动解析，无须再传
+   `--fit-*`。单模型 legacy 路径缺省（csi300/日频/50）逐字不变。
    随后提交 baseline 与状态工件，进入观察期（首季只记录不回调）。
 
 **任一门不过 = 自举中止**：不切换、现任 canonical 续任、失败如实

@@ -35,6 +35,7 @@ import multiprocessing
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -49,6 +50,65 @@ from src.inference.daily_recommend import (  # noqa: E402
 )
 
 _logger = get_logger("src.scripts.daily_recommend")
+
+# Ensemble-mode parameter binding (2026-08-05-ensemble-serving-bound-
+# params): universe/cadence/topk are pinned by the two-level binding
+# chain in this governance-anchored file — the CLI reads them from
+# there instead of trusting the operator to re-type them every
+# morning. Explicit flags are allowed only when EQUAL to the bound
+# values; the single-model path keeps its legacy defaults verbatim
+# (flipping those would let the csi300-era model score csi800).
+_SERVING_CONFIG_PATH = (
+    PROJECT_ROOT / "config" / "serving" / "csi800_n5_production.yaml")
+_SERVING_BOUND_KEYS = ("instruments", "rebalance_cadence_days", "topk")
+_LEGACY_PARAM_DEFAULTS: dict[str, Any] = {
+    "instruments": "csi300", "rebalance_cadence_days": 1, "topk": 50}
+
+
+def _resolve_serving_params(args: argparse.Namespace) -> dict[str, Any]:
+    """Resolve universe/cadence/topk per the bound-params contract.
+
+    Ensemble mode: None -> the pinned serving-config value; an
+    explicit value that differs from the bound value REFUSES (the CLI
+    is not a bypass around the binding chain); a missing/unreadable/
+    incomplete binding source REFUSES (never fall back to the CLI
+    defaults — that is the forgotten-flag trap itself). Single-model
+    mode: None -> the legacy defaults, config untouched."""
+    supplied = {k: getattr(args, k) for k in _SERVING_BOUND_KEYS}
+    if args.ensemble_manifest is None:
+        return {k: v if v is not None else _LEGACY_PARAM_DEFAULTS[k]
+                for k, v in supplied.items()}
+    import yaml
+
+    try:
+        payload = yaml.safe_load(
+            _SERVING_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise DailyRecommendationError(
+            f"ensemble mode needs the pinned serving config "
+            f"{_SERVING_CONFIG_PATH}, which is unreadable: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise DailyRecommendationError(
+            f"pinned serving config is not a mapping: "
+            f"{_SERVING_CONFIG_PATH}")
+    resolved: dict[str, Any] = {}
+    for key in _SERVING_BOUND_KEYS:
+        if key not in payload:
+            raise DailyRecommendationError(
+                f"pinned serving config lacks {key!r}: "
+                f"{_SERVING_CONFIG_PATH} — ensemble mode refuses "
+                "without a complete binding source.")
+        bound = payload[key]
+        if supplied[key] is not None and supplied[key] != bound:
+            raise DailyRecommendationError(
+                f"--{key.replace('_', '-')} {supplied[key]!r} "
+                f"contradicts the pinned serving value {bound!r} "
+                f"({_SERVING_CONFIG_PATH}) — explicit flags are not a "
+                "bypass around the binding chain; drop the flag or "
+                "fix the config through governance.")
+        resolved[key] = bound
+    return resolved
 
 # Phase B clean-PIT defaults. Each is overridable via a QUANT_* env var (the
 # default = the current path, so behaviour is unchanged when it is unset); the
@@ -195,7 +255,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Daily stock recommendation (Alpha158 + LGB, PIT).")
     p.add_argument("--as-of", default=None,
                    help="Decision date T (YYYY-MM-DD). Default = latest PIT trading day.")
-    p.add_argument("--topk", type=int, default=50, help="Buy-list size (default 50).")
+    p.add_argument(
+        "--topk", type=int, default=None,
+        help="Buy-list size. Default: 50 in single-model mode; the "
+             "pinned serving-config value in ensemble mode (an "
+             "explicit value must EQUAL it).")
     p.add_argument("--out-dir", default="output/daily_recommend",
                    help="Output directory for csv/json (default output/daily_recommend).")
     p.add_argument(
@@ -225,7 +289,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "may lag today before the price/feature data is "
                         "rejected as stale (default 14; covers A-share "
                         "holidays). Raise it for an intentional historical run.")
-    p.add_argument("--instruments", default="csi300", help="Universe (default csi300).")
+    p.add_argument(
+        "--instruments", default=None,
+        help="Universe. Default: csi300 in single-model mode; the "
+             "pinned serving-config value in ensemble mode (an "
+             "explicit value must EQUAL it).")
     p.add_argument("--fit-start", default=None,
                    help="Training fit-window start (must match the model). "
                         "Default: read from <model>.meta.json fit_start_for_inference.")
@@ -233,12 +301,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="Training fit-window end (must match the model). "
                         "Default: read from <model>.meta.json fit_end_for_inference.")
     p.add_argument(
-        "--rebalance-cadence-days", type=int, default=1, choices=(1, 5),
+        "--rebalance-cadence-days", type=int, default=None,
+        choices=(1, 5),
         help="Serving rebalance cadence (PR-A of csi800-n5-production-"
-             "promotion). 1 = daily semantics (default, unchanged "
-             "behaviour). 5 = certified N5 weekly cadence: the artifact "
-             "carries rebalance_day/next_rebalance_date (ISO-week "
-             "anchor) and non-rebalance days print a HOLD notice.")
+             "promotion). 1 = daily semantics (single-model default, "
+             "unchanged behaviour). 5 = certified N5 weekly cadence: "
+             "the artifact carries rebalance_day/next_rebalance_date "
+             "(ISO-week anchor) and non-rebalance days print a HOLD "
+             "notice. Ensemble mode defaults to the pinned "
+             "serving-config value (an explicit value must EQUAL it).")
     p.add_argument(
         "--allow-holey-recommend", action="store_true",
         help="Recommend even if the bundle was built from a holey tushare fetch "
@@ -284,21 +355,27 @@ def main(argv: list[str] | None = None) -> int:
             _logger.error("Cannot resolve inference fit window: %s", exc)
             return 1
 
+    try:
+        params = _resolve_serving_params(args)
+    except DailyRecommendationError as exc:
+        _logger.error("Serving parameter binding failed: %s", exc)
+        return 1
+
     config = RecommendationConfig(
         model_path=model_path,
         provider_uri=args.provider_uri,
         delisted_registry_path=args.delisted_registry,
         fit_start=fit_start,
         fit_end=fit_end,
-        instruments=args.instruments,
+        instruments=params["instruments"],
         as_of_date=args.as_of,
-        topk=args.topk,
+        topk=params["topk"],
         name_source_parquet=args.name_source,
         st_snapshot_max_age_days=args.st_max_age_days,
         bundle_max_age_days=args.bundle_max_age_days,
         out_dir=args.out_dir,
         allow_holey_recommend=args.allow_holey_recommend,
-        rebalance_cadence_days=args.rebalance_cadence_days,
+        rebalance_cadence_days=params["rebalance_cadence_days"],
         ensemble_manifest_path=args.ensemble_manifest,
     )
 
