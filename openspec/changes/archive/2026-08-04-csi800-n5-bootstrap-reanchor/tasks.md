@@ -12,10 +12,10 @@
 - [x] runbook 操作卡窗口表 + 干跑窗引用更新
 - [x] RA-DP-3 证据入档：三门工件 JSON + v1 拒绝简报
 - [x] spec delta：自举中止后重注册路径 ADDED requirement
-- [ ] openspec validate --strict + ruff/mypy/目标测试 + 全量快套
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] openspec validate --strict + ruff/mypy/目标测试 + 全量快套
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. 并后（不在本 change 内执行，录以为序）
-- [ ] 三发 GPU 串行点火（m1'/m2'/m3'）
-- [ ] 成员门×3 → 候选 manifest → ensemble 门 → 数字 STOP
-- [ ] 门全过 → 切换执行器 --dry-run 先行 → 实跑 → 证据入库
+- [x] 三发 GPU 串行点火（m1'/m2'/m3'）
+- [x] 成员门×3 → 候选 manifest → ensemble 门 → 数字 STOP
+- [x] 门全过 → 切换执行器 --dry-run 先行 → 实跑 → 证据入库
