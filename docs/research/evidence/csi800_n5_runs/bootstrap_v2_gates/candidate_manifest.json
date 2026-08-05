@@ -1,0 +1,29 @@
+{
+  "schema_version": "csi800_n5_ensemble_manifest_v1",
+  "members": [
+    {
+      "pkl_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_081311_513091_75bda253_dbf0450447a1/artifacts/model.pkl",
+      "pkl_sha256": "5a10cd56721308d16235c5e2836cd6c72bc8724d6be66d3b7875804b6bb68eac",
+      "meta_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_081311_513091_75bda253_dbf0450447a1/artifacts/model.pkl.meta.json",
+      "meta_sha256": "572fdbcdd9d0df62c7e5266430dc49f66929a03285fff097a2218a062adc3f33",
+      "fit_start": "2023-09-28",
+      "fit_end": "2025-09-29"
+    },
+    {
+      "pkl_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_081443_810493_db54e48b_82d6d77f3dc0/artifacts/model.pkl",
+      "pkl_sha256": "5430a65396842330dcb7308befa6479ee6d044de2484fd0237b9f0747bc5fc46",
+      "meta_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_081443_810493_db54e48b_82d6d77f3dc0/artifacts/model.pkl.meta.json",
+      "meta_sha256": "02010af030085bfc34dd9243f0162989fccb8483716101f1f3072f2f3f170b44",
+      "fit_start": "2023-12-29",
+      "fit_end": "2025-12-30"
+    },
+    {
+      "pkl_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_094309_265470_cdfdb033_91f434349725/artifacts/model.pkl",
+      "pkl_sha256": "43ffe00eea8746dd998910409f85286b91fe6f00eeb62a5b8e8515c55c92c7a6",
+      "meta_path": "D:/stock/Claude/qlib_trading_system_v2/output/runs/20260805_094309_265470_cdfdb033_91f434349725/artifacts/model.pkl.meta.json",
+      "meta_sha256": "40eeddb6e529e4e6d4a89e87013f73f3f34131ebcc8a6ea2ad8c8084c40bbd79",
+      "fit_start": "2024-04-01",
+      "fit_end": "2026-04-01"
+    }
+  ]
+}

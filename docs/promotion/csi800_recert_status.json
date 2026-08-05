@@ -1,0 +1,8 @@
+{
+  "schema_version": "csi800_recert_status_v1",
+  "verdict": "WIN",
+  "verdict_sidecar_path": "docs/research/csi800_cadence_verdict.json",
+  "verdict_sidecar_sha256": "1136dde4160724f0d71dca5bb30b2fe79254818185ae09a9b72183ae13572bb5",
+  "evidence_anchor_commit": "3ffceb4f5ed924704f62e63327c7203fb570f2ef",
+  "note": "initial bootstrap WIN — first production switch to the certified csi800 N5 quarterly-retrain ensemble (3 staggered members, manifest ce42bdb7c65e)"
+}

@@ -1,0 +1,74 @@
+{
+  "schema_version": "csi800_n5_retrain_gate_v1",
+  "profile": "csi800_n5",
+  "scope": "ensemble",
+  "generated_at": "2026-08-05T01:51:39.241565+00:00",
+  "subject": {
+    "manifest_path": "output/retrain_gates/bootstrap_v2_candidate_manifest.json",
+    "manifest_sha256": "ce42bdb7c65e27a36c86f162076ec0333381871b6188c20d4b845bf9a74df260",
+    "members": [
+      {
+        "pkl_sha256": "5a10cd56721308d16235c5e2836cd6c72bc8724d6be66d3b7875804b6bb68eac",
+        "fit_start": "2023-09-28",
+        "fit_end": "2025-09-29"
+      },
+      {
+        "pkl_sha256": "5430a65396842330dcb7308befa6479ee6d044de2484fd0237b9f0747bc5fc46",
+        "fit_start": "2023-12-29",
+        "fit_end": "2025-12-30"
+      },
+      {
+        "pkl_sha256": "43ffe00eea8746dd998910409f85286b91fe6f00eeb62a5b8e8515c55c92c7a6",
+        "fit_start": "2024-04-01",
+        "fit_end": "2026-04-01"
+      }
+    ]
+  },
+  "window": {
+    "window_start": "2026-05-06",
+    "window_end": "2026-07-31"
+  },
+  "anchor": {
+    "ref": "origin/main",
+    "rev": "07414d25901cf2e59fc0a0b3092be42e9bc306f2",
+    "evidence_dir": "docs/research/evidence/csi800_n5_runs/csi800_cadence5_conservative_isoweek",
+    "folds_pooled": 23,
+    "total_oneway": 38.76471496878041,
+    "transitions": 1351.0,
+    "daily_mean_oneway": 0.028693349347727912
+  },
+  "gates": {
+    "degeneracy": {
+      "verdict": "PASS",
+      "n_degenerate_days": 0,
+      "n_cutoff_straddle_days": 0,
+      "reasons": []
+    },
+    "constraint_dry_run": {
+      "verdict": "PASS",
+      "constraint_veto": null,
+      "reasons": []
+    },
+    "serving_veto": {
+      "verdict": "PASS",
+      "csi500_effect_share": null,
+      "csi500_weight": 0.7484,
+      "unknown_weight": 0.0244,
+      "dryrun_daily_mean_oneway": 0.0367529945177198,
+      "anchor_daily_mean_oneway": 0.028693349347727912,
+      "turnover_ratio": 1.2808889639309429,
+      "thresholds": {
+        "csi500_effect_share_max_exclusive": 0.8,
+        "turnover_ratio_max": 1.5,
+        "csi500_weight_max": 0.75,
+        "unknown_weight_max": 0.1
+      },
+      "reasons": [],
+      "notes": [
+        "veto2 share undefined (gross effect sum <= 0); dependence leg cannot trigger"
+      ]
+    }
+  },
+  "missing_gates": [],
+  "overall": "PASS"
+}
