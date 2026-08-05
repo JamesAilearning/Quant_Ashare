@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -66,26 +67,42 @@ def t_stat(series: np.ndarray[Any, np.dtype[np.float64]]) -> float:
     return float(series.mean() / (sd / np.sqrt(n)))
 
 
-def block_bootstrap_bar(family: dict[str, np.ndarray[Any, np.dtype[np.float64]]], *, n_boot: int,
+def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
                         block_len: int, quantile: float,
                         seed: int) -> float:
-    """q-quantile of the null max-|t| across the family.
+    """q-quantile of the null max-|t| across the family — JOINT
+    moving-block bootstrap (codex #399 r2, the Gate-4A template's
+    semantics): every resample draws ONE set of block positions on
+    the family's union date axis and applies the SAME positions to
+    every member, preserving family co-movement. Independent per-
+    member draws would break the dependence structure the
+    max-statistic bar exists to respect and can flip verdicts for
+    clusters of correlated expressions.
 
-    Each member's series is DEMEANED (null: zero mean); circular
-    block resampling to the original length preserves short-range
-    autocorrelation. Deterministic under the frozen seed."""
+    Members are aligned on the union axis (NaN where a member lacks
+    a day — legitimate: ts-window warmups differ per expression);
+    each member's t is computed over its non-NaN picks of the shared
+    draw. Series are DEMEANED per member (null: zero mean).
+    Deterministic under the frozen seed."""
     rng = np.random.default_rng(seed)
-    demeaned = {k: v - v.mean() for k, v in family.items()}
+    axis = sorted(set().union(*(set(s.index) for s in family.values())))
+    n = len(axis)
+    matrix = np.full((n, len(family)), np.nan)
+    for j, (_, series) in enumerate(sorted(family.items())):
+        aligned = series.reindex(axis)
+        matrix[:, j] = (aligned - aligned.mean()).to_numpy(dtype=float)
+    n_blocks = int(np.ceil(n / block_len))
     maxima = np.empty(n_boot)
     for b in range(n_boot):
+        starts = rng.integers(0, n, size=n_blocks)      # ONE draw
+        idx = ((starts[:, None] + np.arange(block_len)[None, :]) % n
+               ).ravel()[:n]
+        picked = matrix[idx, :]                          # shared axis
         best = 0.0
-        for series in demeaned.values():
-            n = series.shape[0]
-            n_blocks = int(np.ceil(n / block_len))
-            starts = rng.integers(0, n, size=n_blocks)
-            idx = (starts[:, None] + np.arange(block_len)[None, :]) % n
-            resampled = series[idx.ravel()[:n]]
-            t = t_stat(resampled)
+        for j in range(picked.shape[1]):
+            col = picked[:, j]
+            col = col[np.isfinite(col)]
+            t = t_stat(col)
             if np.isfinite(t):
                 best = max(best, abs(t))
         maxima[b] = best
@@ -97,7 +114,7 @@ def adjudicate(plan: dict[str, Any],
                *, seed: int) -> dict[str, Any]:
     fw = plan["fwer"]
     min_n = int(fw["per_trial_min_n_days"])
-    family: dict[str, np.ndarray[Any, np.dtype[np.float64]]] = {}
+    family: dict[str, pd.Series] = {}
     sparse: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     for art in artifacts:
@@ -106,7 +123,17 @@ def adjudicate(plan: dict[str, Any],
                 f"artifact {art.get('candidate_id')!r} carries "
                 f"protocol_id {art.get('protocol_id')!r} — foreign "
                 "protocol, refusing (never silently skipped).")
-        series = np.array([d["ic"] for d in art["daily_ic"]], dtype=float)
+        series = pd.Series(
+            {d["date"]: float(d["ic"]) for d in art["daily_ic"]},
+            dtype=float).sort_index()
+        if not np.isfinite(series.to_numpy()).all():
+            # Defense in depth (codex #399 r2): the evaluator drops
+            # degenerate days, so a NaN here is artifact corruption —
+            # it would silently fall out of per-draw maxima and lower
+            # the family bar. Refuse, never sanitize.
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} carries non-finite "
+                "daily IC values — corrupt artifact, refusing.")
         row = {"candidate_id": art["candidate_id"],
                "n_days": int(series.shape[0]),
                "ic_mean": art["ic_mean"], "t_stat": art["t_stat"],

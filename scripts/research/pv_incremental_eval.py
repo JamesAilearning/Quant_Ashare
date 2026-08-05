@@ -105,8 +105,17 @@ def daily_rank_ic(factor: pd.DataFrame, fwd: pd.DataFrame,
         if n < min_names:
             dropped += 1
             continue
-        ics[dt] = float(
+        ic_val = float(
             f[mask].rank().corr(r[mask].rank(), method="pearson"))
+        if not np.isfinite(ic_val):
+            # Constant/fully-tied cross-section (codex #399 r2):
+            # a NaN IC must never reach the FWER series — it would
+            # silently fall out of the per-draw maximum and lower
+            # the family bar while the trial still counts as a
+            # member. Degenerate days are dropped AND counted.
+            dropped += 1
+            continue
+        ics[dt] = ic_val
     return pd.Series(ics, dtype=float).sort_index(), dropped
 
 
@@ -152,6 +161,12 @@ def build_artifact(plan: dict[str, Any], candidate_id: str,
     # a data-prep error and the run fails loud.
     orth_cfg = plan["fitness"]["orthogonality"]
     min_cov = float(orth_cfg["min_coverage_of_ic_days"])
+    # Coverage is measured ON THE ELIGIBLE IC DATES (codex #399 r2):
+    # baseline days outside ic.index (e.g. tail signal days with no
+    # forward return) must not compensate for missing eligible ones,
+    # and the band itself is adjudicated from the same restricted
+    # series.
+    orth = orth.reindex(ic.index).dropna()
     if ic.shape[0] and orth.shape[0] < min_cov * ic.shape[0]:
         raise PVEvalError(
             f"{candidate_id}: baseline preds cover only "

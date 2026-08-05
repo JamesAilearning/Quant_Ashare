@@ -106,6 +106,33 @@ class MetricSemanticsTests(unittest.TestCase):
         orth = ev.orthogonality_series(base, base.copy(), min_names=4)
         self.assertTrue(np.allclose(orth.values, 1.0))
 
+    def test_degenerate_day_dropped_not_recorded(self) -> None:
+        # codex #399 r2: a constant/tied cross-section yields NaN IC —
+        # it must be dropped AND counted, never written into the
+        # series the FWER consumes.
+        dates, cols, _ = self._frames()
+        factor = pd.DataFrame(
+            [[1, 2, 3, 4]] * 6, index=dates, columns=cols, dtype=float)
+        factor.iloc[0] = 7.0                      # constant day
+        fwd = pd.DataFrame(
+            [[0.1, 0.2, 0.3, 0.4]] * 6, index=dates, columns=cols)
+        ic, dropped = ev.daily_rank_ic(factor, fwd, min_names=4)
+        self.assertEqual(1, dropped)
+        self.assertTrue(np.isfinite(ic.values).all())
+
+    def test_coverage_counts_only_eligible_ic_days(self) -> None:
+        # codex #399 r2: baseline days OUTSIDE ic.index must not
+        # compensate for missing eligible ones.
+        plan = _plan()
+        ic_dates = pd.date_range("2023-01-02", periods=10, freq="B")
+        other_dates = pd.date_range("2024-06-03", periods=10, freq="B")
+        ic = pd.Series(0.01, index=ic_dates)
+        # 100% volume of orth days, but only 30% on eligible dates.
+        orth = pd.Series(
+            0.1, index=ic_dates[:3].append(other_dates[:7]))
+        with self.assertRaises(ev.PVEvalError):
+            ev.build_artifact(plan, "c1", "$close", ic, 0, orth, "ab")
+
     def test_partial_baseline_coverage_fails_loud(self) -> None:
         # codex #399 r1: the orthogonality gate is the ONLY guard
         # against non-incremental promotion — a sliver of baseline
@@ -130,9 +157,12 @@ class FwerTests(unittest.TestCase):
                   within_band: bool = True,
                   protocol: str = "pv_incremental_v1") -> dict:
         stats = ev.summarize(pd.Series(series))
+        dates = pd.date_range("2023-01-02", periods=len(series),
+                              freq="B")
         return {"protocol_id": protocol, "candidate_id": cid,
-                "daily_ic": [{"date": "2023-01-01", "ic": float(v)}
-                             for v in series],
+                "daily_ic": [{"date": str(d)[:10], "ic": float(v)}
+                             for d, v in zip(dates, series,
+                                             strict=True)],
                 "ic_mean": stats["ic_mean"], "t_stat": stats["t_stat"],
                 "orth_mean_abs_rho": 0.1 if within_band else 0.9,
                 "orth_within_hard_band": within_band}
@@ -193,15 +223,46 @@ class FwerTests(unittest.TestCase):
         with self.assertRaises(fw.PVFwerError):
             fw.adjudicate(self._plan(), arts, seed=7)
 
+    @staticmethod
+    def _series(values: np.ndarray) -> pd.Series:
+        return pd.Series(
+            values,
+            index=pd.date_range("2023-01-02", periods=len(values),
+                                freq="B"))
+
     def test_bootstrap_bar_is_deterministic_under_seed(self) -> None:
         rng = np.random.default_rng(4)
-        fam = {"a": rng.normal(0, 1, 260), "b": rng.normal(0, 1, 260)}
+        fam = {"a": self._series(rng.normal(0, 1, 260)),
+               "b": self._series(rng.normal(0, 1, 260))}
         b1 = fw.block_bootstrap_bar(fam, n_boot=100, block_len=21,
                                     quantile=0.95, seed=42)
         b2 = fw.block_bootstrap_bar(fam, n_boot=100, block_len=21,
                                     quantile=0.95, seed=42)
         self.assertEqual(b1, b2)
         self.assertGreater(b1, 0.0)
+
+    def test_joint_draw_preserves_family_comovement(self) -> None:
+        # codex #399 r2: identical block positions across members —
+        # a clone family's max-|t| null equals the single-member null
+        # exactly; independent draws would inflate it.
+        rng = np.random.default_rng(5)
+        base = rng.normal(0, 1, 260)
+        one = {"a": self._series(base)}
+        clones = {"a": self._series(base),
+                  "b": self._series(base.copy())}
+        b_one = fw.block_bootstrap_bar(one, n_boot=200, block_len=21,
+                                       quantile=0.95, seed=42)
+        b_two = fw.block_bootstrap_bar(clones, n_boot=200,
+                                       block_len=21, quantile=0.95,
+                                       seed=42)
+        self.assertAlmostEqual(b_one, b_two, places=12)
+
+    def test_non_finite_ic_artifact_refused(self) -> None:
+        art = self._artifact("bad", np.zeros(300))
+        art["daily_ic"][5]["ic"] = float("nan")
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.adjudicate(self._plan(), [art], seed=7)
+        self.assertIn("non-finite", str(ctx.exception))
 
 
 if __name__ == "__main__":
