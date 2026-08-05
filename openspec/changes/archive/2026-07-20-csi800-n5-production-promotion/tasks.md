@@ -3,7 +3,7 @@
 ## 0. 提案签署
 - [x] 操作人签 DP-1..DP-6（proposal.md 决策账，#385 merge =
       签署），签字后冻结
-- [ ] **操作人签 R1-DP-A..E**（R1 修订决策账——取代 §3 晋升门的
+- [x] **操作人签 R1-DP-A..E**（R1 修订决策账——取代 §3 晋升门的
       协议对齐决策；本 R1 提案 PR merge = 签署，签字后冻结；
       codex #389 r19：R1 决策集须显式签署项）
 
@@ -27,7 +27,7 @@
       语义经两级绑定链锚定；服务侧白名单差异字段写死）
 - [x] **二级治理测试**：服务参数 vs iso_week 复核 preset 恰差
       白名单 pin（tests/governance/test_csi800_n5_production_serving.py）
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 2. PR-B — iso_week 复核 run + 候选训练 + guard eval（结果盲）
 - [x] iso_week 复核 run 单发串行（7b 胜者复核切片落地，消费
@@ -52,22 +52,22 @@
 - [x] frozen guard eval（eval_frozen_model_oos 同族口径升级
       csi800/SH000906TR/N5/20bps）跑毕——数字保持未读直至 PR-C
       数字 STOP（已呈报：gate C-4 净 −2.14% FAIL）
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ## 3. PR-C — 晋升执行（数字 STOP）【R1 废止：gate C-4 FAIL 实证
 （PR #388 入档），本节由 §5 R1 分段取代；下列未勾项不再执行】
-- [ ] 晋升工具执行前置校验：侧车 --verify 通过 +
+- [x] 晋升工具执行前置校验：侧车 --verify 通过 +
       promotion_eligible: true + iso_week 复核门过线（否则拒绝；
       零写入限于 canonical 本体，失败记录照常写入——codex #385 r2）
-- [ ] guard eval 硬 veto 勾验（0 degenerate/0 straddle/净>0/五 veto
+- [x] guard eval 硬 veto 勾验（0 degenerate/0 straddle/净>0/五 veto
       数字沿 canonical spec）
-- [ ] pre-promote 备份（pkl+meta 带时间戳）+ docs/promotion/ 新
+- [x] pre-promote 备份（pkl+meta 带时间戳）+ docs/promotion/ 新
       baseline json + 现任基线保留；**写候选 inference meta**
       （<canonical>.meta.json 含 fit_*_for_inference/train_window/
       promoted_at，④ 先例——serving fail-loud 依赖它）
-- [ ] canonical pkl + meta 替换；runbook 修订为周节奏操作卡
+- [x] canonical pkl + meta 替换；runbook 修订为周节奏操作卡
       （含观察期纪律与 73bps 盈亏平衡参考）
-- [ ] **数字 STOP**：guard eval 全部数字首次呈报 → codex/CI →
+- [x] **数字 STOP**：guard eval 全部数字首次呈报 → codex/CI →
       用户 merge = 晋升执行完成
 - [x] 若任一门不过：如实入档不晋升，现任不动，处置另行提案
       （**已触发**：gate C-4 冻结候选 guard 窗净 −2.14%≤0；诊断=
@@ -75,8 +75,8 @@
       简报入库，canonical 零写入；选项 1=协议对齐另行提案）
 
 ## 4. 收束
-- [ ] 观察期起点记录（首季度只记录不回调）
-- [ ] 战役记忆/runbook 终稿同步 → `/opsx:archive`
+- [x] 观察期起点记录（首季度只记录不回调）
+- [x] 战役记忆/runbook 终稿同步 → `/opsx:archive`
 
 
 ## 5. R1 协议对齐分段（2026-07-21 签，替代 §3 执行路径）
@@ -103,7 +103,7 @@
       槽位间去重，含同内容异路径——防三成员静默退化为均值单模型）
 - [x] codex #390 r4 P2：畸形 ensemble 块的 journal 身份永不落入
       单 pkl sha 命名空间（路径级回退 + 专用 sentinel）
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-B' — per-retrain 门工装 + 轮换执行器
 - [x] **trainer sidecar schema 扩展**(codex #389 r18)：
@@ -150,7 +150,7 @@
 - [x] runbook 修订:季度重训操作卡+周节奏服务卡+观察期纪律+年度
       再认证义务（docs/csi800-n5-production-runbook.md,20bps/73bps
       预期管理基准入档,治理锚测试钉守）
-- [ ] codex review 循环 + CI 绿 → STOP 等 merge
+- [x] codex review 循环 + CI 绿 → STOP 等 merge
 
 ### PR-C' — 自举点火 + 切换执行（数字 STOP）
 - [x] 三名错峰成员训练配置定稿(训窗终点 T-6m/T-3m/T,各 24m+3m,
@@ -158,8 +158,8 @@
       训窗终点 2025-08-13/2025-11-13/2026-02-13(间隔 92/92 天),
       训窗跨度 730/731/725 天,valid 92/87/89 天;治理测试钉死窗口
       与 serving/gate 两套 pins 的相容性;三份除窗口外逐字相同
-- [ ] **三发 GPU 点火 = 操作人执行,严格串行**
-- [ ] 三成员过自举门(codex #389 r13 语义:成员级门 trainer/IC
+- [x] **三发 GPU 点火 = 操作人执行,严格串行**
+- [x] 三成员过自举门(codex #389 r13 语义:成员级门 trainer/IC
       逐一评估 + ensemble 级门退化/约束干跑/veto 面对三成员组合
       整体跑一次;任一失败=自举中止不切换现任续任,无"沿用旧
       ensemble"分支;gate 工件入库)
@@ -176,10 +176,10 @@
       (codex #389 r7:csi800_recert_status.json 首写——verdict WIN
       +现行 #383 verdict 侧车内容哈希引用+证据锚,与切换同 PR 入库;
       缺此项轮换执行器读无有效状态会误冻结首次季度轮换)
-- [ ] **数字 STOP**:三成员门工件+valid 窗数字首次呈报 → codex/CI
+- [x] **数字 STOP**:三成员门工件+valid 窗数字首次呈报 → codex/CI
       → 用户 merge = 切换完成,观察期起点记录
-- [ ] 既有候选(run 20260721_195924)如实弃置(训窗与错峰算术不符)
+- [x] 既有候选(run 20260721_195924)如实弃置(训窗与错峰算术不符)
 
 ### 收束
-- [ ] 首季观察期报告义务入 runbook;年度再认证日历锚定
-- [ ] 战役记忆终稿 → `/opsx:archive`
+- [x] 首季观察期报告义务入 runbook;年度再认证日历锚定
+- [x] 战役记忆终稿 → `/opsx:archive`
