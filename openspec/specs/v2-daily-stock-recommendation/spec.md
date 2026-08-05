@@ -355,11 +355,20 @@ than bundles).
 `write_outputs` SHALL serialize a top-level `meta` block into
 `daily_recommendation_{as_of}.json` together with `artifact_schema_version: 2`.
 The block SHALL carry: `generated_at` (Asia/Shanghai ISO8601 with explicit
-offset), `model_path`, `model_pkl_sha256` (SHA-256 of the loaded model pickle),
+offset), `model_path`, the mode-specific identity fields below,
 `fit_start_for_inference` / `fit_end_for_inference` (the RESOLVED window the run
 actually used), `provider_uri`, `bundle_tag` (the `_fetch_integrity` identity
 compact tag, or `null` when the bundle carries no identity stamp), `instruments`
-and `topk`. The meta SHALL be assembled inside `recommend()` (the single place
+and `topk`.
+
+**Identity shape is mode-exclusive (XOR)**: in single-model mode the meta
+SHALL carry `model_pkl_sha256` (SHA-256 of the loaded model pickle) and no
+`ensemble` block; in ensemble mode the meta SHALL carry
+`meta.ensemble.manifest_sha256` (plus the member triple listing) and SHALL
+NOT carry `model_pkl_sha256` — that field's semantics stay reserved for the
+single-model pickle digest, which the decision page cross-checks against the
+trainer sidecar (see "ensemble 工件身份字段语义"). An artifact carrying both
+or neither identity is malformed. The meta SHALL be assembled inside `recommend()` (the single place
 that knows the resolved window, model and bundle) and carried on
 `DailyRecommendationResult.run_meta` as a REQUIRED field — no default value, so
 every constructor (including tests) is forced to supply it rather than silently
@@ -369,8 +378,10 @@ omitting context. The buy-list CSV and the scored-audit CSV are unchanged.
 - **WHEN** `recommend()` completes and `write_outputs` persists the JSON
 - **THEN** the JSON contains `artifact_schema_version: 2` and a `meta` block
   whose `fit_end_for_inference` equals the window the run resolved (CLI flag or
-  model meta), and whose `model_pkl_sha256` equals the SHA-256 of the pickle
-  that produced the scores
+  model meta), and whose mode-exclusive identity holds: single-model mode
+  carries `model_pkl_sha256` equal to the SHA-256 of the pickle that produced
+  the scores; ensemble mode carries `meta.ensemble.manifest_sha256` and no
+  `model_pkl_sha256`
 
 #### Scenario: a bundle without an integrity stamp does not fake an identity
 - **WHEN** the provider bundle carries no `_fetch_integrity` identity
