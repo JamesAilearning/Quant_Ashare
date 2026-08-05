@@ -156,6 +156,25 @@ def check_run_identity(artifacts: list[dict[str, Any]],
         raise PVFwerError(
             f"completion stamp lists {stamped} but the artifact set "
             f"is {got} — partial or contaminated batch, refusing.")
+    # The seal binds the BASELINE too (codex #399 r13): the evaluator
+    # writes baseline_preds_sha256 into every artifact and the stamp,
+    # and the orthogonality rho — the one incremental gate — is only
+    # meaningful against that exact baseline. An artifact missing the
+    # field or carrying a different hash is mixed/hand-edited
+    # provenance; refuse the contaminated family.
+    seal_baseline = completion.get("baseline_preds_sha256")
+    if not isinstance(seal_baseline, str) or not seal_baseline:
+        raise PVFwerError(
+            "completion stamp lacks baseline_preds_sha256 — the seal "
+            "must bind the baseline the batch was evaluated against; "
+            "refusing.")
+    foreign = sorted(str(a.get("candidate_id")) for a in artifacts
+                     if a.get("baseline_preds_sha256") != seal_baseline)
+    if foreign:
+        raise PVFwerError(
+            f"artifacts {foreign} carry a baseline_preds_sha256 other "
+            f"than the completion stamp's — mixed baseline "
+            "provenance behind the incremental gate; refusing.")
 
 
 def check_family_manifest(artifacts: list[dict[str, Any]],

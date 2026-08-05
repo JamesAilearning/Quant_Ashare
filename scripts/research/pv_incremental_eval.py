@@ -117,13 +117,19 @@ def check_candidate_id(cid: object) -> str:
     return cid
 
 
-def preflight_candidates(candidates: list[dict[str, Any]]) -> None:
+def preflight_candidates(candidates: list[dict[str, Any]],
+                         fields: list[str]) -> list[Any]:
     """Validate the whole registered manifest BEFORE the first
-    artifact write (codex #399 r12): a bad id found mid-loop leaves
-    earlier `<id>.json` files on disk with no completion stamp — a
-    dirty batch a retry cannot reuse (exclusive create) and the
-    adjudicator cannot accept. All ids safe + unique, or nothing is
-    written."""
+    artifact write (codex #399 r12+r13): a bad id OR bad expression
+    found mid-loop leaves earlier `<id>.json` files on disk with no
+    completion stamp — a dirty batch a retry cannot reuse (exclusive
+    create) and the adjudicator cannot accept. Ids safe + unique,
+    every expression on the PV whitelist, parsing under the frozen
+    grammar and rooted CSF/PURE — or nothing is written. Returns the
+    parsed expressions, aligned with `candidates`."""
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import ExprType, GrammarError
+
     seen: set[str] = set()
     for cand in candidates:
         cid = check_candidate_id(cand.get("candidate_id"))
@@ -133,6 +139,30 @@ def preflight_candidates(candidates: list[dict[str, Any]]) -> None:
                 "registered manifest — refusing before any artifact "
                 "is written.")
         seen.add(cid)
+    parsed: list[Any] = []
+    for cand in candidates:
+        # The factor-mining root contract (codex #399 r6): a
+        # candidate must parse under the frozen grammar (taint rules
+        # refuse at parse time) AND its root must be a PURE
+        # cross-sectional factor — a parser-valid raw/price-level
+        # root (e.g. `$close`) would bypass the adjustment-purity
+        # guarantees the grammar enforces.
+        check_pv_terminals(cand["expression"], fields)
+        try:
+            expr = parse_expression(cand["expression"])
+        except (GrammarError, ValueError, KeyError) as exc:
+            raise PVEvalError(
+                f"candidate {cand['candidate_id']} does not parse "
+                f"under the frozen grammar: {exc}") from exc
+        root_type = expr.output_type
+        if root_type != ExprType("CSF", "PURE"):
+            raise PVEvalError(
+                f"candidate {cand['candidate_id']} has root type "
+                f"{root_type} — the registered contract requires "
+                "ExprType('CSF', 'PURE'); fix the registration, "
+                "refusing.")
+        parsed.append(expr)
+    return parsed
 
 
 def check_baseline_provenance(plan: dict[str, Any], baseline_path: Path,
@@ -324,7 +354,6 @@ def main(argv: list[str] | None = None) -> int:
 
         from src.core.pit_wiring import build_pit_provider
         from src.factor_mining.evaluator import evaluate_expression
-        from src.factor_mining.expression import parse_expression
         from src.factor_mining.pit_adapter import FactorMiningDataView
 
         provider = build_pit_provider(
@@ -355,37 +384,16 @@ def main(argv: list[str] | None = None) -> int:
 
         run_id = uuid.uuid4().hex
         written: list[str] = []
-        from src.factor_mining.grammar import ExprType, GrammarError
 
         # Preflight the WHOLE manifest before the first write (codex
-        # #399 r12): an unsafe/duplicate id discovered mid-loop would
-        # leave earlier artifacts on disk with no completion stamp —
-        # a dirty, unadjudicable batch directory for exactly the
-        # bad-manifest case the slug check exists to refuse.
-        preflight_candidates(candidates)
+        # #399 r12+r13): an unsafe/duplicate id OR an invalid
+        # expression discovered mid-loop would leave earlier
+        # artifacts on disk with no completion stamp — a dirty,
+        # unadjudicable batch directory for exactly the bad-manifest
+        # case these checks exist to refuse.
+        parsed = preflight_candidates(candidates, list(plan["fields"]))
 
-        for cand in candidates:
-            # The factor-mining root contract (codex #399 r6): a
-            # candidate must parse under the frozen grammar (taint
-            # rules refuse at parse time) AND its root must be a
-            # PURE cross-sectional factor — a parser-valid raw/
-            # price-level root (e.g. `$close`) would bypass the
-            # adjustment-purity guarantees the grammar enforces.
-            check_pv_terminals(cand["expression"],
-                               list(plan["fields"]))
-            try:
-                expr = parse_expression(cand["expression"])
-            except (GrammarError, ValueError, KeyError) as exc:
-                raise PVEvalError(
-                    f"candidate {cand['candidate_id']} does not parse "
-                    f"under the frozen grammar: {exc}") from exc
-            root_type = expr.output_type
-            if root_type != ExprType("CSF", "PURE"):
-                raise PVEvalError(
-                    f"candidate {cand['candidate_id']} has root type "
-                    f"{root_type} — the registered contract requires "
-                    "ExprType('CSF', 'PURE'); fix the registration, "
-                    "refusing.")
+        for cand, expr in zip(candidates, parsed, strict=True):
             factor = evaluate_expression(expr, panel)
             if not isinstance(factor, pd.DataFrame):
                 raise PVEvalError(

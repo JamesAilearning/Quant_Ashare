@@ -163,20 +163,39 @@ class CandidateIdTests(unittest.TestCase):
         for ok in ("c1", "pv_batch1-c07", "X"):
             ev.check_candidate_id(ok)
 
+    _CSF = "cs_rank(ts_pctchange($close, 20))"
+
     def test_preflight_refuses_before_any_write(self) -> None:
-        # codex #399 r12: a bad id AFTER a valid one must refuse the
-        # whole manifest up front — mid-loop discovery would leave a
-        # dirty, unadjudicable batch (artifacts without a stamp).
+        # codex #399 r12+r13: a bad id OR bad expression AFTER a
+        # valid candidate must refuse the whole manifest up front —
+        # mid-loop discovery would leave a dirty, unadjudicable
+        # batch (artifacts without a stamp).
+        fields = list(_plan()["fields"])
         with self.assertRaises(ev.PVEvalError):
             ev.preflight_candidates(
-                [{"candidate_id": "ok1"},
-                 {"candidate_id": "../escape"}])
+                [{"candidate_id": "ok1", "expression": self._CSF},
+                 {"candidate_id": "../escape",
+                  "expression": self._CSF}], fields)
         with self.assertRaises(ev.PVEvalError) as ctx:
             ev.preflight_candidates(
-                [{"candidate_id": "dup"}, {"candidate_id": "dup"}])
+                [{"candidate_id": "dup", "expression": self._CSF},
+                 {"candidate_id": "dup", "expression": self._CSF}],
+                fields)
         self.assertIn("more than once", str(ctx.exception))
-        ev.preflight_candidates(
-            [{"candidate_id": "a"}, {"candidate_id": "b"}])
+        # r13: expression validation is preflight too — foreign
+        # terminal / non-CSF root in the SECOND candidate refuses.
+        for label, bad_expr in (
+                ("foreign terminal", "cs_rank(ts_pctchange($pe, 20))"),
+                ("non-CSF root", "$close")):
+            with self.assertRaises(ev.PVEvalError, msg=label):
+                ev.preflight_candidates(
+                    [{"candidate_id": "ok1", "expression": self._CSF},
+                     {"candidate_id": "bad2",
+                      "expression": bad_expr}], fields)
+        parsed = ev.preflight_candidates(
+            [{"candidate_id": "a", "expression": self._CSF},
+             {"candidate_id": "b", "expression": self._CSF}], fields)
+        self.assertEqual(2, len(parsed))
 
 
 class BaselineProvenanceTests(unittest.TestCase):
@@ -380,12 +399,17 @@ class FwerTests(unittest.TestCase):
             self.assertIn("domain", str(ctx.exception))
 
     def test_run_identity_binding(self) -> None:
-        # codex #399 r5: the family binds to ONE completed run.
+        # codex #399 r5: the family binds to ONE completed run —
+        # and to ONE baseline (codex #399 r13): the seal carries
+        # baseline_preds_sha256 and every artifact must match it.
         a = self._artifact("a", np.zeros(300) + 0.01)
         b = self._artifact("b", np.zeros(300) + 0.01)
         a["run_id"] = b["run_id"] = "r1"
+        a["baseline_preds_sha256"] = "basesha-1"
+        b["baseline_preds_sha256"] = "basesha-1"
         good = {"protocol_id": "pv_incremental_v1", "run_id": "r1",
-                "candidate_ids": ["a", "b"]}
+                "candidate_ids": ["a", "b"],
+                "baseline_preds_sha256": "basesha-1"}
         fw.check_run_identity([a, b], good)          # sealed: OK
         for label, arts, comp in (
                 ("mixed run", [a, dict(b, run_id="r0")], good),
@@ -394,8 +418,12 @@ class FwerTests(unittest.TestCase):
                 ("foreign protocol", [a, b],
                  dict(good, protocol_id="other")),
                 ("no run_id", [a, b],
-                 {"protocol_id": "pv_incremental_v1",
-                  "candidate_ids": ["a", "b"]})):
+                 {k: v for k, v in good.items() if k != "run_id"}),
+                ("no baseline seal", [a, b],
+                 {k: v for k, v in good.items()
+                  if k != "baseline_preds_sha256"}),
+                ("mixed baseline",
+                 [a, dict(b, baseline_preds_sha256="other")], good)):
             with self.assertRaises(fw.PVFwerError, msg=label):
                 fw.check_run_identity(arts, comp)
 
