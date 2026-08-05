@@ -409,6 +409,64 @@ class BaselineExporterTests(unittest.TestCase):
                 ["--run-dir", str(run_dir),
                  "--out-dir", str(Path(d) / "out")]))
 
+    def test_non_contiguous_declared_indexes_refuse(self) -> None:
+        # codex #401 r3: uniqueness is not enough — an aggregate
+        # declaring [0, 9] with num_folds=2 would let a stale fold
+        # stand in for a missing fold 1 with every count check passing.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            self._fold(run_dir, 9, "2023-04-03", "2023-06-30")
+            self._agg(run_dir, n_folds=2, fold_indices=[0, 9])
+            self.assertEqual(2, bx.main(
+                ["--run-dir", str(run_dir),
+                 "--out-dir", str(Path(d) / "out")]))
+
+    def test_report_path_outside_run_dir_refuses(self) -> None:
+        # codex #401 r3: a stored absolute path from the original run
+        # must never let the exporter certify one directory while
+        # reading fold evidence from another.
+        with tempfile.TemporaryDirectory() as d:
+            foreign = Path(d) / "foreign"
+            foreign.mkdir()
+            self._fold(foreign, 0, "2023-01-02", "2023-03-31")
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            (run_dir / "walk_forward_report.json").write_text(
+                json.dumps({
+                    "git_commit": "a" * 40, "git_dirty": False,
+                    "num_folds": 1,
+                    "folds": [{"fold_index": 0,
+                               "report_path": str(
+                                   foreign / "fold_00_report.json")}],
+                }), encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.resolve_fold_reports(
+                    run_dir,
+                    json.loads((run_dir / "walk_forward_report.json")
+                               .read_text(encoding="utf-8")))
+            self.assertIn("OUTSIDE", str(ctx.exception))
+
+    def test_moved_run_dir_still_resolves(self) -> None:
+        # The legitimate case the basename fallback exists for: the
+        # run dir was moved wholesale, so the recorded absolute path
+        # no longer exists but the local file does.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "moved"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            agg = {
+                "git_commit": "a" * 40, "git_dirty": False,
+                "num_folds": 1,
+                "folds": [{"fold_index": 0,
+                           "report_path":
+                               "D:/old/place/fold_00_report.json"}],
+            }
+            resolved = bx.resolve_fold_reports(run_dir, agg)
+            self.assertEqual(
+                [(0, run_dir / "fold_00_report.json")], resolved)
+
     def test_mismatched_fold_index_payload_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             run_dir = Path(d) / "run"
