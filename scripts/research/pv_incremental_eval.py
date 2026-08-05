@@ -145,8 +145,22 @@ def build_artifact(plan: dict[str, Any], candidate_id: str,
                    orth: pd.Series,
                    baseline_sha256: str) -> dict[str, Any]:
     stats = summarize(ic)
+    # The orthogonality check is the ONLY guard against promoting
+    # standalone/non-incremental signal (codex #399 r1): a baseline
+    # that covers only a sliver of the eligible IC days must not
+    # adjudicate the band from that sliver — insufficient coverage is
+    # a data-prep error and the run fails loud.
+    orth_cfg = plan["fitness"]["orthogonality"]
+    min_cov = float(orth_cfg["min_coverage_of_ic_days"])
+    if ic.shape[0] and orth.shape[0] < min_cov * ic.shape[0]:
+        raise PVEvalError(
+            f"{candidate_id}: baseline preds cover only "
+            f"{orth.shape[0]}/{ic.shape[0]} eligible IC days "
+            f"(< {min_cov:.0%}) — the orthogonality gate cannot be "
+            "adjudicated from partial overlap; regenerate the "
+            "baseline predictions over the full OOS window.")
     orth_mean_abs = float(orth.abs().mean()) if orth.shape[0] else float("nan")
-    hard_band = plan["fitness"]["orthogonality"]["oos_hard_band_mean_abs_rho"]
+    hard_band = orth_cfg["oos_hard_band_mean_abs_rho"]
     return {
         "protocol_id": PROTOCOL_ID,
         "candidate_id": candidate_id,
@@ -210,12 +224,15 @@ def main(argv: list[str] | None = None) -> int:
             provider_uri=args.provider,
             delisted_registry_path=args.delisted_registry,
             data_adjust_mode="pre_adjusted", region="cn")
+        # The frozen plan lists unsigned field names; the expression
+        # grammar's terminals (and the panel keys the view returns)
+        # are qlib feature names — "$close" etc. (codex #399 r1).
         view = FactorMiningDataView(
             provider, start=args.window_start, end=args.window_end,
             universe_name=plan["universe"]["instruments"],
-            fields=list(plan["fields"]))
+            fields=[f"${f}" for f in plan["fields"]])
         panel = view.load_panel()
-        close = panel["close"]
+        close = panel["$close"]
         fwd = forward_returns(
             close, lag=int(plan["metric"]["signal_to_execution_lag"]))
         min_names = int(plan["metric"]["min_names_per_day"])

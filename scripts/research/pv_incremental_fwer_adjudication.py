@@ -130,12 +130,22 @@ def adjudicate(plan: dict[str, Any],
     floor = float(fw["hard_floor_t"])
     threshold = max(floor, bar) if np.isfinite(bar) else floor
 
-    survivors = [
+    cleared_t = [
         r["candidate_id"] for r in rows
         if r["family_member"] and np.isfinite(r["t_stat"])
-        and r["t_stat"] >= threshold and r["orth_within_hard_band"]]
+        and r["t_stat"] >= threshold]
+    survivors = [
+        r["candidate_id"] for r in rows
+        if r["candidate_id"] in cleared_t
+        and r["orth_within_hard_band"]]
     if survivors:
         verdict = "survivors"
+    elif cleared_t:
+        # Signal exists but is NOT incremental (codex #399 r1): this
+        # is neither a promotion nor a clean closure of the direction
+        # — the frozen plan routes it to an operator decision, and it
+        # must never be laundered into clean_negative's reject_iff.
+        verdict = "significant_non_incremental"
     elif family:
         verdict = "clean_negative"
     else:
@@ -148,6 +158,8 @@ def adjudicate(plan: dict[str, Any],
                       "bootstrap_bar": bar if np.isfinite(bar) else None,
                       "binding": threshold},
         "survivors": survivors,
+        "significant_non_incremental": [c for c in cleared_t
+                                        if c not in survivors],
         "family_size": len(family),
         "sparse_excluded": [r["candidate_id"] for r in sparse],
         "trials": rows,

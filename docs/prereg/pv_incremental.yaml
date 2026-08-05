@@ -74,6 +74,9 @@ fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3�
     fitness_band_abs_rho: 0.30   # 超带部分线性罚
     fitness_penalty_weight: 2.0
     oos_hard_band_mean_abs_rho: 0.50   # OOS 通过的必要条件（增量判据）
+    min_coverage_of_ic_days: 0.95      # 基线须覆盖 ≥95% 的合格 IC 日,
+                                       # 否则评估 run fail-loud(部分重叠
+                                       # 不得静默判定增量性)
   baseline:                      # 基线预测生成 run 的绑定义务
     model: alpha158_lgb_csi800_walkforward
     provenance_required: true    # run_config_sha256/source_git 全绿入 ledger
@@ -89,6 +92,10 @@ fwer:                            # PV-DP-5
   tri_state:
     clean_negative: reject_iff   # 全族观测 t < 双门槛且无幸存者
     survivors: promote_gate      # 幸存者进 PV-DP-7 晋升门
+    significant_non_incremental: operator_decision
+                                 # 有族员过双门槛但败于正交硬带——
+                                 # 信号存在但非增量:不晋升也不构成
+                                 # 方向关门,升级操作人裁决
     sparse_only: no_verdict      # 仅稀疏 trial 有信号不构成裁决
 
 slices:                          # PV-DP-6：注册时冻结几何+probe 前置

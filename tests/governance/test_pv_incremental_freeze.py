@@ -62,6 +62,16 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertEqual(0.95, f["quantile"])
         self.assertEqual(120, f["per_trial_min_n_days"])
         self.assertEqual("reject_iff", f["tri_state"]["clean_negative"])
+        # codex #399 r1: significant-but-non-incremental is a DISTINCT
+        # state routed to the operator — never laundered into
+        # clean_negative's reject_iff.
+        self.assertEqual("operator_decision",
+                         f["tri_state"]["significant_non_incremental"])
+
+    def test_orthogonality_coverage_pin(self) -> None:
+        self.assertEqual(
+            0.95,
+            _PLAN["fitness"]["orthogonality"]["min_coverage_of_ic_days"])
 
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])

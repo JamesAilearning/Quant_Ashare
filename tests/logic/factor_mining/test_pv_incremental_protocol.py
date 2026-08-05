@@ -106,6 +106,23 @@ class MetricSemanticsTests(unittest.TestCase):
         orth = ev.orthogonality_series(base, base.copy(), min_names=4)
         self.assertTrue(np.allclose(orth.values, 1.0))
 
+    def test_partial_baseline_coverage_fails_loud(self) -> None:
+        # codex #399 r1: the orthogonality gate is the ONLY guard
+        # against non-incremental promotion — a sliver of baseline
+        # overlap must not adjudicate the band.
+        plan = _plan()
+        dates = pd.date_range("2023-01-02", periods=10, freq="B")
+        ic = pd.Series(0.01, index=dates)
+        orth = pd.Series(0.1, index=dates[:3])   # 30% coverage
+        with self.assertRaises(ev.PVEvalError) as ctx:
+            ev.build_artifact(plan, "c1", "$close", ic, 0, orth, "ab")
+        self.assertIn("partial overlap", str(ctx.exception))
+        # Full coverage builds fine.
+        art = ev.build_artifact(
+            plan, "c1", "$close", ic, 0,
+            pd.Series(0.1, index=dates), "ab")
+        self.assertIs(True, art["orth_within_hard_band"])
+
 
 class FwerTests(unittest.TestCase):
     @staticmethod
@@ -152,8 +169,13 @@ class FwerTests(unittest.TestCase):
         arts = [self._artifact("hi_orth", strong, within_band=False),
                 self._artifact("noise", rng.normal(0, 0.05, 480))]
         out = fw.adjudicate(self._plan(), arts, seed=7)
-        # Standalone significance is NOT a pass (incremental criterion).
+        # Standalone significance is NOT a pass (incremental criterion)
+        # — and it is NOT clean_negative either (codex #399 r1): the
+        # significant-but-non-incremental state routes to the operator
+        # instead of laundering into reject_iff.
         self.assertNotIn("hi_orth", out["survivors"])
+        self.assertEqual("significant_non_incremental", out["verdict"])
+        self.assertIn("hi_orth", out["significant_non_incremental"])
         arts2 = [self._artifact("ok", strong, within_band=True),
                  self._artifact("noise", rng.normal(0, 0.05, 480))]
         out2 = fw.adjudicate(self._plan(), arts2, seed=7)
