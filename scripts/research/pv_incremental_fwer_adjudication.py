@@ -138,11 +138,15 @@ def check_run_identity(artifacts: list[dict[str, Any]],
 
 
 def check_family_manifest(artifacts: list[dict[str, Any]],
-                          manifest_ids: list[str]) -> None:
+                          manifest: list[dict[str, Any]]) -> None:
     """The family is defined by the REGISTERED batch manifest, never
     by whatever files happen to sit in a directory (codex #399 r3):
     a partial evaluator batch or leftovers from a previous batch
-    would silently shrink or contaminate the max-statistic bar."""
+    would silently shrink or contaminate the max-statistic bar. The
+    binding covers ids AND expressions (codex #399 r6): a corrected
+    re-registration reusing ids must not inherit the old batch's
+    artifacts — the verdict would attach to the wrong candidates."""
+    manifest_ids = [str(c.get("candidate_id")) for c in manifest]
     if len(manifest_ids) != len(set(manifest_ids)):
         dupes = sorted({c for c in manifest_ids
                         if manifest_ids.count(c) > 1})
@@ -163,6 +167,18 @@ def check_family_manifest(artifacts: list[dict[str, Any]],
             f"extras: {extra or 'none'}. Re-run the evaluator over "
             "the FULL registered batch (or clean foreign leftovers) "
             "before adjudication.")
+    expr_by_id = {str(c["candidate_id"]): str(c.get("expression"))
+                  for c in manifest}
+    drift = sorted(
+        str(a.get("candidate_id")) for a in artifacts
+        if str(a.get("expression")) != expr_by_id[
+            str(a.get("candidate_id"))])
+    if drift:
+        raise PVFwerError(
+            f"artifacts {drift} carry expressions that differ from "
+            "the registered manifest's — a re-registration reused "
+            "these ids; re-run the evaluator over the CURRENT "
+            "manifest, refusing.")
 
 
 def adjudicate(plan: dict[str, Any],
@@ -326,8 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         check_run_identity(artifacts, completion)
         manifest = json.loads(
             Path(args.candidates).read_text(encoding="utf-8"))
-        check_family_manifest(
-            artifacts, [c["candidate_id"] for c in manifest])
+        check_family_manifest(artifacts, manifest)
         result = adjudicate(plan, artifacts, seed=args.seed)
         result["plan_sha256"] = plan_sha
         result["input_sha256"] = shas

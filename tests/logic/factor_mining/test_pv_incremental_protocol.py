@@ -160,6 +160,7 @@ class FwerTests(unittest.TestCase):
         dates = pd.date_range("2023-01-02", periods=len(series),
                               freq="B")
         return {"protocol_id": protocol, "candidate_id": cid,
+                "expression": f"cs_rank($close_{cid})",
                 "daily_ic": [{"date": str(d)[:10], "ic": float(v)}
                              for d, v in zip(dates, series,
                                              strict=True)],
@@ -267,19 +268,29 @@ class FwerTests(unittest.TestCase):
             fw.adjudicate(self._plan(), [art], seed=7)
         self.assertIn("inconsistent", str(ctx.exception))
 
+    @staticmethod
+    def _manifest(*arts: dict) -> list[dict]:
+        return [{"candidate_id": a["candidate_id"],
+                 "expression": a["expression"]} for a in arts]
+
     def test_family_manifest_binding(self) -> None:
-        # codex #399 r3: the registered batch manifest defines the
-        # family — missing/extra/duplicate artifact sets refuse.
+        # codex #399 r3/r6: the registered batch manifest defines the
+        # family — ids AND expressions; missing/extra/duplicate/
+        # expression-drift all refuse.
         rng = np.random.default_rng(8)
         a = self._artifact("a", rng.normal(0, 0.05, 300))
         b = self._artifact("b", rng.normal(0, 0.05, 300))
-        fw.check_family_manifest([a, b], ["a", "b"])   # exact: OK
-        for label, arts, ids in (
-                ("missing", [a], ["a", "b"]),
-                ("extra", [a, b], ["a"]),
-                ("duplicate", [a, a], ["a"])):
+        fw.check_family_manifest([a, b], self._manifest(a, b))  # OK
+        reregistered = [{"candidate_id": "a",
+                         "expression": "cs_rank($volume)"},
+                        self._manifest(b)[0]]
+        for label, arts, manifest in (
+                ("missing", [a], self._manifest(a, b)),
+                ("extra", [a, b], self._manifest(a)),
+                ("duplicate", [a, a], self._manifest(a)),
+                ("expression drift", [a, b], reregistered)):
             with self.assertRaises(fw.PVFwerError, msg=label):
-                fw.check_family_manifest(arts, ids)
+                fw.check_family_manifest(arts, manifest)
 
     def test_out_of_domain_rho_refused(self) -> None:
         # codex #399 r5: mean ABSOLUTE rho lives in [0,1] — negative/
@@ -330,8 +341,26 @@ class FwerTests(unittest.TestCase):
         # artifact satisfy two registered trials via set collapse.
         a = self._artifact("a", np.zeros(300) + 0.01)
         with self.assertRaises(fw.PVFwerError) as ctx:
-            fw.check_family_manifest([a], ["a", "a"])
+            fw.check_family_manifest(
+                [a], self._manifest(a) + self._manifest(a))
         self.assertIn("repeats", str(ctx.exception))
+
+    def test_candidate_root_type_contract(self) -> None:
+        # codex #399 r6: the refusal predicates — a raw price-level
+        # root is NOT ExprType('CSF','PURE'); tainted input into
+        # cs_* refuses at PARSE time; a properly neutralized
+        # cross-sectional root passes.
+        from src.factor_mining.expression import parse_expression
+        from src.factor_mining.grammar import ExprType, GrammarError
+
+        csf = ExprType("CSF", "PURE")
+        self.assertNotEqual(csf, parse_expression("$close").output_type)
+        with self.assertRaises(GrammarError):
+            parse_expression("cs_rank($close)")   # taint gate
+        self.assertEqual(
+            csf,
+            parse_expression(
+                "cs_rank(ts_pctchange($close, 20))").output_type)
 
     def test_non_finite_ic_artifact_refused(self) -> None:
         art = self._artifact("bad", np.zeros(300))

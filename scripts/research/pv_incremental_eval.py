@@ -263,8 +263,28 @@ def main(argv: list[str] | None = None) -> int:
 
         run_id = uuid.uuid4().hex
         written: list[str] = []
+        from src.factor_mining.grammar import ExprType, GrammarError
+
         for cand in candidates:
-            expr = parse_expression(cand["expression"])
+            # The factor-mining root contract (codex #399 r6): a
+            # candidate must parse under the frozen grammar (taint
+            # rules refuse at parse time) AND its root must be a
+            # PURE cross-sectional factor — a parser-valid raw/
+            # price-level root (e.g. `$close`) would bypass the
+            # adjustment-purity guarantees the grammar enforces.
+            try:
+                expr = parse_expression(cand["expression"])
+            except (GrammarError, ValueError, KeyError) as exc:
+                raise PVEvalError(
+                    f"candidate {cand['candidate_id']} does not parse "
+                    f"under the frozen grammar: {exc}") from exc
+            root_type = expr.output_type
+            if root_type != ExprType("CSF", "PURE"):
+                raise PVEvalError(
+                    f"candidate {cand['candidate_id']} has root type "
+                    f"{root_type} — the registered contract requires "
+                    "ExprType('CSF', 'PURE'); fix the registration, "
+                    "refusing.")
             factor = evaluate_expression(expr, panel)
             if not isinstance(factor, pd.DataFrame):
                 raise PVEvalError(
