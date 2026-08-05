@@ -560,7 +560,7 @@ def _model_meta_paths(model_path: str) -> list[Path]:
     return [p.with_suffix(".meta.json"), p.with_name(p.name + ".meta.json")]
 
 
-def _resolve_model_universe(model_path: str) -> str:
+def _resolve_model_universe(model_path: str) -> tuple[str, str | None]:
     """Resolve the model's TRAINING universe from its meta sidecars.
 
     Fail-closed (universe-consistency guard): the requested
@@ -576,6 +576,13 @@ def _resolve_model_universe(model_path: str) -> str:
     * NO sidecar carries the field (or none exists) -> raise with the
       backfill remedy. Silent defaulting is exactly the hole this
       guard closes.
+
+    Returns ``(universe, sidecar_pkl_sha256_or_None)`` — the winning
+    sidecar's ``pkl_sha256`` (trainer sidecars carry it; hand-curated
+    promotion metas may not) so the caller can bind the universe
+    claim to the pickle actually loaded (codex #400 r1: a swapped
+    pickle with a left-behind sidecar must not lend its universe to a
+    different model).
     """
     existing = [p for p in _model_meta_paths(model_path) if p.is_file()]
     for meta_path in existing:
@@ -603,7 +610,9 @@ def _resolve_model_universe(model_path: str) -> str:
                 f"string (got {universe!r}). Fix the meta — refusing "
                 "to guess the training universe."
             )
-        return universe
+        sidecar_sha = meta.get("pkl_sha256")
+        return universe, (sidecar_sha if isinstance(sidecar_sha, str)
+                          and sidecar_sha else None)
     raise DailyRecommendationError(
         f"No meta sidecar of model {model_path} carries a "
         f"`universe` field (checked: "
@@ -617,14 +626,17 @@ def _resolve_model_universe(model_path: str) -> str:
     )
 
 
-def _assert_model_universe_match(model_path: str, instruments: str) -> str:
-    """Refuse a model↔universe mismatch; return the model universe.
+def _assert_model_universe_match(
+    model_path: str, instruments: str,
+) -> tuple[str, str | None]:
+    """Refuse a model↔universe mismatch; return
+    ``(universe, sidecar_pkl_sha256_or_None)``.
 
     Domain error carries the three things an operator needs: the two
     values, why the combination is refused (zero certification
     evidence + cross-sectional distribution shift), and the remedy.
     """
-    model_universe = _resolve_model_universe(model_path)
+    model_universe, sidecar_sha = _resolve_model_universe(model_path)
     if model_universe != instruments:
         raise DailyRecommendationError(
             f"universe mismatch: model {model_path} was trained on "
@@ -635,7 +647,33 @@ def _assert_model_universe_match(model_path: str, instruments: str) -> str:
             "refusing. Fix --instruments to match the model, or load "
             "the model actually certified for this universe."
         )
-    return model_universe
+    return model_universe, sidecar_sha
+
+
+def _assert_universe_sidecar_binding(
+    model_universe: str | None,
+    universe_sidecar_sha: str | None,
+    loaded_pkl_sha256: str,
+) -> None:
+    """Bind the universe claim to the pickle ACTUALLY loaded (codex
+    #400 r1): a swapped pickle with a left-behind trainer sidecar
+    must not lend its universe to a different model. The winning
+    sidecar's ``pkl_sha256`` (when it carries one — trainer sidecars
+    do; hand-curated promotion metas may not) must equal the digest
+    of the same byte buffer that was unpickled — no separate read,
+    no TOCTOU window."""
+    if (universe_sidecar_sha is not None
+            and universe_sidecar_sha != loaded_pkl_sha256):
+        raise DailyRecommendationError(
+            f"model sidecar is STALE: the sidecar that claims "
+            f"universe `{model_universe}` records "
+            f"pkl_sha256={universe_sidecar_sha[:12]}… but the loaded "
+            f"pickle digests to {loaded_pkl_sha256[:12]}… — the "
+            "pickle was replaced without its sidecar. "
+            "Regenerate/update the sidecar for the current model; "
+            "refusing to trust a universe claim about a different "
+            "pickle."
+        )
 
 
 def _load_model(model_path: Path) -> tuple[Any, str]:
@@ -799,8 +837,9 @@ def recommend(
     # is already guarded (manifest binding + member-index refusal),
     # so the guard applies exactly where the hole was.
     model_universe: str | None = None
+    universe_sidecar_sha: str | None = None
     if ensemble_members is None:
-        model_universe = _assert_model_universe_match(
+        model_universe, universe_sidecar_sha = _assert_model_universe_match(
             config.model_path, config.instruments)
     init_qlib_canonical(QlibRuntimeConfig(
         provider_uri=config.provider_uri,
@@ -889,6 +928,8 @@ def recommend(
         )
     else:
         model, model_pkl_sha256 = _load_model(Path(config.model_path))
+        _assert_universe_sidecar_binding(
+            model_universe, universe_sidecar_sha, model_pkl_sha256)
         run_meta = _assemble_run_meta(
             config,
             model_pkl_sha256=model_pkl_sha256,

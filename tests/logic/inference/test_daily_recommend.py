@@ -261,7 +261,32 @@ class ModelUniverseGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             model = self._write(d, "m.meta.json", {"universe": "csi300"})
             self.assertEqual(
-                "csi300", _assert_model_universe_match(model, "csi300"))
+                ("csi300", None),
+                _assert_model_universe_match(model, "csi300"))
+            # Trainer sidecar carrying pkl_sha256: the hash rides
+            # along for load-time binding.
+            model = self._write(
+                d, "m.meta.json",
+                {"universe": "csi300", "pkl_sha256": "ab" * 32})
+            self.assertEqual(
+                ("csi300", "ab" * 32),
+                _assert_model_universe_match(model, "csi300"))
+
+    def test_stale_sidecar_hash_refuses_at_load_binding(self) -> None:
+        # codex #400 r1: a swapped pickle with a left-behind sidecar
+        # must not lend its universe to a different model — the
+        # winning sidecar's pkl_sha256 must equal the loaded digest.
+        from src.inference.daily_recommend import (
+            _assert_universe_sidecar_binding,
+        )
+        with self.assertRaises(DailyRecommendationError) as ctx:
+            _assert_universe_sidecar_binding(
+                "csi300", "aa" * 32, "bb" * 32)
+        self.assertIn("STALE", str(ctx.exception))
+        # Matching hash passes; promotion meta without a hash has no
+        # binding to check (documented trust model).
+        _assert_universe_sidecar_binding("csi300", "aa" * 32, "aa" * 32)
+        _assert_universe_sidecar_binding("csi300", None, "bb" * 32)
 
     def test_missing_universe_field_refuses_with_backfill_remedy(self) -> None:
         # A sidecar EXISTS but carries no universe — refuse with the
@@ -288,7 +313,8 @@ class ModelUniverseGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, "m.pkl.meta.json", {"universe": "csi800"})
             model = self._write(d, "m.meta.json", {"universe": "csi300"})
-            self.assertEqual("csi300", _resolve_model_universe(model))
+            self.assertEqual(("csi300", None),
+                             _resolve_model_universe(model))
 
     def test_non_string_universe_refuses(self) -> None:
         from src.inference.daily_recommend import _resolve_model_universe
