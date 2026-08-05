@@ -1,0 +1,30 @@
+# pv_incremental_v1 基线预测生成 run（阶段8 战役二 PV-DP-3）。
+#
+# 用途：为 GP 正交惩罚与 OOS 增量判据提供 Alpha158+LGB 生产同源基线
+# 预测。与 csi800_campaign_base.yaml 严格同形（同宇宙、同基准、同双
+# guard、同滑点），唯一差异 = overall_end 与 output_dir。
+#
+# **圣规防线**：`overall_end: "2024-12-31"`。父配置 config_walk.yaml
+# 缺省 2025-12-31，会训练进入并预测 2025 holdout 年——冻结协议
+# （docs/prereg/pv_incremental.yaml `fitness.baseline.overall_end`）
+# 钉死此尾。折按季对齐，IS/OOS 分界 2023-01-01 恰落折边界。
+#
+# ensemble_window 继承父配置的 3（冻结件 `fitness.baseline.
+# ensemble_window`）——折预测是生产同源 warm-ensemble，不是单模型
+# 输出：「对生产基线增量」须对着生产实际使用的信号测。
+#
+# Run discipline: 一次不间断调用（resume 混提交会让 report 的
+# git_commit 解析为 null，provenance 门直接拒）：
+#     python scripts/run_walk_forward.py config/presets/pv_incremental_baseline.yaml
+# 随后 python scripts/research/pv_incremental_baseline_export.py 导出
+# 宽表 + provenance sidecar，成对登记入 docs/prereg/pv_incremental_ledger.yaml。
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 5.0
+overall_end: "2024-12-31"
+output_dir: "output/walk_forward/pv_incremental_baseline"

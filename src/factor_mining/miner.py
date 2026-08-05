@@ -47,6 +47,14 @@ class DataConfig:
     start_date: str = "2018-01-01"
     end_date: str = "2025-12-31"
     forward_horizon: int = 1
+    # Campaign baseline predictions (wide parquet, date × instrument)
+    # for the orthogonality penalty. Plain pandas read — no qlib, no
+    # PIT, so the D5 gate is untouched. Loading REQUIRES the exporter's
+    # provenance sidecar (see ``load_baseline_predictions``): the
+    # penalty is the campaign's only incremental criterion, so an ad
+    # hoc parquet must never key it.
+    baseline_preds_path: str = ""
+    baseline_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -165,6 +173,84 @@ def _build_pit_panel(config: DataConfig):
     return panel, fwd
 
 
+def load_baseline_predictions(config: MinerConfig):
+    """Load the campaign baseline predictions, provenance-bound.
+
+    Returns ``None`` when no baseline path is configured (the legacy /
+    synthetic path — the orthogonality penalty stays inert).
+
+    The parquet MUST be accompanied by the exporter's sidecar
+    ``<parquet>.provenance.json`` binding THIS file: ``model`` equal to
+    the configured ``baseline_model``, ``file_sha256`` equal to the
+    bytes on disk, and non-empty ``run_config_sha256`` / ``source_git``
+    — the same contract the OOS evaluator enforces. The orthogonality
+    penalty is the campaign's ONLY incremental criterion, so a stale or
+    ad hoc parquet keying it would silently invalidate every fitness
+    score in the run. Fail loud instead.
+
+    Plain pandas + json + hashlib: no qlib, no ``src.pit`` (D5).
+    """
+    import hashlib
+
+    import pandas as pd
+
+    path_str = config.data.baseline_preds_path
+    if not path_str:
+        return None
+    path = Path(path_str)
+    if not path.is_file():
+        raise ValueError(
+            f"baseline_preds_path {path} does not exist — the campaign "
+            "orthogonality penalty has no baseline to measure against; "
+            "refusing."
+        )
+    if not config.data.baseline_model:
+        raise ValueError(
+            "baseline_preds_path is set but baseline_model is empty — "
+            "the run must declare WHICH baseline model it binds to so "
+            "the sidecar can be verified; refusing."
+        )
+    raw = path.read_bytes()
+    file_sha = hashlib.sha256(raw).hexdigest()
+    sidecar = path.with_name(path.name + ".provenance.json")
+    if not sidecar.is_file():
+        raise ValueError(
+            f"baseline provenance sidecar {sidecar.name} not found next "
+            f"to {path.name} — the incremental criterion must bind to a "
+            "ledgered baseline run; refusing."
+        )
+    prov = json.loads(sidecar.read_text(encoding="utf-8"))
+    if not isinstance(prov, dict):
+        raise ValueError(
+            f"baseline provenance sidecar {sidecar.name} is not a JSON "
+            "object; refusing."
+        )
+    if prov.get("model") != config.data.baseline_model:
+        raise ValueError(
+            f"baseline provenance declares model {prov.get('model')!r} "
+            f"but the run binds to {config.data.baseline_model!r}; "
+            "refusing."
+        )
+    if prov.get("file_sha256") != file_sha:
+        raise ValueError(
+            "baseline provenance file_sha256 does not match the parquet "
+            "on disk — stale/mismatched sidecar; refusing."
+        )
+    for key in ("run_config_sha256", "source_git"):
+        val = prov.get(key)
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(
+                f"baseline provenance is missing {key!r} — full run "
+                "provenance is required before the baseline may key the "
+                "incremental criterion; refusing."
+            )
+    frame = pd.read_parquet(path)
+    if frame.empty:
+        raise ValueError(f"baseline predictions {path} are empty; refusing.")
+    frame.index = pd.to_datetime(frame.index)
+    return frame.sort_index()
+
+
 def build_panel(config: MinerConfig):
     if config.data.mode == "synthetic":
         return _build_synthetic_panel(
@@ -244,8 +330,10 @@ def run_mining(config: MinerConfig) -> RunResult:
     """
     panel, fwd = build_panel(config)
     universe_mask = build_universe_mask(config)
+    baseline = load_baseline_predictions(config)
     engine = GPEngine(config.gp, config.fitness)
-    pool = engine.run(panel, fwd, universe_mask=universe_mask)
+    pool = engine.run(panel, fwd, universe_mask=universe_mask,
+                      baseline=baseline)
 
     full_pool_size = len(pool)
     if config.pool_top_k is not None and full_pool_size > config.pool_top_k:
@@ -274,6 +362,22 @@ def run_mining(config: MinerConfig) -> RunResult:
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }
+    if baseline is not None:
+        # Operator decision A: the baseline keeps the production
+        # walk-forward fold geometry, whose first out-of-fold date is
+        # later than the IS window start — so some expressions are
+        # scored with NO baseline overlap and carry no orthogonality
+        # penalty. That gap is DISCLOSED here (run-level counts + the
+        # baseline's own date span), never silently absorbed into the
+        # scores.
+        config_dump["baseline_orthogonality"] = {
+            "baseline_first_date": str(baseline.index.min())[:10],
+            "baseline_last_date": str(baseline.index.max())[:10],
+            "baseline_n_days": int(baseline.shape[0]),
+            "expressions_scored": engine._orthogonality_scored,
+            "expressions_without_baseline_overlap":
+                engine._orthogonality_uncovered,
+        }
     config_path.write_text(
         yaml.safe_dump(config_dump, sort_keys=False),
         encoding="utf-8",

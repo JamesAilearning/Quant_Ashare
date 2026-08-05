@@ -79,6 +79,39 @@ class PvIncrementalFreezePins(unittest.TestCase):
             0.95,
             _PLAN["fitness"]["orthogonality"]["min_coverage_of_ic_days"])
 
+    def test_implementation_pr_decisions_pinned(self) -> None:
+        # The three口径 the operator signed for the implementation PR
+        # (PV-DP-3 left them to it). Frozen here so a later edit is a
+        # deliberate protocol change, not a silent drift.
+        orth = _PLAN["fitness"]["orthogonality"]
+        base = _PLAN["fitness"]["baseline"]
+        # ① IS coverage: penalise only days the baseline covers — the
+        # baseline keeps the production fold geometry rather than
+        # manufacturing earlier folds.
+        self.assertEqual("penalize_covered_days_only",
+                         orth["is_coverage_policy"])
+        # ② production-equivalent warm ensemble, not single-model.
+        self.assertEqual(3, base["ensemble_window"])
+        # ③ GP breeding signal uses |rank-IC| (direction belongs to the
+        # expression; the one-sided FWER threshold culls negatives).
+        self.assertEqual("abs_rank_ic", _PLAN["fitness"]["ic_term"])
+        # Sacred-invariant defence: the baseline run's hard tail must
+        # stop before the blinded holdout year.
+        self.assertEqual("2024-12-31", base["overall_end"])
+        self.assertEqual(_PLAN["windows"]["oos_end"], base["overall_end"])
+
+    def test_baseline_preset_matches_frozen_tail(self) -> None:
+        # The preset that drives the baseline run must pin the frozen
+        # tail: the parent config_walk.yaml default (2025-12-31) would
+        # train into and predict the holdout year.
+        preset = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "presets"
+             / "pv_incremental_baseline.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(_PLAN["fitness"]["baseline"]["overall_end"],
+                         preset["overall_end"])
+        self.assertEqual(_PLAN["universe"]["instruments"],
+                         preset["instruments"])
+
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])
         self.assertIs(False, _PLAN["universe"]["ex_financials"])

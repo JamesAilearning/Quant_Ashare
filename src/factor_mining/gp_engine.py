@@ -177,6 +177,24 @@ class GPEngine:
         # incomparable cache instead of silently mixing coverage semantics
         # (Codex P1+P2 on PR #217). None until the first run / checkpoint load.
         self._coverage_key: str | None = None
+        # Optional EXTERNAL baseline predictions (date × ticker) for the
+        # campaign orthogonality penalty; set by ``run``. Its cache key
+        # ("no_baseline" / "baseline:<fingerprint>") follows the same
+        # invalidation discipline as the coverage key — cached scores
+        # produced against a different baseline (or none) are not
+        # comparable and must be discarded, not silently mixed.
+        self._baseline: pd.DataFrame | None = None
+        self._baseline_key: str | None = None
+        # Pre-stacked baseline (one stack for the whole run, not per
+        # expression — the novelty term's memory lesson).
+        self._baseline_stack: pd.Series | None = None
+        # Run-level orthogonality coverage: how many scored expressions
+        # had ZERO overlapping days with the baseline (operator decision
+        # A: the IS window starts before the baseline's first
+        # out-of-fold date, so early-window-only factors are legitimately
+        # unpenalised — reported, never silently absorbed).
+        self._orthogonality_uncovered: int = 0
+        self._orthogonality_scored: int = 0
 
     # ------------------------------------------------------------------
     # Population lifecycle
@@ -264,8 +282,10 @@ class GPEngine:
             return float("-inf"), None
         novelty = self._within_generation_novelty(result.factor_values)
         size = expression_size(expr)
+        baseline_rho = self._baseline_orthogonality(result.factor_values)
         score = compute_fitness(
             result, expr_size=size, novelty_penalty=novelty, config=self.fitness_config,
+            baseline_mean_abs_rho=baseline_rho,
         )
         self.fitness_cache[h] = score
         if score > float("-inf"):
@@ -286,6 +306,56 @@ class GPEngine:
                 method=FITNESS_EVALUATOR_METHOD,
             )
         return score, result
+
+    def _baseline_orthogonality(self, factor_values: pd.DataFrame) -> float:
+        """Mean |daily cross-sectional Spearman rho| vs the baseline.
+
+        The campaign's incremental criterion (pv_incremental_v1
+        PV-DP-3): correlation is measured PER DAY across names and
+        averaged in absolute value — the same daily-cross-sectional
+        semantics the OOS evaluator and the frozen plan use, not the
+        pooled Pearson the within-generation novelty term uses.
+
+        Returns NaN when the baseline is absent or shares NO day with
+        the factor: under operator decision A the baseline keeps the
+        production walk-forward fold geometry, whose first
+        out-of-fold date is later than the IS window start, so early
+        days legitimately have no baseline. ``orthogonality_penalty``
+        maps NaN to zero penalty and the run reports the uncovered
+        count — the gap is disclosed, never silently absorbed.
+        """
+        if (self._baseline is None
+                or self.fitness_config.w_orthogonality == 0.0):
+            return float("nan")
+        common_dates = factor_values.index.intersection(self._baseline.index)
+        self._orthogonality_scored += 1
+        if len(common_dates) == 0:
+            self._orthogonality_uncovered += 1
+            return float("nan")
+        common_cols = factor_values.columns.intersection(
+            self._baseline.columns)
+        if len(common_cols) < 2:
+            self._orthogonality_uncovered += 1
+            return float("nan")
+        f = factor_values.loc[common_dates, common_cols]
+        b = self._baseline.loc[common_dates, common_cols]
+        rhos: list[float] = []
+        for dt in common_dates:
+            pair = pd.DataFrame({"f": f.loc[dt], "b": b.loc[dt]}).dropna()
+            if pair.shape[0] < 3:
+                continue
+            # Degenerate cross-sections (constant on either side) have
+            # an undefined rank correlation — skip the day rather than
+            # let pandas' NaN pull the mean around.
+            if pair["f"].nunique() < 2 or pair["b"].nunique() < 2:
+                continue
+            rho = pair["f"].corr(pair["b"], method="spearman")
+            if np.isfinite(rho):
+                rhos.append(abs(float(rho)))
+        if not rhos:
+            self._orthogonality_uncovered += 1
+            return float("nan")
+        return float(np.mean(rhos))
 
     def _within_generation_novelty(self, factor_values: pd.DataFrame) -> float:
         """Max abs Pearson correlation against same-generation cached values.
@@ -493,12 +563,19 @@ class GPEngine:
         *,
         n_generations: int | None = None,
         universe_mask: pd.DataFrame | None = None,
+        baseline: pd.DataFrame | None = None,
     ) -> FactorPool:
         """Run the GP loop and return the final ``FactorPool``.
 
         ``universe_mask`` (date × ticker bool) is forwarded to the
         evaluator so coverage is measured members-only on real-PIT
         panels; None preserves the legacy all-cells coverage.
+
+        ``baseline`` (date × ticker predictions) drives the campaign
+        orthogonality penalty; it is inert unless the fitness config
+        carries a non-zero ``w_orthogonality``. Like the mask it is
+        assigned on EVERY run (including None) and its fingerprint
+        invalidates a cache produced against a different baseline.
         """
         # Assign on EVERY run, including None: omitting the mask selects
         # all-cells coverage (per the docstring), so reusing an engine that
@@ -534,6 +611,35 @@ class GPEngine:
             self.fitness_cache = {}
             self._all_evaluated = {}
         self._coverage_key = run_coverage_key
+        # Same discipline for the campaign baseline: scores produced
+        # against a DIFFERENT baseline (or none) are not comparable to
+        # what this run would produce, and the orthogonality penalty is
+        # invisible to the coverage key. Without this, resuming a
+        # campaign checkpoint against a re-exported baseline would
+        # silently mix penalised and unpenalised scores in one pool.
+        self._baseline = baseline
+        self._baseline_stack = None
+        self._orthogonality_uncovered = 0
+        self._orthogonality_scored = 0
+        run_baseline_key = _baseline_key_for(baseline)
+        if (
+            self._baseline_key is not None
+            and self._baseline_key != run_baseline_key
+            and (self.fitness_cache or self._all_evaluated)
+        ):
+            _log.warning(
+                "baseline cache key %r (prior run/checkpoint) != this run "
+                "%r — discarding fitness_cache (%d) and all_evaluated (%d); "
+                "re-scoring from scratch to avoid mixing orthogonality "
+                "semantics across a baseline change.",
+                self._baseline_key,
+                run_baseline_key,
+                len(self.fitness_cache),
+                len(self._all_evaluated),
+            )
+            self.fitness_cache = {}
+            self._all_evaluated = {}
+        self._baseline_key = run_baseline_key
         if not self.population:
             self.initialize_population()
         n_gens = (
@@ -604,6 +710,15 @@ class GPEngine:
                 if self._coverage_key is not None
                 else _coverage_key_for(self._universe_mask)
             ),
+            # Baseline the cached scores' orthogonality penalty was
+            # computed against ("no_baseline" / "baseline:<fp>"); the
+            # penalty is invisible to coverage_key, so a resume against
+            # a different baseline must invalidate the cache too.
+            "baseline_key": (
+                self._baseline_key
+                if self._baseline_key is not None
+                else _baseline_key_for(self._baseline)
+            ),
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
             "fitness_cache": {
@@ -660,6 +775,13 @@ class GPEngine:
             or state.get("coverage_denominator")
             or "all_cells"
         )
+        # Same for the campaign baseline. Legacy checkpoints predate the
+        # field and were necessarily written WITHOUT a baseline, so
+        # "no_baseline" is the faithful default — a campaign resume
+        # against a real baseline then invalidates in ``run``, which is
+        # the correct outcome (unpenalised scores must not be reused
+        # under a penalised fitness).
+        engine._baseline_key = state.get("baseline_key") or "no_baseline"
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
@@ -709,6 +831,28 @@ def _coverage_key_for(mask: pd.DataFrame | None) -> str:
     """Coverage-cache key for a run: ``"all_cells"`` when no mask, else
     ``"members:<fingerprint>"`` so a different mask invalidates the cache."""
     return "all_cells" if mask is None else f"members:{_mask_fingerprint(mask)}"
+
+
+def _frame_fingerprint(frame: pd.DataFrame) -> str:
+    """Stable 16-hex content fingerprint of a float frame (index,
+    columns, cells) — the baseline analogue of ``_mask_fingerprint``.
+    sha256 (not the salted builtin ``hash``) so it survives a
+    checkpoint round-trip and is stable across processes."""
+    h = hashlib.sha256()
+    h.update("|".join(map(str, frame.index)).encode("utf-8"))
+    h.update(b"\x00cols\x00")
+    h.update("|".join(map(str, frame.columns)).encode("utf-8"))
+    h.update(np.ascontiguousarray(
+        frame.to_numpy(dtype=float, na_value=np.nan)).tobytes())
+    return h.hexdigest()[:16]
+
+
+def _baseline_key_for(baseline: pd.DataFrame | None) -> str:
+    """Baseline-cache key: ``"no_baseline"`` or
+    ``"baseline:<fingerprint>"`` so a re-exported/different baseline
+    invalidates scores carrying the orthogonality penalty."""
+    return ("no_baseline" if baseline is None
+            else f"baseline:{_frame_fingerprint(baseline)}")
 
 
 def _serialise_rng_state(state):

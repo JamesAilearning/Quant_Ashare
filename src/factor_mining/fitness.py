@@ -46,6 +46,19 @@ class FitnessConfig:
     extreme_outlier_frac_max: float = 0.05
     extreme_outlier_magnitude: float = 1e8
 
+    # ---- Campaign orthogonality penalty (pv_incremental_v1) ----
+    # INERT BY DEFAULT (weight 0.0): the v1 formula and every existing
+    # pin are unchanged unless a campaign config sets these. Unlike the
+    # within-generation ``w_corr`` novelty term (linear, vs GP peers),
+    # this is a BANDED hinge against a fixed EXTERNAL baseline: only
+    # the part of mean |rho| above ``orthogonality_band`` is penalised,
+    # so a candidate may carry baseline-correlated signal up to the
+    # frozen band for free and pays only for the excess. The band and
+    # weight are frozen in docs/prereg/pv_incremental.yaml (0.30 / 2.0)
+    # — a campaign passes them through, never hardcodes them here.
+    w_orthogonality: float = 0.0
+    orthogonality_band: float = 0.0
+
 
 def _variance_days_frac(result: EvaluationResult, variance_min: float) -> float:
     """Fraction of dates whose cross-sectional std > ``variance_min``."""
@@ -101,11 +114,35 @@ def passes_validity(result: EvaluationResult, config: FitnessConfig) -> bool:
     return True
 
 
+def orthogonality_penalty(mean_abs_rho: float,
+                          config: FitnessConfig) -> float:
+    """Banded hinge on baseline correlation (pv_incremental_v1).
+
+    ``w_orthogonality × max(0, mean|rho| − band)`` — zero when the
+    weight is 0 (the default, so the v1 formula is untouched) and zero
+    inside the frozen band. A non-finite rho (no overlapping days at
+    all) contributes NO penalty: the campaign's IS window deliberately
+    starts before the walk-forward baseline's first out-of-fold date,
+    so early-window expressions are simply unpenalised rather than
+    scored against a baseline that does not exist there (operator
+    decision A — keep the baseline's production fold geometry rather
+    than manufacture earlier folds). Coverage is reported at run level,
+    never silently folded into the score.
+    """
+    if config.w_orthogonality == 0.0:
+        return 0.0
+    if not np.isfinite(mean_abs_rho):
+        return 0.0
+    excess = max(0.0, float(mean_abs_rho) - config.orthogonality_band)
+    return config.w_orthogonality * excess
+
+
 def compute_fitness(
     result: EvaluationResult,
     expr_size: int,
     novelty_penalty: float,
     config: FitnessConfig | None = None,
+    baseline_mean_abs_rho: float = float("nan"),
 ) -> float:
     """Composite fitness per v1 §5.1 with D1 annualised cost.
 
@@ -117,6 +154,10 @@ def compute_fitness(
                 - w_turnover * (turnover_daily × 252 × cost_rate)
                 - w_corr     * novelty_penalty
                 - w_complexity * expr_size
+                - w_orthogonality * max(0, baseline|rho| - band)
+
+    The last term is INERT unless a campaign sets ``w_orthogonality``
+    (default 0.0), so the v1 formula above it is unchanged.
 
     Invalid factors (``passes_validity`` is False) get ``-inf`` so
     GP selection never picks them. NaN IC means the factor produced
@@ -140,6 +181,7 @@ def compute_fitness(
         - cfg.w_turnover * cost_term
         - cfg.w_corr * novelty
         - cfg.w_complexity * float(expr_size)
+        - orthogonality_penalty(baseline_mean_abs_rho, cfg)
     )
     return float(score)
 
