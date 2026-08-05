@@ -1090,5 +1090,92 @@ class HoleyGateTests(unittest.TestCase):
                 _assert_bundle_fetch_complete(tmp, allow_holey_recommend=True)
 
 
+class ServingParamBindingTests(unittest.TestCase):
+    """2026-08-05-ensemble-serving-bound-params: ensemble mode binds
+    universe/cadence/topk from the pinned serving config; explicit
+    flags refuse on mismatch; the single-model path keeps its legacy
+    defaults verbatim (flipping those would let the csi300-era model
+    score csi800)."""
+
+    @staticmethod
+    def _args(**overrides: object) -> object:
+        import argparse
+
+        base: dict[str, object] = {
+            "ensemble_manifest": "Z:/manifest.json",
+            "instruments": None,
+            "rebalance_cadence_days": None,
+            "topk": None,
+        }
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import importlib.util
+        import sys as _sys
+        from pathlib import Path as _P
+
+        root = _P(__file__).resolve().parents[3]
+        spec = importlib.util.spec_from_file_location(
+            "daily_recommend_cli", root / "scripts" / "daily_recommend.py")
+        assert spec is not None and spec.loader is not None
+        cls.mod = importlib.util.module_from_spec(spec)
+        _sys.modules["daily_recommend_cli"] = cls.mod
+        spec.loader.exec_module(cls.mod)
+
+    def _resolve(self, args: object) -> dict[str, object]:
+        return self.mod._resolve_serving_params(args)
+
+    def test_missing_binding_source_refuses(self) -> None:
+        from pathlib import Path as _P
+        from unittest.mock import patch as _patch
+
+        with _patch.object(self.mod, "_SERVING_CONFIG_PATH",
+                           _P("Z:/does/not/exist.yaml")):
+            with self.assertRaisesRegex(DailyRecommendationError,
+                                        "unreadable"):
+                self._resolve(self._args())
+            # ...while the LEGACY path never touches the config.
+            params = self._resolve(self._args(ensemble_manifest=None))
+            self.assertEqual("csi300", params["instruments"])
+
+    def test_ensemble_mode_binds_from_the_committed_config(self) -> None:
+        # Reads the REAL governance-anchored file — this doubles as a
+        # cross-pin that the binding source carries the certified trio.
+        params = self._resolve(self._args())
+        self.assertEqual(
+            {"instruments": "csi800", "rebalance_cadence_days": 5,
+             "topk": 50}, params)
+
+    def test_explicit_equal_flags_pass(self) -> None:
+        params = self._resolve(self._args(
+            instruments="csi800", rebalance_cadence_days=5, topk=50))
+        self.assertEqual("csi800", params["instruments"])
+
+    def test_explicit_mismatch_refuses(self) -> None:
+        for label, overrides in (
+                ("universe", {"instruments": "csi300"}),
+                ("cadence", {"rebalance_cadence_days": 1}),
+                ("topk", {"topk": 30})):
+            with self.assertRaisesRegex(
+                    DailyRecommendationError, "contradicts",
+                    msg=label):
+                self._resolve(self._args(**overrides))
+
+    def test_legacy_mode_keeps_the_old_defaults_verbatim(self) -> None:
+        params = self._resolve(self._args(ensemble_manifest=None))
+        self.assertEqual(
+            {"instruments": "csi300", "rebalance_cadence_days": 1,
+             "topk": 50}, params)
+        # ...and explicit legacy values pass through untouched.
+        params = self._resolve(self._args(
+            ensemble_manifest=None, instruments="csi800",
+            rebalance_cadence_days=5, topk=30))
+        self.assertEqual(
+            {"instruments": "csi800", "rebalance_cadence_days": 5,
+             "topk": 30}, params)
+
+
 if __name__ == "__main__":
     unittest.main()
