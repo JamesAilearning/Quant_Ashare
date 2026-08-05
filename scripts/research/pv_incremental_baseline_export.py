@@ -86,6 +86,56 @@ def check_run_provenance(agg_report: dict[str, Any]) -> dict[str, Any]:
     return {"source_git": commit, "source_git_dirty": False}
 
 
+def resolved_config_sha256(cfg: dict[str, Any]) -> str:
+    """Seal the RESOLVED config the engine actually captured.
+
+    The preset is only an ``extends`` child (codex #401 r5): hashing
+    its bytes leaves every inherited field — train/valid/test months,
+    model hyperparameters, seed, ST mask, slippage — unsealed, so a
+    run driven by a mutated parent passes the five-field check with an
+    unchanged child hash and the sidecar claims a binding it does not
+    have. The aggregate report's embedded config IS the resolved
+    settings that produced these predictions, so that is what the
+    sidecar seals.
+    """
+    canonical = json.dumps(cfg, sort_keys=True, ensure_ascii=False,
+                           separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def config_chain_sha256(preset_path: Path) -> dict[str, str]:
+    """sha256 of every file in the preset's ``extends`` chain.
+
+    Complements the resolved-config seal: it names WHICH file changed
+    when a future re-export disagrees, instead of only proving that
+    something did. Cycles and missing parents refuse rather than
+    silently truncating the chain.
+    """
+    chain: dict[str, str] = {}
+    seen: set[Path] = set()
+    current = preset_path.resolve()
+    while True:
+        if current in seen:
+            raise PVBaselineError(
+                f"config extends chain cycles at {current}; refusing.")
+        seen.add(current)
+        if not current.is_file():
+            raise PVBaselineError(
+                f"config chain references {current} which does not "
+                "exist; refusing.")
+        raw = current.read_bytes()
+        try:
+            rel = str(current.relative_to(_REPO_ROOT)).replace("\\", "/")
+        except ValueError:
+            rel = str(current)
+        chain[rel] = hashlib.sha256(raw).hexdigest()
+        doc = yaml.safe_load(raw.decode("utf-8"))
+        parent = doc.get("extends") if isinstance(doc, dict) else None
+        if not parent:
+            return chain
+        current = (current.parent / str(parent)).resolve()
+
+
 def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
                              preset_path: Path) -> dict[str, Any]:
     """The RUN's own captured config must be the frozen baseline run.
@@ -381,7 +431,9 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
                   run_config_sha256: str, provenance: dict[str, Any],
                   ensemble_window: int, run_dir: str,
                   folds: list[dict[str, Any]],
-                  run_identity: dict[str, Any]) -> dict[str, Any]:
+                  run_identity: dict[str, Any],
+                  resolved_config: dict[str, Any],
+                  config_chain: dict[str, str]) -> dict[str, Any]:
     """The provenance sidecar the miner and the OOS evaluator verify.
 
     ``model`` / ``file_sha256`` / ``run_config_sha256`` / ``source_git``
@@ -400,7 +452,17 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
         "model": plan["fitness"]["baseline"]["model"],
         "file_sha256": file_sha256,
         "run_config": run_config_rel,
+        # sha256 of the RESOLVED config the engine captured — the
+        # settings that actually produced these predictions, parents
+        # included (codex #401 r5). Consumers requiring
+        # ``run_config_sha256`` bind to this, not to a child preset
+        # whose inherited fields were never sealed.
         "run_config_sha256": run_config_sha256,
+        "run_config_sha256_kind": "resolved_walk_forward_config",
+        # Full snapshot + per-file chain hashes so a later disagreement
+        # names WHAT changed, not merely THAT something did.
+        "resolved_config": resolved_config,
+        "config_chain_sha256": config_chain,
         "source_git": provenance["source_git"],
         "source_git_dirty": provenance["source_git_dirty"],
         "walk_forward_run_dir": run_dir,
@@ -483,8 +545,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{out_of_span[:3]}) — blinded holdout / forbidden "
                 "period rows must never be exported; refusing.")
 
-        run_config_sha = hashlib.sha256(
-            config_path.read_bytes()).hexdigest()
+        # Seal the RESOLVED config (the engine's own capture) plus the
+        # whole extends chain — not just the child preset's bytes
+        # (codex #401 r5).
+        run_config_sha = resolved_config_sha256(agg["config"])
+        config_chain = config_chain_sha256(config_path)
 
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -503,7 +568,8 @@ def main(argv: list[str] | None = None) -> int:
             run_config_rel=args.run_config,
             run_config_sha256=run_config_sha, provenance=provenance,
             ensemble_window=ensemble_window, run_dir=str(run_dir),
-            folds=folds, run_identity=run_identity)
+            folds=folds, run_identity=run_identity,
+            resolved_config=agg["config"], config_chain=config_chain)
         (out_dir / "baseline_preds.parquet.provenance.json").write_text(
             json.dumps(sidecar, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")

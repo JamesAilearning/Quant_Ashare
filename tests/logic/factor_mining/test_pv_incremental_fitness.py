@@ -453,6 +453,42 @@ class BaselineExporterTests(unittest.TestCase):
         self.assertEqual("csi800", identity["instruments"])
         self.assertEqual("2024-12-31", identity["overall_end"])
 
+    def test_resolved_config_seal_covers_inherited_fields(self) -> None:
+        # codex #401 r5: the preset is only an `extends` child, so
+        # sealing its bytes leaves inherited training/model fields
+        # unsealed. The seal is over the RESOLVED config the engine
+        # captured — a changed inherited field must change the hash.
+        base = self._run_config()
+        sealed = bx.resolved_config_sha256(base)
+        self.assertEqual(sealed, bx.resolved_config_sha256(dict(base)))
+        # An inherited field the five-field check never inspects.
+        drifted = dict(base, train_months=12, seed=99)
+        self.assertNotEqual(sealed, bx.resolved_config_sha256(drifted))
+        # Key order must not matter (canonical JSON).
+        reordered = dict(reversed(list(base.items())))
+        self.assertEqual(sealed, bx.resolved_config_sha256(reordered))
+
+    def test_config_chain_hashes_parents(self) -> None:
+        chain = bx.config_chain_sha256(
+            _PROJECT_ROOT / "config" / "presets"
+            / "pv_incremental_baseline.yaml")
+        # Child AND the inherited parent must both be recorded.
+        self.assertIn("config/presets/pv_incremental_baseline.yaml",
+                      chain)
+        self.assertIn("config_walk.yaml", chain)
+        for sha in chain.values():
+            self.assertRegex(sha, r"^[0-9a-f]{64}$")
+
+    def test_config_chain_cycle_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            a = Path(d) / "a.yaml"
+            b = Path(d) / "b.yaml"
+            a.write_text("extends: b.yaml\n", encoding="utf-8")
+            b.write_text("extends: a.yaml\n", encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.config_chain_sha256(a)
+            self.assertIn("cycle", str(ctx.exception))
+
     def test_missing_captured_config_refuses(self) -> None:
         preset = (_PROJECT_ROOT / "config" / "presets"
                   / "pv_incremental_baseline.yaml")
@@ -647,6 +683,17 @@ class BaselineExporterTests(unittest.TestCase):
                 hashlib.sha256(
                     (out / "baseline_preds.parquet").read_bytes()
                 ).hexdigest(), sidecar["file_sha256"])
+            # r5: the sealed hash is over the RESOLVED config, and the
+            # snapshot + chain hashes ride along as evidence.
+            self.assertEqual("resolved_walk_forward_config",
+                             sidecar["run_config_sha256_kind"])
+            self.assertEqual(
+                bx.resolved_config_sha256(self._run_config()),
+                sidecar["run_config_sha256"])
+            self.assertEqual("csi800",
+                             sidecar["resolved_config"]["instruments"])
+            self.assertIn("config_walk.yaml",
+                          sidecar["config_chain_sha256"])
             # Decision A disclosure: partial IS coverage is recorded.
             self.assertEqual(3, sidecar["coverage"]["is_days_covered"])
             self.assertEqual(3, sidecar["coverage"]["oos_days_covered"])
