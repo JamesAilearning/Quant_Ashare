@@ -196,6 +196,27 @@ def adjudicate(plan: dict[str, Any],
                 f"protocol_id {art.get('protocol_id')!r} — foreign "
                 "protocol, refusing (never silently skipped).")
         dates = [d["date"] for d in art["daily_ic"]]
+        # Window discipline at the adjudication boundary (codex #399
+        # r8): an artifact matching protocol/run/ids/expressions can
+        # still carry rows from the BLINDED 2025 holdout or the
+        # forbidden 2026 period — those must never be bootstrapped as
+        # if they were the frozen OOS window.
+        w = plan["windows"]
+        art_window = art.get("window") or {}
+        if (art_window.get("start"), art_window.get("end")) != (
+                w["oos_start"], w["oos_end"]):
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} declares window "
+                f"{art_window!r} — not the frozen OOS dev window "
+                f"{w['oos_start']}..{w['oos_end']}, refusing.")
+        off = sorted(d for d in dates
+                     if not (w["oos_start"] <= d <= w["oos_end"]))
+        if off:
+            raise PVFwerError(
+                f"artifact {art['candidate_id']!r} carries daily_ic "
+                f"dates outside the frozen OOS window (e.g. "
+                f"{off[:3]}) — holdout/forbidden-period rows must "
+                "never be adjudicated; refusing.")
         if len(dates) != len(set(dates)):
             # The daily series is the canonical FWER record (codex
             # #399 r7): a repeated date would silently collapse to

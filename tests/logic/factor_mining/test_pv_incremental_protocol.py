@@ -161,6 +161,7 @@ class FwerTests(unittest.TestCase):
                               freq="B")
         return {"protocol_id": protocol, "candidate_id": cid,
                 "expression": f"cs_rank($close_{cid})",
+                "window": {"start": "2023-01-01", "end": "2024-12-31"},
                 "daily_ic": [{"date": str(d)[:10], "ic": float(v)}
                              for d, v in zip(dates, series,
                                              strict=True)],
@@ -356,6 +357,21 @@ class FwerTests(unittest.TestCase):
         with self.assertRaises(ev.PVEvalError) as ctx:
             ev.check_pv_terminals("cs_rank(ts_rank($pe, 20))", fields)
         self.assertIn("$pe", str(ctx.exception))
+
+    def test_off_window_daily_ic_refused(self) -> None:
+        # codex #399 r8: rows from the blinded holdout or forbidden
+        # 2026 period must never be bootstrapped as OOS — and a
+        # non-frozen window declaration refuses outright.
+        art = self._artifact("leak", np.zeros(300) + 0.01)
+        art["daily_ic"][0]["date"] = "2025-03-03"    # holdout row
+        with self.assertRaises(fw.PVFwerError) as ctx:
+            fw.adjudicate(self._plan(), [art], seed=7)
+        self.assertIn("outside the frozen OOS window",
+                      str(ctx.exception))
+        art2 = self._artifact("wrongwin", np.zeros(300) + 0.01)
+        art2["window"] = {"start": "2023-01-01", "end": "2025-12-31"}
+        with self.assertRaises(fw.PVFwerError):
+            fw.adjudicate(self._plan(), [art2], seed=7)
 
     def test_duplicate_daily_ic_dates_refused(self) -> None:
         # codex #399 r7: repeated dates would silently collapse the
