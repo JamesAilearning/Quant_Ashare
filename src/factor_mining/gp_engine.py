@@ -238,6 +238,19 @@ class GPEngine:
                 continue
             seen.add(h)
             pop.append(expr)
+        if not pop:
+            # An unusable configuration must not become a "successful"
+            # empty campaign (codex #401 r10): with a terminal
+            # whitelist that intersects nothing, every generation
+            # attempt raises and the retry budget quietly expires,
+            # leaving an empty population and an empty final pool that
+            # reads like a clean negative. Fail loud instead.
+            raise GrammarError(
+                f"generated no valid individuals in {attempts} attempts "
+                f"(target_type={target!r}, allowed_terminals="
+                f"{sorted(self._allowed_terminals) if self._allowed_terminals else None}) "
+                "— unusable generator configuration; refusing rather "
+                "than running an empty campaign.")
         self.population = pop
 
     # ------------------------------------------------------------------

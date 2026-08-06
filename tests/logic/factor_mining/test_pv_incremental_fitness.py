@@ -510,6 +510,20 @@ class TerminalWhitelistTests(unittest.TestCase):
                 ExprType("FEATURE", "PURE"), exclude="$volume")
             self.assertIn(term.name, self._SEVEN)
 
+    def test_unusable_whitelist_fails_loud_not_empty_pool(self) -> None:
+        # codex #401 r10: the direct generator refuses, but the engine
+        # swallowed each GrammarError until the retry budget expired
+        # and returned an empty pool — a configuration error reading
+        # like a clean negative campaign.
+        from src.factor_mining.gp_engine import GPConfig, GPEngine
+        from src.factor_mining.grammar import GrammarError
+        eng = GPEngine(GPConfig(seed=1, population_size=4),
+                       FitnessConfig())
+        eng._allowed_terminals = frozenset({"$nonexistent"})
+        with self.assertRaises(GrammarError) as ctx:
+            eng.initialize_population()
+        self.assertIn("empty campaign", str(ctx.exception))
+
     def test_run_derives_whitelist_from_panel(self) -> None:
         # A campaign panel (seven fields) restricts; a full-registry
         # panel leaves sampling untouched (legacy byte-identical).
@@ -735,6 +749,42 @@ class BaselineExporterTests(unittest.TestCase):
                   / "pv_incremental_baseline.yaml")
         with self.assertRaises(bx.PVBaselineError):
             bx.check_run_config_binding(_plan(), {}, preset)
+
+    def test_materialized_preset_covers_dataclass_defaults(self) -> None:
+        # codex #401 r10: fields neither YAML declares (e.g.
+        # label_horizon_days) come from WalkForwardConfig defaults but
+        # ARE captured in the run report — a run with a non-default
+        # value would otherwise pass the binding check.
+        frozen = (_PROJECT_ROOT / "config" / "presets"
+                  / "pv_incremental_baseline.yaml")
+        materialized = bx.materialize_preset(frozen)
+        self.assertIn("label_horizon_days", materialized)
+        self.assertNotIn("label_horizon_days",
+                         bx.resolve_preset(frozen))   # YAML-only view
+        # A run whose captured horizon differs from the materialized
+        # default must refuse.
+        cfg = self._run_config(
+            label_horizon_days=materialized["label_horizon_days"] + 1)
+        with self.assertRaises(bx.PVBaselineError) as ctx:
+            bx.check_run_config_binding(_plan(), {"config": cfg}, frozen)
+        self.assertIn("did not drive this run", str(ctx.exception))
+
+    def test_failed_fold_placeholder_refuses(self) -> None:
+        # codex #401 r10: a failed fold is recorded with
+        # report_path: null; falling back to the canonical filename
+        # would resolve a stale same-index artifact from an earlier run.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            agg = {
+                "git_commit": "a" * 40, "git_dirty": False,
+                "num_folds": 1,
+                "folds": [{"fold_index": 0, "report_path": None}],
+            }
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.resolve_fold_reports(run_dir, agg)
+            self.assertIn("FAILED fold", str(ctx.exception))
 
     def test_sibling_preset_refuses_via_resolved_inheritance(self) -> None:
         # codex #401 r6: a sibling preset declares the same overlapping

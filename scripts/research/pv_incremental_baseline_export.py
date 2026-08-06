@@ -27,6 +27,7 @@ import json
 import pickle
 import re
 import sys
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,32 @@ def config_chain_sha256(preset_path: Path) -> dict[str, str]:
         current = (current.parent / str(parent)).resolve()
 
 
+def materialize_preset(preset_path: Path) -> dict[str, Any]:
+    """Fully materialize the preset into walk-forward config VALUES.
+
+    Resolving ``extends`` is still not enough (codex #401 r10):
+    prediction-driving fields that neither YAML declares — e.g.
+    ``label_horizon_days`` — come from ``WalkForwardConfig``'s
+    dataclass defaults, yet the engine captures them in the run
+    report. A run using a non-default value for such a field would
+    otherwise pass the binding check and be exported as the frozen
+    baseline. Building the SAME dataclass the engine builds gives the
+    complete value set to compare against.
+    """
+    from dataclasses import asdict
+
+    from src.core._yaml_loader import load_yaml_with_inheritance
+    from src.core.walk_forward.config import WalkForwardConfig
+
+    raw = load_yaml_with_inheritance(preset_path)
+    if not isinstance(raw, dict):
+        raise PVBaselineError(
+            f"run config {preset_path} is not a mapping; refusing.")
+    valid = {f.name for f in fields(WalkForwardConfig)}
+    return asdict(WalkForwardConfig(
+        **{k: v for k, v in raw.items() if k in valid}))
+
+
 def resolve_preset(preset_path: Path) -> dict[str, Any]:
     """Merge a preset with everything it inherits via ``extends``.
 
@@ -219,7 +246,9 @@ def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
     # its declared keys (it inherits the rest) must agree with the
     # captured config, so the sidecar's run_config_sha256 binds to the
     # file that actually drove these numbers.
-    preset = resolve_preset(preset_path)
+    # Full materialization, not just the YAML chain (codex #401 r10):
+    # dataclass defaults drive predictions too.
+    preset = materialize_preset(preset_path)
     preset_drift = {
         key: {"run": cfg.get(key), "preset": val}
         for key, val in preset.items()
@@ -314,9 +343,21 @@ def resolve_fold_reports(run_dir: Path,
     run_root = run_dir.resolve()
     for entry, idx in zip(declared, indices, strict=True):
         declared_path = entry.get("report_path")
-        basename = (Path(declared_path).name
-                    if isinstance(declared_path, str) and declared_path
-                    else f"fold_{idx:02d}_report.json")
+        # A FAILED fold is recorded with report_path: null (codex #401
+        # r10). Falling back to the canonical filename would resolve a
+        # same-index report left over from an earlier run: its own sha
+        # is self-consistent, so the stale fold would be exported under
+        # THIS aggregate's commit and config while the authoritative
+        # record says the fold failed. A declared fold must declare a
+        # path.
+        if not (isinstance(declared_path, str) and declared_path.strip()):
+            raise PVBaselineError(
+                f"aggregate report declares fold {idx} with an empty "
+                f"report_path ({declared_path!r}) — the engine records "
+                "a FAILED fold that way; a complete baseline run has "
+                "no failed folds, and substituting a local file would "
+                "export another run's artifact; refusing.")
+        basename = Path(declared_path).name
         # Resolve INSIDE --run-dir first (codex #401 r3): a stored
         # absolute path from the original run must never let the
         # exporter certify one directory while reading fold windows
