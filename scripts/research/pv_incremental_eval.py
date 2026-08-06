@@ -139,6 +139,17 @@ def preflight_candidates(candidates: list[dict[str, Any]],
                 "registered manifest — refusing before any artifact "
                 "is written.")
         seen.add(cid)
+        # Orientation is the GP's record of the IS sign (codex #401
+        # r13): a factor bred under the frozen |rank-IC| criterion may
+        # be a stable NEGATIVE predictor, and this gate tests SIGNED
+        # daily IC against a one-sided POSITIVE threshold — applying
+        # the sign is what stops a real factor being tested backwards.
+        orientation = cand.get("orientation", 1)
+        if orientation not in (1, -1):
+            raise PVEvalError(
+                f"candidate {cid!r}: orientation {orientation!r} is "
+                "neither +1 nor -1 — refusing (the registered manifest "
+                "must state which sign the GP selected).")
     parsed: list[Any] = []
     for cand in candidates:
         # The factor-mining root contract (codex #399 r6): a
@@ -400,6 +411,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"candidate {cand['candidate_id']} evaluates to a "
                     "scalar, not a panel — degenerate expression, "
                     "refusing.")
+            # Apply the registered orientation BEFORE any metric: the
+            # IC, the orthogonality series and the FWER t all have to
+            # see the factor in the direction the GP selected it
+            # (codex #401 r13).
+            if int(cand.get("orientation", 1)) == -1:
+                factor = -factor
             ic, dropped = daily_rank_ic(factor, fwd, min_names)
             if ic.shape[0] == 0:
                 raise PVEvalError(
@@ -411,6 +428,9 @@ def main(argv: list[str] | None = None) -> int:
             artifact = build_artifact(
                 plan, cand["candidate_id"], cand["expression"], ic,
                 dropped, orth, baseline_sha)
+            # Record the applied sign so the adjudicator's record shows
+            # WHICH orientation produced these numbers.
+            artifact["orientation"] = int(cand.get("orientation", 1))
             artifact["run_id"] = run_id
             out = out_dir / f"{cand['candidate_id']}.json"
             try:

@@ -197,6 +197,14 @@ class GPEngine:
         self._allowed_terminals: frozenset[str] | None = None
         self._baseline: pd.DataFrame | None = None
         self._baseline_key: str | None = None
+        # Fingerprint of the FULL fitness configuration the cached
+        # scores were produced under (codex #401 r13): the campaign
+        # fields (ic_term / min_names_per_day / orthogonality band and
+        # weight) change selection semantics but are invisible to both
+        # the coverage and baseline keys, so a resume under a different
+        # frozen criterion would restore stale scores by expression
+        # hash and mix criteria within one pool.
+        self._fitness_key: str | None = None
         # Pre-stacked baseline (one stack for the whole run, not per
         # expression — the novelty term's memory lesson).
         self._baseline_stack: pd.Series | None = None
@@ -340,6 +348,17 @@ class GPEngine:
                 fitness=score,
                 expr_size=size,
                 method=FITNESS_EVALUATOR_METHOD,
+                # Record the IS orientation whenever the breeding
+                # criterion is sign-blind (codex #401 r13): the
+                # adjudicating side tests SIGNED IC against a
+                # one-sided positive threshold, so a winner bred on
+                # |rank-IC| must carry the sign that makes it a
+                # positive predictor, or it is tested backwards.
+                orientation=(
+                    -1 if (self.fitness_config.ic_term == "abs_rank_ic"
+                           and np.isfinite(result.rank_ic_mean)
+                           and result.rank_ic_mean < 0)
+                    else 1),
             )
         return score, result
 
@@ -725,6 +744,23 @@ class GPEngine:
             self.fitness_cache = {}
             self._all_evaluated = {}
         self._baseline_key = run_baseline_key
+        run_fitness_key = _fitness_key_for(self.fitness_config)
+        if (
+            self._fitness_key is not None
+            and self._fitness_key != run_fitness_key
+            and (self.fitness_cache or self._all_evaluated)
+        ):
+            _log.warning(
+                "fitness cache key %r (prior run/checkpoint) != this run "
+                "%r — discarding fitness_cache (%d) and all_evaluated "
+                "(%d); re-scoring from scratch to avoid mixing selection "
+                "criteria within one pool.",
+                self._fitness_key, run_fitness_key,
+                len(self.fitness_cache), len(self._all_evaluated),
+            )
+            self.fitness_cache = {}
+            self._all_evaluated = {}
+        self._fitness_key = run_fitness_key
         if not self.population:
             self.initialize_population()
         n_gens = (
@@ -804,6 +840,14 @@ class GPEngine:
                 if self._baseline_key is not None
                 else _baseline_key_for(self._baseline)
             ),
+            # Fitness configuration the cached scores were produced
+            # under (codex #401 r13) — campaign criteria are invisible
+            # to the coverage/baseline keys.
+            "fitness_key": (
+                self._fitness_key
+                if self._fitness_key is not None
+                else _fitness_key_for(self.fitness_config)
+            ),
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
             "fitness_cache": {
@@ -867,6 +911,10 @@ class GPEngine:
         # the correct outcome (unpenalised scores must not be reused
         # under a penalised fitness).
         engine._baseline_key = state.get("baseline_key") or "no_baseline"
+        # Legacy checkpoints predate the field; treating them as
+        # "unknown" makes ``run`` invalidate on the first campaign
+        # resume, which is the safe direction.
+        engine._fitness_key = state.get("fitness_key") or "legacy_unknown"
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
@@ -1014,6 +1062,19 @@ def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel,
             "(re-export the baseline).")
 
 
+def _fitness_key_for(fitness_config: FitnessConfig) -> str:
+    """Stable 16-hex fingerprint of the COMPLETE fitness config.
+
+    Every field participates: a campaign changing ``ic_term``,
+    ``min_names_per_day`` or the orthogonality band/weight changes what
+    "best" means, and cached scores from the previous criterion are not
+    comparable (codex #401 r13)."""
+    canonical = json.dumps(asdict(fitness_config), sort_keys=True,
+                           separators=(",", ":"), default=str)
+    return "fitness:" + hashlib.sha256(
+        canonical.encode("utf-8")).hexdigest()[:16]
+
+
 def _baseline_key_for(baseline: pd.DataFrame | None) -> str:
     """Baseline-cache key: ``"no_baseline"`` or
     ``"baseline:<fingerprint>"`` so a re-exported/different baseline
@@ -1051,6 +1112,7 @@ def _pool_entry_to_dict(entry: PoolEntry) -> dict:
         "n_obs_per_day_min": entry.n_obs_per_day_min,
         "expr_size": entry.expr_size,
         "method": entry.method,
+        "orientation": entry.orientation,
     }
 
 
@@ -1087,4 +1149,5 @@ def _pool_entry_from_dict(d: dict) -> PoolEntry:
         expr_size=int(d["expr_size"]),
         expr_hash=hash(expr),
         method=str(d.get("method", LEGACY_METHOD_TAG)),
+        orientation=int(d.get("orientation", 1)),
     )

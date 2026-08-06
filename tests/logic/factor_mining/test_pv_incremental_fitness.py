@@ -194,6 +194,103 @@ class FrozenIcTermTests(unittest.TestCase):
         self.assertIn(_plan()["fitness"]["ic_term"], _IC_TERMS)
 
 
+class OrientationTests(unittest.TestCase):
+    """codex #401 r13: a factor bred under the sign-blind |rank-IC|
+    criterion may be a stable NEGATIVE predictor, while the OOS gate
+    tests SIGNED IC against a one-sided POSITIVE threshold. Without a
+    recorded orientation the winner is tested backwards."""
+
+    @staticmethod
+    def _panel(dates, cols):
+        rng = np.random.default_rng(77)
+        return {"$close": pd.DataFrame(
+            rng.normal(100, 5, size=(len(dates), len(cols))),
+            index=dates, columns=list(cols))}
+
+    def test_engine_records_negative_orientation(self) -> None:
+        # End-to-end through evaluate_individual: a factor whose IS
+        # rank-IC is negative must be persisted with orientation -1
+        # under abs_rank_ic, and +1 under the legacy criterion.
+        import src.factor_mining.gp_engine as ge
+        from src.factor_mining.evaluator import EvaluationResult
+        from src.factor_mining.expression import parse_expression
+
+        dates = pd.date_range("2023-01-02", periods=4, freq="B")
+        cols = [f"n{i}" for i in range(5)]
+        panel = self._panel(dates, cols)
+        expr = parse_expression("cs_rank(ts_pctchange($close, 20))")
+
+        def fake(expr_, panel_, fwd_, **kw):
+            return EvaluationResult(
+                factor_values=pd.DataFrame(1.0, index=dates,
+                                           columns=cols),
+                ic_mean=-0.05, ic_std=0.1, ir=-0.5,
+                rank_ic_mean=-0.06, rank_ic_std=0.1, rank_ir=-0.6,
+                turnover_daily=0.1, coverage=1.0, n_obs_per_day_min=5,
+                ic_dates=pd.DatetimeIndex(dates))
+
+        original = ge.evaluate_factor
+        ge.evaluate_factor = fake
+        try:
+            eng = ge.GPEngine(
+                ge.GPConfig(seed=1),
+                FitnessConfig(ic_term="abs_rank_ic", coverage_min=0.0,
+                              variance_days_frac_min=0.0))
+            eng.evaluate_individual(expr, panel, panel["$close"])
+            entry = next(iter(eng._all_evaluated.values()))
+            self.assertEqual(-1, entry.orientation)
+            # Legacy criterion is sign-aware, so no flip is recorded.
+            eng2 = ge.GPEngine(
+                ge.GPConfig(seed=1),
+                FitnessConfig(coverage_min=0.0,
+                              variance_days_frac_min=0.0))
+            eng2.evaluate_individual(expr, panel, panel["$close"])
+            self.assertEqual(
+                1, next(iter(eng2._all_evaluated.values())).orientation)
+        finally:
+            ge.evaluate_factor = original
+
+    def test_orientation_survives_pool_and_checkpoint(self) -> None:
+        from src.factor_mining.expression import parse_expression
+        from src.factor_mining.factor_pool import FactorPool, PoolEntry
+        from src.factor_mining.gp_engine import (
+            _pool_entry_from_dict,
+            _pool_entry_to_dict,
+        )
+        expr = parse_expression("cs_rank(ts_pctchange($close, 20))")
+        entry = PoolEntry(
+            expr=expr, fitness=0.1, ic_mean=-0.05, ic_std=0.1, ir=-0.5,
+            rank_ic_mean=-0.06, rank_ic_std=0.1, rank_ir=-0.6,
+            turnover_daily=0.1, coverage=1.0, n_obs_per_day_min=5,
+            expr_size=5, expr_hash=hash(expr), orientation=-1)
+        self.assertEqual(
+            -1, _pool_entry_from_dict(_pool_entry_to_dict(entry))
+            .orientation)
+        with tempfile.TemporaryDirectory() as d:
+            pool = FactorPool()
+            pool.add(entry)
+            pool.save(d)
+            reloaded = FactorPool.load(d)
+            self.assertEqual(
+                -1, next(iter(reloaded.entries())).orientation
+                if hasattr(reloaded, "entries")
+                else list(reloaded._entries.values())[0].orientation)
+
+    def test_fitness_key_invalidates_across_criteria(self) -> None:
+        # codex #401 r13 (2): campaign fitness fields are invisible to
+        # the coverage and baseline keys.
+        from src.factor_mining.gp_engine import _fitness_key_for
+        base = FitnessConfig()
+        self.assertEqual(_fitness_key_for(base), _fitness_key_for(
+            FitnessConfig()))
+        for changed in (FitnessConfig(ic_term="abs_rank_ic"),
+                        FitnessConfig(min_names_per_day=300),
+                        FitnessConfig(w_orthogonality=2.0),
+                        FitnessConfig(orthogonality_band=0.30)):
+            self.assertNotEqual(_fitness_key_for(base),
+                                _fitness_key_for(changed))
+
+
 class BaselinePanelBindingTests(unittest.TestCase):
     """codex #401 r1: an instrument-namespace or date mismatch is a
     CONFIG error that must refuse before scoring — not an 'uncovered'

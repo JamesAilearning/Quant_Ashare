@@ -70,6 +70,12 @@ metric:                          # PV-DP-3（Gate-4A 同源 lag 语义的日频�
 
 fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3）
   parsimony_lambda_per_node: 0.002
+  orientation_recorded: true     # 实现 PR 冻结(codex #401 r13):|rank-IC|
+                                 # 是符号盲的,而 OOS 单侧门槛检验带符号
+                                 # IC——GP 必须记录 IS 符号(PoolEntry.
+                                 # orientation ±1),候选注册表逐项携带,
+                                 # 评估器在任何度量前应用;缺此则稳定负向
+                                 # 因子被反向检验(系统性假阴性)
   ic_term: abs_rank_ic           # 实现 PR 冻结(操作人签,决策③):GP 繁殖
                                  # 信号用 |日截面 rank-IC 均值|——方向
                                  # 自由度属表达式本身(符号翻转是同一

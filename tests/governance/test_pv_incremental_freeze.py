@@ -175,6 +175,24 @@ class PvIncrementalFreezePins(unittest.TestCase):
         DataConfig(**data)
         FitnessConfig(**fit)
 
+    def test_orientation_contract_is_pinned_and_wired(self) -> None:
+        # codex #401 r13: the sign-blind breeding criterion is only
+        # safe if the IS orientation is recorded and APPLIED. Pin both
+        # the frozen flag and the two ends that implement it.
+        self.assertIs(True, _PLAN["fitness"]["orientation_recorded"])
+        from dataclasses import fields as dc_fields
+
+        from src.factor_mining.factor_pool import PoolEntry
+        self.assertIn("orientation",
+                      {f.name for f in dc_fields(PoolEntry)})
+        import inspect
+
+        import scripts.research.pv_incremental_eval as ev
+        # The evaluator must both validate and apply it.
+        self.assertIn("orientation",
+                      inspect.getsource(ev.preflight_candidates))
+        self.assertIn("factor = -factor", inspect.getsource(ev.main))
+
     def test_baseline_preset_matches_frozen_tail(self) -> None:
         # The preset that drives the baseline run must pin the frozen
         # tail: the parent config_walk.yaml default (2025-12-31) would

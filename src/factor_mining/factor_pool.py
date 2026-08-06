@@ -68,6 +68,15 @@ class PoolEntry:
     expr_size: int
     expr_hash: int
     method: str = "normal"
+    # IS orientation of the factor (codex #401 r13). Under an
+    # absolute-IC breeding criterion a stable NEGATIVE predictor scores
+    # exactly like its positive mirror, but the adjudicating side tests
+    # SIGNED daily IC against a one-sided POSITIVE threshold — an
+    # un-oriented winner would be tested backwards and rejected. +1 =
+    # use as-is; -1 = the consumer MUST negate the factor values before
+    # scoring. Default +1 keeps every legacy entry and parquet
+    # unchanged.
+    orientation: int = 1
 
     @classmethod
     def from_result(
@@ -77,6 +86,7 @@ class PoolEntry:
         fitness: float,
         expr_size: int,
         method: str = "normal",
+        orientation: int = 1,
     ) -> PoolEntry:
         return cls(
             expr=expr,
@@ -93,6 +103,7 @@ class PoolEntry:
             expr_size=int(expr_size),
             expr_hash=hash(expr),
             method=str(method),
+            orientation=int(orientation),
         )
 
 
@@ -206,6 +217,7 @@ class FactorPool:
                         "n_obs_per_day_min": e.n_obs_per_day_min,
                         "expr_size": e.expr_size,
                         "method": e.method,
+                        "orientation": e.orientation,
                     }
                     for e in entries
                 ]
@@ -216,7 +228,7 @@ class FactorPool:
                     "expr_hash", "fitness", "ic_mean", "ic_std", "ir",
                     "rank_ic_mean", "rank_ic_std", "rank_ir",
                     "turnover_daily", "coverage", "n_obs_per_day_min",
-                    "expr_size", "method",
+                    "expr_size", "method", "orientation",
                 ]
             )
         metrics.to_parquet(d / POOL_PARQUET_FILENAME, index=False)
@@ -265,6 +277,9 @@ class FactorPool:
         with json_path.open("r", encoding="utf-8") as fh:
             expr_map = json.load(fh)
         has_method = "method" in metrics.columns
+        # Legacy parquets predate the column; +1 is the faithful
+        # default (they were produced by a sign-aware criterion).
+        has_orientation = "orientation" in metrics.columns
         if not has_method and not metrics.empty:
             _log.info(
                 "pool at %s has no 'method' column (predates PR2); "
@@ -302,6 +317,7 @@ class FactorPool:
                 expr_size=int(row["expr_size"]),
                 expr_hash=actual_hash,
                 method=str(row["method"]) if has_method else LEGACY_METHOD_TAG,
+                orientation=int(row["orientation"]) if has_orientation else 1,
             )
             pool.add(entry)
         return pool

@@ -717,6 +717,18 @@ def main(argv: list[str] | None = None) -> int:
         run_config_sha = resolved_config_sha256(agg["config"])
         config_chain = config_chain_sha256(config_path)
 
+        provider_uri = args.provider_uri
+        if provider_uri.startswith("${"):
+            import os
+            provider_uri = os.environ.get(
+                "QUANT_PROVIDER_URI", "D:/qlib_data/my_cn_data_pit")
+        # ALL validation before the first byte is written (codex #401
+        # r13): a refusal after the parquet exists leaves an orphan
+        # without its provenance sidecar, and the corrected retry then
+        # refuses because the export "already exists" — a recoverable
+        # config error turned into a manual-cleanup deadlock.
+        bundle = bind_source_bundle(provider_uri, wide.index)
+
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_parquet = out_dir / "baseline_preds.parquet"
@@ -728,13 +740,6 @@ def main(argv: list[str] | None = None) -> int:
                 "fresh --out-dir; refusing.")
         wide.to_parquet(out_parquet)
         file_sha = hashlib.sha256(out_parquet.read_bytes()).hexdigest()
-
-        provider_uri = args.provider_uri
-        if provider_uri.startswith("${"):
-            import os
-            provider_uri = os.environ.get(
-                "QUANT_PROVIDER_URI", "D:/qlib_data/my_cn_data_pit")
-        bundle = bind_source_bundle(provider_uri, wide.index)
 
         sidecar = build_sidecar(
             plan, wide=wide, file_sha256=file_sha,
