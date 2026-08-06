@@ -264,7 +264,8 @@ def full_bundle_content_hash(bundle_dir: Path) -> dict[str, Any]:
 
 def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
                               bundle: dict[str, Any],
-                              fold_indices: list[int] | None = None) -> str:
+                              fold_indices: list[int] | None = None,
+                              run_commit: str | None = None) -> str:
     """Prove the supplied bundle is the one the RUN read.
 
     Each fold manifest stores ``config_fingerprint``, which folds the
@@ -335,6 +336,27 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
                 f"{declared_test!r} but the fold report says "
                 f"{expected_test!r} — the manifest describes a "
                 "different run than these artifacts; refusing.")
+        # The producer writes each manifest's own git provenance
+        # (codex #401 r18): a directory keeping the aggregate from
+        # clean commit A while its manifests/reports/pickles come
+        # from clean commit B matches on config, bundle, paths and
+        # windows — only the per-fold commit separates them, and the
+        # sidecar would otherwise attribute B's predictions to A.
+        if run_commit is not None:
+            m_commit = payload.get("git_commit")
+            if m_commit != run_commit:
+                raise PVBaselineError(
+                    f"{m_path.name} was produced at git_commit="
+                    f"{m_commit!r} but the aggregate report records "
+                    f"{run_commit!r} — these fold artifacts come from "
+                    "a different commit than the run being exported; "
+                    "refusing.")
+            if payload.get("git_dirty") is not False:
+                raise PVBaselineError(
+                    f"{m_path.name} records git_dirty="
+                    f"{payload.get('git_dirty')!r} — a fold produced "
+                    "from a dirty tree cannot be reproduced from any "
+                    "commit; refusing.")
     # EVERY exported fold needs its own manifest (codex #401 r15): a
     # torn/copied directory keeping one stale manifest from bundle A
     # alongside reports produced under bundle B would otherwise get
@@ -903,7 +925,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(bundle["provider_uri"]))
         bundle["run_config_fingerprint"] = verify_bundle_matches_run(
             run_dir, config_path, bundle,
-            fold_indices=[f["fold_index"] for f in folds])
+            fold_indices=[f["fold_index"] for f in folds],
+            run_commit=provenance["source_git"])
         bundle["binding_strength"] = (
             "verified_against_run:calendar_identity — the fold "
             "manifests' config_fingerprint folds the run-time bundle "

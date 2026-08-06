@@ -747,7 +747,7 @@ class MinerBaselineLoadingTests(unittest.TestCase):
 class BaselineExporterTests(unittest.TestCase):
     @classmethod
     def _fold_manifests(cls, run_dir: Path, indices, bundle_hash: str,
-                        *, config=None):
+                        *, config=None, commit: str = "a" * 40):
         """Write fold manifests carrying the authoritative
         config_fingerprint — the digest that folds the RUN-TIME bundle
         identity in (PR-G+I), which the exporter re-derives to prove
@@ -778,6 +778,8 @@ class BaselineExporterTests(unittest.TestCase):
                     "predictions_path": str(
                         run_dir / f"fold_{i:02d}_predictions.pkl"),
                     "test_period": test_period,
+                    "git_commit": commit,
+                    "git_dirty": False,
                 }), encoding="utf-8")
         return fp
 
@@ -1279,6 +1281,44 @@ class BaselineExporterTests(unittest.TestCase):
                 run_dir, self._PRESET, {"bundle_tag": tag_a},
                 fold_indices=[0])
             self.assertRegex(ok, r"^[0-9a-f]{16}$")
+
+    def test_cross_commit_manifests_refused(self) -> None:
+        # codex #401 r18: the aggregate from clean commit A with
+        # manifests/artifacts from clean commit B matches on config,
+        # bundle, paths and windows — only the per-fold commit
+        # separates them, and the sidecar would attribute B's
+        # predictions to A.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            bundle = self._bundle(Path(d) / "bundle")
+            tag = self._bundle_tag(bundle)
+            self._fold_manifests(run_dir, [0], tag, commit="b" * 40)
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    fold_indices=[0], run_commit="a" * 40)
+            self.assertIn("different commit", str(ctx.exception))
+            # A dirty-tree fold refuses too.
+            mpath = run_dir / "fold_00_manifest.json"
+            payload = json.loads(mpath.read_text(encoding="utf-8"))
+            payload["git_commit"] = "a" * 40
+            payload["git_dirty"] = True
+            mpath.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    fold_indices=[0], run_commit="a" * 40)
+            self.assertIn("dirty", str(ctx.exception))
+            # Matching clean commit passes.
+            payload["git_dirty"] = False
+            mpath.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertRegex(
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    fold_indices=[0], run_commit="a" * 40),
+                r"^[0-9a-f]{16}$")
 
     def test_manifest_must_bind_its_own_artifacts(self) -> None:
         # codex #401 r16: a COMPLETE same-index manifest set copied
