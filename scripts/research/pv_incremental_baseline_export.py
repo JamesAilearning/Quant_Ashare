@@ -249,6 +249,20 @@ def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
     # Full materialization, not just the YAML chain (codex #401 r10):
     # dataclass defaults drive predictions too.
     preset = materialize_preset(preset_path)
+    # A materialized field MISSING from the captured config is not a
+    # pass (codex #401 r11): the exporter would certify and hash a
+    # report that cannot establish which value produced the
+    # predictions. Compare on presence first.
+    comparable = {k: v for k, v in preset.items()
+                  if k not in ("output_dir",)
+                  and not (isinstance(v, str) and "${" in v)}
+    absent = sorted(k for k in comparable if k not in cfg)
+    if absent:
+        raise PVBaselineError(
+            f"the run's captured config omits materialized field(s) "
+            f"{absent} — an older/truncated report cannot establish "
+            "which values produced these predictions; re-run the "
+            "baseline with the current engine; refusing.")
     preset_drift = {
         key: {"run": cfg.get(key), "preset": val}
         for key, val in preset.items()

@@ -987,6 +987,21 @@ def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel,
             f"{str(ref.index.min())[:10]}..{str(ref.index.max())[:10]} — "
             "the orthogonality penalty could never fire; refusing "
             "(partial overlap is expected and allowed, zero is not).")
+    # Labels alone are not evidence (codex #401 r11): a sparse or
+    # all-NaN baseline shares the axes yet has too few finite cells on
+    # every shared day, so the scorer would skip every day and map the
+    # resulting NaN to a zero penalty for EVERY candidate — the
+    # incremental criterion silently disabled while the run looks
+    # healthy. Require at least one day that could actually be scored.
+    usable = int(
+        baseline.loc[common_dates, common_cols].notna().sum(axis=1).max()
+        or 0)
+    if usable < floor:
+        raise ValueError(
+            f"baseline has at most {usable} finite prediction(s) on any "
+            f"shared day, below the {floor} the daily correlation needs "
+            "— every candidate would score unpenalised; refusing "
+            "(re-export the baseline).")
 
 
 def _baseline_key_for(baseline: pd.DataFrame | None) -> str:

@@ -653,17 +653,29 @@ class BaselineExporterTests(unittest.TestCase):
                              "prediction_artifact_sha256": sha},
             }), encoding="utf-8")
 
-    @staticmethod
-    def _run_config(**overrides):
-        cfg = {"instruments": "csi800", "overall_end": "2024-12-31",
-               "ensemble_window": 3, "feature_handler": "Alpha158",
-               "model_type": "LGBModel", "benchmark_code": "SH000906TR",
-               "attribution_sleeve_grouping": True,
-               "risk_constraints_enabled": True,
-               "risk_constraints_calibration": "campaign_v1",
-               "slippage_bps": 5.0}
+    _PRESET = (_PROJECT_ROOT / "config" / "presets"
+               / "pv_incremental_baseline.yaml")
+
+    @classmethod
+    def _run_config(cls, **overrides):
+        # Mirror the SHAPE of a real aggregate report: the engine
+        # captures every WalkForwardConfig field, so a stub with a
+        # handful of keys would not exercise the completeness check.
+        cfg = dict(bx.materialize_preset(cls._PRESET))
         cfg.update(overrides)
         return cfg
+
+    def test_incomplete_captured_config_refuses(self) -> None:
+        # codex #401 r11: a truncated/older report cannot establish
+        # which values produced the predictions — skipping absent
+        # fields would leave the materialization guarantee with a
+        # missing-field fallback.
+        cfg = self._run_config()
+        del cfg["label_horizon_days"]
+        with self.assertRaises(bx.PVBaselineError) as ctx:
+            bx.check_run_config_binding(_plan(), {"config": cfg},
+                                        self._PRESET)
+        self.assertIn("omits materialized field", str(ctx.exception))
 
     @classmethod
     def _agg(cls, run_dir: Path, *, n_folds: int, commit: str = "a" * 40,
@@ -690,8 +702,7 @@ class BaselineExporterTests(unittest.TestCase):
         # exportable with a sidecar claiming the frozen csi800
         # baseline — that certifies the WRONG incremental reference.
         plan = _plan()
-        preset = (_PROJECT_ROOT / "config" / "presets"
-                  / "pv_incremental_baseline.yaml")
+        preset = self._PRESET
         for label, override in (
                 ("other universe", {"instruments": "csi300"}),
                 ("holdout tail", {"overall_end": "2025-12-31"}),
@@ -745,18 +756,15 @@ class BaselineExporterTests(unittest.TestCase):
             self.assertIn("cycle", str(ctx.exception))
 
     def test_missing_captured_config_refuses(self) -> None:
-        preset = (_PROJECT_ROOT / "config" / "presets"
-                  / "pv_incremental_baseline.yaml")
         with self.assertRaises(bx.PVBaselineError):
-            bx.check_run_config_binding(_plan(), {}, preset)
+            bx.check_run_config_binding(_plan(), {}, self._PRESET)
 
     def test_materialized_preset_covers_dataclass_defaults(self) -> None:
         # codex #401 r10: fields neither YAML declares (e.g.
         # label_horizon_days) come from WalkForwardConfig defaults but
         # ARE captured in the run report — a run with a non-default
         # value would otherwise pass the binding check.
-        frozen = (_PROJECT_ROOT / "config" / "presets"
-                  / "pv_incremental_baseline.yaml")
+        frozen = self._PRESET
         materialized = bx.materialize_preset(frozen)
         self.assertIn("label_horizon_days", materialized)
         self.assertNotIn("label_horizon_days",
@@ -802,8 +810,7 @@ class BaselineExporterTests(unittest.TestCase):
         self.assertIn("did not drive this run", str(ctx.exception))
 
     def test_frozen_preset_resolves_and_passes(self) -> None:
-        frozen = (_PROJECT_ROOT / "config" / "presets"
-                  / "pv_incremental_baseline.yaml")
+        frozen = self._PRESET
         resolved = bx.resolve_preset(frozen)
         self.assertEqual("2024-12-31", resolved["overall_end"])
         self.assertEqual("csi800", resolved["instruments"])

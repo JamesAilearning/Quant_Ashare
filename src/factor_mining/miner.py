@@ -109,9 +109,22 @@ class RunResult:
 
 
 def load_config(path: str | Path) -> MinerConfig:
-    """Parse a YAML config into a typed ``MinerConfig``."""
+    """Parse a YAML config into a typed ``MinerConfig``.
+
+    Goes through the repository's environment-aware loader so
+    ``${QUANT_PROVIDER_URI:-/default}`` placeholders expand exactly as
+    they do for every other config in the repo (codex #401 r11: a bare
+    ``yaml.safe_load`` handed the literal ``${...}`` string to
+    ``PITDataProvider``, so a campaign config using the documented
+    env-var convention could not ignite at all). The loader is pure
+    ``os``/``re``/``yaml`` — no qlib, no PIT, so the D5 gate is
+    untouched.
+    """
     p = Path(path)
-    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    from src.core._yaml_loader import (  # noqa: PLC0415
+        load_yaml_with_inheritance,
+    )
+    raw = load_yaml_with_inheritance(p)
     data = DataConfig(**(raw.get("data") or {}))
     gp = GPConfig(**(raw.get("gp") or {}))
     fitness = FitnessConfig(**(raw.get("fitness") or {}))
