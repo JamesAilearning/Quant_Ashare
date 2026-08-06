@@ -132,6 +132,49 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # |0.05| − 0.002×10 − 2.0×(0.40−0.30); no IR/turnover/novelty.
         self.assertAlmostEqual(0.05 - 0.02 - 0.2, score)
 
+    def test_campaign_miner_config_matches_the_frozen_plan(self) -> None:
+        # codex #401 r9: without a campaign miner config the only
+        # available path loads all twelve V1 terminals and the
+        # open→open label — the GP would breed on forbidden inputs
+        # against a different target than the one that adjudicates.
+        cfg = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "factor_mining"
+             / "pv_incremental_v1.yaml").read_text(encoding="utf-8"))
+        data, fit = cfg["data"], cfg["fitness"]
+        plan_fit = _PLAN["fitness"]
+        # PV-DP-1: exactly the seven frozen fields, verbatim order-free.
+        self.assertEqual(sorted(f"${f}" for f in _PLAN["fields"]),
+                         sorted(data["fields"]))
+        # PV-DP-2: the GP may see the IS window and nothing else.
+        self.assertEqual(_PLAN["windows"]["is_start"], data["start_date"])
+        self.assertEqual(_PLAN["windows"]["is_end"], data["end_date"])
+        self.assertEqual(_PLAN["universe"]["instruments"],
+                         data["universe_name"])
+        # PV-DP-3: breeding target == adjudicating target.
+        self.assertEqual("close", data["forward_return_price"])
+        self.assertEqual("close_exec_to_close_next",
+                         _PLAN["metric"]["forward_return"])
+        self.assertEqual(plan_fit["baseline"]["model"],
+                         data["baseline_model"])
+        # Frozen fitness constants, consumed by real config fields.
+        self.assertEqual(plan_fit["ic_term"], fit["ic_term"])
+        self.assertEqual(plan_fit["parsimony_lambda_per_node"],
+                         fit["w_complexity"])
+        self.assertEqual(
+            plan_fit["orthogonality"]["fitness_penalty_weight"],
+            fit["w_orthogonality"])
+        self.assertEqual(
+            plan_fit["orthogonality"]["fitness_band_abs_rho"],
+            fit["orthogonality_band"])
+        self.assertEqual(_PLAN["metric"]["min_names_per_day"],
+                         fit["min_names_per_day"])
+        # The config must parse into the real dataclasses (a typo in a
+        # key would otherwise sit here until ignition).
+        from src.factor_mining.fitness import FitnessConfig
+        from src.factor_mining.miner import DataConfig
+        DataConfig(**data)
+        FitnessConfig(**fit)
+
     def test_baseline_preset_matches_frozen_tail(self) -> None:
         # The preset that drives the baseline run must pin the frozen
         # tail: the parent config_walk.yaml default (2025-12-31) would

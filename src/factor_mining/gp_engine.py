@@ -191,6 +191,10 @@ class GPEngine:
         # invalidation discipline as the coverage key — cached scores
         # produced against a different baseline (or none) are not
         # comparable and must be discarded, not silently mixed.
+        # Campaign terminal whitelist (codex #401 r9): set by ``run``
+        # from the panel actually loaded, so the generator and point
+        # mutation can only build expressions over admitted inputs.
+        self._allowed_terminals: frozenset[str] | None = None
         self._baseline: pd.DataFrame | None = None
         self._baseline_key: str | None = None
         # Pre-stacked baseline (one stack for the whole run, not per
@@ -225,6 +229,7 @@ class GPEngine:
                     max_depth=self.config.max_depth,
                     min_depth=self.config.min_depth,
                     rng=self.rng,
+                    allowed_terminals=self._allowed_terminals,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -462,7 +467,8 @@ class GPEngine:
         sub_min = max(1, min(self.config.min_depth, remaining))
         try:
             new_sub = random_expression(
-                target_type, max_depth=remaining, min_depth=sub_min, rng=self.rng,
+                target_type, max_depth=remaining, min_depth=sub_min,
+                rng=self.rng, allowed_terminals=self._allowed_terminals,
             )
             return _replace_subtree(expr, pos_path, new_sub)
         except (GrammarError, ValueError):
@@ -513,6 +519,11 @@ class GPEngine:
                 pool = [t for t in FeatureRegistry.V1_RAW_PRICE if t != exclude]
             else:
                 pool = [t for t in FeatureRegistry.V1_SCALE_FREE if t != exclude]
+            # Point mutation must respect the campaign whitelist too
+            # (codex #401 r9) — otherwise a legal parent mutates into
+            # an expression over a forbidden terminal.
+            if self._allowed_terminals is not None:
+                pool = [t for t in pool if t in self._allowed_terminals]
             if not pool:
                 raise GrammarError("no alternative terminal available")
             return Terminal(self.rng.choice(pool))
@@ -578,6 +589,7 @@ class GPEngine:
                     max_depth=self.config.max_depth,
                     min_depth=self.config.min_depth,
                     rng=self.rng,
+                    allowed_terminals=self._allowed_terminals,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -615,6 +627,21 @@ class GPEngine:
         # rather than retain stale membership from the old panel. Codex P2
         # on #217.
         self._universe_mask = universe_mask
+        # The panel IS the contract (codex #401 r9): a campaign whose
+        # frozen protocol admits only a subset of the registry loads
+        # exactly those fields, so deriving the generator whitelist
+        # from the panel keeps generation, mutation and evaluation on
+        # one field set. A full-registry panel yields None = legacy
+        # sampling, byte-identical to before.
+        panel_fields = frozenset(
+            k for k in (panel.keys() if hasattr(panel, "keys") else [])
+            if isinstance(k, str) and k.startswith("$")
+        )
+        self._allowed_terminals = (
+            panel_fields
+            if panel_fields and panel_fields != frozenset(FeatureRegistry.V1)
+            else None
+        )
         # Guard a resume/reuse against an incomparable cache: scores cached
         # under a different coverage key — all-cells vs members, OR a
         # different member mask (different universe / date range) — are not

@@ -456,6 +456,82 @@ class EngineBaselineWiringTests(unittest.TestCase):
             self.assertEqual("no_baseline", restored._baseline_key)
 
 
+class TerminalWhitelistTests(unittest.TestCase):
+    """codex #401 r9: the frozen seven-field protocol must constrain
+    the GENERATOR too — a panel whitelist alone would only make every
+    forbidden-terminal individual crash at evaluation."""
+
+    _SEVEN = frozenset({"$open", "$high", "$low", "$close", "$volume",
+                        "$money", "$turnover_rate"})
+    _FORBIDDEN = ("$pe", "$pb", "$ps", "$circ_mv", "$total_mv")
+
+    def test_generator_never_samples_excluded_terminals(self) -> None:
+        from random import Random
+
+        from src.factor_mining.grammar import ExprType, random_expression
+        rng = Random(7)
+        for _ in range(200):
+            expr = str(random_expression(
+                ExprType("CSF", "PURE"), 6, 2, rng,
+                allowed_terminals=self._SEVEN))
+            for bad in self._FORBIDDEN:
+                self.assertNotIn(bad, expr)
+
+    def test_generator_unrestricted_by_default(self) -> None:
+        # Legacy sampling must still reach the fundamentals.
+        from random import Random
+
+        from src.factor_mining.grammar import ExprType, random_expression
+        rng = Random(3)
+        seen = " ".join(
+            str(random_expression(ExprType("CSF", "PURE"), 6, 2, rng))
+            for _ in range(200))
+        self.assertTrue(any(bad in seen for bad in self._FORBIDDEN))
+
+    def test_empty_intersection_refuses(self) -> None:
+        from random import Random
+
+        from src.factor_mining.grammar import (
+            ExprType,
+            GrammarError,
+            random_expression,
+        )
+        with self.assertRaises(GrammarError):
+            random_expression(ExprType("CSF", "PURE"), 6, 2, Random(1),
+                              allowed_terminals=frozenset({"$nonexistent"}))
+
+    def test_point_mutation_respects_whitelist(self) -> None:
+        from src.factor_mining.gp_engine import GPConfig, GPEngine
+        from src.factor_mining.grammar import ExprType
+        eng = GPEngine(GPConfig(seed=5), FitnessConfig())
+        eng._allowed_terminals = self._SEVEN
+        for _ in range(50):
+            term = eng._random_terminal_same_type(
+                ExprType("FEATURE", "PURE"), exclude="$volume")
+            self.assertIn(term.name, self._SEVEN)
+
+    def test_run_derives_whitelist_from_panel(self) -> None:
+        # A campaign panel (seven fields) restricts; a full-registry
+        # panel leaves sampling untouched (legacy byte-identical).
+        from src.factor_mining.gp_engine import GPConfig, GPEngine
+        from src.factor_mining.grammar import FeatureRegistry
+        dates = pd.date_range("2023-01-02", periods=3, freq="B")
+        seven_panel = {f: pd.DataFrame(1.0, index=dates,
+                                       columns=["a", "b", "c"])
+                       for f in sorted(self._SEVEN)}
+        eng = GPEngine(GPConfig(seed=1, population_size=1,
+                                n_generations=0), FitnessConfig())
+        eng.run(seven_panel, seven_panel["$close"], n_generations=0)
+        self.assertEqual(self._SEVEN, eng._allowed_terminals)
+        full_panel = {f: pd.DataFrame(1.0, index=dates,
+                                      columns=["a", "b", "c"])
+                      for f in FeatureRegistry.V1}
+        eng2 = GPEngine(GPConfig(seed=1, population_size=1,
+                                 n_generations=0), FitnessConfig())
+        eng2.run(full_panel, full_panel["$close"], n_generations=0)
+        self.assertIsNone(eng2._allowed_terminals)
+
+
 class MinerBaselineLoadingTests(unittest.TestCase):
     """The miner must refuse an unbound baseline: it keys the only
     incremental criterion the campaign has."""

@@ -50,6 +50,18 @@ class DataConfig:
     start_date: str = "2018-01-01"
     end_date: str = "2025-12-31"
     forward_horizon: int = 1
+    # Terminal whitelist for the panel. Empty = the full
+    # ``FeatureRegistry.V1`` twelve (legacy). A campaign whose frozen
+    # protocol admits only a subset MUST list it here (codex #401 r9):
+    # otherwise the view loads valuation/market-cap terminals the
+    # pre-registration explicitly excludes and the GP can breed on
+    # forbidden inputs.
+    fields: tuple[str, ...] = ()
+    # Forward-return price field: "open" (legacy open→open, D1) or
+    # "close" (pv_incremental_v1's frozen close_exec_to_close_next).
+    # Breeding against a different target than the one that
+    # adjudicates is the same class of defect as a different metric.
+    forward_return_price: str = "open"
     # Campaign baseline predictions (wide parquet, date × instrument)
     # for the orthogonality penalty. Plain pandas read — no qlib, no
     # PIT, so the D5 gate is untouched. Loading REQUIRES the exporter's
@@ -170,9 +182,13 @@ def _build_pit_panel(config: DataConfig):
         start=config.start_date,
         end=config.end_date,
         universe_name=config.universe_name,
+        # Frozen terminal whitelist when a campaign declares one
+        # (codex #401 r9); None keeps the legacy full V1 registry.
+        fields=list(config.fields) if config.fields else None,
     )
     panel = view.load_panel()
-    fwd = view.forward_return(horizon=config.forward_horizon)
+    fwd = view.forward_return(horizon=config.forward_horizon,
+                              price=config.forward_return_price)
     return panel, fwd
 
 
