@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -177,22 +178,36 @@ def check_run_config(plan: dict[str, Any],
     # root, so a relative path in its config means "from there"), then
     # the repo root, so the same config resolves identically wherever
     # the registrar runs.
-    candidates_paths = [Path(baseline_path)]
-    if not Path(baseline_path).is_absolute():
-        candidates_paths = [run_dir / baseline_path,
-                            _REPO_ROOT / baseline_path,
-                            Path(baseline_path)]
-    baseline_file = next(
-        (c for c in candidates_paths if c.is_file()), None)
-    if baseline_file is None:
+    # Identity by DIGEST, never by path search (codex #402 r4): the
+    # miner resolves a relative baseline path against ITS launch
+    # directory, so hunting for that name under the run dir / repo
+    # root can hash a different same-named parquet than the one that
+    # shaped fitness. The miner now records the digest of the bytes it
+    # actually consumed; that recorded value IS the identity, and a
+    # run predating it cannot be registered.
+    recorded_sha = cfg.get("baseline_preds_sha256")
+    if not isinstance(recorded_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", recorded_sha or ""):
         raise PVRegisterError(
-            f"the GP run's baseline {baseline_path!r} cannot be read "
-            f"(tried {[str(c) for c in candidates_paths]}) — the "
-            "registration must digest the baseline that shaped the "
-            "fitness behind this top-K; make it available and re-run; "
-            "refusing.")
-    digests["baseline_preds.parquet"] = hashlib.sha256(
-        baseline_file.read_bytes()).hexdigest()
+            "the GP run's config records no baseline_preds_sha256 "
+            f"(got {recorded_sha!r}) — without the digest of the bytes "
+            "the miner actually consumed, the registration cannot be "
+            "tied to the baseline that shaped its top-K; re-run the "
+            "GP batch with the current miner; refusing.")
+    digests["baseline_preds.parquet"] = recorded_sha
+    # When the file is still reachable, VERIFY rather than trust: a
+    # resolved-path record plus matching bytes is a stronger binding
+    # than either alone. An unreachable file is not fatal here — the
+    # digest is already the identity — but a MISMATCH is.
+    resolved = cfg.get("baseline_preds_resolved_path")
+    if isinstance(resolved, str) and resolved and Path(resolved).is_file():
+        actual = hashlib.sha256(Path(resolved).read_bytes()).hexdigest()
+        if actual != recorded_sha:
+            raise PVRegisterError(
+                f"the baseline at {resolved} now digests to "
+                f"{actual[:12]}… but the GP run consumed "
+                f"{recorded_sha[:12]}… — the file changed after "
+                "mining; refusing.")
     return {
         "gp_run_dir": str(run_dir),
         "gp_config_sha256": hashlib.sha256(
@@ -370,37 +385,18 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = out_dir / "candidates.json"
-        # Order matters (codex #402 r3): the manifest is the
-        # COMMIT POINT, so both sidecars land first. Creating it
-        # first and then failing on a sidecar would leave a
-        # permanently frozen registration with no provenance —
-        # and the retry would refuse because it exists.
+        # ACQUIRE ownership first, then publish (codex #402 r4):
+        # writing the sidecars BEFORE the exclusive create meant a
+        # refused retry had already truncated the previous
+        # registration's provenance and ledger, leaving the frozen
+        # manifest paired with metadata for a registration that
+        # never happened. The exclusive create is the lock; if any
+        # later write fails, the manifest is rolled back so no
+        # half-registration survives.
         payload = json.dumps(manifest, indent=2,
                              ensure_ascii=False) + chr(10)
         manifest_sha = hashlib.sha256(
             payload.encode("utf-8")).hexdigest()
-        for key, value in (
-                ("protocol_id", PROTOCOL_ID),
-                ("manifest_sha256", manifest_sha),
-                ("pool_size", pool_size),
-                ("registered", len(manifest))):
-            provenance[key] = value
-        (out_dir / "candidates.json.provenance.json").write_text(
-            json.dumps(provenance, indent=2, ensure_ascii=False)
-            + chr(10),
-            encoding="utf-8")
-        entry = ledger_entry(
-            when=args.when, manifest_path=manifest_path,
-            manifest_sha256=manifest_sha, provenance=provenance,
-            n_candidates=len(manifest), pool_size=pool_size)
-        (out_dir / "ledger_entry.yaml").write_text(
-            yaml.safe_dump([entry], sort_keys=False,
-                           allow_unicode=True),
-            encoding="utf-8")
-        # EXCLUSIVE create, never check-then-write (codex #402
-        # r1/r2): two registrars targeting one fresh dir could
-        # both clear an exists() check and the second would
-        # truncate the first's frozen registration.
         try:
             with open(manifest_path, "x", encoding="utf-8") as fh:
                 fh.write(payload)
@@ -411,6 +407,27 @@ def main(argv: list[str] | None = None) -> int:
                 "ids would let a new batch inherit an old batch's "
                 "artifacts); use a fresh --out-dir; refusing."
             ) from exc
+        try:
+            for key, value in (
+                    ("protocol_id", PROTOCOL_ID),
+                    ("manifest_sha256", manifest_sha),
+                    ("pool_size", pool_size),
+                    ("registered", len(manifest))):
+                provenance[key] = value
+            (out_dir / "candidates.json.provenance.json").write_text(
+                json.dumps(provenance, indent=2, ensure_ascii=False)
+                + chr(10), encoding="utf-8")
+            entry = ledger_entry(
+                when=args.when, manifest_path=manifest_path,
+                manifest_sha256=manifest_sha, provenance=provenance,
+                n_candidates=len(manifest), pool_size=pool_size)
+            (out_dir / "ledger_entry.yaml").write_text(
+                yaml.safe_dump([entry], sort_keys=False,
+                               allow_unicode=True),
+                encoding="utf-8")
+        except Exception:
+            manifest_path.unlink(missing_ok=True)
+            raise
 
         print(f"[pv-register] wrote {manifest_path}")
         print(f"[pv-register] pool_size={pool_size} "

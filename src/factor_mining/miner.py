@@ -304,7 +304,14 @@ def load_baseline_predictions(config: MinerConfig):
     if frame.empty:
         raise ValueError(f"baseline predictions {path} are empty; refusing.")
     frame.index = pd.to_datetime(frame.index)
-    return frame.sort_index()
+    frame = frame.sort_index()
+    # Record WHICH bytes were consumed (codex #402 r4): the config
+    # only carries a path, which resolves against the miner's launch
+    # directory — a downstream consumer searching for that path can
+    # hash a different same-named file. The digest is the identity.
+    frame.attrs["baseline_preds_sha256"] = file_sha
+    frame.attrs["baseline_preds_resolved_path"] = str(path.resolve())
+    return frame
 
 
 def build_panel(config: MinerConfig):
@@ -426,6 +433,10 @@ def run_mining(config: MinerConfig) -> RunResult:
         # penalty. That gap is DISCLOSED here (run-level counts + the
         # baseline's own date span), never silently absorbed into the
         # scores.
+        config_dump["baseline_preds_sha256"] = baseline.attrs.get(
+            "baseline_preds_sha256")
+        config_dump["baseline_preds_resolved_path"] = baseline.attrs.get(
+            "baseline_preds_resolved_path")
         config_dump["baseline_orthogonality"] = {
             "baseline_first_date": str(baseline.index.min())[:10],
             "baseline_last_date": str(baseline.index.max())[:10],

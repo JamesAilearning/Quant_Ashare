@@ -66,6 +66,7 @@ def _run_config(**overrides) -> dict:
                 plan["fitness"]["orthogonality"]["fitness_band_abs_rho"],
             "min_names_per_day": plan["metric"]["min_names_per_day"],
         },
+        "baseline_preds_sha256": "0" * 64,
         "gp": {"max_depth": plan["gp"]["max_depth"],
                "min_depth": plan["gp"]["min_depth"], "seed": 42},
         "run_id": "gp0001",
@@ -82,11 +83,19 @@ def _make_run(tmp: Path, entries, *, config=None,
     from src.factor_mining.factor_pool import FactorPool
     tmp.mkdir(parents=True, exist_ok=True)
     if with_baseline:
-        # The registration digests the baseline that shaped fitness
-        # (codex #402 r3), so a run fixture needs a real one.
+        # The miner records the DIGEST of the bytes it consumed
+        # (codex #402 r4); the fixture keeps config and file in sync.
+        bpath = tmp / "baseline_preds.parquet"
         pd.DataFrame({"a": [0.1], "b": [0.2]},
                      index=pd.DatetimeIndex(["2022-12-30"])).to_parquet(
-            tmp / "baseline_preds.parquet")
+            bpath)
+        import hashlib as _h
+        digest = _h.sha256(bpath.read_bytes()).hexdigest()
+        if config is None:
+            config = _run_config()
+        config = dict(config)
+        config["baseline_preds_sha256"] = digest
+        config["baseline_preds_resolved_path"] = str(bpath.resolve())
     pool = FactorPool()
     for e in entries:
         pool.add(e)
@@ -132,15 +141,32 @@ class RunBindingTests(unittest.TestCase):
             self.assertRegex(d["baseline_preds.parquet"],
                              r"^[0-9a-f]{64}$")
 
-    def test_unhashable_baseline_refuses(self) -> None:
-        # codex #402 r3: a registration that cannot digest the
-        # baseline cannot be tied to the input that shaped its top-K.
+    def test_missing_recorded_digest_refuses(self) -> None:
+        # codex #402 r4: identity is the digest the miner recorded,
+        # not a path search — a run predating it cannot register.
         with tempfile.TemporaryDirectory() as d:
-            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)],
-                            with_baseline=False)
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            cfg = yaml.safe_load(
+                (run / "config.yaml").read_text(encoding="utf-8"))
+            del cfg["baseline_preds_sha256"]
+            (run / "config.yaml").write_text(
+                yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+                encoding="utf-8")
             with self.assertRaises(rg.PVRegisterError) as ctx:
                 rg.check_run_config(_plan(), run)
-            self.assertIn("cannot be read", str(ctx.exception))
+            self.assertIn("baseline_preds_sha256", str(ctx.exception))
+
+    def test_baseline_changed_after_mining_refuses(self) -> None:
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            # Same path, different bytes than the miner consumed.
+            pd.DataFrame({"a": [9.9]},
+                         index=pd.DatetimeIndex(["2022-12-30"])
+                         ).to_parquet(run / "baseline_preds.parquet")
+            with self.assertRaises(rg.PVRegisterError) as ctx:
+                rg.check_run_config(_plan(), run)
+            self.assertIn("changed after mining", str(ctx.exception))
 
     def test_validity_gate_drift_refuses(self) -> None:
         # codex #402 r3: these gates decide which entries are scored
