@@ -54,7 +54,7 @@ def _run_config(**overrides) -> dict:
             "end_date": plan["windows"]["is_end"],
             "forward_return_price": "close",
             "fields": [f"${f}" for f in plan["fields"]],
-            "baseline_preds_path": "out/baseline_preds.parquet",
+            "baseline_preds_path": "baseline_preds.parquet",
             "baseline_model": plan["fitness"]["baseline"]["model"],
         },
         "fitness": {
@@ -75,9 +75,18 @@ def _run_config(**overrides) -> dict:
     return cfg
 
 
-def _make_run(tmp: Path, entries, *, config=None) -> Path:
+def _make_run(tmp: Path, entries, *, config=None,
+              with_baseline: bool = True) -> Path:
+    import pandas as pd
+
     from src.factor_mining.factor_pool import FactorPool
     tmp.mkdir(parents=True, exist_ok=True)
+    if with_baseline:
+        # The registration digests the baseline that shaped fitness
+        # (codex #402 r3), so a run fixture needs a real one.
+        pd.DataFrame({"a": [0.1], "b": [0.2]},
+                     index=pd.DatetimeIndex(["2022-12-30"])).to_parquet(
+            tmp / "baseline_preds.parquet")
     pool = FactorPool()
     for e in entries:
         pool.add(e)
@@ -120,8 +129,31 @@ class RunBindingTests(unittest.TestCase):
             self.assertRegex(d["factor_pool.parquet"], r"^[0-9a-f]{64}$")
             self.assertRegex(d["factor_expressions.json"],
                              r"^[0-9a-f]{64}$")
-            self.assertEqual("ABSENT_AT_REGISTRATION",
-                             d["baseline_preds.parquet"])
+            self.assertRegex(d["baseline_preds.parquet"],
+                             r"^[0-9a-f]{64}$")
+
+    def test_unhashable_baseline_refuses(self) -> None:
+        # codex #402 r3: a registration that cannot digest the
+        # baseline cannot be tied to the input that shaped its top-K.
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)],
+                            with_baseline=False)
+            with self.assertRaises(rg.PVRegisterError) as ctx:
+                rg.check_run_config(_plan(), run)
+            self.assertIn("cannot be read", str(ctx.exception))
+
+    def test_validity_gate_drift_refuses(self) -> None:
+        # codex #402 r3: these gates decide which entries are scored
+        # -inf, hence which can reach the top-K at all.
+        for gate, value in (("coverage_min", 0.0),
+                            ("variance_days_frac_min", 0.0),
+                            ("extreme_outlier_frac_max", 1.0)):
+            with tempfile.TemporaryDirectory() as d:
+                run = _make_run(
+                    Path(d) / "run", [_entry(_CSF, 0.05)],
+                    config=_run_config(fitness={gate: value}))
+                with self.assertRaises(rg.PVRegisterError, msg=gate):
+                    rg.check_run_config(_plan(), run)
 
     def test_pool_digest_changes_when_pool_changes(self) -> None:
         # A pool replaced in place must not present identical

@@ -123,6 +123,19 @@ def check_run_config(plan: dict[str, Any],
             fit.get("orthogonality_band"),
             plan["fitness"]["orthogonality"]["fitness_band_abs_rho"]),
     }
+    # The VALIDITY gates decide which entries are scored -inf and so
+    # which ones can reach the top-K at all (codex #402 r3): a run
+    # with coverage_min=0 or relaxed variance/outlier bounds can
+    # register factors the campaign's gates would have rejected. The
+    # frozen plan does not restate them — the campaign inherits the v1
+    # defaults — so the defaults ARE the frozen values here.
+    from src.factor_mining.fitness import FitnessConfig
+    defaults = FitnessConfig()
+    for gate in ("coverage_min", "variance_days_frac_min",
+                 "variance_min", "extreme_outlier_frac_max",
+                 "extreme_outlier_magnitude"):
+        expected[gate] = (fit.get(gate, getattr(defaults, gate)),
+                          getattr(defaults, gate))
     drift = {k: {"run": got, "frozen": want}
              for k, (got, want) in expected.items() if got != want}
     if drift:
@@ -156,15 +169,30 @@ def check_run_config(plan: dict[str, Any],
                 f"{f} not found — the run directory is not a complete "
                 "miner run; refusing.")
         digests[name] = hashlib.sha256(f.read_bytes()).hexdigest()
-    baseline_file = Path(baseline_path)
-    if baseline_file.is_file():
-        digests["baseline_preds.parquet"] = hashlib.sha256(
-            baseline_file.read_bytes()).hexdigest()
-    else:
-        # Recorded honestly rather than silently omitted: the baseline
-        # may live on another machine by registration time, and the
-        # reader must be able to tell "absent" from "unhashed".
-        digests["baseline_preds.parquet"] = "ABSENT_AT_REGISTRATION"
+    # The baseline SHAPED the fitness that produced this top-K, so a
+    # registration that cannot hash it cannot be tied to — or
+    # reconstructed from — its own inputs (codex #402 r3). Fail closed
+    # rather than record a sentinel. Relative paths resolve against
+    # the run directory first (the miner is launched from the repo
+    # root, so a relative path in its config means "from there"), then
+    # the repo root, so the same config resolves identically wherever
+    # the registrar runs.
+    candidates_paths = [Path(baseline_path)]
+    if not Path(baseline_path).is_absolute():
+        candidates_paths = [run_dir / baseline_path,
+                            _REPO_ROOT / baseline_path,
+                            Path(baseline_path)]
+    baseline_file = next(
+        (c for c in candidates_paths if c.is_file()), None)
+    if baseline_file is None:
+        raise PVRegisterError(
+            f"the GP run's baseline {baseline_path!r} cannot be read "
+            f"(tried {[str(c) for c in candidates_paths]}) — the "
+            "registration must digest the baseline that shaped the "
+            "fitness behind this top-K; make it available and re-run; "
+            "refusing.")
+    digests["baseline_preds.parquet"] = hashlib.sha256(
+        baseline_file.read_bytes()).hexdigest()
     return {
         "gp_run_dir": str(run_dir),
         "gp_config_sha256": hashlib.sha256(
@@ -342,26 +370,15 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = out_dir / "candidates.json"
-        # EXCLUSIVE create, never check-then-write (codex #402
-        # r1/r2): two registrars targeting one fresh dir could
-        # both clear an exists() check and the second would
-        # truncate the first's frozen registration. Same "x"
-        # discipline as the evaluator's artifacts.
-        try:
-            with open(manifest_path, "x", encoding="utf-8") as fh:
-                fh.write(json.dumps(manifest, indent=2,
-                                    ensure_ascii=False)
-                         + chr(10))
-        except FileExistsError as exc:
-            raise PVRegisterError(
-                f"{manifest_path} already exists — a registration is "
-                "frozen once written (re-registering under the same "
-                "ids would let a new batch inherit an old batch's "
-                "artifacts); use a fresh --out-dir; refusing."
-            ) from exc
+        # Order matters (codex #402 r3): the manifest is the
+        # COMMIT POINT, so both sidecars land first. Creating it
+        # first and then failing on a sidecar would leave a
+        # permanently frozen registration with no provenance —
+        # and the retry would refuse because it exists.
+        payload = json.dumps(manifest, indent=2,
+                             ensure_ascii=False) + chr(10)
         manifest_sha = hashlib.sha256(
-            manifest_path.read_bytes()).hexdigest()
-
+            payload.encode("utf-8")).hexdigest()
         for key, value in (
                 ("protocol_id", PROTOCOL_ID),
                 ("manifest_sha256", manifest_sha),
@@ -369,9 +386,9 @@ def main(argv: list[str] | None = None) -> int:
                 ("registered", len(manifest))):
             provenance[key] = value
         (out_dir / "candidates.json.provenance.json").write_text(
-            json.dumps(provenance, indent=2, ensure_ascii=False) + "\n",
+            json.dumps(provenance, indent=2, ensure_ascii=False)
+            + chr(10),
             encoding="utf-8")
-
         entry = ledger_entry(
             when=args.when, manifest_path=manifest_path,
             manifest_sha256=manifest_sha, provenance=provenance,
@@ -380,6 +397,20 @@ def main(argv: list[str] | None = None) -> int:
             yaml.safe_dump([entry], sort_keys=False,
                            allow_unicode=True),
             encoding="utf-8")
+        # EXCLUSIVE create, never check-then-write (codex #402
+        # r1/r2): two registrars targeting one fresh dir could
+        # both clear an exists() check and the second would
+        # truncate the first's frozen registration.
+        try:
+            with open(manifest_path, "x", encoding="utf-8") as fh:
+                fh.write(payload)
+        except FileExistsError as exc:
+            raise PVRegisterError(
+                f"{manifest_path} already exists — a registration is "
+                "frozen once written (re-registering under the same "
+                "ids would let a new batch inherit an old batch's "
+                "artifacts); use a fresh --out-dir; refusing."
+            ) from exc
 
         print(f"[pv-register] wrote {manifest_path}")
         print(f"[pv-register] pool_size={pool_size} "
