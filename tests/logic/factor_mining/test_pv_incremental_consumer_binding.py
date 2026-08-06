@@ -259,6 +259,39 @@ class LedgerAuthorityTests(_RestoresRepoRoot):
                              loaded["manifest_sha256"])
             self.assertIn("gp_input_sha256", loaded)
 
+    def test_empty_trusted_ref_override_refuses(self) -> None:
+        # codex #403 r6: an unexpanded CI variable must not become an
+        # implicit "authorise against local HEAD".
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            prior = os.environ.get("PV_TRUSTED_LEDGER_REF")
+            os.environ["PV_TRUSTED_LEDGER_REF"] = "   "
+            try:
+                with self.assertRaises(reg.PVRegistrationError) as ctx:
+                    reg.load_registration(manifest, ledger)
+                self.assertIn("set but empty", str(ctx.exception))
+            finally:
+                if prior is None:
+                    os.environ.pop("PV_TRUSTED_LEDGER_REF", None)
+                else:
+                    os.environ["PV_TRUSTED_LEDGER_REF"] = prior
+
+    def test_head_fallback_discloses_the_downgrade(self) -> None:
+        # The fixture repo has no remote, so this exercises the
+        # fallback path — which must SAY so.
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                reg.load_registration(manifest, ledger)
+            self.assertIn("NOT been shown to be reviewed",
+                          buf.getvalue())
+
     def test_ledger_entry_authorises(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             manifest, _ = _registered_batch(Path(d))

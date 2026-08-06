@@ -80,9 +80,22 @@ def _committed_ledger_bytes(ledger_path: Path) -> bytes:
     # not have; the operator sets TRUSTED_LEDGER_REF if a stricter
     # anchor exists.
     import os
-    trusted_ref = os.environ.get("PV_TRUSTED_LEDGER_REF",
-                                 "origin/main")
-    refs = [trusted_ref, "HEAD"] if trusted_ref else ["HEAD"]
+    # An UNSET variable means "use the default anchor"; a variable set
+    # to empty is a misconfiguration — typically an unexpanded CI
+    # variable — and must not silently become "authorise against local
+    # HEAD" (codex #403 r6), which is exactly the unreviewed path this
+    # anchor exists to close.
+    if "PV_TRUSTED_LEDGER_REF" in os.environ:
+        trusted_ref = os.environ["PV_TRUSTED_LEDGER_REF"]
+        if not trusted_ref.strip():
+            raise PVRegistrationError(
+                "PV_TRUSTED_LEDGER_REF is set but empty — refusing "
+                "rather than falling back to local HEAD, which would "
+                "authorise an unreviewed ledger commit; unset it to "
+                "use the default anchor, or point it at a real ref.")
+    else:
+        trusted_ref = "origin/main"
+    refs = [trusted_ref, "HEAD"]
     try:
         committed = None
         used_ref = None
@@ -94,7 +107,7 @@ def _committed_ledger_bytes(ledger_path: Path) -> bytes:
                 committed, used_ref = probe, ref
                 break
             committed = probe
-        if used_ref == "HEAD" and trusted_ref:
+        if used_ref == "HEAD":
             # Fell back because the trusted ref is unavailable (a fresh
             # clone, a detached CI checkout, a test fixture). Say so —
             # the weaker anchor is a fact about this run, not a detail.
