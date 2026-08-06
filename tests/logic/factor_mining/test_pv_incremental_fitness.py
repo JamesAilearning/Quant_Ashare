@@ -1303,6 +1303,15 @@ class BaselineExporterTests(unittest.TestCase):
                     run_dir, self._PRESET, {"bundle_tag": tag},
                     fold_indices=[0])
             self.assertIn("report_path", str(ctx.exception))
+            # (a2) paths present but no test_period at all
+            no_window = {k: v for k, v in good.items()
+                         if k != "test_period"}
+            mpath.write_text(json.dumps(no_window), encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    fold_indices=[0])
+            self.assertIn("test_period", str(ctx.exception))
             # (b) manifest describing a DIFFERENT fold's window
             drifted = dict(good, test_period="2024-01-02 ~ 2024-03-31")
             mpath.write_text(json.dumps(drifted), encoding="utf-8")

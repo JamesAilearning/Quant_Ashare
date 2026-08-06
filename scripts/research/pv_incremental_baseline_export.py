@@ -317,15 +317,24 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
             (run_dir / f"fold_{idx:02d}_report.json").read_text(
                 encoding="utf-8"))
         win = report.get("windows", {}).get("test", {})
+        # REQUIRED, not optional (codex #401 r17): leaving it
+        # optional let a truncated/copied same-index manifest carry
+        # the right basenames, skip the window comparison entirely,
+        # and still contribute its config_fingerprint as
+        # run-authoritative evidence.
         declared_test = payload.get("test_period")
-        if declared_test is not None:
-            expected_test = f"{win.get('start')} ~ {win.get('end')}"
-            if str(declared_test) != expected_test:
-                raise PVBaselineError(
-                    f"{m_path.name} declares test_period "
-                    f"{declared_test!r} but the fold report says "
-                    f"{expected_test!r} — the manifest describes a "
-                    "different run than these artifacts; refusing.")
+        if not isinstance(declared_test, str) or not declared_test.strip():
+            raise PVBaselineError(
+                f"{m_path.name} carries no test_period — an "
+                "abbreviated manifest cannot be shown to describe "
+                "these fold artifacts; refusing.")
+        expected_test = f"{win.get('start')} ~ {win.get('end')}"
+        if declared_test != expected_test:
+            raise PVBaselineError(
+                f"{m_path.name} declares test_period "
+                f"{declared_test!r} but the fold report says "
+                f"{expected_test!r} — the manifest describes a "
+                "different run than these artifacts; refusing.")
     # EVERY exported fold needs its own manifest (codex #401 r15): a
     # torn/copied directory keeping one stale manifest from bundle A
     # alongside reports produced under bundle B would otherwise get
