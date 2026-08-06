@@ -112,6 +112,15 @@ class EvaluationResult:
     turnover_daily: float
     coverage: float
     n_obs_per_day_min: int
+    # Dates whose cross-section actually produced a finite rank-IC —
+    # i.e. the ELIGIBLE IC days after the thin-day floor and the
+    # forward-return join. Additive with a default so every existing
+    # construction site is unchanged. A campaign whose adjudicating
+    # metric restricts orthogonality to the eligible IC dates (codex
+    # #401 r8: the OOS evaluator does ``orth.reindex(ic.index)``) must
+    # measure its breeding penalty over the SAME dates — otherwise
+    # lag-tail / PIT-gap days steer selection but never reach the gate.
+    ic_dates: pd.Index | None = None
 
 
 def _ic_per_day(
@@ -344,4 +353,10 @@ def evaluate_factor(
         turnover_daily=_turnover_daily(factor_values),
         coverage=_coverage(factor_values, universe_mask),
         n_obs_per_day_min=_n_obs_per_day_min(factor_values, fwd),
+        # Eligible IC dates = those the rank-IC path actually scored
+        # (finite rho after the thin-day floor and the forward-return
+        # join) — the axis a campaign's orthogonality penalty must
+        # share with adjudication (codex #401 r8).
+        ic_dates=ic_rank.index[np.isfinite(ic_rank.to_numpy())]
+        if ic_rank.shape[0] else ic_rank.index,
     )

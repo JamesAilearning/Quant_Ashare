@@ -299,7 +299,8 @@ class GPEngine:
             return float("-inf"), None
         novelty = self._within_generation_novelty(result.factor_values)
         size = expression_size(expr)
-        baseline_rho = self._baseline_orthogonality(result.factor_values)
+        baseline_rho = self._baseline_orthogonality(
+            result.factor_values, result.ic_dates)
         score = compute_fitness(
             result, expr_size=size, novelty_penalty=novelty, config=self.fitness_config,
             baseline_mean_abs_rho=baseline_rho,
@@ -324,7 +325,8 @@ class GPEngine:
             )
         return score, result
 
-    def _baseline_orthogonality(self, factor_values: pd.DataFrame) -> float:
+    def _baseline_orthogonality(self, factor_values: pd.DataFrame,
+                                ic_dates: pd.Index | None = None) -> float:
         """Mean |daily cross-sectional Spearman rho| vs the baseline.
 
         The campaign's incremental criterion (pv_incremental_v1
@@ -346,6 +348,13 @@ class GPEngine:
             return float("nan")
         floor = _orthogonality_floor(self.fitness_config)
         common_dates = factor_values.index.intersection(self._baseline.index)
+        # Restrict to the ELIGIBLE IC dates (codex #401 r8): the OOS
+        # evaluator adjudicates orthogonality on ``ic.index`` only, so
+        # lag-tail and PIT-gap days — where factor and baseline both
+        # exist but no forward return does — must not steer breeding
+        # either. Legacy runs pass no axis and keep every shared day.
+        if ic_dates is not None:
+            common_dates = common_dates.intersection(ic_dates)
         self._orthogonality_scored += 1
         if len(common_dates) == 0:
             self._orthogonality_uncovered += 1

@@ -263,6 +263,59 @@ class BaselinePanelBindingTests(unittest.TestCase):
         self.assertTrue(np.isnan(eng2._baseline_orthogonality(factor)))
         self.assertEqual(1, eng2._orthogonality_uncovered)
 
+    def test_penalty_restricted_to_eligible_ic_days(self) -> None:
+        # codex #401 r8: the OOS evaluator adjudicates orthogonality on
+        # ic.index only (`orth.reindex(ic.index).dropna()`), so days
+        # where factor and baseline both exist but no forward return
+        # does (lag tail / PIT gaps) must not steer breeding either.
+        from src.factor_mining.gp_engine import GPConfig, GPEngine
+        dates = pd.date_range("2023-01-02", periods=4, freq="B")
+        cols = [f"n{i}" for i in range(6)]
+        rng = np.random.default_rng(41)
+        factor = pd.DataFrame(rng.normal(size=(4, 6)), index=dates,
+                              columns=cols)
+        # Baseline perfectly tracks the factor on the two eligible
+        # days and is scrambled on the two ineligible (lag-tail) days.
+        baseline = factor.copy()
+        baseline.loc[dates[2:]] = rng.normal(size=(2, 6))
+        eng = GPEngine(GPConfig(seed=1),
+                       FitnessConfig(w_orthogonality=2.0,
+                                     orthogonality_band=0.30))
+        eng._baseline = baseline
+        # All four days: the scrambled tail drags the mean |rho| down.
+        all_days = eng._baseline_orthogonality(factor)
+        # Restricted to the eligible IC axis: only the tracking days
+        # count, so rho is 1.0 — the days adjudication will judge.
+        eligible = eng._baseline_orthogonality(factor, dates[:2])
+        self.assertAlmostEqual(1.0, eligible)
+        self.assertLess(all_days, eligible)
+
+    def test_evaluator_exposes_eligible_ic_dates(self) -> None:
+        # The axis must come from the evaluator itself (the days that
+        # actually produced a finite rank-IC), not be re-derived.
+        from src.factor_mining.evaluator import evaluate_factor
+        from src.factor_mining.expression import parse_expression
+        dates = pd.date_range("2023-01-02", periods=10, freq="B")
+        cols = [f"n{i}" for i in range(5)]
+        rng = np.random.default_rng(42)
+        close = pd.DataFrame(
+            rng.normal(100, 5, size=(10, 5)), index=dates, columns=cols)
+        fwd = pd.DataFrame(rng.normal(size=(10, 5)), index=dates,
+                           columns=cols)
+        fwd.loc[dates[-1]] = np.nan          # lag tail: no return
+        result = evaluate_factor(
+            parse_expression("cs_rank(ts_pctchange($close, 5))"),
+            {"$close": close}, fwd, method="normal")
+        self.assertIsNotNone(result.ic_dates)
+        self.assertNotIn(dates[-1], result.ic_dates)
+        # Legacy default construction still works (additive field).
+        from src.factor_mining.evaluator import EvaluationResult
+        legacy = EvaluationResult(
+            factor_values=close, ic_mean=0.0, ic_std=0.1, ir=0.0,
+            rank_ic_mean=0.0, rank_ic_std=0.1, rank_ir=0.0,
+            turnover_daily=0.0, coverage=1.0, n_obs_per_day_min=5)
+        self.assertIsNone(legacy.ic_dates)
+
     def test_setup_guard_uses_campaign_floor(self) -> None:
         from src.factor_mining.gp_engine import _assert_baseline_meets_panel
         dates = pd.date_range("2023-01-02", periods=3, freq="B")
