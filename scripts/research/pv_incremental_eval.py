@@ -399,8 +399,24 @@ def main(argv: list[str] | None = None) -> int:
             close, lag=int(plan["metric"]["signal_to_execution_lag"]))
         min_names = int(plan["metric"]["min_names_per_day"])
 
+        # The registration is what makes the batch frozen (codex
+        # #402 r6): the manifest's bytes must still equal what the
+        # registrar recorded, and the baseline scored against must be
+        # the one the candidates were bred against.
+        from scripts.research.pv_incremental_registration import (
+            PVRegistrationError,
+            assert_baseline_matches_registration,
+            load_registration,
+        )
+        manifest_path = Path(args.candidates)
+        try:
+            registration = load_registration(manifest_path)
+            assert_baseline_matches_registration(
+                registration, baseline_sha)
+        except PVRegistrationError as exc:
+            raise PVEvalError(str(exc)) from exc
         candidates = json.loads(
-            Path(args.candidates).read_text(encoding="utf-8"))
+            manifest_path.read_text(encoding="utf-8"))
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         # ONE run identity per invocation (codex #399 r5): every
