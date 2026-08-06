@@ -37,18 +37,36 @@ from tests.logic.factor_mining.test_pv_incremental_register import (  # noqa: E4
 
 
 def _authorised_ledger(tmp: Path, manifest: Path) -> Path:
-    """A campaign ledger that records this manifest — the independent
-    authority the consumers authenticate against (codex #403 r3)."""
+    """A COMMITTED campaign ledger recording this manifest.
+
+    The authority is the committed bytes (codex #403 r4), so the
+    fixture builds a real throwaway git repo rather than dropping a
+    file next to the artifacts — a working-tree-only ledger is
+    precisely what must NOT authorise a batch.
+    """
+    import subprocess
     entry = yaml.safe_load(
         (manifest.parent / "ledger_entry.yaml").read_text(
             encoding="utf-8"))
-    path = tmp / "ledger.yaml"
+    repo = tmp / "ledger_repo"
+    (repo / "docs" / "prereg").mkdir(parents=True, exist_ok=True)
+    path = repo / "docs" / "prereg" / "pv_incremental_ledger.yaml"
     path.write_text(
         yaml.safe_dump({"protocol_id": "pv_incremental_v1",
                         "plan": "docs/prereg/pv_incremental.yaml",
                         "entries": entry},
                        sort_keys=False, allow_unicode=True),
         encoding="utf-8")
+    for cmd in (["git", "init", "-q"],
+                ["git", "config", "user.email", "t@example.com"],
+                ["git", "config", "user.name", "t"],
+                ["git", "add", "-A"],
+                ["git", "commit", "-q", "-m", "ledger"]):
+        subprocess.run(cmd, cwd=str(repo), check=True,
+                       capture_output=True)
+    # Point the module's repo root at this throwaway checkout so the
+    # committed-bytes read resolves there.
+    reg._REPO_ROOT = repo
     return path
 
 
@@ -66,7 +84,15 @@ def _registered_batch(tmp: Path) -> tuple[Path, dict]:
     return manifest, json.loads(sidecar.read_text(encoding="utf-8"))
 
 
-class LoadRegistrationTests(unittest.TestCase):
+_REAL_REPO_ROOT = reg._REPO_ROOT
+
+
+class _RestoresRepoRoot(unittest.TestCase):
+    def tearDown(self) -> None:
+        reg._REPO_ROOT = _REAL_REPO_ROOT
+
+
+class LoadRegistrationTests(_RestoresRepoRoot):
     def test_real_registration_loads(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             manifest, payload = _registered_batch(Path(d))
@@ -116,6 +142,7 @@ class LoadRegistrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             manifest, payload = _registered_batch(Path(d))
             sidecar = reg.sidecar_path_for(manifest)
+            ledger = _authorised_ledger(Path(d), manifest)
             for label, mutate in (
                     ("foreign protocol", {"protocol_id": "other_v1"}),
                     ("no digest", {"manifest_sha256": None}),
@@ -125,11 +152,10 @@ class LoadRegistrationTests(unittest.TestCase):
                 sidecar.write_text(json.dumps(bad), encoding="utf-8")
                 with self.assertRaises(reg.PVRegistrationError,
                                        msg=label):
-                    reg.load_registration(manifest, _authorised_ledger(
-                Path(d), manifest))
+                    reg.load_registration(manifest, ledger)
 
 
-class LedgerAuthorityTests(unittest.TestCase):
+class LedgerAuthorityTests(_RestoresRepoRoot):
     """codex #403 r3: the sidecar and the manifest sit in the same
     directory and are equally writable, so their agreement proves only
     self-consistency — anyone could recompute the digest into the
@@ -158,9 +184,56 @@ class LedgerAuthorityTests(unittest.TestCase):
                 yaml.safe_dump({"protocol_id": "pv_incremental_v1",
                                 "entries": []}),
                 encoding="utf-8")
-            with self.assertRaises(reg.PVRegistrationError) as ctx:
+            # A ledger that is not committed inside the repository
+            # cannot authorise anything — that is the r4 point.
+            with self.assertRaises(reg.PVRegistrationError):
                 reg.load_registration(manifest, empty_ledger)
-            self.assertIn("campaign ledger", str(ctx.exception))
+
+    def test_uncommitted_ledger_edit_refuses(self) -> None:
+        # codex #403 r4: a writable checkout defeats a working-tree
+        # read — append a digest, run, revert. The authority must be
+        # the COMMITTED bytes.
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            doc = yaml.safe_load(ledger.read_text(encoding="utf-8"))
+            doc["entries"].append(
+                {"kind": "intent",
+                 "gp_provenance": {"manifest_sha256": "f" * 64}})
+            ledger.write_text(
+                yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+                encoding="utf-8")
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, ledger)
+            self.assertIn("differs from its committed state",
+                          str(ctx.exception))
+
+    def test_doctored_sidecar_baseline_refuses(self) -> None:
+        # codex #403 r4: a legitimately registered manifest plus a
+        # sidecar whose baseline digest was swapped must not let the
+        # incremental comparison run against another baseline.
+        with tempfile.TemporaryDirectory() as d:
+            manifest, payload = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            sidecar = reg.sidecar_path_for(manifest)
+            doctored = dict(payload)
+            doctored["gp_input_sha256"] = dict(
+                payload["gp_input_sha256"],
+                **{"baseline_preds.parquet": "e" * 64})
+            sidecar.write_text(json.dumps(doctored), encoding="utf-8")
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, ledger)
+            self.assertIn("disagree with the committed ledger",
+                          str(ctx.exception))
+
+    def test_returned_provenance_is_the_ledgers(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            manifest, payload = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            loaded = reg.load_registration(manifest, ledger)
+            self.assertEqual(payload["manifest_sha256"],
+                             loaded["manifest_sha256"])
+            self.assertIn("gp_input_sha256", loaded)
 
     def test_ledger_entry_authorises(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -184,7 +257,7 @@ class LedgerAuthorityTests(unittest.TestCase):
                 reg.load_registration(manifest, foreign)
 
 
-class BaselineIdentityTests(unittest.TestCase):
+class BaselineIdentityTests(_RestoresRepoRoot):
     def test_matching_baseline_passes(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             _, payload = _registered_batch(Path(d))
@@ -297,7 +370,7 @@ class ArtifactBaselineBindingTests(unittest.TestCase):
             self.assertIn("bred against", str(ctx.exception))
 
 
-class OosDataProtectionTests(unittest.TestCase):
+class OosDataProtectionTests(_RestoresRepoRoot):
     """codex #403 r2: the 2023-2024 window is a ONE-SHOT evaluation,
     so an unregistered / tampered / wrong-baseline batch must be
     refused BEFORE any of it is read — otherwise the invalid batch has
@@ -357,7 +430,7 @@ class OosDataProtectionTests(unittest.TestCase):
             self.assertEqual(1, rc)
 
 
-class LedgerShapeTests(unittest.TestCase):
+class LedgerShapeTests(_RestoresRepoRoot):
     def test_registration_ledger_entry_is_appendable(self) -> None:
         # The operator appends this to the campaign ledger before the
         # OOS run; it must parse as a one-element YAML list.

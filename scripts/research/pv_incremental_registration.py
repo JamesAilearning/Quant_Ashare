@@ -41,41 +41,102 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER_PATH = _REPO_ROOT / "docs" / "prereg" / "pv_incremental_ledger.yaml"
 
 
-def _ledger_manifest_digests(ledger_path: Path) -> set[str]:
-    """Every manifest digest the APPEND-ONLY campaign ledger records.
+def _committed_ledger_bytes(ledger_path: Path) -> bytes:
+    """Read the ledger AS COMMITTED, not as it sits in the tree.
 
-    The sidecar and the manifest sit in the same directory and are
-    equally writable, so their agreement proves only self-consistency
-    (codex #403 r3): anyone can recompute the digest, drop it into the
-    sidecar, and pass — without ever running the registrar. The ledger
-    is the independent authority: it lives in git, is append-only by
-    protocol, and every entry passed review, so registering a batch
-    there is a recorded act rather than a local file edit.
+    A writable checkout defeats a working-tree read (codex #403 r4):
+    append a forged digest, run the evaluator, revert — no commit, no
+    review, and the "append-only authority" is just another local
+    file. Reading ``git show HEAD:<path>`` makes the authority what
+    was actually recorded; an uncommitted modification refuses with
+    the remedy (commit the ledger entry first), which is exactly the
+    act that makes a registration reviewable.
     """
+    import subprocess
+
+    try:
+        rel = ledger_path.resolve().relative_to(_REPO_ROOT)
+    except ValueError as exc:
+        raise PVRegistrationError(
+            f"ledger {ledger_path} is outside the repository — its "
+            "committed state cannot be established; refusing."
+        ) from exc
+    rel_posix = str(rel).replace("\\", "/")
+    try:
+        committed = subprocess.run(
+            ["git", "show", f"HEAD:{rel_posix}"],
+            cwd=str(_REPO_ROOT), capture_output=True, check=False)
+    except OSError as exc:
+        raise PVRegistrationError(
+            f"cannot invoke git to read the committed ledger ({exc}) "
+            "— the registration authority cannot be established; "
+            "refusing.") from exc
+    if committed.returncode != 0:
+        raise PVRegistrationError(
+            f"{rel_posix} is not committed at HEAD "
+            f"({committed.stderr.decode('utf-8', 'replace').strip()}) "
+            "— a registration is only real once the ledger entry is "
+            "committed; commit it and re-run; refusing.")
+    on_disk = ledger_path.read_bytes()
+    crlf, lf = bytes((13, 10)), bytes((10,))
+    if on_disk.replace(crlf, lf) != committed.stdout.replace(crlf, lf):
+        raise PVRegistrationError(
+            f"{rel_posix} differs from its committed state — an "
+            "uncommitted ledger edit is not a registration; commit "
+            "the entry (append-only) and re-run; refusing.")
+    return committed.stdout
+
+
+def _ledger_entries(ledger_path: Path) -> list[dict[str, Any]]:
+    """Parsed entries of the COMMITTED ledger."""
     import yaml
 
     if not ledger_path.is_file():
         raise PVRegistrationError(
             f"campaign ledger {ledger_path} not found — the "
             "registration cannot be authenticated; refusing.")
-    doc = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    raw = _committed_ledger_bytes(ledger_path)
+    doc = yaml.safe_load(raw.decode("utf-8"))
     if not isinstance(doc, dict) or doc.get("protocol_id") != PROTOCOL_ID:
         raise PVRegistrationError(
             f"campaign ledger {ledger_path.name} is not the "
             f"{PROTOCOL_ID} ledger; refusing.")
-    digests: set[str] = set()
-    for entry in (doc.get("entries") or []):
-        if not isinstance(entry, dict):
-            continue
+    return [e for e in (doc.get("entries") or []) if isinstance(e, dict)]
+
+
+def ledger_entry_for(manifest_sha256: str,
+                     ledger_path: Path) -> dict[str, Any]:
+    """The COMMITTED ledger entry that registered this manifest.
+
+    Returns the entry's own ``gp_provenance`` — the authoritative
+    record. Taking only the manifest digest from the ledger and then
+    trusting the adjacent sidecar for everything else (codex #403 r4)
+    would let an attacker keep a legitimately-registered manifest
+    while swapping the sidecar's baseline digest, so the incremental
+    comparison would run against a baseline the GP never competed
+    with.
+    """
+    for entry in _ledger_entries(ledger_path):
         prov = entry.get("gp_provenance")
-        if isinstance(prov, dict):
-            sha = prov.get("manifest_sha256")
-            if isinstance(sha, str):
-                digests.add(sha)
-        for artifact in (entry.get("artifacts") or []):
-            if isinstance(artifact, str) and "#sha256=" in artifact:
-                digests.add(artifact.split("#sha256=", 1)[1].strip())
-    return digests
+        recorded = (prov or {}).get("manifest_sha256")             if isinstance(prov, dict) else None
+        artifacts = [a for a in (entry.get("artifacts") or [])
+                     if isinstance(a, str) and "#sha256=" in a]
+        artifact_digests = {a.split("#sha256=", 1)[1].strip()
+                            for a in artifacts}
+        if recorded == manifest_sha256 or manifest_sha256 in artifact_digests:
+            if not isinstance(prov, dict):
+                raise PVRegistrationError(
+                    f"the ledger entry registering {manifest_sha256[:12]}"
+                    "… carries no gp_provenance — it cannot authorise "
+                    "the batch's inputs; refusing.")
+            return prov
+    raise PVRegistrationError(
+        f"manifest digest {manifest_sha256[:12]}… is not recorded in "
+        f"the committed campaign ledger ({ledger_path.name}) — a "
+        "sidecar can be written by anyone, so the ledger is what "
+        "makes a registration real; append the registrar's "
+        "ledger_entry.yaml, COMMIT it (append-only), and re-run; "
+        "refusing.")
 
 
 def load_registration(manifest_path: Path,
@@ -123,15 +184,22 @@ def load_registration(manifest_path: Path,
     # ledger — in git, reviewed, never rewritten — is the independent
     # authority that this digest was actually registered.
     ledger = ledger_path if ledger_path is not None else LEDGER_PATH
-    if actual not in _ledger_manifest_digests(ledger):
-        raise PVRegistrationError(
-            f"manifest digest {actual[:12]}… is not recorded in the "
-            f"campaign ledger ({ledger.name}) — a sidecar can be "
-            "written by anyone, so the ledger is what makes a "
-            "registration real; append the registrar's "
-            "ledger_entry.yaml to it (append-only) and commit before "
-            "evaluating or adjudicating; refusing.")
-    return payload
+    authoritative = ledger_entry_for(actual, ledger)
+    # The LEDGER's provenance is what the consumers act on; the
+    # sidecar is a convenience copy that must agree with it (codex
+    # #403 r4). Returning the ledger's record means a doctored
+    # sidecar changes nothing downstream.
+    sidecar_inputs = payload.get("gp_input_sha256")
+    ledger_inputs = authoritative.get("gp_input_sha256")
+    if isinstance(sidecar_inputs, dict) and isinstance(ledger_inputs, dict):
+        drift = {k: {"sidecar": v, "ledger": ledger_inputs.get(k)}
+                 for k, v in sidecar_inputs.items()
+                 if ledger_inputs.get(k) != v}
+        if drift:
+            raise PVRegistrationError(
+                f"the sidecar's input digests disagree with the "
+                f"committed ledger entry: {drift} — refusing.")
+    return dict(authoritative)
 
 
 def assert_baseline_matches_registration(
