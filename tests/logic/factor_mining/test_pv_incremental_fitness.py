@@ -745,6 +745,31 @@ class MinerBaselineLoadingTests(unittest.TestCase):
 
 
 class BaselineExporterTests(unittest.TestCase):
+    @classmethod
+    def _fold_manifests(cls, run_dir: Path, indices, bundle_hash: str,
+                        *, config=None):
+        """Write fold manifests carrying the authoritative
+        config_fingerprint — the digest that folds the RUN-TIME bundle
+        identity in (PR-G+I), which the exporter re-derives to prove
+        the supplied bundle is the one the run read."""
+        from dataclasses import fields as dc_fields
+
+        from src.core.walk_forward._resume import (
+            compute_config_fingerprint,
+        )
+        from src.core.walk_forward.config import WalkForwardConfig
+        raw = config if config is not None else cls._run_config()
+        valid = {f.name for f in dc_fields(WalkForwardConfig)}
+        fp = compute_config_fingerprint(
+            WalkForwardConfig(**{k: v for k, v in raw.items()
+                                 if k in valid}),
+            bundle_identity=bundle_hash)
+        for i in indices:
+            (run_dir / f"fold_{i:02d}_manifest.json").write_text(
+                json.dumps({"fold_index": i, "config_fingerprint": fp}),
+                encoding="utf-8")
+        return fp
+
     @staticmethod
     def _bundle(tmp: Path, *, start="2018-01-02", end="2026-08-03"):
         """A self-contained PIT bundle stamp — never the machine's real
@@ -1137,6 +1162,7 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=2)
             out = Path(d) / "out"
             bundle = self._bundle(Path(d) / "bundle")
+            self._fold_manifests(run_dir, [0, 1], "sha256:" + "0" * 64)
             rc = bx.main(["--run-dir", str(run_dir),
                           "--out-dir", str(out),
                           "--provider-uri", str(bundle)])
@@ -1170,6 +1196,12 @@ class BaselineExporterTests(unittest.TestCase):
             self.assertEqual(3, sidecar["coverage"]["oos_days_covered"])
             self.assertEqual("2020-04-01",
                              sidecar["coverage"]["first_baseline_date"])
+            # r14: the binding is now VERIFIED against the run, not
+            # merely calendar-compatible.
+            self.assertIn("verified_against_run",
+                          sidecar["data_bundle"]["binding_strength"])
+            self.assertIn("run_config_fingerprint",
+                          sidecar["data_bundle"])
             # A second export into the same dir refuses (never
             # overwrite a baseline other scores are keyed to).
             self.assertEqual(2, bx.main(["--run-dir", str(run_dir),
@@ -1193,6 +1225,29 @@ class BaselineExporterTests(unittest.TestCase):
                 ["--run-dir", str(run_dir),
                  "--out-dir", str(Path(d) / "out"),
                  "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
+
+    def test_foreign_bundle_refused_by_run_fingerprint(self) -> None:
+        # codex #401 r14: a DIFFERENT bundle with the same calendar
+        # span must be refused — the fold manifests' fingerprint folds
+        # the run-time bundle identity, so it can be re-derived.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            self._agg(run_dir, n_folds=1)
+            # The run was fingerprinted against bundle A...
+            self._fold_manifests(run_dir, [0], "sha256:" + "a" * 64)
+            # ...but bundle B (same calendar, different contents) is
+            # supplied at export time.
+            bundle_b = self._bundle(Path(d) / "bundle_b")
+            self.assertEqual(2, bx.main(
+                ["--run-dir", str(run_dir), "--out-dir", str(Path(d) / "o"),
+                 "--provider-uri", str(bundle_b)]))
+            # The matching bundle passes the same path.
+            ok = bx.verify_bundle_matches_run(
+                run_dir, self._PRESET,
+                {"content_hash": "sha256:" + "a" * 64})
+            self.assertRegex(ok, r"^[0-9a-f]{16}$")
 
     def test_bundle_calendar_must_contain_exported_rows(self) -> None:
         # codex #401 r12: config hashes cannot say WHICH data produced

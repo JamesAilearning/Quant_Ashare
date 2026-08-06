@@ -144,7 +144,18 @@ def preflight_candidates(candidates: list[dict[str, Any]],
         # be a stable NEGATIVE predictor, and this gate tests SIGNED
         # daily IC against a one-sided POSITIVE threshold — applying
         # the sign is what stops a real factor being tested backwards.
-        orientation = cand.get("orientation", 1)
+        # REQUIRED, never defaulted (codex #401 r14): defaulting a
+        # missing sign to +1 would test a selected negative-IS
+        # candidate backwards — the exact failure the field exists to
+        # prevent. Legacy tolerance belongs at the pool-loading
+        # boundary, not in this campaign manifest.
+        if "orientation" not in cand:
+            raise PVEvalError(
+                f"candidate {cid!r} carries no orientation — the frozen "
+                "plan requires every registered candidate to state the "
+                "IS sign the GP selected (the pool records it); "
+                "refusing rather than assuming +1.")
+        orientation = cand["orientation"]
         if orientation not in (1, -1):
             raise PVEvalError(
                 f"candidate {cid!r}: orientation {orientation!r} is "
@@ -415,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
             # IC, the orthogonality series and the FWER t all have to
             # see the factor in the direction the GP selected it
             # (codex #401 r13).
-            if int(cand.get("orientation", 1)) == -1:
+            if int(cand["orientation"]) == -1:
                 factor = -factor
             ic, dropped = daily_rank_ic(factor, fwd, min_names)
             if ic.shape[0] == 0:
@@ -430,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
                 dropped, orth, baseline_sha)
             # Record the applied sign so the adjudicator's record shows
             # WHICH orientation produced these numbers.
-            artifact["orientation"] = int(cand.get("orientation", 1))
+            artifact["orientation"] = int(cand["orientation"])
             artifact["run_id"] = run_id
             out = out_dir / f"{cand['candidate_id']}.json"
             try:

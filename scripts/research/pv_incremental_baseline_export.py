@@ -155,11 +155,15 @@ def bind_source_bundle(provider_uri: str,
       calendar cannot contain the baseline's dates provably did not
       produce them, and refuses.
 
-    What this does NOT prove: that the walk-forward process read this
-    exact bundle (the run report carries no bundle identity). The
-    sidecar says so explicitly, and the ledger's ignition condition
-    requires exporting straight after the run, before any bundle
-    rollover.
+    The binding is AUTHORITATIVE, not merely calendar-compatible
+    (codex #401 r14 — correcting the weaker claim made at r12): each
+    fold manifest's ``config_fingerprint`` already folds the run-time
+    bundle content identity into its digest (PR-G+I), so recomputing
+    that fingerprint with the SUPPLIED bundle's identity and comparing
+    it to what the run recorded proves whether this is the bundle the
+    run actually read. ``verify_bundle_matches_run`` does that; this
+    function records the identity and rules out calendar-incompatible
+    bundles up front.
     """
     from src.data.pit.bundle_integrity import read_bundle_integrity
 
@@ -198,6 +202,56 @@ def bind_source_bundle(provider_uri: str,
             "contain the exported rows"
         ),
     }
+
+
+def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
+                              bundle: dict[str, Any]) -> str:
+    """Prove the supplied bundle is the one the RUN read.
+
+    Each fold manifest stores ``config_fingerprint``, which folds the
+    run-time bundle content identity into its digest (PR-G+I). Rebuild
+    that fingerprint from the materialized config plus the SUPPLIED
+    bundle's identity: equality means this bundle produced the run;
+    inequality means a different bundle (or vintage) did, however
+    calendar-compatible it looks (codex #401 r14).
+
+    A run whose bundle carried no identity stamp leaves the digest
+    unchanged by design ("unknown" is not folded in), so the check
+    cannot bind there — and that case already refused earlier, because
+    a stamp-less bundle is rejected outright.
+    """
+    from src.core.walk_forward._resume import compute_config_fingerprint
+    from src.core.walk_forward.config import WalkForwardConfig
+
+    manifests = sorted(run_dir.glob("fold_*_manifest.json"))
+    if not manifests:
+        raise PVBaselineError(
+            f"no fold manifests under {run_dir} — the run-time bundle "
+            "binding cannot be verified; refusing.")
+    recorded = {
+        json.loads(m.read_text(encoding="utf-8")).get("config_fingerprint")
+        for m in manifests
+    }
+    if len(recorded) != 1 or None in recorded:
+        raise PVBaselineError(
+            f"fold manifests disagree on config_fingerprint ({recorded}) "
+            "— the folds were not produced by one configuration; "
+            "refusing.")
+    raw = materialize_preset(preset_path)
+    valid = {f.name for f in fields(WalkForwardConfig)}
+    expected = compute_config_fingerprint(
+        WalkForwardConfig(**{k: v for k, v in raw.items() if k in valid}),
+        bundle_identity=bundle["content_hash"],
+    )
+    actual = str(recorded.pop())
+    if expected != actual:
+        raise PVBaselineError(
+            f"the run recorded config_fingerprint={actual} but this "
+            f"config + the supplied bundle "
+            f"({bundle['content_hash'][:20]}…) fingerprints to "
+            f"{expected} — the supplied --provider-uri is NOT the "
+            "bundle this run read (or the config differs); refusing.")
+    return actual
 
 
 def materialize_preset(preset_path: Path) -> dict[str, Any]:
@@ -728,6 +782,13 @@ def main(argv: list[str] | None = None) -> int:
         # refuses because the export "already exists" — a recoverable
         # config error turned into a manual-cleanup deadlock.
         bundle = bind_source_bundle(provider_uri, wide.index)
+        bundle["run_config_fingerprint"] = verify_bundle_matches_run(
+            run_dir, config_path, bundle)
+        bundle["binding_strength"] = (
+            "verified_against_run: the fold manifests' "
+            "config_fingerprint folds the run-time bundle identity, "
+            "and it matches this config + this bundle"
+        )
 
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)

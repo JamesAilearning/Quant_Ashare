@@ -219,6 +219,28 @@ def check_family_manifest(artifacts: list[dict[str, Any]],
             "the registered manifest's — a re-registration reused "
             "these ids; re-run the evaluator over the CURRENT "
             "manifest, refusing.")
+    # ORIENTATION is part of the identity (codex #401 r14): the same
+    # id and expression re-registered with the opposite sign is a
+    # DIFFERENT trial — its IC series runs the other way. Without this
+    # the old artifact would be adjudicated under the new
+    # registration, with numbers computed in the opposite direction.
+    orient_by_id = {str(c["candidate_id"]): c.get("orientation")
+                    for c in manifest}
+    for cid, want in orient_by_id.items():
+        if want not in (1, -1):
+            raise PVFwerError(
+                f"registered manifest entry {cid!r} carries "
+                f"orientation={want!r} — every candidate must state "
+                "the IS sign the GP selected (+1/-1); refusing.")
+    sign_drift = sorted(
+        str(a.get("candidate_id")) for a in artifacts
+        if a.get("orientation") != orient_by_id[str(a.get("candidate_id"))])
+    if sign_drift:
+        raise PVFwerError(
+            f"artifacts {sign_drift} were evaluated under a different "
+            "orientation than the registered manifest declares — the "
+            "IC series runs the other way; re-run the evaluator over "
+            "the CURRENT manifest, refusing.")
 
 
 def adjudicate(plan: dict[str, Any],

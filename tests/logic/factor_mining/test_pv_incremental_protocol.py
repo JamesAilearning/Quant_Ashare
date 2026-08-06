@@ -173,13 +173,13 @@ class CandidateIdTests(unittest.TestCase):
         fields = list(_plan()["fields"])
         with self.assertRaises(ev.PVEvalError):
             ev.preflight_candidates(
-                [{"candidate_id": "ok1", "expression": self._CSF},
+                [{"candidate_id": "ok1", "expression": self._CSF, "orientation": 1},
                  {"candidate_id": "../escape",
                   "expression": self._CSF}], fields)
         with self.assertRaises(ev.PVEvalError) as ctx:
             ev.preflight_candidates(
-                [{"candidate_id": "dup", "expression": self._CSF},
-                 {"candidate_id": "dup", "expression": self._CSF}],
+                [{"candidate_id": "dup", "expression": self._CSF, "orientation": 1},
+                 {"candidate_id": "dup", "expression": self._CSF, "orientation": 1}],
                 fields)
         self.assertIn("more than once", str(ctx.exception))
         # r13: expression validation is preflight too — foreign
@@ -189,12 +189,12 @@ class CandidateIdTests(unittest.TestCase):
                 ("non-CSF root", "$close")):
             with self.assertRaises(ev.PVEvalError, msg=label):
                 ev.preflight_candidates(
-                    [{"candidate_id": "ok1", "expression": self._CSF},
+                    [{"candidate_id": "ok1", "expression": self._CSF, "orientation": 1},
                      {"candidate_id": "bad2",
                       "expression": bad_expr}], fields)
         parsed = ev.preflight_candidates(
-            [{"candidate_id": "a", "expression": self._CSF},
-             {"candidate_id": "b", "expression": self._CSF}], fields)
+            [{"candidate_id": "a", "expression": self._CSF, "orientation": 1},
+             {"candidate_id": "b", "expression": self._CSF, "orientation": 1}], fields)
         self.assertEqual(2, len(parsed))
 
 
@@ -252,6 +252,7 @@ class FwerTests(unittest.TestCase):
                               freq="B")
         return {"protocol_id": protocol, "candidate_id": cid,
                 "expression": f"cs_rank($close_{cid})",
+                "orientation": 1,
                 "window": {"start": "2023-01-01", "end": "2024-12-31"},
                 "daily_ic": [{"date": str(d)[:10], "ic": float(v)}
                              for d, v in zip(dates, series,
@@ -364,7 +365,8 @@ class FwerTests(unittest.TestCase):
     @staticmethod
     def _manifest(*arts: dict) -> list[dict]:
         return [{"candidate_id": a["candidate_id"],
-                 "expression": a["expression"]} for a in arts]
+                 "expression": a["expression"],
+                 "orientation": a.get("orientation", 1)} for a in arts]
 
     def test_family_manifest_binding(self) -> None:
         # codex #399 r3/r6: the registered batch manifest defines the
