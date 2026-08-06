@@ -175,6 +175,39 @@ def check_run_config(plan: dict[str, Any],
     }
 
 
+def assert_pool_records_orientation(run_dir: Path) -> None:
+    """The POOL must have recorded the sign — never the loader default.
+
+    ``FactorPool.load`` supplies ``orientation=1`` for parquets that
+    predate the column (legacy compatibility, correct at that
+    boundary). But a campaign pool without the column means the GP
+    never recorded which way each factor points, and defaulting it
+    would send every negative-IS candidate into the one-shot OOS run
+    backwards (codex #402 r2). Check the SOURCE parquet, not the
+    loaded objects.
+    """
+    import pandas as pd
+
+    parquet = run_dir / "factor_pool.parquet"
+    frame = pd.read_parquet(parquet)
+    if "orientation" not in frame.columns:
+        raise PVRegisterError(
+            f"{parquet.name} has no `orientation` column — this pool "
+            "predates orientation recording, so the GP's IS sign for "
+            "each factor is unknown and the loader's +1 default would "
+            "test negative candidates backwards; re-run the GP batch "
+            "with the current engine; refusing.")
+    if frame.empty:
+        return
+    values = frame["orientation"].tolist()
+    bad = sorted({v for v in values
+                  if isinstance(v, bool) or v not in (1, -1)})
+    if bad:
+        raise PVRegisterError(
+            f"{parquet.name} carries orientation values {bad} outside "
+            "the ±1 domain — corrupt pool; refusing.")
+
+
 def candidate_id_for(index: int, expression: str) -> str:
     """Stable, safe, content-derived id.
 
@@ -299,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         run_dir = Path(args.run_dir)
         provenance = check_run_config(plan, run_dir)
 
+        assert_pool_records_orientation(run_dir)
         pool = FactorPool.load(run_dir)
         pool_size = len(pool)
         entries = select_candidates(pool, args.top_k)
@@ -308,15 +342,23 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = out_dir / "candidates.json"
-        if manifest_path.exists():
+        # EXCLUSIVE create, never check-then-write (codex #402
+        # r1/r2): two registrars targeting one fresh dir could
+        # both clear an exists() check and the second would
+        # truncate the first's frozen registration. Same "x"
+        # discipline as the evaluator's artifacts.
+        try:
+            with open(manifest_path, "x", encoding="utf-8") as fh:
+                fh.write(json.dumps(manifest, indent=2,
+                                    ensure_ascii=False)
+                         + chr(10))
+        except FileExistsError as exc:
             raise PVRegisterError(
                 f"{manifest_path} already exists — a registration is "
                 "frozen once written (re-registering under the same "
                 "ids would let a new batch inherit an old batch's "
-                "artifacts); use a fresh --out-dir; refusing.")
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8")
+                "artifacts); use a fresh --out-dir; refusing."
+            ) from exc
         manifest_sha = hashlib.sha256(
             manifest_path.read_bytes()).hexdigest()
 

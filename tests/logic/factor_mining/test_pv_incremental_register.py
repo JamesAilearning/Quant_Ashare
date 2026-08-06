@@ -195,6 +195,46 @@ class RunBindingTests(unittest.TestCase):
                 rg.check_run_config(_plan(), run)
 
 
+class PoolOrientationSourceTests(unittest.TestCase):
+    """codex #402 r2: FactorPool.load defaults a missing orientation
+    column to +1 (right at the legacy boundary, wrong for a campaign
+    pool) — a manifest built on that default would send every
+    negative-IS candidate into the one-shot OOS run backwards."""
+
+    def test_pool_without_orientation_column_refuses(self) -> None:
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            parquet = run / "factor_pool.parquet"
+            frame = pd.read_parquet(parquet)
+            self.assertIn("orientation", frame.columns)   # engine wrote it
+            frame.drop(columns=["orientation"]).to_parquet(parquet)
+            with self.assertRaises(rg.PVRegisterError) as ctx:
+                rg.assert_pool_records_orientation(run)
+            self.assertIn("orientation", str(ctx.exception))
+            # And the CLI refuses rather than registering.
+            self.assertEqual(2, rg.main(
+                ["--run-dir", str(run), "--out-dir", str(Path(d) / "o"),
+                 "--top-k", "1", "--when", "2026-08-06"]))
+
+    def test_out_of_domain_orientation_refuses(self) -> None:
+        import pandas as pd
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            parquet = run / "factor_pool.parquet"
+            frame = pd.read_parquet(parquet)
+            frame["orientation"] = 0
+            frame.to_parquet(parquet)
+            with self.assertRaises(rg.PVRegisterError):
+                rg.assert_pool_records_orientation(run)
+
+    def test_recorded_orientation_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run",
+                            [_entry(_CSF, 0.05, orientation=-1)])
+            rg.assert_pool_records_orientation(run)
+
+
 class SelectionTests(unittest.TestCase):
     def test_top_k_by_fitness_excludes_invalid(self) -> None:
         from src.factor_mining.factor_pool import FactorPool
