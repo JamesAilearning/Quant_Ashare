@@ -70,6 +70,17 @@ metric:                          # PV-DP-3（Gate-4A 同源 lag 语义的日频�
 
 fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3）
   parsimony_lambda_per_node: 0.002
+  orientation_recorded: true     # 实现 PR 冻结(codex #401 r13):|rank-IC|
+                                 # 是符号盲的,而 OOS 单侧门槛检验带符号
+                                 # IC——GP 必须记录 IS 符号(PoolEntry.
+                                 # orientation ±1),候选注册表逐项携带,
+                                 # 评估器在任何度量前应用;缺此则稳定负向
+                                 # 因子被反向检验(系统性假阴性)
+  ic_term: abs_rank_ic           # 实现 PR 冻结(操作人签,决策③):GP 繁殖
+                                 # 信号用 |日截面 rank-IC 均值|——方向
+                                 # 自由度属表达式本身(符号翻转是同一
+                                 # 因子);FWER 单侧正门槛在 OOS 侧淘汰
+                                 # 负向候选,注册时按 IS 符号规范化方向
   orthogonality:                 # 对 Alpha158 基线预测的日截面 Spearman
     fitness_band_abs_rho: 0.30   # 超带部分线性罚
     fitness_penalty_weight: 2.0
@@ -77,9 +88,25 @@ fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3�
     min_coverage_of_ic_days: 0.95      # 基线须覆盖 ≥95% 的合格 IC 日,
                                        # 否则评估 run fail-loud(部分重叠
                                        # 不得静默判定增量性)
+                                       # ——此门只管 OOS 决策评估
+    is_coverage_policy: penalize_covered_days_only
+                                 # 实现 PR 冻结(操作人签,决策①):基线
+                                 # 保持生产 walk-forward 折几何,首个
+                                 # 样本外日晚于 IS 窗起点,故 IS 前段
+                                 # 无基线可比。正交罚只在有基线覆盖的
+                                 # 日子计算;无重叠表达式不罚,但覆盖
+                                 # 计数入 run 记录如实披露(不缩短 train
+                                 # 窗造"更早基线"——那不是生产模型族)
   baseline:                      # 基线预测生成 run 的绑定义务
     model: alpha158_lgb_csi800_walkforward
     provenance_required: true    # run_config_sha256/source_git 全绿入 ledger
+    ensemble_window: 3           # 实现 PR 冻结(操作人签,决策②):折预测
+                                 # 取生产同源 warm-ensemble(config_walk
+                                 # 缺省 3),非单模型输出——"对生产基线
+                                 # 增量"须对着生产实际使用的信号测
+    overall_end: "2024-12-31"    # 基线生成 run 的硬尾:config_walk 缺省
+                                 # 2025-12-31 会训进并预测 holdout 年,
+                                 # preset 必须钉死此值(圣规防线)
 
 fwer:                            # PV-DP-5
   family: all_oos_evaluated_candidates

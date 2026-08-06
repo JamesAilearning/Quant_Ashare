@@ -1,0 +1,60 @@
+# pv_incremental_v1 GP 搜索批次配置（阶段8 战役二，PV-DP-1..4）。
+#
+# 本文件的每个语义字段都由 docs/prereg/pv_incremental.yaml 冻结，且由
+# tests/governance/test_pv_incremental_freeze.py 逐条比对——改这里而不
+# 改冻结件（或反之）会让治理测试红。
+#
+# **点火前必填**：data.baseline_preds_path 指向导出器产出的宽表
+# （scripts/research/pv_incremental_baseline_export.py），其
+# `<parquet>.provenance.json` sidecar 必须存在且绑定该文件，否则
+# miner 拒跑（正交惩罚是本役唯一增量判据，不容许无凭基线）。
+#
+# 点火（操作人）：
+#     python -m src.factor_mining.miner config/factor_mining/pv_incremental_v1.yaml
+
+data:
+  mode: pit
+  pit_provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"
+  delisted_registry_path: "${QUANT_DELISTED_REGISTRY:-D:/qlib_data/tushare_raw/delisted_registry.parquet}"
+  universe_name: csi800
+  # PV-DP-2：IS 窗是 GP 唯一可见窗。OOS/holdout/2026 段绝不进本配置。
+  start_date: "2018-01-01"
+  end_date: "2022-12-31"
+  forward_horizon: 1
+  # PV-DP-1：恰七价量字段。估值/市值（pe/pb/ps/circ_mv/total_mv）
+  # 明令排除——白名单同时收窄面板加载与 GP 终端采样。
+  fields:
+    - "$open"
+    - "$high"
+    - "$low"
+    - "$close"
+    - "$volume"
+    - "$money"
+    - "$turnover_rate"
+  # PV-DP-3：冻结度量是 close_exec_to_close_next，非 v1 缺省的
+  # open→open——繁殖目标必须与裁决目标同一个。
+  forward_return_price: close
+  # 点火前填入导出器产出物（连同其 .provenance.json sidecar）。
+  baseline_preds_path: ""
+  baseline_model: alpha158_lgb_csi800_walkforward
+
+gp:
+  population_size: 500
+  n_generations: 50
+  max_depth: 6
+  min_depth: 2
+  seed: 42
+
+fitness:
+  # PV-DP-3 冻结适应度：|日截面 rank-IC 均值| − 简约压 − 正交罚。
+  # abs_rank_ic 模式下 IR/换手成本/池内 novelty 一律不参与。
+  ic_term: abs_rank_ic
+  w_complexity: 0.002
+  w_orthogonality: 2.0
+  orthogonality_band: 0.30
+  # 薄日门与冻结度量一致：截面窄于此的交易日不参与繁殖，正如它们
+  # 不参与裁决。
+  min_names_per_day: 300
+
+output_dir: output/factor_mining/pv_incremental_v1
+pool_top_k: 200

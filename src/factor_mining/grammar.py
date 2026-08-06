@@ -497,13 +497,36 @@ def _has_leaves_for(target_type: ExprType) -> bool:
     return False
 
 
-def _random_leaf(target_type: ExprType, rng: Random):
+def _restrict(pool: tuple[str, ...],
+              allowed: frozenset[str] | None) -> tuple[str, ...]:
+    """Intersect a terminal pool with a campaign whitelist.
+
+    A frozen protocol may admit only a subset of the registry (codex
+    #401 r9: pv_incremental_v1 admits exactly seven price/volume
+    fields). Sampling outside it would breed on inputs the
+    pre-registration excludes. An empty intersection is a
+    configuration error, not something to sample around.
+    """
+    if allowed is None:
+        return pool
+    kept = tuple(t for t in pool if t in allowed)
+    if not kept:
+        raise GrammarError(
+            f"terminal whitelist {sorted(allowed)} admits none of "
+            f"{list(pool)} — the generator cannot build this type "
+            "under the campaign's frozen field set.")
+    return kept
+
+
+def _random_leaf(target_type: ExprType, rng: Random,
+                 allowed: frozenset[str] | None = None):
     # Deferred import to break circularity with expression.py.
     from .expression import Terminal
 
     if target_type.kind in ("FEATURE", "FLOAT"):
         if target_type.taint == "ADJ_TAINTED":
-            name = rng.choice(FeatureRegistry.V1_RAW_PRICE)
+            name = rng.choice(
+                _restrict(FeatureRegistry.V1_RAW_PRICE, allowed))
         else:
             # PURE pool = legacy scale-free (volume, money) + daily_basic
             # fundamentals (pe, pb, ps, turnover_rate, circ_mv, total_mv).
@@ -511,7 +534,9 @@ def _random_leaf(target_type: ExprType, rng: Random):
             # here so the random sampler reaches them with non-negligible
             # probability per the extend-feature-universe-with-daily-basic
             # spec's "generator MUST sample fundamentals" requirement.
-            pure_pool = FeatureRegistry.V1_SCALE_FREE + FeatureRegistry.V1_FUNDAMENTAL
+            pure_pool = _restrict(
+                FeatureRegistry.V1_SCALE_FREE
+                + FeatureRegistry.V1_FUNDAMENTAL, allowed)
             name = rng.choice(pure_pool)
         return Terminal(name)
     if target_type.kind == "INT_WINDOW":
@@ -526,6 +551,7 @@ def _random_operator(
     max_depth: int,
     min_depth: int,
     rng: Random,
+    allowed: frozenset[str] | None = None,
 ):
     from .expression import OperatorCall  # deferred
 
@@ -534,7 +560,7 @@ def _random_operator(
     if not candidates:
         # No operator can produce this type; fall back to leaf if any.
         if _has_leaves_for(target_type):
-            return _random_leaf(target_type, rng)
+            return _random_leaf(target_type, rng, allowed)
         raise GrammarError(
             f"Generator cannot produce target_type={target_type!r}: "
             "no operator candidates and no leaves available"
@@ -551,7 +577,8 @@ def _random_operator(
     for _ in range(MAX_OP_RETRIES):
         op, input_types = rng.choice(candidates)
         children = tuple(
-            _gen(t, max_depth - 1, min_depth - 1, rng) for t in input_types
+            _gen(t, max_depth - 1, min_depth - 1, rng, allowed)
+            for t in input_types
         )
         try:
             return OperatorCall(op.name, children)
@@ -561,7 +588,7 @@ def _random_operator(
     # If retries are exhausted (extremely rare) fall back to a leaf when
     # one exists for this target_type; otherwise propagate the last error.
     if _has_leaves_for(target_type):
-        return _random_leaf(target_type, rng)
+        return _random_leaf(target_type, rng, allowed)
     raise GrammarError(
         f"Generator cannot construct {target_type!r} after "
         f"{MAX_OP_RETRIES} retries: {last_err}"
@@ -573,22 +600,26 @@ def _gen(
     max_depth: int,
     min_depth: int,
     rng: Random,
+    allowed: frozenset[str] | None = None,
 ):
     has_leaves = _has_leaves_for(target_type)
     if max_depth <= 0 and has_leaves and min_depth <= 0:
-        return _random_leaf(target_type, rng)
+        return _random_leaf(target_type, rng, allowed)
     if not has_leaves:
         # Must use an operator (e.g. target=CSF with no leaves)
-        return _random_operator(target_type, max_depth, min_depth, rng)
+        return _random_operator(target_type, max_depth, min_depth, rng,
+                            allowed)
     if min_depth > 0:
         # Forced to descend through at least one more operator level
-        return _random_operator(target_type, max_depth, min_depth, rng)
+        return _random_operator(target_type, max_depth, min_depth, rng,
+                            allowed)
     if max_depth <= 0:
-        return _random_leaf(target_type, rng)
+        return _random_leaf(target_type, rng, allowed)
     # Weighted choice — bias toward operators so trees aren't too shallow
     if rng.random() < 0.3:
-        return _random_leaf(target_type, rng)
-    return _random_operator(target_type, max_depth, min_depth, rng)
+        return _random_leaf(target_type, rng, allowed)
+    return _random_operator(target_type, max_depth, min_depth, rng,
+                            allowed)
 
 
 def random_expression(
@@ -596,6 +627,7 @@ def random_expression(
     max_depth: int,
     min_depth: int = 2,
     rng: Random | None = None,
+    allowed_terminals: frozenset[str] | None = None,
 ):
     """Generate a random expression with the given target output type.
 
@@ -617,6 +649,12 @@ def random_expression(
         trees per ``factor_mining_phase1_preflight.md`` §4.4.
     rng
         Optional ``random.Random`` for deterministic seeding.
+    allowed_terminals
+        Optional whitelist of ``$``-terminals the generator may sample
+        (codex #401 r9). ``None`` (default) samples the full
+        ``FeatureRegistry.V1`` registry — legacy behaviour verbatim. A
+        campaign passes its frozen field set so no expression can be
+        built on inputs the pre-registration excludes.
     """
     if max_depth < min_depth:
         raise ValueError(
@@ -624,4 +662,4 @@ def random_expression(
         )
     if rng is None:
         rng = Random()
-    return _gen(target_type, max_depth, min_depth, rng)
+    return _gen(target_type, max_depth, min_depth, rng, allowed_terminals)

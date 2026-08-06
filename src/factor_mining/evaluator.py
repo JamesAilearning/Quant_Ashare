@@ -112,12 +112,22 @@ class EvaluationResult:
     turnover_daily: float
     coverage: float
     n_obs_per_day_min: int
+    # Dates whose cross-section actually produced a finite rank-IC —
+    # i.e. the ELIGIBLE IC days after the thin-day floor and the
+    # forward-return join. Additive with a default so every existing
+    # construction site is unchanged. A campaign whose adjudicating
+    # metric restricts orthogonality to the eligible IC dates (codex
+    # #401 r8: the OOS evaluator does ``orth.reindex(ic.index)``) must
+    # measure its breeding penalty over the SAME dates — otherwise
+    # lag-tail / PIT-gap days steer selection but never reach the gate.
+    ic_dates: pd.Index | None = None
 
 
 def _ic_per_day(
     factor_values: pd.DataFrame,
     forward_return: pd.DataFrame,
     method: str,
+    min_names_per_day: int = 0,
 ) -> pd.Series:
     """Per-date cross-sectional IC via the shared primitive in
     ``src.core._ic_utils``.
@@ -125,6 +135,13 @@ def _ic_per_day(
     Returns a Series indexed by date; NaN for dates with fewer than
     ``MIN_IC_OBSERVATIONS_PER_LAG`` observations (handled inside
     ``compute_ic_for_group``).
+
+    ``min_names_per_day`` additionally DROPS days whose cross-section
+    is thinner than the caller's frozen floor. Default 0 keeps the
+    legacy behaviour (only the primitive's own 3-name floor). A
+    campaign whose pre-registered metric drops thin days must pass its
+    floor here, or the breeding metric would count days the
+    adjudicating metric discards (codex #401 r6).
     """
     if factor_values.empty or forward_return.empty:
         return pd.Series(dtype=float)
@@ -135,6 +152,12 @@ def _ic_per_day(
     df = pd.DataFrame({"factor": f, "ret": r}).dropna()
     if df.empty:
         return pd.Series(dtype=float)
+    if min_names_per_day > 0:
+        sizes = df.groupby(level="datetime", sort=True).size()
+        keep = sizes[sizes >= min_names_per_day].index
+        df = df[df.index.get_level_values("datetime").isin(keep)]
+        if df.empty:
+            return pd.Series(dtype=float)
     return df.groupby(level="datetime", sort=True).apply(
         lambda g: compute_ic_for_group(g, method)
     )
@@ -258,6 +281,7 @@ def evaluate_factor(
     *,
     method: str = "rank",
     universe_mask: pd.DataFrame | None = None,
+    min_names_per_day: int = 0,
 ) -> EvaluationResult:
     """Walk ``expr``, compute its factor values, then produce the
     full metric bundle against ``forward_return``.
@@ -305,7 +329,8 @@ def evaluate_factor(
     # joins are clean.
     fwd = forward_return.reindex_like(factor_values)
 
-    ic_rank = _ic_per_day(factor_values, fwd, method="rank")
+    ic_rank = _ic_per_day(factor_values, fwd, method="rank",
+                          min_names_per_day=min_names_per_day)
     rank_mean, rank_std = float(ic_rank.mean()), float(ic_rank.std())
     if method == "rank":
         headline_mean, headline_std = rank_mean, rank_std
@@ -313,7 +338,8 @@ def evaluate_factor(
         # Pearson IC is the headline ONLY when method != "rank". Computing it
         # on the rank path (the validator's per-entry hot path, IS + OOS) is
         # dead work — it is discarded there. Defer it into this branch.
-        ic_pearson = _ic_per_day(factor_values, fwd, method="normal")
+        ic_pearson = _ic_per_day(factor_values, fwd, method="normal",
+                                 min_names_per_day=min_names_per_day)
         headline_mean, headline_std = float(ic_pearson.mean()), float(ic_pearson.std())
 
     return EvaluationResult(
@@ -327,4 +353,10 @@ def evaluate_factor(
         turnover_daily=_turnover_daily(factor_values),
         coverage=_coverage(factor_values, universe_mask),
         n_obs_per_day_min=_n_obs_per_day_min(factor_values, fwd),
+        # Eligible IC dates = those the rank-IC path actually scored
+        # (finite rho after the thin-day floor and the forward-return
+        # join) — the axis a campaign's orthogonality penalty must
+        # share with adjudication (codex #401 r8).
+        ic_dates=ic_rank.index[np.isfinite(ic_rank.to_numpy())]
+        if ic_rank.shape[0] else ic_rank.index,
     )

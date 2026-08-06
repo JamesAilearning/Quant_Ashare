@@ -2,7 +2,29 @@
 # run 后登记结果；FAIL/阴性照录永不删除——Gate-4A 纪律沿袭）。
 protocol_id: pv_incremental_v1
 plan: docs/prereg/pv_incremental.yaml
-entries: []
+entries:
+  - id: E001
+    when: "2026-08-05"
+    kind: intent
+    what: >-
+      基线预测生成 run 预登记（PV-DP-3）。config/presets/
+      pv_incremental_baseline.yaml 一次不间断调用 walk-forward
+      （csi800 / Alpha158+LGB / overall_end 2024-12-31 / ensemble
+      window 3），随后 scripts/research/pv_incremental_baseline_export.py
+      导出宽表 + provenance sidecar。点火在操作人（GPU 约 1-2 小时）。
+    semantics_pinned:
+      universe: csi800
+      overall_end: "2024-12-31"      # 2025 holdout 盲态防线
+      ensemble_window: 3             # 决策②：生产同源 warm ensemble
+      is_coverage_policy: penalize_covered_days_only
+                                     # 决策①：折几何保生产同源，IS 前段
+                                     # 无基线覆盖不罚且如实披露
+      ic_term: abs_rank_ic           # 决策③：方向自由度归表达式
+    ignition_condition: >-
+      冻结件与工装已入 main；run 须单次调用（resume 混提交致
+      git_commit=null，导出器直接拒）；tree 必须干净（git_dirty=True 拒）。
+    artifacts: []
+    numbers: null
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>

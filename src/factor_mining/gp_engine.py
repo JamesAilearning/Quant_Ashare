@@ -51,6 +51,14 @@ _log = logging.getLogger(__name__)
 
 FITNESS_EVALUATOR_METHOD = "normal"
 
+# Minimum names a day needs before its cross-sectional correlation is
+# meaningful. The SETUP guard and the per-day scorer MUST use the same
+# floor (codex #401 r4): a baseline sharing exactly two instruments
+# passed a ``< 2`` setup check and then had every single day skipped
+# by the scorer's ``< 3``, recording the whole run as uncovered and
+# zeroing the campaign's incremental criterion.
+_MIN_ORTHOGONALITY_CROSS_SECTION = 3
+
 
 # ---------------------------------------------------------------------------
 # Configs and stats
@@ -177,6 +185,36 @@ class GPEngine:
         # incomparable cache instead of silently mixing coverage semantics
         # (Codex P1+P2 on PR #217). None until the first run / checkpoint load.
         self._coverage_key: str | None = None
+        # Optional EXTERNAL baseline predictions (date × ticker) for the
+        # campaign orthogonality penalty; set by ``run``. Its cache key
+        # ("no_baseline" / "baseline:<fingerprint>") follows the same
+        # invalidation discipline as the coverage key — cached scores
+        # produced against a different baseline (or none) are not
+        # comparable and must be discarded, not silently mixed.
+        # Campaign terminal whitelist (codex #401 r9): set by ``run``
+        # from the panel actually loaded, so the generator and point
+        # mutation can only build expressions over admitted inputs.
+        self._allowed_terminals: frozenset[str] | None = None
+        self._baseline: pd.DataFrame | None = None
+        self._baseline_key: str | None = None
+        # Fingerprint of the FULL fitness configuration the cached
+        # scores were produced under (codex #401 r13): the campaign
+        # fields (ic_term / min_names_per_day / orthogonality band and
+        # weight) change selection semantics but are invisible to both
+        # the coverage and baseline keys, so a resume under a different
+        # frozen criterion would restore stale scores by expression
+        # hash and mix criteria within one pool.
+        self._fitness_key: str | None = None
+        # Pre-stacked baseline (one stack for the whole run, not per
+        # expression — the novelty term's memory lesson).
+        self._baseline_stack: pd.Series | None = None
+        # Run-level orthogonality coverage: how many scored expressions
+        # had ZERO overlapping days with the baseline (operator decision
+        # A: the IS window starts before the baseline's first
+        # out-of-fold date, so early-window-only factors are legitimately
+        # unpenalised — reported, never silently absorbed).
+        self._orthogonality_uncovered: int = 0
+        self._orthogonality_scored: int = 0
 
     # ------------------------------------------------------------------
     # Population lifecycle
@@ -199,6 +237,7 @@ class GPEngine:
                     max_depth=self.config.max_depth,
                     min_depth=self.config.min_depth,
                     rng=self.rng,
+                    allowed_terminals=self._allowed_terminals,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -207,6 +246,19 @@ class GPEngine:
                 continue
             seen.add(h)
             pop.append(expr)
+        if not pop:
+            # An unusable configuration must not become a "successful"
+            # empty campaign (codex #401 r10): with a terminal
+            # whitelist that intersects nothing, every generation
+            # attempt raises and the retry budget quietly expires,
+            # leaving an empty population and an empty final pool that
+            # reads like a clean negative. Fail loud instead.
+            raise GrammarError(
+                f"generated no valid individuals in {attempts} attempts "
+                f"(target_type={target!r}, allowed_terminals="
+                f"{sorted(self._allowed_terminals) if self._allowed_terminals else None}) "
+                "— unusable generator configuration; refusing rather "
+                "than running an empty campaign.")
         self.population = pop
 
     # ------------------------------------------------------------------
@@ -230,9 +282,18 @@ class GPEngine:
             # (w_ic·|rank| + w_rankic·|rank|). The constant lives at module
             # scope so checkpoint payloads can tag stored scores with the
             # method that produced them — see ``save_checkpoint``.
+            # The thin-day floor is passed ONLY when a campaign sets
+            # one (codex #401 r6): the breeding metric must drop the
+            # same thin days the adjudicating metric drops. The legacy
+            # call stays literally unchanged when the floor is 0, so
+            # no existing caller/stub sees a new keyword.
+            extra_kw = (
+                {"min_names_per_day": self.fitness_config.min_names_per_day}
+                if self.fitness_config.min_names_per_day > 0 else {}
+            )
             result = evaluate_factor(
                 expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD,
-                universe_mask=self._universe_mask,
+                universe_mask=self._universe_mask, **extra_kw,
             )
         except KeyError as exc:
             # The evaluator raises KeyError only when a Terminal references
@@ -264,8 +325,11 @@ class GPEngine:
             return float("-inf"), None
         novelty = self._within_generation_novelty(result.factor_values)
         size = expression_size(expr)
+        baseline_rho = self._baseline_orthogonality(
+            result.factor_values, result.ic_dates)
         score = compute_fitness(
             result, expr_size=size, novelty_penalty=novelty, config=self.fitness_config,
+            baseline_mean_abs_rho=baseline_rho,
         )
         self.fitness_cache[h] = score
         if score > float("-inf"):
@@ -284,8 +348,83 @@ class GPEngine:
                 fitness=score,
                 expr_size=size,
                 method=FITNESS_EVALUATOR_METHOD,
+                # Record the IS orientation whenever the breeding
+                # criterion is sign-blind (codex #401 r13): the
+                # adjudicating side tests SIGNED IC against a
+                # one-sided positive threshold, so a winner bred on
+                # |rank-IC| must carry the sign that makes it a
+                # positive predictor, or it is tested backwards.
+                orientation=(
+                    -1 if (self.fitness_config.ic_term == "abs_rank_ic"
+                           and np.isfinite(result.rank_ic_mean)
+                           and result.rank_ic_mean < 0)
+                    else 1),
             )
         return score, result
+
+    def _baseline_orthogonality(self, factor_values: pd.DataFrame,
+                                ic_dates: pd.Index | None = None) -> float:
+        """Mean |daily cross-sectional Spearman rho| vs the baseline.
+
+        The campaign's incremental criterion (pv_incremental_v1
+        PV-DP-3): correlation is measured PER DAY across names and
+        averaged in absolute value — the same daily-cross-sectional
+        semantics the OOS evaluator and the frozen plan use, not the
+        pooled Pearson the within-generation novelty term uses.
+
+        Returns NaN when the baseline is absent or shares NO day with
+        the factor: under operator decision A the baseline keeps the
+        production walk-forward fold geometry, whose first
+        out-of-fold date is later than the IS window start, so early
+        days legitimately have no baseline. ``orthogonality_penalty``
+        maps NaN to zero penalty and the run reports the uncovered
+        count — the gap is disclosed, never silently absorbed.
+        """
+        if (self._baseline is None
+                or self.fitness_config.w_orthogonality == 0.0):
+            return float("nan")
+        floor = _orthogonality_floor(self.fitness_config)
+        common_dates = factor_values.index.intersection(self._baseline.index)
+        # Restrict to the ELIGIBLE IC dates (codex #401 r8): the OOS
+        # evaluator adjudicates orthogonality on ``ic.index`` only, so
+        # lag-tail and PIT-gap days — where factor and baseline both
+        # exist but no forward return does — must not steer breeding
+        # either. Legacy runs pass no axis and keep every shared day.
+        if ic_dates is not None:
+            common_dates = common_dates.intersection(ic_dates)
+        self._orthogonality_scored += 1
+        if len(common_dates) == 0:
+            self._orthogonality_uncovered += 1
+            return float("nan")
+        common_cols = factor_values.columns.intersection(
+            self._baseline.columns)
+        if len(common_cols) < floor:
+            self._orthogonality_uncovered += 1
+            return float("nan")
+        f = factor_values.loc[common_dates, common_cols]
+        b = self._baseline.loc[common_dates, common_cols]
+        rhos: list[float] = []
+        for dt in common_dates:
+            pair = pd.DataFrame({"f": f.loc[dt], "b": b.loc[dt]}).dropna()
+            # The frozen thin-day floor applies to the orthogonality
+            # days too (codex #401 r7): the OOS evaluator's
+            # orthogonality_series skips days below min_names_per_day,
+            # so a breeding penalty computed over days adjudication
+            # discards would again diverge from the registered gate.
+            if pair.shape[0] < floor:
+                continue
+            # Degenerate cross-sections (constant on either side) have
+            # an undefined rank correlation — skip the day rather than
+            # let pandas' NaN pull the mean around.
+            if pair["f"].nunique() < 2 or pair["b"].nunique() < 2:
+                continue
+            rho = pair["f"].corr(pair["b"], method="spearman")
+            if np.isfinite(rho):
+                rhos.append(abs(float(rho)))
+        if not rhos:
+            self._orthogonality_uncovered += 1
+            return float("nan")
+        return float(np.mean(rhos))
 
     def _within_generation_novelty(self, factor_values: pd.DataFrame) -> float:
         """Max abs Pearson correlation against same-generation cached values.
@@ -360,7 +499,8 @@ class GPEngine:
         sub_min = max(1, min(self.config.min_depth, remaining))
         try:
             new_sub = random_expression(
-                target_type, max_depth=remaining, min_depth=sub_min, rng=self.rng,
+                target_type, max_depth=remaining, min_depth=sub_min,
+                rng=self.rng, allowed_terminals=self._allowed_terminals,
             )
             return _replace_subtree(expr, pos_path, new_sub)
         except (GrammarError, ValueError):
@@ -411,6 +551,11 @@ class GPEngine:
                 pool = [t for t in FeatureRegistry.V1_RAW_PRICE if t != exclude]
             else:
                 pool = [t for t in FeatureRegistry.V1_SCALE_FREE if t != exclude]
+            # Point mutation must respect the campaign whitelist too
+            # (codex #401 r9) — otherwise a legal parent mutates into
+            # an expression over a forbidden terminal.
+            if self._allowed_terminals is not None:
+                pool = [t for t in pool if t in self._allowed_terminals]
             if not pool:
                 raise GrammarError("no alternative terminal available")
             return Terminal(self.rng.choice(pool))
@@ -476,6 +621,7 @@ class GPEngine:
                     max_depth=self.config.max_depth,
                     min_depth=self.config.min_depth,
                     rng=self.rng,
+                    allowed_terminals=self._allowed_terminals,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -493,12 +639,19 @@ class GPEngine:
         *,
         n_generations: int | None = None,
         universe_mask: pd.DataFrame | None = None,
+        baseline: pd.DataFrame | None = None,
     ) -> FactorPool:
         """Run the GP loop and return the final ``FactorPool``.
 
         ``universe_mask`` (date × ticker bool) is forwarded to the
         evaluator so coverage is measured members-only on real-PIT
         panels; None preserves the legacy all-cells coverage.
+
+        ``baseline`` (date × ticker predictions) drives the campaign
+        orthogonality penalty; it is inert unless the fitness config
+        carries a non-zero ``w_orthogonality``. Like the mask it is
+        assigned on EVERY run (including None) and its fingerprint
+        invalidates a cache produced against a different baseline.
         """
         # Assign on EVERY run, including None: omitting the mask selects
         # all-cells coverage (per the docstring), so reusing an engine that
@@ -506,6 +659,21 @@ class GPEngine:
         # rather than retain stale membership from the old panel. Codex P2
         # on #217.
         self._universe_mask = universe_mask
+        # The panel IS the contract (codex #401 r9): a campaign whose
+        # frozen protocol admits only a subset of the registry loads
+        # exactly those fields, so deriving the generator whitelist
+        # from the panel keeps generation, mutation and evaluation on
+        # one field set. A full-registry panel yields None = legacy
+        # sampling, byte-identical to before.
+        panel_fields = frozenset(
+            k for k in (panel.keys() if hasattr(panel, "keys") else [])
+            if isinstance(k, str) and k.startswith("$")
+        )
+        self._allowed_terminals = (
+            panel_fields
+            if panel_fields and panel_fields != frozenset(FeatureRegistry.V1)
+            else None
+        )
         # Guard a resume/reuse against an incomparable cache: scores cached
         # under a different coverage key — all-cells vs members, OR a
         # different member mask (different universe / date range) — are not
@@ -534,6 +702,65 @@ class GPEngine:
             self.fitness_cache = {}
             self._all_evaluated = {}
         self._coverage_key = run_coverage_key
+        # Same discipline for the campaign baseline: scores produced
+        # against a DIFFERENT baseline (or none) are not comparable to
+        # what this run would produce, and the orthogonality penalty is
+        # invisible to the coverage key. Without this, resuming a
+        # campaign checkpoint against a re-exported baseline would
+        # silently mix penalised and unpenalised scores in one pool.
+        self._baseline = baseline
+        self._baseline_stack = None
+        self._orthogonality_uncovered = 0
+        self._orthogonality_scored = 0
+        # SETUP validation before a single expression is scored (codex
+        # #401 r1): a baseline whose instrument namespace or date range
+        # does not meet the panel is a configuration error, not the
+        # legitimate "IS window starts before the first out-of-fold
+        # date" gap. Left unchecked it would make EVERY candidate
+        # score as uncovered — silently disabling the campaign's only
+        # incremental criterion while the run looked healthy. Raised
+        # here (not inside evaluate_individual, whose broad except
+        # would swallow it into a -inf score).
+        if baseline is not None and self.fitness_config.w_orthogonality != 0.0:
+            _assert_baseline_meets_panel(
+                baseline, panel,
+                floor=_orthogonality_floor(self.fitness_config))
+        run_baseline_key = _baseline_key_for(baseline)
+        if (
+            self._baseline_key is not None
+            and self._baseline_key != run_baseline_key
+            and (self.fitness_cache or self._all_evaluated)
+        ):
+            _log.warning(
+                "baseline cache key %r (prior run/checkpoint) != this run "
+                "%r — discarding fitness_cache (%d) and all_evaluated (%d); "
+                "re-scoring from scratch to avoid mixing orthogonality "
+                "semantics across a baseline change.",
+                self._baseline_key,
+                run_baseline_key,
+                len(self.fitness_cache),
+                len(self._all_evaluated),
+            )
+            self.fitness_cache = {}
+            self._all_evaluated = {}
+        self._baseline_key = run_baseline_key
+        run_fitness_key = _fitness_key_for(self.fitness_config)
+        if (
+            self._fitness_key is not None
+            and self._fitness_key != run_fitness_key
+            and (self.fitness_cache or self._all_evaluated)
+        ):
+            _log.warning(
+                "fitness cache key %r (prior run/checkpoint) != this run "
+                "%r — discarding fitness_cache (%d) and all_evaluated "
+                "(%d); re-scoring from scratch to avoid mixing selection "
+                "criteria within one pool.",
+                self._fitness_key, run_fitness_key,
+                len(self.fitness_cache), len(self._all_evaluated),
+            )
+            self.fitness_cache = {}
+            self._all_evaluated = {}
+        self._fitness_key = run_fitness_key
         if not self.population:
             self.initialize_population()
         n_gens = (
@@ -604,6 +831,23 @@ class GPEngine:
                 if self._coverage_key is not None
                 else _coverage_key_for(self._universe_mask)
             ),
+            # Baseline the cached scores' orthogonality penalty was
+            # computed against ("no_baseline" / "baseline:<fp>"); the
+            # penalty is invisible to coverage_key, so a resume against
+            # a different baseline must invalidate the cache too.
+            "baseline_key": (
+                self._baseline_key
+                if self._baseline_key is not None
+                else _baseline_key_for(self._baseline)
+            ),
+            # Fitness configuration the cached scores were produced
+            # under (codex #401 r13) — campaign criteria are invisible
+            # to the coverage/baseline keys.
+            "fitness_key": (
+                self._fitness_key
+                if self._fitness_key is not None
+                else _fitness_key_for(self.fitness_config)
+            ),
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
             "fitness_cache": {
@@ -660,6 +904,17 @@ class GPEngine:
             or state.get("coverage_denominator")
             or "all_cells"
         )
+        # Same for the campaign baseline. Legacy checkpoints predate the
+        # field and were necessarily written WITHOUT a baseline, so
+        # "no_baseline" is the faithful default — a campaign resume
+        # against a real baseline then invalidates in ``run``, which is
+        # the correct outcome (unpenalised scores must not be reused
+        # under a penalised fitness).
+        engine._baseline_key = state.get("baseline_key") or "no_baseline"
+        # Legacy checkpoints predate the field; treating them as
+        # "unknown" makes ``run`` invalidate on the first campaign
+        # resume, which is the safe direction.
+        engine._fitness_key = state.get("fitness_key") or "legacy_unknown"
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
@@ -711,6 +966,123 @@ def _coverage_key_for(mask: pd.DataFrame | None) -> str:
     return "all_cells" if mask is None else f"members:{_mask_fingerprint(mask)}"
 
 
+def _frame_fingerprint(frame: pd.DataFrame) -> str:
+    """Stable 16-hex content fingerprint of a float frame (index,
+    columns, cells) — the baseline analogue of ``_mask_fingerprint``.
+    sha256 (not the salted builtin ``hash``) so it survives a
+    checkpoint round-trip and is stable across processes."""
+    h = hashlib.sha256()
+    h.update("|".join(map(str, frame.index)).encode("utf-8"))
+    h.update(b"\x00cols\x00")
+    h.update("|".join(map(str, frame.columns)).encode("utf-8"))
+    h.update(np.ascontiguousarray(
+        frame.to_numpy(dtype=float, na_value=np.nan)).tobytes())
+    return h.hexdigest()[:16]
+
+
+def _orthogonality_floor(fitness_config) -> int:
+    """Per-day name floor for the orthogonality penalty.
+
+    Legacy runs keep the bare correlation minimum; a campaign that
+    froze ``min_names_per_day`` must use ITS floor here too (codex
+    #401 r7) so the breeding penalty is measured over exactly the days
+    the OOS evaluator will adjudicate.
+    """
+    return max(_MIN_ORTHOGONALITY_CROSS_SECTION,
+               int(getattr(fitness_config, "min_names_per_day", 0) or 0))
+
+
+def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel,
+                                 floor: int = _MIN_ORTHOGONALITY_CROSS_SECTION,
+                                 ) -> None:
+    """Refuse a baseline that cannot measure the panel at all.
+
+    Distinguishes a CONFIGURATION error from the campaign's accepted
+    coverage gap (codex #401 r1):
+
+    * fewer than 2 instruments in common — a different instrument
+      namespace (e.g. ``SH600000`` vs ``600000.SH``): no cross-section
+      can ever be correlated, so every candidate would score
+      unpenalised;
+    * zero dates in common — the baseline does not overlap the mining
+      window at all (a wrong export), as opposed to overlapping only
+      part of it, which is the expected and disclosed geometry.
+
+    Partial overlap is NOT an error: the frozen
+    ``is_coverage_policy = penalize_covered_days_only`` accepts it and
+    the run record discloses the counts.
+    """
+    frames = list(panel.values()) if hasattr(panel, "values") else list(panel)
+    if not frames:
+        raise ValueError(
+            "orthogonality penalty is enabled but the panel is empty — "
+            "cannot bind the baseline; refusing.")
+    ref = frames[0]
+    common_cols = ref.columns.intersection(baseline.columns)
+    if len(common_cols) < floor:
+        raise ValueError(
+            f"baseline shares {len(common_cols)} instrument(s) with the "
+            f"panel (panel e.g. {list(ref.columns[:3])}, baseline e.g. "
+            f"{list(baseline.columns[:3])}) — fewer than the {floor} "
+            "names the daily correlation needs under this campaign's "
+            "floor, so EVERY candidate would score unpenalised and "
+            "silently disable the incremental criterion; refusing.")
+    common_dates = ref.index.intersection(baseline.index)
+    if len(common_dates) == 0:
+        raise ValueError(
+            f"baseline dates {str(baseline.index.min())[:10]}.."
+            f"{str(baseline.index.max())[:10]} do not overlap the panel "
+            f"{str(ref.index.min())[:10]}..{str(ref.index.max())[:10]} — "
+            "the orthogonality penalty could never fire; refusing "
+            "(partial overlap is expected and allowed, zero is not).")
+    # Labels alone are not evidence (codex #401 r11): a sparse or
+    # all-NaN baseline shares the axes yet has too few finite cells on
+    # every shared day, so the scorer would skip every day and map the
+    # resulting NaN to a zero penalty for EVERY candidate — the
+    # incremental criterion silently disabled while the run looks
+    # healthy. Require at least one day that could actually be scored.
+    # JOINTLY finite, not merely non-null on one side (codex #401
+    # r12): disjoint populated cells, or infinities on either side,
+    # would clear a baseline-only count while the scorer still finds
+    # no scoreable cross-section on any day.
+    b_ok = np.isfinite(
+        baseline.loc[common_dates, common_cols].to_numpy(dtype=float,
+                                                         na_value=np.nan))
+    p_ok = np.isfinite(
+        ref.loc[common_dates, common_cols].to_numpy(dtype=float,
+                                                    na_value=np.nan))
+    per_day = (b_ok & p_ok).sum(axis=1)
+    usable = int(per_day.max()) if per_day.size else 0
+    if usable < floor:
+        raise ValueError(
+            f"baseline and panel are jointly finite on at most "
+            f"{usable} name(s) on any shared day, below the {floor} the "
+            "daily correlation needs "
+            "— every candidate would score unpenalised; refusing "
+            "(re-export the baseline).")
+
+
+def _fitness_key_for(fitness_config: FitnessConfig) -> str:
+    """Stable 16-hex fingerprint of the COMPLETE fitness config.
+
+    Every field participates: a campaign changing ``ic_term``,
+    ``min_names_per_day`` or the orthogonality band/weight changes what
+    "best" means, and cached scores from the previous criterion are not
+    comparable (codex #401 r13)."""
+    canonical = json.dumps(asdict(fitness_config), sort_keys=True,
+                           separators=(",", ":"), default=str)
+    return "fitness:" + hashlib.sha256(
+        canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _baseline_key_for(baseline: pd.DataFrame | None) -> str:
+    """Baseline-cache key: ``"no_baseline"`` or
+    ``"baseline:<fingerprint>"`` so a re-exported/different baseline
+    invalidates scores carrying the orthogonality penalty."""
+    return ("no_baseline" if baseline is None
+            else f"baseline:{_frame_fingerprint(baseline)}")
+
+
 def _serialise_rng_state(state):
     """``random.Random.getstate`` returns a tuple of (version, tuple, None)."""
     version, internal, gauss = state
@@ -740,6 +1112,7 @@ def _pool_entry_to_dict(entry: PoolEntry) -> dict:
         "n_obs_per_day_min": entry.n_obs_per_day_min,
         "expr_size": entry.expr_size,
         "method": entry.method,
+        "orientation": entry.orientation,
     }
 
 
@@ -776,4 +1149,5 @@ def _pool_entry_from_dict(d: dict) -> PoolEntry:
         expr_size=int(d["expr_size"]),
         expr_hash=hash(expr),
         method=str(d.get("method", LEGACY_METHOD_TAG)),
+        orientation=int(d.get("orientation", 1)),
     )

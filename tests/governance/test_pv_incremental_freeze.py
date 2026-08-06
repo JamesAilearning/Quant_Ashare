@@ -10,6 +10,7 @@ import sys
 import unittest
 from pathlib import Path
 
+import pandas as _PD
 import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +79,131 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertEqual(
             0.95,
             _PLAN["fitness"]["orthogonality"]["min_coverage_of_ic_days"])
+
+    def test_implementation_pr_decisions_pinned(self) -> None:
+        # The three口径 the operator signed for the implementation PR
+        # (PV-DP-3 left them to it). Frozen here so a later edit is a
+        # deliberate protocol change, not a silent drift.
+        orth = _PLAN["fitness"]["orthogonality"]
+        base = _PLAN["fitness"]["baseline"]
+        # ① IS coverage: penalise only days the baseline covers — the
+        # baseline keeps the production fold geometry rather than
+        # manufacturing earlier folds.
+        self.assertEqual("penalize_covered_days_only",
+                         orth["is_coverage_policy"])
+        # ② production-equivalent warm ensemble, not single-model.
+        self.assertEqual(3, base["ensemble_window"])
+        # ③ GP breeding signal uses |rank-IC| (direction belongs to the
+        # expression; the one-sided FWER threshold culls negatives).
+        self.assertEqual("abs_rank_ic", _PLAN["fitness"]["ic_term"])
+        # Sacred-invariant defence: the baseline run's hard tail must
+        # stop before the blinded holdout year.
+        self.assertEqual("2024-12-31", base["overall_end"])
+        self.assertEqual(_PLAN["windows"]["oos_end"], base["overall_end"])
+
+    def test_frozen_fitness_is_expressible_and_consumed(self) -> None:
+        # codex #401 r1: the frozen breeding criterion must map onto
+        # REAL FitnessConfig fields the engine consumes — a plan value
+        # no code reads would let the GP select factors by a metric
+        # other than the pre-registered one.
+        from src.factor_mining.fitness import FitnessConfig, compute_fitness
+        f = _PLAN["fitness"]
+        cfg = FitnessConfig(
+            ic_term=f["ic_term"],
+            w_complexity=f["parsimony_lambda_per_node"],
+            w_orthogonality=f["orthogonality"]["fitness_penalty_weight"],
+            orthogonality_band=f["orthogonality"]["fitness_band_abs_rho"],
+        )
+        self.assertEqual("abs_rank_ic", cfg.ic_term)
+        self.assertEqual(0.002, cfg.w_complexity)
+        self.assertEqual(2.0, cfg.w_orthogonality)
+        self.assertEqual(0.30, cfg.orthogonality_band)
+        # And the formula actually honours them.
+        from src.factor_mining.evaluator import EvaluationResult
+        result = EvaluationResult(
+            factor_values=_PD.DataFrame(
+                {"a": [1.0], "b": [2.0]},
+                index=_PD.DatetimeIndex(["2023-01-02"])),
+            ic_mean=0.9, ic_std=0.1, ir=5.0, rank_ic_mean=0.05,
+            rank_ic_std=0.1, rank_ir=0.5, turnover_daily=0.9,
+            coverage=1.0, n_obs_per_day_min=2)
+        score = compute_fitness(result, expr_size=10, novelty_penalty=0.9,
+                                config=cfg, baseline_mean_abs_rho=0.40)
+        # |0.05| − 0.002×10 − 2.0×(0.40−0.30); no IR/turnover/novelty.
+        self.assertAlmostEqual(0.05 - 0.02 - 0.2, score)
+
+    def test_campaign_miner_config_matches_the_frozen_plan(self) -> None:
+        # codex #401 r9: without a campaign miner config the only
+        # available path loads all twelve V1 terminals and the
+        # open→open label — the GP would breed on forbidden inputs
+        # against a different target than the one that adjudicates.
+        cfg = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "factor_mining"
+             / "pv_incremental_v1.yaml").read_text(encoding="utf-8"))
+        data, fit = cfg["data"], cfg["fitness"]
+        plan_fit = _PLAN["fitness"]
+        # PV-DP-1: exactly the seven frozen fields, verbatim order-free.
+        self.assertEqual(sorted(f"${f}" for f in _PLAN["fields"]),
+                         sorted(data["fields"]))
+        # PV-DP-2: the GP may see the IS window and nothing else.
+        self.assertEqual(_PLAN["windows"]["is_start"], data["start_date"])
+        self.assertEqual(_PLAN["windows"]["is_end"], data["end_date"])
+        self.assertEqual(_PLAN["universe"]["instruments"],
+                         data["universe_name"])
+        # PV-DP-3: breeding target == adjudicating target.
+        self.assertEqual("close", data["forward_return_price"])
+        self.assertEqual("close_exec_to_close_next",
+                         _PLAN["metric"]["forward_return"])
+        self.assertEqual(plan_fit["baseline"]["model"],
+                         data["baseline_model"])
+        # Frozen fitness constants, consumed by real config fields.
+        self.assertEqual(plan_fit["ic_term"], fit["ic_term"])
+        self.assertEqual(plan_fit["parsimony_lambda_per_node"],
+                         fit["w_complexity"])
+        self.assertEqual(
+            plan_fit["orthogonality"]["fitness_penalty_weight"],
+            fit["w_orthogonality"])
+        self.assertEqual(
+            plan_fit["orthogonality"]["fitness_band_abs_rho"],
+            fit["orthogonality_band"])
+        self.assertEqual(_PLAN["metric"]["min_names_per_day"],
+                         fit["min_names_per_day"])
+        # The config must parse into the real dataclasses (a typo in a
+        # key would otherwise sit here until ignition).
+        from src.factor_mining.fitness import FitnessConfig
+        from src.factor_mining.miner import DataConfig
+        DataConfig(**data)
+        FitnessConfig(**fit)
+
+    def test_orientation_contract_is_pinned_and_wired(self) -> None:
+        # codex #401 r13: the sign-blind breeding criterion is only
+        # safe if the IS orientation is recorded and APPLIED. Pin both
+        # the frozen flag and the two ends that implement it.
+        self.assertIs(True, _PLAN["fitness"]["orientation_recorded"])
+        from dataclasses import fields as dc_fields
+
+        from src.factor_mining.factor_pool import PoolEntry
+        self.assertIn("orientation",
+                      {f.name for f in dc_fields(PoolEntry)})
+        import inspect
+
+        import scripts.research.pv_incremental_eval as ev
+        # The evaluator must both validate and apply it.
+        self.assertIn("orientation",
+                      inspect.getsource(ev.preflight_candidates))
+        self.assertIn("factor = -factor", inspect.getsource(ev.main))
+
+    def test_baseline_preset_matches_frozen_tail(self) -> None:
+        # The preset that drives the baseline run must pin the frozen
+        # tail: the parent config_walk.yaml default (2025-12-31) would
+        # train into and predict the holdout year.
+        preset = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "presets"
+             / "pv_incremental_baseline.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(_PLAN["fitness"]["baseline"]["overall_end"],
+                         preset["overall_end"])
+        self.assertEqual(_PLAN["universe"]["instruments"],
+                         preset["instruments"])
 
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])

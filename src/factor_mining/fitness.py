@@ -18,6 +18,11 @@ from .evaluator import EvaluationResult
 
 ANNUALISATION_DAYS = 252
 
+# Recognised fitness shapes. An unknown value must never silently fall
+# through to the v1 mixture — that is how a campaign ends up breeding
+# against a metric other than the pre-registered one.
+_IC_TERMS = frozenset({"v1_composite", "abs_rank_ic"})
+
 
 @dataclass(frozen=True)
 class FitnessConfig:
@@ -45,6 +50,37 @@ class FitnessConfig:
     variance_min: float = 1e-6
     extreme_outlier_frac_max: float = 0.05
     extreme_outlier_magnitude: float = 1e8
+
+    # ---- Campaign IC term (pv_incremental_v1) ----
+    # ``"v1_composite"`` (default) = the §5.1 mixture below, unchanged.
+    # ``"abs_rank_ic"`` = the FROZEN pv_incremental_v1 breeding
+    # criterion: |daily cross-sectional rank-IC mean| MINUS parsimony
+    # and orthogonality, and NOTHING else. Selecting the mode switches
+    # the formula's SHAPE rather than asking an operator to zero six
+    # legacy weights by hand — a hand-zeroed config would silently
+    # diverge from the pre-registered metric that is supposed to be
+    # selecting factors (codex #401 r1).
+    ic_term: str = "v1_composite"
+    # Thin-day floor for the BREEDING metric. 0 keeps the legacy
+    # behaviour (only the IC primitive's own 3-name floor). A campaign
+    # whose frozen metric drops days below ``min_names_per_day`` must
+    # set it here too (codex #401 r6) — otherwise thin days steer GP
+    # selection and then vanish at adjudication, so the breeding
+    # metric is not the pre-registered one.
+    min_names_per_day: int = 0
+
+    # ---- Campaign orthogonality penalty (pv_incremental_v1) ----
+    # INERT BY DEFAULT (weight 0.0): the v1 formula and every existing
+    # pin are unchanged unless a campaign config sets these. Unlike the
+    # within-generation ``w_corr`` novelty term (linear, vs GP peers),
+    # this is a BANDED hinge against a fixed EXTERNAL baseline: only
+    # the part of mean |rho| above ``orthogonality_band`` is penalised,
+    # so a candidate may carry baseline-correlated signal up to the
+    # frozen band for free and pays only for the excess. The band and
+    # weight are frozen in docs/prereg/pv_incremental.yaml (0.30 / 2.0)
+    # — a campaign passes them through, never hardcodes them here.
+    w_orthogonality: float = 0.0
+    orthogonality_band: float = 0.0
 
 
 def _variance_days_frac(result: EvaluationResult, variance_min: float) -> float:
@@ -101,11 +137,35 @@ def passes_validity(result: EvaluationResult, config: FitnessConfig) -> bool:
     return True
 
 
+def orthogonality_penalty(mean_abs_rho: float,
+                          config: FitnessConfig) -> float:
+    """Banded hinge on baseline correlation (pv_incremental_v1).
+
+    ``w_orthogonality × max(0, mean|rho| − band)`` — zero when the
+    weight is 0 (the default, so the v1 formula is untouched) and zero
+    inside the frozen band. A non-finite rho (no overlapping days at
+    all) contributes NO penalty: the campaign's IS window deliberately
+    starts before the walk-forward baseline's first out-of-fold date,
+    so early-window expressions are simply unpenalised rather than
+    scored against a baseline that does not exist there (operator
+    decision A — keep the baseline's production fold geometry rather
+    than manufacture earlier folds). Coverage is reported at run level,
+    never silently folded into the score.
+    """
+    if config.w_orthogonality == 0.0:
+        return 0.0
+    if not np.isfinite(mean_abs_rho):
+        return 0.0
+    excess = max(0.0, float(mean_abs_rho) - config.orthogonality_band)
+    return config.w_orthogonality * excess
+
+
 def compute_fitness(
     result: EvaluationResult,
     expr_size: int,
     novelty_penalty: float,
     config: FitnessConfig | None = None,
+    baseline_mean_abs_rho: float = float("nan"),
 ) -> float:
     """Composite fitness per v1 §5.1 with D1 annualised cost.
 
@@ -117,12 +177,20 @@ def compute_fitness(
                 - w_turnover * (turnover_daily × 252 × cost_rate)
                 - w_corr     * novelty_penalty
                 - w_complexity * expr_size
+                - w_orthogonality * max(0, baseline|rho| - band)
+
+    The last term is INERT unless a campaign sets ``w_orthogonality``
+    (default 0.0), so the v1 formula above it is unchanged.
 
     Invalid factors (``passes_validity`` is False) get ``-inf`` so
     GP selection never picks them. NaN IC means the factor produced
     no valid observations, which also gives ``-inf``.
     """
     cfg = config if config is not None else FitnessConfig()
+    if cfg.ic_term not in _IC_TERMS:
+        raise ValueError(
+            f"unknown ic_term {cfg.ic_term!r}; expected one of "
+            f"{sorted(_IC_TERMS)}")
     if not passes_validity(result, cfg):
         return float("-inf")
     if (
@@ -130,6 +198,17 @@ def compute_fitness(
         or not np.isfinite(result.rank_ic_mean)
     ):
         return float("-inf")
+    if cfg.ic_term == "abs_rank_ic":
+        # The frozen pv_incremental_v1 breeding criterion, verbatim:
+        # |daily cross-sectional rank-IC mean| − parsimony −
+        # orthogonality. The v1 IR / turnover-cost / within-generation
+        # novelty terms deliberately do NOT participate — the
+        # pre-registered metric is exactly this and nothing else.
+        return float(
+            abs(result.rank_ic_mean)
+            - cfg.w_complexity * float(expr_size)
+            - orthogonality_penalty(baseline_mean_abs_rho, cfg)
+        )
     ir_term = 0.0 if not np.isfinite(result.ir) else result.ir
     cost_term = result.turnover_daily * ANNUALISATION_DAYS * cfg.cost_rate
     novelty = float(novelty_penalty) if np.isfinite(novelty_penalty) else 0.0
@@ -140,6 +219,7 @@ def compute_fitness(
         - cfg.w_turnover * cost_term
         - cfg.w_corr * novelty
         - cfg.w_complexity * float(expr_size)
+        - orthogonality_penalty(baseline_mean_abs_rho, cfg)
     )
     return float(score)
 

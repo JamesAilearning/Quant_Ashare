@@ -112,20 +112,35 @@ class FactorMiningDataView:
         )
         return self._pivot_per_field(raw, self._fields)
 
-    def forward_return(self, horizon: int = 1) -> pd.DataFrame:
-        """T+1 → T+1+horizon open-to-open return panel.
+    def forward_return(self, horizon: int = 1,
+                       price: str = "open") -> pd.DataFrame:
+        """T+1 → T+1+horizon forward-return panel.
 
-        Per ``decisions.md`` D1 and ``factor_mining_design.md`` §5.3:
+        ``price="open"`` (the default, per ``decisions.md`` D1 and
+        ``factor_mining_design.md`` §5.3):
 
         ``Ref($open, -horizon-1) / Ref($open, -1) - 1``
 
-        which corresponds to "buy at T+1's open, sell at T+1+horizon's
-        open". Routed through ``PITDataProvider.get_features`` so the
+        i.e. "buy at T+1's open, sell at T+1+horizon's open".
+
+        ``price="close"`` is the pv_incremental_v1 frozen metric
+        (``close_exec_to_close_next``, codex #401 r9): the campaign's
+        OOS evaluator scores signal at t against
+        ``close[t+1] → close[t+2]``, so a GP run breeding on the
+        open-to-open label would rank candidates against a DIFFERENT
+        target than the one that adjudicates them. Same shape, same
+        post-delist NaN mask; only the price field changes.
+
+        Routed through ``PITDataProvider.get_features`` so the
         post-delist NaN mask applies to the label too.
         """
         if horizon < 1:
             raise ValueError(f"horizon must be >= 1, got {horizon}")
-        expr = f"Ref($open, -{horizon + 1}) / Ref($open, -1) - 1"
+        if price not in ("open", "close"):
+            raise ValueError(
+                f"price must be 'open' or 'close', got {price!r}")
+        field = f"${price}"
+        expr = f"Ref({field}, -{horizon + 1}) / Ref({field}, -1) - 1"
         raw = self._provider.get_features(
             fields=[expr],
             start=self._start,

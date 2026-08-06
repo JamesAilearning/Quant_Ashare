@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ import yaml
 from .factor_pool import FactorPool
 from .fitness import FitnessConfig
 from .gp_engine import GenerationStats, GPConfig, GPEngine
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Config types
@@ -47,6 +50,26 @@ class DataConfig:
     start_date: str = "2018-01-01"
     end_date: str = "2025-12-31"
     forward_horizon: int = 1
+    # Terminal whitelist for the panel. Empty = the full
+    # ``FeatureRegistry.V1`` twelve (legacy). A campaign whose frozen
+    # protocol admits only a subset MUST list it here (codex #401 r9):
+    # otherwise the view loads valuation/market-cap terminals the
+    # pre-registration explicitly excludes and the GP can breed on
+    # forbidden inputs.
+    fields: tuple[str, ...] = ()
+    # Forward-return price field: "open" (legacy open→open, D1) or
+    # "close" (pv_incremental_v1's frozen close_exec_to_close_next).
+    # Breeding against a different target than the one that
+    # adjudicates is the same class of defect as a different metric.
+    forward_return_price: str = "open"
+    # Campaign baseline predictions (wide parquet, date × instrument)
+    # for the orthogonality penalty. Plain pandas read — no qlib, no
+    # PIT, so the D5 gate is untouched. Loading REQUIRES the exporter's
+    # provenance sidecar (see ``load_baseline_predictions``): the
+    # penalty is the campaign's only incremental criterion, so an ad
+    # hoc parquet must never key it.
+    baseline_preds_path: str = ""
+    baseline_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -86,9 +109,22 @@ class RunResult:
 
 
 def load_config(path: str | Path) -> MinerConfig:
-    """Parse a YAML config into a typed ``MinerConfig``."""
+    """Parse a YAML config into a typed ``MinerConfig``.
+
+    Goes through the repository's environment-aware loader so
+    ``${QUANT_PROVIDER_URI:-/default}`` placeholders expand exactly as
+    they do for every other config in the repo (codex #401 r11: a bare
+    ``yaml.safe_load`` handed the literal ``${...}`` string to
+    ``PITDataProvider``, so a campaign config using the documented
+    env-var convention could not ignite at all). The loader is pure
+    ``os``/``re``/``yaml`` — no qlib, no PIT, so the D5 gate is
+    untouched.
+    """
     p = Path(path)
-    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    from src.core._yaml_loader import (  # noqa: PLC0415
+        load_yaml_with_inheritance,
+    )
+    raw = load_yaml_with_inheritance(p)
     data = DataConfig(**(raw.get("data") or {}))
     gp = GPConfig(**(raw.get("gp") or {}))
     fitness = FitnessConfig(**(raw.get("fitness") or {}))
@@ -159,10 +195,116 @@ def _build_pit_panel(config: DataConfig):
         start=config.start_date,
         end=config.end_date,
         universe_name=config.universe_name,
+        # Frozen terminal whitelist when a campaign declares one
+        # (codex #401 r9); None keeps the legacy full V1 registry.
+        fields=list(config.fields) if config.fields else None,
     )
     panel = view.load_panel()
-    fwd = view.forward_return(horizon=config.forward_horizon)
+    fwd = view.forward_return(horizon=config.forward_horizon,
+                              price=config.forward_return_price)
     return panel, fwd
+
+
+def load_baseline_predictions(config: MinerConfig):
+    """Load the campaign baseline predictions, provenance-bound.
+
+    Returns ``None`` when no baseline path is configured (the legacy /
+    synthetic path — the orthogonality penalty stays inert).
+
+    The parquet MUST be accompanied by the exporter's sidecar
+    ``<parquet>.provenance.json`` binding THIS file: ``model`` equal to
+    the configured ``baseline_model``, ``file_sha256`` equal to the
+    bytes on disk, and non-empty ``run_config_sha256`` / ``source_git``
+    — the same contract the OOS evaluator enforces. The orthogonality
+    penalty is the campaign's ONLY incremental criterion, so a stale or
+    ad hoc parquet keying it would silently invalidate every fitness
+    score in the run. Fail loud instead.
+
+    Plain pandas + json + hashlib: no qlib, no ``src.pit`` (D5).
+    """
+    import hashlib
+
+    import pandas as pd
+
+    path_str = config.data.baseline_preds_path
+    if not path_str:
+        # The symmetric failure to a namespace mismatch (codex #401
+        # r2): a campaign config that ENABLES the orthogonality
+        # penalty but forgets to bind the exported baseline would
+        # breed with a zero penalty on every candidate — no
+        # incremental criterion at all — while looking exactly like a
+        # healthy legacy run. Refuse before any scoring.
+        if config.fitness.w_orthogonality != 0.0:
+            raise ValueError(
+                "fitness.w_orthogonality is enabled "
+                f"({config.fitness.w_orthogonality}) but "
+                "data.baseline_preds_path is empty — the campaign's "
+                "only incremental criterion would silently contribute "
+                "nothing to every score; bind the exported baseline "
+                "or disable the penalty; refusing."
+            )
+        return None
+    if config.fitness.w_orthogonality == 0.0:
+        # Inverse mismatch: a baseline is bound but the penalty is
+        # off. Not silently wrong (no candidate is mis-certified), but
+        # the intent and the behaviour disagree — say so out loud.
+        _log.warning(
+            "baseline_preds_path is set but fitness.w_orthogonality "
+            "is 0.0 — the baseline will be loaded and IGNORED; no "
+            "orthogonality penalty will apply to this run."
+        )
+    path = Path(path_str)
+    if not path.is_file():
+        raise ValueError(
+            f"baseline_preds_path {path} does not exist — the campaign "
+            "orthogonality penalty has no baseline to measure against; "
+            "refusing."
+        )
+    if not config.data.baseline_model:
+        raise ValueError(
+            "baseline_preds_path is set but baseline_model is empty — "
+            "the run must declare WHICH baseline model it binds to so "
+            "the sidecar can be verified; refusing."
+        )
+    raw = path.read_bytes()
+    file_sha = hashlib.sha256(raw).hexdigest()
+    sidecar = path.with_name(path.name + ".provenance.json")
+    if not sidecar.is_file():
+        raise ValueError(
+            f"baseline provenance sidecar {sidecar.name} not found next "
+            f"to {path.name} — the incremental criterion must bind to a "
+            "ledgered baseline run; refusing."
+        )
+    prov = json.loads(sidecar.read_text(encoding="utf-8"))
+    if not isinstance(prov, dict):
+        raise ValueError(
+            f"baseline provenance sidecar {sidecar.name} is not a JSON "
+            "object; refusing."
+        )
+    if prov.get("model") != config.data.baseline_model:
+        raise ValueError(
+            f"baseline provenance declares model {prov.get('model')!r} "
+            f"but the run binds to {config.data.baseline_model!r}; "
+            "refusing."
+        )
+    if prov.get("file_sha256") != file_sha:
+        raise ValueError(
+            "baseline provenance file_sha256 does not match the parquet "
+            "on disk — stale/mismatched sidecar; refusing."
+        )
+    for key in ("run_config_sha256", "source_git"):
+        val = prov.get(key)
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(
+                f"baseline provenance is missing {key!r} — full run "
+                "provenance is required before the baseline may key the "
+                "incremental criterion; refusing."
+            )
+    frame = pd.read_parquet(path)
+    if frame.empty:
+        raise ValueError(f"baseline predictions {path} are empty; refusing.")
+    frame.index = pd.to_datetime(frame.index)
+    return frame.sort_index()
 
 
 def build_panel(config: MinerConfig):
@@ -244,8 +386,10 @@ def run_mining(config: MinerConfig) -> RunResult:
     """
     panel, fwd = build_panel(config)
     universe_mask = build_universe_mask(config)
+    baseline = load_baseline_predictions(config)
     engine = GPEngine(config.gp, config.fitness)
-    pool = engine.run(panel, fwd, universe_mask=universe_mask)
+    pool = engine.run(panel, fwd, universe_mask=universe_mask,
+                      baseline=baseline)
 
     full_pool_size = len(pool)
     if config.pool_top_k is not None and full_pool_size > config.pool_top_k:
@@ -274,6 +418,22 @@ def run_mining(config: MinerConfig) -> RunResult:
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }
+    if baseline is not None:
+        # Operator decision A: the baseline keeps the production
+        # walk-forward fold geometry, whose first out-of-fold date is
+        # later than the IS window start — so some expressions are
+        # scored with NO baseline overlap and carry no orthogonality
+        # penalty. That gap is DISCLOSED here (run-level counts + the
+        # baseline's own date span), never silently absorbed into the
+        # scores.
+        config_dump["baseline_orthogonality"] = {
+            "baseline_first_date": str(baseline.index.min())[:10],
+            "baseline_last_date": str(baseline.index.max())[:10],
+            "baseline_n_days": int(baseline.shape[0]),
+            "expressions_scored": engine._orthogonality_scored,
+            "expressions_without_baseline_overlap":
+                engine._orthogonality_uncovered,
+        }
     config_path.write_text(
         yaml.safe_dump(config_dump, sort_keys=False),
         encoding="utf-8",
