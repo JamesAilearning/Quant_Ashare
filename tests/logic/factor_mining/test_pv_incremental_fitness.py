@@ -327,6 +327,28 @@ class BaselinePanelBindingTests(unittest.TestCase):
             _assert_baseline_meets_panel(baseline, panel, floor=300)
         self.assertIn("300", str(ctx.exception))
 
+    def test_guard_counts_jointly_finite_cells(self) -> None:
+        # codex #401 r12: counting non-null baseline cells alone lets a
+        # baseline whose populated cells are DISJOINT from the panel's
+        # (or which carries infinities) clear the floor while the
+        # scorer still finds no scoreable cross-section.
+        from src.factor_mining.gp_engine import _assert_baseline_meets_panel
+        dates = pd.date_range("2023-01-02", periods=2, freq="B")
+        cols = [f"n{i}" for i in range(6)]
+        panel_frame = pd.DataFrame(np.nan, index=dates, columns=cols)
+        panel_frame.iloc[:, :3] = 1.0          # panel populates n0..n2
+        baseline = pd.DataFrame(np.nan, index=dates, columns=cols)
+        baseline.iloc[:, 3:] = 0.5             # baseline populates n3..n5
+        with self.assertRaises(ValueError) as ctx:
+            _assert_baseline_meets_panel(baseline, {"$close": panel_frame})
+        self.assertIn("jointly finite", str(ctx.exception))
+        # Infinities do not count as observations either.
+        inf_baseline = pd.DataFrame(np.inf, index=dates, columns=cols)
+        with self.assertRaises(ValueError):
+            _assert_baseline_meets_panel(
+                inf_baseline, {"$close": pd.DataFrame(1.0, index=dates,
+                                                      columns=cols)})
+
     def test_namespace_mismatch_refuses(self) -> None:
         from src.factor_mining.gp_engine import _assert_baseline_meets_panel
         dates = pd.date_range("2023-01-02", periods=3, freq="B")
@@ -627,6 +649,23 @@ class MinerBaselineLoadingTests(unittest.TestCase):
 
 class BaselineExporterTests(unittest.TestCase):
     @staticmethod
+    def _bundle(tmp: Path, *, start="2018-01-02", end="2026-08-03"):
+        """A self-contained PIT bundle stamp — never the machine's real
+        bundle, so the test is hermetic (and CI-safe)."""
+        from src.data.pit.bundle_integrity import (
+            BundleIdentity,
+            write_bundle_integrity,
+        )
+        tmp.mkdir(parents=True, exist_ok=True)
+        write_bundle_integrity(
+            tmp, built_from_holey_fetch=False,
+            identity=BundleIdentity(
+                tail_date=end, content_hash="sha256:" + "0" * 64,
+                instrument_count=800, calendar_start=start,
+                calendar_end=end))
+        return tmp
+
+    @staticmethod
     def _fold(run_dir: Path, index: int, start: str, end: str, *,
               ensemble_window: int = 3, dates=None, tamper: bool = False):
         dates = dates if dates is not None else pd.date_range(
@@ -851,7 +890,8 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=2, fold_indices=[0, 1])
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir),
-                 "--out-dir", str(Path(d) / "out")]))
+                 "--out-dir", str(Path(d) / "out"),
+                 "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
 
     def test_non_contiguous_declared_indexes_refuse(self) -> None:
         # codex #401 r3: uniqueness is not enough — an aggregate
@@ -865,7 +905,8 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=2, fold_indices=[0, 9])
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir),
-                 "--out-dir", str(Path(d) / "out")]))
+                 "--out-dir", str(Path(d) / "out"),
+                 "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
 
     def test_report_path_outside_run_dir_refuses(self) -> None:
         # codex #401 r3: a stored absolute path from the original run
@@ -925,7 +966,8 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=1)
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir),
-                 "--out-dir", str(Path(d) / "out")]))
+                 "--out-dir", str(Path(d) / "out"),
+                 "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
 
     def test_frozen_plan_loads_and_refuses_unblinded(self) -> None:
         import yaml
@@ -997,8 +1039,10 @@ class BaselineExporterTests(unittest.TestCase):
                                            freq="B"))
             self._agg(run_dir, n_folds=2)
             out = Path(d) / "out"
+            bundle = self._bundle(Path(d) / "bundle")
             rc = bx.main(["--run-dir", str(run_dir),
-                          "--out-dir", str(out)])
+                          "--out-dir", str(out),
+                          "--provider-uri", str(bundle)])
             self.assertEqual(0, rc)
             wide = pd.read_parquet(out / "baseline_preds.parquet")
             self.assertEqual((6, 3), wide.shape)
@@ -1032,7 +1076,8 @@ class BaselineExporterTests(unittest.TestCase):
             # A second export into the same dir refuses (never
             # overwrite a baseline other scores are keyed to).
             self.assertEqual(2, bx.main(["--run-dir", str(run_dir),
-                                         "--out-dir", str(out)]))
+                                         "--out-dir", str(out),
+                                         "--provider-uri", str(bundle)]))
 
     def test_stray_row_outside_declared_window_refuses(self) -> None:
         # codex #401 r1 (sacred invariant): a report may declare an
@@ -1049,7 +1094,31 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=1)
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir),
-                 "--out-dir", str(Path(d) / "out")]))
+                 "--out-dir", str(Path(d) / "out"),
+                 "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
+
+    def test_bundle_calendar_must_contain_exported_rows(self) -> None:
+        # codex #401 r12: config hashes cannot say WHICH data produced
+        # the baseline. A bundle whose calendar cannot contain the
+        # exported rows provably did not produce them.
+        with tempfile.TemporaryDirectory() as d:
+            idx = pd.DatetimeIndex(["2023-01-02", "2023-03-31"])
+            ok = bx.bind_source_bundle(
+                str(self._bundle(Path(d) / "ok")), idx)
+            self.assertEqual("sha256:" + "0" * 64, ok["content_hash"])
+            self.assertIn("observed_at_export_time",
+                          ok["binding_strength"])
+            narrow = self._bundle(Path(d) / "narrow",
+                                  start="2024-01-02", end="2024-12-31")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.bind_source_bundle(str(narrow), idx)
+            self.assertIn("did not produce these predictions",
+                          str(ctx.exception))
+            # No stamp at all → refuse (provenance unestablished).
+            bare = Path(d) / "bare"
+            bare.mkdir()
+            with self.assertRaises(bx.PVBaselineError):
+                bx.bind_source_bundle(str(bare), idx)
 
     def test_tampered_fold_pickle_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -1060,7 +1129,8 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=1)
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir),
-                 "--out-dir", str(Path(d) / "out")]))
+                 "--out-dir", str(Path(d) / "out"),
+                 "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
 
     def test_partial_run_dir_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -1070,7 +1140,8 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=5)      # declares more folds
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir),
-                 "--out-dir", str(Path(d) / "out")]))
+                 "--out-dir", str(Path(d) / "out"),
+                 "--provider-uri", str(self._bundle(Path(d) / "bundle"))]))
 
 
 class D5GateTests(unittest.TestCase):

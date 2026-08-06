@@ -993,13 +993,23 @@ def _assert_baseline_meets_panel(baseline: pd.DataFrame, panel,
     # resulting NaN to a zero penalty for EVERY candidate — the
     # incremental criterion silently disabled while the run looks
     # healthy. Require at least one day that could actually be scored.
-    usable = int(
-        baseline.loc[common_dates, common_cols].notna().sum(axis=1).max()
-        or 0)
+    # JOINTLY finite, not merely non-null on one side (codex #401
+    # r12): disjoint populated cells, or infinities on either side,
+    # would clear a baseline-only count while the scorer still finds
+    # no scoreable cross-section on any day.
+    b_ok = np.isfinite(
+        baseline.loc[common_dates, common_cols].to_numpy(dtype=float,
+                                                         na_value=np.nan))
+    p_ok = np.isfinite(
+        ref.loc[common_dates, common_cols].to_numpy(dtype=float,
+                                                    na_value=np.nan))
+    per_day = (b_ok & p_ok).sum(axis=1)
+    usable = int(per_day.max()) if per_day.size else 0
     if usable < floor:
         raise ValueError(
-            f"baseline has at most {usable} finite prediction(s) on any "
-            f"shared day, below the {floor} the daily correlation needs "
+            f"baseline and panel are jointly finite on at most "
+            f"{usable} name(s) on any shared day, below the {floor} the "
+            "daily correlation needs "
             "— every candidate would score unpenalised; refusing "
             "(re-export the baseline).")
 

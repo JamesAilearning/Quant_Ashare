@@ -137,6 +137,69 @@ def config_chain_sha256(preset_path: Path) -> dict[str, str]:
         current = (current.parent / str(parent)).resolve()
 
 
+def bind_source_bundle(provider_uri: str,
+                       wide_index: pd.Index) -> dict[str, Any]:
+    """Bind the export to the DATA that produced it (codex #401 r12).
+
+    The aggregate report captures only ``WalkForwardConfig``; the
+    runtime ``provider_uri`` and the bundle's content identity are not
+    in it, so config hashes alone cannot establish WHICH bundle (or
+    which vintage of it) produced the campaign's canonical baseline.
+
+    Two things are done here, and the limit of each is stated in the
+    sidecar rather than glossed:
+
+    * the bundle's fetch-integrity identity (content hash, calendar
+      span, tail date, instrument count) is recorded;
+    * it is CROSS-CHECKED against the exported rows — a bundle whose
+      calendar cannot contain the baseline's dates provably did not
+      produce them, and refuses.
+
+    What this does NOT prove: that the walk-forward process read this
+    exact bundle (the run report carries no bundle identity). The
+    sidecar says so explicitly, and the ledger's ignition condition
+    requires exporting straight after the run, before any bundle
+    rollover.
+    """
+    from src.data.pit.bundle_integrity import read_bundle_integrity
+
+    bundle_dir = Path(provider_uri)
+    if not bundle_dir.is_dir():
+        raise PVBaselineError(
+            f"--provider-uri {bundle_dir} is not a directory — the "
+            "export must record WHICH data bundle produced the "
+            "baseline; refusing.")
+    integrity = read_bundle_integrity(bundle_dir)
+    if integrity is None or integrity.identity is None:
+        raise PVBaselineError(
+            f"bundle {bundle_dir} carries no fetch-integrity identity "
+            "stamp — the baseline's data provenance cannot be "
+            "established; refusing.")
+    ident = integrity.identity
+    first, last = str(wide_index.min())[:10], str(wide_index.max())[:10]
+    if not (ident.calendar_start <= first and last <= ident.calendar_end):
+        raise PVBaselineError(
+            f"bundle calendar {ident.calendar_start}.."
+            f"{ident.calendar_end} cannot contain the exported rows "
+            f"{first}..{last} — this bundle did not produce these "
+            "predictions; refusing.")
+    return {
+        "provider_uri": str(bundle_dir),
+        "content_hash": ident.content_hash,
+        "tail_date": ident.tail_date,
+        "calendar_start": ident.calendar_start,
+        "calendar_end": ident.calendar_end,
+        "instrument_count": ident.instrument_count,
+        "built_from_holey_fetch": integrity.built_from_holey_fetch,
+        "binding_strength": (
+            "observed_at_export_time; the walk-forward report carries "
+            "no bundle identity, so this records the bundle present "
+            "when the export ran and verifies its calendar can "
+            "contain the exported rows"
+        ),
+    }
+
+
 def materialize_preset(preset_path: Path) -> dict[str, Any]:
     """Fully materialize the preset into walk-forward config VALUES.
 
@@ -528,7 +591,8 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
                   folds: list[dict[str, Any]],
                   run_identity: dict[str, Any],
                   resolved_config: dict[str, Any],
-                  config_chain: dict[str, str]) -> dict[str, Any]:
+                  config_chain: dict[str, str],
+                  bundle: dict[str, Any]) -> dict[str, Any]:
     """The provenance sidecar the miner and the OOS evaluator verify.
 
     ``model`` / ``file_sha256`` / ``run_config_sha256`` / ``source_git``
@@ -558,6 +622,9 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
         # names WHAT changed, not merely THAT something did.
         "resolved_config": resolved_config,
         "config_chain_sha256": config_chain,
+        # WHICH data produced this (codex #401 r12) — config hashes
+        # alone cannot say. Carries its own binding-strength note.
+        "data_bundle": bundle,
         "source_git": provenance["source_git"],
         "source_git_dirty": provenance["source_git_dirty"],
         "walk_forward_run_dir": run_dir,
@@ -596,6 +663,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--run-config",
                    default="config/presets/pv_incremental_baseline.yaml",
                    help="Repo-relative preset that drove the run.")
+    p.add_argument("--provider-uri",
+                   default="${QUANT_PROVIDER_URI}",
+                   help="PIT bundle the run read; its fetch-integrity "
+                        "identity is recorded and cross-checked.")
     args = p.parse_args(argv)
 
     try:
@@ -658,13 +729,21 @@ def main(argv: list[str] | None = None) -> int:
         wide.to_parquet(out_parquet)
         file_sha = hashlib.sha256(out_parquet.read_bytes()).hexdigest()
 
+        provider_uri = args.provider_uri
+        if provider_uri.startswith("${"):
+            import os
+            provider_uri = os.environ.get(
+                "QUANT_PROVIDER_URI", "D:/qlib_data/my_cn_data_pit")
+        bundle = bind_source_bundle(provider_uri, wide.index)
+
         sidecar = build_sidecar(
             plan, wide=wide, file_sha256=file_sha,
             run_config_rel=args.run_config,
             run_config_sha256=run_config_sha, provenance=provenance,
             ensemble_window=ensemble_window, run_dir=str(run_dir),
             folds=folds, run_identity=run_identity,
-            resolved_config=agg["config"], config_chain=config_chain)
+            resolved_config=agg["config"], config_chain=config_chain,
+            bundle=bundle)
         (out_dir / "baseline_preds.parquet.provenance.json").write_text(
             json.dumps(sidecar, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
