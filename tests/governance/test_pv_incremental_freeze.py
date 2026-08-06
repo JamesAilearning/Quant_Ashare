@@ -193,6 +193,25 @@ class PvIncrementalFreezePins(unittest.TestCase):
                       inspect.getsource(ev.preflight_candidates))
         self.assertIn("factor = -factor", inspect.getsource(ev.main))
 
+    def test_registration_tool_binds_the_frozen_protocol(self) -> None:
+        # The registration is what the OOS batch is adjudicated
+        # against, so the tool that writes it must bind the same
+        # frozen values the miner config does — otherwise a run bred
+        # outside the protocol could still be registered.
+        import inspect
+
+        import scripts.research.pv_incremental_register_candidates as rg
+        src = inspect.getsource(rg.check_run_config)
+        for token in ("universe", "is_start", "is_end", "ic_term",
+                      "min_names_per_day", "orthogonality",
+                      "baseline_preds_path"):
+            self.assertIn(token, src)
+        # And it must self-verify against the consumer's own preflight
+        # rather than re-implementing its rules.
+        self.assertIn(
+            "preflight_candidates",
+            inspect.getsource(rg.selfcheck_against_evaluator))
+
     def test_baseline_preset_matches_frozen_tail(self) -> None:
         # The preset that drives the baseline run must pin the frozen
         # tail: the parent config_walk.yaml default (2025-12-31) would
