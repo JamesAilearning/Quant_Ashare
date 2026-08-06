@@ -37,7 +37,49 @@ def sidecar_path_for(manifest_path: Path) -> Path:
     return manifest_path.with_name(manifest_path.name + SIDECAR_SUFFIX)
 
 
-def load_registration(manifest_path: Path) -> dict[str, Any]:
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+LEDGER_PATH = _REPO_ROOT / "docs" / "prereg" / "pv_incremental_ledger.yaml"
+
+
+def _ledger_manifest_digests(ledger_path: Path) -> set[str]:
+    """Every manifest digest the APPEND-ONLY campaign ledger records.
+
+    The sidecar and the manifest sit in the same directory and are
+    equally writable, so their agreement proves only self-consistency
+    (codex #403 r3): anyone can recompute the digest, drop it into the
+    sidecar, and pass — without ever running the registrar. The ledger
+    is the independent authority: it lives in git, is append-only by
+    protocol, and every entry passed review, so registering a batch
+    there is a recorded act rather than a local file edit.
+    """
+    import yaml
+
+    if not ledger_path.is_file():
+        raise PVRegistrationError(
+            f"campaign ledger {ledger_path} not found — the "
+            "registration cannot be authenticated; refusing.")
+    doc = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict) or doc.get("protocol_id") != PROTOCOL_ID:
+        raise PVRegistrationError(
+            f"campaign ledger {ledger_path.name} is not the "
+            f"{PROTOCOL_ID} ledger; refusing.")
+    digests: set[str] = set()
+    for entry in (doc.get("entries") or []):
+        if not isinstance(entry, dict):
+            continue
+        prov = entry.get("gp_provenance")
+        if isinstance(prov, dict):
+            sha = prov.get("manifest_sha256")
+            if isinstance(sha, str):
+                digests.add(sha)
+        for artifact in (entry.get("artifacts") or []):
+            if isinstance(artifact, str) and "#sha256=" in artifact:
+                digests.add(artifact.split("#sha256=", 1)[1].strip())
+    return digests
+
+
+def load_registration(manifest_path: Path,
+                      ledger_path: Path | None = None) -> dict[str, Any]:
     """Load + verify the registration that froze this manifest.
 
     Refuses when the sidecar is absent (an unregistered manifest is not
@@ -76,6 +118,19 @@ def load_registration(manifest_path: Path) -> dict[str, Any]:
             f"registration recorded {recorded[:12]}… — the manifest "
             "was modified after registration; the family is no longer "
             "the frozen one; refusing.")
+    # Self-consistency between two colocated, equally-writable files
+    # is not authentication (codex #403 r3). The append-only campaign
+    # ledger — in git, reviewed, never rewritten — is the independent
+    # authority that this digest was actually registered.
+    ledger = ledger_path if ledger_path is not None else LEDGER_PATH
+    if actual not in _ledger_manifest_digests(ledger):
+        raise PVRegistrationError(
+            f"manifest digest {actual[:12]}… is not recorded in the "
+            f"campaign ledger ({ledger.name}) — a sidecar can be "
+            "written by anyone, so the ledger is what makes a "
+            "registration real; append the registrar's "
+            "ledger_entry.yaml to it (append-only) and commit before "
+            "evaluating or adjudicating; refusing.")
     return payload
 
 

@@ -36,6 +36,22 @@ from tests.logic.factor_mining.test_pv_incremental_register import (  # noqa: E4
 )
 
 
+def _authorised_ledger(tmp: Path, manifest: Path) -> Path:
+    """A campaign ledger that records this manifest — the independent
+    authority the consumers authenticate against (codex #403 r3)."""
+    entry = yaml.safe_load(
+        (manifest.parent / "ledger_entry.yaml").read_text(
+            encoding="utf-8"))
+    path = tmp / "ledger.yaml"
+    path.write_text(
+        yaml.safe_dump({"protocol_id": "pv_incremental_v1",
+                        "plan": "docs/prereg/pv_incremental.yaml",
+                        "entries": entry},
+                       sort_keys=False, allow_unicode=True),
+        encoding="utf-8")
+    return path
+
+
 def _registered_batch(tmp: Path) -> tuple[Path, dict]:
     """Produce a REAL registration with the registrar, so these tests
     bind to the artifact the campaign will actually consume rather
@@ -54,7 +70,8 @@ class LoadRegistrationTests(unittest.TestCase):
     def test_real_registration_loads(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             manifest, payload = _registered_batch(Path(d))
-            loaded = reg.load_registration(manifest)
+            loaded = reg.load_registration(manifest, _authorised_ledger(
+                Path(d), manifest))
             self.assertEqual(payload["manifest_sha256"],
                              loaded["manifest_sha256"])
             self.assertEqual("pv_incremental_v1", loaded["protocol_id"])
@@ -64,6 +81,8 @@ class LoadRegistrationTests(unittest.TestCase):
             manifest = Path(d) / "candidates.json"
             manifest.write_text("[]", encoding="utf-8")
             with self.assertRaises(reg.PVRegistrationError) as ctx:
+                # No sidecar at all — refused before the ledger is
+                # even consulted.
                 reg.load_registration(manifest)
             self.assertIn("no registration sidecar", str(ctx.exception))
 
@@ -77,7 +96,8 @@ class LoadRegistrationTests(unittest.TestCase):
             manifest.write_text(json.dumps(body, indent=2) + "\n",
                                 encoding="utf-8")
             with self.assertRaises(reg.PVRegistrationError) as ctx:
-                reg.load_registration(manifest)
+                reg.load_registration(manifest, _authorised_ledger(
+                Path(d), manifest))
             self.assertIn("modified after registration",
                           str(ctx.exception))
 
@@ -89,7 +109,8 @@ class LoadRegistrationTests(unittest.TestCase):
             body = json.loads(manifest.read_text(encoding="utf-8"))
             manifest.write_text(json.dumps(body), encoding="utf-8")
             with self.assertRaises(reg.PVRegistrationError):
-                reg.load_registration(manifest)
+                reg.load_registration(manifest, _authorised_ledger(
+                Path(d), manifest))
 
     def test_foreign_protocol_and_bad_digest_refuse(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -104,7 +125,63 @@ class LoadRegistrationTests(unittest.TestCase):
                 sidecar.write_text(json.dumps(bad), encoding="utf-8")
                 with self.assertRaises(reg.PVRegistrationError,
                                        msg=label):
-                    reg.load_registration(manifest)
+                    reg.load_registration(manifest, _authorised_ledger(
+                Path(d), manifest))
+
+
+class LedgerAuthorityTests(unittest.TestCase):
+    """codex #403 r3: the sidecar and the manifest sit in the same
+    directory and are equally writable, so their agreement proves only
+    self-consistency — anyone could recompute the digest into the
+    sidecar without ever running the registrar. The append-only
+    campaign ledger (in git, reviewed) is the independent authority."""
+
+    def test_forged_pair_without_ledger_entry_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            # A hand-made "registration": manifest + a self-consistent
+            # sidecar, never registered anywhere.
+            manifest = Path(d) / "candidates.json"
+            body = json.dumps([{"candidate_id": "pv001_deadbeef",
+                                "expression": _CSF,
+                                "orientation": 1}], indent=2) + chr(10)
+            manifest.write_text(body, encoding="utf-8", newline="")
+            reg.sidecar_path_for(manifest).write_text(
+                json.dumps({
+                    "protocol_id": "pv_incremental_v1",
+                    "manifest_sha256": hashlib.sha256(
+                        manifest.read_bytes()).hexdigest(),
+                    "gp_input_sha256": {
+                        "baseline_preds.parquet": "a" * 64},
+                }), encoding="utf-8")
+            empty_ledger = Path(d) / "ledger.yaml"
+            empty_ledger.write_text(
+                yaml.safe_dump({"protocol_id": "pv_incremental_v1",
+                                "entries": []}),
+                encoding="utf-8")
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, empty_ledger)
+            self.assertIn("campaign ledger", str(ctx.exception))
+
+    def test_ledger_entry_authorises(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            self.assertEqual(
+                "pv_incremental_v1",
+                reg.load_registration(manifest, ledger)["protocol_id"])
+
+    def test_foreign_or_missing_ledger_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            missing = Path(d) / "nope.yaml"
+            with self.assertRaises(reg.PVRegistrationError):
+                reg.load_registration(manifest, missing)
+            foreign = Path(d) / "foreign.yaml"
+            foreign.write_text(
+                yaml.safe_dump({"protocol_id": "other_v1",
+                                "entries": []}), encoding="utf-8")
+            with self.assertRaises(reg.PVRegistrationError):
+                reg.load_registration(manifest, foreign)
 
 
 class BaselineIdentityTests(unittest.TestCase):
