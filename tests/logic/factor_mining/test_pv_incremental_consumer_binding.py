@@ -220,6 +220,66 @@ class ArtifactBaselineBindingTests(unittest.TestCase):
             self.assertIn("bred against", str(ctx.exception))
 
 
+class OosDataProtectionTests(unittest.TestCase):
+    """codex #403 r2: the 2023-2024 window is a ONE-SHOT evaluation,
+    so an unregistered / tampered / wrong-baseline batch must be
+    refused BEFORE any of it is read — otherwise the invalid batch has
+    already consumed the protected data."""
+
+    def test_registration_gate_precedes_provider_and_panel(self) -> None:
+        import inspect
+
+        import scripts.research.pv_incremental_eval as ev
+        src = inspect.getsource(ev.main)
+        gate = src.index("load_registration(")
+        preflight = src.index("preflight_candidates(candidates")
+        provider = src.index("build_pit_provider(")
+        panel = src.index("view.load_panel()")
+        self.assertLess(gate, provider)
+        self.assertLess(preflight, provider)
+        self.assertLess(provider, panel)
+
+    def test_tampered_manifest_refuses_without_touching_data(self) -> None:
+        # Drive the real CLI: if the gate ran after the provider, the
+        # run would fail on qlib/bundle access instead of the
+        # registration refusal (and would have read the window).
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            body = json.loads(manifest.read_text(encoding="utf-8"))
+            body[0]["expression"] = "cs_rank(ts_delta($high, 5))"
+            manifest.write_text(
+                json.dumps(body, indent=2) + chr(10),
+                encoding="utf-8")
+            import scripts.research.pv_incremental_eval as ev
+            baseline = Path(d) / "run" / "baseline_preds.parquet"
+            # Give the baseline a VALID provenance sidecar so that
+            # gate passes — otherwise it refuses first and this test
+            # would not exercise the registration gate at all.
+            plan = ev.load_frozen_plan()
+            baseline.with_name(
+                baseline.name + ".provenance.json").write_text(
+                json.dumps({
+                    "model": plan["fitness"]["baseline"]["model"],
+                    "file_sha256": hashlib.sha256(
+                        baseline.read_bytes()).hexdigest(),
+                    "run_config_sha256": "ab" * 32,
+                    "source_git": "c" * 40,
+                }), encoding="utf-8")
+            rc = ev.main([
+                "--candidates", str(manifest),
+                "--baseline-preds", str(baseline),
+                "--out-dir", str(Path(d) / "artifacts"),
+                "--window-start", "2023-01-01",
+                "--window-end", "2024-12-31",
+                "--provider", str(Path(d) / "no-such-bundle"),
+            ])
+            # 1 = the evaluator's classified refusal. If the gate ran
+            # AFTER the provider, this would have died on the
+            # nonexistent bundle instead — and would have read the
+            # protected window in the real case.
+            self.assertEqual(1, rc)
+
+
 class LedgerShapeTests(unittest.TestCase):
     def test_registration_ledger_entry_is_appendable(self) -> None:
         # The operator appends this to the campaign ledger before the
