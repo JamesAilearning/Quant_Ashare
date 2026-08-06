@@ -90,8 +90,21 @@ def check_run_config(plan: dict[str, Any],
         raise PVRegisterError(f"{cfg_path} is not a mapping; refusing.")
     data = cfg.get("data") or {}
     fit = cfg.get("fitness") or {}
+    gp = cfg.get("gp") or {}
     w = plan["windows"]
     expected: dict[str, tuple[Any, Any]] = {
+        # Every field that changes what was BRED (codex #402 r1):
+        # matching universe/window strings are not enough — a
+        # synthetic panel, a different holding horizon, another
+        # baseline model or looser depth bounds all produce candidates
+        # that were never selected under the frozen protocol.
+        "mode": (data.get("mode"), "pit"),
+        "forward_horizon": (data.get("forward_horizon"),
+                            plan["metric"]["signal_to_execution_lag"]),
+        "baseline_model": (data.get("baseline_model"),
+                           plan["fitness"]["baseline"]["model"]),
+        "gp.max_depth": (gp.get("max_depth"), plan["gp"]["max_depth"]),
+        "gp.min_depth": (gp.get("min_depth"), plan["gp"]["min_depth"]),
         "universe_name": (data.get("universe_name"),
                           plan["universe"]["instruments"]),
         "start_date": (data.get("start_date"), w["is_start"]),
@@ -130,12 +143,35 @@ def check_run_config(plan: dict[str, Any],
             "without the orthogonality penalty, so its candidates "
             "were not selected on the incremental criterion; "
             "refusing.")
+    # Digest the INPUTS, not just their paths (codex #402 r1): a
+    # pool or baseline replaced in place leaves identical
+    # path-and-config provenance while neither the top-K selection
+    # nor the incremental-fitness input can be reconstructed. The
+    # module docstring promised pool digests; this makes it true.
+    digests: dict[str, str] = {}
+    for name in ("factor_pool.parquet", "factor_expressions.json"):
+        f = run_dir / name
+        if not f.is_file():
+            raise PVRegisterError(
+                f"{f} not found — the run directory is not a complete "
+                "miner run; refusing.")
+        digests[name] = hashlib.sha256(f.read_bytes()).hexdigest()
+    baseline_file = Path(baseline_path)
+    if baseline_file.is_file():
+        digests["baseline_preds.parquet"] = hashlib.sha256(
+            baseline_file.read_bytes()).hexdigest()
+    else:
+        # Recorded honestly rather than silently omitted: the baseline
+        # may live on another machine by registration time, and the
+        # reader must be able to tell "absent" from "unhashed".
+        digests["baseline_preds.parquet"] = "ABSENT_AT_REGISTRATION"
     return {
         "gp_run_dir": str(run_dir),
         "gp_config_sha256": hashlib.sha256(
             cfg_path.read_bytes()).hexdigest(),
         "gp_baseline_preds_path": baseline_path,
         "gp_run_id": cfg.get("run_id"),
+        "gp_input_sha256": digests,
     }
 
 

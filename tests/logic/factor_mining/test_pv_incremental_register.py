@@ -48,6 +48,7 @@ def _run_config(**overrides) -> dict:
     cfg = {
         "data": {
             "mode": "pit",
+            "forward_horizon": plan["metric"]["signal_to_execution_lag"],
             "universe_name": plan["universe"]["instruments"],
             "start_date": plan["windows"]["is_start"],
             "end_date": plan["windows"]["is_end"],
@@ -65,6 +66,8 @@ def _run_config(**overrides) -> dict:
                 plan["fitness"]["orthogonality"]["fitness_band_abs_rho"],
             "min_names_per_day": plan["metric"]["min_names_per_day"],
         },
+        "gp": {"max_depth": plan["gp"]["max_depth"],
+               "min_depth": plan["gp"]["min_depth"], "seed": 42},
         "run_id": "gp0001",
     }
     for section, patch in overrides.items():
@@ -112,6 +115,32 @@ class RunBindingTests(unittest.TestCase):
             prov = rg.check_run_config(_plan(), run)
             self.assertEqual("gp0001", prov["gp_run_id"])
             self.assertRegex(prov["gp_config_sha256"], r"^[0-9a-f]{64}$")
+            # codex #402 r1: the INPUTS are digested, not just named.
+            d = prov["gp_input_sha256"]
+            self.assertRegex(d["factor_pool.parquet"], r"^[0-9a-f]{64}$")
+            self.assertRegex(d["factor_expressions.json"],
+                             r"^[0-9a-f]{64}$")
+            self.assertEqual("ABSENT_AT_REGISTRATION",
+                             d["baseline_preds.parquet"])
+
+    def test_pool_digest_changes_when_pool_changes(self) -> None:
+        # A pool replaced in place must not present identical
+        # provenance — the top-K selection could not be reconstructed.
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            first = rg.check_run_config(
+                _plan(), run)["gp_input_sha256"]["factor_pool.parquet"]
+            _make_run(run, [_entry(_CSF, 0.05), _entry(_CSF2, 0.09)])
+            second = rg.check_run_config(
+                _plan(), run)["gp_input_sha256"]["factor_pool.parquet"]
+            self.assertNotEqual(first, second)
+
+    def test_incomplete_run_dir_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            (run / "factor_expressions.json").unlink()
+            with self.assertRaises(rg.PVRegisterError):
+                rg.check_run_config(_plan(), run)
 
     def test_protocol_drift_refuses(self) -> None:
         plan = _plan()
@@ -125,7 +154,14 @@ class RunBindingTests(unittest.TestCase):
                 ("no thin-day floor",
                  {"fitness": {"min_names_per_day": 0}}),
                 ("band drift",
-                 {"fitness": {"orthogonality_band": 0.5}})):
+                 {"fitness": {"orthogonality_band": 0.5}}),
+                # codex #402 r1: dimensions that change what was BRED
+                # while leaving universe/window strings intact.
+                ("synthetic panel", {"data": {"mode": "synthetic"}}),
+                ("other horizon", {"data": {"forward_horizon": 5}}),
+                ("other baseline model",
+                 {"data": {"baseline_model": "some_other_model"}}),
+                ("looser depth", {"gp": {"max_depth": 9}})):
             with tempfile.TemporaryDirectory() as d:
                 run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)],
                                 config=_run_config(**override))
@@ -298,7 +334,12 @@ class EndToEndTests(unittest.TestCase):
             args = ["--run-dir", str(run), "--out-dir", str(out),
                     "--top-k", "1", "--when", "2026-08-06"]
             self.assertEqual(0, rg.main(args))
+            first = (out / "candidates.json").read_bytes()
             self.assertEqual(2, rg.main(args))
+            # codex #402 r1: exclusive create — the frozen file is
+            # byte-identical after the refused second attempt.
+            self.assertEqual(first,
+                             (out / "candidates.json").read_bytes())
 
     def test_manifest_is_consumable_by_the_adjudicator(self) -> None:
         # End-to-end shape check against the OTHER consumer: the
