@@ -62,18 +62,58 @@ def _committed_ledger_bytes(ledger_path: Path) -> bytes:
             "committed state cannot be established; refusing."
         ) from exc
     rel_posix = str(rel).replace("\\", "/")
+    # Prefer a REVIEWED ref over local HEAD (codex #403 r5): a local
+    # commit is as caller-controlled as a working-tree edit — append,
+    # commit, run, reset, and nothing was ever reviewed. The default
+    # trusted ref is the remote-tracking branch, which only advances
+    # by fetching what was actually pushed and merged.
+    #
+    # The honest boundary, stated rather than implied: this is a
+    # PROCEDURAL guarantee, not a cryptographic one. Someone with
+    # repository access can still forge a remote-tracking ref
+    # locally. What it buys is that a registration cannot be
+    # authorised by an ordinary local edit or an unpushed commit —
+    # bypassing it takes a deliberate act that leaves the campaign's
+    # normal evidence trail (a pushed, reviewed ledger entry) absent
+    # and visible in hindsight. Closing it fully needs signed commits
+    # or an external attestation service, which this campaign does
+    # not have; the operator sets TRUSTED_LEDGER_REF if a stricter
+    # anchor exists.
+    import os
+    trusted_ref = os.environ.get("PV_TRUSTED_LEDGER_REF",
+                                 "origin/main")
+    refs = [trusted_ref, "HEAD"] if trusted_ref else ["HEAD"]
     try:
-        committed = subprocess.run(
-            ["git", "show", f"HEAD:{rel_posix}"],
-            cwd=str(_REPO_ROOT), capture_output=True, check=False)
+        committed = None
+        used_ref = None
+        for ref in refs:
+            probe = subprocess.run(
+                ["git", "show", f"{ref}:{rel_posix}"],
+                cwd=str(_REPO_ROOT), capture_output=True, check=False)
+            if probe.returncode == 0:
+                committed, used_ref = probe, ref
+                break
+            committed = probe
+        if used_ref == "HEAD" and trusted_ref:
+            # Fell back because the trusted ref is unavailable (a fresh
+            # clone, a detached CI checkout, a test fixture). Say so —
+            # the weaker anchor is a fact about this run, not a detail.
+            print(f"[pv-registration] trusted ref {trusted_ref!r} "
+                  "unavailable; authorising against local HEAD — a "
+                  "registration approved this way has NOT been shown to "
+                  "be reviewed.", flush=True)
     except OSError as exc:
         raise PVRegistrationError(
             f"cannot invoke git to read the committed ledger ({exc}) "
             "— the registration authority cannot be established; "
             "refusing.") from exc
+    if committed is None:
+        raise PVRegistrationError(
+            "no trusted ref could be probed for the ledger — the "
+            "registration authority cannot be established; refusing.")
     if committed.returncode != 0:
         raise PVRegistrationError(
-            f"{rel_posix} is not committed at HEAD "
+            f"{rel_posix} is not present in any trusted ref "
             f"({committed.stderr.decode('utf-8', 'replace').strip()}) "
             "— a registration is only real once the ledger entry is "
             "committed; commit it and re-run; refusing.")
@@ -191,14 +231,29 @@ def load_registration(manifest_path: Path,
     # sidecar changes nothing downstream.
     sidecar_inputs = payload.get("gp_input_sha256")
     ledger_inputs = authoritative.get("gp_input_sha256")
-    if isinstance(sidecar_inputs, dict) and isinstance(ledger_inputs, dict):
-        drift = {k: {"sidecar": v, "ledger": ledger_inputs.get(k)}
-                 for k, v in sidecar_inputs.items()
-                 if ledger_inputs.get(k) != v}
-        if drift:
-            raise PVRegistrationError(
-                f"the sidecar's input digests disagree with the "
-                f"committed ledger entry: {drift} — refusing.")
+    # COMPLETE equality, both sides dicts (codex #403 r5): a sidecar
+    # that drops the key, swaps it for a non-dict, or deletes selected
+    # digests must not slip through a "compare the surviving keys"
+    # check — truncation is tampering too.
+    if not isinstance(ledger_inputs, dict):
+        raise PVRegistrationError(
+            "the committed ledger entry carries no gp_input_sha256 "
+            "mapping — it cannot authorise the batch's inputs; "
+            "refusing.")
+    if not isinstance(sidecar_inputs, dict):
+        raise PVRegistrationError(
+            f"the sidecar's gp_input_sha256 is "
+            f"{type(sidecar_inputs).__name__}, not a mapping — "
+            "refusing.")
+    if sidecar_inputs != ledger_inputs:
+        missing = sorted(set(ledger_inputs) - set(sidecar_inputs))
+        extra = sorted(set(sidecar_inputs) - set(ledger_inputs))
+        changed = sorted(k for k in set(sidecar_inputs) & set(ledger_inputs)
+                         if sidecar_inputs[k] != ledger_inputs[k])
+        raise PVRegistrationError(
+            f"the sidecar's input digests do not equal the committed "
+            f"ledger entry's (missing={missing}, extra={extra}, "
+            f"changed={changed}) — refusing.")
     return dict(authoritative)
 
 

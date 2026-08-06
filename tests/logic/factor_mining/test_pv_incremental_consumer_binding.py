@@ -223,8 +223,32 @@ class LedgerAuthorityTests(_RestoresRepoRoot):
             sidecar.write_text(json.dumps(doctored), encoding="utf-8")
             with self.assertRaises(reg.PVRegistrationError) as ctx:
                 reg.load_registration(manifest, ledger)
-            self.assertIn("disagree with the committed ledger",
+            self.assertIn("do not equal the committed ledger",
                           str(ctx.exception))
+
+    def test_truncated_or_retyped_sidecar_map_refuses(self) -> None:
+        # codex #403 r5: dropping the key, retyping it, or deleting
+        # selected digests must not slip past a surviving-keys check.
+        with tempfile.TemporaryDirectory() as d:
+            manifest, payload = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            sidecar = reg.sidecar_path_for(manifest)
+            partial = {k: v for k, v
+                       in payload["gp_input_sha256"].items()
+                       if k != "baseline_preds.parquet"}
+            for label, inputs in (("dropped key", None),
+                                  ("retyped", ["not", "a", "map"]),
+                                  ("truncated", partial)):
+                doctored = dict(payload)
+                if inputs is None:
+                    doctored.pop("gp_input_sha256", None)
+                else:
+                    doctored["gp_input_sha256"] = inputs
+                sidecar.write_text(json.dumps(doctored),
+                                   encoding="utf-8")
+                with self.assertRaises(reg.PVRegistrationError,
+                                       msg=label):
+                    reg.load_registration(manifest, ledger)
 
     def test_returned_provenance_is_the_ledgers(self) -> None:
         with tempfile.TemporaryDirectory() as d:
