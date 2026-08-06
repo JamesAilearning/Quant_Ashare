@@ -227,7 +227,8 @@ def check_family_manifest(artifacts: list[dict[str, Any]],
     orient_by_id = {str(c["candidate_id"]): c.get("orientation")
                     for c in manifest}
     for cid, want in orient_by_id.items():
-        if want not in (1, -1):
+        # bool is not an orientation (codex #401 r15): True == 1.
+        if isinstance(want, bool) or want not in (1, -1):
             raise PVFwerError(
                 f"registered manifest entry {cid!r} carries "
                 f"orientation={want!r} — every candidate must state "

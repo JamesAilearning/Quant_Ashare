@@ -156,7 +156,11 @@ def preflight_candidates(candidates: list[dict[str, Any]],
                 "IS sign the GP selected (the pool records it); "
                 "refusing rather than assuming +1.")
         orientation = cand["orientation"]
-        if orientation not in (1, -1):
+        # ``True == 1`` in Python, so a JSON ``true`` would sail
+        # through a bare membership test and be normalized to +1
+        # (codex #401 r15) — the strict ±1 boundary must exclude bool
+        # explicitly.
+        if isinstance(orientation, bool) or orientation not in (1, -1):
             raise PVEvalError(
                 f"candidate {cid!r}: orientation {orientation!r} is "
                 "neither +1 nor -1 — refusing (the registered manifest "

@@ -771,14 +771,20 @@ class BaselineExporterTests(unittest.TestCase):
         return fp
 
     @staticmethod
-    def _bundle(tmp: Path, *, start="2018-01-02", end="2026-08-03"):
-        """A self-contained PIT bundle stamp — never the machine's real
-        bundle, so the test is hermetic (and CI-safe)."""
+    def _bundle(tmp: Path, *, start="2018-01-02", end="2026-08-03",
+                calendar_extra: str = ""):
+        """A self-contained MINIMAL PIT bundle: integrity stamp plus a
+        real ``calendars/day.txt``, because ``read_bundle_tag``
+        RECOMPUTES the content hash from the live calendar (codex #401
+        r15). Hermetic — never the machine's own bundle."""
         from src.data.pit.bundle_integrity import (
             BundleIdentity,
             write_bundle_integrity,
         )
-        tmp.mkdir(parents=True, exist_ok=True)
+        (tmp / "calendars").mkdir(parents=True, exist_ok=True)
+        (tmp / "calendars" / "day.txt").write_text(
+            f"{start}" + chr(10) + f"{end}" + chr(10) + calendar_extra,
+            encoding="utf-8")
         write_bundle_integrity(
             tmp, built_from_holey_fetch=False,
             identity=BundleIdentity(
@@ -786,6 +792,14 @@ class BaselineExporterTests(unittest.TestCase):
                 instrument_count=800, calendar_start=start,
                 calendar_end=end))
         return tmp
+
+    @staticmethod
+    def _bundle_tag(bundle_dir: Path) -> str:
+        """The tag the ENGINE would fingerprint with — read from the
+        same function, never hand-derived (that mismatch is what r15
+        caught)."""
+        from src.data._feature_dataset_cache import read_bundle_tag
+        return read_bundle_tag(str(bundle_dir))
 
     @staticmethod
     def _fold(run_dir: Path, index: int, start: str, end: str, *,
@@ -1162,7 +1176,8 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=2)
             out = Path(d) / "out"
             bundle = self._bundle(Path(d) / "bundle")
-            self._fold_manifests(run_dir, [0, 1], "sha256:" + "0" * 64)
+            self._fold_manifests(run_dir, [0, 1],
+                                 self._bundle_tag(bundle))
             rc = bx.main(["--run-dir", str(run_dir),
                           "--out-dir", str(out),
                           "--provider-uri", str(bundle)])
@@ -1235,19 +1250,54 @@ class BaselineExporterTests(unittest.TestCase):
             run_dir.mkdir()
             self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
             self._agg(run_dir, n_folds=1)
-            # The run was fingerprinted against bundle A...
-            self._fold_manifests(run_dir, [0], "sha256:" + "a" * 64)
-            # ...but bundle B (same calendar, different contents) is
-            # supplied at export time.
-            bundle_b = self._bundle(Path(d) / "bundle_b")
+            # Bundle A and B differ ONLY in calendar contents — the
+            # same span, so the calendar-containment check cannot tell
+            # them apart; only the run fingerprint can.
+            bundle_a = self._bundle(Path(d) / "bundle_a")
+            bundle_b = self._bundle(Path(d) / "bundle_b",
+                                    calendar_extra="2023-02-01" + chr(10))
+            tag_a = self._bundle_tag(bundle_a)
+            tag_b = self._bundle_tag(bundle_b)
+            self.assertNotEqual(tag_a, tag_b)
+            self._fold_manifests(run_dir, [0], tag_a)   # run used A
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir), "--out-dir", str(Path(d) / "o"),
                  "--provider-uri", str(bundle_b)]))
-            # The matching bundle passes the same path.
+            # The bundle the run actually read passes the same path.
             ok = bx.verify_bundle_matches_run(
-                run_dir, self._PRESET,
-                {"content_hash": "sha256:" + "a" * 64})
+                run_dir, self._PRESET, {"bundle_tag": tag_a},
+                fold_indices=[0])
             self.assertRegex(ok, r"^[0-9a-f]{16}$")
+
+    def test_unreadable_calendar_bundle_refused(self) -> None:
+        # codex #401 r15 follow-through: read_bundle_tag emits a
+        # per-call RANDOM sentinel when the content hash cannot be
+        # recomputed — binding against it is meaningless, and the
+        # bundle's bytes are unverifiable.
+        with tempfile.TemporaryDirectory() as d:
+            b = self._bundle(Path(d) / "b")
+            (b / "calendars" / "day.txt").unlink()
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.bind_source_bundle(
+                    str(b), pd.DatetimeIndex(["2023-01-02"]))
+            self.assertIn("unverifiable", str(ctx.exception))
+
+    def test_partial_manifest_set_refuses(self) -> None:
+        # codex #401 r15: one surviving manifest must not certify a
+        # whole torn/copied run directory.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            self._fold(run_dir, 1, "2023-04-03", "2023-06-30")
+            bundle = self._bundle(Path(d) / "bundle")
+            self._fold_manifests(run_dir, [0], self._bundle_tag(bundle))
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET,
+                    {"bundle_tag": self._bundle_tag(bundle)},
+                    fold_indices=[0, 1])
+            self.assertIn("aggregate", str(ctx.exception))
 
     def test_bundle_calendar_must_contain_exported_rows(self) -> None:
         # codex #401 r12: config hashes cannot say WHICH data produced

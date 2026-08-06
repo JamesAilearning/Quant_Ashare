@@ -165,6 +165,7 @@ def bind_source_bundle(provider_uri: str,
     function records the identity and rules out calendar-incompatible
     bundles up front.
     """
+    from src.data._feature_dataset_cache import read_bundle_tag
     from src.data.pit.bundle_integrity import read_bundle_integrity
 
     bundle_dir = Path(provider_uri)
@@ -187,8 +188,31 @@ def bind_source_bundle(provider_uri: str,
             f"{ident.calendar_end} cannot contain the exported rows "
             f"{first}..{last} — this bundle did not produce these "
             "predictions; refusing.")
+    # The engine fingerprints with read_bundle_tag()'s value
+    # ("<tail_date>@<content_hash>", hash RECOMPUTED from the live
+    # calendar), NOT the stamp's stored content_hash (codex #401 r15).
+    # Call the same function so the comparison is apples-to-apples;
+    # deriving the tag by hand here is exactly how the previous
+    # revision would have refused every legitimate export.
+    tag = read_bundle_tag(str(bundle_dir))
+    if not tag or tag == "unknown":
+        raise PVBaselineError(
+            f"bundle {bundle_dir} yields no content tag "
+            f"({tag!r}) — its identity cannot be bound to the run; "
+            "refusing.")
+    if "_calendar_unreadable_" in tag:
+        # read_bundle_tag emits a per-call RANDOM sentinel when it
+        # cannot recompute the content hash from the live calendar.
+        # Such a tag can never match anything and, more importantly,
+        # means the bundle's bytes are unverifiable — refuse instead
+        # of comparing against a value that is different every call.
+        raise PVBaselineError(
+            f"bundle {bundle_dir} has an unreadable calendar "
+            "(content hash cannot be recomputed) — its identity is "
+            "unverifiable; refusing.")
     return {
         "provider_uri": str(bundle_dir),
+        "bundle_tag": tag,
         "content_hash": ident.content_hash,
         "tail_date": ident.tail_date,
         "calendar_start": ident.calendar_start,
@@ -205,7 +229,8 @@ def bind_source_bundle(provider_uri: str,
 
 
 def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
-                              bundle: dict[str, Any]) -> str:
+                              bundle: dict[str, Any],
+                              fold_indices: list[int] | None = None) -> str:
     """Prove the supplied bundle is the one the RUN read.
 
     Each fold manifest stores ``config_fingerprint``, which folds the
@@ -228,10 +253,22 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
         raise PVBaselineError(
             f"no fold manifests under {run_dir} — the run-time bundle "
             "binding cannot be verified; refusing.")
-    recorded = {
-        json.loads(m.read_text(encoding="utf-8")).get("config_fingerprint")
-        for m in manifests
-    }
+    payloads = [json.loads(m.read_text(encoding="utf-8"))
+                for m in manifests]
+    # EVERY exported fold needs its own manifest (codex #401 r15): a
+    # torn/copied directory keeping one stale manifest from bundle A
+    # alongside reports produced under bundle B would otherwise get
+    # the whole export labelled "verified" from that single survivor.
+    if fold_indices is not None:
+        have = sorted(int(p.get("fold_index", -1)) for p in payloads)
+        want = sorted(fold_indices)
+        if have != want:
+            raise PVBaselineError(
+                f"fold manifests cover {have} but the aggregate "
+                f"declares folds {want} — an incomplete/mixed run "
+                "directory cannot establish the run-time bundle for "
+                "every exported fold; refusing.")
+    recorded = {p.get("config_fingerprint") for p in payloads}
     if len(recorded) != 1 or None in recorded:
         raise PVBaselineError(
             f"fold manifests disagree on config_fingerprint ({recorded}) "
@@ -241,14 +278,14 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
     valid = {f.name for f in fields(WalkForwardConfig)}
     expected = compute_config_fingerprint(
         WalkForwardConfig(**{k: v for k, v in raw.items() if k in valid}),
-        bundle_identity=bundle["content_hash"],
+        bundle_identity=bundle["bundle_tag"],
     )
     actual = str(recorded.pop())
     if expected != actual:
         raise PVBaselineError(
             f"the run recorded config_fingerprint={actual} but this "
             f"config + the supplied bundle "
-            f"({bundle['content_hash'][:20]}…) fingerprints to "
+            f"({bundle['bundle_tag'][:28]}…) fingerprints to "
             f"{expected} — the supplied --provider-uri is NOT the "
             "bundle this run read (or the config differs); refusing.")
     return actual
@@ -783,7 +820,8 @@ def main(argv: list[str] | None = None) -> int:
         # config error turned into a manual-cleanup deadlock.
         bundle = bind_source_bundle(provider_uri, wide.index)
         bundle["run_config_fingerprint"] = verify_bundle_matches_run(
-            run_dir, config_path, bundle)
+            run_dir, config_path, bundle,
+            fold_indices=[f["fold_index"] for f in folds])
         bundle["binding_strength"] = (
             "verified_against_run: the fold manifests' "
             "config_fingerprint folds the run-time bundle identity, "
