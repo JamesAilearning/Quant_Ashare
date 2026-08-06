@@ -58,6 +58,11 @@ def _run_config(**overrides) -> dict:
             "baseline_model": plan["fitness"]["baseline"]["model"],
         },
         "fitness": {
+            "coverage_min": 0.8,
+            "variance_days_frac_min": 0.7,
+            "variance_min": 1e-6,
+            "extreme_outlier_frac_max": 0.05,
+            "extreme_outlier_magnitude": 1e8,
             "ic_term": plan["fitness"]["ic_term"],
             "w_complexity": plan["fitness"]["parsimony_lambda_per_node"],
             "w_orthogonality":
@@ -167,6 +172,18 @@ class RunBindingTests(unittest.TestCase):
             with self.assertRaises(rg.PVRegisterError) as ctx:
                 rg.check_run_config(_plan(), run)
             self.assertIn("changed after mining", str(ctx.exception))
+
+    def test_missing_validity_gate_refuses(self) -> None:
+        # codex #402 r5: substituting the registrar's default would
+        # certify a threshold the run never recorded.
+        with tempfile.TemporaryDirectory() as d:
+            cfg = _run_config()
+            del cfg["fitness"]["coverage_min"]
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)],
+                            config=cfg)
+            with self.assertRaises(rg.PVRegisterError) as ctx:
+                rg.check_run_config(_plan(), run)
+            self.assertIn("coverage_min", str(ctx.exception))
 
     def test_validity_gate_drift_refuses(self) -> None:
         # codex #402 r3: these gates decide which entries are scored
@@ -438,6 +455,42 @@ class EndToEndTests(unittest.TestCase):
             # byte-identical after the refused second attempt.
             self.assertEqual(first,
                              (out / "candidates.json").read_bytes())
+
+    def test_interrupted_publish_leaves_nothing_frozen(self) -> None:
+        # codex #402 r5: a KeyboardInterrupt (or an OSError mid-write)
+        # during publication must not leave a frozen manifest that
+        # every retry then refuses. All three artifacts are created
+        # exclusively and rolled back together.
+        import builtins
+        with tempfile.TemporaryDirectory() as d:
+            run = _make_run(Path(d) / "run", [_entry(_CSF, 0.05)])
+            out = Path(d) / "out"
+            real_open = builtins.open
+            state = {"n": 0}
+
+            def flaky(path, *a, **kw):
+                if kw.get("mode", a[0] if a else "r") == "x" or (
+                        a and a[0] == "x"):
+                    state["n"] += 1
+                    if state["n"] == 2:      # die mid-transaction
+                        raise KeyboardInterrupt("simulated Ctrl-C")
+                return real_open(path, *a, **kw)
+
+            builtins.open = flaky
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    rg.main(["--run-dir", str(run), "--out-dir",
+                             str(out), "--top-k", "1",
+                             "--when", "2026-08-06"])
+            finally:
+                builtins.open = real_open
+            # Nothing survives — and the retry succeeds cleanly.
+            self.assertFalse((out / "candidates.json").exists())
+            self.assertFalse(
+                (out / "candidates.json.provenance.json").exists())
+            self.assertEqual(0, rg.main(
+                ["--run-dir", str(run), "--out-dir", str(out),
+                 "--top-k", "1", "--when", "2026-08-06"]))
 
     def test_manifest_is_consumable_by_the_adjudicator(self) -> None:
         # End-to-end shape check against the OTHER consumer: the

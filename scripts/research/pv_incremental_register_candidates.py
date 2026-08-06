@@ -132,11 +132,27 @@ def check_run_config(plan: dict[str, Any],
     # defaults — so the defaults ARE the frozen values here.
     from src.factor_mining.fitness import FitnessConfig
     defaults = FitnessConfig()
+    missing_gates = [g for g in ("coverage_min",
+                                 "variance_days_frac_min",
+                                 "variance_min",
+                                 "extreme_outlier_frac_max",
+                                 "extreme_outlier_magnitude")
+                     if g not in fit]
+    if missing_gates:
+        # Substituting the registrar's current default would "prove"
+        # a threshold the run never recorded (codex #402 r5) — the
+        # canonical miner dumps every field, so a gap means an older
+        # or truncated artifact whose breeding semantics are unknown.
+        raise PVRegisterError(
+            f"the GP run's config records no {missing_gates} — the "
+            "validity gates decide which entries are scored -inf and "
+            "therefore which can reach the top-K, so an unrecorded "
+            "threshold cannot be certified; re-run the GP batch with "
+            "the current miner; refusing.")
     for gate in ("coverage_min", "variance_days_frac_min",
                  "variance_min", "extreme_outlier_frac_max",
                  "extreme_outlier_magnitude"):
-        expected[gate] = (fit.get(gate, getattr(defaults, gate)),
-                          getattr(defaults, gate))
+        expected[gate] = (fit[gate], getattr(defaults, gate))
     drift = {k: {"run": got, "frozen": want}
              for k, (got, want) in expected.items() if got != want}
     if drift:
@@ -385,48 +401,55 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = out_dir / "candidates.json"
-        # ACQUIRE ownership first, then publish (codex #402 r4):
-        # writing the sidecars BEFORE the exclusive create meant a
-        # refused retry had already truncated the previous
-        # registration's provenance and ledger, leaving the frozen
-        # manifest paired with metadata for a registration that
-        # never happened. The exclusive create is the lock; if any
-        # later write fails, the manifest is rolled back so no
-        # half-registration survives.
+        # A registration is a TRANSACTION (codex #402 r5): all three
+        # artifacts are created EXCLUSIVELY, so a retry fails on the
+        # first one and alters nothing; and every pre-commit failure
+        # — including OSError mid-write and KeyboardInterrupt, which
+        # `except Exception` would miss — removes whatever this
+        # invocation created, so no partial registration survives to
+        # block the retry.
         payload = json.dumps(manifest, indent=2,
                              ensure_ascii=False) + chr(10)
         manifest_sha = hashlib.sha256(
             payload.encode("utf-8")).hexdigest()
+        for key, value in (
+                ("protocol_id", PROTOCOL_ID),
+                ("manifest_sha256", manifest_sha),
+                ("pool_size", pool_size),
+                ("registered", len(manifest))):
+            provenance[key] = value
+        entry = ledger_entry(
+            when=args.when, manifest_path=manifest_path,
+            manifest_sha256=manifest_sha, provenance=provenance,
+            n_candidates=len(manifest), pool_size=pool_size)
+        writes = [
+            (out_dir / "candidates.json.provenance.json",
+             json.dumps(provenance, indent=2, ensure_ascii=False)
+             + chr(10)),
+            (out_dir / "ledger_entry.yaml",
+             yaml.safe_dump([entry], sort_keys=False,
+                            allow_unicode=True)),
+            # The manifest is the COMMIT POINT: created last, so an
+            # interrupted run never leaves it standing alone.
+            (manifest_path, payload),
+        ]
+        created: list[Path] = []
         try:
-            with open(manifest_path, "x", encoding="utf-8") as fh:
-                fh.write(payload)
-        except FileExistsError as exc:
-            raise PVRegisterError(
+            for path, text in writes:
+                try:
+                    with open(path, "x", encoding="utf-8") as fh:
+                        created.append(path)
+                        fh.write(text)
+                except FileExistsError as exc:
+                    raise PVRegisterError(
                 f"{manifest_path} already exists — a registration is "
                 "frozen once written (re-registering under the same "
                 "ids would let a new batch inherit an old batch's "
                 "artifacts); use a fresh --out-dir; refusing."
-            ) from exc
-        try:
-            for key, value in (
-                    ("protocol_id", PROTOCOL_ID),
-                    ("manifest_sha256", manifest_sha),
-                    ("pool_size", pool_size),
-                    ("registered", len(manifest))):
-                provenance[key] = value
-            (out_dir / "candidates.json.provenance.json").write_text(
-                json.dumps(provenance, indent=2, ensure_ascii=False)
-                + chr(10), encoding="utf-8")
-            entry = ledger_entry(
-                when=args.when, manifest_path=manifest_path,
-                manifest_sha256=manifest_sha, provenance=provenance,
-                n_candidates=len(manifest), pool_size=pool_size)
-            (out_dir / "ledger_entry.yaml").write_text(
-                yaml.safe_dump([entry], sort_keys=False,
-                               allow_unicode=True),
-                encoding="utf-8")
-        except Exception:
-            manifest_path.unlink(missing_ok=True)
+                    ) from exc
+        except BaseException:
+            for path in created:
+                path.unlink(missing_ok=True)
             raise
 
         print(f"[pv-register] wrote {manifest_path}")
