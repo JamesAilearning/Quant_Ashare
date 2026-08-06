@@ -168,6 +168,58 @@ class ConsumerWiringTests(unittest.TestCase):
                       inspect.getsource(fw.main))
 
 
+class DirectCliInvocationTests(unittest.TestCase):
+    """codex #403 r1: the documented invocation is
+    ``python scripts/research/<tool>.py``, which puts scripts/research
+    on sys.path — NOT the repo root. A shared absolute import then
+    dies with ModuleNotFoundError. pytest hides this (the root is
+    already importable), so the check has to run the real CLI."""
+
+    def test_every_tool_imports_under_direct_execution(self) -> None:
+        import os
+        import subprocess
+        # Inherit the real environment but strip PYTHONPATH — that is
+        # precisely the condition under test (and keeps this portable:
+        # the CI runners are Linux).
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        for tool in ("pv_incremental_eval.py",
+                     "pv_incremental_fwer_adjudication.py",
+                     "pv_incremental_register_candidates.py"):
+            proc = subprocess.run(
+                [sys.executable,
+                 str(_PROJECT_ROOT / "scripts" / "research" / tool),
+                 "--help"],
+                capture_output=True, text=True,
+                cwd=str(_PROJECT_ROOT), env=env)
+            self.assertEqual(0, proc.returncode,
+                             f"{tool}: {proc.stderr[-400:]}")
+
+
+class ArtifactBaselineBindingTests(unittest.TestCase):
+    def test_adjudicator_binds_artifact_baseline(self) -> None:
+        # codex #403 r1: check_run_identity only proves artifacts and
+        # their completion stamp agree WITH EACH OTHER — a
+        # self-consistent batch scored against another baseline must
+        # not be adjudicated against this registration.
+        import inspect
+
+        import scripts.research.pv_incremental_fwer_adjudication as fw
+        src = inspect.getsource(fw.main)
+        self.assertIn("assert_baseline_matches_registration", src)
+        self.assertIn("baseline_preds_sha256", src)
+
+    def test_mismatched_artifact_baseline_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _, payload = _registered_batch(Path(d))
+            # The completion stamp's digest is what the adjudicator
+            # passes in; a batch evaluated against another baseline
+            # refuses.
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.assert_baseline_matches_registration(
+                    payload, "c" * 64)
+            self.assertIn("bred against", str(ctx.exception))
+
+
 class LedgerShapeTests(unittest.TestCase):
     def test_registration_ledger_entry_is_appendable(self) -> None:
         # The operator appends this to the campaign ledger before the
