@@ -765,9 +765,20 @@ class BaselineExporterTests(unittest.TestCase):
                                  if k in valid}),
             bundle_identity=bundle_hash)
         for i in indices:
+            report_path = run_dir / f"fold_{i:02d}_report.json"
+            test_period = ""
+            if report_path.is_file():
+                win = json.loads(report_path.read_text(
+                    encoding="utf-8"))["windows"]["test"]
+                test_period = f"{win['start']} ~ {win['end']}"
             (run_dir / f"fold_{i:02d}_manifest.json").write_text(
-                json.dumps({"fold_index": i, "config_fingerprint": fp}),
-                encoding="utf-8")
+                json.dumps({
+                    "fold_index": i, "config_fingerprint": fp,
+                    "report_path": str(report_path),
+                    "predictions_path": str(
+                        run_dir / f"fold_{i:02d}_predictions.pkl"),
+                    "test_period": test_period,
+                }), encoding="utf-8")
         return fp
 
     @staticmethod
@@ -1268,6 +1279,55 @@ class BaselineExporterTests(unittest.TestCase):
                 run_dir, self._PRESET, {"bundle_tag": tag_a},
                 fold_indices=[0])
             self.assertRegex(ok, r"^[0-9a-f]{16}$")
+
+    def test_manifest_must_bind_its_own_artifacts(self) -> None:
+        # codex #401 r16: a COMPLETE same-index manifest set copied
+        # from another run must not certify this directory. The real
+        # FoldManifest records the paths and windows it produced.
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            bundle = self._bundle(Path(d) / "bundle")
+            tag = self._bundle_tag(bundle)
+            self._fold_manifests(run_dir, [0], tag)
+            mpath = run_dir / "fold_00_manifest.json"
+            good = json.loads(mpath.read_text(encoding="utf-8"))
+            # (a) abbreviated manifest (no artifact paths at all)
+            mpath.write_text(json.dumps(
+                {"fold_index": 0,
+                 "config_fingerprint": good["config_fingerprint"]}),
+                encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    fold_indices=[0])
+            self.assertIn("report_path", str(ctx.exception))
+            # (b) manifest describing a DIFFERENT fold's window
+            drifted = dict(good, test_period="2024-01-02 ~ 2024-03-31")
+            mpath.write_text(json.dumps(drifted), encoding="utf-8")
+            with self.assertRaises(bx.PVBaselineError) as ctx:
+                bx.verify_bundle_matches_run(
+                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    fold_indices=[0])
+            self.assertIn("different run", str(ctx.exception))
+
+    def test_full_content_hash_sees_non_calendar_bytes(self) -> None:
+        # codex #401 r16: the run-recorded tag is calendar-only, so a
+        # same-calendar bin correction is invisible to it. The full
+        # fingerprint captured for future audits must see it.
+        with tempfile.TemporaryDirectory() as d:
+            b = self._bundle(Path(d) / "b")
+            (b / "features").mkdir(parents=True, exist_ok=True)
+            (b / "features" / "x.bin").write_bytes(b"")
+            first = bx.full_bundle_content_hash(b)
+            self.assertEqual(
+                self._bundle_tag(b), self._bundle_tag(b))   # tag stable
+            (b / "features" / "x.bin").write_bytes(b"")
+            second = bx.full_bundle_content_hash(b)
+            # Calendar untouched -> same cache tag, DIFFERENT full hash.
+            self.assertNotEqual(first["sha256"], second["sha256"])
+            self.assertEqual(first["file_count"], second["file_count"])
 
     def test_unreadable_calendar_bundle_refused(self) -> None:
         # codex #401 r15 follow-through: read_bundle_tag emits a

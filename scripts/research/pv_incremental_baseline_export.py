@@ -228,6 +228,40 @@ def bind_source_bundle(provider_uri: str,
     }
 
 
+def full_bundle_content_hash(bundle_dir: Path) -> dict[str, Any]:
+    """Fingerprint the WHOLE bundle, not just its calendar.
+
+    The identity the run recorded is calendar-only by design
+    (``BundleIdentity.content_hash`` is a sha256 over
+    ``calendars/day.txt``; the source says outright it is "NOT a
+    full-bin integrity guarantee"). So a bundle with the same calendar
+    but corrected price bins carries the SAME tag and the run
+    fingerprint cannot tell them apart (codex #401 r16).
+
+    This captures a full-contents digest so the gap is at least
+    CLOSED GOING FORWARD: a later re-export, audit, or dispute can
+    compare byte-level identity. It cannot retroactively verify the
+    run — the run never recorded one — and the sidecar says so rather
+    than implying byte-level verification the evidence does not
+    support. ~0.5 GB / 69k files on the production bundle: seconds,
+    paid once per export.
+    """
+    h = hashlib.sha256()
+    files = sorted(
+        (p for p in bundle_dir.rglob("*") if p.is_file()),
+        key=lambda p: str(p.relative_to(bundle_dir)).replace("\\", "/"))
+    count = 0
+    for f in files:
+        rel = str(f.relative_to(bundle_dir)).replace("\\", "/")
+        h.update(rel.encode("utf-8"))
+        h.update(bytes(1))
+        with f.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        count += 1
+    return {"sha256": h.hexdigest(), "file_count": count}
+
+
 def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
                               bundle: dict[str, Any],
                               fold_indices: list[int] | None = None) -> str:
@@ -255,6 +289,43 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
             "binding cannot be verified; refusing.")
     payloads = [json.loads(m.read_text(encoding="utf-8"))
                 for m in manifests]
+    # Each manifest must BELONG to the artifacts being exported
+    # (codex #401 r16): a complete same-index manifest set copied from
+    # another run would otherwise certify this directory. The real
+    # FoldManifest records the paths it produced and the fold windows
+    # — bind them to the reports/pickles actually being read.
+    for m_path, payload in zip(manifests, payloads, strict=True):
+        idx = payload.get("fold_index")
+        for key, expected_name in (
+                ("report_path", f"fold_{idx:02d}_report.json"),
+                ("predictions_path", f"fold_{idx:02d}_predictions.pkl")):
+            declared = payload.get(key)
+            if not isinstance(declared, str) or not declared:
+                raise PVBaselineError(
+                    f"{m_path.name} carries no {key} — an abbreviated "
+                    "manifest cannot be bound to the artifacts it "
+                    "claims to describe; refusing.")
+            if Path(declared).name != expected_name:
+                raise PVBaselineError(
+                    f"{m_path.name} declares {key}={declared!r}, which "
+                    f"is not this fold's {expected_name}; refusing.")
+            if not (run_dir / expected_name).is_file():
+                raise PVBaselineError(
+                    f"{m_path.name} references {expected_name}, absent "
+                    f"from {run_dir}; refusing.")
+        report = json.loads(
+            (run_dir / f"fold_{idx:02d}_report.json").read_text(
+                encoding="utf-8"))
+        win = report.get("windows", {}).get("test", {})
+        declared_test = payload.get("test_period")
+        if declared_test is not None:
+            expected_test = f"{win.get('start')} ~ {win.get('end')}"
+            if str(declared_test) != expected_test:
+                raise PVBaselineError(
+                    f"{m_path.name} declares test_period "
+                    f"{declared_test!r} but the fold report says "
+                    f"{expected_test!r} — the manifest describes a "
+                    "different run than these artifacts; refusing.")
     # EVERY exported fold needs its own manifest (codex #401 r15): a
     # torn/copied directory keeping one stale manifest from bundle A
     # alongside reports produced under bundle B would otherwise get
@@ -819,13 +890,22 @@ def main(argv: list[str] | None = None) -> int:
         # refuses because the export "already exists" — a recoverable
         # config error turned into a manual-cleanup deadlock.
         bundle = bind_source_bundle(provider_uri, wide.index)
+        bundle["full_content"] = full_bundle_content_hash(
+            Path(bundle["provider_uri"]))
         bundle["run_config_fingerprint"] = verify_bundle_matches_run(
             run_dir, config_path, bundle,
             fold_indices=[f["fold_index"] for f in folds])
         bundle["binding_strength"] = (
-            "verified_against_run: the fold manifests' "
-            "config_fingerprint folds the run-time bundle identity, "
-            "and it matches this config + this bundle"
+            "verified_against_run:calendar_identity — the fold "
+            "manifests' config_fingerprint folds the run-time bundle "
+            "TAG, and it matches this config + this bundle. That tag "
+            "is calendar-only by construction (BundleIdentity."
+            "content_hash is a sha256 over calendars/day.txt and is "
+            "explicitly NOT a full-bin guarantee), so a same-calendar "
+            "bin correction is NOT distinguished by this check. "
+            "full_content below fingerprints the whole bundle for "
+            "future audits; it cannot retroactively verify this run, "
+            "which never recorded one."
         )
 
         out_dir = Path(args.out_dir)
