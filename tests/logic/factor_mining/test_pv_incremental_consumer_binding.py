@@ -392,6 +392,21 @@ class MalformedInputsAreClassifiedRefusals(_RestoresRepoRoot):
                 reg.load_registration(manifest, ledger)
             self.assertIn("not valid JSON", str(ctx.exception))
 
+    def test_scalar_entries_refuses(self) -> None:
+        # Syntactically valid YAML whose `entries` is a scalar would
+        # raise TypeError straight through the CLIs'
+        # PVRegistrationError-only handler (codex #404 r3).
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            ledger.write_text(
+                "protocol_id: pv_incremental_v1\nentries: 1\n",
+                encoding="utf-8")
+            _recommit(ledger)
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, ledger)
+            self.assertIn("not a list", str(ctx.exception))
+
     def test_malformed_committed_ledger_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             manifest, _ = _registered_batch(Path(d))
@@ -456,6 +471,10 @@ class ConsumerWiringTests(unittest.TestCase):
         self.assertNotIn("manifest_path.read_text", src)
         self.assertNotIn("manifest_path.read_bytes", src)
         self.assertNotIn("_load_wide_parquet(baseline_path", src)
+        # The evaluator must SEAL which registration it served, into
+        # both the per-candidate artifacts and the completion stamp
+        # (codex #404 r3) — otherwise nothing downstream can bind them.
+        self.assertIn("registration_manifest_sha256", src)
 
     def test_adjudicator_enforces_registration(self) -> None:
         import inspect
@@ -465,6 +484,9 @@ class ConsumerWiringTests(unittest.TestCase):
         self.assertIn("load_verified_manifest", src)
         self.assertNotIn("manifest_path.read_text", src)
         self.assertNotIn("manifest_path.read_bytes", src)
+        # codex #404 r3: the verdict's registration digest must be one
+        # the evaluated inputs were bound to.
+        self.assertIn("check_registration_binding", src)
 
     def test_adjudicator_records_the_registration_digest(self) -> None:
         import inspect

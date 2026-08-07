@@ -173,7 +173,17 @@ def _ledger_entries(ledger_path: Path) -> list[dict[str, Any]]:
         raise PVRegistrationError(
             f"campaign ledger {ledger_path.name} is not the "
             f"{PROTOCOL_ID} ledger; refusing.")
-    return [e for e in (doc.get("entries") or []) if isinstance(e, dict)]
+    entries = doc.get("entries") or []
+    # A syntactically valid but malformed `entries: 1` would raise
+    # TypeError straight through the CLIs' PVRegistrationError-only
+    # handler (codex #404 r3) — the documented REFUSED result exists
+    # for exactly this file being damaged.
+    if not isinstance(entries, (list, tuple)):
+        raise PVRegistrationError(
+            f"the committed campaign ledger {ledger_path.name} has "
+            f"entries of type {type(entries).__name__}, not a list — "
+            "the registration authority cannot be read; refusing.")
+    return [e for e in entries if isinstance(e, dict)]
 
 
 def ledger_entry_for(manifest_sha256: str,

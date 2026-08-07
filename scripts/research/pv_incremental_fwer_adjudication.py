@@ -137,6 +137,37 @@ def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
     return float(np.quantile(maxima, quantile))
 
 
+def check_registration_binding(
+        artifacts: list[dict[str, Any]], completion: dict[str, Any],
+        registration_sha256: str) -> None:
+    """The evaluated inputs must be bound to THIS registration.
+
+    codex #404 r3: check_family_manifest matches ids, expressions and
+    orientations as SETS, so two ledger-authorised manifests differing
+    only in byte order satisfy it equally. Without this check the
+    verdict would be stamped with the digest of the manifest handed to
+    the ADJUDICATOR while the artifacts were produced under another —
+    a byte-level frozen-family contract that nothing actually holds.
+    """
+    sealed = completion.get("registration_manifest_sha256")
+    if sealed != registration_sha256:
+        raise PVFwerError(
+            f"the completion stamp seals registration "
+            f"{str(sealed)[:12]}… but the supplied manifest is "
+            f"{registration_sha256[:12]}… — these artifacts were not "
+            "evaluated under this registration; adjudicate the batch "
+            "against the manifest the evaluator consumed; refusing.")
+    off = sorted(str(a.get("candidate_id")) for a in artifacts
+                 if a.get("registration_manifest_sha256")
+                 != registration_sha256)
+    if off:
+        raise PVFwerError(
+            f"artifacts {off} carry a registration digest other than "
+            f"{registration_sha256[:12]}… (or none at all — a "
+            "pre-binding evaluator run); re-run the FULL batch under "
+            "the current registration; refusing.")
+
+
 def check_run_identity(artifacts: list[dict[str, Any]],
                        completion: dict[str, Any]) -> None:
     """Bind the family to ONE completed evaluator run (codex #399
@@ -489,11 +520,13 @@ def main(argv: list[str] | None = None) -> int:
                 registration, str(completion.get("baseline_preds_sha256")))
         except PVRegistrationError as exc:
             raise PVFwerError(str(exc)) from exc
+        registration_sha = str(registration["manifest_sha256"])
+        check_registration_binding(artifacts, completion,
+                                   registration_sha)
         check_family_manifest(artifacts, manifest)
         result = adjudicate(plan, artifacts, seed=args.seed)
         result["plan_sha256"] = plan_sha
-        result["registration_manifest_sha256"] = registration[
-            "manifest_sha256"]
+        result["registration_manifest_sha256"] = registration_sha
         result["input_sha256"] = shas
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)

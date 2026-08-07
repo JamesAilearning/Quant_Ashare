@@ -412,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
                 manifest_path)
             assert_baseline_matches_registration(
                 registration, baseline_sha)
+            registration_sha = str(registration["manifest_sha256"])
         except PVRegistrationError as exc:
             raise PVEvalError(str(exc)) from exc
         parsed = preflight_candidates(candidates, list(plan["fields"]))
@@ -488,6 +489,14 @@ def main(argv: list[str] | None = None) -> int:
             # WHICH orientation produced these numbers.
             artifact["orientation"] = int(cand["orientation"])
             artifact["run_id"] = run_id
+            # WHICH registration these numbers served (codex #404 r3).
+            # check_family_manifest compares CONTENT (ids,
+            # expressions, orientations) as sets, so two
+            # ledger-authorised manifests that differ only in byte
+            # order are interchangeable to it — the verdict would then
+            # be labelled with a digest no evaluated input was ever
+            # bound to. The digest travels with the numbers.
+            artifact["registration_manifest_sha256"] = registration_sha
             out = out_dir / f"{cand['candidate_id']}.json"
             try:
                 with open(out, "x", encoding="utf-8") as fh:
@@ -508,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
             "protocol_id": PROTOCOL_ID, "run_id": run_id,
             "candidate_ids": written,
             "baseline_preds_sha256": baseline_sha,
+            "registration_manifest_sha256": registration_sha,
         }
         (out_dir / "_batch_complete.json").write_text(
             json.dumps(completion, indent=2, ensure_ascii=False) + "\n",
