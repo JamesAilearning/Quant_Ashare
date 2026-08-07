@@ -39,6 +39,13 @@ import pandas as pd
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    # Direct-script execution puts scripts/research on sys.path,
+    # not the repo root — without this the shared registration
+    # import below dies with ModuleNotFoundError under the
+    # documented invocation (codex #403 r1). The evaluator and
+    # registrar already do this; this module did not.
+    sys.path.insert(0, str(PROJECT_ROOT))
 PLAN_PATH = PROJECT_ROOT / "docs" / "prereg" / "pv_incremental.yaml"
 PROTOCOL_ID = "pv_incremental_v1"
 
@@ -456,11 +463,35 @@ def main(argv: list[str] | None = None) -> int:
             artifacts.append(json.loads(raw.decode("utf-8")))
             shas[path.name] = hashlib.sha256(raw).hexdigest()
         check_run_identity(artifacts, completion)
+        # Same freeze check at the adjudication boundary (codex #402
+        # r6): a manifest edited between evaluation and adjudication
+        # would silently redefine the family this verdict binds to.
+        from scripts.research.pv_incremental_registration import (
+            PVRegistrationError,
+            assert_baseline_matches_registration,
+            load_registration,
+        )
+        manifest_path = Path(args.candidates)
+        try:
+            registration = load_registration(manifest_path)
+            # The artifacts' own baseline must ALSO be the registered
+            # one (codex #403 r1): check_run_identity only proves the
+            # artifacts and their completion stamp agree with each
+            # other, so a self-consistent batch scored against another
+            # baseline — e.g. produced by the pre-enforcement
+            # evaluator — would otherwise be adjudicated as if it had
+            # competed against the registered one.
+            assert_baseline_matches_registration(
+                registration, str(completion.get("baseline_preds_sha256")))
+        except PVRegistrationError as exc:
+            raise PVFwerError(str(exc)) from exc
         manifest = json.loads(
-            Path(args.candidates).read_text(encoding="utf-8"))
+            manifest_path.read_text(encoding="utf-8"))
         check_family_manifest(artifacts, manifest)
         result = adjudicate(plan, artifacts, seed=args.seed)
         result["plan_sha256"] = plan_sha
+        result["registration_manifest_sha256"] = registration[
+            "manifest_sha256"]
         result["input_sha256"] = shas
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)

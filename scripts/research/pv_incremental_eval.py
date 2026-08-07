@@ -378,6 +378,32 @@ def main(argv: list[str] | None = None) -> int:
         check_baseline_provenance(plan, baseline_path, baseline_sha)
         baseline = _load_wide_parquet(baseline_path, "baseline preds")
 
+        # The registration is what makes the batch frozen (codex
+        # #402 r6): the manifest's bytes must still equal what the
+        # registrar recorded, and the baseline scored against must be
+        # the one the candidates were bred against.
+        from scripts.research.pv_incremental_registration import (
+            PVRegistrationError,
+            assert_baseline_matches_registration,
+            load_registration,
+        )
+        manifest_path = Path(args.candidates)
+        try:
+            registration = load_registration(manifest_path)
+            assert_baseline_matches_registration(
+                registration, baseline_sha)
+        except PVRegistrationError as exc:
+            raise PVEvalError(str(exc)) from exc
+        candidates = json.loads(
+            manifest_path.read_text(encoding="utf-8"))
+        parsed = preflight_candidates(candidates, list(plan["fields"]))
+        # Everything above touches NO OOS data (codex #403 r2): the
+        # 2023-2024 window is a one-shot evaluation, so an
+        # unregistered, tampered or wrong-baseline batch must be
+        # refused BEFORE the provider is built and the panel read —
+        # otherwise an invalid batch has already consumed the
+        # protected window.
+
         from src.core.pit_wiring import build_pit_provider
         from src.factor_mining.evaluator import evaluate_expression
         from src.factor_mining.pit_adapter import FactorMiningDataView
@@ -399,8 +425,6 @@ def main(argv: list[str] | None = None) -> int:
             close, lag=int(plan["metric"]["signal_to_execution_lag"]))
         min_names = int(plan["metric"]["min_names_per_day"])
 
-        candidates = json.loads(
-            Path(args.candidates).read_text(encoding="utf-8"))
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         # ONE run identity per invocation (codex #399 r5): every
@@ -417,7 +441,6 @@ def main(argv: list[str] | None = None) -> int:
         # artifacts on disk with no completion stamp — a dirty,
         # unadjudicable batch directory for exactly the bad-manifest
         # case these checks exist to refuse.
-        parsed = preflight_candidates(candidates, list(plan["fields"]))
 
         for cand, expr in zip(candidates, parsed, strict=True):
             factor = evaluate_expression(expr, panel)

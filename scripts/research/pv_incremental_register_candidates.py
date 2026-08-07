@@ -437,7 +437,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             for path, text in writes:
                 try:
-                    with open(path, "x", encoding="utf-8") as fh:
+                    # newline='' disables text-mode newline
+                    # translation: on Windows the default rewrites
+                    # every LF as CRLF, so the bytes ON DISK would
+                    # differ from the payload the digest was taken
+                    # over, and every consumer's freeze check would
+                    # reject a perfectly good registration.
+                    with open(path, "x", encoding="utf-8",
+                              newline="") as fh:
                         created.append(path)
                         fh.write(text)
                 except FileExistsError as exc:
