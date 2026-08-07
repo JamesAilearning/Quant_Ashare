@@ -51,6 +51,7 @@ from src.core.qlib_runtime import (
 )
 from src.core.risk_constraints import (
     MinimalRiskConstraints,
+    RiskConstraintMode,
     campaign_risk_constraints_v1,
 )
 from src.core.signal_analyzer import (
@@ -892,9 +893,11 @@ class WalkForwardEngine:
             # campaign_v1; everything else keeps the P0-1 defaults.
             # Effective values land in each fold's backtest provenance.
             risk_constraints=(
-                (campaign_risk_constraints_v1()
-                 if config.risk_constraints_calibration == "campaign_v1"
-                 else MinimalRiskConstraints())
+                replace(
+                    campaign_risk_constraints_v1()
+                    if config.risk_constraints_calibration == "campaign_v1"
+                    else MinimalRiskConstraints(),
+                    mode=RiskConstraintMode(config.risk_constraints_mode))
                 if config.risk_constraints_enabled else None),
             # R1 (codex #378 r3): explicit scope opt-in threads through;
             # the default "all_days" keeps the canonical full-map

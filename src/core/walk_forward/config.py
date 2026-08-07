@@ -230,6 +230,25 @@ class WalkForwardConfig:
     # silently substituted for a non-campaign run. Two engines, one
     # schema: mirrors PipelineConfig.
     risk_constraints_calibration: str = "default"
+    # Violation REACTION (pv_incremental_v1 baseline run). "raise"
+    # (default) aborts the fold on any violation — the canonical
+    # backtest-validation semantics, unchanged for every existing
+    # config. "warn_and_clip" logs each violation and proceeds on a
+    # clipped allocation.
+    #
+    # The opt-in exists because a run whose PURPOSE is exporting
+    # out-of-fold PREDICTIONS is killed by a post-trade portfolio
+    # violation that has nothing to do with them: a held name drifting
+    # to 5.01% against a 5.00% cap discarded a whole quarter of
+    # otherwise-perfect predictions (observed 3/19 folds, campaign
+    # baseline run 2026-08-07). Predictions are produced BEFORE the
+    # backtest and are bit-identical under either mode.
+    #
+    # It is NOT a way to get official metrics past the cap: returns
+    # under a clipped allocation are not the RAISE-validated ones, so
+    # tests/governance/test_risk_constraints_mode_optin.py pins the
+    # tracked presets that may declare it.
+    risk_constraints_mode: str = "raise"
     # Risk-constraint validation scope (R1, codex #378 r3): the
     # canonical contract validates the FULL positions map ("all_days",
     # default — byte-identical to the pre-R1 behaviour for every
@@ -321,6 +340,10 @@ class WalkForwardConfig:
                 "risk_constraint_scope='rebalance_days' requires a "
                 "non-daily rebalance cadence (under N=1 every day is a "
                 "rebalance day — the opt-in would be a no-op).")
+        if self.risk_constraints_mode not in ("raise", "warn_and_clip"):
+            raise WalkForwardError(
+                "risk_constraints_mode must be 'raise' or "
+                f"'warn_and_clip'; got {self.risk_constraints_mode!r}.")
         if self.risk_constraints_calibration not in ("default",
                                                      "campaign_v1"):
             raise WalkForwardError(
