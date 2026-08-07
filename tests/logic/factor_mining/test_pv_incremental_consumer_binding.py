@@ -292,6 +292,22 @@ class LedgerAuthorityTests(_RestoresRepoRoot):
             self.assertIn("NOT been shown to be reviewed",
                           buf.getvalue())
 
+    def test_repo_root_form_does_not_break_containment(self) -> None:
+        # CI regression (#404): a repo root in a different but
+        # equivalent form — Windows 8.3 short names like RUNNER~1, or
+        # a symlinked path — must not read as "outside the
+        # repository", which would refuse EVERY registration on such
+        # a checkout. Both sides are resolved before comparison.
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            # Re-point the root at an UNRESOLVED spelling of itself.
+            reg._REPO_ROOT = Path(str(reg._REPO_ROOT))
+            self.assertEqual(
+                "pv_incremental_v1",
+                reg.load_registration(manifest,
+                                      ledger.resolve())["protocol_id"])
+
     def test_ledger_entry_authorises(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             manifest, _ = _registered_batch(Path(d))

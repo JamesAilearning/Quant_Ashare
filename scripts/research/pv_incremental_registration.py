@@ -55,7 +55,13 @@ def _committed_ledger_bytes(ledger_path: Path) -> bytes:
     import subprocess
 
     try:
-        rel = ledger_path.resolve().relative_to(_REPO_ROOT)
+        # BOTH sides resolved (CI, Windows): a repo root carrying an
+        # 8.3 short name (``RUNNER~1``) never matches a ledger path
+        # that ``resolve()`` expanded to the long form, and the
+        # mismatch reads as "outside the repository" — which would
+        # refuse EVERY registration on such a checkout. Symlinked
+        # roots have the same shape.
+        rel = ledger_path.resolve().relative_to(Path(_REPO_ROOT).resolve())
     except ValueError as exc:
         raise PVRegistrationError(
             f"ledger {ledger_path} is outside the repository — its "
@@ -102,7 +108,8 @@ def _committed_ledger_bytes(ledger_path: Path) -> bytes:
         for ref in refs:
             probe = subprocess.run(
                 ["git", "show", f"{ref}:{rel_posix}"],
-                cwd=str(_REPO_ROOT), capture_output=True, check=False)
+                cwd=str(Path(_REPO_ROOT).resolve()),
+                capture_output=True, check=False)
             if probe.returncode == 0:
                 committed, used_ref = probe, ref
                 break
