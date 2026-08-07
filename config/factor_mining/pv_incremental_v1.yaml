@@ -4,10 +4,11 @@
 # tests/governance/test_pv_incremental_freeze.py 逐条比对——改这里而不
 # 改冻结件（或反之）会让治理测试红。
 #
-# **点火前必填**：data.baseline_preds_path 指向导出器产出的宽表
-# （scripts/research/pv_incremental_baseline_export.py），其
-# `<parquet>.provenance.json` sidecar 必须存在且绑定该文件，否则
-# miner 拒跑（正交惩罚是本役唯一增量判据，不容许无凭基线）。
+# 点火前提：data.baseline_preds_path 已默认指向导出器
+# （scripts/research/pv_incremental_baseline_export.py）的标准产物，
+# 其 `<parquet>.provenance.json` sidecar 必须存在且绑定该文件，否则
+# miner 拒跑（正交惩罚是本役唯一增量判据，不容许无凭基线）。导出器
+# 尚未跑过时同样拒跑——缺失的基线是拒绝条件，不是缺省行为。
 #
 # 点火（操作人）：
 #     python -m src.factor_mining.miner config/factor_mining/pv_incremental_v1.yaml
@@ -34,8 +35,12 @@ data:
   # PV-DP-3：冻结度量是 close_exec_to_close_next，非 v1 缺省的
   # open→open——繁殖目标必须与裁决目标同一个。
   forward_return_price: close
-  # 点火前填入导出器产出物（连同其 .provenance.json sidecar）。
-  baseline_preds_path: ""
+  # 导出器产出物（连同其 .provenance.json sidecar）。默认指向导出器的
+  # 标准 out-dir，且是**仓库相对**路径——点火因此无需改动任何 tracked
+  # 文件，预注册批次得以在干净工作树上跑（脏树会污染 GP run 的 config
+  # 转储，而注册器正是以它绑定这批候选的出处）。产物落在别处时用
+  # PV_BASELINE_PREDS 覆盖，本机绝对路径不进仓库。
+  baseline_preds_path: "${PV_BASELINE_PREDS:-output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet}"
   baseline_model: alpha158_lgb_csi800_walkforward
 
 gp:

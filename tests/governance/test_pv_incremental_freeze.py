@@ -175,6 +175,61 @@ class PvIncrementalFreezePins(unittest.TestCase):
         DataConfig(**data)
         FitnessConfig(**fit)
 
+    def test_baseline_path_is_portable_and_env_overridable(self) -> None:
+        # The campaign config is tracked and governance-pinned, so the
+        # baseline binding must NOT require editing it at ignition: a
+        # dirty tree at that moment contaminates the GP run's config
+        # dump, which is precisely what the registrar binds these
+        # candidates' provenance to. Repo-relative default + env
+        # override keeps ignition a zero-edit operation and keeps
+        # machine-local paths out of the repo (CLAUDE.md).
+        import os
+
+        from src.factor_mining.miner import load_config
+        cfg_path = (_PROJECT_ROOT / "config" / "factor_mining"
+                    / "pv_incremental_v1.yaml")
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        declared = raw["data"]["baseline_preds_path"]
+        self.assertIn("${PV_BASELINE_PREDS", declared)
+        # No machine-local path may be committed here.
+        self.assertNotIn(":\\", declared)
+        self.assertNotIn(":/", declared.replace("${", ""))
+        self.assertFalse(declared.startswith("/"))
+
+        # Both branches of the fallback must actually resolve — a
+        # placeholder no loader expands would hand the literal
+        # "${...}" string to the miner (codex #401 r11).
+        before = os.environ.get("PV_BASELINE_PREDS")
+        try:
+            os.environ.pop("PV_BASELINE_PREDS", None)
+            default = load_config(cfg_path).data.baseline_preds_path
+            self.assertNotIn("$", default)
+            # The default IS the exporter's standard out-dir, or the
+            # zero-edit ignition promise is empty.
+            self.assertEqual(
+                "output/factor_mining/pv_incremental_v1/baseline/"
+                "baseline_preds.parquet", default)
+            os.environ["PV_BASELINE_PREDS"] = "elsewhere/other.parquet"
+            self.assertEqual(
+                "elsewhere/other.parquet",
+                load_config(cfg_path).data.baseline_preds_path)
+        finally:
+            os.environ.pop("PV_BASELINE_PREDS", None)
+            if before is not None:
+                os.environ["PV_BASELINE_PREDS"] = before
+
+    def test_missing_baseline_is_a_refusal_not_a_default(self) -> None:
+        # The path having a default must NOT weaken the guard that a
+        # campaign with the orthogonality penalty enabled and no
+        # exported baseline refuses (miner.py): a silently-zero
+        # incremental criterion looks exactly like a healthy run.
+        import inspect
+
+        from src.factor_mining import miner
+        src = inspect.getsource(miner)
+        self.assertIn("data.baseline_preds_path is empty", src)
+        self.assertIn("does not exist", src)
+
     def test_orientation_contract_is_pinned_and_wired(self) -> None:
         # codex #401 r13: the sign-blind breeding criterion is only
         # safe if the IS orientation is recorded and APPLIED. Pin both
