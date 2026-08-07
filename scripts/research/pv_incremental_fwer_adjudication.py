@@ -471,11 +471,13 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.research.pv_incremental_registration import (
             PVRegistrationError,
             assert_baseline_matches_registration,
-            load_registration,
+            load_verified_manifest,
         )
         manifest_path = Path(args.candidates)
         try:
-            registration = load_registration(manifest_path)
+            # The VERIFIED snapshot, never a second read of the path
+            # (codex #404 r2).
+            registration, manifest = load_verified_manifest(manifest_path)
             # The artifacts' own baseline must ALSO be the registered
             # one (codex #403 r1): check_run_identity only proves the
             # artifacts and their completion stamp agree with each
@@ -487,8 +489,6 @@ def main(argv: list[str] | None = None) -> int:
                 registration, str(completion.get("baseline_preds_sha256")))
         except PVRegistrationError as exc:
             raise PVFwerError(str(exc)) from exc
-        manifest = json.loads(
-            manifest_path.read_text(encoding="utf-8"))
         check_family_manifest(artifacts, manifest)
         result = adjudicate(plan, artifacts, seed=args.seed)
         result["plan_sha256"] = plan_sha

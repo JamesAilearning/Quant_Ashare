@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import sys
@@ -341,11 +342,20 @@ def build_artifact(plan: dict[str, Any], candidate_id: str,
     }
 
 
-def _load_wide_parquet(path: Path, what: str) -> pd.DataFrame:
+def _load_wide_parquet(raw: bytes, what: str,
+                       origin: Path) -> pd.DataFrame:
+    """Parse the wide frame from the SAME bytes that were digested.
+
+    Re-opening the path after hashing it is check-then-use (codex #404
+    r2): a file replaced in between leaves the digest check passing
+    while the frame in memory holds different predictions, and the
+    artifacts would then record the registered digest over numbers
+    that never came from it.
+    """
     try:
-        frame = pd.read_parquet(path)
+        frame = pd.read_parquet(io.BytesIO(raw))
     except (OSError, ValueError) as exc:
-        raise PVEvalError(f"{what} unreadable: {path} ({exc})") from exc
+        raise PVEvalError(f"{what} unreadable: {origin} ({exc})") from exc
     if not isinstance(frame.index, pd.DatetimeIndex):
         raise PVEvalError(f"{what} must be date-indexed wide frame.")
     return frame
@@ -375,10 +385,16 @@ def main(argv: list[str] | None = None) -> int:
         plan = load_frozen_plan()
         check_window_discipline(plan, args.window_start, args.window_end)
         baseline_path = Path(args.baseline_preds)
-        baseline_sha = hashlib.sha256(
-            baseline_path.read_bytes()).hexdigest()
+        try:
+            baseline_raw = baseline_path.read_bytes()
+        except OSError as exc:
+            raise PVEvalError(
+                f"baseline preds unreadable: {baseline_path} "
+                f"({exc})") from exc
+        baseline_sha = hashlib.sha256(baseline_raw).hexdigest()
         check_baseline_provenance(plan, baseline_path, baseline_sha)
-        baseline = _load_wide_parquet(baseline_path, "baseline preds")
+        baseline = _load_wide_parquet(baseline_raw, "baseline preds",
+                                      baseline_path)
 
         # The registration is what makes the batch frozen (codex
         # #402 r6): the manifest's bytes must still equal what the
@@ -387,17 +403,17 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.research.pv_incremental_registration import (
             PVRegistrationError,
             assert_baseline_matches_registration,
-            load_registration,
+            load_verified_manifest,
         )
         manifest_path = Path(args.candidates)
         try:
-            registration = load_registration(manifest_path)
+            # The VERIFIED snapshot, never a second read of the path.
+            registration, candidates = load_verified_manifest(
+                manifest_path)
             assert_baseline_matches_registration(
                 registration, baseline_sha)
         except PVRegistrationError as exc:
             raise PVEvalError(str(exc)) from exc
-        candidates = json.loads(
-            manifest_path.read_text(encoding="utf-8"))
         parsed = preflight_candidates(candidates, list(plan["fields"]))
         # Everything above touches NO OOS data (codex #403 r2): the
         # 2023-2024 window is a one-shot evaluation, so an

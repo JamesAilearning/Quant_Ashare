@@ -156,7 +156,19 @@ def _ledger_entries(ledger_path: Path) -> list[dict[str, Any]]:
             f"campaign ledger {ledger_path} not found — the "
             "registration cannot be authenticated; refusing.")
     raw = _committed_ledger_bytes(ledger_path)
-    doc = yaml.safe_load(raw.decode("utf-8"))
+    # A damaged authority file must REFUSE, not traceback (codex #404
+    # r2): both consumer CLIs translate only PVRegistrationError, so an
+    # unwrapped UnicodeDecodeError/YAMLError would bypass the
+    # documented REFUSED result and its return code — the same
+    # fail-loud-becomes-fail-obscure shape the console guard closed.
+    try:
+        doc = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise PVRegistrationError(
+            f"the committed campaign ledger {ledger_path.name} is not "
+            f"readable as UTF-8 YAML ({type(exc).__name__}: {exc}) — "
+            "the registration authority cannot be established; "
+            "refusing.") from exc
     if not isinstance(doc, dict) or doc.get("protocol_id") != PROTOCOL_ID:
         raise PVRegistrationError(
             f"campaign ledger {ledger_path.name} is not the "
@@ -178,18 +190,26 @@ def ledger_entry_for(manifest_sha256: str,
     """
     for entry in _ledger_entries(ledger_path):
         prov = entry.get("gp_provenance")
-        recorded = (prov or {}).get("manifest_sha256")             if isinstance(prov, dict) else None
-        artifacts = [a for a in (entry.get("artifacts") or [])
-                     if isinstance(a, str) and "#sha256=" in a]
+        recorded = (prov.get("manifest_sha256")
+                    if isinstance(prov, dict) else None)
         artifact_digests = {a.split("#sha256=", 1)[1].strip()
-                            for a in artifacts}
-        if recorded == manifest_sha256 or manifest_sha256 in artifact_digests:
-            if not isinstance(prov, dict):
-                raise PVRegistrationError(
-                    f"the ledger entry registering {manifest_sha256[:12]}"
-                    "… carries no gp_provenance — it cannot authorise "
-                    "the batch's inputs; refusing.")
+                            for a in (entry.get("artifacts") or [])
+                            if isinstance(a, str) and "#sha256=" in a}
+        if isinstance(prov, dict) and recorded == manifest_sha256:
             return prov
+        # The artifact hash CORROBORATES, it never authorises (codex
+        # #404 r2). An entry whose artifacts name this manifest while
+        # its gp_provenance describes a different registration would
+        # otherwise hand back the wrong provenance — and if both
+        # registrations came from one GP run their input digests are
+        # identical, so every later check passes and the adjudicator
+        # seals the wrong registration digest.
+        if manifest_sha256 in artifact_digests:
+            raise PVRegistrationError(
+                f"a committed ledger entry lists {manifest_sha256[:12]}"
+                "… among its artifacts but its gp_provenance registers "
+                f"{str(recorded)[:12]}… — the entry does not authorise "
+                "this manifest; refusing.")
     raise PVRegistrationError(
         f"manifest digest {manifest_sha256[:12]}… is not recorded in "
         f"the committed campaign ledger ({ledger_path.name}) — a "
@@ -199,8 +219,49 @@ def ledger_entry_for(manifest_sha256: str,
         "refusing.")
 
 
+def _read_manifest_bytes(manifest_path: Path) -> bytes:
+    """The ONE read of the manifest — everything else uses these bytes."""
+    try:
+        return manifest_path.read_bytes()
+    except OSError as exc:
+        raise PVRegistrationError(
+            f"{manifest_path} is unreadable ({exc}) — the registered "
+            "family cannot be established; refusing.") from exc
+
+
+def load_verified_manifest(
+        manifest_path: Path,
+        ledger_path: Path | None = None) -> tuple[dict[str, Any], Any]:
+    """Registration + the EXACT candidates whose bytes it verified.
+
+    Verifying the digest and then RE-READING the path is check-then-use
+    (codex #404 r2): a manifest swapped between the two reads passes
+    authentication while the consumer preflights and evaluates a
+    different family. That is unrecoverable here — the OOS window is
+    one-shot, so the invalid family has already spent it by the time
+    any downstream check could notice. Consumers must act on this
+    snapshot, never on a fresh read.
+    """
+    raw = _read_manifest_bytes(manifest_path)
+    registration = _verify_registration(raw, manifest_path, ledger_path)
+    try:
+        candidates = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PVRegistrationError(
+            f"{manifest_path.name} is not valid UTF-8 JSON "
+            f"({type(exc).__name__}: {exc}); refusing.") from exc
+    return registration, candidates
+
+
 def load_registration(manifest_path: Path,
                       ledger_path: Path | None = None) -> dict[str, Any]:
+    """The registration alone (see ``load_verified_manifest``)."""
+    return _verify_registration(
+        _read_manifest_bytes(manifest_path), manifest_path, ledger_path)
+
+
+def _verify_registration(manifest_bytes: bytes, manifest_path: Path,
+                         ledger_path: Path | None) -> dict[str, Any]:
     """Load + verify the registration that froze this manifest.
 
     Refuses when the sidecar is absent (an unregistered manifest is not
@@ -217,7 +278,13 @@ def load_registration(manifest_path: Path,
             "evaluated or adjudicated; run "
             "scripts/research/pv_incremental_register_candidates.py "
             "over the GP pool; refusing.")
-    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PVRegistrationError(
+            f"{sidecar.name} is unreadable or not valid JSON "
+            f"({type(exc).__name__}: {exc}) — a malformed registration "
+            "is not a registration; refusing.") from exc
     if not isinstance(payload, dict):
         raise PVRegistrationError(
             f"{sidecar.name} is not a JSON object; refusing.")
@@ -232,7 +299,7 @@ def load_registration(manifest_path: Path,
         raise PVRegistrationError(
             f"{sidecar.name} records no valid manifest_sha256 "
             f"({recorded!r}); refusing.")
-    actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    actual = hashlib.sha256(manifest_bytes).hexdigest()
     if actual != recorded:
         raise PVRegistrationError(
             f"{manifest_path.name} digests to {actual[:12]}… but the "

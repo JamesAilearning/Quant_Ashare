@@ -364,6 +364,82 @@ class BaselineIdentityTests(_RestoresRepoRoot):
                 "a" * 64)
 
 
+def _recommit(ledger: Path) -> None:
+    """Re-commit a mutated ledger — the authority is committed bytes."""
+    import subprocess
+    for cmd in (["git", "add", "-A"],
+                ["git", "commit", "-q", "-m", "mutate"]):
+        subprocess.run(cmd, cwd=str(ledger.parent.parent.parent),
+                       check=True, capture_output=True)
+
+
+class MalformedInputsAreClassifiedRefusals(_RestoresRepoRoot):
+    """codex #404 r2: a damaged input must REFUSE, not traceback.
+
+    Both consumer CLIs translate only ``PVRegistrationError`` into the
+    documented REFUSED result and its return code, so an escaping
+    JSONDecodeError / YAMLError / UnicodeDecodeError would hand the
+    operator an unhandled traceback in place of the reason the batch
+    was refused."""
+
+    def test_malformed_sidecar_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            reg.sidecar_path_for(manifest).write_bytes(
+                b'{"protocol_id": "pv_incr')
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, ledger)
+            self.assertIn("not valid JSON", str(ctx.exception))
+
+    def test_malformed_committed_ledger_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            ledger.write_bytes(b"entries: [{a: 1}\n  bad: : :\n")
+            _recommit(ledger)
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, ledger)
+            self.assertIn("UTF-8 YAML", str(ctx.exception))
+
+    def test_artifact_hash_alone_does_not_authorise(self) -> None:
+        # An entry whose artifacts name THIS manifest while its
+        # gp_provenance registers another one must not hand back that
+        # other registration's provenance: if both came from one GP
+        # run their input digests are identical, so every later check
+        # passes and the adjudicator seals the wrong registration.
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            doc = yaml.safe_load(ledger.read_text(encoding="utf-8"))
+            entries = doc["entries"]
+            if isinstance(entries, dict):
+                entries = [entries]
+            self.assertIn("#sha256=", str(entries[0]["artifacts"]))
+            entries[0]["gp_provenance"]["manifest_sha256"] = "0" * 64
+            doc["entries"] = entries
+            ledger.write_text(
+                yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+                encoding="utf-8")
+            _recommit(ledger)
+            with self.assertRaises(reg.PVRegistrationError) as ctx:
+                reg.load_registration(manifest, ledger)
+            self.assertIn("does not authorise", str(ctx.exception))
+
+
+class VerifiedSnapshotTests(_RestoresRepoRoot):
+    def test_candidates_come_from_the_verified_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            registration, candidates = reg.load_verified_manifest(
+                manifest, ledger)
+            self.assertEqual(
+                json.loads(manifest.read_text(encoding="utf-8")),
+                candidates)
+            self.assertIn("manifest_sha256", registration)
+
+
 class ConsumerWiringTests(unittest.TestCase):
     """Both consumers must route through the binding — a check that
     exists but is never called protects nothing."""
@@ -373,15 +449,22 @@ class ConsumerWiringTests(unittest.TestCase):
 
         import scripts.research.pv_incremental_eval as ev
         src = inspect.getsource(ev.main)
-        self.assertIn("load_registration", src)
+        self.assertIn("load_verified_manifest", src)
         self.assertIn("assert_baseline_matches_registration", src)
+        # codex #404 r2: acting on the VERIFIED snapshot means never
+        # re-reading either path after its digest was taken.
+        self.assertNotIn("manifest_path.read_text", src)
+        self.assertNotIn("manifest_path.read_bytes", src)
+        self.assertNotIn("_load_wide_parquet(baseline_path", src)
 
     def test_adjudicator_enforces_registration(self) -> None:
         import inspect
 
         import scripts.research.pv_incremental_fwer_adjudication as fw
         src = inspect.getsource(fw.main)
-        self.assertIn("load_registration", src)
+        self.assertIn("load_verified_manifest", src)
+        self.assertNotIn("manifest_path.read_text", src)
+        self.assertNotIn("manifest_path.read_bytes", src)
 
     def test_adjudicator_records_the_registration_digest(self) -> None:
         import inspect
@@ -498,7 +581,7 @@ class OosDataProtectionTests(_RestoresRepoRoot):
 
         import scripts.research.pv_incremental_eval as ev
         src = inspect.getsource(ev.main)
-        gate = src.index("load_registration(")
+        gate = src.index("load_verified_manifest(")
         preflight = src.index("preflight_candidates(candidates")
         provider = src.index("build_pit_provider(")
         panel = src.index("view.load_panel()")
