@@ -144,9 +144,18 @@ def campaign_risk_constraints_v1() -> MinimalRiskConstraints:
       buffering is a live-deployment concern, not a backtest-validity
       one.
 
-    ``max_per_name`` = 0.05 and ``max_leverage`` = 1.0 stay STRICT in
-    RAISE mode — they are the constraints with real anti-concentration /
-    sanity teeth, and the observed runs pass them. A function (not a
+    ``max_per_name`` = 0.05 and ``max_leverage`` = 1.0 stay STRICT —
+    they are the constraints with real anti-concentration / sanity
+    teeth. The mode is the CALLER's choice (threaded from
+    ``risk_constraints_mode``), defaulting to RAISE.
+
+    The earlier claim here — "the observed runs pass them" — was
+    falsified on 2026-08-07: the csi800 pv_incremental_v1 baseline run
+    (19 folds, 2018-04..2024-12) tripped ``max_per_name`` in 3 folds
+    through post-trade DRIFT, not entry-time concentration (a held
+    name reaching 5.01% against the 5.00% cap). Anything relying on
+    "no observed run violates this" should re-derive it. A function
+    (not a
     module-level instance) so each run gets a fresh frozen object; the
     exact values are governance-pinned in
     tests/governance/test_csi800_expansion_guards.py."""

@@ -28,6 +28,7 @@ from src.core.attribution_sleeve_loader import (
 )
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
+    FAILED_METRIC_STATUS,
     CanonicalAccountConfig,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
@@ -51,6 +52,7 @@ from src.core.qlib_runtime import (
 )
 from src.core.risk_constraints import (
     MinimalRiskConstraints,
+    RiskConstraintMode,
     campaign_risk_constraints_v1,
 )
 from src.core.signal_analyzer import (
@@ -68,6 +70,7 @@ from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.aggregate import (
     compute_aggregate,
     extract_cost_metrics,
+    run_metric_status,
     write_aggregate_report,
     write_fold_report,
     write_positions,
@@ -80,6 +83,8 @@ from src.core.walk_forward.ensemble import (
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
 _logger = get_logger(__name__)
+
+
 
 
 class WalkForwardEngine:
@@ -273,6 +278,7 @@ class WalkForwardEngine:
                     max_drawdown=float("nan"),
                     information_ratio=float("nan"),
                     prediction_shape=(0,),
+                    metric_status=FAILED_METRIC_STATUS,
                 )
                 fold_failed = True
 
@@ -450,6 +456,17 @@ class WalkForwardEngine:
             record = build_record(
                 engine="walk_forward",
                 status="partial" if has_any_nan else "ok",
+                # codex #406 r3: the catalog is what run comparison
+                # reads. Without the status a predictions-only run
+                # lands in output/runs/_index.jsonl as an ordinary
+                # ``ok`` record and its RAISE-refused returns become
+                # indistinguishable from official ones.
+                # One derivation for one verdict (codex #406 r7):
+                # the catalog reads what the FOLDS carry, exactly
+                # as the aggregate report does — a declared
+                # purpose is not evidence that folds passed.
+                metric_status=run_metric_status(folds, config),
+                metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
                 config_summary={
@@ -892,10 +909,15 @@ class WalkForwardEngine:
             # campaign_v1; everything else keeps the P0-1 defaults.
             # Effective values land in each fold's backtest provenance.
             risk_constraints=(
-                (campaign_risk_constraints_v1()
-                 if config.risk_constraints_calibration == "campaign_v1"
-                 else MinimalRiskConstraints())
+                replace(
+                    campaign_risk_constraints_v1()
+                    if config.risk_constraints_calibration == "campaign_v1"
+                    else MinimalRiskConstraints(),
+                    mode=RiskConstraintMode(config.risk_constraints_mode))
                 if config.risk_constraints_enabled else None),
+            # The purpose travels WITH the run (codex #406 r1): a
+            # violation-tolerating run is never canonical by default.
+            metrics_purpose=config.metrics_purpose,
             # R1 (codex #378 r3): explicit scope opt-in threads through;
             # the default "all_days" keeps the canonical full-map
             # contract byte-identical.
@@ -1002,6 +1024,7 @@ class WalkForwardEngine:
             max_drawdown=max_dd,
             information_ratio=ir,
             prediction_shape=model_result.prediction_shape,
+            metric_status=backtest_output.metric_status,
             # POSIX form (codex #379 P1): this value lands in the
             # committed aggregate's fold rows and must resolve on any OS.
             report_path=report_path.as_posix(),

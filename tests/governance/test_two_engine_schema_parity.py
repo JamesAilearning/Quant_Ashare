@@ -54,10 +54,17 @@ if str(PROJECT_ROOT) not in sys.path:
 # engine-specific set = declaring, here and reviewably, why the concept cannot
 # exist in the other engine.
 # ---------------------------------------------------------------------------
-REPORT_SHARED = {"generated_at", "git_commit", "git_dirty", "config"}
+REPORT_SHARED = {"generated_at", "git_commit", "git_dirty", "config",
+                 # codex #406 r4: the metric verdict and its reason are
+                 # now MIRRORED — walk-forward publishes a run-level
+                 # status next to aggregate_metrics, pipeline keeps its
+                 # single-run one. A consumer reads one key regardless
+                 # of engine, which is the whole point: a run that did
+                 # not pass RAISE must not look ordinary anywhere.
+                 "metric_status", "metrics_purpose"}
 REPORT_PIPELINE_ONLY = {
     # single-run shape: one dataset/model/backtest, sections inline
-    "metric_status", "official_backtest_path", "dataset", "model",
+    "official_backtest_path", "dataset", "model",
     "signal_analysis", "backtest", "risk_analysis", "factor_analysis",
     "attribution",
     # CSI800 guard-2 (v2-csi800-expansion-guards): per-sleeve turnover is
@@ -140,6 +147,8 @@ class TopLevelReportParityTests(unittest.TestCase):
             risk_constraints_enabled=False,
             risk_constraints_calibration="default",
             risk_constraint_scope="all_days",
+            risk_constraints_mode="raise",
+            metrics_purpose="official",
             delisted_registry_path="",
         )
         feature_result = SimpleNamespace(

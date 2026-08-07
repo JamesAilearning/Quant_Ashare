@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,7 @@ from src.core.qlib_runtime import (
 )
 from src.core.risk_constraints import (
     MinimalRiskConstraints,
+    RiskConstraintMode,
     campaign_risk_constraints_v1,
 )
 from src.core.run_catalog import append_run_record
@@ -194,6 +195,34 @@ class PipelineConfig:
     # campaign calibration is an EXPLICIT opt-in, never silently
     # substituted for a non-campaign run.
     risk_constraints_calibration: str = "default"
+    # Violation REACTION (pv_incremental_v1 baseline run). "raise"
+    # (default) aborts the fold on any violation — the canonical
+    # backtest-validation semantics, unchanged for every existing
+    # config. "warn_and_clip" logs each violation and proceeds on a
+    # clipped allocation.
+    #
+    # The opt-in exists because a run whose PURPOSE is exporting
+    # out-of-fold PREDICTIONS is killed by a post-trade portfolio
+    # violation that has nothing to do with them: a held name drifting
+    # to 5.01% against a 5.00% cap discarded a whole quarter of
+    # otherwise-perfect predictions (observed 3/19 folds, campaign
+    # baseline run 2026-08-07). Predictions are produced BEFORE the
+    # backtest and are bit-identical under either mode.
+    #
+    # It is NOT a way to get official metrics past the cap: returns
+    # under a clipped allocation are not the RAISE-validated ones, so
+    # tests/governance/test_risk_constraints_mode_optin.py pins the
+    # tracked presets that may declare it.
+    risk_constraints_mode: str = "raise"
+    # What this run's numbers ARE (codex #406 r2). INDEPENDENT of
+    # risk_constraints_mode on purpose: deriving it from the relaxed
+    # mode would hand the guard's key to the very switch it guards —
+    # selecting warn_and_clip would auto-grant the escape, which is
+    # exactly the untracked-entry-path leak the boundary check exists
+    # to close. A caller wanting the relaxed reaction must ALSO state
+    # that the run's product is predictions, and that statement lands
+    # in the report.
+    metrics_purpose: str = "official"
     # R1 (codex #378 r3): see WalkForwardConfig — "all_days" preserves
     # the canonical full-map contract; "rebalance_days" is the campaign
     # opt-in (pipeline has no cadence machinery, so only "all_days" is
@@ -240,6 +269,24 @@ class PipelineConfig:
                 "risk_constraint_scope: the pipeline engine has no "
                 "rebalance-cadence machinery — only 'all_days' is "
                 f"valid; got {self.risk_constraint_scope!r}.")
+        if self.metrics_purpose not in ("official", "predictions_only"):
+            raise PipelineError(
+                "metrics_purpose must be 'official' or "
+                f"'predictions_only'; got {self.metrics_purpose!r}.")
+        if (self.risk_constraints_mode == "warn_and_clip"
+                and self.metrics_purpose != "predictions_only"):
+            raise PipelineError(
+                "risk_constraints_mode='warn_and_clip' tolerates "
+                "violations, but the clipping is POST-TRADE — the "
+                "returns are qlib's UNCLIPPED execution, i.e. the "
+                "numbers RAISE refuses. Declare "
+                "metrics_purpose='predictions_only' to state that this "
+                "run's product is out-of-fold predictions, or use "
+                "risk_constraints_mode='raise'.")
+        if self.risk_constraints_mode not in ("raise", "warn_and_clip"):
+            raise PipelineError(
+                "risk_constraints_mode must be 'raise' or "
+                f"'warn_and_clip'; got {self.risk_constraints_mode!r}.")
         if self.risk_constraints_calibration not in ("default",
                                                      "campaign_v1"):
             raise PipelineError(
@@ -617,10 +664,15 @@ class Pipeline:
             # mismatches disabled with rationale); everything else keeps
             # the P0-1 defaults. Effective values land in provenance.
             risk_constraints=(
-                (campaign_risk_constraints_v1()
-                 if config.risk_constraints_calibration == "campaign_v1"
-                 else MinimalRiskConstraints())
+                replace(
+                    campaign_risk_constraints_v1()
+                    if config.risk_constraints_calibration == "campaign_v1"
+                    else MinimalRiskConstraints(),
+                    mode=RiskConstraintMode(config.risk_constraints_mode))
                 if config.risk_constraints_enabled else None),
+            # The purpose travels WITH the run (codex #406 r1): a
+            # violation-tolerating run is never canonical by default.
+            metrics_purpose=config.metrics_purpose,
             # R1 (codex #378 r3): explicit scope opt-in threads through;
             # the default "all_days" keeps the canonical full-map
             # contract byte-identical.
@@ -895,6 +947,9 @@ class Pipeline:
             record = build_catalog_record(
                 engine="pipeline",
                 status=status,
+                # Parallel catalog schema (codex #406 r3).
+                metric_status=backtest_output.metric_status,
+                metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
                 config_summary={
@@ -1010,6 +1065,10 @@ class Pipeline:
             "git_commit": gp.get("commit"),
             "git_dirty": gp.get("dirty"),
             "metric_status": backtest_output.metric_status,
+            # Mirrors walk-forward's top level (codex #406 r4): the
+            # verdict and WHY it is that verdict sit together, readable
+            # without descending into the config block.
+            "metrics_purpose": config.metrics_purpose,
             "official_backtest_path": backtest_output.official_backtest_path,
             "config": {
                 "instruments": config.instruments,
@@ -1038,6 +1097,13 @@ class Pipeline:
                 "risk_constraints_enabled": config.risk_constraints_enabled,
                 "risk_constraints_calibration": config.risk_constraints_calibration,
                 "risk_constraint_scope": config.risk_constraint_scope,
+                # codex #406 r2: walk-forward gets these free via
+                # asdict(config); the pipeline projection is manual, so
+                # a single-fold report could not reproduce whether
+                # violations raised or were tolerated — and the two
+                # engine schemas would diverge on the new key.
+                "risk_constraints_mode": config.risk_constraints_mode,
+                "metrics_purpose": config.metrics_purpose,
             },
             "dataset": {
                 "train_shape": list(feature_result.train_shape),

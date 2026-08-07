@@ -68,6 +68,28 @@ except ImportError:  # pragma: no cover - environment-dependent
     _QLIB_METRIC_HELPER_ANCHOR_AVAILABLE = False
 
 OFFICIAL_METRIC_STATUS = "official"
+# codex #406 r2: a run that TOLERATED risk-constraint violations must
+# not carry the official label. The clipping is post-trade, so its
+# return_series/risk_analysis/positions are qlib's UNCLIPPED execution
+# — the very numbers RAISE refuses. The status is what downstream
+# reports read as "these are canonical numbers", so the relaxed path
+# stamps this instead and every report inherits it.
+PREDICTIONS_ONLY_METRIC_STATUS = "predictions_only_non_canonical"
+# codex #406 r7: a fold that died before BacktestRunner.run returned
+# (training, prediction, backtest) never crossed the canonical
+# boundary, so it has NO metrics to label. Stamping it with the
+# declared purpose — which #406 r3 did to keep ``None`` from reading
+# as official — asserts the opposite: it makes the placeholder look
+# like evidence that the fold passed. It carries this instead, and
+# run-level status treats it as no evidence either way.
+FAILED_METRIC_STATUS = "failed_no_metrics"
+# codex #406 r8: a fold RESUMED from a manifest written before
+# ``WalkForwardFold.metric_status`` existed carries finite metrics and
+# no stamp. That is NOT the same as a failed fold: there are numbers,
+# but nothing proves they crossed the canonical boundary. Treating the
+# absence as "nothing to see" let an official declaration certify
+# them. The run says this instead — never ``official``.
+UNVERIFIED_METRIC_STATUS = "unverified_no_fold_stamp"
 CANONICAL_INPUT_REQUIRED_FIELDS = (
     "predictions_ref",
     "evaluation_start",

@@ -27,6 +27,7 @@ from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
     CANONICAL_OFFICIAL_METRIC_HELPER_PATH,
     OFFICIAL_METRIC_STATUS,
+    PREDICTIONS_ONLY_METRIC_STATUS,
     CanonicalBacktestContract,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
@@ -46,6 +47,7 @@ from src.core.qlib_runtime import (
 from src.core.risk_constraints import (
     MinimalRiskConstraints,
     RiskConstraintError,
+    RiskConstraintMode,
 )
 from src.data.st_history import (
     StHistoryError,
@@ -138,10 +140,48 @@ class BacktestRunner:
         rebalance_phase: int = 0,
         rebalance_anchor: str = "fold_phase",
         universe_hint: str | None = None,
+        metrics_purpose: str = "official",
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
         CanonicalBacktestContract.validate_input(request)
+
+        # WARN_AND_CLIP at the OFFICIAL-METRICS BOUNDARY (codex #406
+        # r1). The clipping is POST-TRADE: ``return_series`` and
+        # ``risk_analysis`` come from qlib's UNCLIPPED execution and
+        # ``positions`` stays tied to them, so tolerating violations
+        # does not soften the numbers — it emits the very returns
+        # RAISE exists to refuse, under the canonical label.
+        #
+        # A config-file scan cannot protect this: personal overrides
+        # (``my_*.yaml`` / ``*.local.yaml``) are gitignored BY DESIGN,
+        # and tests / replay scripts / single-fold callers construct
+        # the runner directly. So the refusal lives HERE, where every
+        # path converges, mirroring the cadence check below.
+        #
+        # The escape is narrow and must NAME the purpose: a run whose
+        # product is out-of-fold PREDICTIONS (unaffected by clipping —
+        # they are produced before the backtest) may tolerate
+        # violations, and the purpose travels into the output so the
+        # numbers are never canonical-by-default at rest.
+        if metrics_purpose not in ("official", "predictions_only"):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: metrics_purpose must be 'official' "
+                f"or 'predictions_only'; got {metrics_purpose!r}.")
+        if (risk_constraints is not None
+                and risk_constraints.mode is RiskConstraintMode.WARN_AND_CLIP
+                and metrics_purpose != "predictions_only"):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: risk_constraints.mode="
+                "WARN_AND_CLIP tolerates violations, but the clipping "
+                "is POST-TRADE — return_series/risk_analysis/positions "
+                "are qlib's UNCLIPPED execution, i.e. exactly the "
+                "numbers RAISE refuses. Emitting them as official "
+                "metrics would bypass that validation silently. Pass "
+                "metrics_purpose='predictions_only' when the run's "
+                "product is out-of-fold predictions (they are produced "
+                "before the backtest and are unaffected), or use "
+                "mode=RAISE. Audit P0-1 / codex #406 r1.")
 
         # Cadence validation at the OFFICIAL-METRICS BOUNDARY (codex P2 on
         # #336): direct callers (tests, replay scripts, single-fold) bypass
@@ -972,10 +1012,28 @@ class BacktestRunner:
             request, topk, n_drop, st_mask_provenance,
             rebalance=rebalance_provenance,
             risk_constraints=rc_provenance,
+            # SIBLING of risk_constraints, never a key inside it
+            # (codex #406 r5): the campaign veto compares that mapping
+            # by EXACT equality against the five calibration values
+            # (csi800_campaign_attach_vetoes.CAMPAIGN_V1_EXPECTED), so
+            # an extra key there fails veto 4 on every new fold and
+            # blocks promotion. The purpose is not a calibration value.
+            metrics_purpose=metrics_purpose,
         )
 
         return CanonicalBacktestOutput(
-            metric_status=OFFICIAL_METRIC_STATUS,
+            # RELABEL, not just refuse (codex #406 r2). metric_status is
+            # what pipeline_report / result artifacts / the walk-forward
+            # aggregate all copy as "these are canonical numbers", so a
+            # predictions-only run must not carry "official" there.
+            #
+            # ``official_backtest_path`` deliberately stays: it records
+            # WHICH code path executed, and the canonical path DID run.
+            # Rewriting it would misstate the execution — the honest
+            # signal is the status plus the provenance entry.
+            metric_status=(PREDICTIONS_ONLY_METRIC_STATUS
+                           if metrics_purpose == "predictions_only"
+                           else OFFICIAL_METRIC_STATUS),
             official_backtest_path=CANONICAL_OFFICIAL_BACKTEST_PATH,
             return_series=return_series,
             risk_analysis=risk_dict,
@@ -1695,6 +1753,7 @@ class BacktestRunner:
         st_mask: Mapping[str, Any] | None = None,
         rebalance: Mapping[str, Any] | None = None,
         risk_constraints: Mapping[str, Any] | None = None,
+        metrics_purpose: str = "official",
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -1734,6 +1793,10 @@ class BacktestRunner:
         # safety, same pattern as ``rebalance`` above.
         if risk_constraints is not None:
             strategy_dict["risk_constraints"] = dict(risk_constraints)
+        # Always recorded, official runs included: a reader holding only
+        # the artifact must not have to infer the purpose from a key's
+        # absence (codex #406 r2/r5).
+        strategy_dict["metrics_purpose"] = metrics_purpose
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)

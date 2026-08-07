@@ -25,6 +25,24 @@ benchmark_code: "SH000906TR"
 attribution_sleeve_grouping: true
 risk_constraints_enabled: true
 risk_constraints_calibration: "campaign_v1"
+# 违规反应（本档独有）。本次跑的产物是**样本外预测**——战役的唯一增量判据
+# (正交惩罚) 只吃 baseline_preds.parquet，组合构建与收益率与判据无关。而
+# 预测在回测之前产生、且两种 mode 下逐字节相同（2026-08-07 实测:fold 02 在
+# 回测抛异常的情况下仍写出 46,812 行完好预测）。
+#
+# 用 raise 的代价是:一个被动漂移到 5.01%(上限 5.00%)的持仓,会废掉整整一个
+# 季度的预测覆盖。首跑 19 folds 有 3 个因此判死(fold 02/05/10,超限幅度
+# 0.01~1.55 个百分点)。那些空洞随后会被口径①(penalize_covered_days_only)
+# 静默吸收——正是本役一路在防的静默降级。
+#
+# 这不是让官方指标绕过上限的通道:clip 后的配置产生的收益率不是 RAISE 校验
+# 过的那一套,故 tests/governance/test_risk_constraints_mode_optin.py 钉死了
+# 允许声明本键的 tracked preset 集合(仅本档)。
+risk_constraints_mode: "warn_and_clip"
+# 并须独立声明本跑的产物是什么（codex #406 r2）。刻意不从 mode 派生：派生等于
+# 把守卫的钥匙交给被守卫的那个开关——选了宽松 mode 就自动获得豁免，正是边界
+# 检查要堵的那条未 tracked 入口。声明也随报告落盘。
+metrics_purpose: "predictions_only"
 slippage_bps: 5.0
 overall_end: "2024-12-31"
 output_dir: "output/walk_forward/pv_incremental_baseline"

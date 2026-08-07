@@ -712,6 +712,8 @@ class ReportGitProvenanceTests(unittest.TestCase):
             risk_constraints_enabled=False,
             risk_constraints_calibration="default",
             risk_constraint_scope="all_days",
+            risk_constraints_mode="raise",
+            metrics_purpose="official",
             delisted_registry_path="",
         )
         feature_result = SimpleNamespace(

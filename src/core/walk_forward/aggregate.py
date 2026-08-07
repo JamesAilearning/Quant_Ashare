@@ -4,13 +4,19 @@ import hashlib
 import json
 import math
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from src.core._json_utils import _sanitize_for_json
+from src.core.canonical_backtest_contract import (
+    FAILED_METRIC_STATUS,
+    OFFICIAL_METRIC_STATUS,
+    PREDICTIONS_ONLY_METRIC_STATUS,
+    UNVERIFIED_METRIC_STATUS,
+)
 from src.core.logger import get_logger
 from src.core.walk_forward._types import WalkForwardFold
 from src.core.walk_forward.config import WalkForwardError
@@ -28,6 +34,43 @@ _logger = get_logger(__name__)
 # src.core.git_provenance and is captured by each ENGINE at RUN START (not at report-write
 # time — a run can take hours / resume, and HEAD can advance mid-run), then injected here.
 # Two engines, one schema: pipeline_report.json records the same fields the same way.
+
+
+def _fold_has_metrics(fold: WalkForwardFold) -> bool:
+    """A placeholder fold carries ``prediction_shape == (0,)``."""
+    return tuple(fold.prediction_shape) != (0,)
+
+
+def run_metric_status(folds: Sequence[WalkForwardFold],
+                      config: WalkForwardConfig) -> str:
+    """Run-level metric status published with the aggregate numbers.
+
+    Never certifies without evidence (codex #406 r7/r8). Three cases
+    must stay distinct:
+
+    * a FAILED fold has no metrics — evidence of nothing, neither
+      endorsing nor tainting the run;
+    * an UNSTAMPED fold that DOES carry metrics (resumed from a
+      manifest predating the field) has numbers whose provenance is
+      unknown — the run cannot be called official on their strength;
+    * a stamped fold says what its numbers are.
+
+    The declared purpose can only make the verdict WORSE, never
+    better: a predictions-only run stays non-canonical whatever its
+    folds look like.
+    """
+    declared_relaxed = config.metrics_purpose == "predictions_only"
+    measured = [f for f in folds
+                if _fold_has_metrics(f)
+                and f.metric_status != FAILED_METRIC_STATUS]
+    statuses = {f.metric_status for f in measured}
+    if PREDICTIONS_ONLY_METRIC_STATUS in statuses or declared_relaxed:
+        return PREDICTIONS_ONLY_METRIC_STATUS
+    if not measured or None in statuses:
+        return UNVERIFIED_METRIC_STATUS
+    if statuses == {OFFICIAL_METRIC_STATUS}:
+        return OFFICIAL_METRIC_STATUS
+    return UNVERIFIED_METRIC_STATUS
 
 
 def build_aggregate_report(
@@ -91,10 +134,22 @@ def build_aggregate_report(
                 "duration_seconds": f.duration_seconds,
                 "started_at": f.started_at,
                 "finished_at": f.finished_at,
+                # codex #406 r4: this projection is MANUAL, so a field
+                # added to WalkForwardFold does not reach the report by
+                # itself — the r3 fix populated the dataclass while
+                # walk_forward_report.json still said nothing, and a
+                # consumer reading the established status field saw
+                # ordinary metrics.
+                "metric_status": f.metric_status,
             }
             for f in folds
         ],
         "aggregate_metrics": dict(aggregate_metrics),
+        # Run-level verdict, next to the numbers it qualifies: official
+        # ONLY when every fold says so. An unstamped fold (None,
+        # pre-field or synthetic) is NOT evidence of official.
+        "metric_status": run_metric_status(folds, config),
+        "metrics_purpose": config.metrics_purpose,
         "test_window_coverage": compute_test_window_coverage(folds),
         "num_folds": len(folds),
     }
