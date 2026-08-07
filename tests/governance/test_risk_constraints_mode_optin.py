@@ -44,7 +44,9 @@ def _wf_fold(status, idx=0):
         test_period=f"202{3 + idx}-01-01 ~ 202{3 + idx}-03-31",
         ic_1d=0.01, ic_5d=0.02, annualized_return=0.1,
         max_drawdown=-0.1, information_ratio=0.5,
-        prediction_shape=(10,), metric_status=status)
+        prediction_shape=((0,) if status == "failed_no_metrics"
+                          else (10,)),
+        metric_status=status)
 
 
 class RiskConstraintsModeOptIn(unittest.TestCase):
@@ -400,6 +402,50 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
                          prov_official["config"]["metrics_purpose"])
         self.assertEqual(CAMPAIGN_V1_EXPECTED,
                          prov_official["config"]["risk_constraints"])
+
+    def test_unstamped_fold_with_metrics_is_not_official(self) -> None:
+        # codex #406 r8: a fold RESUMED from a manifest written before
+        # WalkForwardFold.metric_status carries FINITE metrics and no
+        # stamp. r7 lumped it in with failed folds, so `measured` came
+        # out empty and an `official` declaration certified numbers no
+        # fold ever proved crossed the boundary. "No metrics" and
+        # "metrics of unknown provenance" are different things.
+        from src.core.canonical_backtest_contract import (
+            FAILED_METRIC_STATUS,
+            OFFICIAL_METRIC_STATUS,
+            PREDICTIONS_ONLY_METRIC_STATUS,
+            UNVERIFIED_METRIC_STATUS,
+        )
+        from src.core.walk_forward.aggregate import build_aggregate_report
+        from src.core.walk_forward.config import WalkForwardConfig
+
+        official_cfg = WalkForwardConfig()
+
+        def status_of(folds, cfg=official_cfg):
+            return build_aggregate_report(
+                config=cfg, folds=folds,
+                aggregate_metrics={})["metric_status"]
+
+        legacy = _wf_fold(None, 0)          # metrics, no stamp
+        stamped = _wf_fold(OFFICIAL_METRIC_STATUS, 1)
+        failed = _wf_fold(FAILED_METRIC_STATUS, 2)
+
+        # The r8 case: legacy folds cannot certify.
+        self.assertEqual(UNVERIFIED_METRIC_STATUS, status_of([legacy]))
+        self.assertEqual(UNVERIFIED_METRIC_STATUS,
+                         status_of([legacy, stamped]))
+        # A failed fold is still evidence of nothing, either way.
+        self.assertEqual(OFFICIAL_METRIC_STATUS,
+                         status_of([failed, stamped]))
+        self.assertEqual(UNVERIFIED_METRIC_STATUS, status_of([failed]))
+        # The declaration can only make it worse, never better.
+        relaxed = WalkForwardConfig(
+            risk_constraints_mode="warn_and_clip",
+            metrics_purpose="predictions_only")
+        self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
+                         status_of([legacy], relaxed))
+        self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
+                         status_of([stamped], relaxed))
 
     def test_only_the_baseline_preset_relaxes_the_reaction(self) -> None:
         # The leak guard: an official-metrics preset that quietly

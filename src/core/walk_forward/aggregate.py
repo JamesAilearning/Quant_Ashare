@@ -15,6 +15,7 @@ from src.core.canonical_backtest_contract import (
     FAILED_METRIC_STATUS,
     OFFICIAL_METRIC_STATUS,
     PREDICTIONS_ONLY_METRIC_STATUS,
+    UNVERIFIED_METRIC_STATUS,
 )
 from src.core.logger import get_logger
 from src.core.walk_forward._types import WalkForwardFold
@@ -35,29 +36,41 @@ _logger = get_logger(__name__)
 # Two engines, one schema: pipeline_report.json records the same fields the same way.
 
 
+def _fold_has_metrics(fold: WalkForwardFold) -> bool:
+    """A placeholder fold carries ``prediction_shape == (0,)``."""
+    return tuple(fold.prediction_shape) != (0,)
+
+
 def run_metric_status(folds: Sequence[WalkForwardFold],
-                config: WalkForwardConfig) -> str:
+                      config: WalkForwardConfig) -> str:
     """Run-level metric status published with the aggregate numbers.
 
-    Taken from what the folds ACTUALLY carry, falling back to the
-    declared purpose for folds that never reached the runner (NaN
-    placeholders, synthetic reports). Any non-official fold makes the
-    run non-official — mixing is not a way to launder the label.
+    Never certifies without evidence (codex #406 r7/r8). Three cases
+    must stay distinct:
+
+    * a FAILED fold has no metrics — evidence of nothing, neither
+      endorsing nor tainting the run;
+    * an UNSTAMPED fold that DOES carry metrics (resumed from a
+      manifest predating the field) has numbers whose provenance is
+      unknown — the run cannot be called official on their strength;
+    * a stamped fold says what its numbers are.
+
+    The declared purpose can only make the verdict WORSE, never
+    better: a predictions-only run stays non-canonical whatever its
+    folds look like.
     """
-    declared = (PREDICTIONS_ONLY_METRIC_STATUS
-                if config.metrics_purpose == "predictions_only"
-                else OFFICIAL_METRIC_STATUS)
-    # A fold that produced no metrics is NO EVIDENCE either way
-    # (codex #406 r7): it never reached the canonical boundary, so it
-    # can neither certify the run nor taint it. With nothing measured
-    # at all, the declared purpose is the only honest answer.
-    measured = {f.metric_status for f in folds
-                if f.metric_status not in (None, FAILED_METRIC_STATUS)}
-    if not measured:
-        return declared
-    return (OFFICIAL_METRIC_STATUS
-            if measured == {OFFICIAL_METRIC_STATUS}
-            else PREDICTIONS_ONLY_METRIC_STATUS)
+    declared_relaxed = config.metrics_purpose == "predictions_only"
+    measured = [f for f in folds
+                if _fold_has_metrics(f)
+                and f.metric_status != FAILED_METRIC_STATUS]
+    statuses = {f.metric_status for f in measured}
+    if PREDICTIONS_ONLY_METRIC_STATUS in statuses or declared_relaxed:
+        return PREDICTIONS_ONLY_METRIC_STATUS
+    if not measured or None in statuses:
+        return UNVERIFIED_METRIC_STATUS
+    if statuses == {OFFICIAL_METRIC_STATUS}:
+        return OFFICIAL_METRIC_STATUS
+    return UNVERIFIED_METRIC_STATUS
 
 
 def build_aggregate_report(

@@ -83,6 +83,13 @@ PREDICTIONS_ONLY_METRIC_STATUS = "predictions_only_non_canonical"
 # like evidence that the fold passed. It carries this instead, and
 # run-level status treats it as no evidence either way.
 FAILED_METRIC_STATUS = "failed_no_metrics"
+# codex #406 r8: a fold RESUMED from a manifest written before
+# ``WalkForwardFold.metric_status`` existed carries finite metrics and
+# no stamp. That is NOT the same as a failed fold: there are numbers,
+# but nothing proves they crossed the canonical boundary. Treating the
+# absence as "nothing to see" let an official declaration certify
+# them. The run says this instead — never ``official``.
+UNVERIFIED_METRIC_STATUS = "unverified_no_fold_stamp"
 CANONICAL_INPUT_REQUIRED_FIELDS = (
     "predictions_ref",
     "evaluation_start",

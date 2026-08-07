@@ -73,7 +73,9 @@
 canonical 边界，因此**没有指标可标记**；它
 SHALL NOT 被盖上运行声明的用途 —— 后者会让占位记录看起来像是该 fold 通过
 了边界。运行级判定 SHALL 将其视为**两边都不构成证据**：既不为整跑背书，
-也不污染整跑。运行级判定 SHALL 由**各 fold 实际携带的状态**推导，报告与
+也不污染整跑。而**携带指标却未盖章**的 fold（从旧 manifest 恢复）与之不同：
+它有数字但出处不明，SHALL NOT 被判为 official，运行级状态 SHALL 记为
+「未经验证」。声明的用途 SHALL 只能使判定更差，绝不更好。运行级判定 SHALL 由**各 fold 实际携带的状态**推导，报告与
 run catalog SHALL 使用同一个推导，声明的用途 SHALL NOT 单独构成 official
 的依据。
 
@@ -87,7 +89,15 @@ run catalog SHALL 使用同一个推导，声明的用途 SHALL NOT 单独构成
 
 - **GIVEN** 一次跑没有任何 fold 产出指标
 - **WHEN** 生成总表
-- **THEN** 运行级状态回落到声明的用途，而不以失败折作为 official 的证据
+- **THEN** 运行级状态为「未经验证」，而不以失败折作为 official 的证据
+
+#### Scenario: 有指标但无盖章的 fold 不足以背书
+
+- **GIVEN** 一次 official 跑，其折从早于本字段的 manifest 恢复：指标有限、
+  但没有状态盖章
+- **WHEN** 生成总表与 catalog 记录
+- **THEN** 运行级状态为「未经验证」而非 official —— "没有指标"与"指标出处
+  不明"是两回事，后者 SHALL NOT 被声明的用途背书
 
 #### Scenario: 混折不洗白
 
