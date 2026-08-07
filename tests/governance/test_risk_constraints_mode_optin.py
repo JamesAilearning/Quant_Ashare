@@ -180,9 +180,9 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
         src = inspect.getsource(BacktestRunner.run)
         self.assertIn("PREDICTIONS_ONLY_METRIC_STATUS", src)
         self.assertIn('metrics_purpose == "predictions_only"', src)
-        # And the purpose is readable from the artifact alone.
-        self.assertIn('rc_provenance["metrics_purpose"] = metrics_purpose',
-                      src)
+        # And the purpose is readable from the artifact alone —
+        # as a SIBLING of risk_constraints, never inside it (r5).
+        self.assertIn("metrics_purpose=metrics_purpose", src)
 
     def test_both_engine_reports_record_the_purpose(self) -> None:
         # codex #406 r2: walk-forward gets it via asdict(config) ONLY
@@ -308,6 +308,49 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
             aggregate_metrics={"mean_ic_1d": 0.01})
         self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
                          legacy["metric_status"])
+
+    def test_purpose_never_pollutes_the_constraint_mapping(self) -> None:
+        # codex #406 r5: the campaign veto compares
+        # provenance.config.risk_constraints by EXACT equality against
+        # the five calibration values, so ONE extra key there fails
+        # veto 4 on every newly generated csi800 fold and blocks
+        # promotion. Behavioural: build the real provenance and read
+        # the real mapping, and bind it to the veto's own expectation
+        # so the two cannot drift apart silently.
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        from src.core.backtest_runner import BacktestRunner
+        from src.core.risk_constraints import campaign_risk_constraints_v1
+
+        root = _Path(__file__).resolve().parents[2]
+        if str(root) not in _sys.path:
+            _sys.path.insert(0, str(root))
+        from scripts.research.csi800_campaign_attach_vetoes import (
+            CAMPAIGN_V1_EXPECTED,
+        )
+        c = campaign_risk_constraints_v1()
+        rc = {"max_per_name": c.max_per_name,
+              "max_per_board": c.max_per_board,
+              "cash_buffer_min": c.cash_buffer_min,
+              "max_leverage": c.max_leverage,
+              "mode": c.mode.value}
+        prov = BacktestRunner._build_provenance(
+            _bare_request(), topk=50, n_drop=5,
+            risk_constraints=rc, metrics_purpose="predictions_only")
+        cfg = prov["config"]
+        # EXACTLY the calibration schema the veto expects.
+        self.assertEqual(CAMPAIGN_V1_EXPECTED, cfg["risk_constraints"])
+        # …and the purpose is still readable, as a sibling.
+        self.assertEqual("predictions_only", cfg["metrics_purpose"])
+        # Recorded for official runs too — absence must not be the
+        # only signal.
+        prov_official = BacktestRunner._build_provenance(
+            _bare_request(), topk=50, n_drop=5, risk_constraints=rc)
+        self.assertEqual("official",
+                         prov_official["config"]["metrics_purpose"])
+        self.assertEqual(CAMPAIGN_V1_EXPECTED,
+                         prov_official["config"]["risk_constraints"])
 
     def test_only_the_baseline_preset_relaxes_the_reaction(self) -> None:
         # The leak guard: an official-metrics preset that quietly

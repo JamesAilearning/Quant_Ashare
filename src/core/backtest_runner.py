@@ -1008,17 +1008,17 @@ class BacktestRunner:
                 "max_leverage": risk_constraints.max_leverage,
                 "mode": risk_constraints.mode.value,
             }
-        # The purpose travels IN the artifact (codex #406 r2), not just
-        # through the call: a reader holding only the output must be
-        # able to tell whether these numbers passed RAISE.
-        rc_provenance = dict(rc_provenance or {})
-        rc_provenance["metrics_purpose"] = metrics_purpose
-        if not rc_provenance:
-            rc_provenance = None
         provenance = cls._build_provenance(
             request, topk, n_drop, st_mask_provenance,
             rebalance=rebalance_provenance,
             risk_constraints=rc_provenance,
+            # SIBLING of risk_constraints, never a key inside it
+            # (codex #406 r5): the campaign veto compares that mapping
+            # by EXACT equality against the five calibration values
+            # (csi800_campaign_attach_vetoes.CAMPAIGN_V1_EXPECTED), so
+            # an extra key there fails veto 4 on every new fold and
+            # blocks promotion. The purpose is not a calibration value.
+            metrics_purpose=metrics_purpose,
         )
 
         return CanonicalBacktestOutput(
@@ -1753,6 +1753,7 @@ class BacktestRunner:
         st_mask: Mapping[str, Any] | None = None,
         rebalance: Mapping[str, Any] | None = None,
         risk_constraints: Mapping[str, Any] | None = None,
+        metrics_purpose: str = "official",
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -1792,6 +1793,10 @@ class BacktestRunner:
         # safety, same pattern as ``rebalance`` above.
         if risk_constraints is not None:
             strategy_dict["risk_constraints"] = dict(risk_constraints)
+        # Always recorded, official runs included: a reader holding only
+        # the artifact must not have to infer the purpose from a key's
+        # absence (codex #406 r2/r5).
+        strategy_dict["metrics_purpose"] = metrics_purpose
         # Full request serialised via dataclass asdict — captures every field
         # including nested cost model and exchange config.
         request_dict = asdict(request)
