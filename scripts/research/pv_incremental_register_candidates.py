@@ -373,6 +373,8 @@ def ledger_entry(*, when: str, manifest_path: Path,
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.research.pv_incremental_console import make_console_safe
+    make_console_safe()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-dir", required=True,
                    help="Completed GP miner run directory.")

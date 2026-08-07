@@ -391,6 +391,12 @@ class ConsumerWiringTests(unittest.TestCase):
                       inspect.getsource(fw.main))
 
 
+_PV_TOOLS = ("pv_incremental_eval.py",
+             "pv_incremental_fwer_adjudication.py",
+             "pv_incremental_register_candidates.py",
+             "pv_incremental_baseline_export.py")
+
+
 class DirectCliInvocationTests(unittest.TestCase):
     """codex #403 r1: the documented invocation is
     ``python scripts/research/<tool>.py``, which puts scripts/research
@@ -405,9 +411,7 @@ class DirectCliInvocationTests(unittest.TestCase):
         # precisely the condition under test (and keeps this portable:
         # the CI runners are Linux).
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-        for tool in ("pv_incremental_eval.py",
-                     "pv_incremental_fwer_adjudication.py",
-                     "pv_incremental_register_candidates.py"):
+        for tool in _PV_TOOLS:
             proc = subprocess.run(
                 [sys.executable,
                  str(_PROJECT_ROOT / "scripts" / "research" / tool),
@@ -416,6 +420,46 @@ class DirectCliInvocationTests(unittest.TestCase):
                 cwd=str(_PROJECT_ROOT), env=env)
             self.assertEqual(0, proc.returncode,
                              f"{tool}: {proc.stderr[-400:]}")
+
+    def test_tools_survive_a_narrow_console_encoding(self) -> None:
+        # CI regression (#404): the runner's Windows console is cp1252,
+        # where the module docstring's `→` is unencodable — argparse
+        # died inside _print_message, so `--help` exited 1. The same
+        # exposure sits on the REFUSAL path, which is worse: every
+        # refusal message carries `—`, the exporter's carry `∪`/`②`
+        # and the registrar's ledger text is Chinese, so on a narrow
+        # console the operator would get a codec traceback INSTEAD of
+        # the reason the batch was refused. Pinned with ascii — the
+        # harshest encoding, and platform-independent so Linux catches
+        # it too.
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONIOENCODING"] = "ascii"
+        for tool in _PV_TOOLS:
+            proc = subprocess.run(
+                [sys.executable,
+                 str(_PROJECT_ROOT / "scripts" / "research" / tool),
+                 "--help"],
+                capture_output=True, text=True, errors="replace",
+                cwd=str(_PROJECT_ROOT), env=env)
+            self.assertEqual(0, proc.returncode,
+                             f"{tool} --help under ascii: "
+                             f"{proc.stderr[-400:]}")
+
+        # And a real refusal must still DELIVER its reason there.
+        proc = subprocess.run(
+            [sys.executable,
+             str(_PROJECT_ROOT / "scripts" / "research"
+                 / "pv_incremental_register_candidates.py"),
+             "--run-dir", "/pv-does-not-exist",
+             "--out-dir", "/pv-does-not-exist/out",
+             "--when", "2026-01-01T00:00:00+08:00"],
+            capture_output=True, text=True, errors="replace",
+            cwd=str(_PROJECT_ROOT), env=env)
+        self.assertEqual(2, proc.returncode, proc.stderr[-400:])
+        self.assertIn("REFUSED", proc.stderr)
+        self.assertIn("point --run-dir at a COMPLETED", proc.stderr)
 
 
 class ArtifactBaselineBindingTests(unittest.TestCase):
