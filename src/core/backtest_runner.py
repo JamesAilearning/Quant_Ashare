@@ -27,6 +27,7 @@ from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_METRIC_HELPER_CALLABLE,
     CANONICAL_OFFICIAL_METRIC_HELPER_PATH,
     OFFICIAL_METRIC_STATUS,
+    PREDICTIONS_ONLY_METRIC_STATUS,
     CanonicalBacktestContract,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
@@ -1007,6 +1008,13 @@ class BacktestRunner:
                 "max_leverage": risk_constraints.max_leverage,
                 "mode": risk_constraints.mode.value,
             }
+        # The purpose travels IN the artifact (codex #406 r2), not just
+        # through the call: a reader holding only the output must be
+        # able to tell whether these numbers passed RAISE.
+        rc_provenance = dict(rc_provenance or {})
+        rc_provenance["metrics_purpose"] = metrics_purpose
+        if not rc_provenance:
+            rc_provenance = None
         provenance = cls._build_provenance(
             request, topk, n_drop, st_mask_provenance,
             rebalance=rebalance_provenance,
@@ -1014,7 +1022,18 @@ class BacktestRunner:
         )
 
         return CanonicalBacktestOutput(
-            metric_status=OFFICIAL_METRIC_STATUS,
+            # RELABEL, not just refuse (codex #406 r2). metric_status is
+            # what pipeline_report / result artifacts / the walk-forward
+            # aggregate all copy as "these are canonical numbers", so a
+            # predictions-only run must not carry "official" there.
+            #
+            # ``official_backtest_path`` deliberately stays: it records
+            # WHICH code path executed, and the canonical path DID run.
+            # Rewriting it would misstate the execution — the honest
+            # signal is the status plus the provenance entry.
+            metric_status=(PREDICTIONS_ONLY_METRIC_STATUS
+                           if metrics_purpose == "predictions_only"
+                           else OFFICIAL_METRIC_STATUS),
             official_backtest_path=CANONICAL_OFFICIAL_BACKTEST_PATH,
             return_series=return_series,
             risk_analysis=risk_dict,

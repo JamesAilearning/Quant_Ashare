@@ -68,6 +68,13 @@ except ImportError:  # pragma: no cover - environment-dependent
     _QLIB_METRIC_HELPER_ANCHOR_AVAILABLE = False
 
 OFFICIAL_METRIC_STATUS = "official"
+# codex #406 r2: a run that TOLERATED risk-constraint violations must
+# not carry the official label. The clipping is post-trade, so its
+# return_series/risk_analysis/positions are qlib's UNCLIPPED execution
+# — the very numbers RAISE refuses. The status is what downstream
+# reports read as "these are canonical numbers", so the relaxed path
+# stamps this instead and every report inherits it.
+PREDICTIONS_ONLY_METRIC_STATUS = "predictions_only_non_canonical"
 CANONICAL_INPUT_REQUIRED_FIELDS = (
     "predictions_ref",
     "evaluation_start",

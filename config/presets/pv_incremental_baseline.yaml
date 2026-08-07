@@ -39,6 +39,10 @@ risk_constraints_calibration: "campaign_v1"
 # 过的那一套,故 tests/governance/test_risk_constraints_mode_optin.py 钉死了
 # 允许声明本键的 tracked preset 集合(仅本档)。
 risk_constraints_mode: "warn_and_clip"
+# 并须独立声明本跑的产物是什么（codex #406 r2）。刻意不从 mode 派生：派生等于
+# 把守卫的钥匙交给被守卫的那个开关——选了宽松 mode 就自动获得豁免，正是边界
+# 检查要堵的那条未 tracked 入口。声明也随报告落盘。
+metrics_purpose: "predictions_only"
 slippage_bps: 5.0
 overall_end: "2024-12-31"
 output_dir: "output/walk_forward/pv_incremental_baseline"

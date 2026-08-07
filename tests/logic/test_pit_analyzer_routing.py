@@ -437,6 +437,7 @@ class ReportRecordsRegistryTests(unittest.TestCase):
             risk_constraints_calibration="default",
             risk_constraint_scope="all_days",
             risk_constraints_mode="raise",
+            metrics_purpose="official",
         )
         signal_result = SignalAnalysisResult(
             ic_summary={1: {"mean_ic": 0.01, "std_ic": 0.02, "ir": 0.5, "num_days": 5}},

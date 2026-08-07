@@ -124,14 +124,80 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
         from src.core import pipeline
         from src.core.walk_forward import engine
         for mod in (pipeline, engine):
-            self.assertIn('metrics_purpose=("predictions_only"',
-                          inspect.getsource(mod), mod.__name__)
+            src = inspect.getsource(mod)
+            self.assertIn("metrics_purpose=config.metrics_purpose",
+                          src, mod.__name__)
+            # NEVER derived (codex #406 r2). The previous revision
+            # computed the purpose FROM risk_constraints_mode, which
+            # handed the guard's key to the very switch it guards:
+            # selecting the relaxed mode auto-granted the escape, so a
+            # private YAML needed only one line to bypass the boundary
+            # check entirely.
+            self.assertNotIn('metrics_purpose=("predictions_only"',
+                             src, mod.__name__)
         # The pipeline report projects its config BY HAND (walk-forward
         # gets it free via asdict) — codex #406 r2.
         psrc = inspect.getsource(pipeline)
         self.assertIn('"risk_constraints_mode": config.risk_constraints_mode',
                       psrc)
-        self.assertIn('"metrics_purpose": ("predictions_only"', psrc)
+        self.assertIn('"metrics_purpose": config.metrics_purpose', psrc)
+
+    def test_purpose_is_an_independent_declaration(self) -> None:
+        # Two engines: the relaxed reaction alone must NOT be enough.
+        from src.core.pipeline import PipelineConfig, PipelineError
+        from src.core.walk_forward.config import (
+            WalkForwardConfig,
+            WalkForwardError,
+        )
+        for cls, err, extra in ((PipelineConfig, PipelineError,
+                                 {"provider_uri": "x"}),
+                                (WalkForwardConfig, WalkForwardError, {})):
+            field = cls.__dataclass_fields__["metrics_purpose"]
+            self.assertEqual("official", field.default, cls.__name__)
+            with self.assertRaises(err, msg=cls.__name__):
+                cls(risk_constraints_mode="warn_and_clip", **extra)
+            with self.assertRaises(err, msg=cls.__name__):
+                cls(metrics_purpose="research", **extra)
+            # Both declared together is the only way through.
+            cfg = cls(risk_constraints_mode="warn_and_clip",
+                      metrics_purpose="predictions_only", **extra)
+            self.assertEqual("predictions_only", cfg.metrics_purpose)
+
+    def test_relaxed_runs_are_not_labelled_official(self) -> None:
+        # codex #406 r2: refusing un-declared callers is half of it —
+        # a DECLARED predictions-only run still returned
+        # metric_status="official", which pipeline_report, the result
+        # artifacts and the walk-forward aggregate all copy verbatim.
+        import inspect
+
+        from src.core.backtest_runner import BacktestRunner
+        from src.core.canonical_backtest_contract import (
+            OFFICIAL_METRIC_STATUS,
+            PREDICTIONS_ONLY_METRIC_STATUS,
+        )
+        self.assertNotEqual(OFFICIAL_METRIC_STATUS,
+                            PREDICTIONS_ONLY_METRIC_STATUS)
+        src = inspect.getsource(BacktestRunner.run)
+        self.assertIn("PREDICTIONS_ONLY_METRIC_STATUS", src)
+        self.assertIn('metrics_purpose == "predictions_only"', src)
+        # And the purpose is readable from the artifact alone.
+        self.assertIn('rc_provenance["metrics_purpose"] = metrics_purpose',
+                      src)
+
+    def test_both_engine_reports_record_the_purpose(self) -> None:
+        # codex #406 r2: walk-forward gets it via asdict(config) ONLY
+        # if it is a real config field; the pipeline projects by hand.
+        # A purpose recorded on one engine and absent on the other
+        # leaves the baseline artifact without its claimed marker.
+        import inspect
+        from dataclasses import fields
+
+        from src.core import pipeline
+        from src.core.walk_forward.config import WalkForwardConfig
+        self.assertIn("metrics_purpose",
+                      {f.name for f in fields(WalkForwardConfig)})
+        self.assertIn('"metrics_purpose": config.metrics_purpose',
+                      inspect.getsource(pipeline))
 
     def test_only_the_baseline_preset_relaxes_the_reaction(self) -> None:
         # The leak guard: an official-metrics preset that quietly
@@ -156,6 +222,8 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
             (_PROJECT_ROOT / "config" / "presets"
              / "pv_incremental_baseline.yaml").read_text(encoding="utf-8"))
         self.assertEqual("warn_and_clip", raw["risk_constraints_mode"])
+        # Independently declared, never derived.
+        self.assertEqual("predictions_only", raw["metrics_purpose"])
         # And it stays production-equivalent everywhere else.
         self.assertIs(True, raw["risk_constraints_enabled"])
         self.assertEqual("campaign_v1", raw["risk_constraints_calibration"])

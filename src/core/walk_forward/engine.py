@@ -901,9 +901,7 @@ class WalkForwardEngine:
                 if config.risk_constraints_enabled else None),
             # The purpose travels WITH the run (codex #406 r1): a
             # violation-tolerating run is never canonical by default.
-            metrics_purpose=("predictions_only"
-                             if config.risk_constraints_mode
-                             == "warn_and_clip" else "official"),
+            metrics_purpose=config.metrics_purpose,
             # R1 (codex #378 r3): explicit scope opt-in threads through;
             # the default "all_days" keeps the canonical full-map
             # contract byte-identical.

@@ -214,6 +214,15 @@ class PipelineConfig:
     # tests/governance/test_risk_constraints_mode_optin.py pins the
     # tracked presets that may declare it.
     risk_constraints_mode: str = "raise"
+    # What this run's numbers ARE (codex #406 r2). INDEPENDENT of
+    # risk_constraints_mode on purpose: deriving it from the relaxed
+    # mode would hand the guard's key to the very switch it guards —
+    # selecting warn_and_clip would auto-grant the escape, which is
+    # exactly the untracked-entry-path leak the boundary check exists
+    # to close. A caller wanting the relaxed reaction must ALSO state
+    # that the run's product is predictions, and that statement lands
+    # in the report.
+    metrics_purpose: str = "official"
     # R1 (codex #378 r3): see WalkForwardConfig — "all_days" preserves
     # the canonical full-map contract; "rebalance_days" is the campaign
     # opt-in (pipeline has no cadence machinery, so only "all_days" is
@@ -260,6 +269,20 @@ class PipelineConfig:
                 "risk_constraint_scope: the pipeline engine has no "
                 "rebalance-cadence machinery — only 'all_days' is "
                 f"valid; got {self.risk_constraint_scope!r}.")
+        if self.metrics_purpose not in ("official", "predictions_only"):
+            raise PipelineError(
+                "metrics_purpose must be 'official' or "
+                f"'predictions_only'; got {self.metrics_purpose!r}.")
+        if (self.risk_constraints_mode == "warn_and_clip"
+                and self.metrics_purpose != "predictions_only"):
+            raise PipelineError(
+                "risk_constraints_mode='warn_and_clip' tolerates "
+                "violations, but the clipping is POST-TRADE — the "
+                "returns are qlib's UNCLIPPED execution, i.e. the "
+                "numbers RAISE refuses. Declare "
+                "metrics_purpose='predictions_only' to state that this "
+                "run's product is out-of-fold predictions, or use "
+                "risk_constraints_mode='raise'.")
         if self.risk_constraints_mode not in ("raise", "warn_and_clip"):
             raise PipelineError(
                 "risk_constraints_mode must be 'raise' or "
@@ -649,9 +672,7 @@ class Pipeline:
                 if config.risk_constraints_enabled else None),
             # The purpose travels WITH the run (codex #406 r1): a
             # violation-tolerating run is never canonical by default.
-            metrics_purpose=("predictions_only"
-                             if config.risk_constraints_mode
-                             == "warn_and_clip" else "official"),
+            metrics_purpose=config.metrics_purpose,
             # R1 (codex #378 r3): explicit scope opt-in threads through;
             # the default "all_days" keeps the canonical full-map
             # contract byte-identical.
@@ -1075,9 +1096,7 @@ class Pipeline:
                 # violations raised or were tolerated — and the two
                 # engine schemas would diverge on the new key.
                 "risk_constraints_mode": config.risk_constraints_mode,
-                "metrics_purpose": ("predictions_only"
-                                    if config.risk_constraints_mode
-                                    == "warn_and_clip" else "official"),
+                "metrics_purpose": config.metrics_purpose,
             },
             "dataset": {
                 "train_shape": list(feature_result.train_shape),
