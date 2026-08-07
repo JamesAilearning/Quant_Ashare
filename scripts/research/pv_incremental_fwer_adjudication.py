@@ -39,6 +39,13 @@ import pandas as pd
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    # Direct-script execution puts scripts/research on sys.path,
+    # not the repo root — without this the shared registration
+    # import below dies with ModuleNotFoundError under the
+    # documented invocation (codex #403 r1). The evaluator and
+    # registrar already do this; this module did not.
+    sys.path.insert(0, str(PROJECT_ROOT))
 PLAN_PATH = PROJECT_ROOT / "docs" / "prereg" / "pv_incremental.yaml"
 PROTOCOL_ID = "pv_incremental_v1"
 
@@ -128,6 +135,37 @@ def block_bootstrap_bar(family: dict[str, pd.Series], *, n_boot: int,
                     "axis to resample; refusing rather than "
                     "computing the bar over a smaller family.")
     return float(np.quantile(maxima, quantile))
+
+
+def check_registration_binding(
+        artifacts: list[dict[str, Any]], completion: dict[str, Any],
+        registration_sha256: str) -> None:
+    """The evaluated inputs must be bound to THIS registration.
+
+    codex #404 r3: check_family_manifest matches ids, expressions and
+    orientations as SETS, so two ledger-authorised manifests differing
+    only in byte order satisfy it equally. Without this check the
+    verdict would be stamped with the digest of the manifest handed to
+    the ADJUDICATOR while the artifacts were produced under another —
+    a byte-level frozen-family contract that nothing actually holds.
+    """
+    sealed = completion.get("registration_manifest_sha256")
+    if sealed != registration_sha256:
+        raise PVFwerError(
+            f"the completion stamp seals registration "
+            f"{str(sealed)[:12]}… but the supplied manifest is "
+            f"{registration_sha256[:12]}… — these artifacts were not "
+            "evaluated under this registration; adjudicate the batch "
+            "against the manifest the evaluator consumed; refusing.")
+    off = sorted(str(a.get("candidate_id")) for a in artifacts
+                 if a.get("registration_manifest_sha256")
+                 != registration_sha256)
+    if off:
+        raise PVFwerError(
+            f"artifacts {off} carry a registration digest other than "
+            f"{registration_sha256[:12]}… (or none at all — a "
+            "pre-binding evaluator run); re-run the FULL batch under "
+            "the current registration; refusing.")
 
 
 def check_run_identity(artifacts: list[dict[str, Any]],
@@ -424,6 +462,8 @@ def adjudicate(plan: dict[str, Any],
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.research.pv_incremental_console import make_console_safe
+    make_console_safe()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--artifacts-dir", required=True)
     p.add_argument("--candidates", required=True,
@@ -456,11 +496,37 @@ def main(argv: list[str] | None = None) -> int:
             artifacts.append(json.loads(raw.decode("utf-8")))
             shas[path.name] = hashlib.sha256(raw).hexdigest()
         check_run_identity(artifacts, completion)
-        manifest = json.loads(
-            Path(args.candidates).read_text(encoding="utf-8"))
+        # Same freeze check at the adjudication boundary (codex #402
+        # r6): a manifest edited between evaluation and adjudication
+        # would silently redefine the family this verdict binds to.
+        from scripts.research.pv_incremental_registration import (
+            PVRegistrationError,
+            assert_baseline_matches_registration,
+            load_verified_manifest,
+        )
+        manifest_path = Path(args.candidates)
+        try:
+            # The VERIFIED snapshot, never a second read of the path
+            # (codex #404 r2).
+            registration, manifest = load_verified_manifest(manifest_path)
+            # The artifacts' own baseline must ALSO be the registered
+            # one (codex #403 r1): check_run_identity only proves the
+            # artifacts and their completion stamp agree with each
+            # other, so a self-consistent batch scored against another
+            # baseline — e.g. produced by the pre-enforcement
+            # evaluator — would otherwise be adjudicated as if it had
+            # competed against the registered one.
+            assert_baseline_matches_registration(
+                registration, str(completion.get("baseline_preds_sha256")))
+        except PVRegistrationError as exc:
+            raise PVFwerError(str(exc)) from exc
+        registration_sha = str(registration["manifest_sha256"])
+        check_registration_binding(artifacts, completion,
+                                   registration_sha)
         check_family_manifest(artifacts, manifest)
         result = adjudicate(plan, artifacts, seed=args.seed)
         result["plan_sha256"] = plan_sha
+        result["registration_manifest_sha256"] = registration_sha
         result["input_sha256"] = shas
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)

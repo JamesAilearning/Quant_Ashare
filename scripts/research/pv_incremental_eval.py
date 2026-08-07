@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import sys
@@ -341,17 +342,28 @@ def build_artifact(plan: dict[str, Any], candidate_id: str,
     }
 
 
-def _load_wide_parquet(path: Path, what: str) -> pd.DataFrame:
+def _load_wide_parquet(raw: bytes, what: str,
+                       origin: Path) -> pd.DataFrame:
+    """Parse the wide frame from the SAME bytes that were digested.
+
+    Re-opening the path after hashing it is check-then-use (codex #404
+    r2): a file replaced in between leaves the digest check passing
+    while the frame in memory holds different predictions, and the
+    artifacts would then record the registered digest over numbers
+    that never came from it.
+    """
     try:
-        frame = pd.read_parquet(path)
+        frame = pd.read_parquet(io.BytesIO(raw))
     except (OSError, ValueError) as exc:
-        raise PVEvalError(f"{what} unreadable: {path} ({exc})") from exc
+        raise PVEvalError(f"{what} unreadable: {origin} ({exc})") from exc
     if not isinstance(frame.index, pd.DatetimeIndex):
         raise PVEvalError(f"{what} must be date-indexed wide frame.")
     return frame
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.research.pv_incremental_console import make_console_safe
+    make_console_safe()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--candidates", required=True,
                    help="JSON file: [{candidate_id, expression}, ...] — "
@@ -373,10 +385,43 @@ def main(argv: list[str] | None = None) -> int:
         plan = load_frozen_plan()
         check_window_discipline(plan, args.window_start, args.window_end)
         baseline_path = Path(args.baseline_preds)
-        baseline_sha = hashlib.sha256(
-            baseline_path.read_bytes()).hexdigest()
+        try:
+            baseline_raw = baseline_path.read_bytes()
+        except OSError as exc:
+            raise PVEvalError(
+                f"baseline preds unreadable: {baseline_path} "
+                f"({exc})") from exc
+        baseline_sha = hashlib.sha256(baseline_raw).hexdigest()
         check_baseline_provenance(plan, baseline_path, baseline_sha)
-        baseline = _load_wide_parquet(baseline_path, "baseline preds")
+        baseline = _load_wide_parquet(baseline_raw, "baseline preds",
+                                      baseline_path)
+
+        # The registration is what makes the batch frozen (codex
+        # #402 r6): the manifest's bytes must still equal what the
+        # registrar recorded, and the baseline scored against must be
+        # the one the candidates were bred against.
+        from scripts.research.pv_incremental_registration import (
+            PVRegistrationError,
+            assert_baseline_matches_registration,
+            load_verified_manifest,
+        )
+        manifest_path = Path(args.candidates)
+        try:
+            # The VERIFIED snapshot, never a second read of the path.
+            registration, candidates = load_verified_manifest(
+                manifest_path)
+            assert_baseline_matches_registration(
+                registration, baseline_sha)
+            registration_sha = str(registration["manifest_sha256"])
+        except PVRegistrationError as exc:
+            raise PVEvalError(str(exc)) from exc
+        parsed = preflight_candidates(candidates, list(plan["fields"]))
+        # Everything above touches NO OOS data (codex #403 r2): the
+        # 2023-2024 window is a one-shot evaluation, so an
+        # unregistered, tampered or wrong-baseline batch must be
+        # refused BEFORE the provider is built and the panel read —
+        # otherwise an invalid batch has already consumed the
+        # protected window.
 
         from src.core.pit_wiring import build_pit_provider
         from src.factor_mining.evaluator import evaluate_expression
@@ -399,8 +444,6 @@ def main(argv: list[str] | None = None) -> int:
             close, lag=int(plan["metric"]["signal_to_execution_lag"]))
         min_names = int(plan["metric"]["min_names_per_day"])
 
-        candidates = json.loads(
-            Path(args.candidates).read_text(encoding="utf-8"))
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         # ONE run identity per invocation (codex #399 r5): every
@@ -417,7 +460,6 @@ def main(argv: list[str] | None = None) -> int:
         # artifacts on disk with no completion stamp — a dirty,
         # unadjudicable batch directory for exactly the bad-manifest
         # case these checks exist to refuse.
-        parsed = preflight_candidates(candidates, list(plan["fields"]))
 
         for cand, expr in zip(candidates, parsed, strict=True):
             factor = evaluate_expression(expr, panel)
@@ -447,6 +489,14 @@ def main(argv: list[str] | None = None) -> int:
             # WHICH orientation produced these numbers.
             artifact["orientation"] = int(cand["orientation"])
             artifact["run_id"] = run_id
+            # WHICH registration these numbers served (codex #404 r3).
+            # check_family_manifest compares CONTENT (ids,
+            # expressions, orientations) as sets, so two
+            # ledger-authorised manifests that differ only in byte
+            # order are interchangeable to it — the verdict would then
+            # be labelled with a digest no evaluated input was ever
+            # bound to. The digest travels with the numbers.
+            artifact["registration_manifest_sha256"] = registration_sha
             out = out_dir / f"{cand['candidate_id']}.json"
             try:
                 with open(out, "x", encoding="utf-8") as fh:
@@ -467,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
             "protocol_id": PROTOCOL_ID, "run_id": run_id,
             "candidate_ids": written,
             "baseline_preds_sha256": baseline_sha,
+            "registration_manifest_sha256": registration_sha,
         }
         (out_dir / "_batch_complete.json").write_text(
             json.dumps(completion, indent=2, ensure_ascii=False) + "\n",

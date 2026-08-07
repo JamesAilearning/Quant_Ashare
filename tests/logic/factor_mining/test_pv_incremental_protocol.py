@@ -429,6 +429,33 @@ class FwerTests(unittest.TestCase):
             with self.assertRaises(fw.PVFwerError, msg=label):
                 fw.check_run_identity(arts, comp)
 
+    def test_registration_binding(self) -> None:
+        # codex #404 r3: check_family_manifest matches ids /
+        # expressions / orientations as SETS, so two ledger-authorised
+        # manifests differing only in byte order satisfy it equally.
+        # The evaluated inputs must therefore carry the digest of the
+        # registration they actually served, or the verdict gets
+        # stamped with a digest nothing was bound to.
+        sha = "a" * 64
+        a = self._artifact("a", np.zeros(300) + 0.01)
+        b = self._artifact("b", np.zeros(300) + 0.01)
+        a["registration_manifest_sha256"] = sha
+        b["registration_manifest_sha256"] = sha
+        good = {"registration_manifest_sha256": sha}
+        fw.check_registration_binding([a, b], good, sha)      # bound
+        for label, arts, comp in (
+                ("stamp seals another registration", [a, b],
+                 {"registration_manifest_sha256": "b" * 64}),
+                ("stamp seals nothing", [a, b], {}),
+                ("artifact from another registration",
+                 [a, dict(b, registration_manifest_sha256="b" * 64)],
+                 good),
+                ("pre-binding artifact",
+                 [a, {k: v for k, v in b.items()
+                      if k != "registration_manifest_sha256"}], good)):
+            with self.assertRaises(fw.PVFwerError, msg=label):
+                fw.check_registration_binding(arts, comp, sha)
+
     def test_stale_orthogonality_boolean_refused(self) -> None:
         # codex #399 r4: the boolean is DERIVED from rho vs the frozen
         # band — a stale True over an out-of-band rho refuses.

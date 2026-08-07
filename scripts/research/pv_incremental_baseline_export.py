@@ -849,6 +849,8 @@ def build_sidecar(plan: dict[str, Any], *, wide: pd.DataFrame,
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.research.pv_incremental_console import make_console_safe
+    make_console_safe()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-dir", required=True,
                    help="Completed walk-forward run directory.")

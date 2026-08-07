@@ -373,6 +373,8 @@ def ledger_entry(*, when: str, manifest_path: Path,
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.research.pv_incremental_console import make_console_safe
+    make_console_safe()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-dir", required=True,
                    help="Completed GP miner run directory.")
@@ -437,7 +439,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             for path, text in writes:
                 try:
-                    with open(path, "x", encoding="utf-8") as fh:
+                    # newline='' disables text-mode newline
+                    # translation: on Windows the default rewrites
+                    # every LF as CRLF, so the bytes ON DISK would
+                    # differ from the payload the digest was taken
+                    # over, and every consumer's freeze check would
+                    # reject a perfectly good registration.
+                    with open(path, "x", encoding="utf-8",
+                              newline="") as fh:
                         created.append(path)
                         fh.write(text)
                 except FileExistsError as exc:
