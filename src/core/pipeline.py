@@ -1065,6 +1065,10 @@ class Pipeline:
             "git_commit": gp.get("commit"),
             "git_dirty": gp.get("dirty"),
             "metric_status": backtest_output.metric_status,
+            # Mirrors walk-forward's top level (codex #406 r4): the
+            # verdict and WHY it is that verdict sit together, readable
+            # without descending into the config block.
+            "metrics_purpose": config.metrics_purpose,
             "official_backtest_path": backtest_output.official_backtest_path,
             "config": {
                 "instruments": config.instruments,

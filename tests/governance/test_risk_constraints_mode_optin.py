@@ -217,6 +217,10 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
         # The fold carries it.
         self.assertIn("metric_status",
                       {f.name for f in fields(WalkForwardFold)})
+        # Source-shaped, and that is its LIMIT (codex #406 r4): it
+        # proves the wiring exists, never that the artifact carries
+        # the value. test_report_actually_carries_the_status above is
+        # the one that checks the output.
         self.assertIn("metric_status=backtest_output.metric_status",
                       inspect.getsource(engine))
 
@@ -243,6 +247,67 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
         from src.core.walk_forward import engine
         src = inspect.getsource(engine)
         self.assertIn("metric_status=_run_metric_status(config)", src)
+
+    def test_report_actually_carries_the_status(self) -> None:
+        # codex #406 r4, and the lesson of this whole PR: the r3 pins
+        # asserted the SOURCE TEXT and passed while the field never
+        # reached walk_forward_report.json — build_aggregate_report
+        # projects WalkForwardFold BY HAND. Assert on the produced
+        # artifact, not on the code that is supposed to produce it.
+        from src.core.canonical_backtest_contract import (
+            OFFICIAL_METRIC_STATUS,
+            PREDICTIONS_ONLY_METRIC_STATUS,
+        )
+        from src.core.walk_forward._types import WalkForwardFold
+        from src.core.walk_forward.aggregate import build_aggregate_report
+        from src.core.walk_forward.config import WalkForwardConfig
+
+        def _fold(status: str | None,
+                  idx: int = 0) -> WalkForwardFold:
+            return WalkForwardFold(
+                fold_index=idx,
+                train_period="2020-01-01 ~ 2021-12-31",
+                valid_period="2022-01-01 ~ 2022-06-30",
+                test_period=f"202{3 + idx}-01-01 ~ 202{3 + idx}-03-31",
+                ic_1d=0.01, ic_5d=0.02,
+                annualized_return=0.1, max_drawdown=-0.1,
+                information_ratio=0.5, prediction_shape=(10,),
+                metric_status=status)
+
+        relaxed = WalkForwardConfig(
+            risk_constraints_mode="warn_and_clip",
+            metrics_purpose="predictions_only")
+        report = build_aggregate_report(
+            config=relaxed, folds=[_fold(PREDICTIONS_ONLY_METRIC_STATUS)],
+            aggregate_metrics={"mean_ic_1d": 0.01})
+        self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
+                         report["metric_status"])
+        self.assertEqual("predictions_only", report["metrics_purpose"])
+        self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
+                         report["folds"][0]["metric_status"])
+
+        official = build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=[_fold(OFFICIAL_METRIC_STATUS)],
+            aggregate_metrics={"mean_ic_1d": 0.01})
+        self.assertEqual(OFFICIAL_METRIC_STATUS, official["metric_status"])
+
+        # One non-official fold taints the run: mixing must not launder
+        # the label.
+        mixed = build_aggregate_report(
+            config=WalkForwardConfig(),
+            folds=[_fold(OFFICIAL_METRIC_STATUS, 0),
+                   _fold(PREDICTIONS_ONLY_METRIC_STATUS, 1)],
+            aggregate_metrics={"mean_ic_1d": 0.01})
+        self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
+                         mixed["metric_status"])
+
+        # An UNSTAMPED fold under a relaxed run must not read official.
+        legacy = build_aggregate_report(
+            config=relaxed, folds=[_fold(None)],
+            aggregate_metrics={"mean_ic_1d": 0.01})
+        self.assertEqual(PREDICTIONS_ONLY_METRIC_STATUS,
+                         legacy["metric_status"])
 
     def test_only_the_baseline_preset_relaxes_the_reaction(self) -> None:
         # The leak guard: an official-metrics preset that quietly

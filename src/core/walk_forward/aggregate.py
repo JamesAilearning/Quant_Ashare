@@ -11,6 +11,10 @@ from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from src.core._json_utils import _sanitize_for_json
+from src.core.canonical_backtest_contract import (
+    OFFICIAL_METRIC_STATUS,
+    PREDICTIONS_ONLY_METRIC_STATUS,
+)
 from src.core.logger import get_logger
 from src.core.walk_forward._types import WalkForwardFold
 from src.core.walk_forward.config import WalkForwardError
@@ -28,6 +32,24 @@ _logger = get_logger(__name__)
 # src.core.git_provenance and is captured by each ENGINE at RUN START (not at report-write
 # time — a run can take hours / resume, and HEAD can advance mid-run), then injected here.
 # Two engines, one schema: pipeline_report.json records the same fields the same way.
+
+
+def _run_status(folds: list[WalkForwardFold],
+                config: WalkForwardConfig) -> str:
+    """Run-level metric status published with the aggregate numbers.
+
+    Taken from what the folds ACTUALLY carry, falling back to the
+    declared purpose for folds that never reached the runner (NaN
+    placeholders, synthetic reports). Any non-official fold makes the
+    run non-official — mixing is not a way to launder the label.
+    """
+    declared = (PREDICTIONS_ONLY_METRIC_STATUS
+                if config.metrics_purpose == "predictions_only"
+                else OFFICIAL_METRIC_STATUS)
+    seen = {f.metric_status or declared for f in folds}
+    if seen == {OFFICIAL_METRIC_STATUS} or not seen:
+        return declared if not seen else OFFICIAL_METRIC_STATUS
+    return PREDICTIONS_ONLY_METRIC_STATUS
 
 
 def build_aggregate_report(
@@ -91,10 +113,22 @@ def build_aggregate_report(
                 "duration_seconds": f.duration_seconds,
                 "started_at": f.started_at,
                 "finished_at": f.finished_at,
+                # codex #406 r4: this projection is MANUAL, so a field
+                # added to WalkForwardFold does not reach the report by
+                # itself — the r3 fix populated the dataclass while
+                # walk_forward_report.json still said nothing, and a
+                # consumer reading the established status field saw
+                # ordinary metrics.
+                "metric_status": f.metric_status,
             }
             for f in folds
         ],
         "aggregate_metrics": dict(aggregate_metrics),
+        # Run-level verdict, next to the numbers it qualifies: official
+        # ONLY when every fold says so. An unstamped fold (None,
+        # pre-field or synthetic) is NOT evidence of official.
+        "metric_status": _run_status(folds, config),
+        "metrics_purpose": config.metrics_purpose,
         "test_window_coverage": compute_test_window_coverage(folds),
         "num_folds": len(folds),
     }
