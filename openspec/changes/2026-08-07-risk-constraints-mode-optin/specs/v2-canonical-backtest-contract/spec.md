@@ -52,8 +52,8 @@
    `predictions_only_non_canonical`，而非 `official`；
 2. 该状态 SHALL 逐层传递到 per-fold 记录、总表报告顶层、以及 run catalog
    记录 —— 任一层缺失都会让消费者把这批数字读成普通结果；
-3. 任一 fold 非 official SHALL 使整跑非 official（混折不得洗白标签）；
-   未盖章的 fold SHALL NOT 被视为 official 的证据；
+3. 任一**有指标**的 fold 非 official SHALL 使整跑非 official（混折不得
+   洗白标签）；未盖章的 fold SHALL NOT 被视为 official 的证据；
 4. `metrics_purpose` SHALL 与状态同处记录（含官方跑），使"键不存在"不成为
    判断用途的唯一信号；
 5. `official_backtest_path` SHALL 保持记录**实际执行的代码路径**，不因本
@@ -65,6 +65,29 @@
 - **WHEN** 读取 `walk_forward_report.json` 与 `output/runs/_index.jsonl`
 - **THEN** 两者的 `metric_status` 均为 `predictions_only_non_canonical`，
   且均带 `metrics_purpose`
+
+### Requirement: 失败的 fold SHALL NOT 被标为 official
+
+失败的 fold SHALL 携带显式的失败状态，SHALL NOT 被标为 official。在
+`BacktestRunner.run` 返回前失败的 fold（训练/预测/回测阶段）从未跨过
+canonical 边界，因此**没有指标可标记**；它
+SHALL NOT 被盖上运行声明的用途 —— 后者会让占位记录看起来像是该 fold 通过
+了边界。运行级判定 SHALL 将其视为**两边都不构成证据**：既不为整跑背书，
+也不污染整跑。运行级判定 SHALL 由**各 fold 实际携带的状态**推导，报告与
+run catalog SHALL 使用同一个推导，声明的用途 SHALL NOT 单独构成 official
+的依据。
+
+#### Scenario: 失败折不为整跑背书
+
+- **GIVEN** 一次 official 跑，其中一折失败、其余折为 official
+- **WHEN** 生成总表与 catalog 记录
+- **THEN** 失败折自身记为失败状态，整跑仍为 official（部分完成）
+
+#### Scenario: 全部失败不得自称 official
+
+- **GIVEN** 一次跑没有任何 fold 产出指标
+- **WHEN** 生成总表
+- **THEN** 运行级状态回落到声明的用途，而不以失败折作为 official 的证据
 
 #### Scenario: 混折不洗白
 

@@ -75,6 +75,14 @@ OFFICIAL_METRIC_STATUS = "official"
 # reports read as "these are canonical numbers", so the relaxed path
 # stamps this instead and every report inherits it.
 PREDICTIONS_ONLY_METRIC_STATUS = "predictions_only_non_canonical"
+# codex #406 r7: a fold that died before BacktestRunner.run returned
+# (training, prediction, backtest) never crossed the canonical
+# boundary, so it has NO metrics to label. Stamping it with the
+# declared purpose — which #406 r3 did to keep ``None`` from reading
+# as official — asserts the opposite: it makes the placeholder look
+# like evidence that the fold passed. It carries this instead, and
+# run-level status treats it as no evidence either way.
+FAILED_METRIC_STATUS = "failed_no_metrics"
 CANONICAL_INPUT_REQUIRED_FIELDS = (
     "predictions_ref",
     "evaluation_start",

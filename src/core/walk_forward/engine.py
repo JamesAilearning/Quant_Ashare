@@ -28,8 +28,7 @@ from src.core.attribution_sleeve_loader import (
 )
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
-    OFFICIAL_METRIC_STATUS,
-    PREDICTIONS_ONLY_METRIC_STATUS,
+    FAILED_METRIC_STATUS,
     CanonicalAccountConfig,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
@@ -71,6 +70,7 @@ from src.core.walk_forward._types import WalkForwardFold, WalkForwardResult
 from src.core.walk_forward.aggregate import (
     compute_aggregate,
     extract_cost_metrics,
+    run_metric_status,
     write_aggregate_report,
     write_fold_report,
     write_positions,
@@ -85,16 +85,6 @@ from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatas
 _logger = get_logger(__name__)
 
 
-def _run_metric_status(config: WalkForwardConfig) -> str:
-    """Run-level metric status implied by the declared purpose.
-
-    Mirrors what ``BacktestRunner.run`` stamps per fold, so the
-    aggregate report and the run catalog carry the same verdict as the
-    per-fold artifacts (codex #406 r3).
-    """
-    return (PREDICTIONS_ONLY_METRIC_STATUS
-            if config.metrics_purpose == "predictions_only"
-            else OFFICIAL_METRIC_STATUS)
 
 
 class WalkForwardEngine:
@@ -288,7 +278,7 @@ class WalkForwardEngine:
                     max_drawdown=float("nan"),
                     information_ratio=float("nan"),
                     prediction_shape=(0,),
-                    metric_status=_run_metric_status(config),
+                    metric_status=FAILED_METRIC_STATUS,
                 )
                 fold_failed = True
 
@@ -471,7 +461,11 @@ class WalkForwardEngine:
                 # lands in output/runs/_index.jsonl as an ordinary
                 # ``ok`` record and its RAISE-refused returns become
                 # indistinguishable from official ones.
-                metric_status=_run_metric_status(config),
+                # One derivation for one verdict (codex #406 r7):
+                # the catalog reads what the FOLDS carry, exactly
+                # as the aggregate report does — a declared
+                # purpose is not evidence that folds passed.
+                metric_status=run_metric_status(folds, config),
                 metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,

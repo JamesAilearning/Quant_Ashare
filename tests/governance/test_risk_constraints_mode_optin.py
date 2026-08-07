@@ -34,6 +34,19 @@ def _bare_request() -> object:
     return _make_request()
 
 
+def _wf_fold(status, idx=0):
+    """A WalkForwardFold with a valid test_period for the aggregator."""
+    from src.core.walk_forward._types import WalkForwardFold
+    return WalkForwardFold(
+        fold_index=idx,
+        train_period="2020-01-01 ~ 2021-12-31",
+        valid_period="2022-01-01 ~ 2022-06-30",
+        test_period=f"202{3 + idx}-01-01 ~ 202{3 + idx}-03-31",
+        ic_1d=0.01, ic_5d=0.02, annualized_return=0.1,
+        max_drawdown=-0.1, information_ratio=0.5,
+        prediction_shape=(10,), metric_status=status)
+
+
 class RiskConstraintsModeOptIn(unittest.TestCase):
     def test_default_is_raise_on_both_engines(self) -> None:
         # Two engines, one schema: a default that drifted on one side
@@ -238,15 +251,51 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
             self.assertIn("metrics_purpose=config.metrics_purpose",
                           inspect.getsource(mod), mod.__name__)
 
-    def test_failed_fold_placeholder_is_not_labelled_official(self) -> None:
-        # A NaN placeholder fold never reaches the runner, so it has no
-        # stamped status of its own — defaulting it to official would
-        # relabel a predictions-only run's failure as canonical.
+    def test_failed_fold_is_never_stamped_official(self) -> None:
+        # codex #406 r7 — and this one I created in r3: stamping the
+        # NaN placeholder with the DECLARED purpose kept ``None`` from
+        # reading as official, but under an official run it asserted
+        # the opposite, marking a fold that never reached the
+        # canonical boundary as having passed it. A failed fold has no
+        # metrics, so it is evidence of nothing.
         import inspect
 
+        from src.core.canonical_backtest_contract import (
+            FAILED_METRIC_STATUS,
+            OFFICIAL_METRIC_STATUS,
+            PREDICTIONS_ONLY_METRIC_STATUS,
+        )
         from src.core.walk_forward import engine
+        from src.core.walk_forward.aggregate import build_aggregate_report
+        from src.core.walk_forward.config import WalkForwardConfig
         src = inspect.getsource(engine)
-        self.assertIn("metric_status=_run_metric_status(config)", src)
+        self.assertIn("metric_status=FAILED_METRIC_STATUS", src)
+        self.assertNotIn("metric_status=_run_metric_status(config)", src)
+
+        # Behavioural: a failed fold neither certifies nor taints.
+        fail = _wf_fold(FAILED_METRIC_STATUS, 0)
+        ok = _wf_fold(OFFICIAL_METRIC_STATUS, 1)
+        official_cfg = WalkForwardConfig()
+        # Surviving official folds still make an (partial) official run.
+        self.assertEqual(
+            OFFICIAL_METRIC_STATUS,
+            build_aggregate_report(
+                config=official_cfg, folds=[fail, ok],
+                aggregate_metrics={})["metric_status"])
+        # But a run where NOTHING was measured cannot claim more than
+        # its declared purpose.
+        self.assertEqual(
+            PREDICTIONS_ONLY_METRIC_STATUS,
+            build_aggregate_report(
+                config=WalkForwardConfig(
+                    risk_constraints_mode="warn_and_clip",
+                    metrics_purpose="predictions_only"),
+                folds=[fail], aggregate_metrics={})["metric_status"])
+        # And the failed fold says so in the report itself.
+        rep = build_aggregate_report(config=official_cfg, folds=[fail],
+                                     aggregate_metrics={})
+        self.assertEqual(FAILED_METRIC_STATUS,
+                         rep["folds"][0]["metric_status"])
 
     def test_report_actually_carries_the_status(self) -> None:
         # codex #406 r4, and the lesson of this whole PR: the r3 pins

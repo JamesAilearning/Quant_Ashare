@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PureWindowsPath
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.core._json_utils import _sanitize_for_json
 from src.core.canonical_backtest_contract import (
+    FAILED_METRIC_STATUS,
     OFFICIAL_METRIC_STATUS,
     PREDICTIONS_ONLY_METRIC_STATUS,
 )
@@ -34,7 +35,7 @@ _logger = get_logger(__name__)
 # Two engines, one schema: pipeline_report.json records the same fields the same way.
 
 
-def _run_status(folds: list[WalkForwardFold],
+def run_metric_status(folds: Sequence[WalkForwardFold],
                 config: WalkForwardConfig) -> str:
     """Run-level metric status published with the aggregate numbers.
 
@@ -46,10 +47,17 @@ def _run_status(folds: list[WalkForwardFold],
     declared = (PREDICTIONS_ONLY_METRIC_STATUS
                 if config.metrics_purpose == "predictions_only"
                 else OFFICIAL_METRIC_STATUS)
-    seen = {f.metric_status or declared for f in folds}
-    if seen == {OFFICIAL_METRIC_STATUS} or not seen:
-        return declared if not seen else OFFICIAL_METRIC_STATUS
-    return PREDICTIONS_ONLY_METRIC_STATUS
+    # A fold that produced no metrics is NO EVIDENCE either way
+    # (codex #406 r7): it never reached the canonical boundary, so it
+    # can neither certify the run nor taint it. With nothing measured
+    # at all, the declared purpose is the only honest answer.
+    measured = {f.metric_status for f in folds
+                if f.metric_status not in (None, FAILED_METRIC_STATUS)}
+    if not measured:
+        return declared
+    return (OFFICIAL_METRIC_STATUS
+            if measured == {OFFICIAL_METRIC_STATUS}
+            else PREDICTIONS_ONLY_METRIC_STATUS)
 
 
 def build_aggregate_report(
@@ -127,7 +135,7 @@ def build_aggregate_report(
         # Run-level verdict, next to the numbers it qualifies: official
         # ONLY when every fold says so. An unstamped fold (None,
         # pre-field or synthetic) is NOT evidence of official.
-        "metric_status": _run_status(folds, config),
+        "metric_status": run_metric_status(folds, config),
         "metrics_purpose": config.metrics_purpose,
         "test_window_coverage": compute_test_window_coverage(folds),
         "num_folds": len(folds),
