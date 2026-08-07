@@ -18,9 +18,11 @@ that makes the one-shot OOS window meaningful.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +149,36 @@ def _committed_ledger_bytes(ledger_path: Path) -> bytes:
     return committed.stdout
 
 
+@contextlib.contextmanager
+def _classified_shape(what: str) -> Iterator[None]:
+    """Any SHAPE violation in an untrusted document is a refusal.
+
+    codex walked this family one key at a time — the sidecar's JSON
+    (#404 r2), the ledger's YAML (r2), ``entries: 1`` (r3),
+    ``artifacts: 1`` (r4). Each is the same defect: a scalar where a
+    container belongs raises TypeError/AttributeError, which sails
+    straight through the consumer CLIs' PVRegistrationError-only
+    handler and hands the operator a traceback instead of the
+    documented REFUSED result. Guarding keys one at a time just
+    invites the next key, so the read of the document AS A WHOLE is
+    classified here.
+
+    Deliberate refusals pass through unchanged, and the block this
+    wraps stays limited to reading the document's shape — it must not
+    grow to cover computation, or a genuine bug would be reported as
+    a malformed input.
+    """
+    try:
+        yield
+    except PVRegistrationError:
+        raise
+    except (TypeError, AttributeError, ValueError, KeyError,
+            IndexError) as exc:
+        raise PVRegistrationError(
+            f"{what} is malformed ({type(exc).__name__}: {exc}) — the "
+            "registration authority cannot be read; refusing.") from exc
+
+
 def _ledger_entries(ledger_path: Path) -> list[dict[str, Any]]:
     """Parsed entries of the COMMITTED ledger."""
     import yaml
@@ -198,13 +230,26 @@ def ledger_entry_for(manifest_sha256: str,
     comparison would run against a baseline the GP never competed
     with.
     """
+    where = f"the committed campaign ledger {ledger_path.name}"
     for entry in _ledger_entries(ledger_path):
-        prov = entry.get("gp_provenance")
-        recorded = (prov.get("manifest_sha256")
-                    if isinstance(prov, dict) else None)
-        artifact_digests = {a.split("#sha256=", 1)[1].strip()
-                            for a in (entry.get("artifacts") or [])
-                            if isinstance(a, str) and "#sha256=" in a}
+        with _classified_shape(where):
+            prov = entry.get("gp_provenance")
+            recorded = (prov.get("manifest_sha256")
+                        if isinstance(prov, dict) else None)
+            raw_artifacts = entry.get("artifacts") or []
+            if not isinstance(raw_artifacts, (list, tuple)):
+                # Silently treating it as empty would let a damaged
+                # authority record still authorise on its surviving
+                # half — the ledger is the thing being authenticated
+                # against, so a malformed part of it refuses.
+                raise PVRegistrationError(
+                    f"a committed ledger entry has artifacts of type "
+                    f"{type(raw_artifacts).__name__}, not a list — "
+                    "the registration authority is damaged; refusing.")
+            artifact_digests = {a.split("#sha256=", 1)[1].strip()
+                                for a in raw_artifacts
+                                if isinstance(a, str)
+                                and "#sha256=" in a}
         if isinstance(prov, dict) and recorded == manifest_sha256:
             return prov
         # The artifact hash CORROBORATES, it never authorises (codex

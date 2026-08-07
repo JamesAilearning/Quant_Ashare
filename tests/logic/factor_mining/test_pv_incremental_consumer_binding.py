@@ -407,6 +407,52 @@ class MalformedInputsAreClassifiedRefusals(_RestoresRepoRoot):
                 reg.load_registration(manifest, ledger)
             self.assertIn("not a list", str(ctx.exception))
 
+    def test_every_scalar_shaped_ledger_key_refuses(self) -> None:
+        # The FAMILY, not one instance (codex #404 r2-r4 walked it key
+        # by key: entries, artifacts, ...). Every key of a real ledger
+        # entry is replaced with a scalar in turn; each must produce a
+        # classified refusal, never a TypeError/AttributeError that
+        # sails through the CLIs' PVRegistrationError-only handler.
+        with tempfile.TemporaryDirectory() as d:
+            manifest, _ = _registered_batch(Path(d))
+            ledger = _authorised_ledger(Path(d), manifest)
+            pristine = ledger.read_text(encoding="utf-8")
+            keys = sorted(
+                yaml.safe_load(pristine)["entries"][0].keys())
+            self.assertIn("artifacts", keys)
+            self.assertIn("gp_provenance", keys)
+            for key in keys:
+                for scalar in (1, True, "x"):
+                    doc = yaml.safe_load(pristine)
+                    doc["entries"][0][key] = scalar
+                    ledger.write_text(
+                        yaml.safe_dump(doc, sort_keys=False,
+                                       allow_unicode=True),
+                        encoding="utf-8")
+                    _recommit(ledger)
+                    with self.subTest(key=key, scalar=scalar):
+                        # The contract is CLASSIFICATION, not refusal:
+                        # keys the authority never reads may legally
+                        # still authorise. What must never happen is
+                        # an unclassified exception — any escaping
+                        # TypeError/AttributeError fails here.
+                        try:
+                            reg.load_registration(manifest, ledger)
+                        except reg.PVRegistrationError:
+                            pass
+                # The two the authority DOES read must refuse outright.
+                if key in ("artifacts", "gp_provenance"):
+                    doc = yaml.safe_load(pristine)
+                    doc["entries"][0][key] = 1
+                    ledger.write_text(
+                        yaml.safe_dump(doc, sort_keys=False,
+                                       allow_unicode=True),
+                        encoding="utf-8")
+                    _recommit(ledger)
+                    with self.subTest(key=key, refuses=True):
+                        with self.assertRaises(reg.PVRegistrationError):
+                            reg.load_registration(manifest, ledger)
+
     def test_malformed_committed_ledger_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             manifest, _ = _registered_batch(Path(d))
