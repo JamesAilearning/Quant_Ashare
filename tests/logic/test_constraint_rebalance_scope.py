@@ -129,6 +129,7 @@ def test_pipeline_report_config_mirrors_risk_constraint_scope() -> None:
         risk_constraints_enabled=False,
         risk_constraints_calibration="default",
         risk_constraint_scope="all_days",
+        risk_constraints_mode="raise",
         delisted_registry_path="",
     )
     feature_result = SimpleNamespace(

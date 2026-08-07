@@ -647,6 +647,11 @@ class Pipeline:
                     else MinimalRiskConstraints(),
                     mode=RiskConstraintMode(config.risk_constraints_mode))
                 if config.risk_constraints_enabled else None),
+            # The purpose travels WITH the run (codex #406 r1): a
+            # violation-tolerating run is never canonical by default.
+            metrics_purpose=("predictions_only"
+                             if config.risk_constraints_mode
+                             == "warn_and_clip" else "official"),
             # R1 (codex #378 r3): explicit scope opt-in threads through;
             # the default "all_days" keeps the canonical full-map
             # contract byte-identical.
@@ -1064,6 +1069,15 @@ class Pipeline:
                 "risk_constraints_enabled": config.risk_constraints_enabled,
                 "risk_constraints_calibration": config.risk_constraints_calibration,
                 "risk_constraint_scope": config.risk_constraint_scope,
+                # codex #406 r2: walk-forward gets these free via
+                # asdict(config); the pipeline projection is manual, so
+                # a single-fold report could not reproduce whether
+                # violations raised or were tolerated — and the two
+                # engine schemas would diverge on the new key.
+                "risk_constraints_mode": config.risk_constraints_mode,
+                "metrics_purpose": ("predictions_only"
+                                    if config.risk_constraints_mode
+                                    == "warn_and_clip" else "official"),
             },
             "dataset": {
                 "train_shape": list(feature_result.train_shape),

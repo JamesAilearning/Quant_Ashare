@@ -26,6 +26,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 _ALLOWED_WARN_AND_CLIP = {"pv_incremental_baseline.yaml"}
 
 
+def _bare_request() -> object:
+    """A valid request, borrowed from the runner's own test helper —
+    the guard under test runs right after input validation, so the
+    request must pass that first."""
+    from tests.logic.test_backtest_runner import _make_request
+    return _make_request()
+
+
 class RiskConstraintsModeOptIn(unittest.TestCase):
     def test_default_is_raise_on_both_engines(self) -> None:
         # Two engines, one schema: a default that drifted on one side
@@ -62,6 +70,68 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
             self.assertIn(
                 "mode=RiskConstraintMode(config.risk_constraints_mode)",
                 src, mod.__name__)
+
+    def test_runtime_boundary_refuses_official_warn_and_clip(self) -> None:
+        # codex #406 r1: the preset scan below cannot protect the other
+        # entry paths — personal overrides (my_*.yaml / *.local.yaml)
+        # are gitignored BY DESIGN, and tests / replay scripts /
+        # single-fold callers construct the runner directly. The
+        # refusal therefore lives at the boundary every path crosses.
+        import inspect
+
+        from src.core.backtest_runner import BacktestRunner
+        src = inspect.getsource(BacktestRunner.run)
+        self.assertIn("metrics_purpose", src)
+        self.assertIn("RiskConstraintMode.WARN_AND_CLIP", src)
+        # The refusal must be BEFORE any metric is computed.
+        refusal = src.index("metrics_purpose != \"predictions_only\"")
+        self.assertLess(refusal, src.index("positions_map ="))
+        # And the signature must default to the strict purpose: a
+        # caller that says nothing must not get the tolerant path.
+        sig = inspect.signature(BacktestRunner.run)
+        self.assertEqual("official",
+                         sig.parameters["metrics_purpose"].default)
+
+    def test_warn_and_clip_refused_without_declared_purpose(self) -> None:
+        # Behavioural, not just source-shaped: the guard must fire on a
+        # real call. It sits ahead of any data access, so a bare
+        # request object is enough to reach it.
+        from dataclasses import replace
+
+        from src.core.backtest_runner import (
+            BacktestRunner,
+            BacktestRunnerError,
+        )
+        from src.core.risk_constraints import (
+            RiskConstraintMode,
+            campaign_risk_constraints_v1,
+        )
+        clip = replace(campaign_risk_constraints_v1(),
+                       mode=RiskConstraintMode.WARN_AND_CLIP)
+        with self.assertRaises(BacktestRunnerError) as ctx:
+            BacktestRunner.run(request=_bare_request(),
+                               predictions="dummy",
+                               risk_constraints=clip)
+        self.assertIn("WARN_AND_CLIP", str(ctx.exception))
+        self.assertIn("predictions_only", str(ctx.exception))
+
+    def test_purpose_is_threaded_and_recorded_by_both_engines(self) -> None:
+        # Refusing at the boundary is only half of it: the purpose must
+        # travel WITH the run, or a tolerant run's numbers still read
+        # as canonical at rest.
+        import inspect
+
+        from src.core import pipeline
+        from src.core.walk_forward import engine
+        for mod in (pipeline, engine):
+            self.assertIn('metrics_purpose=("predictions_only"',
+                          inspect.getsource(mod), mod.__name__)
+        # The pipeline report projects its config BY HAND (walk-forward
+        # gets it free via asdict) — codex #406 r2.
+        psrc = inspect.getsource(pipeline)
+        self.assertIn('"risk_constraints_mode": config.risk_constraints_mode',
+                      psrc)
+        self.assertIn('"metrics_purpose": ("predictions_only"', psrc)
 
     def test_only_the_baseline_preset_relaxes_the_reaction(self) -> None:
         # The leak guard: an official-metrics preset that quietly

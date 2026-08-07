@@ -46,6 +46,7 @@ from src.core.qlib_runtime import (
 from src.core.risk_constraints import (
     MinimalRiskConstraints,
     RiskConstraintError,
+    RiskConstraintMode,
 )
 from src.data.st_history import (
     StHistoryError,
@@ -138,10 +139,48 @@ class BacktestRunner:
         rebalance_phase: int = 0,
         rebalance_anchor: str = "fold_phase",
         universe_hint: str | None = None,
+        metrics_purpose: str = "official",
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
         CanonicalBacktestContract.validate_input(request)
+
+        # WARN_AND_CLIP at the OFFICIAL-METRICS BOUNDARY (codex #406
+        # r1). The clipping is POST-TRADE: ``return_series`` and
+        # ``risk_analysis`` come from qlib's UNCLIPPED execution and
+        # ``positions`` stays tied to them, so tolerating violations
+        # does not soften the numbers — it emits the very returns
+        # RAISE exists to refuse, under the canonical label.
+        #
+        # A config-file scan cannot protect this: personal overrides
+        # (``my_*.yaml`` / ``*.local.yaml``) are gitignored BY DESIGN,
+        # and tests / replay scripts / single-fold callers construct
+        # the runner directly. So the refusal lives HERE, where every
+        # path converges, mirroring the cadence check below.
+        #
+        # The escape is narrow and must NAME the purpose: a run whose
+        # product is out-of-fold PREDICTIONS (unaffected by clipping —
+        # they are produced before the backtest) may tolerate
+        # violations, and the purpose travels into the output so the
+        # numbers are never canonical-by-default at rest.
+        if metrics_purpose not in ("official", "predictions_only"):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: metrics_purpose must be 'official' "
+                f"or 'predictions_only'; got {metrics_purpose!r}.")
+        if (risk_constraints is not None
+                and risk_constraints.mode is RiskConstraintMode.WARN_AND_CLIP
+                and metrics_purpose != "predictions_only"):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: risk_constraints.mode="
+                "WARN_AND_CLIP tolerates violations, but the clipping "
+                "is POST-TRADE — return_series/risk_analysis/positions "
+                "are qlib's UNCLIPPED execution, i.e. exactly the "
+                "numbers RAISE refuses. Emitting them as official "
+                "metrics would bypass that validation silently. Pass "
+                "metrics_purpose='predictions_only' when the run's "
+                "product is out-of-fold predictions (they are produced "
+                "before the backtest and are unaffected), or use "
+                "mode=RAISE. Audit P0-1 / codex #406 r1.")
 
         # Cadence validation at the OFFICIAL-METRICS BOUNDARY (codex P2 on
         # #336): direct callers (tests, replay scripts, single-fold) bypass
