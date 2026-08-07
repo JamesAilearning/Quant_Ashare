@@ -59,8 +59,16 @@ def build_record(
     headline_metrics: dict[str, Any] | None = None,
     report_path: str | None = None,
     output_dir: str = "",
+    metric_status: str = "official",
+    metrics_purpose: str = "official",
 ) -> dict[str, Any]:
-    """Build a run-catalog record with consistent schema."""
+    """Build a run-catalog record with consistent schema.
+
+    ``metric_status`` / ``metrics_purpose`` (codex #406 r3): the
+    catalog is what run comparison reads, so a run whose numbers did
+    NOT pass the RAISE risk-constraint validation must say so here —
+    otherwise it sits next to official runs as an ordinary record.
+    """
     return {
         "run_id": _build_run_id(engine, completed_at, config_fingerprint),
         "engine": engine,
@@ -72,6 +80,8 @@ def build_record(
         "headline_metrics": headline_metrics or {},
         "report_path": report_path,
         "output_dir": output_dir,
+        "metric_status": metric_status,
+        "metrics_purpose": metrics_purpose,
     }
 
 

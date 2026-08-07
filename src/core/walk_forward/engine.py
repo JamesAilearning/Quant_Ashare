@@ -28,6 +28,8 @@ from src.core.attribution_sleeve_loader import (
 )
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
+    OFFICIAL_METRIC_STATUS,
+    PREDICTIONS_ONLY_METRIC_STATUS,
     CanonicalAccountConfig,
     CanonicalBacktestInput,
     CanonicalBacktestOutput,
@@ -81,6 +83,18 @@ from src.core.walk_forward.ensemble import (
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
 _logger = get_logger(__name__)
+
+
+def _run_metric_status(config: WalkForwardConfig) -> str:
+    """Run-level metric status implied by the declared purpose.
+
+    Mirrors what ``BacktestRunner.run`` stamps per fold, so the
+    aggregate report and the run catalog carry the same verdict as the
+    per-fold artifacts (codex #406 r3).
+    """
+    return (PREDICTIONS_ONLY_METRIC_STATUS
+            if config.metrics_purpose == "predictions_only"
+            else OFFICIAL_METRIC_STATUS)
 
 
 class WalkForwardEngine:
@@ -274,6 +288,7 @@ class WalkForwardEngine:
                     max_drawdown=float("nan"),
                     information_ratio=float("nan"),
                     prediction_shape=(0,),
+                    metric_status=_run_metric_status(config),
                 )
                 fold_failed = True
 
@@ -451,6 +466,13 @@ class WalkForwardEngine:
             record = build_record(
                 engine="walk_forward",
                 status="partial" if has_any_nan else "ok",
+                # codex #406 r3: the catalog is what run comparison
+                # reads. Without the status a predictions-only run
+                # lands in output/runs/_index.jsonl as an ordinary
+                # ``ok`` record and its RAISE-refused returns become
+                # indistinguishable from official ones.
+                metric_status=_run_metric_status(config),
+                metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
                 config_summary={
@@ -1008,6 +1030,7 @@ class WalkForwardEngine:
             max_drawdown=max_dd,
             information_ratio=ir,
             prediction_shape=model_result.prediction_shape,
+            metric_status=backtest_output.metric_status,
             # POSIX form (codex #379 P1): this value lands in the
             # committed aggregate's fold rows and must resolve on any OS.
             report_path=report_path.as_posix(),

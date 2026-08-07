@@ -199,6 +199,51 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
         self.assertIn('"metrics_purpose": config.metrics_purpose',
                       inspect.getsource(pipeline))
 
+    def test_status_travels_to_aggregate_and_catalog(self) -> None:
+        # codex #406 r3: stamping each fold is not enough. The
+        # per-fold status was DISCARDED when building WalkForwardFold,
+        # so build_aggregate_report published raw aggregate_metrics
+        # and the catalog wrote output/runs/_index.jsonl as an
+        # ordinary status="ok" record — RAISE-refused returns sitting
+        # next to official ones, indistinguishable to run comparison.
+        import inspect
+        from dataclasses import fields
+
+        from src.core import pipeline
+        from src.core.run_catalog import build_record
+        from src.core.walk_forward import engine
+        from src.core.walk_forward._types import WalkForwardFold
+
+        # The fold carries it.
+        self.assertIn("metric_status",
+                      {f.name for f in fields(WalkForwardFold)})
+        self.assertIn("metric_status=backtest_output.metric_status",
+                      inspect.getsource(engine))
+
+        # The catalog schema carries BOTH, on both engines.
+        rec = build_record(engine="walk_forward", status="ok")
+        self.assertIn("metric_status", rec)
+        self.assertIn("metrics_purpose", rec)
+        relaxed = build_record(
+            engine="walk_forward", status="ok",
+            metric_status="predictions_only_non_canonical",
+            metrics_purpose="predictions_only")
+        self.assertEqual("predictions_only_non_canonical",
+                         relaxed["metric_status"])
+        for mod in (pipeline, engine):
+            self.assertIn("metrics_purpose=config.metrics_purpose",
+                          inspect.getsource(mod), mod.__name__)
+
+    def test_failed_fold_placeholder_is_not_labelled_official(self) -> None:
+        # A NaN placeholder fold never reaches the runner, so it has no
+        # stamped status of its own — defaulting it to official would
+        # relabel a predictions-only run's failure as canonical.
+        import inspect
+
+        from src.core.walk_forward import engine
+        src = inspect.getsource(engine)
+        self.assertIn("metric_status=_run_metric_status(config)", src)
+
     def test_only_the_baseline_preset_relaxes_the_reaction(self) -> None:
         # The leak guard: an official-metrics preset that quietly
         # adopted warn_and_clip would publish returns the RAISE

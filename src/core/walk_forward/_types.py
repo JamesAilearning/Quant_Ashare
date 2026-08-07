@@ -23,6 +23,13 @@ class WalkForwardFold:
     # fold without persisting a report (e.g. the aggregate-NaN tests
     # below) keep working unchanged.
     report_path: str | None = None
+    # What the fold's backtest numbers ARE (codex #406 r3). The runner
+    # already stamps a non-canonical status for a predictions-only
+    # run; DISCARDING it here is what let the aggregate report and the
+    # run catalog republish RAISE-refused returns as ordinary results.
+    # Optional so legacy/mock folds keep working; ``None`` means the
+    # fold predates the field, not that it was official.
+    metric_status: str | None = None
     # Wall-clock duration of the fold (``time.perf_counter`` delta
     # around the engine's ``_run_single_fold`` call). ``None`` when
     # the fold was resumed from a manifest that predates the timing

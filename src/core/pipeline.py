@@ -947,6 +947,9 @@ class Pipeline:
             record = build_catalog_record(
                 engine="pipeline",
                 status=status,
+                # Parallel catalog schema (codex #406 r3).
+                metric_status=backtest_output.metric_status,
+                metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
                 config_summary={
