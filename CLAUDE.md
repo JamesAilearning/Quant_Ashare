@@ -135,6 +135,6 @@ canonical starting point; `config_walk*.yaml` variants drive
 walk-forward runs. **Don't hardcode local paths** in tracked configs —
 use env-var substitution (`${QUANT_PROVIDER_URI}`, optionally with a
 default: `${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}`) so the
-same config works across machines. The five operational env vars are
+same config works across machines. The operational env vars are
 documented centrally in `docs/operations-env-vars.md`. Personal preset overrides should be named
 `my_*.yaml` or `*.local.yaml` (gitignored).
