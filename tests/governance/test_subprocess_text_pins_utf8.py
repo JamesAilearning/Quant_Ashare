@@ -60,6 +60,100 @@ def _is_utf8_literal(node: ast.expr) -> bool:
     return node.value.strip().lower().replace("-", "_") in _UTF8_SPELLINGS
 
 
+def _utf8_env_helpers(tree: ast.Module) -> set[str]:
+    """Names of module functions that return an env pinning PYTHONIOENCODING.
+
+    A call site writes ``env=_utf8_child_env()``; the dict lives in the
+    helper, so accepting the kwarg blindly would accept any env at all.
+    """
+    helpers: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(_pins_child_encoder(sub) for sub in ast.walk(node)):
+            helpers.add(node.name)
+    return helpers
+
+
+def _pins_child_encoder(node: ast.AST) -> bool:
+    """Whether ``node`` is a dict literal mapping PYTHONIOENCODING to UTF-8."""
+    if not isinstance(node, ast.Dict):
+        return False
+    for key, value in zip(node.keys, node.values, strict=True):
+        if (isinstance(key, ast.Constant) and key.value == "PYTHONIOENCODING"
+                and _is_utf8_literal(value)):
+            return True
+    return False
+
+
+def _env_pins_child_encoder(
+    env: ast.expr, helpers: set[str], assignments: dict[str, ast.expr],
+) -> bool:
+    """Whether an ``env=`` argument demonstrably pins the child's encoder.
+
+    Three shapes, all in use in this repo: an inline
+    ``{**os.environ, "PYTHONIOENCODING": "utf-8"}``, a call to a module
+    helper that returns one, and a local ``env = {...}`` passed by name.
+    """
+    if isinstance(env, ast.Name):
+        resolved = assignments.get(env.id)
+        if resolved is not None:
+            env = resolved
+    if any(_pins_child_encoder(sub) for sub in ast.walk(env)):
+        return True
+    return (
+        isinstance(env, ast.Call)
+        and isinstance(env.func, ast.Name)
+        and env.func.id in helpers
+    )
+
+
+def _python_child(node: ast.Call, scope_assignments: dict[str, ast.expr]) -> bool | None:
+    """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
+
+    A python child ENCODES its stdout with the inherited locale, so the
+    parent-side pin alone is not enough for these (codex P1 / P2 r4 on
+    #410). A ``git`` child needs no env, hence the three-valued answer:
+    unresolvable argv fails closed at the call site rather than being
+    guessed either way.
+    """
+    if not node.args:
+        return None
+    argv = node.args[0]
+    if isinstance(argv, ast.Name):
+        argv = scope_assignments.get(argv.id)  # type: ignore[assignment]
+        if argv is None:
+            return None
+    if not isinstance(argv, ast.List) or not argv.elts:
+        return None
+    head = argv.elts[0]
+    if isinstance(head, ast.Attribute) and head.attr == "executable":
+        return True  # sys.executable
+    if isinstance(head, ast.Constant) and isinstance(head.value, str):
+        return Path(head.value).stem.lower().startswith("python")
+    return None
+
+
+def _literal_assignments(tree: ast.Module) -> dict[str, ast.expr]:
+    """``name -> list/dict literal`` for simple assignments in the module.
+
+    Enough to resolve the two shapes this repo uses —
+    ``argv = [sys.executable, ...]; run(argv, ...)`` and
+    ``env = {...}; run(..., env=env)`` — without a dataflow analysis.
+    Anything else stays unresolvable and fails closed. ``argv += [...]``
+    must not displace the head-defining assignment, hence ``setdefault``.
+    """
+    found: dict[str, ast.expr] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Dict)):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found[target.id] = node.value
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            found.setdefault(node.target.id, node.value)
+    return found
+
+
 def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     """(module aliases, bare spawner names) that resolve to ``subprocess``.
 
@@ -115,6 +209,8 @@ def offending_lines(source: str) -> list[int]:
     modules, bare = _subprocess_names(tree)
     if not modules and not bare:
         return []
+    helpers = _utf8_env_helpers(tree)
+    assignments = _literal_assignments(tree)
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -133,10 +229,7 @@ def offending_lines(source: str) -> list[int]:
         if not is_spawn:
             continue
         kwargs = {kw.arg: kw.value for kw in node.keywords}
-        # ``**kwargs`` forwarding (arg is None) cannot be judged
-        # statically — the encoding may live in the caller's dict.
-        if None in kwargs:
-            continue
+        forwards_kwargs = None in kwargs
 
         # CPython: ``text_mode = encoding or errors or text or
         # universal_newlines`` — so a CODEC keyword wins over text=False
@@ -144,16 +237,36 @@ def offending_lines(source: str) -> list[int]:
         # str). Judge the codec keywords FIRST, before any binary-mode
         # exit (codex P2 r3 on #410; verified against the interpreter).
         if "encoding" in kwargs or "errors" in kwargs:
-            if not _is_utf8_literal(kwargs.get("encoding", ast.Constant(None))):
-                hits.append(node.lineno)
+            text_mode = True
+        else:
+            flags = [kwargs[f] for f in _TEXT_FLAGS if f in kwargs]
+            if any(not isinstance(v, ast.Constant) for v in flags):
+                continue  # dynamic text flag — cannot judge (see docstring)
+            text_mode = any(bool(v.value) for v in flags)  # type: ignore[union-attr]
+            if not text_mode and forwards_kwargs:
+                continue  # binary as written; ``**opts`` may add a codec
+                          # kwarg, but then it supplies the encoding too
+        if not text_mode:
+            continue  # bytes: no codec kwarg and no truthy text flag
+
+        # Text mode from here on. ``**opts`` FAILS CLOSED (codex P2 r4):
+        # a forwarded dict may carry cwd only, and the call would then
+        # decode with the locale exactly as before this gate existed.
+        if forwards_kwargs or not _is_utf8_literal(
+            kwargs.get("encoding", ast.Constant(None))
+        ):
+            hits.append(node.lineno)
             continue
 
-        flags = [kwargs[f] for f in _TEXT_FLAGS if f in kwargs]
-        if any(not isinstance(v, ast.Constant) for v in flags):
-            continue  # dynamic text flag — cannot judge, see the docstring
-        if not any(bool(v.value) for v in flags):  # type: ignore[union-attr]
-            continue  # bytes: no codec kwarg and no truthy text flag
-        hits.append(node.lineno)  # text mode with no encoding at all
+        # Parent-side pin is right, but a PYTHON child encodes with the
+        # locale — the other half of the same bug (codex P2 r4). Require
+        # demonstrable env evidence; an unresolvable command fails closed.
+        is_python = _python_child(node, assignments)
+        if is_python is False:
+            continue  # git & friends emit UTF-8 regardless of locale
+        env = kwargs.get("env")
+        if env is None or not _env_pins_child_encoder(env, helpers, assignments):
+            hits.append(node.lineno)
     return hits
 
 
@@ -213,11 +326,22 @@ class DetectorSelfTests(unittest.TestCase):
         # No text flag -> bytes out, the caller decodes deliberately.
         self.assertFalse(offending_lines(self._IMPORT + 'subprocess.run(["git"])\n'))
 
-    def test_ignores_kwargs_forwarding(self) -> None:
-        # The encoding may be supplied by the caller's dict; a static
-        # verdict here would be a false positive.
-        self.assertFalse(offending_lines(
+    def test_kwargs_forwarding_in_text_mode_fails_closed(self) -> None:
+        # codex P2 r4 #410: **opts may carry only cwd/timeout, and the call
+        # then decodes with the locale exactly as before this gate existed.
+        # An unverifiable text-mode spawn is noncompliant, not exempt.
+        self.assertTrue(offending_lines(
             self._IMPORT + 'subprocess.run(["git"], text=True, **opts)\n'))
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=True, encoding="utf-8", **opts)\n'))
+
+    def test_kwargs_forwarding_without_text_mode_is_ignored(self) -> None:
+        # Binary as written: **opts could add a codec kwarg, but a dict
+        # that supplies `encoding` supplies its VALUE too — nothing here
+        # can silently fall back to the locale.
+        self.assertFalse(offending_lines(
+            self._IMPORT + 'subprocess.run(["git"], check=True, **opts)\n'))
 
     def test_ignores_unrelated_run_attribute(self) -> None:
         # codex P2 #410: a same-named method on an unrelated object is NOT
@@ -322,6 +446,64 @@ class DetectorSelfTests(unittest.TestCase):
         self.assertFalse(offending_lines(
             self._IMPORT
             + 'subprocess.run(["git"], text=False, encoding="utf-8")\n'))
+
+    # ---- the CHILD encoder for python spawns (codex P2 r4 #410) ----
+
+    _PY_CALL = ('subprocess.run([sys.executable, "-c", "print(1)"], '
+                'text=True, encoding="utf-8"{extra})\n')
+
+    def test_python_child_needs_env_evidence(self) -> None:
+        # Parent-side pin alone leaves the child encoding with the locale —
+        # the regression this PR fixed can otherwise walk right back in.
+        self.assertTrue(offending_lines(
+            self._IMPORT + self._PY_CALL.format(extra="")))
+
+    def test_python_child_accepts_inline_env(self) -> None:
+        self.assertFalse(offending_lines(
+            self._IMPORT + self._PY_CALL.format(
+                extra=', env={**os.environ, "PYTHONIOENCODING": "utf-8"}')))
+
+    def test_python_child_accepts_env_helper_and_local(self) -> None:
+        helper = (
+            "def _utf8_child_env():\n"
+            '    return {**os.environ, "PYTHONIOENCODING": "utf-8"}\n\n'
+        )
+        self.assertFalse(offending_lines(
+            self._IMPORT + helper + self._PY_CALL.format(
+                extra=", env=_utf8_child_env()")))
+        local = 'env = {**os.environ, "PYTHONIOENCODING": "utf-8"}\n'
+        self.assertFalse(offending_lines(
+            self._IMPORT + local + self._PY_CALL.format(extra=", env=env")))
+
+    def test_python_child_rejects_env_without_the_pin(self) -> None:
+        self.assertTrue(offending_lines(
+            self._IMPORT + self._PY_CALL.format(
+                extra=', env={**os.environ, "TZ": "UTC"}')))
+        self.assertTrue(offending_lines(
+            self._IMPORT + self._PY_CALL.format(
+                extra=', env={**os.environ, "PYTHONIOENCODING": "cp936"}')))
+
+    def test_git_child_needs_no_env(self) -> None:
+        # git emits UTF-8 regardless of locale — demanding an env here
+        # would imply a dependency that does not exist.
+        self.assertFalse(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git", "log"], text=True, encoding="utf-8")\n'))
+
+    def test_python_child_via_resolved_argv_variable(self) -> None:
+        # argv = [sys.executable, ...]; run(argv, ...) — the shape
+        # rehearse_gate3_prereg_gate.py uses.
+        prog = (self._IMPORT
+                + 'argv = [sys.executable, "x.py"]\n'
+                + 'subprocess.run(argv, text=True, encoding="utf-8")\n')
+        self.assertTrue(offending_lines(prog))
+
+    def test_unresolvable_command_fails_closed(self) -> None:
+        # Cannot prove the child is not python -> demand the env rather
+        # than assume the benign case.
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(build_argv(), text=True, encoding="utf-8")\n'))
 
     def test_dynamic_text_flag_with_codec_kwarg_is_judged(self) -> None:
         # The dynamic flag is irrelevant once a codec kwarg is present:
