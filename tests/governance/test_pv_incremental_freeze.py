@@ -279,6 +279,106 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertEqual(_PLAN["universe"]["instruments"],
                          preset["instruments"])
 
+    def test_baseline_start_yields_full_is_coverage(self) -> None:
+        # Pin the INTENT, not the literal date: the baseline must start
+        # early enough that its first out-of-fold TEST window lands on
+        # the frozen IS start. The parent config's 2018-01-01 does not —
+        # 24m train + 3m valid pushed the first prediction to
+        # 2020-04-01, leaving 670 of ~1215 IS days uncovered, so the
+        # campaign's only incremental criterion (the orthogonality
+        # penalty) had no purchase on 45% of the breeding window.
+        #
+        # Derived from the fold geometry so a change to train/valid
+        # months re-derives the requirement instead of silently
+        # invalidating this pin.
+        from dateutil.relativedelta import relativedelta
+
+        preset = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "presets"
+             / "pv_incremental_baseline.yaml").read_text(encoding="utf-8"))
+        parent = yaml.safe_load(
+            (_PROJECT_ROOT / "config_walk.yaml").read_text(encoding="utf-8"))
+        train = int(preset.get("train_months", parent["train_months"]))
+        valid = int(preset.get("valid_months", parent["valid_months"]))
+        start = _PD.Timestamp(str(preset["overall_start"])).date()
+        first_test = start + relativedelta(months=train + valid)
+        is_start = _PD.Timestamp(_PLAN["windows"]["is_start"]).date()
+        self.assertEqual(
+            is_start, first_test,
+            f"first out-of-fold test window is {first_test}, but the "
+            f"frozen IS window starts {is_start} — the baseline would "
+            f"leave part of IS uncovered")
+        # And the tail stays where the sacred invariant put it.
+        self.assertEqual("2024-12-31", str(preset["overall_end"]))
+        # Decision 1-rev1: plan, preset and exporter binding must agree
+        # on the start — two of the three drifting apart would let a
+        # run bred under one definition be certified under another.
+        self.assertEqual(str(preset["overall_start"]),
+                         str(_PLAN["fitness"]["baseline"]["overall_start"]))
+        import inspect
+
+        import scripts.research.pv_incremental_baseline_export as ex
+        self.assertIn('"overall_start": base["overall_start"]',
+                      inspect.getsource(ex.check_run_config_binding))
+
+    def test_engine_refuses_uncovered_training_history(self) -> None:
+        # codex #411 r1-b: _generate_windows snaps valid/test ENDS back
+        # onto the calendar but never checked the HEAD — on the old
+        # 2018-start bundle a fold declaring train 2016-04..2018-03
+        # silently trained on three months of data while its manifest
+        # recorded the declared 24-month window, and the exporter would
+        # have certified it. Behavioural: a calendar that starts after
+        # overall_start must refuse outright.
+        from datetime import date, timedelta
+
+        from src.core.walk_forward.config import WalkForwardConfig
+        from src.core.walk_forward.engine import WalkForwardEngine, WalkForwardError
+
+        cal = [date(2018, 1, 2) + timedelta(days=i) for i in range(2400)]
+        cfg = WalkForwardConfig(overall_start="2015-10-01",
+                                overall_end="2024-12-31")
+        with self.assertRaises(WalkForwardError) as ctx:
+            WalkForwardEngine._generate_windows(cfg, calendar=cal)
+        self.assertIn("predates the bound data calendar",
+                      str(ctx.exception))
+        # AUTHORITATIVE branch (codex #412 r2): when the bundle stamp
+        # carries the fetch-coverage start, the guard compares against
+        # THAT — no gap heuristic. A bundle whose fetch began
+        # 2015-10-12 gaps only 7 weekdays (inside any closure
+        # tolerance) yet misses the real 10-08/10-09 sessions; the
+        # stamp says so, and the run refuses.
+        cal_1012 = [date(2015, 10, 12) + timedelta(days=i)
+                    for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx_cov:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1012,
+                data_coverage_start="2015-10-12")
+        self.assertIn("fetched data coverage", str(ctx_cov.exception))
+        # An honest full-coverage stamp passes with the SAME calendar
+        # shape the real bundle has (first session 10-08).
+        cal_full = [date(2015, 10, 8) + timedelta(days=i)
+                    for i in range(3400)]
+        wins_cov = WalkForwardEngine._generate_windows(
+            cfg, calendar=cal_full, data_coverage_start="2015-10-01")
+        self.assertGreater(len(wins_cov), 19)
+
+        # LEGACY branch (no stamp): the weekday tolerance stays as the
+        # fallback (codex #412 r1) — a partially built bundle starting
+        # 2015-10-20 sits only 19 calendar days after overall_start,
+        # inside any holiday-sized fixed window, while genuinely
+        # missing 13 weekdays of history. It must refuse too.
+        cal_partial = [date(2015, 10, 20) + timedelta(days=i)
+                       for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx2:
+            WalkForwardEngine._generate_windows(cfg, calendar=cal_partial)
+        self.assertIn("weekdays of history missing", str(ctx2.exception))
+        # A calendar that starts on the first session AT OR AFTER the
+        # anchor (2015-10-08 — the National Day week has none; a
+        # 5-weekday gap, within the 6-weekday worst closure) passes.
+        cal_ok = [date(2015, 10, 8) + timedelta(days=i) for i in range(3400)]
+        wins = WalkForwardEngine._generate_windows(cfg, calendar=cal_ok)
+        self.assertGreater(len(wins), 19)
+
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])
         self.assertIs(False, _PLAN["universe"]["ex_financials"])

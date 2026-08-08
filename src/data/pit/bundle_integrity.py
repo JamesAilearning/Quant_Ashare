@@ -76,6 +76,18 @@ class BundleIntegrity:
     # bumped precisely so those v1 stamps (and the daily_recommend gate that reads
     # them) keep working without a forced rebuild.
     identity: BundleIdentity | None = None
+    # codex #412 r2: the authoritative expected-first-session anchor
+    # for coverage guards. Copied by the builder from the fetch
+    # manifest's required-endpoint coverage (max coverage_start_date,
+    # ISO yyyy-mm-dd): a complete zero-hole fetch from date X means
+    # every session from X onward is present, so the bundle
+    # calendar's first day IS the first real session >= X - no
+    # gap-size heuristic a truncated bundle could hide inside.
+    # OPTIONAL within schema_version 1 for the same reason
+    # ``identity`` is: pre-existing stamps (the production bundle's
+    # included) keep working; consumers fall back to their
+    # weekday-tolerance guard.
+    data_coverage_start: str | None = None
 
 
 def write_bundle_integrity(
@@ -84,6 +96,7 @@ def write_bundle_integrity(
     built_from_holey_fetch: bool,
     holes: tuple[FetchHole, ...] = (),
     identity: BundleIdentity | None = None,
+    data_coverage_start: str | None = None,
     now: datetime | None = None,
 ) -> None:
     """Atomically write the bundle's fetch-integrity stamp (temp + ``os.replace``)
@@ -111,6 +124,8 @@ def write_bundle_integrity(
             for h in holes
         ],
     }
+    if data_coverage_start is not None:
+        payload["data_coverage_start"] = data_coverage_start
     if identity is not None:
         payload["identity"] = {
             "tail_date": identity.tail_date,
@@ -194,12 +209,18 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             calendar_start=_require(ident_raw, "calendar_start", str, ident_ctx),
             calendar_end=_require(ident_raw, "calendar_end", str, ident_ctx),
         )
+    cov = raw.get("data_coverage_start")
+    if cov is not None and not isinstance(cov, str):
+        raise BundleIntegrityError(
+            f"{ctx}: data_coverage_start must be a string, got "
+            f"{type(cov).__name__}")
     return BundleIntegrity(
         schema_version=SCHEMA_VERSION,  # already validated equal above
         built_from_holey_fetch=built_from_holey_fetch,
         built_at=_require(raw, "built_at", str, ctx),
         holes=holes,
         identity=identity,
+        data_coverage_start=cov,
     )
 
 
