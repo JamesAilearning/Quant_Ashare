@@ -79,6 +79,39 @@ from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatas
 _logger = get_logger(__name__)
 
 
+def _read_data_coverage_start(provider_uri: str | None) -> str | None:
+    """The bundle's stamped fetch-coverage start, or ``None``.
+
+    ``None`` (no stamp / legacy stamp without the field / unreadable)
+    falls back to the weekday-tolerance guard in
+    ``_generate_windows`` - pre-existing bundles, the production one
+    included, keep working exactly as before (codex #412 r2; the
+    same optional-within-schema-v1 posture as ``identity``).
+    """
+    if not provider_uri:
+        return None
+    from src.data.pit.bundle_integrity import (
+        BundleIntegrityError,
+        read_bundle_integrity,
+    )
+    try:
+        integrity = read_bundle_integrity(Path(provider_uri))
+    except BundleIntegrityError as exc:
+        # A CORRUPT stamp is not a missing one (the repo's
+        # no-silent-fallback pin is what caught the earlier swallow):
+        # degrading unreadable provenance to the legacy path would let
+        # a damaged bundle skip the authoritative coverage check.
+        raise WalkForwardError(
+            f"bundle integrity stamp at {provider_uri} is unreadable "
+            f"({exc}) - cannot establish the fetch coverage; fix or "
+            "rebuild the bundle; refusing.") from exc
+    if integrity is None:
+        # Genuinely absent stamp = pre-stamp bundle; the weekday
+        # fallback in _generate_windows still guards it.
+        return None
+    return integrity.data_coverage_start
+
+
 class WalkForwardEngine:
     """Orchestrates rolling train/predict/backtest across time."""
 
@@ -147,7 +180,12 @@ class WalkForwardEngine:
         discovered_manifests = FoldManifest.discover(output_dir)
 
         # Generate fold windows (embargo-gapped; calendar from qlib runtime)
-        windows = cls._generate_windows(config, calendar=cls._load_trading_calendar())
+        windows = cls._generate_windows(
+            config,
+            calendar=cls._load_trading_calendar(),
+            data_coverage_start=_read_data_coverage_start(
+                getattr(config, "provider_uri", None)),
+        )
         if not windows:
             raise WalkForwardError(
                 "No valid fold windows could be generated with the given config. "
@@ -491,6 +529,7 @@ class WalkForwardEngine:
         cls,
         config: WalkForwardConfig,
         calendar: Sequence[date] | None = None,
+        data_coverage_start: str | None = None,
     ) -> list[tuple[str, ...]]:
         """Generate (train_s, train_e, valid_s, valid_e, test_s, test_e) tuples.
 
@@ -549,13 +588,38 @@ class WalkForwardEngine:
         # closure — it is missing data. The partial-bundle example
         # gaps 13 weekdays; the old 2018 bundle gaps 588.
         overall_start_date = cls._to_date(config.overall_start)
+        # AUTHORITATIVE check first (codex #412 r2): when the bundle's
+        # integrity stamp carries the fetch coverage start, compare
+        # against THAT. A complete zero-hole fetch from X means the
+        # calendar's first day is the first real session >= X, so any
+        # coverage_start > overall_start is missing history no matter
+        # how small the gap looks: a bundle starting 2015-10-12 gaps
+        # only 7 weekdays - inside any closure tolerance - yet misses
+        # the real 10-08/10-09 sessions. The weekday tolerance below
+        # remains ONLY as the legacy fallback for stamps that predate
+        # the field (the production bundle's included) and for direct
+        # calendar-injection callers.
+        coverage_start: date | None = None
+        if data_coverage_start is not None:
+            coverage_start = cls._to_date(data_coverage_start)
+            if coverage_start > overall_start_date:
+                raise WalkForwardError(
+                    f"overall_start {config.overall_start} predates "
+                    "the bundle's fetched data coverage (integrity "
+                    f"stamp data_coverage_start={data_coverage_start})"
+                    " - the fetch never established history before "
+                    "that date, so every fold's training window would "
+                    "be silently clipped. Point QUANT_PROVIDER_URI at "
+                    "a bundle whose fetch covers the requested "
+                    "history, or move overall_start; refusing.")
         _MAX_EXCHANGE_CLOSURE_WEEKDAYS = 7
         missing_weekdays = 0
         if cal and cal[0] > overall_start_date:
             missing_weekdays = sum(
                 1 for i in range((cal[0] - overall_start_date).days)
                 if (overall_start_date + timedelta(days=i)).weekday() < 5)
-        if cal and missing_weekdays > _MAX_EXCHANGE_CLOSURE_WEEKDAYS:
+        if (coverage_start is None and cal
+                and missing_weekdays > _MAX_EXCHANGE_CLOSURE_WEEKDAYS):
             raise WalkForwardError(
                 f"overall_start {config.overall_start} predates the "
                 f"bound data calendar (first day {cal[0].isoformat()}, "

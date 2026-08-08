@@ -86,6 +86,7 @@ from src.core.logger import get_logger
 from src.data.bundle_manifest import compute_bundle_content_hash
 from src.data.pit.bundle_integrity import BundleIdentity, write_bundle_integrity
 from src.data.tushare.fetch_manifest import (
+    _DATE_SCOPED_ENDPOINTS,
     MANIFEST_FILENAME,
     FetchManifestError,
     all_holes,
@@ -314,11 +315,39 @@ class QlibBinBuilder:
                 calendar_start=calendar[0],
                 calendar_end=calendar[-1],
             )
+            # codex #412 r2: stamp the authoritative coverage start so
+            # run-time guards compare overall_start against what the
+            # FETCH established, not against calendar-gap guesses. Max
+            # across required endpoints = the date from which ALL are
+            # complete. Only a clean build may stamp it - a holey fetch
+            # cannot vouch for its own coverage.
+            data_coverage_start: str | None = None
+            # Only DATE-SCOPED endpoints participate: stock_basic is a
+            # SNAPSHOT (full listing pull) whose manifest coverage
+            # records the run's window PARAMETER, not what the listing
+            # covers - folding it into the max stamped 2018-01-01 onto
+            # a bundle whose price history genuinely starts 2015-10-01
+            # (caught end-to-end on the real rebuilt bundle before this
+            # ever shipped).
+            _dated = [ep for ep in BUNDLE_REQUIRED_ENDPOINTS
+                      if ep in _DATE_SCOPED_ENDPOINTS]
+            if manifest is not None and not built_from_holey_fetch:
+                starts = [
+                    manifest.endpoints[ep].coverage_start_date
+                    for ep in _dated
+                    if ep in manifest.endpoints
+                    and manifest.endpoints[ep].coverage_start_date
+                ]
+                if starts and len(starts) == len(_dated):
+                    raw_d = max(starts)
+                    data_coverage_start = (
+                        f"{raw_d[0:4]}-{raw_d[4:6]}-{raw_d[6:8]}")
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,
                 holes=fetch_holes,
                 identity=bundle_identity,
+                data_coverage_start=data_coverage_start,
             )
             # Promote staging to final location
             if self._output_dir.exists():

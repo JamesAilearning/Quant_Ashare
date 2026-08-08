@@ -341,11 +341,32 @@ class PvIncrementalFreezePins(unittest.TestCase):
             WalkForwardEngine._generate_windows(cfg, calendar=cal)
         self.assertIn("predates the bound data calendar",
                       str(ctx.exception))
-        # The tolerance counts WEEKDAYS, not calendar days (codex #412
-        # r1): a partially built bundle starting 2015-10-20 sits only
-        # 19 calendar days after overall_start — inside any
-        # holiday-sized fixed window — while genuinely missing 13
-        # weekdays of history. It must refuse too.
+        # AUTHORITATIVE branch (codex #412 r2): when the bundle stamp
+        # carries the fetch-coverage start, the guard compares against
+        # THAT — no gap heuristic. A bundle whose fetch began
+        # 2015-10-12 gaps only 7 weekdays (inside any closure
+        # tolerance) yet misses the real 10-08/10-09 sessions; the
+        # stamp says so, and the run refuses.
+        cal_1012 = [date(2015, 10, 12) + timedelta(days=i)
+                    for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx_cov:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1012,
+                data_coverage_start="2015-10-12")
+        self.assertIn("fetched data coverage", str(ctx_cov.exception))
+        # An honest full-coverage stamp passes with the SAME calendar
+        # shape the real bundle has (first session 10-08).
+        cal_full = [date(2015, 10, 8) + timedelta(days=i)
+                    for i in range(3400)]
+        wins_cov = WalkForwardEngine._generate_windows(
+            cfg, calendar=cal_full, data_coverage_start="2015-10-01")
+        self.assertGreater(len(wins_cov), 19)
+
+        # LEGACY branch (no stamp): the weekday tolerance stays as the
+        # fallback (codex #412 r1) — a partially built bundle starting
+        # 2015-10-20 sits only 19 calendar days after overall_start,
+        # inside any holiday-sized fixed window, while genuinely
+        # missing 13 weekdays of history. It must refuse too.
         cal_partial = [date(2015, 10, 20) + timedelta(days=i)
                        for i in range(3400)]
         with self.assertRaises(WalkForwardError) as ctx2:

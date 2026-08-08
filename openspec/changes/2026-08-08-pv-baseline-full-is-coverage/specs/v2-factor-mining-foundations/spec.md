@@ -35,19 +35,34 @@ walk-forward 引擎 SHALL 校验所绑 bundle 日历覆盖自 overall_start 起
 的完整训练历史，不满足时 SHALL fail-loud 拒绝该 run（而非静默用被裁
 剪的数据训练并在 manifest 中记录声明窗口）。
 
-容差 SHALL 按**工作日**而非固定日历天数计（codex #412 r1）：A 股交易
-日是周一至周五的子集，史上最长连续闭市为 6 个工作日（2020 春节延长；
-国庆+中秋连休亦为 6），故 [overall_start, 日历首日) 间缺失工作日数超
-过 7 即 SHALL 拒——固定日历天容差会放行在该窗口内起始的部分构建
-bundle（例：起于 2015-10-20 者缺 13 个工作日）。
+"预期首个交易日"的权威 SHALL 是 bundle 完整性戳的
+`data_coverage_start`（codex #412 r2）——构建器自 fetch manifest 的必需
+端点覆盖复制（取其 coverage_start_date 之最大者；仅零 hole 的完整
+fetch 可盖此戳）。零 hole 完整 fetch 自 X 日起的语义即"X 起每个交易日
+的数据都在"，故日历首日就是 ≥X 的第一个真实交易日：`coverage_start >
+overall_start` 即 SHALL 拒，**与空缺大小无关**——任何按空缺尺寸的启发
+式都会放行藏在假期窗口内的截断 bundle（例：起于 2015-10-12 者仅缺 7
+个工作日，却缺失 10-08/10-09 两个真实交易日）。
+
+戳无该字段时（早于本字段的 bundle，含生产 bundle；与 identity 字段同
+一 schema-v1 可选姿态）SHALL 回退工作日容差：A 股史上最长连续闭市为
+6 个工作日（2020 春节延长；国庆+中秋连休亦 6），缺失工作日数超过 7
+即拒（例：起于 2015-10-20 者缺 13 个）。
 
 基线导出器 SHALL 将 overall_start 纳入 run-config 绑定，使一个用错误
 起点跑出的 run 无法被认证为本战役的基线。
 
-#### Scenario: 假期空档内的部分构建 bundle 亦拒
+#### Scenario: 戳内覆盖起点晚于 overall_start 即拒（与空缺大小无关）
 
-- **GIVEN** 一个起于 2015-10-20 的部分构建 bundle（距 overall_start
-  仅 19 个日历天，但缺 13 个工作日的真实交易历史）
+- **GIVEN** 完整性戳 data_coverage_start=2015-10-12 的 bundle（仅缺 7
+  个工作日，任何闭市容差都会放行）
+- **WHEN** 启动 walk-forward（overall_start=2015-10-01）
+- **THEN** run 拒绝启动并指出 fetch 从未建立该日前的历史
+
+#### Scenario: 无戳（legacy）bundle 回退工作日容差
+
+- **GIVEN** 一个无 data_coverage_start 戳、起于 2015-10-20 的部分构建
+  bundle（距 overall_start 仅 19 个日历天，但缺 13 个工作日）
 - **WHEN** 启动 walk-forward
 - **THEN** run 拒绝启动 —— 固定日历天容差不得放行它
 
