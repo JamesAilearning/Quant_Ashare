@@ -16,6 +16,10 @@ from typing import Any
 
 from dateutil.relativedelta import relativedelta
 
+from src.core._canonical_request import (
+    build_canonical_request,
+    resolve_risk_constraints,
+)
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -29,12 +33,7 @@ from src.core.attribution_sleeve_loader import (
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     FAILED_METRIC_STATUS,
-    CanonicalAccountConfig,
-    CanonicalBacktestInput,
     CanonicalBacktestOutput,
-    CanonicalExchangeConfig,
-    CanonicalExchangeCostModel,
-    resolve_stamp_tax_schedule,
 )
 from src.core.git_provenance import capture_git_provenance, resolve_run_git_provenance
 from src.core.logger import get_logger
@@ -49,11 +48,6 @@ from src.core.performance_attribution import (
 from src.core.qlib_runtime import (
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
-)
-from src.core.risk_constraints import (
-    MinimalRiskConstraints,
-    RiskConstraintMode,
-    campaign_risk_constraints_v1,
 )
 from src.core.signal_analyzer import (
     SignalAnalysisConfig,
@@ -83,8 +77,6 @@ from src.core.walk_forward.ensemble import (
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig
 
 _logger = get_logger(__name__)
-
-
 
 
 class WalkForwardEngine:
@@ -870,29 +862,14 @@ class WalkForwardEngine:
 
         # Backtest
         _logger.info("  Fold %d: backtest...", fold_index)
-        backtest_request = CanonicalBacktestInput(
+        # Assembled by the SHARED builder both engines use, so the exchange /
+        # cost-model / execution-semantics fields cannot drift between them
+        # ("two engines, one schema" — see src/core/_canonical_request.py).
+        backtest_request = build_canonical_request(
+            config,
             predictions_ref=str(prediction_artifact_path),
             evaluation_start=test_start,
             evaluation_end=test_end,
-            account_config=CanonicalAccountConfig(
-                init_cash=config.init_cash,
-            ),
-            exchange_config=CanonicalExchangeConfig(
-                freq="day",
-                execution_price_kind=config.execution_price_kind,
-                cost_model=CanonicalExchangeCostModel(
-                    commission_rate=config.commission_rate,
-                    stamp_tax_schedule=resolve_stamp_tax_schedule(
-                        config.stamp_tax_schedule,
-                    ),
-                    slippage_bps=config.slippage_bps,
-                    min_cost=config.min_cost,
-                ),
-                limit_threshold=config.limit_threshold,
-            ),
-            adjust_mode=config.adjust_mode,
-            signal_to_execution_lag=config.signal_to_execution_lag,
-            benchmark_code=config.benchmark_code,
         )
         backtest_output = BacktestRunner.run(
             request=backtest_request,
@@ -904,17 +881,10 @@ class WalkForwardEngine:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
-            # CSI800 guard-2 (veto-4): calibration is an EXPLICIT config
-            # choice (codex P2 on #372) — campaign presets opt into
-            # campaign_v1; everything else keeps the P0-1 defaults.
-            # Effective values land in each fold's backtest provenance.
-            risk_constraints=(
-                replace(
-                    campaign_risk_constraints_v1()
-                    if config.risk_constraints_calibration == "campaign_v1"
-                    else MinimalRiskConstraints(),
-                    mode=RiskConstraintMode(config.risk_constraints_mode))
-                if config.risk_constraints_enabled else None),
+            # Calibration (CSI800 guard-2 / veto-4) x mode (codex #406) —
+            # resolved by the shared helper so both engines thread the SAME
+            # policy; effective values land in each fold's provenance.
+            risk_constraints=resolve_risk_constraints(config),
             # The purpose travels WITH the run (codex #406 r1): a
             # violation-tolerating run is never canonical by default.
             metrics_purpose=config.metrics_purpose,
