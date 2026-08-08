@@ -41,6 +41,13 @@ _BAD_VALUES: tuple[tuple[str, object, str], ...] = (
     ("commission_rate", -0.1, "commission_rate"),
     ("min_cost", -1.0, "min_cost"),
     ("slippage_bps", -5.0, "slippage_bps"),
+    # Non-numeric cost knobs: PipelineConfig used to own a private loop for
+    # these three (rejecting them BEFORE the shared canonical path ran), so
+    # the engines still differed on the message and the check order until
+    # that loop was removed (codex P1 on #409).
+    ("commission_rate", "0.0005", "commission_rate"),
+    ("min_cost", None, "min_cost"),
+    ("slippage_bps", True, "slippage_bps"),
     ("signal_to_execution_lag", 0, "signal_to_execution_lag"),
     ("signal_to_execution_lag", True, "signal_to_execution_lag"),
     ("label_horizon_days", 0, "label_horizon_days"),

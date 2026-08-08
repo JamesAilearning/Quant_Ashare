@@ -334,30 +334,6 @@ class PipelineConfig:
         # validated by ``validate_backtest_controls`` below, against the
         # canonical contract itself.
         validate_topk(self.topk, error_class=PipelineError, prefix="PipelineConfig.")
-        # Cost / fee parameters must be non-negative. Negative
-        # commission / stamp tax / slippage / min_cost would silently
-        # *add* return rather than subtract it — backtest looks better
-        # than reality. ``CanonicalExchangeCostModel.__post_init__``
-        # would catch these at backtest-construction time, but by then
-        # the feature build + model train + predict steps have already
-        # run for several minutes; failing here at config construction
-        # avoids the wasted compute.
-        # ``stamp_tax_schedule`` has its own validation below — it is
-        # a sequence-of-mappings shape, not a scalar — so the per-field
-        # numeric check applies only to the remaining three scalar
-        # cost knobs. Audit P0-4 (add-stamp-tax-schedule).
-        for name in ("commission_rate", "slippage_bps", "min_cost"):
-            value = getattr(self, name)
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
-                raise PipelineError(
-                    f"PipelineConfig.{name} must be a real number; got "
-                    f"{type(value).__name__} ({value!r})."
-                )
-            if value < 0:
-                raise PipelineError(
-                    f"PipelineConfig.{name} must be >= 0 to avoid silently "
-                    f"inflating returns by negative cost; got {value!r}."
-                )
         # Resolve AND fully validate the backtest controls now so a
         # malformed value in the YAML config fails AT CONFIG CONSTRUCTION,
         # not after several minutes of feature build. Shared with
