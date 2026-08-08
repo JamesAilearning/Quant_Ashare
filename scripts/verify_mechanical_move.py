@@ -319,7 +319,7 @@ def find_split_destinations(old_text: str | Counter[str],
 
 def _git(*args: str) -> str:
     out = subprocess.run(["git", "-C", str(_REPO), *args],
-                         capture_output=True, text=True, check=True)
+                         capture_output=True, text=True, encoding="utf-8", check=True)
     return out.stdout
 
 

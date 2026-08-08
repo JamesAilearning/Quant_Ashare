@@ -651,7 +651,7 @@ def run_gate(repo: Path, candidate: str, store_dir: Path,
         [sys.executable, str(repo / GATE), "--repo-root", str(repo),
          "--candidate", candidate, "--store-dir", str(store_dir),
          "--run-config", str(repo / run_config_rel)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     out = proc.stdout + proc.stderr
     if proc.returncode != 0 or "GATE ACCEPT" not in out:

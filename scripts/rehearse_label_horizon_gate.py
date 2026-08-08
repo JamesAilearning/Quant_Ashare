@@ -45,7 +45,7 @@ REHEARSAL_ROOT = PROJECT_ROOT / "output" / "stage6" / "rehearsal"
 def _head_commit() -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT,
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", check=True,
     ).stdout.strip()
 
 

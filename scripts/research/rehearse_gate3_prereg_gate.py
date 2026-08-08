@@ -90,7 +90,7 @@ def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
             "--store-dir", str(store), *extra]
     if "--run-config" not in extra:
         argv += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
-    out = subprocess.run(argv, capture_output=True, text=True)
+    out = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
     return out.returncode, out.stdout + out.stderr
 
 

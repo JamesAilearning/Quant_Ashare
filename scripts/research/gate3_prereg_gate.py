@@ -90,7 +90,7 @@ def _refuse(reason: str) -> int:
 def _git(repo: Path, *args: str) -> str:
     out = subprocess.run(
         ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", check=True,
     )
     return out.stdout.strip()
 
@@ -466,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     verify = subprocess.run(
         [sys.executable, str(repo / "scripts/research/gate3_store_manifest.py"),
          "--store-dir", str(args.store_dir), "--verify", str(manifest_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     )
     if verify.returncode != 0:
         return _refuse("store manifest mismatch:\n" + verify.stdout.strip())
@@ -482,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     pit = subprocess.run(
         [sys.executable, "-m", "pytest", *pit_targets, "-q",
          "--no-header", "-x"],
-        capture_output=True, text=True, cwd=str(repo),
+        capture_output=True, text=True, encoding="utf-8", cwd=str(repo),
     )
     if pit.returncode != 0:
         tail = "\n".join(pit.stdout.strip().splitlines()[-5:])
