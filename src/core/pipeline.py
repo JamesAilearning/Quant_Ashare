@@ -21,7 +21,17 @@ from src.core._canonical_request import (
     resolve_risk_constraints,
 )
 from src.core._json_utils import _sanitize_for_json, sha256_canonical
-from src.core._shared_validators import validate_n_drop, validate_topk
+from src.core._shared_validators import (
+    validate_attribution_sleeve_grouping,
+    validate_backtest_controls,
+    validate_compute_device,
+    validate_csi800_expansion_guards,
+    validate_label_horizon,
+    validate_n_drop,
+    validate_risk_constraints_policy,
+    validate_signal_to_execution_lag,
+    validate_topk,
+)
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -36,18 +46,13 @@ from src.core.attribution_sleeve_loader import (
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
-    CanonicalBacktestContractError,
     CanonicalBacktestOutput,
-    CanonicalExchangeCostModel,
-    resolve_stamp_tax_schedule,
 )
 from src.core.factor_analyzer import FactorAnalysisConfig, FactorAnalysisResult, FactorAnalyzer
 from src.core.git_provenance import capture_git_provenance
 from src.core.logger import get_logger
 from src.core.model_config_projection import build_model_train_config
 from src.core.model_trainer import (
-    GPU_SUPPORTED_MODEL_TYPES,
-    SUPPORTED_COMPUTE_DEVICES,
     ModelTrainer,
     ModelTrainResult,
 )
@@ -246,94 +251,38 @@ class PipelineConfig:
                 "PipelineConfig.benchmark_code must be non-empty; the "
                 "canonical backtest contract requires a benchmark."
             )
-        if self.attribution_sleeve_grouping and self.industry_artifact_path:
-            raise PipelineError(
-                "attribution_sleeve_grouping and industry_artifact_path "
-                "are mutually exclusive — one Brinson run takes exactly "
-                "one grouping source (v2-csi800-expansion-guards)."
-            )
-        if self.attribution_sleeve_grouping and not self.run_attribution:
-            raise PipelineError(
-                "attribution_sleeve_grouping=True requires "
-                "run_attribution=True — disabling attribution would skip "
-                "the sleeve resolution entirely and emit bare csi800 "
-                "metrics without the mandated decomposition "
-                "(v2-csi800-expansion-guards, codex P1 on #370)."
-            )
+        validate_attribution_sleeve_grouping(
+            attribution_sleeve_grouping=self.attribution_sleeve_grouping,
+            industry_artifact_path=self.industry_artifact_path,
+            run_attribution=self.run_attribution,
+            error_class=PipelineError,
+        )
         if self.risk_constraint_scope != "all_days":
             raise ValueError(
                 "risk_constraint_scope: the pipeline engine has no "
                 "rebalance-cadence machinery — only 'all_days' is "
                 f"valid; got {self.risk_constraint_scope!r}.")
-        if self.metrics_purpose not in ("official", "predictions_only"):
-            raise PipelineError(
-                "metrics_purpose must be 'official' or "
-                f"'predictions_only'; got {self.metrics_purpose!r}.")
-        if (self.risk_constraints_mode == "warn_and_clip"
-                and self.metrics_purpose != "predictions_only"):
-            raise PipelineError(
-                "risk_constraints_mode='warn_and_clip' tolerates "
-                "violations, but the clipping is POST-TRADE — the "
-                "returns are qlib's UNCLIPPED execution, i.e. the "
-                "numbers RAISE refuses. Declare "
-                "metrics_purpose='predictions_only' to state that this "
-                "run's product is out-of-fold predictions, or use "
-                "risk_constraints_mode='raise'.")
-        if self.risk_constraints_mode not in ("raise", "warn_and_clip"):
-            raise PipelineError(
-                "risk_constraints_mode must be 'raise' or "
-                f"'warn_and_clip'; got {self.risk_constraints_mode!r}.")
-        if self.risk_constraints_calibration not in ("default",
-                                                     "campaign_v1"):
-            raise PipelineError(
-                "risk_constraints_calibration must be 'default' or "
-                f"'campaign_v1'; got {self.risk_constraints_calibration!r}."
-            )
-        if self.instruments == "csi800" and not (
-                self.attribution_sleeve_grouping
-                and self.risk_constraints_enabled
-                and self.risk_constraints_calibration == "campaign_v1"):
-            raise PipelineError(
-                "instruments='csi800' requires attribution_sleeve_grouping="
-                "True, risk_constraints_enabled=True AND "
-                "risk_constraints_calibration='campaign_v1' — official "
-                "csi800 metrics without the sleeve report and the campaign "
-                "constraint calibration are forbidden; presets "
-                "config/presets/csi800*.yaml carry all three "
-                "(v2-csi800-expansion-guards, codex #370 r6 + #372 r1; "
-                "custom/copied campaign configs get no bypass)."
-            )
-        h = self.label_horizon_days
-        if not isinstance(h, int) or isinstance(h, bool) or h < 1:
-            raise PipelineError(
-                f"label_horizon_days must be a positive integer (holding days, "
-                f"T+1 close -> T+1+H close); got {h!r}."
-            )
-        if h != 1 and self.feature_handler != "Alpha158":
-            # Same up-front refusal as WalkForwardConfig (two engines, one
-            # schema): fail at config construction, not deep inside the run
-            # (codex P2 on #318).
-            raise PipelineError(
-                f"label_horizon_days={h} is only supported for feature_handler="
-                f"'Alpha158'; handler '{self.feature_handler}' defines its own "
-                "label and would silently ignore the horizon. Use the default "
-                "(1) or add horizon support to that handler first."
-            )
-        if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
-            raise PipelineError(
-                f"PipelineConfig.compute_device must be one of "
-                f"{SUPPORTED_COMPUTE_DEVICES}; got {self.compute_device!r}."
-            )
-        if (
-            self.compute_device == "gpu"
-            and self.model_type not in GPU_SUPPORTED_MODEL_TYPES
-        ):
-            raise PipelineError(
-                "PipelineConfig.compute_device='gpu' is currently supported "
-                f"only for {GPU_SUPPORTED_MODEL_TYPES}; got "
-                f"model_type={self.model_type!r}. Refusing to silently fall "
-                "back to CPU."
-            )
+        validate_risk_constraints_policy(
+            risk_constraints_mode=self.risk_constraints_mode,
+            risk_constraints_calibration=self.risk_constraints_calibration,
+            metrics_purpose=self.metrics_purpose,
+            error_class=PipelineError,
+        )
+        validate_csi800_expansion_guards(
+            instruments=self.instruments,
+            attribution_sleeve_grouping=self.attribution_sleeve_grouping,
+            risk_constraints_enabled=self.risk_constraints_enabled,
+            risk_constraints_calibration=self.risk_constraints_calibration,
+            error_class=PipelineError,
+        )
+        validate_label_horizon(
+            self.label_horizon_days, self.feature_handler,
+            error_class=PipelineError,
+        )
+        validate_compute_device(
+            self.compute_device, self.model_type,
+            error_class=PipelineError, prefix="PipelineConfig.",
+        )
         # Window order: train < valid < test. The downstream feature
         # builder validates date *format*; here we just check ordering
         # so a transposed train/test window does not waste an entire
@@ -380,12 +329,10 @@ class PipelineConfig:
                     f"before {next_start_attr} "
                     f"({getattr(self, next_start_attr)})."
                 )
-        # Numeric sanity: positive cash, non-negative cost components,
-        # topk ≥ 1.
-        if self.init_cash <= 0:
-            raise PipelineError(
-                f"PipelineConfig.init_cash must be positive; got {self.init_cash!r}."
-            )
+        # Numeric sanity: non-negative cost components, topk ≥ 1.
+        # ``init_cash`` / ``limit_threshold`` / the stamp-tax schedule are
+        # validated by ``validate_backtest_controls`` below, against the
+        # canonical contract itself.
         validate_topk(self.topk, error_class=PipelineError, prefix="PipelineConfig.")
         # Cost / fee parameters must be non-negative. Negative
         # commission / stamp tax / slippage / min_cost would silently
@@ -411,30 +358,25 @@ class PipelineConfig:
                     f"PipelineConfig.{name} must be >= 0 to avoid silently "
                     f"inflating returns by negative cost; got {value!r}."
                 )
-        # Resolve AND fully validate the stamp-tax schedule now so a
-        # malformed value in the YAML config fails AT CONFIG
-        # CONSTRUCTION, not after several minutes of feature build.
-        # ``resolve_stamp_tax_schedule`` alone only coerces the
-        # YAML shape — ordering / duplicate-date checks live on
-        # ``CanonicalExchangeCostModel._validate_stamp_tax_schedule``.
-        # Construct a throwaway cost-model with the resolved schedule
-        # so BOTH validators fire here, matching the pattern
-        # ``WalkForwardConfig.__post_init__`` uses to validate its
-        # backtest controls. Codex P2 follow-up on PR #178.
-        try:
-            resolved_schedule = resolve_stamp_tax_schedule(
-                self.stamp_tax_schedule,
-            )
-            CanonicalExchangeCostModel(
-                commission_rate=self.commission_rate,
-                stamp_tax_schedule=resolved_schedule,
-                slippage_bps=self.slippage_bps,
-                min_cost=self.min_cost,
-            )
-        except CanonicalBacktestContractError as exc:
-            raise PipelineError(
-                f"PipelineConfig.stamp_tax_schedule failed validation: {exc}"
-            ) from exc
+        # Resolve AND fully validate the backtest controls now so a
+        # malformed value in the YAML config fails AT CONFIG CONSTRUCTION,
+        # not after several minutes of feature build. Shared with
+        # WalkForwardConfig: the helper constructs throwaway canonical
+        # contract objects, so account / exchange / cost-model / stamp-tax
+        # bounds come from the contract itself and BOTH engines reject the
+        # same typo at the same point (Codex P2 follow-up on PR #178).
+        validate_backtest_controls(
+            init_cash=self.init_cash,
+            execution_price_kind=self.execution_price_kind,
+            commission_rate=self.commission_rate,
+            stamp_tax_schedule=self.stamp_tax_schedule,
+            slippage_bps=self.slippage_bps,
+            min_cost=self.min_cost,
+            limit_threshold=self.limit_threshold,
+            adjust_mode=self.adjust_mode,
+            error_class=PipelineError,
+            prefix="PipelineConfig.",
+        )
         # n_drop validity + n_drop < topk lock-step — shared with
         # WalkForwardConfig via _shared_validators so a copy-pasted
         # ``topk=10, n_drop=10`` can't slip through one path while being
@@ -444,36 +386,10 @@ class PipelineConfig:
             error_class=PipelineError,
             prefix="PipelineConfig.",
         )
-        if (
-            not isinstance(self.limit_threshold, (int, float))
-            or isinstance(self.limit_threshold, bool)
-        ):
-            raise PipelineError(
-                "PipelineConfig.limit_threshold must be a real number; got "
-                f"{type(self.limit_threshold).__name__}."
-            )
-        if not (0.0 < float(self.limit_threshold) <= 0.25):
-            raise PipelineError(
-                "PipelineConfig.limit_threshold must be in (0, 0.25]; got "
-                f"{self.limit_threshold!r}."
-            )
-        if isinstance(self.signal_to_execution_lag, bool) or not isinstance(
+        validate_signal_to_execution_lag(
             self.signal_to_execution_lag,
-            int,
-        ):
-            raise PipelineError(
-                "PipelineConfig.signal_to_execution_lag must be an int, not "
-                f"{type(self.signal_to_execution_lag).__name__}; got "
-                f"{self.signal_to_execution_lag!r}."
-            )
-        if self.signal_to_execution_lag < 1:
-            raise PipelineError(
-                "PipelineConfig.signal_to_execution_lag must be >= 1 (the "
-                "TOTAL signal→fill delay; 1 = T+1 execution); got "
-                f"{self.signal_to_execution_lag!r}. 0 (same-day) is rejected "
-                "on the canonical path — it would publish look-ahead results "
-                "as official metrics."
-            )
+            error_class=PipelineError, prefix="PipelineConfig.",
+        )
         # Model hyperparameter sanity: reject definitely-wrong values
         # (zero/negative) at config construction so the operator does not
         # wait for dataset build + model init to discover them. Heavier
