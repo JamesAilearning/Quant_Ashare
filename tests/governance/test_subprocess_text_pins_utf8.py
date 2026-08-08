@@ -41,6 +41,23 @@ if str(PROJECT_ROOT) not in sys.path:
 _TREES = ("src", "scripts")
 _SPAWNERS = frozenset({"run", "check_output", "Popen", "call", "check_call"})
 _TEXT_FLAGS = frozenset({"text", "universal_newlines"})
+# Spellings CPython's codec registry normalizes to UTF-8 (aliases differ only
+# by case and by '-'/'_' separators).
+_UTF8_SPELLINGS = frozenset({"utf8", "utf_8", "u8", "utf"})
+
+
+def _is_utf8_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is a string LITERAL naming the UTF-8 codec.
+
+    A literal is required on purpose: ``encoding=_ENC`` may well be
+    "utf-8", but a governance gate that accepts an unresolvable name
+    cannot tell it from ``encoding=locale.getpreferredencoding()``. The
+    repo has no such call today, and a literal is also what makes the
+    rule greppable.
+    """
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return False
+    return node.value.strip().lower().replace("-", "_") in _UTF8_SPELLINGS
 
 
 def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -67,7 +84,28 @@ def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
 
 
 def offending_lines(source: str) -> list[int]:
-    """Line numbers of text-mode ``subprocess`` spawns with no ``encoding``."""
+    """Line numbers of text-mode ``subprocess`` spawns not pinned to UTF-8.
+
+    Keyword VALUES are inspected, not just their presence (codex P2 on
+    #410), because both directions matter:
+
+    * ``text=False`` / ``universal_newlines=False`` asks for BYTES — the
+      locale never decodes anything, and "fixing" it by adding
+      ``encoding`` would flip the return type (any of ``encoding`` /
+      ``errors`` implies text mode);
+    * ``text=True, encoding=None`` and ``encoding="cp936"`` would satisfy
+      a name-only check while still decoding with the locale or the wrong
+      codec — exactly the regression this gate exists to prevent.
+
+    Text mode is taken as implied by a truthy ``text`` /
+    ``universal_newlines``, or by ``encoding`` / ``errors`` being passed
+    at all — ``errors="replace"`` alone switches a spawn to text mode
+    decoded with the locale.
+
+    A text flag whose value is not a literal (``text=want_str``) is
+    SKIPPED rather than guessed: the call may legitimately be binary, and
+    the emitted advice would then be wrong.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError:  # not this gate's job to report
@@ -92,12 +130,25 @@ def offending_lines(source: str) -> list[int]:
             is_spawn = False
         if not is_spawn:
             continue
-        kwargs = {kw.arg for kw in node.keywords}
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
         # ``**kwargs`` forwarding (arg is None) cannot be judged
         # statically — the encoding may live in the caller's dict.
         if None in kwargs:
             continue
-        if kwargs & _TEXT_FLAGS and "encoding" not in kwargs:
+
+        flags = [kwargs[f] for f in _TEXT_FLAGS if f in kwargs]
+        if any(not isinstance(v, ast.Constant) for v in flags):
+            continue  # dynamic text flag — cannot judge, see the docstring
+        text_requested = any(bool(v.value) for v in flags)  # type: ignore[union-attr]
+        binary_requested = bool(flags) and not text_requested
+        if binary_requested:
+            continue  # bytes by explicit request; adding encoding would flip it
+
+        implied_by_codec_kwarg = "encoding" in kwargs or "errors" in kwargs
+        if not (text_requested or implied_by_codec_kwarg):
+            continue  # binary by default
+
+        if "encoding" not in kwargs or not _is_utf8_literal(kwargs["encoding"]):
             hits.append(node.lineno)
     return hits
 
@@ -190,6 +241,58 @@ class DetectorSelfTests(unittest.TestCase):
 
     def test_ignores_module_without_subprocess_import(self) -> None:
         self.assertFalse(offending_lines('runner.run(["x"], text=True)\n'))
+
+    # ---- keyword VALUES, not just names (codex P2 #410 r2) ----
+
+    def test_ignores_explicit_binary_request(self) -> None:
+        # text=False asks for BYTES; adding encoding would flip the return
+        # type, so the advice must not be emitted here.
+        self.assertFalse(offending_lines(
+            self._IMPORT + 'subprocess.run(["git"], text=False)\n'))
+        self.assertFalse(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], universal_newlines=False)\n'))
+
+    def test_flags_encoding_none(self) -> None:
+        # Passing None is the locale default spelled out — a name-only
+        # check would have let it through.
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=True, encoding=None)\n'))
+
+    def test_flags_non_utf8_codec(self) -> None:
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=True, encoding="cp936")\n'))
+
+    def test_accepts_utf8_alias_spellings(self) -> None:
+        for spelling in ('"utf-8"', '"UTF-8"', '"utf8"', '"utf_8"', '"U8"'):
+            self.assertFalse(
+                offending_lines(
+                    self._IMPORT
+                    + f'subprocess.run(["git"], text=True, encoding={spelling})\n'),
+                spelling,
+            )
+
+    def test_flags_non_literal_encoding(self) -> None:
+        # encoding=_ENC may be "utf-8" — or locale.getpreferredencoding().
+        # A gate that cannot tell must not pass it.
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=True, encoding=_ENC)\n'))
+
+    def test_flags_errors_kwarg_without_encoding(self) -> None:
+        # errors="replace" alone switches the spawn to TEXT mode decoded
+        # with the locale — the same bug without a text flag in sight.
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], errors="replace")\n'))
+
+    def test_ignores_dynamic_text_flag(self) -> None:
+        # Unresolvable: the call may legitimately be binary, and the
+        # advice would then be wrong (see offending_lines docstring).
+        self.assertFalse(offending_lines(
+            self._IMPORT + 'subprocess.run(["git"], text=want_str)\n'))
 
 
 if __name__ == "__main__":
