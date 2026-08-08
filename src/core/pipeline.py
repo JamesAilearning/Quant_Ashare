@@ -10,12 +10,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
+from src.core._canonical_request import (
+    build_canonical_request,
+    resolve_risk_constraints,
+)
 from src.core._json_utils import _sanitize_for_json, sha256_canonical
 from src.core._shared_validators import validate_n_drop, validate_topk
 from src.core.attribution_industry_loader import (
@@ -32,11 +36,8 @@ from src.core.attribution_sleeve_loader import (
 from src.core.backtest_runner import BacktestRunner
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
-    CanonicalAccountConfig,
     CanonicalBacktestContractError,
-    CanonicalBacktestInput,
     CanonicalBacktestOutput,
-    CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
     resolve_stamp_tax_schedule,
 )
@@ -64,11 +65,6 @@ from src.core.qlib_runtime import (
     QlibRuntimeConfig,
     init_qlib_canonical,
     provider_uri_guard_message,
-)
-from src.core.risk_constraints import (
-    MinimalRiskConstraints,
-    RiskConstraintMode,
-    campaign_risk_constraints_v1,
 )
 from src.core.run_catalog import append_run_record
 from src.core.run_catalog import build_record as build_catalog_record
@@ -625,27 +621,14 @@ class Pipeline:
         _logger.info("Running canonical backtest...")
         # predictions_ref is a provenance marker (where the model artifact lives),
         # not consumed by BacktestRunner — predictions are passed directly below.
-        backtest_request = CanonicalBacktestInput(
+        # Assembled by the SHARED builder both engines use, so the exchange /
+        # cost-model / execution-semantics fields cannot drift between them
+        # ("two engines, one schema" — see src/core/_canonical_request.py).
+        backtest_request = build_canonical_request(
+            config,
             predictions_ref=model_artifact_path,
             evaluation_start=config.test_start,
             evaluation_end=config.test_end,
-            account_config=CanonicalAccountConfig(init_cash=config.init_cash),
-            exchange_config=CanonicalExchangeConfig(
-                freq="day",
-                execution_price_kind=config.execution_price_kind,
-                cost_model=CanonicalExchangeCostModel(
-                    commission_rate=config.commission_rate,
-                    stamp_tax_schedule=resolve_stamp_tax_schedule(
-                        config.stamp_tax_schedule,
-                    ),
-                    slippage_bps=config.slippage_bps,
-                    min_cost=config.min_cost,
-                ),
-                limit_threshold=config.limit_threshold,
-            ),
-            adjust_mode=config.adjust_mode,
-            signal_to_execution_lag=config.signal_to_execution_lag,
-            benchmark_code=config.benchmark_code,
         )
 
         backtest_output = BacktestRunner.run(
@@ -658,18 +641,10 @@ class Pipeline:
             # canonical code (csi800 on the csi300 basket or vice versa),
             # not just out-of-set codes.
             universe_hint=config.instruments,
-            # CSI800 guard-2 (veto-4): calibration is an EXPLICIT config
-            # choice (codex P2 on #372) — campaign presets opt into
-            # campaign_v1 (name/leverage strict, board/cash structural
-            # mismatches disabled with rationale); everything else keeps
-            # the P0-1 defaults. Effective values land in provenance.
-            risk_constraints=(
-                replace(
-                    campaign_risk_constraints_v1()
-                    if config.risk_constraints_calibration == "campaign_v1"
-                    else MinimalRiskConstraints(),
-                    mode=RiskConstraintMode(config.risk_constraints_mode))
-                if config.risk_constraints_enabled else None),
+            # Calibration (CSI800 guard-2 / veto-4) x mode (codex #406) —
+            # resolved by the shared helper so both engines thread the SAME
+            # policy; effective values land in provenance.
+            risk_constraints=resolve_risk_constraints(config),
             # The purpose travels WITH the run (codex #406 r1): a
             # violation-tolerating run is never canonical by default.
             metrics_purpose=config.metrics_purpose,

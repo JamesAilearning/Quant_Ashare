@@ -75,7 +75,44 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
 
     def test_mode_reaches_the_constraints_object(self) -> None:
         # Recording the field without threading it would look exactly
-        # like a working opt-in while every fold still aborted.
+        # like a working opt-in while every fold still aborted. Both
+        # engines now resolve the constraints through ONE shared helper
+        # (src/core/_canonical_request.py), so this pins the BEHAVIOR of
+        # that helper — strictly stronger than the source-text check it
+        # replaces, which could pass on a threading expression that was
+        # never actually reached.
+        from src.core._canonical_request import resolve_risk_constraints
+        from src.core.pipeline import PipelineConfig
+        from src.core.risk_constraints import RiskConstraintMode
+        from src.core.walk_forward import WalkForwardConfig
+
+        for cls in (PipelineConfig, WalkForwardConfig):
+            kwargs = {"provider_uri": "x"} if cls is PipelineConfig else {}
+            for declared, expected in (
+                ("raise", RiskConstraintMode.RAISE),
+                ("warn_and_clip", RiskConstraintMode.WARN_AND_CLIP),
+            ):
+                resolved = resolve_risk_constraints(cls(
+                    risk_constraints_enabled=True,
+                    risk_constraints_mode=declared,
+                    # warn_and_clip is only legal off the official purpose
+                    metrics_purpose=("official" if declared == "raise"
+                                     else "predictions_only"),
+                    **kwargs,
+                ))
+                self.assertIsNotNone(resolved, f"{cls.__name__}/{declared}")
+                assert resolved is not None  # narrow for the type checker
+                self.assertEqual(resolved.mode, expected, cls.__name__)
+            # ...and the layer stays OFF (None) when not enabled, so a
+            # disabled run cannot silently acquire clipped constraints.
+            self.assertIsNone(resolve_risk_constraints(cls(**kwargs)))
+
+    def test_both_engines_resolve_constraints_through_the_shared_helper(
+        self,
+    ) -> None:
+        # The behavioral pin above only protects the helper; this keeps
+        # both engines actually WIRED to it, so neither can drift back to
+        # a private copy of the policy expression.
         import inspect
 
         from src.core import pipeline
@@ -83,7 +120,7 @@ class RiskConstraintsModeOptIn(unittest.TestCase):
         for mod in (pipeline, engine):
             src = inspect.getsource(mod)
             self.assertIn(
-                "mode=RiskConstraintMode(config.risk_constraints_mode)",
+                "risk_constraints=resolve_risk_constraints(config)",
                 src, mod.__name__)
 
     def test_runtime_boundary_refuses_official_warn_and_clip(self) -> None:
