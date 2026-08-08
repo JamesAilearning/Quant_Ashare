@@ -279,6 +279,38 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertEqual(_PLAN["universe"]["instruments"],
                          preset["instruments"])
 
+    def test_baseline_start_yields_full_is_coverage(self) -> None:
+        # Pin the INTENT, not the literal date: the baseline must start
+        # early enough that its first out-of-fold TEST window lands on
+        # the frozen IS start. The parent config's 2018-01-01 does not —
+        # 24m train + 3m valid pushed the first prediction to
+        # 2020-04-01, leaving 670 of ~1215 IS days uncovered, so the
+        # campaign's only incremental criterion (the orthogonality
+        # penalty) had no purchase on 45% of the breeding window.
+        #
+        # Derived from the fold geometry so a change to train/valid
+        # months re-derives the requirement instead of silently
+        # invalidating this pin.
+        from dateutil.relativedelta import relativedelta
+
+        preset = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "presets"
+             / "pv_incremental_baseline.yaml").read_text(encoding="utf-8"))
+        parent = yaml.safe_load(
+            (_PROJECT_ROOT / "config_walk.yaml").read_text(encoding="utf-8"))
+        train = int(preset.get("train_months", parent["train_months"]))
+        valid = int(preset.get("valid_months", parent["valid_months"]))
+        start = _PD.Timestamp(str(preset["overall_start"])).date()
+        first_test = start + relativedelta(months=train + valid)
+        is_start = _PD.Timestamp(_PLAN["windows"]["is_start"]).date()
+        self.assertEqual(
+            is_start, first_test,
+            f"first out-of-fold test window is {first_test}, but the "
+            f"frozen IS window starts {is_start} — the baseline would "
+            f"leave part of IS uncovered")
+        # And the tail stays where the sacred invariant put it.
+        self.assertEqual("2024-12-31", str(preset["overall_end"]))
+
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])
         self.assertIs(False, _PLAN["universe"]["ex_financials"])
