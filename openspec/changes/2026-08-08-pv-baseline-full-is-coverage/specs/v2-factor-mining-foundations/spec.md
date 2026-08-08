@@ -31,12 +31,25 @@ test 窗原样保留，OOS（2023-2024）折 SHALL 分毫不动。
 
 ### Requirement: 训练窗 SHALL 被数据日历完整覆盖（fail-loud）
 
-walk-forward 引擎 SHALL 在装配每折前校验：该折声明的 train_start 不
-早于所绑 bundle 日历的首日。不满足时 SHALL fail-loud 拒绝该 run（而
-非静默用被裁剪的数据训练并在 manifest 中记录声明窗口）。
+walk-forward 引擎 SHALL 校验所绑 bundle 日历覆盖自 overall_start 起
+的完整训练历史，不满足时 SHALL fail-loud 拒绝该 run（而非静默用被裁
+剪的数据训练并在 manifest 中记录声明窗口）。
+
+容差 SHALL 按**工作日**而非固定日历天数计（codex #412 r1）：A 股交易
+日是周一至周五的子集，史上最长连续闭市为 6 个工作日（2020 春节延长；
+国庆+中秋连休亦为 6），故 [overall_start, 日历首日) 间缺失工作日数超
+过 7 即 SHALL 拒——固定日历天容差会放行在该窗口内起始的部分构建
+bundle（例：起于 2015-10-20 者缺 13 个工作日）。
 
 基线导出器 SHALL 将 overall_start 纳入 run-config 绑定，使一个用错误
 起点跑出的 run 无法被认证为本战役的基线。
+
+#### Scenario: 假期空档内的部分构建 bundle 亦拒
+
+- **GIVEN** 一个起于 2015-10-20 的部分构建 bundle（距 overall_start
+  仅 19 个日历天，但缺 13 个工作日的真实交易历史）
+- **WHEN** 启动 walk-forward
+- **THEN** run 拒绝启动 —— 固定日历天容差不得放行它
 
 #### Scenario: 旧 bundle 上声明 2015 起点即拒
 

@@ -10,7 +10,7 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -537,18 +537,30 @@ class WalkForwardEngine:
         # ``overall_start`` is a month anchor, not a trading day: the
         # first session AT OR AFTER it is what training actually uses
         # (2015-10-01 anchors to 2015-10-08 — the National Day week has
-        # no sessions). The guard therefore tolerates a holiday-sized
-        # gap and fires only when the calendar starts so much later
-        # that real trading history must be missing: the longest CN
-        # exchange closure is ~10 calendar days, while a genuinely
-        # truncated bundle is off by months (2018-01-02 vs 2015-10-01
-        # = 824 days).
+        # no sessions). A fixed calendar-day tolerance is NOT good
+        # enough (codex #412 r1): a partially built bundle starting,
+        # say, 2015-10-20 sits inside any holiday-sized window while
+        # genuinely missing sessions. So the guard counts WEEKDAYS in
+        # [overall_start, first calendar day): CN exchange sessions
+        # are a subset of Mon-Fri, so every missing session costs a
+        # weekday, and the longest closure in A-share history spans 6
+        # weekdays (Spring Festival 2020 extension; National Day +
+        # Mid-Autumn runs are also 6). Anything beyond 7 cannot be a
+        # closure — it is missing data. The partial-bundle example
+        # gaps 13 weekdays; the old 2018 bundle gaps 588.
         overall_start_date = cls._to_date(config.overall_start)
-        _HOLIDAY_TOLERANCE_DAYS = 20
-        if cal and (cal[0] - overall_start_date).days > _HOLIDAY_TOLERANCE_DAYS:
+        _MAX_EXCHANGE_CLOSURE_WEEKDAYS = 7
+        missing_weekdays = 0
+        if cal and cal[0] > overall_start_date:
+            missing_weekdays = sum(
+                1 for i in range((cal[0] - overall_start_date).days)
+                if (overall_start_date + timedelta(days=i)).weekday() < 5)
+        if cal and missing_weekdays > _MAX_EXCHANGE_CLOSURE_WEEKDAYS:
             raise WalkForwardError(
                 f"overall_start {config.overall_start} predates the "
-                f"bound data calendar (first day {cal[0].isoformat()}) "
+                f"bound data calendar (first day {cal[0].isoformat()}, "
+                f"{missing_weekdays} weekdays of history missing — the "
+                "longest A-share exchange closure spans 6) "
                 "— every fold's training window would be silently "
                 "clipped to the bundle's coverage while claiming the "
                 "declared span. Point QUANT_PROVIDER_URI at a bundle "

@@ -341,7 +341,19 @@ class PvIncrementalFreezePins(unittest.TestCase):
             WalkForwardEngine._generate_windows(cfg, calendar=cal)
         self.assertIn("predates the bound data calendar",
                       str(ctx.exception))
-        # A calendar that DOES cover the start still generates windows.
+        # The tolerance counts WEEKDAYS, not calendar days (codex #412
+        # r1): a partially built bundle starting 2015-10-20 sits only
+        # 19 calendar days after overall_start — inside any
+        # holiday-sized fixed window — while genuinely missing 13
+        # weekdays of history. It must refuse too.
+        cal_partial = [date(2015, 10, 20) + timedelta(days=i)
+                       for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx2:
+            WalkForwardEngine._generate_windows(cfg, calendar=cal_partial)
+        self.assertIn("weekdays of history missing", str(ctx2.exception))
+        # A calendar that starts on the first session AT OR AFTER the
+        # anchor (2015-10-08 — the National Day week has none; a
+        # 5-weekday gap, within the 6-weekday worst closure) passes.
         cal_ok = [date(2015, 10, 8) + timedelta(days=i) for i in range(3400)]
         wins = WalkForwardEngine._generate_windows(cfg, calendar=cal_ok)
         self.assertGreater(len(wins), 19)

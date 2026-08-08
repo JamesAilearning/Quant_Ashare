@@ -97,6 +97,18 @@ fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3�
                                  # 日子计算;无重叠表达式不罚,但覆盖
                                  # 计数入 run 记录如实披露(不缩短 train
                                  # 窗造"更早基线"——那不是生产模型族)
+                                 # ―决策①-rev1(2026-08-08,操作人重签,
+                                 # change 2026-08-08-pv-baseline-full-
+                                 # is-coverage):上述"首个样本外日晚于
+                                 # IS 窗起点/IS 前段无基线可比"自 rev1
+                                 # 起为历史陈述——数据边界解除后基线
+                                 # overall_start 前移至 2015-10-01(见
+                                 # fitness.baseline),首个 test 窗恰为
+                                 # IS 起点,覆盖=全部 IS 日。机制不变:
+                                 # 罚仍只在有基线覆盖的日子计算(如今
+                                 # 即全部);"不缩短 train 窗"禁令继续
+                                 # 有效。签署前原文描述当时数据边界下
+                                 # 的真实状态,故保留不删。
   baseline:                      # 基线预测生成 run 的绑定义务
     model: alpha158_lgb_csi800_walkforward
     overall_start: "2015-10-01"  # 决策①-rev1(2026-08-08,change

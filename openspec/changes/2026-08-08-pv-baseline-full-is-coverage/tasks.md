@@ -5,13 +5,13 @@
       （train 窗保持 24m；OOS 折分毫不动；理由与影响见 proposal）
 
 ## 1. 实现（本 PR）
-- [ ] preset 增 overall_start: "2015-10-01"（含数据边界注文）
-- [ ] 治理钉：折几何推导首个 test 窗 == 冻结 IS 起点（负向验证：
+- [x] preset 增 overall_start: "2015-10-01"（含数据边界注文）
+- [x] 治理钉：折几何推导首个 test 窗 == 冻结 IS 起点（负向验证：
       退回 2018-01-01 即红）
-- [ ] 引擎守卫：train_start 早于 bundle 日历首日即 fail-loud
+- [x] 引擎守卫：train_start 早于 bundle 日历首日即 fail-loud
       （负向验证：旧 bundle + 2015 起点即拒）
-- [ ] 导出器：check_run_config_binding 增绑 overall_start
-- [ ] 冻结件 is_coverage_policy 注文追加 rev1 备注（原文不删，
+- [x] 导出器：check_run_config_binding 增绑 overall_start
+- [x] 冻结件 is_coverage_policy 注文追加 rev1 备注（原文不删，
       标注"2026-08-08 经 2026-08-08-pv-baseline-full-is-coverage
       修订，见台账 E00x"）
 
