@@ -97,10 +97,12 @@ def offending_lines(source: str) -> list[int]:
       a name-only check while still decoding with the locale or the wrong
       codec — exactly the regression this gate exists to prevent.
 
-    Text mode is taken as implied by a truthy ``text`` /
-    ``universal_newlines``, or by ``encoding`` / ``errors`` being passed
-    at all — ``errors="replace"`` alone switches a spawn to text mode
-    decoded with the locale.
+    The order follows CPython's own rule,
+    ``text_mode = encoding or errors or text or universal_newlines``: a
+    CODEC keyword is decisive and OUTRANKS ``text=False``
+    (``run(..., text=False, encoding="cp936")`` really does return
+    ``str``), so the codec keywords are judged first and the binary-mode
+    exit is only reached when neither is present.
 
     A text flag whose value is not a literal (``text=want_str``) is
     SKIPPED rather than guessed: the call may legitimately be binary, and
@@ -136,20 +138,22 @@ def offending_lines(source: str) -> list[int]:
         if None in kwargs:
             continue
 
+        # CPython: ``text_mode = encoding or errors or text or
+        # universal_newlines`` — so a CODEC keyword wins over text=False
+        # (``run(..., text=False, encoding="cp936")`` really does return
+        # str). Judge the codec keywords FIRST, before any binary-mode
+        # exit (codex P2 r3 on #410; verified against the interpreter).
+        if "encoding" in kwargs or "errors" in kwargs:
+            if not _is_utf8_literal(kwargs.get("encoding", ast.Constant(None))):
+                hits.append(node.lineno)
+            continue
+
         flags = [kwargs[f] for f in _TEXT_FLAGS if f in kwargs]
         if any(not isinstance(v, ast.Constant) for v in flags):
             continue  # dynamic text flag — cannot judge, see the docstring
-        text_requested = any(bool(v.value) for v in flags)  # type: ignore[union-attr]
-        binary_requested = bool(flags) and not text_requested
-        if binary_requested:
-            continue  # bytes by explicit request; adding encoding would flip it
-
-        implied_by_codec_kwarg = "encoding" in kwargs or "errors" in kwargs
-        if not (text_requested or implied_by_codec_kwarg):
-            continue  # binary by default
-
-        if "encoding" not in kwargs or not _is_utf8_literal(kwargs["encoding"]):
-            hits.append(node.lineno)
+        if not any(bool(v.value) for v in flags):  # type: ignore[union-attr]
+            continue  # bytes: no codec kwarg and no truthy text flag
+        hits.append(node.lineno)  # text mode with no encoding at all
     return hits
 
 
@@ -293,6 +297,41 @@ class DetectorSelfTests(unittest.TestCase):
         # advice would then be wrong (see offending_lines docstring).
         self.assertFalse(offending_lines(
             self._IMPORT + 'subprocess.run(["git"], text=want_str)\n'))
+
+    # ---- codec kwargs OUTRANK text=False (codex P2 r3 #410) ----
+    # Verified against the interpreter: CPython computes
+    # ``text_mode = encoding or errors or text or universal_newlines``,
+    # so these combinations really do return str.
+
+    def test_codec_kwarg_beats_explicit_binary_flag(self) -> None:
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=False, encoding="cp936")\n'))
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], universal_newlines=False,'
+              ' errors="replace")\n'))
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=False, encoding=None,'
+              ' errors="replace")\n'))
+
+    def test_utf8_with_binary_flag_still_passes(self) -> None:
+        # The combination is odd, but it decodes as UTF-8 — which is all
+        # this gate is about; flagging it would be a false positive.
+        self.assertFalse(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=False, encoding="utf-8")\n'))
+
+    def test_dynamic_text_flag_with_codec_kwarg_is_judged(self) -> None:
+        # The dynamic flag is irrelevant once a codec kwarg is present:
+        # text mode is guaranteed either way, so the codec must be UTF-8.
+        self.assertTrue(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=want_str, encoding="cp936")\n'))
+        self.assertFalse(offending_lines(
+            self._IMPORT
+            + 'subprocess.run(["git"], text=want_str, encoding="utf-8")\n'))
 
 
 if __name__ == "__main__":
