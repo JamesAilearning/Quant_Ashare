@@ -5,21 +5,24 @@ from datetime import date
 from typing import Any
 
 from src.contracts.taxonomy_data_contract import TAXONOMY_MODE_STATIC
-from src.core._shared_validators import validate_n_drop, validate_topk
+from src.core._shared_validators import (
+    validate_attribution_sleeve_grouping,
+    validate_backtest_controls,
+    validate_compute_device,
+    validate_csi800_expansion_guards,
+    validate_label_horizon,
+    validate_n_drop,
+    validate_risk_constraints_policy,
+    validate_signal_to_execution_lag,
+    validate_topk,
+)
 from src.core.attribution_industry_loader import assert_industry_config_complete_or_empty
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_POST,
     ADJUST_MODE_PRE,
     EXECUTION_PRICE_CLOSE,
-    SUPPORTED_ADJUST_MODES,
-    CanonicalBacktestContractError,
-    CanonicalExchangeConfig,
-    CanonicalExchangeCostModel,
-    resolve_stamp_tax_schedule,
 )
 from src.core.model_trainer import (
-    GPU_SUPPORTED_MODEL_TYPES,
-    SUPPORTED_COMPUTE_DEVICES,
     SUPPORTED_MODEL_TYPES,
 )
 
@@ -324,20 +327,12 @@ class WalkForwardConfig:
                     "or produce empty folds."
                 )
 
-        if self.attribution_sleeve_grouping and self.industry_artifact_path:
-            raise WalkForwardError(
-                "attribution_sleeve_grouping and industry_artifact_path "
-                "are mutually exclusive — one Brinson run takes exactly "
-                "one grouping source (v2-csi800-expansion-guards)."
-            )
-        if self.attribution_sleeve_grouping and not self.run_attribution:
-            raise WalkForwardError(
-                "attribution_sleeve_grouping=True requires "
-                "run_attribution=True — disabling attribution would skip "
-                "the sleeve resolution entirely and emit bare csi800 "
-                "metrics without the mandated decomposition "
-                "(v2-csi800-expansion-guards, codex P1 on #370)."
-            )
+        validate_attribution_sleeve_grouping(
+            attribution_sleeve_grouping=self.attribution_sleeve_grouping,
+            industry_artifact_path=self.industry_artifact_path,
+            run_attribution=self.run_attribution,
+            error_class=WalkForwardError,
+        )
         if self.risk_constraint_scope not in ("all_days",
                                               "rebalance_days"):
             raise WalkForwardError(
@@ -349,44 +344,19 @@ class WalkForwardConfig:
                 "risk_constraint_scope='rebalance_days' requires a "
                 "non-daily rebalance cadence (under N=1 every day is a "
                 "rebalance day — the opt-in would be a no-op).")
-        if self.metrics_purpose not in ("official", "predictions_only"):
-            raise WalkForwardError(
-                "metrics_purpose must be 'official' or "
-                f"'predictions_only'; got {self.metrics_purpose!r}.")
-        if (self.risk_constraints_mode == "warn_and_clip"
-                and self.metrics_purpose != "predictions_only"):
-            raise WalkForwardError(
-                "risk_constraints_mode='warn_and_clip' tolerates "
-                "violations, but the clipping is POST-TRADE — the "
-                "returns are qlib's UNCLIPPED execution, i.e. the "
-                "numbers RAISE refuses. Declare "
-                "metrics_purpose='predictions_only' to state that this "
-                "run's product is out-of-fold predictions, or use "
-                "risk_constraints_mode='raise'.")
-        if self.risk_constraints_mode not in ("raise", "warn_and_clip"):
-            raise WalkForwardError(
-                "risk_constraints_mode must be 'raise' or "
-                f"'warn_and_clip'; got {self.risk_constraints_mode!r}.")
-        if self.risk_constraints_calibration not in ("default",
-                                                     "campaign_v1"):
-            raise WalkForwardError(
-                "risk_constraints_calibration must be 'default' or "
-                f"'campaign_v1'; got {self.risk_constraints_calibration!r}."
-            )
-        if self.instruments == "csi800" and not (
-                self.attribution_sleeve_grouping
-                and self.risk_constraints_enabled
-                and self.risk_constraints_calibration == "campaign_v1"):
-            raise WalkForwardError(
-                "instruments='csi800' requires attribution_sleeve_grouping="
-                "True, risk_constraints_enabled=True AND "
-                "risk_constraints_calibration='campaign_v1' — official "
-                "csi800 metrics without the sleeve report and the campaign "
-                "constraint calibration are forbidden; presets "
-                "config/presets/csi800*.yaml carry all three "
-                "(v2-csi800-expansion-guards, codex #370 r6 + #372 r1; "
-                "custom/copied campaign configs get no bypass)."
-            )
+        validate_risk_constraints_policy(
+            risk_constraints_mode=self.risk_constraints_mode,
+            risk_constraints_calibration=self.risk_constraints_calibration,
+            metrics_purpose=self.metrics_purpose,
+            error_class=WalkForwardError,
+        )
+        validate_csi800_expansion_guards(
+            instruments=self.instruments,
+            attribution_sleeve_grouping=self.attribution_sleeve_grouping,
+            risk_constraints_enabled=self.risk_constraints_enabled,
+            risk_constraints_calibration=self.risk_constraints_calibration,
+            error_class=WalkForwardError,
+        )
 
         if self.st_mask_mode not in ("required", "off_experiment"):
             raise WalkForwardError(
@@ -465,23 +435,10 @@ class WalkForwardConfig:
                 "cadence (the canonical path)."
             )
 
-        h = self.label_horizon_days
-        if not isinstance(h, int) or isinstance(h, bool) or h < 1:
-            raise WalkForwardError(
-                f"label_horizon_days must be a positive integer (holding days, "
-                f"T+1 close -> T+1+H close); got {h!r}."
-            )
-        if h != 1 and self.feature_handler != "Alpha158":
-            # Must refuse HERE, at config construction: the engine's per-fold
-            # error isolation would otherwise catch FeatureDatasetBuilder's
-            # rejection fold by fold and finish with an all-NaN placeholder
-            # report instead of failing at config load (codex P2 on #318).
-            raise WalkForwardError(
-                f"label_horizon_days={h} is only supported for feature_handler="
-                f"'Alpha158'; handler '{self.feature_handler}' defines its own "
-                "label and would silently ignore the horizon. Use the default "
-                "(1) or add horizon support to that handler first."
-            )
+        validate_label_horizon(
+            self.label_horizon_days, self.feature_handler,
+            error_class=WalkForwardError,
+        )
 
         # Validate ISO dates up-front so misconfiguration surfaces at config
         # construction rather than deep inside ``_generate_windows``.
@@ -510,23 +467,24 @@ class WalkForwardConfig:
         # the first rebalance; both validated here so the rules can't drift).
         validate_topk(self.topk, error_class=WalkForwardError)
         validate_n_drop(self.n_drop, self.topk, error_class=WalkForwardError)
-        if (
-            not isinstance(self.signal_to_execution_lag, int)
-            or isinstance(self.signal_to_execution_lag, bool)
-            or self.signal_to_execution_lag < 1
-        ):
-            raise WalkForwardError(
-                "signal_to_execution_lag must be an int >= 1 (the TOTAL "
-                "signal→fill delay; 1 = T+1 execution); got "
-                f"{self.signal_to_execution_lag!r}. 0 (same-day) is rejected "
-                "on the canonical path — it would publish look-ahead results "
-                "as official metrics."
-            )
-        if self.adjust_mode not in SUPPORTED_ADJUST_MODES:
-            raise WalkForwardError(
-                f"adjust_mode must be one of {SUPPORTED_ADJUST_MODES}; "
-                f"got {self.adjust_mode!r}."
-            )
+        validate_signal_to_execution_lag(
+            self.signal_to_execution_lag, error_class=WalkForwardError,
+        )
+        # Canonical backtest controls (account / exchange / cost model /
+        # stamp-tax schedule / adjust mode) — shared with PipelineConfig so
+        # the two engines reject the same typo at the same point, with the
+        # bounds sourced from the contract itself.
+        validate_backtest_controls(
+            init_cash=self.init_cash,
+            execution_price_kind=self.execution_price_kind,
+            commission_rate=self.commission_rate,
+            stamp_tax_schedule=self.stamp_tax_schedule,
+            slippage_bps=self.slippage_bps,
+            min_cost=self.min_cost,
+            limit_threshold=self.limit_threshold,
+            adjust_mode=self.adjust_mode,
+            error_class=WalkForwardError,
+        )
         # PIT/MinedFactor factors are built on post-adjusted PIT prices
         # (PITDataProvider pins the canonical runtime to post_adjusted). A
         # walk-forward in any other mode aborts every fold with a cryptic
@@ -555,20 +513,10 @@ class WalkForwardConfig:
                 f"model_type must be one of {SUPPORTED_MODEL_TYPES}; "
                 f"got {self.model_type!r}."
             )
-        if self.compute_device not in SUPPORTED_COMPUTE_DEVICES:
-            raise WalkForwardError(
-                f"compute_device must be one of {SUPPORTED_COMPUTE_DEVICES}; "
-                f"got {self.compute_device!r}."
-            )
-        if (
-            self.compute_device == "gpu"
-            and self.model_type not in GPU_SUPPORTED_MODEL_TYPES
-        ):
-            raise WalkForwardError(
-                "compute_device='gpu' is currently supported only for "
-                f"{GPU_SUPPORTED_MODEL_TYPES}; got model_type={self.model_type!r}. "
-                "Refusing to silently fall back to CPU."
-            )
+        validate_compute_device(
+            self.compute_device, self.model_type,
+            error_class=WalkForwardError,
+        )
 
         # Model hyperparameter sanity: reject definitely-wrong values
         # (zero/negative) at config construction — same rationale as
@@ -599,24 +547,6 @@ class WalkForwardConfig:
                 "ensemble_window must be an int >= 1 (1 disables ensembling); "
                 f"got {self.ensemble_window!r}."
             )
-        try:
-            CanonicalExchangeConfig(
-                freq="day",
-                execution_price_kind=self.execution_price_kind,
-                cost_model=CanonicalExchangeCostModel(
-                    commission_rate=self.commission_rate,
-                    stamp_tax_schedule=resolve_stamp_tax_schedule(
-                        self.stamp_tax_schedule,
-                    ),
-                    slippage_bps=self.slippage_bps,
-                    min_cost=self.min_cost,
-                ),
-                limit_threshold=self.limit_threshold,
-            )
-        except CanonicalBacktestContractError as exc:
-            raise WalkForwardError(
-                f"Invalid WalkForwardConfig backtest controls: {exc}"
-            ) from exc
 
         # Industry-taxonomy fields: same all-or-nothing contract used by
         # PipelineConfig. Catching the partial state here prevents a
