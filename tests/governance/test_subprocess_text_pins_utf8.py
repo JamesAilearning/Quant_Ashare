@@ -60,46 +60,122 @@ def _is_utf8_literal(node: ast.expr) -> bool:
     return node.value.strip().lower().replace("-", "_") in _UTF8_SPELLINGS
 
 
+def _pins_child_encoder(node: ast.expr) -> bool:
+    """Whether ``node`` is a dict literal mapping PYTHONIOENCODING to UTF-8."""
+    if not isinstance(node, ast.Dict):
+        return False
+    return any(
+        isinstance(key, ast.Constant) and key.value == "PYTHONIOENCODING"
+        and _is_utf8_literal(value)
+        for key, value in zip(node.keys, node.values, strict=True)
+    )
+
+
+def _returned_values(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    """Expressions ``fn`` returns, ignoring returns of nested functions."""
+    out: list[ast.expr] = []
+    stack: list[ast.AST] = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue  # a nested function's return is not fn's return
+        if isinstance(node, ast.Return):
+            if node.value is None:
+                out.append(ast.Constant(None))
+            else:
+                out.append(node.value)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
 def _utf8_env_helpers(tree: ast.Module) -> set[str]:
-    """Names of module functions that return an env pinning PYTHONIOENCODING.
+    """Module functions whose EVERY return pins PYTHONIOENCODING to UTF-8.
 
     A call site writes ``env=_utf8_child_env()``; the dict lives in the
-    helper, so accepting the kwarg blindly would accept any env at all.
+    helper, so the helper's RETURNED mapping is what matters — a dict
+    merely built somewhere in the body proves nothing (codex P2 r5 on
+    #410: ``def env(): tmp = {"PYTHONIOENCODING": "utf-8"}; return {}``).
+    Every return must pin it, so a conditional early ``return os.environ``
+    cannot slip through either.
     """
     helpers: set[str] = set()
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if any(_pins_child_encoder(sub) for sub in ast.walk(node)):
+        returns = _returned_values(node)
+        if returns and all(_pins_child_encoder(r) for r in returns):
             helpers.add(node.name)
     return helpers
 
 
-def _pins_child_encoder(node: ast.AST) -> bool:
-    """Whether ``node`` is a dict literal mapping PYTHONIOENCODING to UTF-8."""
-    if not isinstance(node, ast.Dict):
-        return False
-    for key, value in zip(node.keys, node.values, strict=True):
-        if (isinstance(key, ast.Constant) and key.value == "PYTHONIOENCODING"
-                and _is_utf8_literal(value)):
-            return True
-    return False
+def _enclosing_scope(tree: ast.Module, node: ast.AST) -> ast.AST:
+    """The nearest function that contains ``node`` (or the module)."""
+    best: ast.AST = tree
+    for candidate in ast.walk(tree):
+        if not isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if candidate.lineno <= node.lineno <= (candidate.end_lineno or node.lineno):
+            if candidate.lineno >= getattr(best, "lineno", -1):
+                best = candidate
+    return best
+
+
+def _bindings_for(tree: ast.Module, call: ast.Call, name: str) -> list[ast.expr]:
+    """Values ``name`` may hold AT ``call``, nearest scope first.
+
+    Module-wide collection by name was wrong (codex P2 r5 on #410): a
+    same-named assignment in an unrelated function could silently supply
+    the value for this call. Bindings are therefore taken from the
+    ENCLOSING function (only those textually before the call, nested
+    functions excluded) and, failing that, from module level. Returning
+    ALL candidates lets each caller decide conservatively — an ambiguous
+    name is never resolved to whichever binding happens to be convenient.
+    """
+    def _collect(scope: ast.AST, *, before: int | None) -> list[ast.expr]:
+        found: list[ast.expr] = []
+        stack: list[ast.AST] = list(ast.iter_child_nodes(scope))
+        while stack:
+            node = stack.pop()
+            if node is not scope and isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+            ):
+                continue  # a different scope's binding
+            if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                if (any(isinstance(t, ast.Name) and t.id == name for t in targets)
+                        and node.value is not None
+                        and (before is None or node.lineno < before)):
+                    found.append(node.value)
+                continue
+            stack.extend(ast.iter_child_nodes(node))
+        return found
+
+    scope = _enclosing_scope(tree, call)
+    if scope is not tree:
+        local = _collect(scope, before=call.lineno)
+        if local:
+            return local
+    return _collect(tree, before=None)
 
 
 def _env_pins_child_encoder(
-    env: ast.expr, helpers: set[str], assignments: dict[str, ast.expr],
+    env: ast.expr, helpers: set[str], tree: ast.Module, call: ast.Call,
 ) -> bool:
     """Whether an ``env=`` argument demonstrably pins the child's encoder.
 
-    Three shapes, all in use in this repo: an inline
+    Three shapes are in use here: an inline
     ``{**os.environ, "PYTHONIOENCODING": "utf-8"}``, a call to a module
-    helper that returns one, and a local ``env = {...}`` passed by name.
+    helper returning one, and a local ``env = {...}`` passed by name. A
+    name resolves only if EVERY binding visible at the call pins it.
     """
     if isinstance(env, ast.Name):
-        resolved = assignments.get(env.id)
-        if resolved is not None:
-            env = resolved
-    if any(_pins_child_encoder(sub) for sub in ast.walk(env)):
+        bindings = _bindings_for(tree, call, env.id)
+        return bool(bindings) and all(
+            _env_pins_child_encoder(b, helpers, tree, call) for b in bindings
+        )
+    if _pins_child_encoder(env):
         return True
     return (
         isinstance(env, ast.Call)
@@ -108,50 +184,57 @@ def _env_pins_child_encoder(
     )
 
 
-def _python_child(node: ast.Call, scope_assignments: dict[str, ast.expr]) -> bool | None:
-    """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
+# Program names known NOT to be a python interpreter. Anything else
+# unrecognized stays UNRESOLVED and fails closed, so a launcher this list
+# does not know (``py``, ``python3.12``, a venv shim) can never be waved
+# through (codex P2 r5 on #410).
+_NON_PYTHON_PROGRAMS = frozenset({"git"})
+_PYTHON_PROGRAM_PREFIXES = ("python", "py")
 
-    A python child ENCODES its stdout with the inherited locale, so the
-    parent-side pin alone is not enough for these (codex P1 / P2 r4 on
-    #410). A ``git`` child needs no env, hence the three-valued answer:
-    unresolvable argv fails closed at the call site rather than being
-    guessed either way.
-    """
-    if not node.args:
-        return None
-    argv = node.args[0]
-    if isinstance(argv, ast.Name):
-        argv = scope_assignments.get(argv.id)  # type: ignore[assignment]
-        if argv is None:
-            return None
-    if not isinstance(argv, ast.List) or not argv.elts:
-        return None
-    head = argv.elts[0]
+
+def _program_is_python(head: ast.expr) -> bool | None:
+    """True / False / None (unresolvable) for the spawned program."""
     if isinstance(head, ast.Attribute) and head.attr == "executable":
         return True  # sys.executable
     if isinstance(head, ast.Constant) and isinstance(head.value, str):
-        return Path(head.value).stem.lower().startswith("python")
+        stem = Path(head.value).stem.lower()
+        if stem in _NON_PYTHON_PROGRAMS:
+            return False
+        if stem.startswith(_PYTHON_PROGRAM_PREFIXES):
+            return True  # python, python3, pythonw, py (Windows launcher)
+        return None  # unknown program — fail closed
     return None
 
 
-def _literal_assignments(tree: ast.Module) -> dict[str, ast.expr]:
-    """``name -> list/dict literal`` for simple assignments in the module.
+def _python_child(tree: ast.Module, call: ast.Call) -> bool | None:
+    """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
 
-    Enough to resolve the two shapes this repo uses —
-    ``argv = [sys.executable, ...]; run(argv, ...)`` and
-    ``env = {...}; run(..., env=env)`` — without a dataflow analysis.
-    Anything else stays unresolvable and fails closed. ``argv += [...]``
-    must not displace the head-defining assignment, hence ``setdefault``.
+    A python child ENCODES its stdout with the inherited locale, so the
+    parent-side pin alone is not enough for these (codex P1 on #410). A
+    ``git`` child needs no env, hence the three-valued answer: anything
+    not positively identified as non-python fails closed.
     """
-    found: dict[str, ast.expr] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.List, ast.Dict)):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    found[target.id] = node.value
-        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            found.setdefault(node.target.id, node.value)
-    return found
+    if not call.args:
+        return None
+    argv = call.args[0]
+    candidates: list[ast.expr] = []
+    if isinstance(argv, ast.Name):
+        for binding in _bindings_for(tree, call, argv.id):
+            if isinstance(binding, ast.List) and binding.elts:
+                candidates.append(binding.elts[0])
+            else:
+                return None  # a non-literal binding — cannot resolve
+        if not candidates:
+            return None
+    elif isinstance(argv, ast.List) and argv.elts:
+        candidates.append(argv.elts[0])
+    else:
+        return None
+
+    verdicts = {_program_is_python(head) for head in candidates}
+    if verdicts == {False}:
+        return False
+    return True if verdicts == {True} else None
 
 
 def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -210,7 +293,6 @@ def offending_lines(source: str) -> list[int]:
     if not modules and not bare:
         return []
     helpers = _utf8_env_helpers(tree)
-    assignments = _literal_assignments(tree)
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -261,11 +343,11 @@ def offending_lines(source: str) -> list[int]:
         # Parent-side pin is right, but a PYTHON child encodes with the
         # locale — the other half of the same bug (codex P2 r4). Require
         # demonstrable env evidence; an unresolvable command fails closed.
-        is_python = _python_child(node, assignments)
+        is_python = _python_child(tree, node)
         if is_python is False:
             continue  # git & friends emit UTF-8 regardless of locale
         env = kwargs.get("env")
-        if env is None or not _env_pins_child_encoder(env, helpers, assignments):
+        if env is None or not _env_pins_child_encoder(env, helpers, tree, node):
             hits.append(node.lineno)
     return hits
 
@@ -302,6 +384,131 @@ class SubprocessEncodingPinTests(unittest.TestCase):
                 "inherited locale)."
             ),
         )
+
+
+_PIN = '{**os.environ, "PYTHONIOENCODING": "utf-8"}'
+_PREAMBLE = "import os\nimport subprocess\nimport sys\n"
+
+# The decision space, as a table. Written after this gate needed five
+# review rounds: each round fixed the ONE reported symptom, so the next
+# hole was found by the reviewer instead of by the tests. Enumerating the
+# space here — codec semantics, target resolution, **kwargs, the child
+# encoder, and every resolution shortcut the helpers take — is what makes
+# a new shortcut fail HERE first.
+_DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
+    # --- codec keyword semantics (values, not just names) ---
+    ("text bare", 'subprocess.run(["git"], text=True)', True),
+    ("text + utf-8", 'subprocess.run(["git"], text=True, encoding="utf-8")', False),
+    ("text + cp936", 'subprocess.run(["git"], text=True, encoding="cp936")', True),
+    ("text + None", 'subprocess.run(["git"], text=True, encoding=None)', True),
+    ("binary", 'subprocess.run(["git"])', False),
+    ("text=False", 'subprocess.run(["git"], text=False)', False),
+    ("text=False + cp936",
+     'subprocess.run(["git"], text=False, encoding="cp936")', True),
+    ("text=False + utf-8",
+     'subprocess.run(["git"], text=False, encoding="utf-8")', False),
+    ("errors alone", 'subprocess.run(["git"], errors="replace")', True),
+    ("errors + utf-8",
+     'subprocess.run(["git"], errors="replace", encoding="utf-8")', False),
+    ("dynamic text flag", 'subprocess.run(["git"], text=want)', False),
+    ("non-literal encoding",
+     'subprocess.run(["git"], text=True, encoding=ENC)', True),
+    ("alias U8", 'subprocess.run(["git"], text=True, encoding="U8")', False),
+    ("alias utf_8", 'subprocess.run(["git"], text=True, encoding="utf_8")', False),
+    # --- call-target resolution ---
+    ("unrelated .run()", "renderer.run(text=True)", False),
+    ("locally defined run()",
+     "def run(text=False):\n    pass\nrun(text=True)", False),
+    ("aliased module", 'import subprocess as sp\nsp.run(["git"], text=True)', True),
+    ("from-import", 'from subprocess import run\nrun(["git"], text=True)', True),
+    # --- **kwargs forwarding ---
+    ("kwargs in text mode", 'subprocess.run(["git"], text=True, **o)', True),
+    ("kwargs while binary", 'subprocess.run(["git"], check=True, **o)', False),
+    # --- the child encoder ---
+    ("python child, no env",
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8")', True),
+    ("python child, inline env",
+     f'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env={_PIN})',
+     False),
+    ("python child, env without the pin",
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8",'
+     ' env={**os.environ, "TZ": "UTC"})', True),
+    ("python child, env pinned to cp936",
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8",'
+     ' env={**os.environ, "PYTHONIOENCODING": "cp936"})', True),
+    ("python child, env=os.environ",
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8",'
+     " env=os.environ)", True),
+    ("git child needs no env",
+     'subprocess.run(["git", "log"], text=True, encoding="utf-8")', False),
+    # --- env helper: the RETURNED mapping is what counts ---
+    ("helper returns the pin",
+     f"def h():\n    return {_PIN}\n"
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=h())',
+     False),
+    ("helper builds a pin but returns bare",
+     'def h():\n    tmp = {"PYTHONIOENCODING": "utf-8"}\n    return {}\n'
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=h())',
+     True),
+    ("helper with an unpinned early return",
+     f"def h():\n    if flag:\n        return os.environ\n    return {_PIN}\n"
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=h())',
+     True),
+    ("helper whose NESTED def returns the pin",
+     f"def h():\n    def inner():\n        return {_PIN}\n    return {{}}\n"
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=h())',
+     True),
+    # --- name resolution is scope- and position-bound ---
+    ("argv bound in ANOTHER function",
+     'def a():\n    argv = [sys.executable, "x"]\n'
+     '    subprocess.run(argv, text=True, encoding="utf-8")\n'
+     'def b():\n    argv = ["git"]\n', True),
+    ("argv bound locally to python",
+     'def a():\n    argv = [sys.executable, "x"]\n'
+     '    subprocess.run(argv, text=True, encoding="utf-8")\n', True),
+    ("argv bound locally to git",
+     'def a():\n    argv = ["git", "log"]\n'
+     '    subprocess.run(argv, text=True, encoding="utf-8")\n', False),
+    ("env bound in ANOTHER function",
+     "def a():\n"
+     '    subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=env)\n'
+     f"def b():\n    env = {_PIN}\n", True),
+    ("env bound locally before the call",
+     f"def a():\n    env = {_PIN}\n"
+     '    subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=env)\n',
+     False),
+    ("env bound AFTER the call",
+     "def a():\n"
+     '    subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=env)\n'
+     f"    env = {_PIN}\n", True),
+    ("env rebound to an unpinned value",
+     f"def a():\n    env = {_PIN}\n    env = {{**os.environ}}\n"
+     '    subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=env)\n',
+     True),
+    ("module-level env constant",
+     f"ENV = {_PIN}\ndef a():\n"
+     '    subprocess.run([sys.executable, "x"], text=True, encoding="utf-8", env=ENV)\n',
+     False),
+    # --- interpreter naming / unknown programs fail closed ---
+    ("py launcher", 'subprocess.run(["py", "s.py"], text=True, encoding="utf-8")', True),
+    ("python3", 'subprocess.run(["python3", "s.py"], text=True, encoding="utf-8")', True),
+    ("absolute python.exe",
+     'subprocess.run([r"C:\\Py\\python.exe", "s"], text=True, encoding="utf-8")', True),
+    ("unknown program",
+     'subprocess.run(["node", "s.js"], text=True, encoding="utf-8")', True),
+    ("unresolvable argv expression",
+     'subprocess.run(build(), text=True, encoding="utf-8")', True),
+)
+
+
+class DecisionTableTests(unittest.TestCase):
+    """Every branch of the gate's decision space, in one place."""
+
+    def test_decision_table(self) -> None:
+        for label, body, should_flag in _DECISION_TABLE:
+            with self.subTest(case=label):
+                flagged = bool(offending_lines(_PREAMBLE + body + "\n"))
+                self.assertEqual(flagged, should_flag, label)
 
 
 class DetectorSelfTests(unittest.TestCase):
