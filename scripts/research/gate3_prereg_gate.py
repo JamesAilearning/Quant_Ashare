@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -80,6 +81,19 @@ FROZEN_ARTIFACTS = (
     "config/presets/quality_gate3_final_adjudication_c2_prof.yaml",
     "config/presets/quality_gate3_final_adjudication_c3_cash_op.yaml",
 )
+
+
+def _utf8_child_env() -> dict[str, str]:
+    """Environment for a child PYTHON process, with its stdout encoder pinned.
+
+    A child python inherits the OS locale and ENCODES its output with it
+    (cp936 on a CN Windows box), so pinning only the parent-side decoder
+    trades mojibake for a UnicodeDecodeError on the first em dash. Pin BOTH
+    ends -- same pattern as scripts/rehearse_label_horizon_gate.py::_compare
+    (codex P1 on #410). Not needed for git children: git emits UTF-8
+    regardless of locale.
+    """
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def _refuse(reason: str) -> int:
@@ -466,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     verify = subprocess.run(
         [sys.executable, str(repo / "scripts/research/gate3_store_manifest.py"),
          "--store-dir", str(args.store_dir), "--verify", str(manifest_path)],
-        capture_output=True, text=True, encoding="utf-8",
+        capture_output=True, text=True, encoding="utf-8", env=_utf8_child_env(),
     )
     if verify.returncode != 0:
         return _refuse("store manifest mismatch:\n" + verify.stdout.strip())
@@ -482,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     pit = subprocess.run(
         [sys.executable, "-m", "pytest", *pit_targets, "-q",
          "--no-header", "-x"],
-        capture_output=True, text=True, encoding="utf-8", cwd=str(repo),
+        capture_output=True, text=True, encoding="utf-8", env=_utf8_child_env(), cwd=str(repo),
     )
     if pit.returncode != 0:
         tail = "\n".join(pit.stdout.strip().splitlines()[-5:])

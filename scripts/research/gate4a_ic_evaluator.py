@@ -119,6 +119,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -181,6 +182,19 @@ C3_ENDPOINTS = ("balancesheet", "income")
 
 N_SIZE_DECILES = 10
 MAX_MV_STALENESS_DAYS = 20  # trading days; beyond -> drop from fold, counted
+
+
+def _utf8_child_env() -> dict[str, str]:
+    """Environment for a child PYTHON process, with its stdout encoder pinned.
+
+    A child python inherits the OS locale and ENCODES its output with it
+    (cp936 on a CN Windows box), so pinning only the parent-side decoder
+    trades mojibake for a UnicodeDecodeError on the first em dash. Pin BOTH
+    ends -- same pattern as scripts/rehearse_label_horizon_gate.py::_compare
+    (codex P1 on #410). Not needed for git children: git emits UTF-8
+    regardless of locale.
+    """
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 class EvaluatorError(RuntimeError):
@@ -651,7 +665,7 @@ def run_gate(repo: Path, candidate: str, store_dir: Path,
         [sys.executable, str(repo / GATE), "--repo-root", str(repo),
          "--candidate", candidate, "--store-dir", str(store_dir),
          "--run-config", str(repo / run_config_rel)],
-        capture_output=True, text=True, encoding="utf-8",
+        capture_output=True, text=True, encoding="utf-8", env=_utf8_child_env(),
     )
     out = proc.stdout + proc.stderr
     if proc.returncode != 0 or "GATE ACCEPT" not in out:
