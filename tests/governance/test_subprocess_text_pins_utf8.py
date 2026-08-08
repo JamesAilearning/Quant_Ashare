@@ -79,33 +79,56 @@ def _is_utf8_literal(node: ast.expr) -> bool:
     return node.value.strip().lower().replace("-", "_") in _UTF8_SPELLINGS
 
 
-def _sanctioned_env_names(tree: ast.Module) -> set[str]:
-    """Local names bound to ``src.core.child_env.utf8_child_env`` by import."""
-    names: set[str] = set()
+def _sanctioned_env_names(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """(bare names, module aliases) bound to the sanctioned constructor.
+
+    Both spellings must be resolved through an actual IMPORT: an attribute
+    whose base is not a proven ``src.core.child_env`` alias could be any
+    object with a same-named method returning an unpinned environment
+    (codex P2 r7 on #410) — the same target-resolution rule the spawner
+    check uses.
+    """
+    bare: set[str] = set()
+    modules: set[str] = set()
+    package, _, leaf = _CHILD_ENV_MODULE.rpartition(".")
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == _CHILD_ENV_MODULE:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == _CHILD_ENV_MODULE:
+                for alias in node.names:
+                    if alias.name == _CHILD_ENV_FUNC:
+                        bare.add(alias.asname or alias.name)
+            elif node.module == package:  # from src.core import child_env
+                for alias in node.names:
+                    if alias.name == leaf:
+                        modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == _CHILD_ENV_FUNC:
-                    names.add(alias.asname or alias.name)
-    return names
+                if alias.name == _CHILD_ENV_MODULE and alias.asname:
+                    modules.add(alias.asname)  # import ... as X
+    return bare, modules
 
 
-def _env_is_sanctioned(env: ast.expr, sanctioned: set[str]) -> bool:
+def _env_is_sanctioned(
+    env: ast.expr, bare: set[str], modules: set[str],
+) -> bool:
     """Whether ``env=`` is a DIRECT call to the sanctioned constructor.
 
-    Not "a mapping that looks pinned", and not a name that might hold one:
-    the call expression itself. Every weaker form this gate accepted in an
-    earlier revision turned out to be forgeable (see the module docstring).
+    Not "a mapping that looks pinned", not a name that might hold one, and
+    not any attribute that happens to be spelled ``utf8_child_env``: the
+    call expression itself, with its target resolved through an import.
+    Every weaker form this gate accepted in an earlier revision turned out
+    to be forgeable (see the module docstring).
     """
     if not isinstance(env, ast.Call):
         return False
     func = env.func
     if isinstance(func, ast.Name):
-        return func.id in sanctioned
+        return func.id in bare
     return (  # child_env.utf8_child_env(...)
         isinstance(func, ast.Attribute)
         and func.attr == _CHILD_ENV_FUNC
         and isinstance(func.value, ast.Name)
+        and func.value.id in modules
     )
 
 
@@ -210,7 +233,7 @@ def offending_lines(source: str) -> list[int]:
     modules, bare = _subprocess_names(tree)
     if not modules and not bare:
         return []
-    sanctioned = _sanctioned_env_names(tree)
+    sanctioned_bare, sanctioned_modules = _sanctioned_env_names(tree)
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -231,7 +254,19 @@ def offending_lines(source: str) -> list[int]:
 
         kwargs, opaque_unpacking = _collect_kwargs(node)
 
-        if "encoding" in kwargs or "errors" in kwargs:
+        # A codec keyword enables text mode only when its VALUE is truthy:
+        # CPython evaluates ``encoding or errors or text or
+        # universal_newlines``, so an explicit ``encoding=None`` leaves the
+        # result as BYTES and must not be reported — following the advice
+        # would flip the return type (codex P2 r7 on #410, verified against
+        # the interpreter). A non-literal codec value is unresolvable and
+        # therefore still counts as text mode (fail closed).
+        codecs = [kwargs[k] for k in ("encoding", "errors") if k in kwargs]
+        codec_enables_text = any(
+            not isinstance(v, ast.Constant) or v.value is not None
+            for v in codecs
+        )
+        if codec_enables_text:
             text_mode = True
         elif opaque_unpacking:
             text_mode = True  # cannot prove binary — fail closed
@@ -253,7 +288,9 @@ def offending_lines(source: str) -> list[int]:
         if _python_child(node) is False:
             continue  # git & friends emit UTF-8 regardless of locale
         env = kwargs.get("env")
-        if env is None or not _env_is_sanctioned(env, sanctioned):
+        if env is None or not _env_is_sanctioned(
+            env, sanctioned_bare, sanctioned_modules,
+        ):
             hits.append(node.lineno)
     return hits
 
@@ -327,6 +364,15 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("errors alone", 'subprocess.run(["git"], errors="replace")', True),
     ("errors + utf-8",
      'subprocess.run(["git"], errors="replace", encoding="utf-8")', False),
+    # A codec keyword set to None does NOT enable text mode (verified
+    # against the interpreter): flagging it would push the author to add
+    # an encoding and flip the call from bytes to str.
+    ("encoding=None alone", 'subprocess.run(["git"], encoding=None)', False),
+    ("errors=None alone", 'subprocess.run(["git"], errors=None)', False),
+    ("both codecs None",
+     'subprocess.run(["git"], encoding=None, errors=None)', False),
+    ("encoding=None with text=True",
+     'subprocess.run(["git"], text=True, encoding=None)', True),
     ("dynamic text flag", 'subprocess.run(["git"], text=want)', False),
     ("non-literal encoding",
      'subprocess.run(["git"], text=True, encoding=ENC)', True),
@@ -356,6 +402,16 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, env via a local name",
      "env = utf8_child_env()\n" + _PY.format(extra=", env=env"), True),
     ("python child, env=os.environ", _PY.format(extra=", env=os.environ"), True),
+    # The attribute spelling must resolve through an IMPORT of the module —
+    # any object can expose a same-named method returning an unpinned env.
+    ("python child, unrelated object with the same method name",
+     _PY.format(extra=", env=helper.utf8_child_env()"), True),
+    ("python child, imported module alias",
+     "from src.core import child_env\n"
+     + _PY.format(extra=", env=child_env.utf8_child_env()"), False),
+    ("python child, aliased module import",
+     "import src.core.child_env as ce\n"
+     + _PY.format(extra=", env=ce.utf8_child_env()"), False),
     ("python child, env pinned to cp936", _PY.format(extra=_CP936_PIN), True),
     # the three forgeries that beat the old mapping analysis
     ("python child, pin overridden by later unpacking",
