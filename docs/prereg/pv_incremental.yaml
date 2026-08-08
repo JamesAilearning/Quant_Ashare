@@ -99,6 +99,15 @@ fitness:                         # GP 适应度 = ic_mean − 罚项（PV-DP-3�
                                  # 窗造"更早基线"——那不是生产模型族)
   baseline:                      # 基线预测生成 run 的绑定义务
     model: alpha158_lgb_csi800_walkforward
+    overall_start: "2015-10-01"  # 决策①-rev1(2026-08-08,change
+                                 # 2026-08-08-pv-baseline-full-is-
+                                 # coverage,操作人重签):数据边界解除
+                                 # (tushare 回补+新 bundle)后基线起点
+                                 # 前移 27 个月(step 整数倍,折网格对
+                                 # 齐,OOS 折分毫不动),首个 test 窗恰
+                                 # 为 IS 起点,正交罚获全 IS 覆盖。
+                                 # train 窗仍 24m——原禁令"不缩短
+                                 # train 窗造更早基线"继续有效。
     provenance_required: true    # run_config_sha256/source_git 全绿入 ledger
     ensemble_window: 3           # 实现 PR 冻结(操作人签,决策②):折预测
                                  # 取生产同源 warm-ensemble(config_walk

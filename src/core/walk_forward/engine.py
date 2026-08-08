@@ -525,6 +525,35 @@ class WalkForwardEngine:
             calendar = list(D.calendar())
         # Normalize + sort + de-dup the trading calendar for bisect/index.
         cal = sorted({cls._to_date(d) for d in calendar})
+        # Train-coverage guard (codex #411 r1): the loop below snaps
+        # valid/test ends back onto the calendar and skips folds whose
+        # TAIL falls outside coverage, but nothing checked the HEAD — a
+        # fold declaring train_start before the calendar's first day
+        # would silently train on whatever slice the bundle happens to
+        # hold (a "24-month model" fitted on 3 months of data) while
+        # its manifest records the declared window, and the exporter
+        # would certify it. A bundle that cannot serve the requested
+        # history is a configuration error, never a degraded run.
+        # ``overall_start`` is a month anchor, not a trading day: the
+        # first session AT OR AFTER it is what training actually uses
+        # (2015-10-01 anchors to 2015-10-08 — the National Day week has
+        # no sessions). The guard therefore tolerates a holiday-sized
+        # gap and fires only when the calendar starts so much later
+        # that real trading history must be missing: the longest CN
+        # exchange closure is ~10 calendar days, while a genuinely
+        # truncated bundle is off by months (2018-01-02 vs 2015-10-01
+        # = 824 days).
+        overall_start_date = cls._to_date(config.overall_start)
+        _HOLIDAY_TOLERANCE_DAYS = 20
+        if cal and (cal[0] - overall_start_date).days > _HOLIDAY_TOLERANCE_DAYS:
+            raise WalkForwardError(
+                f"overall_start {config.overall_start} predates the "
+                f"bound data calendar (first day {cal[0].isoformat()}) "
+                "— every fold's training window would be silently "
+                "clipped to the bundle's coverage while claiming the "
+                "declared span. Point QUANT_PROVIDER_URI at a bundle "
+                "covering the requested history, or move "
+                "overall_start; refusing.")
         # Horizon-driven: H=1 -> LABEL_LOOKAHEAD_DAYS (today's 2), H>1 -> H+1.
         # Same shared derivation as the builder check and the UI guard.
         gap = label_lookahead_days(config.label_horizon_days)

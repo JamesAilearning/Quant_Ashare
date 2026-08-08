@@ -482,6 +482,12 @@ def check_run_config_binding(plan: dict[str, Any], agg: dict[str, Any],
     base = plan["fitness"]["baseline"]
     expected = {
         "instruments": plan["universe"]["instruments"],
+        # Decision 1-rev1 (2026-08-08-pv-baseline-full-is-coverage):
+        # the start is part of the baseline's identity — a run with a
+        # different overall_start has a different fold set and a
+        # different IS coverage, so certifying it would bind the
+        # campaign to a baseline nobody signed (codex #411 r1).
+        "overall_start": base["overall_start"],
         "overall_end": base["overall_end"],
         "ensemble_window": base["ensemble_window"],
         "feature_handler": "Alpha158",
