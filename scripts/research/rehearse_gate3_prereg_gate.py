@@ -39,12 +39,13 @@ execution record.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from src.core.child_env import utf8_child_env
 
 GATE = "scripts/research/gate3_prereg_gate.py"
 MANIFEST_REL = "docs/prereg/quality_profitability_store_manifest.json"
@@ -86,19 +87,6 @@ FINAL_STUB_REL = "config/presets/quality_gate3_final_adjudication_c1_gpa.yaml"
 FINAL_PARENT_REL = "config/presets/quality_gate3_final_adjudication.yaml"
 
 
-def _utf8_child_env() -> dict[str, str]:
-    """Environment for a child PYTHON process, with its stdout encoder pinned.
-
-    A child python inherits the OS locale and ENCODES its output with it
-    (cp936 on a CN Windows box), so pinning only the parent-side decoder
-    trades mojibake for a UnicodeDecodeError on the first em dash — and this
-    rehearsal deliberately exercises refusal paths whose messages carry em
-    dashes. Pin BOTH ends, the same way
-    scripts/rehearse_label_horizon_gate.py::_compare does (codex P1 on #410).
-    Not needed for git children: git emits UTF-8 regardless of locale.
-    """
-    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
-
 
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
     argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
@@ -106,7 +94,7 @@ def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
     if "--run-config" not in extra:
         argv += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
     out = subprocess.run(argv, capture_output=True, text=True,
-                         encoding="utf-8", env=_utf8_child_env())
+                         encoding="utf-8", env=utf8_child_env())
     return out.returncode, out.stdout + out.stderr
 
 
