@@ -141,6 +141,7 @@ from scripts.research.gate3_step_a_coverage_report import (  # noqa: E402
     members_on,
     parse_membership,
 )
+from src.core.child_env import utf8_child_env  # noqa: E402
 from src.core.microstructure_mask import (  # noqa: E402
     MicrostructureMaskResult,
     compute_unavailable_mask,
@@ -181,6 +182,7 @@ C3_ENDPOINTS = ("balancesheet", "income")
 
 N_SIZE_DECILES = 10
 MAX_MV_STALENESS_DAYS = 20  # trading days; beyond -> drop from fold, counted
+
 
 
 class EvaluatorError(RuntimeError):
@@ -651,7 +653,7 @@ def run_gate(repo: Path, candidate: str, store_dir: Path,
         [sys.executable, str(repo / GATE), "--repo-root", str(repo),
          "--candidate", candidate, "--store-dir", str(store_dir),
          "--run-config", str(repo / run_config_rel)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
     )
     out = proc.stdout + proc.stderr
     if proc.returncode != 0 or "GATE ACCEPT" not in out:

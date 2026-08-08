@@ -35,14 +35,14 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
     try:
         commit: str | None = subprocess.run(
             ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5, check=True,
+            capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
         ).stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return {"commit": None, "dirty": None}
     try:
         status = subprocess.run(
             ["git", "-C", str(_REPO_ROOT), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5, check=True,
+            capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
         ).stdout
         dirty: bool | None = bool(status.strip())
     except (OSError, subprocess.SubprocessError):

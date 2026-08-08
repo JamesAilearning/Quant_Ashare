@@ -61,7 +61,7 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
     try:
         completed = subprocess.run(
             ["git", *args], cwd=str(cwd),
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreregistrationError(
@@ -174,7 +174,7 @@ def is_ancestor(ancestor: str, descendant: str, *, repo_root: str | Path) -> boo
     try:
         completed = subprocess.run(
             ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-            cwd=str(repo_root), capture_output=True, text=True, timeout=10, check=False,
+            cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreregistrationError(
