@@ -379,6 +379,72 @@ class PvIncrementalFreezePins(unittest.TestCase):
         wins = WalkForwardEngine._generate_windows(cfg, calendar=cal_ok)
         self.assertGreater(len(wins), 19)
 
+    def test_coverage_stamp_is_read_on_the_real_run_path(self) -> None:
+        # codex #412 r3 - and the exact miss of the previous round: the
+        # guard itself was verified end to end, but the RUN wiring read
+        # provider_uri off WalkForwardConfig, which has no such field
+        # (the CLI strips it into QlibRuntimeConfig), so real runs
+        # always fell back to the legacy heuristic and the stamp was
+        # never consulted. Pin all three sides.
+        import inspect
+        import unittest.mock as mock
+        from dataclasses import fields
+
+        from src.core.walk_forward import engine
+        from src.core.walk_forward.config import WalkForwardConfig
+        from src.core.walk_forward.engine import WalkForwardEngine
+
+        # 1) The config REALLY has no provider_uri - if someone adds
+        #    one, this pin forces them to reconcile the two sources.
+        self.assertNotIn("provider_uri",
+                         {f.name for f in fields(WalkForwardConfig)})
+        # 2) run() resolves through the canonical qlib config, never
+        #    off the config object.
+        src = inspect.getsource(engine)
+        self.assertIn("data_coverage_start=_read_data_coverage_start(",
+                      src)
+        self.assertIn("cls._resolve_provider_uri()),", src)
+        self.assertNotIn('getattr(config, "provider_uri"', src)
+        # 3) Behaviour: the resolver returns the canonical URI when the
+        #    runtime is initialized, None when it is not.
+        class _Cfg:
+            provider_uri = "D:/some/bundle"
+        with mock.patch("src.core.qlib_runtime.get_canonical_qlib_config",
+                        return_value=_Cfg()):
+            self.assertEqual("D:/some/bundle",
+                             WalkForwardEngine._resolve_provider_uri())
+        with mock.patch("src.core.qlib_runtime.get_canonical_qlib_config",
+                        return_value=None):
+            self.assertIsNone(WalkForwardEngine._resolve_provider_uri())
+
+    def test_malformed_coverage_stamp_refuses_actionably(self) -> None:
+        # codex #412 r3 P2: a damaged/hand-edited stamp must surface as
+        # a classified, actionable refusal - not a raw pd.Timestamp
+        # parse traceback deep inside window generation.
+        import json as _json
+        import tempfile
+
+        from src.core.walk_forward.config import WalkForwardError
+        from src.core.walk_forward.engine import _read_data_coverage_start
+        from src.data.pit.bundle_integrity import (
+            BundleIntegrityError,
+            read_bundle_integrity,
+        )
+        for bad in ("not-a-date", "2015-13-40", "20151001"):
+            with tempfile.TemporaryDirectory() as d:
+                stamp = {"schema_version": 1,
+                         "built_from_holey_fetch": False,
+                         "built_at": "2026-08-08T00:00:00+00:00",
+                         "holes": [],
+                         "data_coverage_start": bad}
+                (Path(d) / "_fetch_integrity.json").write_text(
+                    _json.dumps(stamp), encoding="utf-8")
+                with self.assertRaises(BundleIntegrityError, msg=bad):
+                    read_bundle_integrity(Path(d))
+                # And the engine-side reader translates, not crashes.
+                with self.assertRaises(WalkForwardError, msg=bad):
+                    _read_data_coverage_start(d)
+
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])
         self.assertIs(False, _PLAN["universe"]["ex_financials"])

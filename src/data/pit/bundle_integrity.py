@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -210,10 +211,29 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             calendar_end=_require(ident_raw, "calendar_end", str, ident_ctx),
         )
     cov = raw.get("data_coverage_start")
-    if cov is not None and not isinstance(cov, str):
-        raise BundleIntegrityError(
-            f"{ctx}: data_coverage_start must be a string, got "
-            f"{type(cov).__name__}")
+    if cov is not None:
+        # Syntax AND calendar validity (codex #412 r3 P2): a damaged
+        # or hand-edited stamp ("not-a-date", "2015-13-40") must be
+        # a BundleIntegrityError here - the consumer translates that
+        # into an actionable refusal, whereas letting it through
+        # surfaces as a raw parse traceback deep in window
+        # generation.
+        if not isinstance(cov, str):
+            raise BundleIntegrityError(
+                f"{ctx}: data_coverage_start must be a string, got "
+                f"{type(cov).__name__}")
+        # Explicit yyyy-mm-dd: py3.11's fromisoformat also accepts the
+        # compact form ("20151001"), which is NOT this stamp's contract
+        # (caught by the malformed-stamp pin before this ever shipped).
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cov):
+            raise BundleIntegrityError(
+                f"{ctx}: data_coverage_start {cov!r} is not yyyy-mm-dd")
+        try:
+            date.fromisoformat(cov)
+        except ValueError as exc:
+            raise BundleIntegrityError(
+                f"{ctx}: data_coverage_start {cov!r} is not a valid "
+                "ISO calendar date (yyyy-mm-dd)") from exc
     return BundleIntegrity(
         schema_version=SCHEMA_VERSION,  # already validated equal above
         built_from_holey_fetch=built_from_holey_fetch,

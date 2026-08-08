@@ -184,7 +184,7 @@ class WalkForwardEngine:
             config,
             calendar=cls._load_trading_calendar(),
             data_coverage_start=_read_data_coverage_start(
-                getattr(config, "provider_uri", None)),
+                cls._resolve_provider_uri()),
         )
         if not windows:
             raise WalkForwardError(
@@ -763,6 +763,27 @@ class WalkForwardEngine:
         """
         from qlib.data import D
         return [cls._to_date(d) for d in D.calendar()]
+
+    @staticmethod
+    def _resolve_provider_uri() -> str | None:
+        """The provider URI from the CANONICAL qlib config.
+
+        codex #412 r3: WalkForwardConfig has NO provider_uri field -
+        the CLI strips that top-level key into QlibRuntimeConfig, so
+        reading it off the config object always yields None in real
+        runs and the coverage stamp would silently never be read.
+        Resolution therefore mirrors _resolve_bundle_identity: the
+        SAME canonical source the feature-cache key uses. None only
+        when the canonical runtime is not initialized (unit tests
+        injecting a calendar directly), where the weekday fallback
+        still guards.
+        """
+        # get_canonical_qlib_config returns None (never raises) when
+        # the runtime is not initialized, so no except is needed - the
+        # repo's no-silent-fallback pin flagged the redundant swallow.
+        from src.core.qlib_runtime import get_canonical_qlib_config
+        canonical = get_canonical_qlib_config()
+        return canonical.provider_uri if canonical else None
 
     @staticmethod
     def _resolve_bundle_identity() -> str:
