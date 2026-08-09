@@ -175,8 +175,26 @@ def derive_expected_first_session(
     try:
         cal = pd.read_parquet(path)
         anchor = coverage_start_iso.replace("-", "")
-        opens = cal[(cal["is_open"] == 1)
-                    & (cal["cal_date"].astype(str) >= anchor)]
+        # The calendar itself must COVER the anchor (codex #412 r8): a
+        # leading-truncated file that still has open rows AFTER the
+        # anchor (e.g. beginning 2015-10-09 for a 2015-10-01 anchor)
+        # would otherwise derive its own first row as the "expected"
+        # session — and a bundle truncated to the same date then
+        # passes the exact-match check. A calendar whose earliest row
+        # (open or closed) is after the anchor cannot prove there was
+        # no session in between; that is unusable evidence, not
+        # legacy.
+        all_dates = cal["cal_date"].astype(str)
+        if cal.empty or all_dates.min() > anchor:
+            raise QlibBinBuilderError(
+                f"trade_cal.parquet in {tushare_dir} does not cover "
+                f"the anchor {coverage_start_iso}: its earliest row is "
+                + (repr(all_dates.min()) if len(cal) else "absent")
+                + " - the exchange calendar is truncated at the "
+                "leading edge; re-fetch the trade_cal endpoint; "
+                "refusing to derive an expected session from evidence "
+                "that begins after the anchor.")
+        opens = cal[(cal["is_open"] == 1) & (all_dates >= anchor)]
         if opens.empty:
             raise QlibBinBuilderError(
                 f"trade_cal.parquet in {tushare_dir} has no open "

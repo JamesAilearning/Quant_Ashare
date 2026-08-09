@@ -566,6 +566,22 @@ class PvIncrementalFreezePins(unittest.TestCase):
             # exists to eliminate.
             with self.assertRaises(QlibBinBuilderError):
                 derive_expected_first_session(root, "2026-01-01")
+        # Leading truncation (codex #412 r8): a calendar whose EARLIEST
+        # row is after the anchor cannot prove there was no session in
+        # between — deriving its own first row as "expected" would let
+        # a bundle truncated to the same date pass the exact-match
+        # check. Rows after the anchor exist, so the r7 empty-check
+        # alone does not catch this.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pd_.DataFrame(
+                {"exchange": ["SSE", "SSE"],
+                 "cal_date": ["20151009", "20151012"],
+                 "is_open": [1, 1]}
+            ).to_parquet(root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError) as ctx_head:
+                derive_expected_first_session(root, "2015-10-01")
+            self.assertIn("leading edge", str(ctx_head.exception))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # No trade_cal at all (legacy dump): None, not an error.

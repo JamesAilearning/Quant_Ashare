@@ -123,6 +123,49 @@ ENDPOINTS: tuple[str, ...] = (
 # truncation when probed).
 TRADE_CAL_START_DATE = "19901201"
 
+# The earliest row tushare's own calendar carries is 1990-12-19 (the
+# exchange's first recorded session), 18 calendar days after the
+# requested start — anything within this slack is the data source's
+# genuine head, anything beyond it is a truncated response.
+_TRADE_CAL_HEAD_SLACK_DAYS = 31
+
+
+def _trade_cal_unusable(
+    df: Any, *, requested_end: str, today: str,
+) -> str | None:
+    """Why this trade_cal response must NOT be persisted, or ``None``.
+
+    Every unusable shape becomes a hole rather than a written file
+    (codex #412 r7 empty; r8 the rest): a persisted-but-unusable
+    calendar is resume-skipped by existence forever, deadlocking the
+    builder in a damaged state. Checked: presence, required columns,
+    date syntax, at least one open session, and head/tail coverage of
+    the requested full-history window (a leading-truncated calendar
+    would let the builder derive its own first row as the "expected"
+    session — the r8 escape).
+    """
+    if df is None or len(df) == 0:
+        return "empty trade_cal response"
+    missing = {"cal_date", "is_open"} - set(df.columns)
+    if missing:
+        return f"trade_cal response lacks column(s) {sorted(missing)}"
+    dates = df["cal_date"].astype(str)
+    if not dates.str.fullmatch(r"\d{8}").all():
+        bad = dates[~dates.str.fullmatch(r"\d{8}")].iloc[0]
+        return f"trade_cal cal_date {bad!r} is not YYYYMMDD"
+    if not (df["is_open"] == 1).any():
+        return "trade_cal response has no open sessions at all"
+    head = datetime.strptime(dates.min(), "%Y%m%d").date()
+    req = datetime.strptime(TRADE_CAL_START_DATE, "%Y%m%d").date()
+    if (head - req).days > _TRADE_CAL_HEAD_SLACK_DAYS:
+        return (f"trade_cal response begins {dates.min()}, far after "
+                f"the requested {TRADE_CAL_START_DATE} - leading "
+                "truncation")
+    if dates.max() < min(requested_end, today):
+        return (f"trade_cal response ends {dates.max()}, before "
+                f"{min(requested_end, today)} - trailing truncation")
+    return None
+
 DEFAULT_INDICES: tuple[str, ...] = (
     "000300.SH",  # CSI300
     "000905.SH",  # CSI500
@@ -612,15 +655,23 @@ class TushareFetcher:
         except FetchHoleError as hole:
             self._record_hole("trade_cal", "file", hole)
             return TushareFetchResult("trade_cal", 0, 0, skipped=0)
-        if df is None or df.empty:
-            # A full-history calendar can never legitimately be empty
-            # (codex #412 r7): writing an empty "success" file would
-            # resume-skip forever while the builder's anchor lookup
-            # finds no sessions — a hole, not a result.
+        # Any UNUSABLE response is a hole, never a "success" file
+        # (codex #412 r7 empty; r8 the rest): a persisted-but-unusable
+        # calendar is resume-skipped by existence forever while the
+        # builder either refuses it indefinitely or, for leading
+        # truncation, trusts it — the damaged-state deadlock this
+        # branch exists to prevent. Validation happens BEFORE the
+        # write, so nothing unusable ever lands on disk.
+        today = (self._config.now if self._config.now is not None
+                 else date.today()).strftime("%Y%m%d")
+        unusable = _trade_cal_unusable(
+            df, requested_end=self._config.end_date, today=today)
+        if unusable is not None:
             self._record_hole("trade_cal", "file", FetchHoleError(
-                "trade_cal", reason_class="empty_response", attempts=1,
-                last_error="empty trade_cal response for "
-                f"{TRADE_CAL_START_DATE}..{self._config.end_date}"))
+                "trade_cal", reason_class="unusable_response",
+                attempts=1,
+                last_error=f"{unusable} (requested "
+                f"{TRADE_CAL_START_DATE}..{self._config.end_date})"))
             return TushareFetchResult("trade_cal", 0, 0, skipped=0)
         atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)

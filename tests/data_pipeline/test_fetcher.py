@@ -77,7 +77,16 @@ class _FakeClient:
             # on the number of DATA pulls use _data_call_count to exclude it.
             if api == "trade_cal":
                 if trade_cal_dates is not None:
-                    return pd.DataFrame({"cal_date": list(trade_cal_dates)})
+                    # Full endpoint schema (exchange/cal_date/is_open):
+                    # the trade_cal ENDPOINT validates its response
+                    # shape before persisting (codex #412 r8), while
+                    # the freshness-gate consumer only reads cal_date
+                    # — extra columns are harmless there.
+                    return pd.DataFrame({
+                        "exchange": ["SSE"] * len(trade_cal_dates),
+                        "cal_date": list(trade_cal_dates),
+                        "is_open": [1] * len(trade_cal_dates),
+                    })
                 return _all_weekday_cal_df(p["start_date"], p["end_date"])
             return call_side_effect(api, **p)
 
@@ -2127,40 +2136,79 @@ class TradingDayFloorTests(unittest.TestCase):
 
 
 class TradeCalEndpointTests(unittest.TestCase):
-    def test_empty_trade_cal_is_a_hole_not_a_file(self) -> None:
-        # codex #412 r7: a full-history exchange calendar can never
-        # legitimately be empty, and an empty "success" file would be
-        # resume-skipped forever while the builder's anchor lookup
-        # finds no sessions — record a hole, write nothing.
-        client = _make_client(lambda api, **p: pd.DataFrame(),
-                              trade_cal_dates=[])
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = TushareFetcherConfig(
-                output_dir=Path(tmp), endpoints=("trade_cal",),
-                start_date="20200101", end_date="20201231",
-                rate_limit_sleep_ms=0,
-            )
-            fetcher = TushareFetcher(client, cfg)
-            fetcher.fetch()
-            self.assertFalse((Path(tmp) / "trade_cal.parquet").exists())
-            self.assertEqual(1, len(fetcher.holes))
-            self.assertEqual("trade_cal", fetcher.holes[0].endpoint)
-            self.assertEqual("empty_response",
-                             fetcher.holes[0].reason_class)
+    """Any UNUSABLE trade_cal response is a hole, never a "success"
+    file (codex #412 r7 empty; r8 the rest): a persisted-but-unusable
+    calendar is resume-skipped by existence forever, deadlocking the
+    builder in a damaged state."""
 
-    def test_nonempty_trade_cal_writes_one_file(self) -> None:
-        client = _make_client(lambda api, **p: pd.DataFrame(),
-                              trade_cal_dates=["20200102", "20200103"])
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg = TushareFetcherConfig(
-                output_dir=Path(tmp), endpoints=("trade_cal",),
-                start_date="20200101", end_date="20201231",
-                rate_limit_sleep_ms=0,
-            )
-            fetcher = TushareFetcher(client, cfg)
-            fetcher.fetch()
-            self.assertTrue((Path(tmp) / "trade_cal.parquet").exists())
-            self.assertEqual(0, len(fetcher.holes))
+    @staticmethod
+    def _run(client) -> tuple[TushareFetcher, Path]:
+        tmp = Path(tempfile.mkdtemp())
+        cfg = TushareFetcherConfig(
+            output_dir=tmp, endpoints=("trade_cal",),
+            start_date="20200101", end_date="20201231",
+            rate_limit_sleep_ms=0, now=date(2020, 12, 31),
+        )
+        fetcher = TushareFetcher(client, cfg)
+        fetcher.fetch()
+        return fetcher, tmp / "trade_cal.parquet"
+
+    def _assert_hole(self, df, reason_fragment: str) -> None:
+        client = _FakeClient(lambda api, **p: df,
+                             trade_cal_dates=None)
+        # Bypass the central trade_cal shim: serve the raw frame.
+        client.call = MagicMock(side_effect=lambda api, **p: df)
+        fetcher, path = self._run(client)
+        self.assertFalse(path.exists(), reason_fragment)
+        self.assertEqual(1, len(fetcher.holes), reason_fragment)
+        self.assertEqual("unusable_response",
+                         fetcher.holes[0].reason_class)
+        self.assertIn(reason_fragment, fetcher.holes[0].last_error)
+
+    def test_empty_is_a_hole(self) -> None:
+        self._assert_hole(pd.DataFrame(), "empty")
+
+    def test_missing_columns_is_a_hole(self) -> None:
+        self._assert_hole(pd.DataFrame({"cal_date": ["19901219"]}),
+                          "lacks column")
+
+    def test_malformed_dates_is_a_hole(self) -> None:
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["nope"],
+                          "is_open": [1]}),
+            "not YYYYMMDD")
+
+    def test_all_closed_is_a_hole(self) -> None:
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["19901219"],
+                          "is_open": [0]}),
+            "no open sessions")
+
+    def test_leading_truncation_is_a_hole(self) -> None:
+        # codex #412 r8: a calendar beginning years after the
+        # requested full-history start cannot answer for earlier
+        # anchors — persisting it would let the builder derive the
+        # truncated head as the "expected" session.
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE", "SSE"],
+                          "cal_date": ["20151009", "20201231"],
+                          "is_open": [1, 1]}),
+            "leading truncation")
+
+    def test_trailing_truncation_is_a_hole(self) -> None:
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE", "SSE"],
+                          "cal_date": ["19901219", "20150101"],
+                          "is_open": [1, 1]}),
+            "trailing truncation")
+
+    def test_usable_full_history_writes_one_file(self) -> None:
+        client = _make_client(
+            lambda api, **p: pd.DataFrame(),
+            trade_cal_dates=["19901219", "20201231"])
+        fetcher, path = self._run(client)
+        self.assertTrue(path.exists())
+        self.assertEqual(0, len(fetcher.holes))
 
 
 if __name__ == "__main__":
