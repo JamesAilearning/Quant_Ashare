@@ -625,6 +625,53 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertLess(src.index("calendar[0] != expected_first_session"),
                         src.index("write_bundle_integrity("))
 
+    def test_adj_factor_leading_coverage_is_verified(self) -> None:
+        # codex #412 r13: the bundle calendar is the union of DAILY
+        # rows alone, so a leading-truncated adj_factor dump passes
+        # every daily-based reconciliation while _apply_adjustment
+        # silently fills the missing head with factor 1.0 — UNADJUSTED
+        # prices stamped as covered. The builder must verify
+        # adj_factor's market-wide earliest date independently, before
+        # stamping.
+        import inspect
+        import tempfile
+
+        import pandas as pd_
+
+        from src.data.pit import qlib_bin_builder
+        from src.data.pit.qlib_bin_builder import earliest_endpoint_date
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Missing endpoint dir: no evidence.
+            self.assertIsNone(earliest_endpoint_date(root, "adj_factor"))
+            # Empty placeholder year is skipped; the earliest
+            # POPULATED year wins, and the earliest row inside it.
+            (root / "adj_factor" / "2015").mkdir(parents=True)
+            (root / "adj_factor" / "2016").mkdir(parents=True)
+            pd_.DataFrame({"ts_code": [], "trade_date": [],
+                           "adj_factor": []}).to_parquet(
+                root / "adj_factor" / "2015" / "A.parquet", index=False)
+            pd_.DataFrame({"ts_code": ["X", "X"],
+                           "trade_date": ["20160105", "20160104"],
+                           "adj_factor": [1.0, 1.0]}).to_parquet(
+                root / "adj_factor" / "2016" / "X.parquet", index=False)
+            self.assertEqual("2016-01-04",
+                             earliest_endpoint_date(root, "adj_factor"))
+            # A populated earlier year takes precedence.
+            pd_.DataFrame({"ts_code": ["Y"],
+                           "trade_date": ["20151008"],
+                           "adj_factor": [1.0]}).to_parquet(
+                root / "adj_factor" / "2015" / "Y.parquet", index=False)
+            self.assertEqual("2015-10-08",
+                             earliest_endpoint_date(root, "adj_factor"))
+        # Wiring: the adj_factor check runs before the stamp is
+        # written, refusing with the silent-1.0 rationale spelled out.
+        src = inspect.getsource(qlib_bin_builder)
+        self.assertIn("_adj_earliest", src)
+        self.assertLess(src.index("_adj_earliest is None or"),
+                        src.index("write_bundle_integrity("))
+
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])
         self.assertIs(False, _PLAN["universe"]["ex_financials"])

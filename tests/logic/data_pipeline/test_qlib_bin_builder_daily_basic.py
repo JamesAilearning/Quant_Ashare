@@ -105,6 +105,20 @@ def _write_daily_year(
     path = tushare_dir / "daily" / str(year) / f"{ts_code}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
+    # An HONEST dump (codex #412 r13): the builder verifies
+    # adj_factor's market-wide leading coverage before stamping, and a
+    # daily-only fixture under a complete-fetch manifest is exactly
+    # the dishonest-claim shape it refuses. factor=1.0 keeps every
+    # price assertion in this file unchanged; these tests are about
+    # daily_basic emission, not adjustment.
+    adj = pd.DataFrame({
+        "ts_code": [ts_code] * len(trade_dates),
+        "trade_date": trade_dates,
+        "adj_factor": [1.0] * len(trade_dates),
+    })
+    adj_path = tushare_dir / "adj_factor" / str(year) / f"{ts_code}.parquet"
+    adj_path.parent.mkdir(parents=True, exist_ok=True)
+    adj.to_parquet(adj_path, index=False)
 
 
 def _write_daily_basic_year(

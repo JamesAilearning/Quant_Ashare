@@ -80,7 +80,8 @@ def _write_registry(path: Path, rows: list[dict]) -> None:
 
 
 def _write_daily_year(tushare_dir: Path, year: int, ts_code: str,
-                     trade_dates: list[str], close: float = 10.0) -> None:
+                     trade_dates: list[str], close: float = 10.0,
+                     with_adj: bool = True) -> None:
     df = pd.DataFrame({
         "ts_code": [ts_code] * len(trade_dates),
         "trade_date": trade_dates,
@@ -94,6 +95,18 @@ def _write_daily_year(tushare_dir: Path, year: int, ts_code: str,
     path = tushare_dir / "daily" / str(year) / f"{ts_code}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
+    # An HONEST dump by default (codex #412 r13): the builder now
+    # verifies adj_factor's market-wide leading coverage before
+    # stamping, and a fixture that claims a complete fetch while
+    # carrying daily-only data is exactly the dishonest-claim shape it
+    # refuses. factor=1.0 keeps every price assertion unchanged.
+    # Tests that SPECIFICALLY exercise a ticker without adj data pass
+    # with_adj=False (and keep at least one other ticker WITH factors,
+    # since per-ticker absence is legal while market-wide absence is
+    # a refused truncation).
+    if with_adj:
+        _write_adj_factor_year(tushare_dir, year, ts_code, trade_dates,
+                               factor=1.0)
 
 
 def _write_adj_factor_year(tushare_dir: Path, year: int, ts_code: str,
@@ -390,15 +403,27 @@ class HappyPathTests(unittest.TestCase):
             self.assertFalse(np.isnan(valid).any())
 
     def test_no_adj_factor_falls_back_to_raw_prices(self) -> None:
-        """When no adj_factor parquet exists for a ticker, the builder
-        defaults to factor=1.0 and writes raw close prices unchanged."""
+        """When no adj_factor parquet exists FOR A TICKER, the builder
+        defaults to factor=1.0 and writes raw close prices unchanged.
+
+        Per-ticker absence stays legal (a newly listed name may lack a
+        factor file) — while MARKET-WIDE absence is a refused
+        truncation since codex #412 r13, so a second ticker carries a
+        factor file to keep the dump's market-wide leading coverage
+        honest. The assertion below is about the factor-less ticker.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_active(tmp_path / "active_stocks.parquet",
+                          ["600519.SH", "000001.SZ"])
             _write_registry(tmp_path / "registry.parquet", [])
             dates = ["20200102"]
-            _write_daily_year(tmp_path, 2020, "600519.SH", dates, close=42.0)
-            # No adj_factor parquet written
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates,
+                              close=42.0, with_adj=False)
+            # No adj_factor parquet for 600519.SH — the branch under
+            # test. 000001.SZ provides the market-wide adj coverage.
+            _write_daily_year(tmp_path, 2020, "000001.SZ", dates,
+                              close=10.0)
 
             out = tmp_path / "provider"
             QlibBinBuilder(

@@ -138,6 +138,19 @@ def _seed_tushare(tushare_dir: Path) -> None:
             _mkdirs(tushare_dir / "daily" / "2025") / f"{ts_code}.parquet",
             index=False,
         )
+        # An HONEST dump (codex #412 r13): the builder verifies
+        # adj_factor's market-wide leading coverage before stamping;
+        # factor=1.0 keeps every price in these cadence probes
+        # unchanged.
+        pd.DataFrame({
+            "ts_code": [ts_code] * len(_CAL),
+            "trade_date": list(_CAL),
+            "adj_factor": [1.0] * len(_CAL),
+        }).to_parquet(
+            _mkdirs(tushare_dir / "adj_factor" / "2025")
+            / f"{ts_code}.parquet",
+            index=False,
+        )
 
 
 def _request():

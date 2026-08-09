@@ -240,6 +240,39 @@ def derive_expected_first_session(
     return f"{first[0:4]}-{first[4:6]}-{first[6:8]}"
 
 
+def earliest_endpoint_date(tushare_dir: Path, endpoint: str) -> str | None:
+    """The market-wide earliest ``trade_date`` a per-ticker endpoint
+    dump carries, ISO-formatted, or ``None`` when it has no rows.
+
+    Anchor evidence for the coverage stamp (codex #412 r13): the
+    bundle calendar is the union of DAILY rows alone, so a
+    leading-truncated ``adj_factor`` dump passes every daily-based
+    reconciliation while ``_apply_adjustment`` silently fills the
+    missing head with factor 1.0 — UNADJUSTED prices stamped as
+    covered. In a healthy dump adj_factor coverage is a superset of
+    daily's (tushare publishes a factor for every session a listed
+    name has, traded or suspended — the independent audit confirmed
+    zero traded days without a factor), so market-wide
+    ``min(adj) <= min(daily)`` must hold; scanning only the earliest
+    populated year keeps this a few seconds on a real dump.
+    """
+    root = tushare_dir / endpoint
+    if not root.is_dir():
+        return None
+    for year_dir in sorted(d for d in root.iterdir()
+                           if d.is_dir() and re.fullmatch(r"\d{4}", d.name)):
+        best: str | None = None
+        for f in year_dir.glob("*.parquet"):
+            frame = pd.read_parquet(f, columns=["trade_date"])
+            if len(frame):
+                m = str(frame["trade_date"].astype(str).min())
+                if best is None or m < best:
+                    best = m
+        if best is not None:
+            return f"{best[0:4]}-{best[4:6]}-{best[6:8]}"
+    return None
+
+
 @dataclass(frozen=True)
 class QlibBinBuilderResult:
     output_dir: Path
@@ -515,6 +548,34 @@ class QlibBinBuilder:
                                 f"{MAX_EXCHANGE_CLOSURE_WEEKDAYS}). "
                                 "Leading raw files are missing or "
                                 "truncated; re-fetch before building.")
+                    # adj_factor leading coverage, INDEPENDENTLY (codex
+                    # #412 r13): the calendar above is the union of
+                    # DAILY rows alone, so a leading-truncated
+                    # adj_factor dump passes every daily-based check
+                    # while _apply_adjustment silently fills the
+                    # missing head with factor 1.0 — unadjusted prices
+                    # would then be stamped as covered. Healthy
+                    # adj_factor coverage is a superset of daily's, so
+                    # its market-wide earliest date must not be later
+                    # than the calendar's first day. (daily needs no
+                    # separate check — the calendar IS its earliest;
+                    # daily_basic is optional and not vouched for by
+                    # this stamp.)
+                    _adj_earliest = earliest_endpoint_date(
+                        self._tushare_dir, "adj_factor")
+                    if _adj_earliest is None or _adj_earliest > calendar[0]:
+                        raise QlibBinBuilderError(
+                            "fetch manifest claims coverage from "
+                            f"{data_coverage_start}, and daily data "
+                            f"honours it (calendar starts "
+                            f"{calendar[0]}), but adj_factor's "
+                            "market-wide earliest row is "
+                            f"{_adj_earliest!r} - its leading files "
+                            "are missing or truncated, and "
+                            "adjustment would silently fall back to "
+                            "factor 1.0 (unadjusted prices) for the "
+                            "missing head; re-fetch adj_factor "
+                            "before building.")
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,
