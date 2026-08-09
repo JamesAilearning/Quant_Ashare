@@ -44,6 +44,7 @@ from __future__ import annotations
 import ast
 import sys
 import unittest
+from collections import Counter
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -64,6 +65,11 @@ _TEXT_FLAGS = frozenset({"text", "universal_newlines"})
 # one, ``PYTHONIOENCODING`` in the child env is dead letter (verified: the
 # child emits cp936 bytes), unless UTF-8 mode is forced on the command line.
 _ENV_IGNORING_FLAGS = frozenset({"E", "I"})
+# Short interpreter options that CONSUME a value (attached, ``-Xutf8``, or
+# the next argv element, ``-X utf8``) — needed so the value is not mistaken
+# for another flag cluster, and so a later script argument spelled ``utf8``
+# is not mistaken for the option's value.
+_VALUE_TAKING_FLAGS = frozenset({"X", "W"})
 # Spellings CPython's codec registry normalizes to UTF-8 (aliases differ only
 # by case and by '-'/'_' separators).
 _UTF8_SPELLINGS = frozenset({"utf8", "utf_8", "u8", "utf"})
@@ -119,39 +125,45 @@ def _sanctioned_env_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     return bare, modules
 
 
-def _rebound_names(tree: ast.Module) -> set[str]:
-    """Names the module rebinds anywhere: parameters, assignments, loop and
-    ``with``/``except`` targets, defs and classes.
+def _binding_counts(tree: ast.Module) -> Counter[str]:
+    """How many times each name is BOUND anywhere in the module.
 
-    An imported name that is ALSO rebound somewhere is no longer proof of
-    anything at a call site — ``def launch(utf8_child_env): ...`` makes the
-    call use whatever the caller passed (codex P2 r8 on #410). Collected
-    module-wide and applied as a fail-closed veto: the remedy is simply not
-    to shadow the sanctioned name, and no file here does.
+    Every binding form counts — imports included (codex P2 r9 on #410: a
+    fallback ``except ImportError: from elsewhere import utf8_child_env``
+    re-binds the same name and the runtime branch decides which wins), as
+    do parameters, assignments, loop / ``with`` / ``except`` targets, defs
+    and classes.
+
+    A sanctioned import is trusted only when its name has EXACTLY ONE
+    binding site in the file. Anything else — a second import, a parameter,
+    an assignment — makes the name prove nothing at the call site, and the
+    call fails closed. The remedy is simply not to shadow or re-bind the
+    sanctioned name; nothing in this repo does.
     """
-    names: set[str] = set()
+    counts: Counter[str] = Counter()
 
     def _add_target(node: ast.expr | None) -> None:
         for sub in ast.walk(node) if node is not None else ():
             if isinstance(sub, ast.Name):
-                names.add(sub.id)
+                counts[sub.id] += 1
+
+    def _add_args(args: ast.arguments) -> None:
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                    args.vararg, args.kwarg):
+            if arg is not None:
+                counts[arg.arg] += 1
 
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            names.add(node.name)
-            args = node.args
-            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
-                        args.vararg, args.kwarg):
-                if arg is not None:
-                    names.add(arg.arg)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                counts[alias.asname or alias.name.split(".")[0]] += 1
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            counts[node.name] += 1
+            _add_args(node.args)
         elif isinstance(node, ast.Lambda):
-            args = node.args
-            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
-                        args.vararg, args.kwarg):
-                if arg is not None:
-                    names.add(arg.arg)
+            _add_args(node.args)
         elif isinstance(node, ast.ClassDef):
-            names.add(node.name)
+            counts[node.name] += 1
         elif isinstance(node, ast.Assign):
             for target in node.targets:
                 _add_target(target)
@@ -163,8 +175,8 @@ def _rebound_names(tree: ast.Module) -> set[str]:
         elif isinstance(node, ast.withitem):
             _add_target(node.optional_vars)
         elif isinstance(node, ast.ExceptHandler) and node.name:
-            names.add(node.name)
-    return names
+            counts[node.name] += 1
+    return counts
 
 
 def _env_is_sanctioned(
@@ -217,31 +229,62 @@ def _argv_strings(call: ast.Call) -> list[str] | None:
     return out
 
 
+def _interpreter_options(argv: list[str]) -> tuple[set[str], list[str]]:
+    """(short option letters, ``-X`` option values) of a python argv.
+
+    Parsed the way CPython parses: options end at ``-c`` / ``-m`` / ``--``
+    or the script name, and value-taking short options (``-X``, ``-W``)
+    consume the rest of their cluster if attached (``-Xutf8``) or the NEXT
+    element otherwise (``-X utf8``). Both rules matter — a trailing script
+    argument that happens to read ``utf8`` must NOT count as a UTF-8 pin
+    (codex P2 r9 on #410), and ``-Es`` must still yield the ``E``.
+    """
+    letters: set[str] = set()
+    x_values: list[str] = []
+    i = 1  # argv[0] is the interpreter itself
+    while i < len(argv):
+        arg = argv[i]
+        if not arg.startswith("-") or arg in ("-", "--"):
+            break  # the script name (or an explicit end of options)
+        if arg in ("-c", "-m"):
+            break  # everything after belongs to the command / module
+        if arg.startswith("--"):
+            i += 1
+            continue
+        cluster = arg[1:]
+        for pos, letter in enumerate(cluster):
+            if letter in _VALUE_TAKING_FLAGS:
+                attached = cluster[pos + 1:]
+                if attached:
+                    if letter == "X":
+                        x_values.append(attached)
+                elif i + 1 < len(argv):
+                    if letter == "X":
+                        x_values.append(argv[i + 1])
+                    i += 1
+                break  # the rest of the cluster was this option's value
+            letters.add(letter)
+        i += 1
+    return letters, x_values
+
+
 def _child_ignores_env(call: ast.Call) -> bool:
     """Whether the spawned python is told to IGNORE ``PYTHON*`` variables.
 
     ``-E`` ignores every ``PYTHON*`` env var and ``-I`` implies it, so
     ``PYTHONIOENCODING`` in the child env becomes dead letter and the child
     falls back to the locale encoder — verified against the interpreter
-    (codex P2 r8 on #410). ``-X utf8`` / ``-Xutf8`` forces UTF-8 mode on
-    the command line and repairs it.
+    (codex P2 r8 on #410). ``-X utf8`` forces UTF-8 mode on the command
+    line and repairs it, but only when ``utf8`` is the option PAIRED with
+    ``-X`` (codex P2 r9).
     """
     argv = _argv_strings(call)
     if argv is None:
         return False  # unresolvable argv already fails closed elsewhere
-    ignores = any(
-        arg.startswith("-") and not arg.startswith("--")
-        and set(arg[1:]) & _ENV_IGNORING_FLAGS
-        for arg in argv
-    )
-    if not ignores:
+    letters, x_values = _interpreter_options(argv)
+    if not letters & _ENV_IGNORING_FLAGS:
         return False
-    forced_utf8 = any(
-        arg.replace(" ", "").lower() in ("-xutf8", "utf8")
-        and (arg.lower().startswith("-x") or "-X" in argv)
-        for arg in argv
-    )
-    return not forced_utf8
+    return not any(v.split("=")[0].lower() == "utf8" for v in x_values)
 
 
 def _python_child(call: ast.Call) -> bool | None:
@@ -338,11 +381,12 @@ def offending_lines(source: str) -> list[int]:
     if not modules and not bare and not text_helpers:
         return []
     sanctioned_bare, sanctioned_modules = _sanctioned_env_names(tree)
-    # An imported name that is also rebound somewhere proves nothing at a
-    # call site (parameter/local shadowing) — drop it, fail closed.
-    shadowed = _rebound_names(tree)
-    sanctioned_bare -= shadowed
-    sanctioned_modules -= shadowed
+    # A sanctioned name is trusted only when the file binds it EXACTLY
+    # once — a second import, a parameter or an assignment means the call
+    # site cannot know which object it gets, so fail closed.
+    counts = _binding_counts(tree)
+    sanctioned_bare = {n for n in sanctioned_bare if counts[n] == 1}
+    sanctioned_modules = {n for n in sanctioned_modules if counts[n] == 1}
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -566,6 +610,21 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child with -E but -X utf8 forced",
      'subprocess.run([sys.executable, "-E", "-X", "utf8", "x"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
+    # ``-X`` consumes the option NEXT to it: a different -X option plus a
+    # later script argument spelled "utf8" is NOT a UTF-8 pin.
+    ("python child, -X dev with a trailing utf8 argument",
+     'subprocess.run([sys.executable, "-E", "-X", "dev", "-c", code, "utf8"],'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, utf8 only after -c",
+     'subprocess.run([sys.executable, "-I", "-c", code, "-X", "utf8"],'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -X utf8=1 accepted",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=1", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # a competing / fallback import re-binds the sanctioned name
+    ("python child, sanctioned name also imported elsewhere",
+     "from fallback import utf8_child_env\n"
+     + _PY.format(extra=", env=utf8_child_env()"), True),
     ("python child with -I but -Xutf8 forced",
      'subprocess.run([sys.executable, "-I", "-Xutf8", "x"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
