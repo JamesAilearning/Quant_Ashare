@@ -52,7 +52,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 _TREES = ("src", "scripts")
 _SPAWNERS = frozenset({"run", "check_output", "Popen", "call", "check_call"})
+# ``getoutput`` / ``getstatusoutput`` are ALWAYS text mode and take no
+# encoding at all on Python 3.10 (the oldest runtime in CI); they decode
+# with the locale, which is the whole bug. There is no pinning spelling to
+# recommend, so any use is rejected outright (codex P2 r8 on #410).
+_TEXT_ONLY_HELPERS = frozenset({"getoutput", "getstatusoutput"})
 _TEXT_FLAGS = frozenset({"text", "universal_newlines"})
+
+# Interpreter flags that make a python child IGNORE ``PYTHON*`` env vars —
+# ``-E`` per ``python --help``, and ``-I`` which implies ``-E``. With either
+# one, ``PYTHONIOENCODING`` in the child env is dead letter (verified: the
+# child emits cp936 bytes), unless UTF-8 mode is forced on the command line.
+_ENV_IGNORING_FLAGS = frozenset({"E", "I"})
 # Spellings CPython's codec registry normalizes to UTF-8 (aliases differ only
 # by case and by '-'/'_' separators).
 _UTF8_SPELLINGS = frozenset({"utf8", "utf_8", "u8", "utf"})
@@ -108,6 +119,54 @@ def _sanctioned_env_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     return bare, modules
 
 
+def _rebound_names(tree: ast.Module) -> set[str]:
+    """Names the module rebinds anywhere: parameters, assignments, loop and
+    ``with``/``except`` targets, defs and classes.
+
+    An imported name that is ALSO rebound somewhere is no longer proof of
+    anything at a call site — ``def launch(utf8_child_env): ...`` makes the
+    call use whatever the caller passed (codex P2 r8 on #410). Collected
+    module-wide and applied as a fail-closed veto: the remedy is simply not
+    to shadow the sanctioned name, and no file here does.
+    """
+    names: set[str] = set()
+
+    def _add_target(node: ast.expr | None) -> None:
+        for sub in ast.walk(node) if node is not None else ():
+            if isinstance(sub, ast.Name):
+                names.add(sub.id)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+            args = node.args
+            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                        args.vararg, args.kwarg):
+                if arg is not None:
+                    names.add(arg.arg)
+        elif isinstance(node, ast.Lambda):
+            args = node.args
+            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                        args.vararg, args.kwarg):
+                if arg is not None:
+                    names.add(arg.arg)
+        elif isinstance(node, ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                _add_target(target)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For,
+                               ast.AsyncFor, ast.comprehension)):
+            _add_target(node.target)
+        elif isinstance(node, ast.NamedExpr):
+            _add_target(node.target)
+        elif isinstance(node, ast.withitem):
+            _add_target(node.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+    return names
+
+
 def _env_is_sanctioned(
     env: ast.expr, bare: set[str], modules: set[str],
 ) -> bool:
@@ -145,6 +204,46 @@ def _program_is_python(head: ast.expr) -> bool | None:
     return None
 
 
+def _argv_strings(call: ast.Call) -> list[str] | None:
+    """The call's argv as string literals, or ``None`` if not fully literal."""
+    if not call.args or not isinstance(call.args[0], ast.List):
+        return None
+    out: list[str] = []
+    for elt in call.args[0].elts:
+        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+            out.append(elt.value)
+        else:
+            out.append("")  # sys.executable and friends: not a flag
+    return out
+
+
+def _child_ignores_env(call: ast.Call) -> bool:
+    """Whether the spawned python is told to IGNORE ``PYTHON*`` variables.
+
+    ``-E`` ignores every ``PYTHON*`` env var and ``-I`` implies it, so
+    ``PYTHONIOENCODING`` in the child env becomes dead letter and the child
+    falls back to the locale encoder — verified against the interpreter
+    (codex P2 r8 on #410). ``-X utf8`` / ``-Xutf8`` forces UTF-8 mode on
+    the command line and repairs it.
+    """
+    argv = _argv_strings(call)
+    if argv is None:
+        return False  # unresolvable argv already fails closed elsewhere
+    ignores = any(
+        arg.startswith("-") and not arg.startswith("--")
+        and set(arg[1:]) & _ENV_IGNORING_FLAGS
+        for arg in argv
+    )
+    if not ignores:
+        return False
+    forced_utf8 = any(
+        arg.replace(" ", "").lower() in ("-xutf8", "utf8")
+        and (arg.lower().startswith("-x") or "-X" in argv)
+        for arg in argv
+    )
+    return not forced_utf8
+
+
 def _python_child(call: ast.Call) -> bool | None:
     """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
 
@@ -161,8 +260,10 @@ def _python_child(call: ast.Call) -> bool | None:
     return _program_is_python(argv.elts[0])
 
 
-def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """(module aliases, bare spawner names) that resolve to ``subprocess``.
+def _subprocess_names(
+    tree: ast.Module,
+) -> tuple[set[str], set[str], set[str]]:
+    """(module aliases, bare spawner names, bare text-helper names).
 
     Resolving the CALL TARGET — not just its trailing attribute — is what
     keeps an unrelated ``renderer.run(text=True)`` or a locally defined
@@ -171,6 +272,7 @@ def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     """
     modules: set[str] = set()
     bare: set[str] = set()
+    helpers: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -180,7 +282,9 @@ def _subprocess_names(tree: ast.Module) -> tuple[set[str], set[str]]:
             for alias in node.names:
                 if alias.name in _SPAWNERS:
                     bare.add(alias.asname or alias.name)
-    return modules, bare
+                elif alias.name in _TEXT_ONLY_HELPERS:
+                    helpers.add(alias.asname or alias.name)
+    return modules, bare, helpers
 
 
 def _collect_kwargs(call: ast.Call) -> tuple[dict[str, ast.expr], bool]:
@@ -230,10 +334,15 @@ def offending_lines(source: str) -> list[int]:
         tree = ast.parse(source)
     except SyntaxError:  # not this gate's job to report
         return []
-    modules, bare = _subprocess_names(tree)
-    if not modules and not bare:
+    modules, bare, text_helpers = _subprocess_names(tree)
+    if not modules and not bare and not text_helpers:
         return []
     sanctioned_bare, sanctioned_modules = _sanctioned_env_names(tree)
+    # An imported name that is also rebound somewhere proves nothing at a
+    # call site (parameter/local shadowing) — drop it, fail closed.
+    shadowed = _rebound_names(tree)
+    sanctioned_bare -= shadowed
+    sanctioned_modules -= shadowed
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -249,6 +358,20 @@ def offending_lines(source: str) -> list[int]:
             is_spawn = func.id in bare
         else:
             is_spawn = False
+
+        # subprocess.getoutput / getstatusoutput: always text mode, and no
+        # encoding parameter at all on Python 3.10 (oldest CI runtime), so
+        # they decode with the locale and there is no pinning spelling to
+        # recommend — reject outright (codex P2 r8).
+        is_text_helper = (
+            isinstance(func, ast.Attribute)
+            and func.attr in _TEXT_ONLY_HELPERS
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules
+        ) or (isinstance(func, ast.Name) and func.id in text_helpers)
+        if is_text_helper:
+            hits.append(node.lineno)
+            continue
         if not is_spawn:
             continue
 
@@ -290,7 +413,7 @@ def offending_lines(source: str) -> list[int]:
         env = kwargs.get("env")
         if env is None or not _env_is_sanctioned(
             env, sanctioned_bare, sanctioned_modules,
-        ):
+        ) or _child_ignores_env(node):
             hits.append(node.lineno)
     return hits
 
@@ -422,6 +545,36 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, parameter shadowing a module constant",
      "ENV = utf8_child_env()\ndef f(ENV):\n    " + _PY.format(extra=", env=ENV"),
      True),
+    ("python child, sanctioned name shadowed by a parameter",
+     "def launch(utf8_child_env):\n    " + _PY.format(extra=", env=utf8_child_env()"),
+     True),
+    ("python child, sanctioned name shadowed by an assignment",
+     "utf8_child_env = make_env\n" + _PY.format(extra=", env=utf8_child_env()"),
+     True),
+    # -E ignores every PYTHON* var and -I implies it, so the env pin is dead
+    # letter (verified: the child emits cp936 bytes) unless -X utf8 forces
+    # UTF-8 mode on the command line.
+    ("python child with -E ignores the env",
+     'subprocess.run([sys.executable, "-E", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child with -I ignores the env",
+     'subprocess.run([sys.executable, "-I", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child with a combined -Es cluster",
+     'subprocess.run([sys.executable, "-Es", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child with -E but -X utf8 forced",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("python child with -I but -Xutf8 forced",
+     'subprocess.run([sys.executable, "-I", "-Xutf8", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # subprocess.getoutput / getstatusoutput decode with the locale and take
+    # no encoding on Python 3.10 — no pinning spelling exists, so reject.
+    ("getoutput", 'subprocess.getoutput("git log")', True),
+    ("getstatusoutput", 'subprocess.getstatusoutput("git log")', True),
+    ("getoutput via from-import",
+     'from subprocess import getoutput\ngetoutput("git log")', True),
     ("git child needs no env",
      'subprocess.run(["git", "log"], text=True, encoding="utf-8")', False),
     # --- interpreter naming / unknown programs fail closed ---
