@@ -78,6 +78,7 @@ import pandas as pd
 
 from src.core.logger import get_logger
 from src.data._atomic_io import atomic_write_parquet
+from src.data._trade_cal import calendar_frame_defect
 from src.data.tushare.client import (
     KIND_NETWORK,
     KIND_RATE_LIMIT,
@@ -136,25 +137,21 @@ def _trade_cal_unusable(
     """Why this trade_cal response must NOT be persisted, or ``None``.
 
     Every unusable shape becomes a hole rather than a written file
-    (codex #412 r7 empty; r8 the rest): a persisted-but-unusable
-    calendar is resume-skipped by existence forever, deadlocking the
-    builder in a damaged state. Checked: presence, required columns,
-    date syntax, at least one open session, and head/tail coverage of
-    the requested full-history window (a leading-truncated calendar
-    would let the builder derive its own first row as the "expected"
-    session — the r8 escape).
+    (codex #412 r7-r9): a persisted-but-unusable calendar is
+    resume-skipped by existence forever, deadlocking the builder in a
+    damaged state.
+
+    Structure (columns, real dates, duplicates, one-row-per-day
+    completeness, open sessions) is the shared
+    :func:`calendar_frame_defect` — the same equation the builder
+    re-checks on read, so the two ends cannot drift. Only the checks
+    that need FETCH context live here: head/tail coverage of the
+    requested full-history window.
     """
-    if df is None or len(df) == 0:
-        return "empty trade_cal response"
-    missing = {"cal_date", "is_open"} - set(df.columns)
-    if missing:
-        return f"trade_cal response lacks column(s) {sorted(missing)}"
+    defect = calendar_frame_defect(df)
+    if defect is not None:
+        return defect
     dates = df["cal_date"].astype(str)
-    if not dates.str.fullmatch(r"\d{8}").all():
-        bad = dates[~dates.str.fullmatch(r"\d{8}")].iloc[0]
-        return f"trade_cal cal_date {bad!r} is not YYYYMMDD"
-    if not (df["is_open"] == 1).any():
-        return "trade_cal response has no open sessions at all"
     head = datetime.strptime(dates.min(), "%Y%m%d").date()
     req = datetime.strptime(TRADE_CAL_START_DATE, "%Y%m%d").date()
     if (head - req).days > _TRADE_CAL_HEAD_SLACK_DAYS:

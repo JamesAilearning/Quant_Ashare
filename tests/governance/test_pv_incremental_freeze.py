@@ -544,15 +544,25 @@ class PvIncrementalFreezePins(unittest.TestCase):
             QlibBinBuilderError,
             derive_expected_first_session,
         )
-        rows = [{"exchange": "SSE", "cal_date": d, "is_open": o}
-                for d, o in (("20151001", 0), ("20151002", 0),
-                             ("20151005", 0), ("20151006", 0),
-                             ("20151007", 0), ("20151008", 1),
-                             ("20151009", 1), ("20151012", 1))]
+        # One row per CALENDAR day, weekends closed — the endpoint's
+        # real contract, which the completeness equation now enforces
+        # (codex #412 r9): a fixture that skipped weekends would fail
+        # the row-count == day-span equation, not the check under
+        # test.
+        def _cal(first: str, last: str) -> pd_.DataFrame:
+            days = pd_.date_range(first, last, freq="D")
+            return pd_.DataFrame({
+                "exchange": ["SSE"] * len(days),
+                "cal_date": [d.strftime("%Y%m%d") for d in days],
+                "is_open": [1 if d.weekday() < 5 and
+                            d.strftime("%Y%m%d") >= "20151008" else 0
+                            for d in days],
+            })
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            pd_.DataFrame(rows).to_parquet(root / "trade_cal.parquet",
-                                           index=False)
+            _cal("2015-10-01", "2015-10-12").to_parquet(
+                root / "trade_cal.parquet", index=False)
             self.assertEqual(
                 "2015-10-08",
                 derive_expected_first_session(root, "2015-10-01"))
@@ -570,18 +580,29 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # row is after the anchor cannot prove there was no session in
         # between — deriving its own first row as "expected" would let
         # a bundle truncated to the same date pass the exact-match
-        # check. Rows after the anchor exist, so the r7 empty-check
-        # alone does not catch this.
+        # check. Contiguous within its own span, so it reaches the
+        # coverage check rather than the gap equation.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            pd_.DataFrame(
-                {"exchange": ["SSE", "SSE"],
-                 "cal_date": ["20151009", "20151012"],
-                 "is_open": [1, 1]}
-            ).to_parquet(root / "trade_cal.parquet", index=False)
+            _cal("2015-10-09", "2015-10-12").to_parquet(
+                root / "trade_cal.parquet", index=False)
             with self.assertRaises(QlibBinBuilderError) as ctx_head:
                 derive_expected_first_session(root, "2015-10-01")
             self.assertIn("leading edge", str(ctx_head.exception))
+        # Interior gap (codex #412 r9): head covers the anchor, tail
+        # is fine, but days are missing in between — bounds checks
+        # pass while the derived "expected" session would be the first
+        # row AFTER the gap. The row-count equation refuses it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gap = pd_.concat([_cal("2015-10-01", "2015-10-07"),
+                              _cal("2015-10-09", "2015-10-12")],
+                             ignore_index=True)
+            gap.to_parquet(root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError) as ctx_gap:
+                derive_expected_first_session(root, "2015-10-01")
+            self.assertIn("interior days are missing",
+                          str(ctx_gap.exception))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # No trade_cal at all (legacy dump): None, not an error.

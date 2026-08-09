@@ -85,6 +85,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.logger import get_logger
+from src.data._trade_cal import calendar_frame_defect
 from src.data.bundle_manifest import compute_bundle_content_hash
 from src.data.pit.bundle_integrity import (
     MAX_EXCHANGE_CLOSURE_WEEKDAYS,
@@ -174,6 +175,23 @@ def derive_expected_first_session(
         return None
     try:
         cal = pd.read_parquet(path)
+        # STRUCTURAL completeness first (codex #412 r9), via the SAME
+        # shared equation the fetcher validates before persisting —
+        # one row per calendar day, so row count must equal the day
+        # span. The fetcher never writes a frame that fails it, but
+        # the on-disk file can be damaged or hand-edited afterwards
+        # (the threat model every guard in this change answers), and a
+        # frame with its interior missing would otherwise derive the
+        # first row AFTER the gap as the "expected" session. Real
+        # non-dates (19901340) are caught here too, as a defect
+        # report rather than a bounds-arithmetic crash (r9 P2).
+        defect = calendar_frame_defect(cal)
+        if defect is not None:
+            raise QlibBinBuilderError(
+                f"trade_cal.parquet in {tushare_dir} is unusable: "
+                f"{defect}; re-fetch the trade_cal endpoint; refusing "
+                "to derive an expected session from damaged "
+                "evidence.")
         anchor = coverage_start_iso.replace("-", "")
         # The calendar itself must COVER the anchor (codex #412 r8): a
         # leading-truncated file that still has open rows AFTER the
