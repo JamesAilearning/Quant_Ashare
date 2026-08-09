@@ -105,11 +105,23 @@ ENDPOINTS: tuple[str, ...] = (
     "stock_basic",
     "namechange",
     "suspend_d",
+    "trade_cal",
     "index_weight",
     "daily",
     "adj_factor",
     "daily_basic",
 )
+
+# trade_cal is ALWAYS pulled from the exchange's first recorded session:
+# it is the anchor-specific evidence the bin builder uses to derive the
+# EXPECTED first session for any coverage anchor (codex #412 r6 — a
+# historical-maximum gap tolerance cannot establish the expected first
+# session for a particular anchor, so every global threshold leaves a
+# hiding place of exactly its own size). A window-clipped calendar
+# could not answer for anchors before the window. Full history is one
+# call (~13k rows; the endpoint returned 19901219..20261231 without
+# truncation when probed).
+TRADE_CAL_START_DATE = "19901201"
 
 DEFAULT_INDICES: tuple[str, ...] = (
     "000300.SH",  # CSI300
@@ -570,6 +582,39 @@ class TushareFetcher:
             filename="suspend_d.parquet",
             fields="ts_code,trade_date,suspend_timing,suspend_type",
         )
+
+    def _fetch_trade_cal(self) -> TushareFetchResult:
+        """Pull the FULL exchange trading calendar (SSE) into one file.
+
+        Deliberately NOT window-scoped: the range is always
+        [TRADE_CAL_START_DATE, config.end_date], because the calendar
+        is the anchor-specific evidence for the bin builder's
+        expected-first-session reconciliation (codex #412 r6) and a
+        window-clipped file could not answer for anchors before the
+        window. One call covers all of it (~13k rows, no cap
+        observed).
+        """
+        path = self._config.output_dir / "trade_cal.parquet"
+        if self._aggregate_can_skip(path, "trade_cal", "file"):
+            _logger.info("  skip (exists): %s", path)
+            return TushareFetchResult("trade_cal", 0, 0, skipped=1)
+        if self._config.dry_run:
+            _logger.info("  [dry-run] would write %s", path)
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        try:
+            df = self._safe_call(
+                "trade_cal",
+                exchange="SSE",
+                start_date=TRADE_CAL_START_DATE,
+                end_date=self._config.end_date,
+                fields="exchange,cal_date,is_open",
+            )
+        except FetchHoleError as hole:
+            self._record_hole("trade_cal", "file", hole)
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        atomic_write_parquet(df, path)
+        _logger.info("  wrote %d rows to %s", len(df), path)
+        return TushareFetchResult("trade_cal", 1, len(df))
 
     def _fetch_index_weight(self) -> TushareFetchResult:
         """Pull index_weight per configured index across the date range.

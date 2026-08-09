@@ -89,6 +89,16 @@ class BundleIntegrity:
     # included) keep working; consumers fall back to their
     # weekday-tolerance guard.
     data_coverage_start: str | None = None
+    # codex #412 r6: the ANCHOR-SPECIFIC expected first session,
+    # derived by the builder from the fetched exchange calendar
+    # (trade_cal.parquet): the first is_open session at or after
+    # data_coverage_start. With this present, the walk-forward guard
+    # requires the bundle calendar to start EXACTLY here - zero gap
+    # tolerance - because every global gap threshold K leaves a hiding
+    # place of exactly size K (lowering 7 to 6 only moved it from
+    # 10-12 to 10-09). Optional for the same schema-v1 reasons as the
+    # fields above; absent = the closure-bound fallback applies.
+    expected_first_session: str | None = None
 
 
 MAX_EXCHANGE_CLOSURE_WEEKDAYS = 6
@@ -124,6 +134,7 @@ def write_bundle_integrity(
     holes: tuple[FetchHole, ...] = (),
     identity: BundleIdentity | None = None,
     data_coverage_start: str | None = None,
+    expected_first_session: str | None = None,
     now: datetime | None = None,
 ) -> None:
     """Atomically write the bundle's fetch-integrity stamp (temp + ``os.replace``)
@@ -153,6 +164,8 @@ def write_bundle_integrity(
     }
     if data_coverage_start is not None:
         payload["data_coverage_start"] = data_coverage_start
+    if expected_first_session is not None:
+        payload["expected_first_session"] = expected_first_session
     if identity is not None:
         payload["identity"] = {
             "tail_date": identity.tail_date,
@@ -236,30 +249,8 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             calendar_start=_require(ident_raw, "calendar_start", str, ident_ctx),
             calendar_end=_require(ident_raw, "calendar_end", str, ident_ctx),
         )
-    cov = raw.get("data_coverage_start")
-    if cov is not None:
-        # Syntax AND calendar validity (codex #412 r3 P2): a damaged
-        # or hand-edited stamp ("not-a-date", "2015-13-40") must be
-        # a BundleIntegrityError here - the consumer translates that
-        # into an actionable refusal, whereas letting it through
-        # surfaces as a raw parse traceback deep in window
-        # generation.
-        if not isinstance(cov, str):
-            raise BundleIntegrityError(
-                f"{ctx}: data_coverage_start must be a string, got "
-                f"{type(cov).__name__}")
-        # Explicit yyyy-mm-dd: py3.11's fromisoformat also accepts the
-        # compact form ("20151001"), which is NOT this stamp's contract
-        # (caught by the malformed-stamp pin before this ever shipped).
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cov):
-            raise BundleIntegrityError(
-                f"{ctx}: data_coverage_start {cov!r} is not yyyy-mm-dd")
-        try:
-            date.fromisoformat(cov)
-        except ValueError as exc:
-            raise BundleIntegrityError(
-                f"{ctx}: data_coverage_start {cov!r} is not a valid "
-                "ISO calendar date (yyyy-mm-dd)") from exc
+    cov = _validated_stamp_date(raw, "data_coverage_start", ctx)
+    expected = _validated_stamp_date(raw, "expected_first_session", ctx)
     return BundleIntegrity(
         schema_version=SCHEMA_VERSION,  # already validated equal above
         built_from_holey_fetch=built_from_holey_fetch,
@@ -267,7 +258,34 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
         holes=holes,
         identity=identity,
         data_coverage_start=cov,
+        expected_first_session=expected,
     )
+
+
+def _validated_stamp_date(raw: Any, key: str, ctx: str) -> str | None:
+    """An optional stamp date, validated for syntax AND calendar
+    validity (codex #412 r3 P2): a damaged or hand-edited stamp
+    ("not-a-date", "2015-13-40") must be a BundleIntegrityError here -
+    the consumer translates that into an actionable refusal, whereas
+    letting it through surfaces as a raw parse traceback deep in
+    window generation. Explicit yyyy-mm-dd: py3.11's fromisoformat
+    also accepts the compact form ("20151001"), which is NOT this
+    stamp's contract (caught by the malformed-stamp pin)."""
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise BundleIntegrityError(
+            f"{ctx}: {key} must be a string, got {type(value).__name__}")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise BundleIntegrityError(f"{ctx}: {key} {value!r} is not yyyy-mm-dd")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise BundleIntegrityError(
+            f"{ctx}: {key} {value!r} is not a valid "
+            "ISO calendar date (yyyy-mm-dd)") from exc
+    return value
 
 
 def _require(obj: Any, key: str, typ: type, ctx: str) -> Any:

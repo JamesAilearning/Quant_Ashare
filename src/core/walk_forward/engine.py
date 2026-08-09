@@ -79,17 +79,20 @@ from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatas
 _logger = get_logger(__name__)
 
 
-def _read_data_coverage_start(provider_uri: str | None) -> str | None:
-    """The bundle's stamped fetch-coverage start, or ``None``.
+def _read_coverage_stamp(
+    provider_uri: str | None,
+) -> tuple[str | None, str | None]:
+    """The bundle's stamped ``(data_coverage_start,
+    expected_first_session)``, either ``None`` when absent.
 
-    ``None`` (no stamp / legacy stamp without the field / unreadable)
+    ``(None, None)`` (no stamp / legacy stamp without the fields)
     falls back to the weekday-tolerance guard in
     ``_generate_windows`` - pre-existing bundles, the production one
     included, keep working exactly as before (codex #412 r2; the
     same optional-within-schema-v1 posture as ``identity``).
     """
     if not provider_uri:
-        return None
+        return None, None
     from src.data.pit.bundle_integrity import (
         BundleIntegrityError,
         read_bundle_integrity,
@@ -108,8 +111,8 @@ def _read_data_coverage_start(provider_uri: str | None) -> str | None:
     if integrity is None:
         # Genuinely absent stamp = pre-stamp bundle; the weekday
         # fallback in _generate_windows still guards it.
-        return None
-    return integrity.data_coverage_start
+        return None, None
+    return integrity.data_coverage_start, integrity.expected_first_session
 
 
 class WalkForwardEngine:
@@ -180,11 +183,13 @@ class WalkForwardEngine:
         discovered_manifests = FoldManifest.discover(output_dir)
 
         # Generate fold windows (embargo-gapped; calendar from qlib runtime)
+        stamped_coverage, stamped_first_session = _read_coverage_stamp(
+            cls._resolve_provider_uri())
         windows = cls._generate_windows(
             config,
             calendar=cls._load_trading_calendar(),
-            data_coverage_start=_read_data_coverage_start(
-                cls._resolve_provider_uri()),
+            data_coverage_start=stamped_coverage,
+            expected_first_session=stamped_first_session,
         )
         if not windows:
             raise WalkForwardError(
@@ -530,6 +535,7 @@ class WalkForwardEngine:
         config: WalkForwardConfig,
         calendar: Sequence[date] | None = None,
         data_coverage_start: str | None = None,
+        expected_first_session: str | None = None,
     ) -> list[tuple[str, ...]]:
         """Generate (train_s, train_e, valid_s, valid_e, test_s, test_e) tuples.
 
@@ -614,16 +620,34 @@ class WalkForwardEngine:
                     "be silently clipped. Point QUANT_PROVIDER_URI at "
                     "a bundle whose fetch covers the requested "
                     "history, or move overall_start; refusing.")
-        # The stamp check is ADDITIVE, never a replacement (codex #412
-        # r4): the manifest coverage is the fetch's REQUESTED window,
-        # recorded before files are verified, and the fetcher's
-        # freshness rule validates tails only - so a stamp can claim
-        # 2015-10-01 while leading raw files are missing and the built
-        # calendar starts years later. Disabling the calendar-gap
-        # refusal whenever a stamp exists would let exactly that case
-        # through. Both guards therefore ALWAYS run: the stamp catches
-        # truncation hidden inside the closure window (10-12 case),
-        # the calendar gap catches a stamp the data does not honour.
+        # ANCHOR-SPECIFIC exactness (codex #412 r6): when the stamp
+        # carries the exchange-calendar-derived expected first
+        # session, the bundle calendar must start EXACTLY there - zero
+        # gap tolerance. Every global gap threshold K leaves a hiding
+        # place of exactly size K (lowering 7 to 6 only moved it from
+        # 10-12 to 10-09); only the exchange's own calendar names the
+        # first session for a PARTICULAR anchor.
+        if (expected_first_session is not None and cal
+                and cal[0] != cls._to_date(expected_first_session)):
+            raise WalkForwardError(
+                f"the bundle's integrity stamp says the exchange's "
+                f"first session at or after its coverage start is "
+                f"{expected_first_session}, but the bundle calendar "
+                f"starts {cal[0].isoformat()} - the data does not "
+                "honour the stamped coverage (leading history is "
+                "missing or the stamp is stale); rebuild the bundle; "
+                "refusing.")
+        # The stamp checks are ADDITIVE, never a replacement (codex
+        # #412 r4): the manifest coverage is the fetch's REQUESTED
+        # window, recorded before files are verified, and the
+        # fetcher's freshness rule validates tails only - so a stamp
+        # can claim 2015-10-01 while leading raw files are missing and
+        # the built calendar starts years later. Disabling the
+        # calendar-gap refusal whenever a stamp exists would let
+        # exactly that case through. All guards therefore ALWAYS run:
+        # the coverage stamp catches honestly-stamped truncation, the
+        # expected-first-session stamp pins the exact anchor, the
+        # calendar gap bounds legacy stamps with neither field.
         from src.data.pit.bundle_integrity import (
             MAX_EXCHANGE_CLOSURE_WEEKDAYS,
             missing_weekdays_between,

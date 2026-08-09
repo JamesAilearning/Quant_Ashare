@@ -362,6 +362,28 @@ class PvIncrementalFreezePins(unittest.TestCase):
             cfg, calendar=cal_full, data_coverage_start="2015-10-01")
         self.assertGreater(len(wins_cov), 19)
 
+        # ANCHOR-SPECIFIC exactness (codex #412 r6): with the
+        # exchange-calendar-derived expected first session stamped,
+        # even a ONE-session truncation refuses - the case no global
+        # gap threshold can ever catch (every bound K accepts a gap of
+        # exactly K; lowering 7 to 6 merely moved the hiding place
+        # from 10-12 to 10-09).
+        cal_1009 = [date(2015, 10, 9) + timedelta(days=i)
+                    for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx_exact:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1009,
+                data_coverage_start="2015-10-01",
+                expected_first_session="2015-10-08")
+        self.assertIn("does not honour the stamped coverage",
+                      str(ctx_exact.exception))
+        # And the honest bundle passes the exact check.
+        wins_exact = WalkForwardEngine._generate_windows(
+            cfg, calendar=cal_full,
+            data_coverage_start="2015-10-01",
+            expected_first_session="2015-10-08")
+        self.assertGreater(len(wins_exact), 19)
+
         # ADDITIVE, not a replacement (codex #412 r4): the manifest
         # coverage is the fetch's REQUESTED window, so a stamp can
         # claim 2015-10-01 while leading raw files are missing and the
@@ -428,9 +450,9 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # 2) run() resolves through the canonical qlib config, never
         #    off the config object.
         src = inspect.getsource(engine)
-        self.assertIn("data_coverage_start=_read_data_coverage_start(",
+        self.assertIn("_read_coverage_stamp(",
                       src)
-        self.assertIn("cls._resolve_provider_uri()),", src)
+        self.assertIn("cls._resolve_provider_uri())", src)
         self.assertNotIn('getattr(config, "provider_uri"', src)
         # 3) Behaviour: the resolver returns the canonical URI when the
         #    runtime is initialized, None when it is not.
@@ -452,7 +474,7 @@ class PvIncrementalFreezePins(unittest.TestCase):
         import tempfile
 
         from src.core.walk_forward.config import WalkForwardError
-        from src.core.walk_forward.engine import _read_data_coverage_start
+        from src.core.walk_forward.engine import _read_coverage_stamp
         from src.data.pit.bundle_integrity import (
             BundleIntegrityError,
             read_bundle_integrity,
@@ -470,7 +492,7 @@ class PvIncrementalFreezePins(unittest.TestCase):
                     read_bundle_integrity(Path(d))
                 # And the engine-side reader translates, not crashes.
                 with self.assertRaises(WalkForwardError, msg=bad):
-                    _read_data_coverage_start(d)
+                    _read_coverage_stamp(d)
 
     def test_builder_cross_checks_stamp_against_built_calendar(self) -> None:
         # codex #412 r4: the builder must not stamp a coverage claim
@@ -504,6 +526,55 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertIn("> MAX_EXCHANGE_CLOSURE_WEEKDAYS", src)
         # And the refusal precedes the stamp write.
         self.assertLess(src.index("weekdays of "),
+                        src.index("write_bundle_integrity("))
+
+    def test_builder_derives_the_anchor_specific_first_session(self) -> None:
+        # codex #412 r6: with the fetched exchange calendar on disk,
+        # the builder derives the EXACT expected first session for the
+        # coverage anchor and reconciles/stamps against it - no gap
+        # heuristic. Behavioural on a synthetic trade_cal; wiring
+        # pinned by source (exact-match refusal precedes the stamp).
+        import inspect
+        import tempfile
+
+        import pandas as pd_
+
+        from src.data.pit import qlib_bin_builder
+        from src.data.pit.qlib_bin_builder import (
+            QlibBinBuilderError,
+            derive_expected_first_session,
+        )
+        rows = [{"exchange": "SSE", "cal_date": d, "is_open": o}
+                for d, o in (("20151001", 0), ("20151002", 0),
+                             ("20151005", 0), ("20151006", 0),
+                             ("20151007", 0), ("20151008", 1),
+                             ("20151009", 1), ("20151012", 1))]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pd_.DataFrame(rows).to_parquet(root / "trade_cal.parquet",
+                                           index=False)
+            self.assertEqual(
+                "2015-10-08",
+                derive_expected_first_session(root, "2015-10-01"))
+            self.assertEqual(
+                "2015-10-09",
+                derive_expected_first_session(root, "2015-10-09"))
+            # Anchor beyond the calendar tail: no evidence, legacy.
+            self.assertIsNone(
+                derive_expected_first_session(root, "2026-01-01"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # No trade_cal at all (legacy dump): None, not an error.
+            self.assertIsNone(
+                derive_expected_first_session(root, "2015-10-01"))
+            # A malformed calendar is corrupt input, never legacy.
+            pd_.DataFrame([{"wrong": 1}]).to_parquet(
+                root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError):
+                derive_expected_first_session(root, "2015-10-01")
+        src = inspect.getsource(qlib_bin_builder)
+        self.assertIn("derive_expected_first_session(", src)
+        self.assertLess(src.index("calendar[0] != expected_first_session"),
                         src.index("write_bundle_integrity("))
 
     def test_universe_and_scope(self) -> None:

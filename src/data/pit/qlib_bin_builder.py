@@ -148,6 +148,47 @@ class QlibBinBuilderError(RuntimeError):
     """Raised when bin construction fails."""
 
 
+def derive_expected_first_session(
+    tushare_dir: Path, coverage_start_iso: str,
+) -> str | None:
+    """The exchange's first session AT OR AFTER the coverage anchor.
+
+    Anchor-specific evidence (codex #412 r6): read from the fetched
+    exchange calendar (``trade_cal.parquet``, one row per calendar day
+    with ``is_open``), so the reconciliation compares the built bundle
+    calendar against what the EXCHANGE says the first session is - not
+    against a closure-sized gap heuristic, whose every bound K leaves
+    a hiding place of exactly size K.
+
+    ``None`` when the dump predates the trade_cal endpoint (legacy) or
+    the calendar file does not reach the anchor - callers fall back to
+    the closure-bound check. A malformed file is a
+    :class:`QlibBinBuilderError` (corrupt input, not a legacy dump).
+    """
+    path = tushare_dir / "trade_cal.parquet"
+    if not path.is_file():
+        return None
+    try:
+        cal = pd.read_parquet(path)
+        anchor = coverage_start_iso.replace("-", "")
+        opens = cal[(cal["is_open"] == 1)
+                    & (cal["cal_date"].astype(str) >= anchor)]
+        if opens.empty:
+            return None
+        first = str(opens["cal_date"].astype(str).min())
+    except (KeyError, ValueError, OSError) as exc:
+        raise QlibBinBuilderError(
+            f"trade_cal.parquet in {tushare_dir} is unreadable or "
+            f"malformed ({exc}) - re-fetch the trade_cal endpoint; "
+            "refusing to reconcile coverage against a corrupt "
+            "exchange calendar.") from exc
+    if not re.fullmatch(r"\d{8}", first):
+        raise QlibBinBuilderError(
+            f"trade_cal.parquet cal_date {first!r} is not YYYYMMDD - "
+            "the exchange calendar is corrupt; re-fetch it.")
+    return f"{first[0:4]}-{first[4:6]}-{first[6:8]}"
+
+
 @dataclass(frozen=True)
 class QlibBinBuilderResult:
     output_dir: Path
@@ -329,6 +370,7 @@ class QlibBinBuilder:
             # complete. Only a clean build may stamp it - a holey fetch
             # cannot vouch for its own coverage.
             data_coverage_start: str | None = None
+            expected_first_session: str | None = None
             # Only DATE-SCOPED endpoints participate: stock_basic is a
             # SNAPSHOT (full listing pull) whose manifest coverage
             # records the run's window PARAMETER, not what the listing
@@ -382,26 +424,53 @@ class QlibBinBuilder:
                     # launder missing history into an authoritative
                     # assertion. Refuse the build (fail-loud) - this is
                     # corrupt input, not a partial-build opt-in.
-                    _cov = date.fromisoformat(data_coverage_start)
-                    _first = date.fromisoformat(calendar[0])
-                    _gap = missing_weekdays_between(_cov, _first)
-                    if _gap > MAX_EXCHANGE_CLOSURE_WEEKDAYS:
-                        raise QlibBinBuilderError(
-                            f"fetch manifest claims coverage from "
-                            f"{data_coverage_start} but the calendar "
-                            f"built from the actual data starts "
-                            f"{calendar[0]} - {_gap} weekdays of "
-                            "claimed history are missing (longest "
-                            "exchange closure spans "
-                            f"{MAX_EXCHANGE_CLOSURE_WEEKDAYS}). "
-                            "Leading raw files are missing or "
-                            "truncated; re-fetch before building.")
+                    # ANCHOR-SPECIFIC evidence first (codex #412 r6):
+                    # a fetched exchange calendar names the exact first
+                    # session at or after the anchor, so the built
+                    # calendar must start EXACTLY there - zero gap
+                    # tolerance. Every global gap threshold K leaves a
+                    # hiding place of size K (lowering 7 to 6 only
+                    # moved it from 10-12 to 10-09); only the
+                    # exchange's own calendar closes the family.
+                    expected_first_session = derive_expected_first_session(
+                        self._tushare_dir, data_coverage_start)
+                    if expected_first_session is not None:
+                        if calendar[0] != expected_first_session:
+                            raise QlibBinBuilderError(
+                                f"fetch manifest claims coverage from "
+                                f"{data_coverage_start}; the exchange "
+                                f"calendar (trade_cal.parquet) says "
+                                f"the first session at or after it is "
+                                f"{expected_first_session}, but the "
+                                f"calendar built from the actual data "
+                                f"starts {calendar[0]}. Leading raw "
+                                "files are missing or truncated; "
+                                "re-fetch before building.")
+                    else:
+                        # LEGACY dump without trade_cal.parquet: the
+                        # closure-bound reconciliation still guards.
+                        _cov = date.fromisoformat(data_coverage_start)
+                        _first = date.fromisoformat(calendar[0])
+                        _gap = missing_weekdays_between(_cov, _first)
+                        if _gap > MAX_EXCHANGE_CLOSURE_WEEKDAYS:
+                            raise QlibBinBuilderError(
+                                f"fetch manifest claims coverage from "
+                                f"{data_coverage_start} but the "
+                                f"calendar built from the actual data "
+                                f"starts {calendar[0]} - {_gap} "
+                                "weekdays of claimed history are "
+                                "missing (longest exchange closure "
+                                "spans "
+                                f"{MAX_EXCHANGE_CLOSURE_WEEKDAYS}). "
+                                "Leading raw files are missing or "
+                                "truncated; re-fetch before building.")
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,
                 holes=fetch_holes,
                 identity=bundle_identity,
                 data_coverage_start=data_coverage_start,
+                expected_first_session=expected_first_session,
             )
             # Promote staging to final location
             if self._output_dir.exists():

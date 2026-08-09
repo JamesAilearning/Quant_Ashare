@@ -35,8 +35,16 @@ walk-forward 引擎 SHALL 校验所绑 bundle 日历覆盖自 overall_start 起
 的完整训练历史，不满足时 SHALL fail-loud 拒绝该 run（而非静默用被裁
 剪的数据训练并在 manifest 中记录声明窗口）。
 
-"预期首个交易日"的权威 SHALL 是 bundle 完整性戳的
-`data_coverage_start`（codex #412 r2）——构建器自 fetch manifest 的必需
+"预期首个交易日"的最终权威 SHALL 是**交易所自己的日历**（codex #412
+r6）：fetcher SHALL 将 tushare `trade_cal`（全历史，非窗口裁剪）落盘为
+dump 的一部分；构建器 SHALL 据此推导锚点专属的预期首日（首个
+`is_open` 且 ≥ 覆盖起点的交易日），要求构建出的日历首日**恰等于**它
+（零空缺容忍——任何全局空缺阈值 K 都给恰为 K 的截断留藏身处：7→6 只是
+把藏身处从 10-12 挪到 10-09），并把该值写入完整性戳
+`expected_first_session`；引擎在戳含该字段时 SHALL 同样要求日历首日恰
+等于它。
+
+次级权威是 bundle 完整性戳的 `data_coverage_start`（codex #412 r2）——构建器自 fetch manifest 的必需
 端点覆盖复制（取其 coverage_start_date 之最大者；仅零 hole 的完整
 fetch 可盖此戳）。零 hole 完整 fetch 自 X 日起的语义即"X 起每个交易日
 的数据都在"，故日历首日就是 ≥X 的第一个真实交易日：`coverage_start >
@@ -59,6 +67,14 @@ fetch 的**请求窗口**，在文件校验之前记录，且 fetcher 的新鲜�
 
 基线导出器 SHALL 将 overall_start 纳入 run-config 绑定，使一个用错误
 起点跑出的 run 无法被认证为本战役的基线。
+
+#### Scenario: 一个交易日的截断也拒（锚点专属精确匹配）
+
+- **GIVEN** 完整性戳 expected_first_session=2015-10-08（交易所日历所
+  载），而 bundle 日历起于 2015-10-09（仅缺一个交易日——任何全局阈值
+  都无法捕捉）
+- **WHEN** 启动 walk-forward
+- **THEN** run 拒绝启动并指出数据未兑现所盖的覆盖
 
 #### Scenario: 戳内覆盖起点晚于 overall_start 即拒（与空缺大小无关）
 
