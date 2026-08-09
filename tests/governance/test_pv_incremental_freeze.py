@@ -688,6 +688,16 @@ class PvIncrementalFreezePins(unittest.TestCase):
                           index=False)
             builder._apply_adjustment(daily, "Z.SH")
             self.assertEqual([], builder._adj_head_violations)
+        # Per-RUN reset (codex #412 r15): a reused instance must not
+        # carry a prior run's violations into a repaired, clean build.
+        # Source pin: the clear sits at the very top of build(),
+        # before the manifest is even read. The two-build behavioural
+        # proof lives with the full fixtures in
+        # tests/data_pipeline/test_qlib_bin_builder.py.
+        src_txt = inspect.getsource(qlib_bin_builder.QlibBinBuilder.build)
+        self.assertIn("self._adj_head_violations.clear()",
+                      src_txt.split("read_manifest")[0])
+
         # Wiring: the per-ticker adjudication refuses BEFORE the stamp
         # is written, with the silent-1.0 rationale spelled out.
         src = inspect.getsource(qlib_bin_builder)

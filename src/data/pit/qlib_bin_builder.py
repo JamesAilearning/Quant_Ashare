@@ -285,6 +285,13 @@ class QlibBinBuilder:
     # ------------------------------------------------------------------
 
     def build(self) -> QlibBinBuilderResult:
+        # Per-RUN state (codex #412 r15): the violation list is
+        # appended by _apply_adjustment during THIS build's main loop,
+        # so a reused instance (build() is documented idempotent)
+        # must not carry a prior run's entries — a holey build
+        # followed by a repaired, clean build would otherwise be
+        # falsely refused at the stamp adjudication.
+        self._adj_head_violations.clear()
         # P3-4c Layer 1: gate on the P3-4b fetch manifest BEFORE doing any work.
         # A holey (some endpoint failed) OR missing (cannot confirm) manifest means
         # the raw tushare dump is incomplete; building from it would bake a
