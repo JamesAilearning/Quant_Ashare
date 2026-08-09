@@ -2126,5 +2126,42 @@ class TradingDayFloorTests(unittest.TestCase):
             self.assertEqual(TushareFetcher(client, cfg)._get_trading_days(), ())
 
 
+class TradeCalEndpointTests(unittest.TestCase):
+    def test_empty_trade_cal_is_a_hole_not_a_file(self) -> None:
+        # codex #412 r7: a full-history exchange calendar can never
+        # legitimately be empty, and an empty "success" file would be
+        # resume-skipped forever while the builder's anchor lookup
+        # finds no sessions — record a hole, write nothing.
+        client = _make_client(lambda api, **p: pd.DataFrame(),
+                              trade_cal_dates=[])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("trade_cal",),
+                start_date="20200101", end_date="20201231",
+                rate_limit_sleep_ms=0,
+            )
+            fetcher = TushareFetcher(client, cfg)
+            fetcher.fetch()
+            self.assertFalse((Path(tmp) / "trade_cal.parquet").exists())
+            self.assertEqual(1, len(fetcher.holes))
+            self.assertEqual("trade_cal", fetcher.holes[0].endpoint)
+            self.assertEqual("empty_response",
+                             fetcher.holes[0].reason_class)
+
+    def test_nonempty_trade_cal_writes_one_file(self) -> None:
+        client = _make_client(lambda api, **p: pd.DataFrame(),
+                              trade_cal_dates=["20200102", "20200103"])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("trade_cal",),
+                start_date="20200101", end_date="20201231",
+                rate_limit_sleep_ms=0,
+            )
+            fetcher = TushareFetcher(client, cfg)
+            fetcher.fetch()
+            self.assertTrue((Path(tmp) / "trade_cal.parquet").exists())
+            self.assertEqual(0, len(fetcher.holes))
+
+
 if __name__ == "__main__":
     unittest.main()

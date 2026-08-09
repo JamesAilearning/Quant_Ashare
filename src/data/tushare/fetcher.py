@@ -612,6 +612,16 @@ class TushareFetcher:
         except FetchHoleError as hole:
             self._record_hole("trade_cal", "file", hole)
             return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        if df is None or df.empty:
+            # A full-history calendar can never legitimately be empty
+            # (codex #412 r7): writing an empty "success" file would
+            # resume-skip forever while the builder's anchor lookup
+            # finds no sessions — a hole, not a result.
+            self._record_hole("trade_cal", "file", FetchHoleError(
+                "trade_cal", reason_class="empty_response", attempts=1,
+                last_error="empty trade_cal response for "
+                f"{TRADE_CAL_START_DATE}..{self._config.end_date}"))
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
         atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult("trade_cal", 1, len(df))

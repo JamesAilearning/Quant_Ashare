@@ -160,10 +160,14 @@ def derive_expected_first_session(
     against a closure-sized gap heuristic, whose every bound K leaves
     a hiding place of exactly size K.
 
-    ``None`` when the dump predates the trade_cal endpoint (legacy) or
-    the calendar file does not reach the anchor - callers fall back to
-    the closure-bound check. A malformed file is a
-    :class:`QlibBinBuilderError` (corrupt input, not a legacy dump).
+    ``None`` ONLY when the file does not exist (a dump that predates
+    the trade_cal endpoint - the genuinely legacy case) — callers then
+    fall back to the closure-bound check. A file that IS present but
+    cannot name an open session for the anchor (empty, truncated
+    before the anchor, or stale) is a :class:`QlibBinBuilderError`
+    (codex #412 r7): that is unusable EVIDENCE, and silently
+    reclassifying it as legacy would re-open the very heuristic path
+    this evidence exists to eliminate. A malformed file likewise.
     """
     path = tushare_dir / "trade_cal.parquet"
     if not path.is_file():
@@ -174,8 +178,19 @@ def derive_expected_first_session(
         opens = cal[(cal["is_open"] == 1)
                     & (cal["cal_date"].astype(str) >= anchor)]
         if opens.empty:
-            return None
+            raise QlibBinBuilderError(
+                f"trade_cal.parquet in {tushare_dir} has no open "
+                f"session at or after {coverage_start_iso} "
+                f"({len(cal)} rows"
+                + (f", tail {cal['cal_date'].astype(str).max()}"
+                   if len(cal) else "")
+                + ") - the exchange calendar is empty, truncated or "
+                "stale; re-fetch the trade_cal endpoint; refusing to "
+                "fall back to the gap heuristic on unusable "
+                "evidence.")
         first = str(opens["cal_date"].astype(str).min())
+    except QlibBinBuilderError:
+        raise
     except (KeyError, ValueError, OSError) as exc:
         raise QlibBinBuilderError(
             f"trade_cal.parquet in {tushare_dir} is unreadable or "

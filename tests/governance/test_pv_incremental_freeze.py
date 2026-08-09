@@ -559,14 +559,25 @@ class PvIncrementalFreezePins(unittest.TestCase):
             self.assertEqual(
                 "2015-10-09",
                 derive_expected_first_session(root, "2015-10-09"))
-            # Anchor beyond the calendar tail: no evidence, legacy.
-            self.assertIsNone(
-                derive_expected_first_session(root, "2026-01-01"))
+            # Anchor beyond the calendar tail (codex #412 r7): the
+            # file is PRESENT but cannot answer — truncated/stale
+            # evidence must REFUSE, never silently reclassify as
+            # legacy and re-open the gap heuristic this evidence
+            # exists to eliminate.
+            with self.assertRaises(QlibBinBuilderError):
+                derive_expected_first_session(root, "2026-01-01")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # No trade_cal at all (legacy dump): None, not an error.
             self.assertIsNone(
                 derive_expected_first_session(root, "2015-10-01"))
+            # An EMPTY calendar is unusable evidence, not legacy
+            # (codex #412 r7).
+            pd_.DataFrame(
+                {"exchange": [], "cal_date": [], "is_open": []}
+            ).to_parquet(root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError):
+                derive_expected_first_session(root, "2015-10-01")
             # A malformed calendar is corrupt input, never legacy.
             pd_.DataFrame([{"wrong": 1}]).to_parquet(
                 root / "trade_cal.parquet", index=False)
