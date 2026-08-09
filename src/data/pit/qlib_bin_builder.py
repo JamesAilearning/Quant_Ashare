@@ -75,6 +75,7 @@ Out of scope
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import date
@@ -346,8 +347,26 @@ class QlibBinBuilder:
                 ]
                 if starts and len(starts) == len(_dated):
                     raw_d = max(starts)
+                    # Validate BEFORE slicing into a stamp (codex #412
+                    # r5 P2): read_manifest accepts any string here,
+                    # and an unvalidated value would surface as a raw
+                    # ValueError the build CLI does not catch - the
+                    # corrupt-manifest refusal must stay actionable.
+                    if not re.fullmatch(r"\d{8}", raw_d):
+                        raise QlibBinBuilderError(
+                            f"fetch manifest coverage_start_date "
+                            f"{raw_d!r} is not YYYYMMDD - the manifest "
+                            "is corrupt; re-fetch to regenerate it.")
                     data_coverage_start = (
                         f"{raw_d[0:4]}-{raw_d[4:6]}-{raw_d[6:8]}")
+                    try:
+                        date.fromisoformat(data_coverage_start)
+                    except ValueError as exc:
+                        raise QlibBinBuilderError(
+                            f"fetch manifest coverage_start_date "
+                            f"{raw_d!r} is not a valid calendar date - "
+                            "the manifest is corrupt; re-fetch to "
+                            "regenerate it.") from exc
                     # codex #412 r4: the manifest coverage is the run's
                     # REQUESTED window - build_manifest records it
                     # before files are verified, and the fetcher's

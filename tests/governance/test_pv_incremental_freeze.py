@@ -388,6 +388,17 @@ class PvIncrementalFreezePins(unittest.TestCase):
         with self.assertRaises(WalkForwardError) as ctx2:
             WalkForwardEngine._generate_windows(cfg, calendar=cal_partial)
         self.assertIn("weekdays of history missing", str(ctx2.exception))
+        # The boundary itself (codex #412 r5): an UNSTAMPED calendar
+        # starting 2015-10-12 gaps exactly 7 weekdays — the earlier
+        # +1-slack threshold accepted it while the real 10-08/10-09
+        # sessions were missing. The bound is the EXACT historical
+        # maximum (6), so 7 refuses.
+        cal_1012_legacy = [date(2015, 10, 12) + timedelta(days=i)
+                           for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx3:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1012_legacy)
+        self.assertIn("weekdays of history missing", str(ctx3.exception))
         # A calendar that starts on the first session AT OR AFTER the
         # anchor (2015-10-08 — the National Day week has none; a
         # 5-weekday gap, within the 6-weekday worst closure) passes.
@@ -475,7 +486,11 @@ class PvIncrementalFreezePins(unittest.TestCase):
             MAX_EXCHANGE_CLOSURE_WEEKDAYS,
             missing_weekdays_between,
         )
-        self.assertEqual(7, MAX_EXCHANGE_CLOSURE_WEEKDAYS)
+        # EXACT historical bound, zero slack (codex #412 r5): the
+        # earlier +1 buffer was precisely where truncation could hide
+        # (a 10-01 anchor with files missing through 10-09 gaps
+        # exactly 7 weekdays and sailed through a >7 check).
+        self.assertEqual(6, MAX_EXCHANGE_CLOSURE_WEEKDAYS)
         # Holiday-sized gap (National Day 2015): 5 weekdays - stampable.
         self.assertEqual(5, missing_weekdays_between(
             date(2015, 10, 1), date(2015, 10, 8)))

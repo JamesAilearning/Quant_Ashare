@@ -60,6 +60,12 @@ def _authorised_ledger(tmp: Path, manifest: Path) -> Path:
     for cmd in (["git", "init", "-q"],
                 ["git", "config", "user.email", "t@example.com"],
                 ["git", "config", "user.name", "t"],
+                # No auto-gc/maintenance: a background gc spawned by
+                # commit keeps writing into .git/objects while
+                # TemporaryDirectory tears the repo down, which
+                # surfaced on CI as OSError(Directory not empty).
+                ["git", "config", "gc.auto", "0"],
+                ["git", "config", "maintenance.auto", "false"],
                 ["git", "add", "-A"],
                 ["git", "commit", "-q", "-m", "ledger"]):
         subprocess.run(cmd, cwd=str(repo), check=True,

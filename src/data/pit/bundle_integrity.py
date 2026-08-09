@@ -91,13 +91,20 @@ class BundleIntegrity:
     data_coverage_start: str | None = None
 
 
-MAX_EXCHANGE_CLOSURE_WEEKDAYS = 7
+MAX_EXCHANGE_CLOSURE_WEEKDAYS = 6
 """Longest run of weekdays the A-share exchange has EVER been closed.
 
-Spring Festival 2020 (extended) and National Day + Mid-Autumn runs both
-span 6 weekdays; 7 leaves one day of slack. A gap of missing weekdays
-beyond this cannot be a closure - it is missing data. Sessions are a
-subset of Mon-Fri, so every missing session costs a weekday."""
+Spring Festival 2020 (extended, 01-24..02-02) and National Day +
+Mid-Autumn 2023 (09-29..10-08) both span exactly 6 weekdays; National
+Day 1999 (50th anniversary) spanned 5. The bound is EXACT on purpose
+(codex #412 r5): an earlier revision kept "one day of slack" at 7, and
+that slack was precisely where truncation could hide - a bundle whose
+leading files are missing through 10-09 gaps exactly 7 weekdays from a
+10-01 anchor and sailed through the strict-greater check. Sessions are
+a subset of Mon-Fri, so every missing session costs a weekday; a gap
+beyond 6 cannot be a closure. Should the exchange ever close longer,
+this refuses loudly and the operator raises the constant with the new
+historical fact - fail-loud beats silently accepting truncation."""
 
 
 def missing_weekdays_between(start: date, first_present: date) -> int:

@@ -584,18 +584,20 @@ class WalkForwardEngine:
         # are a subset of Mon-Fri, so every missing session costs a
         # weekday, and the longest closure in A-share history spans 6
         # weekdays (Spring Festival 2020 extension; National Day +
-        # Mid-Autumn runs are also 6). Anything beyond 7 cannot be a
-        # closure — it is missing data. The partial-bundle example
-        # gaps 13 weekdays; the old 2018 bundle gaps 588.
+        # Mid-Autumn runs are also 6). Anything beyond that EXACT
+        # bound cannot be a closure — it is missing data (codex #412
+        # r5: an earlier +1 slack was precisely where a 10-12
+        # truncation could hide). The partial-bundle example gaps 13
+        # weekdays; the old 2018 bundle gaps 588.
         overall_start_date = cls._to_date(config.overall_start)
         # AUTHORITATIVE check first (codex #412 r2): when the bundle's
         # integrity stamp carries the fetch coverage start, compare
         # against THAT. A complete zero-hole fetch from X means the
         # calendar's first day is the first real session >= X, so any
         # coverage_start > overall_start is missing history no matter
-        # how small the gap looks: a bundle starting 2015-10-12 gaps
-        # only 7 weekdays - inside any closure tolerance - yet misses
-        # the real 10-08/10-09 sessions. The weekday tolerance below
+        # how small the gap looks — an honestly-stamped truncation is
+        # refused even when its gap sits inside the closure bound.
+        # The weekday tolerance below
         # remains ONLY as the legacy fallback for stamps that predate
         # the field (the production bundle's included) and for direct
         # calendar-injection callers.
