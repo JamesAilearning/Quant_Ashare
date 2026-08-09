@@ -51,10 +51,17 @@ def calendar_frame_defect(df: Any) -> str | None:
     # bundle_integrity learned in r5 for its stamp dates; dropping the
     # lexical layer when this logic moved into the shared module was a
     # regression r10 caught.)
-    if not dates_str.str.fullmatch(r"\d{8}").all():
-        bad = dates_str[~dates_str.str.fullmatch(r"\d{8}")].iloc[0]
+    #
+    # [0-9], NOT \d (codex #412 r11): \d is Unicode-aware, so an
+    # Arabic-Indic spelling like "٢٠١٥1008"
+    # matches it AND strptime parses it to 2015-10-08 (verified
+    # empirically) — while the string minimum downstream sorts it
+    # after every ASCII date, deriving the wrong first session. The
+    # class literally spells the ASCII contract the comment claims.
+    if not dates_str.str.fullmatch(r"[0-9]{8}").all():
+        bad = dates_str[~dates_str.str.fullmatch(r"[0-9]{8}")].iloc[0]
         return (f"trade_cal cal_date {bad!r} is not exactly eight "
-                "digits (YYYYMMDD)")
+                "ASCII digits (YYYYMMDD)")
     parsed = pd.to_datetime(dates_str, format="%Y%m%d", errors="coerce")
     if parsed.isna().any():
         bad = dates_str[parsed.isna()].iloc[0]

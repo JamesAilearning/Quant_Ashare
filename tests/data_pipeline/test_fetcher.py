@@ -2200,7 +2200,7 @@ class TradeCalEndpointTests(unittest.TestCase):
         self._assert_hole(
             pd.DataFrame({"exchange": ["SSE"], "cal_date": ["nope"],
                           "is_open": [1]}),
-            "not exactly eight digits")
+            "not exactly eight ASCII digits")
         self._assert_hole(
             pd.DataFrame({"exchange": ["SSE"], "cal_date": ["19901340"],
                           "is_open": [1]}),
@@ -2214,7 +2214,18 @@ class TradeCalEndpointTests(unittest.TestCase):
         self._assert_hole(
             pd.DataFrame({"exchange": ["SSE"], "cal_date": ["2019012"],
                           "is_open": [1]}),
-            "not exactly eight digits")
+            "not exactly eight ASCII digits")
+
+    def test_unicode_digit_dates_are_a_hole(self) -> None:
+        # codex #412 r11: \d is Unicode-aware, so an Arabic-Indic
+        # spelling matches it AND strptime parses it — while the
+        # string minimum downstream sorts it after every ASCII date,
+        # deriving the wrong first session. The lexical guard must be
+        # literally [0-9]. Mixed Unicode/ASCII rows are the attack
+        # shape: the true first session in Unicode, later rows ASCII.
+        df = _contiguous_cal("20151008", "20151012")
+        df.loc[0, "cal_date"] = "٢٠١٥1008"
+        self._assert_hole(df, "not exactly eight ASCII digits")
 
     def test_non_binary_is_open_is_a_hole(self) -> None:
         # codex #412 r10: a damaged marker (2 / NaN) on the true first
