@@ -79,6 +79,42 @@ from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatas
 _logger = get_logger(__name__)
 
 
+def _read_coverage_stamp(
+    provider_uri: str | None,
+) -> tuple[str | None, str | None]:
+    """The bundle's stamped ``(data_coverage_start,
+    expected_first_session)``, either ``None`` when absent.
+
+    ``(None, None)`` (no stamp / legacy stamp without the fields)
+    falls back to the weekday-tolerance guard in
+    ``_generate_windows`` - pre-existing bundles, the production one
+    included, keep working exactly as before (codex #412 r2; the
+    same optional-within-schema-v1 posture as ``identity``).
+    """
+    if not provider_uri:
+        return None, None
+    from src.data.pit.bundle_integrity import (
+        BundleIntegrityError,
+        read_bundle_integrity,
+    )
+    try:
+        integrity = read_bundle_integrity(Path(provider_uri))
+    except BundleIntegrityError as exc:
+        # A CORRUPT stamp is not a missing one (the repo's
+        # no-silent-fallback pin is what caught the earlier swallow):
+        # degrading unreadable provenance to the legacy path would let
+        # a damaged bundle skip the authoritative coverage check.
+        raise WalkForwardError(
+            f"bundle integrity stamp at {provider_uri} is unreadable "
+            f"({exc}) - cannot establish the fetch coverage; fix or "
+            "rebuild the bundle; refusing.") from exc
+    if integrity is None:
+        # Genuinely absent stamp = pre-stamp bundle; the weekday
+        # fallback in _generate_windows still guards it.
+        return None, None
+    return integrity.data_coverage_start, integrity.expected_first_session
+
+
 class WalkForwardEngine:
     """Orchestrates rolling train/predict/backtest across time."""
 
@@ -147,7 +183,14 @@ class WalkForwardEngine:
         discovered_manifests = FoldManifest.discover(output_dir)
 
         # Generate fold windows (embargo-gapped; calendar from qlib runtime)
-        windows = cls._generate_windows(config, calendar=cls._load_trading_calendar())
+        stamped_coverage, stamped_first_session = _read_coverage_stamp(
+            cls._resolve_provider_uri())
+        windows = cls._generate_windows(
+            config,
+            calendar=cls._load_trading_calendar(),
+            data_coverage_start=stamped_coverage,
+            expected_first_session=stamped_first_session,
+        )
         if not windows:
             raise WalkForwardError(
                 "No valid fold windows could be generated with the given config. "
@@ -491,6 +534,8 @@ class WalkForwardEngine:
         cls,
         config: WalkForwardConfig,
         calendar: Sequence[date] | None = None,
+        data_coverage_start: str | None = None,
+        expected_first_session: str | None = None,
     ) -> list[tuple[str, ...]]:
         """Generate (train_s, train_e, valid_s, valid_e, test_s, test_e) tuples.
 
@@ -525,6 +570,102 @@ class WalkForwardEngine:
             calendar = list(D.calendar())
         # Normalize + sort + de-dup the trading calendar for bisect/index.
         cal = sorted({cls._to_date(d) for d in calendar})
+        # Train-coverage guard (codex #411 r1): the loop below snaps
+        # valid/test ends back onto the calendar and skips folds whose
+        # TAIL falls outside coverage, but nothing checked the HEAD — a
+        # fold declaring train_start before the calendar's first day
+        # would silently train on whatever slice the bundle happens to
+        # hold (a "24-month model" fitted on 3 months of data) while
+        # its manifest records the declared window, and the exporter
+        # would certify it. A bundle that cannot serve the requested
+        # history is a configuration error, never a degraded run.
+        # ``overall_start`` is a month anchor, not a trading day: the
+        # first session AT OR AFTER it is what training actually uses
+        # (2015-10-01 anchors to 2015-10-08 — the National Day week has
+        # no sessions). A fixed calendar-day tolerance is NOT good
+        # enough (codex #412 r1): a partially built bundle starting,
+        # say, 2015-10-20 sits inside any holiday-sized window while
+        # genuinely missing sessions. So the guard counts WEEKDAYS in
+        # [overall_start, first calendar day): CN exchange sessions
+        # are a subset of Mon-Fri, so every missing session costs a
+        # weekday, and the longest closure in A-share history spans 6
+        # weekdays (Spring Festival 2020 extension; National Day +
+        # Mid-Autumn runs are also 6). Anything beyond that EXACT
+        # bound cannot be a closure — it is missing data (codex #412
+        # r5: an earlier +1 slack was precisely where a 10-12
+        # truncation could hide). The partial-bundle example gaps 13
+        # weekdays; the old 2018 bundle gaps 588.
+        overall_start_date = cls._to_date(config.overall_start)
+        # AUTHORITATIVE check first (codex #412 r2): when the bundle's
+        # integrity stamp carries the fetch coverage start, compare
+        # against THAT. A complete zero-hole fetch from X means the
+        # calendar's first day is the first real session >= X, so any
+        # coverage_start > overall_start is missing history no matter
+        # how small the gap looks — an honestly-stamped truncation is
+        # refused even when its gap sits inside the closure bound.
+        # The weekday tolerance below
+        # remains ONLY as the legacy fallback for stamps that predate
+        # the field (the production bundle's included) and for direct
+        # calendar-injection callers.
+        coverage_start: date | None = None
+        if data_coverage_start is not None:
+            coverage_start = cls._to_date(data_coverage_start)
+            if coverage_start > overall_start_date:
+                raise WalkForwardError(
+                    f"overall_start {config.overall_start} predates "
+                    "the bundle's fetched data coverage (integrity "
+                    f"stamp data_coverage_start={data_coverage_start})"
+                    " - the fetch never established history before "
+                    "that date, so every fold's training window would "
+                    "be silently clipped. Point QUANT_PROVIDER_URI at "
+                    "a bundle whose fetch covers the requested "
+                    "history, or move overall_start; refusing.")
+        # ANCHOR-SPECIFIC exactness (codex #412 r6): when the stamp
+        # carries the exchange-calendar-derived expected first
+        # session, the bundle calendar must start EXACTLY there - zero
+        # gap tolerance. Every global gap threshold K leaves a hiding
+        # place of exactly size K (lowering 7 to 6 only moved it from
+        # 10-12 to 10-09); only the exchange's own calendar names the
+        # first session for a PARTICULAR anchor.
+        if (expected_first_session is not None and cal
+                and cal[0] != cls._to_date(expected_first_session)):
+            raise WalkForwardError(
+                f"the bundle's integrity stamp says the exchange's "
+                f"first session at or after its coverage start is "
+                f"{expected_first_session}, but the bundle calendar "
+                f"starts {cal[0].isoformat()} - the data does not "
+                "honour the stamped coverage (leading history is "
+                "missing or the stamp is stale); rebuild the bundle; "
+                "refusing.")
+        # The stamp checks are ADDITIVE, never a replacement (codex
+        # #412 r4): the manifest coverage is the fetch's REQUESTED
+        # window, recorded before files are verified, and the
+        # fetcher's freshness rule validates tails only - so a stamp
+        # can claim 2015-10-01 while leading raw files are missing and
+        # the built calendar starts years later. Disabling the
+        # calendar-gap refusal whenever a stamp exists would let
+        # exactly that case through. All guards therefore ALWAYS run:
+        # the coverage stamp catches honestly-stamped truncation, the
+        # expected-first-session stamp pins the exact anchor, the
+        # calendar gap bounds legacy stamps with neither field.
+        from src.data.pit.bundle_integrity import (
+            MAX_EXCHANGE_CLOSURE_WEEKDAYS,
+            missing_weekdays_between,
+        )
+        missing_weekdays = (
+            missing_weekdays_between(overall_start_date, cal[0])
+            if cal else 0)
+        if cal and missing_weekdays > MAX_EXCHANGE_CLOSURE_WEEKDAYS:
+            raise WalkForwardError(
+                f"overall_start {config.overall_start} predates the "
+                f"bound data calendar (first day {cal[0].isoformat()}, "
+                f"{missing_weekdays} weekdays of history missing — the "
+                "longest A-share exchange closure spans 6) "
+                "— every fold's training window would be silently "
+                "clipped to the bundle's coverage while claiming the "
+                "declared span. Point QUANT_PROVIDER_URI at a bundle "
+                "covering the requested history, or move "
+                "overall_start; refusing.")
         # Horizon-driven: H=1 -> LABEL_LOOKAHEAD_DAYS (today's 2), H>1 -> H+1.
         # Same shared derivation as the builder check and the UI guard.
         gap = label_lookahead_days(config.label_horizon_days)
@@ -658,6 +799,27 @@ class WalkForwardEngine:
         """
         from qlib.data import D
         return [cls._to_date(d) for d in D.calendar()]
+
+    @staticmethod
+    def _resolve_provider_uri() -> str | None:
+        """The provider URI from the CANONICAL qlib config.
+
+        codex #412 r3: WalkForwardConfig has NO provider_uri field -
+        the CLI strips that top-level key into QlibRuntimeConfig, so
+        reading it off the config object always yields None in real
+        runs and the coverage stamp would silently never be read.
+        Resolution therefore mirrors _resolve_bundle_identity: the
+        SAME canonical source the feature-cache key uses. None only
+        when the canonical runtime is not initialized (unit tests
+        injecting a calendar directly), where the weekday fallback
+        still guards.
+        """
+        # get_canonical_qlib_config returns None (never raises) when
+        # the runtime is not initialized, so no except is needed - the
+        # repo's no-silent-fallback pin flagged the redundant swallow.
+        from src.core.qlib_runtime import get_canonical_qlib_config
+        canonical = get_canonical_qlib_config()
+        return canonical.provider_uri if canonical else None
 
     @staticmethod
     def _resolve_bundle_identity() -> str:

@@ -71,6 +71,7 @@ MANIFEST_FILENAME = "fetch_manifest.json"
 # universe regardless of date range, so its holes always re-attempt.
 _DATE_SCOPED_ENDPOINTS = frozenset({
     "daily", "adj_factor", "daily_basic", "namechange", "suspend_d", "index_weight",
+    "trade_cal",
 })
 
 

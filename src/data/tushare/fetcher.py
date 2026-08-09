@@ -78,6 +78,7 @@ import pandas as pd
 
 from src.core.logger import get_logger
 from src.data._atomic_io import atomic_write_parquet
+from src.data._trade_cal import calendar_frame_defect
 from src.data.tushare.client import (
     KIND_NETWORK,
     KIND_RATE_LIMIT,
@@ -105,11 +106,62 @@ ENDPOINTS: tuple[str, ...] = (
     "stock_basic",
     "namechange",
     "suspend_d",
+    "trade_cal",
     "index_weight",
     "daily",
     "adj_factor",
     "daily_basic",
 )
+
+# trade_cal is ALWAYS pulled from the exchange's first recorded session:
+# it is the anchor-specific evidence the bin builder uses to derive the
+# EXPECTED first session for any coverage anchor (codex #412 r6 — a
+# historical-maximum gap tolerance cannot establish the expected first
+# session for a particular anchor, so every global threshold leaves a
+# hiding place of exactly its own size). A window-clipped calendar
+# could not answer for anchors before the window. Full history is one
+# call (~13k rows; the endpoint returned 19901219..20261231 without
+# truncation when probed).
+TRADE_CAL_START_DATE = "19901201"
+
+# The earliest row tushare's own calendar carries is 1990-12-19 (the
+# exchange's first recorded session), 18 calendar days after the
+# requested start — anything within this slack is the data source's
+# genuine head, anything beyond it is a truncated response.
+_TRADE_CAL_HEAD_SLACK_DAYS = 31
+
+
+def _trade_cal_unusable(
+    df: Any, *, requested_end: str, today: str,
+) -> str | None:
+    """Why this trade_cal response must NOT be persisted, or ``None``.
+
+    Every unusable shape becomes a hole rather than a written file
+    (codex #412 r7-r9): a persisted-but-unusable calendar is
+    resume-skipped by existence forever, deadlocking the builder in a
+    damaged state.
+
+    Structure (columns, real dates, duplicates, one-row-per-day
+    completeness, open sessions) is the shared
+    :func:`calendar_frame_defect` — the same equation the builder
+    re-checks on read, so the two ends cannot drift. Only the checks
+    that need FETCH context live here: head/tail coverage of the
+    requested full-history window.
+    """
+    defect = calendar_frame_defect(df)
+    if defect is not None:
+        return defect
+    dates = df["cal_date"].astype(str)
+    head = datetime.strptime(dates.min(), "%Y%m%d").date()
+    req = datetime.strptime(TRADE_CAL_START_DATE, "%Y%m%d").date()
+    if (head - req).days > _TRADE_CAL_HEAD_SLACK_DAYS:
+        return (f"trade_cal response begins {dates.min()}, far after "
+                f"the requested {TRADE_CAL_START_DATE} - leading "
+                "truncation")
+    if dates.max() < min(requested_end, today):
+        return (f"trade_cal response ends {dates.max()}, before "
+                f"{min(requested_end, today)} - trailing truncation")
+    return None
 
 DEFAULT_INDICES: tuple[str, ...] = (
     "000300.SH",  # CSI300
@@ -570,6 +622,57 @@ class TushareFetcher:
             filename="suspend_d.parquet",
             fields="ts_code,trade_date,suspend_timing,suspend_type",
         )
+
+    def _fetch_trade_cal(self) -> TushareFetchResult:
+        """Pull the FULL exchange trading calendar (SSE) into one file.
+
+        Deliberately NOT window-scoped: the range is always
+        [TRADE_CAL_START_DATE, config.end_date], because the calendar
+        is the anchor-specific evidence for the bin builder's
+        expected-first-session reconciliation (codex #412 r6) and a
+        window-clipped file could not answer for anchors before the
+        window. One call covers all of it (~13k rows, no cap
+        observed).
+        """
+        path = self._config.output_dir / "trade_cal.parquet"
+        if self._aggregate_can_skip(path, "trade_cal", "file"):
+            _logger.info("  skip (exists): %s", path)
+            return TushareFetchResult("trade_cal", 0, 0, skipped=1)
+        if self._config.dry_run:
+            _logger.info("  [dry-run] would write %s", path)
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        try:
+            df = self._safe_call(
+                "trade_cal",
+                exchange="SSE",
+                start_date=TRADE_CAL_START_DATE,
+                end_date=self._config.end_date,
+                fields="exchange,cal_date,is_open",
+            )
+        except FetchHoleError as hole:
+            self._record_hole("trade_cal", "file", hole)
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        # Any UNUSABLE response is a hole, never a "success" file
+        # (codex #412 r7 empty; r8 the rest): a persisted-but-unusable
+        # calendar is resume-skipped by existence forever while the
+        # builder either refuses it indefinitely or, for leading
+        # truncation, trusts it — the damaged-state deadlock this
+        # branch exists to prevent. Validation happens BEFORE the
+        # write, so nothing unusable ever lands on disk.
+        today = (self._config.now if self._config.now is not None
+                 else date.today()).strftime("%Y%m%d")
+        unusable = _trade_cal_unusable(
+            df, requested_end=self._config.end_date, today=today)
+        if unusable is not None:
+            self._record_hole("trade_cal", "file", FetchHoleError(
+                "trade_cal", reason_class="unusable_response",
+                attempts=1,
+                last_error=f"{unusable} (requested "
+                f"{TRADE_CAL_START_DATE}..{self._config.end_date})"))
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        atomic_write_parquet(df, path)
+        _logger.info("  wrote %d rows to %s", len(df), path)
+        return TushareFetchResult("trade_cal", 1, len(df))
 
     def _fetch_index_weight(self) -> TushareFetchResult:
         """Pull index_weight per configured index across the date range.

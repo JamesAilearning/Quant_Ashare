@@ -77,7 +77,16 @@ class _FakeClient:
             # on the number of DATA pulls use _data_call_count to exclude it.
             if api == "trade_cal":
                 if trade_cal_dates is not None:
-                    return pd.DataFrame({"cal_date": list(trade_cal_dates)})
+                    # Full endpoint schema (exchange/cal_date/is_open):
+                    # the trade_cal ENDPOINT validates its response
+                    # shape before persisting (codex #412 r8), while
+                    # the freshness-gate consumer only reads cal_date
+                    # — extra columns are harmless there.
+                    return pd.DataFrame({
+                        "exchange": ["SSE"] * len(trade_cal_dates),
+                        "cal_date": list(trade_cal_dates),
+                        "is_open": [1] * len(trade_cal_dates),
+                    })
                 return _all_weekday_cal_df(p["start_date"], p["end_date"])
             return call_side_effect(api, **p)
 
@@ -2124,6 +2133,146 @@ class TradingDayFloorTests(unittest.TestCase):
                 start_date="20181231", end_date="20181231", rate_limit_sleep_ms=0,
             )
             self.assertEqual(TushareFetcher(client, cfg)._get_trading_days(), ())
+
+
+def _contiguous_cal(first: str, last: str) -> pd.DataFrame:
+    """A structurally VALID trade_cal frame: one row per calendar day
+    (the endpoint's contract), weekdays open. Interior gaps are what
+    the completeness equation refuses, so truncation fixtures must be
+    contiguous within their own span — otherwise they would fail on
+    the gap, not on the coverage check under test (codex #412 r9
+    called out exactly that: a two-endpoint-row fixture is itself an
+    interior-gap frame)."""
+    days = pd.date_range(datetime.strptime(first, "%Y%m%d"),
+                         datetime.strptime(last, "%Y%m%d"), freq="D")
+    return pd.DataFrame({
+        "exchange": ["SSE"] * len(days),
+        "cal_date": [d.strftime("%Y%m%d") for d in days],
+        "is_open": [1 if d.weekday() < 5 else 0 for d in days],
+    })
+
+
+class TradeCalEndpointTests(unittest.TestCase):
+    """Any UNUSABLE trade_cal response is a hole, never a "success"
+    file (codex #412 r7-r9): a persisted-but-unusable calendar is
+    resume-skipped by existence forever, deadlocking the builder in a
+    damaged state. Completeness is the one-row-per-day EQUATION, so
+    interior gaps of any shape fail as a family rather than being
+    chased one enumeration at a time."""
+
+    @staticmethod
+    def _run(client) -> tuple[TushareFetcher, Path]:
+        tmp = Path(tempfile.mkdtemp())
+        cfg = TushareFetcherConfig(
+            output_dir=tmp, endpoints=("trade_cal",),
+            start_date="20200101", end_date="20201231",
+            rate_limit_sleep_ms=0, now=date(2020, 12, 31),
+        )
+        fetcher = TushareFetcher(client, cfg)
+        fetcher.fetch()
+        return fetcher, tmp / "trade_cal.parquet"
+
+    def _assert_hole(self, df, reason_fragment: str) -> None:
+        client = _FakeClient(lambda api, **p: df,
+                             trade_cal_dates=None)
+        # Bypass the central trade_cal shim: serve the raw frame.
+        client.call = MagicMock(side_effect=lambda api, **p: df)
+        fetcher, path = self._run(client)
+        self.assertFalse(path.exists(), reason_fragment)
+        self.assertEqual(1, len(fetcher.holes), reason_fragment)
+        self.assertEqual("unusable_response",
+                         fetcher.holes[0].reason_class)
+        self.assertIn(reason_fragment, fetcher.holes[0].last_error)
+
+    def test_empty_is_a_hole(self) -> None:
+        self._assert_hole(pd.DataFrame(), "empty")
+
+    def test_missing_columns_is_a_hole(self) -> None:
+        self._assert_hole(pd.DataFrame({"cal_date": ["19901219"]}),
+                          "lacks column")
+
+    def test_malformed_dates_are_a_hole(self) -> None:
+        # Two distinct layers (codex #412 r9 P2 + r10): a non-numeric
+        # string fails the lexical eight-digit check, while an
+        # eight-digit NON-DATE (19901340) passes it and must then be
+        # caught by calendar-validity parsing — as a defect report,
+        # never a bounds-arithmetic crash.
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["nope"],
+                          "is_open": [1]}),
+            "not exactly eight ASCII digits")
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["19901340"],
+                          "is_open": [1]}),
+            "not a real calendar date")
+
+    def test_seven_digit_date_is_a_hole(self) -> None:
+        # codex #412 r10: pandas' strptime is lenient — "2019012"
+        # parses as 2019-01-02 — while downstream compares these as
+        # STRINGS, where "2019012" sorts before "20190102". The
+        # lexical eight-digit layer must fire before parsing.
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["2019012"],
+                          "is_open": [1]}),
+            "not exactly eight ASCII digits")
+
+    def test_unicode_digit_dates_are_a_hole(self) -> None:
+        # codex #412 r11: \d is Unicode-aware, so an Arabic-Indic
+        # spelling matches it AND strptime parses it — while the
+        # string minimum downstream sorts it after every ASCII date,
+        # deriving the wrong first session. The lexical guard must be
+        # literally [0-9]. Mixed Unicode/ASCII rows are the attack
+        # shape: the true first session in Unicode, later rows ASCII.
+        df = _contiguous_cal("20151008", "20151012")
+        df.loc[0, "cal_date"] = "٢٠١٥1008"
+        self._assert_hole(df, "not exactly eight ASCII digits")
+
+    def test_non_binary_is_open_is_a_hole(self) -> None:
+        # codex #412 r10: a damaged marker (2 / NaN) on the true first
+        # session would read as closed, deriving a later session as
+        # "expected" — every value must be a non-null 0/1.
+        base = _contiguous_cal("20190102", "20190104")
+        for bad in (2, float("nan")):
+            df = base.copy()
+            df.loc[0, "is_open"] = bad
+            self._assert_hole(df, "not a binary 0/1 marker")
+
+    def test_all_closed_is_a_hole(self) -> None:
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["19901219"],
+                          "is_open": [0]}),
+            "no open sessions")
+
+    def test_interior_gap_is_a_hole(self) -> None:
+        # codex #412 r9: correct head, correct tail, interior missing
+        # — bounds checks pass, yet the builder would derive the first
+        # row AFTER the gap as the "expected" session. The row-count
+        # equation refuses it whatever the gap's shape or position.
+        df = pd.concat([_contiguous_cal("19901219", "20151008"),
+                        _contiguous_cal("20151012", "20201231")],
+                       ignore_index=True)
+        self._assert_hole(df, "interior days are missing")
+
+    def test_leading_truncation_is_a_hole(self) -> None:
+        # codex #412 r8: a calendar beginning years after the
+        # requested full-history start cannot answer for earlier
+        # anchors. Contiguous within its own span, so it reaches the
+        # coverage check rather than failing on the gap equation.
+        self._assert_hole(_contiguous_cal("20151009", "20201231"),
+                          "leading truncation")
+
+    def test_trailing_truncation_is_a_hole(self) -> None:
+        self._assert_hole(_contiguous_cal("19901219", "20150101"),
+                          "trailing truncation")
+
+    def test_usable_full_history_writes_one_file(self) -> None:
+        cal = _contiguous_cal("19901219", "20201231")
+        client = _make_client(
+            lambda api, **p: pd.DataFrame(),
+            trade_cal_dates=list(cal["cal_date"]))
+        fetcher, path = self._run(client)
+        self.assertTrue(path.exists())
+        self.assertEqual(0, len(fetcher.holes))
 
 
 if __name__ == "__main__":

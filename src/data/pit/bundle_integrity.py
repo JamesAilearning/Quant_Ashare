@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,54 @@ class BundleIntegrity:
     # bumped precisely so those v1 stamps (and the daily_recommend gate that reads
     # them) keep working without a forced rebuild.
     identity: BundleIdentity | None = None
+    # codex #412 r2: the authoritative expected-first-session anchor
+    # for coverage guards. Copied by the builder from the fetch
+    # manifest's required-endpoint coverage (max coverage_start_date,
+    # ISO yyyy-mm-dd): a complete zero-hole fetch from date X means
+    # every session from X onward is present, so the bundle
+    # calendar's first day IS the first real session >= X - no
+    # gap-size heuristic a truncated bundle could hide inside.
+    # OPTIONAL within schema_version 1 for the same reason
+    # ``identity`` is: pre-existing stamps (the production bundle's
+    # included) keep working; consumers fall back to their
+    # weekday-tolerance guard.
+    data_coverage_start: str | None = None
+    # codex #412 r6: the ANCHOR-SPECIFIC expected first session,
+    # derived by the builder from the fetched exchange calendar
+    # (trade_cal.parquet): the first is_open session at or after
+    # data_coverage_start. With this present, the walk-forward guard
+    # requires the bundle calendar to start EXACTLY here - zero gap
+    # tolerance - because every global gap threshold K leaves a hiding
+    # place of exactly size K (lowering 7 to 6 only moved it from
+    # 10-12 to 10-09). Optional for the same schema-v1 reasons as the
+    # fields above; absent = the closure-bound fallback applies.
+    expected_first_session: str | None = None
+
+
+MAX_EXCHANGE_CLOSURE_WEEKDAYS = 6
+"""Longest run of weekdays the A-share exchange has EVER been closed.
+
+Spring Festival 2020 (extended, 01-24..02-02) and National Day +
+Mid-Autumn 2023 (09-29..10-08) both span exactly 6 weekdays; National
+Day 1999 (50th anniversary) spanned 5. The bound is EXACT on purpose
+(codex #412 r5): an earlier revision kept "one day of slack" at 7, and
+that slack was precisely where truncation could hide - a bundle whose
+leading files are missing through 10-09 gaps exactly 7 weekdays from a
+10-01 anchor and sailed through the strict-greater check. Sessions are
+a subset of Mon-Fri, so every missing session costs a weekday; a gap
+beyond 6 cannot be a closure. Should the exchange ever close longer,
+this refuses loudly and the operator raises the constant with the new
+historical fact - fail-loud beats silently accepting truncation."""
+
+
+def missing_weekdays_between(start: date, first_present: date) -> int:
+    """Weekdays in [start, first_present) - the coverage-gap metric
+    shared by the builder's stamp cross-check and the walk-forward
+    calendar guard, so the two ends cannot drift apart."""
+    if first_present <= start:
+        return 0
+    return sum(1 for i in range((first_present - start).days)
+               if (start + timedelta(days=i)).weekday() < 5)
 
 
 def write_bundle_integrity(
@@ -84,6 +133,8 @@ def write_bundle_integrity(
     built_from_holey_fetch: bool,
     holes: tuple[FetchHole, ...] = (),
     identity: BundleIdentity | None = None,
+    data_coverage_start: str | None = None,
+    expected_first_session: str | None = None,
     now: datetime | None = None,
 ) -> None:
     """Atomically write the bundle's fetch-integrity stamp (temp + ``os.replace``)
@@ -111,6 +162,10 @@ def write_bundle_integrity(
             for h in holes
         ],
     }
+    if data_coverage_start is not None:
+        payload["data_coverage_start"] = data_coverage_start
+    if expected_first_session is not None:
+        payload["expected_first_session"] = expected_first_session
     if identity is not None:
         payload["identity"] = {
             "tail_date": identity.tail_date,
@@ -194,13 +249,43 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             calendar_start=_require(ident_raw, "calendar_start", str, ident_ctx),
             calendar_end=_require(ident_raw, "calendar_end", str, ident_ctx),
         )
+    cov = _validated_stamp_date(raw, "data_coverage_start", ctx)
+    expected = _validated_stamp_date(raw, "expected_first_session", ctx)
     return BundleIntegrity(
         schema_version=SCHEMA_VERSION,  # already validated equal above
         built_from_holey_fetch=built_from_holey_fetch,
         built_at=_require(raw, "built_at", str, ctx),
         holes=holes,
         identity=identity,
+        data_coverage_start=cov,
+        expected_first_session=expected,
     )
+
+
+def _validated_stamp_date(raw: Any, key: str, ctx: str) -> str | None:
+    """An optional stamp date, validated for syntax AND calendar
+    validity (codex #412 r3 P2): a damaged or hand-edited stamp
+    ("not-a-date", "2015-13-40") must be a BundleIntegrityError here -
+    the consumer translates that into an actionable refusal, whereas
+    letting it through surfaces as a raw parse traceback deep in
+    window generation. Explicit yyyy-mm-dd: py3.11's fromisoformat
+    also accepts the compact form ("20151001"), which is NOT this
+    stamp's contract (caught by the malformed-stamp pin)."""
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise BundleIntegrityError(
+            f"{ctx}: {key} must be a string, got {type(value).__name__}")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise BundleIntegrityError(f"{ctx}: {key} {value!r} is not yyyy-mm-dd")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise BundleIntegrityError(
+            f"{ctx}: {key} {value!r} is not a valid "
+            "ISO calendar date (yyyy-mm-dd)") from exc
+    return value
 
 
 def _require(obj: Any, key: str, typ: type, ctx: str) -> Any:

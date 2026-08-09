@@ -279,6 +279,432 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertEqual(_PLAN["universe"]["instruments"],
                          preset["instruments"])
 
+    def test_baseline_start_yields_full_is_coverage(self) -> None:
+        # Pin the INTENT, not the literal date: the baseline must start
+        # early enough that its first out-of-fold TEST window lands on
+        # the frozen IS start. The parent config's 2018-01-01 does not —
+        # 24m train + 3m valid pushed the first prediction to
+        # 2020-04-01, leaving 670 of ~1215 IS days uncovered, so the
+        # campaign's only incremental criterion (the orthogonality
+        # penalty) had no purchase on 45% of the breeding window.
+        #
+        # Derived from the fold geometry so a change to train/valid
+        # months re-derives the requirement instead of silently
+        # invalidating this pin.
+        from dateutil.relativedelta import relativedelta
+
+        preset = yaml.safe_load(
+            (_PROJECT_ROOT / "config" / "presets"
+             / "pv_incremental_baseline.yaml").read_text(encoding="utf-8"))
+        parent = yaml.safe_load(
+            (_PROJECT_ROOT / "config_walk.yaml").read_text(encoding="utf-8"))
+        train = int(preset.get("train_months", parent["train_months"]))
+        valid = int(preset.get("valid_months", parent["valid_months"]))
+        start = _PD.Timestamp(str(preset["overall_start"])).date()
+        first_test = start + relativedelta(months=train + valid)
+        is_start = _PD.Timestamp(_PLAN["windows"]["is_start"]).date()
+        self.assertEqual(
+            is_start, first_test,
+            f"first out-of-fold test window is {first_test}, but the "
+            f"frozen IS window starts {is_start} — the baseline would "
+            f"leave part of IS uncovered")
+        # And the tail stays where the sacred invariant put it.
+        self.assertEqual("2024-12-31", str(preset["overall_end"]))
+        # Decision 1-rev1: plan, preset and exporter binding must agree
+        # on the start — two of the three drifting apart would let a
+        # run bred under one definition be certified under another.
+        self.assertEqual(str(preset["overall_start"]),
+                         str(_PLAN["fitness"]["baseline"]["overall_start"]))
+        import inspect
+
+        import scripts.research.pv_incremental_baseline_export as ex
+        self.assertIn('"overall_start": base["overall_start"]',
+                      inspect.getsource(ex.check_run_config_binding))
+
+    def test_engine_refuses_uncovered_training_history(self) -> None:
+        # codex #411 r1-b: _generate_windows snaps valid/test ENDS back
+        # onto the calendar but never checked the HEAD — on the old
+        # 2018-start bundle a fold declaring train 2016-04..2018-03
+        # silently trained on three months of data while its manifest
+        # recorded the declared 24-month window, and the exporter would
+        # have certified it. Behavioural: a calendar that starts after
+        # overall_start must refuse outright.
+        from datetime import date, timedelta
+
+        from src.core.walk_forward.config import WalkForwardConfig
+        from src.core.walk_forward.engine import WalkForwardEngine, WalkForwardError
+
+        cal = [date(2018, 1, 2) + timedelta(days=i) for i in range(2400)]
+        cfg = WalkForwardConfig(overall_start="2015-10-01",
+                                overall_end="2024-12-31")
+        with self.assertRaises(WalkForwardError) as ctx:
+            WalkForwardEngine._generate_windows(cfg, calendar=cal)
+        self.assertIn("predates the bound data calendar",
+                      str(ctx.exception))
+        # AUTHORITATIVE branch (codex #412 r2): when the bundle stamp
+        # carries the fetch-coverage start, the guard compares against
+        # THAT — no gap heuristic. A bundle whose fetch began
+        # 2015-10-12 gaps only 7 weekdays (inside any closure
+        # tolerance) yet misses the real 10-08/10-09 sessions; the
+        # stamp says so, and the run refuses.
+        cal_1012 = [date(2015, 10, 12) + timedelta(days=i)
+                    for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx_cov:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1012,
+                data_coverage_start="2015-10-12")
+        self.assertIn("fetched data coverage", str(ctx_cov.exception))
+        # An honest full-coverage stamp passes with the SAME calendar
+        # shape the real bundle has (first session 10-08).
+        cal_full = [date(2015, 10, 8) + timedelta(days=i)
+                    for i in range(3400)]
+        wins_cov = WalkForwardEngine._generate_windows(
+            cfg, calendar=cal_full, data_coverage_start="2015-10-01")
+        self.assertGreater(len(wins_cov), 19)
+
+        # ANCHOR-SPECIFIC exactness (codex #412 r6): with the
+        # exchange-calendar-derived expected first session stamped,
+        # even a ONE-session truncation refuses - the case no global
+        # gap threshold can ever catch (every bound K accepts a gap of
+        # exactly K; lowering 7 to 6 merely moved the hiding place
+        # from 10-12 to 10-09).
+        cal_1009 = [date(2015, 10, 9) + timedelta(days=i)
+                    for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx_exact:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1009,
+                data_coverage_start="2015-10-01",
+                expected_first_session="2015-10-08")
+        self.assertIn("does not honour the stamped coverage",
+                      str(ctx_exact.exception))
+        # And the honest bundle passes the exact check.
+        wins_exact = WalkForwardEngine._generate_windows(
+            cfg, calendar=cal_full,
+            data_coverage_start="2015-10-01",
+            expected_first_session="2015-10-08")
+        self.assertGreater(len(wins_exact), 19)
+
+        # ADDITIVE, not a replacement (codex #412 r4): the manifest
+        # coverage is the fetch's REQUESTED window, so a stamp can
+        # claim 2015-10-01 while leading raw files are missing and the
+        # built calendar starts years later. The calendar-gap refusal
+        # must still fire even though a stamp exists and equals
+        # overall_start - the previous revision disabled it whenever a
+        # stamp was present, which let exactly this case through.
+        cal_2018 = [date(2018, 1, 2) + timedelta(days=i)
+                    for i in range(2600)]
+        with self.assertRaises(WalkForwardError) as ctx_add:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_2018,
+                data_coverage_start="2015-10-01")
+        self.assertIn("weekdays of history missing",
+                      str(ctx_add.exception))
+
+        # LEGACY branch (no stamp): the weekday tolerance stays as the
+        # fallback (codex #412 r1) — a partially built bundle starting
+        # 2015-10-20 sits only 19 calendar days after overall_start,
+        # inside any holiday-sized fixed window, while genuinely
+        # missing 13 weekdays of history. It must refuse too.
+        cal_partial = [date(2015, 10, 20) + timedelta(days=i)
+                       for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx2:
+            WalkForwardEngine._generate_windows(cfg, calendar=cal_partial)
+        self.assertIn("weekdays of history missing", str(ctx2.exception))
+        # The boundary itself (codex #412 r5): an UNSTAMPED calendar
+        # starting 2015-10-12 gaps exactly 7 weekdays — the earlier
+        # +1-slack threshold accepted it while the real 10-08/10-09
+        # sessions were missing. The bound is the EXACT historical
+        # maximum (6), so 7 refuses.
+        cal_1012_legacy = [date(2015, 10, 12) + timedelta(days=i)
+                           for i in range(3400)]
+        with self.assertRaises(WalkForwardError) as ctx3:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_1012_legacy)
+        self.assertIn("weekdays of history missing", str(ctx3.exception))
+        # A calendar that starts on the first session AT OR AFTER the
+        # anchor (2015-10-08 — the National Day week has none; a
+        # 5-weekday gap, within the 6-weekday worst closure) passes.
+        cal_ok = [date(2015, 10, 8) + timedelta(days=i) for i in range(3400)]
+        wins = WalkForwardEngine._generate_windows(cfg, calendar=cal_ok)
+        self.assertGreater(len(wins), 19)
+
+    def test_coverage_stamp_is_read_on_the_real_run_path(self) -> None:
+        # codex #412 r3 - and the exact miss of the previous round: the
+        # guard itself was verified end to end, but the RUN wiring read
+        # provider_uri off WalkForwardConfig, which has no such field
+        # (the CLI strips it into QlibRuntimeConfig), so real runs
+        # always fell back to the legacy heuristic and the stamp was
+        # never consulted. Pin all three sides.
+        import inspect
+        import unittest.mock as mock
+        from dataclasses import fields
+
+        from src.core.walk_forward import engine
+        from src.core.walk_forward.config import WalkForwardConfig
+        from src.core.walk_forward.engine import WalkForwardEngine
+
+        # 1) The config REALLY has no provider_uri - if someone adds
+        #    one, this pin forces them to reconcile the two sources.
+        self.assertNotIn("provider_uri",
+                         {f.name for f in fields(WalkForwardConfig)})
+        # 2) run() resolves through the canonical qlib config, never
+        #    off the config object.
+        src = inspect.getsource(engine)
+        self.assertIn("_read_coverage_stamp(",
+                      src)
+        self.assertIn("cls._resolve_provider_uri())", src)
+        self.assertNotIn('getattr(config, "provider_uri"', src)
+        # 3) Behaviour: the resolver returns the canonical URI when the
+        #    runtime is initialized, None when it is not.
+        class _Cfg:
+            provider_uri = "D:/some/bundle"
+        with mock.patch("src.core.qlib_runtime.get_canonical_qlib_config",
+                        return_value=_Cfg()):
+            self.assertEqual("D:/some/bundle",
+                             WalkForwardEngine._resolve_provider_uri())
+        with mock.patch("src.core.qlib_runtime.get_canonical_qlib_config",
+                        return_value=None):
+            self.assertIsNone(WalkForwardEngine._resolve_provider_uri())
+
+    def test_malformed_coverage_stamp_refuses_actionably(self) -> None:
+        # codex #412 r3 P2: a damaged/hand-edited stamp must surface as
+        # a classified, actionable refusal - not a raw pd.Timestamp
+        # parse traceback deep inside window generation.
+        import json as _json
+        import tempfile
+
+        from src.core.walk_forward.config import WalkForwardError
+        from src.core.walk_forward.engine import _read_coverage_stamp
+        from src.data.pit.bundle_integrity import (
+            BundleIntegrityError,
+            read_bundle_integrity,
+        )
+        for bad in ("not-a-date", "2015-13-40", "20151001"):
+            with tempfile.TemporaryDirectory() as d:
+                stamp = {"schema_version": 1,
+                         "built_from_holey_fetch": False,
+                         "built_at": "2026-08-08T00:00:00+00:00",
+                         "holes": [],
+                         "data_coverage_start": bad}
+                (Path(d) / "_fetch_integrity.json").write_text(
+                    _json.dumps(stamp), encoding="utf-8")
+                with self.assertRaises(BundleIntegrityError, msg=bad):
+                    read_bundle_integrity(Path(d))
+                # And the engine-side reader translates, not crashes.
+                with self.assertRaises(WalkForwardError, msg=bad):
+                    _read_coverage_stamp(d)
+
+    def test_builder_cross_checks_stamp_against_built_calendar(self) -> None:
+        # codex #412 r4: the builder must not stamp a coverage claim
+        # the data does not honour. Shared-helper behaviour plus a
+        # source pin that the builder actually calls it before
+        # stamping (the full build path needs a real fixture tree; the
+        # helper carries the logic, the pin carries the wiring).
+        import inspect
+        from datetime import date
+
+        from src.data.pit import qlib_bin_builder
+        from src.data.pit.bundle_integrity import (
+            MAX_EXCHANGE_CLOSURE_WEEKDAYS,
+            missing_weekdays_between,
+        )
+        # EXACT historical bound, zero slack (codex #412 r5): the
+        # earlier +1 buffer was precisely where truncation could hide
+        # (a 10-01 anchor with files missing through 10-09 gaps
+        # exactly 7 weekdays and sailed through a >7 check).
+        self.assertEqual(6, MAX_EXCHANGE_CLOSURE_WEEKDAYS)
+        # Holiday-sized gap (National Day 2015): 5 weekdays - stampable.
+        self.assertEqual(5, missing_weekdays_between(
+            date(2015, 10, 1), date(2015, 10, 8)))
+        # Missing leading files: far beyond any closure.
+        self.assertEqual(13, missing_weekdays_between(
+            date(2015, 10, 1), date(2015, 10, 20)))
+        self.assertEqual(0, missing_weekdays_between(
+            date(2015, 10, 8), date(2015, 10, 8)))
+        src = inspect.getsource(qlib_bin_builder)
+        self.assertIn("missing_weekdays_between(_cov, _first)", src)
+        self.assertIn("> MAX_EXCHANGE_CLOSURE_WEEKDAYS", src)
+        # And the refusal precedes the stamp write.
+        self.assertLess(src.index("weekdays of "),
+                        src.index("write_bundle_integrity("))
+
+    def test_builder_derives_the_anchor_specific_first_session(self) -> None:
+        # codex #412 r6: with the fetched exchange calendar on disk,
+        # the builder derives the EXACT expected first session for the
+        # coverage anchor and reconciles/stamps against it - no gap
+        # heuristic. Behavioural on a synthetic trade_cal; wiring
+        # pinned by source (exact-match refusal precedes the stamp).
+        import inspect
+        import tempfile
+
+        import pandas as pd_
+
+        from src.data.pit import qlib_bin_builder
+        from src.data.pit.qlib_bin_builder import (
+            QlibBinBuilderError,
+            derive_expected_first_session,
+        )
+        # One row per CALENDAR day, weekends closed — the endpoint's
+        # real contract, which the completeness equation now enforces
+        # (codex #412 r9): a fixture that skipped weekends would fail
+        # the row-count == day-span equation, not the check under
+        # test.
+        def _cal(first: str, last: str) -> pd_.DataFrame:
+            days = pd_.date_range(first, last, freq="D")
+            return pd_.DataFrame({
+                "exchange": ["SSE"] * len(days),
+                "cal_date": [d.strftime("%Y%m%d") for d in days],
+                "is_open": [1 if d.weekday() < 5 and
+                            d.strftime("%Y%m%d") >= "20151008" else 0
+                            for d in days],
+            })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _cal("2015-10-01", "2015-10-12").to_parquet(
+                root / "trade_cal.parquet", index=False)
+            self.assertEqual(
+                "2015-10-08",
+                derive_expected_first_session(root, "2015-10-01"))
+            self.assertEqual(
+                "2015-10-09",
+                derive_expected_first_session(root, "2015-10-09"))
+            # Anchor beyond the calendar tail (codex #412 r7): the
+            # file is PRESENT but cannot answer — truncated/stale
+            # evidence must REFUSE, never silently reclassify as
+            # legacy and re-open the gap heuristic this evidence
+            # exists to eliminate.
+            with self.assertRaises(QlibBinBuilderError):
+                derive_expected_first_session(root, "2026-01-01")
+        # Leading truncation (codex #412 r8): a calendar whose EARLIEST
+        # row is after the anchor cannot prove there was no session in
+        # between — deriving its own first row as "expected" would let
+        # a bundle truncated to the same date pass the exact-match
+        # check. Contiguous within its own span, so it reaches the
+        # coverage check rather than the gap equation.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _cal("2015-10-09", "2015-10-12").to_parquet(
+                root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError) as ctx_head:
+                derive_expected_first_session(root, "2015-10-01")
+            self.assertIn("leading edge", str(ctx_head.exception))
+        # Interior gap (codex #412 r9): head covers the anchor, tail
+        # is fine, but days are missing in between — bounds checks
+        # pass while the derived "expected" session would be the first
+        # row AFTER the gap. The row-count equation refuses it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gap = pd_.concat([_cal("2015-10-01", "2015-10-07"),
+                              _cal("2015-10-09", "2015-10-12")],
+                             ignore_index=True)
+            gap.to_parquet(root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError) as ctx_gap:
+                derive_expected_first_session(root, "2015-10-01")
+            self.assertIn("interior days are missing",
+                          str(ctx_gap.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # No trade_cal at all (legacy dump): None, not an error.
+            self.assertIsNone(
+                derive_expected_first_session(root, "2015-10-01"))
+            # An EMPTY calendar is unusable evidence, not legacy
+            # (codex #412 r7).
+            pd_.DataFrame(
+                {"exchange": [], "cal_date": [], "is_open": []}
+            ).to_parquet(root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError):
+                derive_expected_first_session(root, "2015-10-01")
+            # A malformed calendar is corrupt input, never legacy.
+            pd_.DataFrame([{"wrong": 1}]).to_parquet(
+                root / "trade_cal.parquet", index=False)
+            with self.assertRaises(QlibBinBuilderError):
+                derive_expected_first_session(root, "2015-10-01")
+        src = inspect.getsource(qlib_bin_builder)
+        self.assertIn("derive_expected_first_session(", src)
+        self.assertLess(src.index("calendar[0] != expected_first_session"),
+                        src.index("write_bundle_integrity("))
+
+    def test_adj_factor_leading_coverage_is_verified_per_ticker(self) -> None:
+        # codex #412 r13/r14: the bundle calendar is the union of
+        # DAILY rows alone, so a leading-truncated adj_factor dump
+        # passes every daily-based reconciliation while
+        # _apply_adjustment silently fills the missing head with
+        # factor 1.0 — UNADJUSTED prices stamped as covered. And a
+        # single market-wide minimum is not enough (r14): one old
+        # file's surviving row would certify the endpoint while every
+        # other ticker's missing head still took the 1.0 path. The
+        # adjudication is therefore PER TICKER, recorded by the main
+        # loop as it reads each ticker anyway.
+        import inspect
+        import tempfile
+
+        from src.data.pit import qlib_bin_builder
+        from src.data.pit.qlib_bin_builder import QlibBinBuilder
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builder = QlibBinBuilder(
+                tushare_dir=root,
+                delisted_registry_path=root / "registry.parquet",
+                output_dir=root / "provider")
+            daily = _PD.DataFrame({
+                "ts_code": ["X"] * 3,
+                "trade_date": ["20151008", "20151009", "20151012"],
+                "open": [1.0] * 3, "high": [1.0] * 3,
+                "low": [1.0] * 3, "close": [1.0] * 3,
+                "vol": [1.0] * 3, "amount": [1.0] * 3,
+            })
+            # Case 1: adj head truncated to AFTER the daily head — the
+            # exact r14 shape — is recorded as a violation even though
+            # the conversion itself stays tolerant.
+            (root / "adj_factor" / "2015").mkdir(parents=True)
+            _PD.DataFrame({
+                "ts_code": ["X.SH"],
+                "trade_date": ["20151009"],
+                "adj_factor": [1.0],
+            }).to_parquet(root / "adj_factor" / "2015" / "X.SH.parquet",
+                          index=False)
+            builder._apply_adjustment(daily, "X.SH")
+            self.assertEqual(
+                [("X.SH", "20151008", "20151009")],
+                builder._adj_head_violations)
+            # Case 2: adj file entirely missing is a violation too —
+            # r14's escape was precisely that per-ticker absence hid
+            # behind another ticker's surviving old row.
+            builder._adj_head_violations.clear()
+            builder._apply_adjustment(daily, "Y.SH")
+            self.assertEqual(
+                [("Y.SH", "20151008", None)],
+                builder._adj_head_violations)
+            # Case 3: a head that reaches the daily head records
+            # nothing.
+            builder._adj_head_violations.clear()
+            _PD.DataFrame({
+                "ts_code": ["Z.SH"] * 3,
+                "trade_date": ["20151008", "20151009", "20151012"],
+                "adj_factor": [1.0] * 3,
+            }).to_parquet(root / "adj_factor" / "2015" / "Z.SH.parquet",
+                          index=False)
+            builder._apply_adjustment(daily, "Z.SH")
+            self.assertEqual([], builder._adj_head_violations)
+        # Per-RUN reset (codex #412 r15): a reused instance must not
+        # carry a prior run's violations into a repaired, clean build.
+        # Source pin: the clear sits at the very top of build(),
+        # before the manifest is even read. The two-build behavioural
+        # proof lives with the full fixtures in
+        # tests/data_pipeline/test_qlib_bin_builder.py.
+        src_txt = inspect.getsource(qlib_bin_builder.QlibBinBuilder.build)
+        self.assertIn("self._adj_head_violations.clear()",
+                      src_txt.split("read_manifest")[0])
+
+        # Wiring: the per-ticker adjudication refuses BEFORE the stamp
+        # is written, with the silent-1.0 rationale spelled out.
+        src = inspect.getsource(qlib_bin_builder)
+        self.assertIn("_adj_head_violations", src)
+        self.assertLess(src.index("if self._adj_head_violations:"),
+                        src.index("write_bundle_integrity("))
+
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])
         self.assertIs(False, _PLAN["universe"]["ex_financials"])

@@ -75,17 +75,26 @@ Out of scope
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from src.core.logger import get_logger
+from src.data._trade_cal import calendar_frame_defect
 from src.data.bundle_manifest import compute_bundle_content_hash
-from src.data.pit.bundle_integrity import BundleIdentity, write_bundle_integrity
+from src.data.pit.bundle_integrity import (
+    MAX_EXCHANGE_CLOSURE_WEEKDAYS,
+    BundleIdentity,
+    missing_weekdays_between,
+    write_bundle_integrity,
+)
 from src.data.tushare.fetch_manifest import (
+    _DATE_SCOPED_ENDPOINTS,
     MANIFEST_FILENAME,
     FetchManifestError,
     all_holes,
@@ -140,6 +149,97 @@ class QlibBinBuilderError(RuntimeError):
     """Raised when bin construction fails."""
 
 
+def derive_expected_first_session(
+    tushare_dir: Path, coverage_start_iso: str,
+) -> str | None:
+    """The exchange's first session AT OR AFTER the coverage anchor.
+
+    Anchor-specific evidence (codex #412 r6): read from the fetched
+    exchange calendar (``trade_cal.parquet``, one row per calendar day
+    with ``is_open``), so the reconciliation compares the built bundle
+    calendar against what the EXCHANGE says the first session is - not
+    against a closure-sized gap heuristic, whose every bound K leaves
+    a hiding place of exactly size K.
+
+    ``None`` ONLY when the file does not exist (a dump that predates
+    the trade_cal endpoint - the genuinely legacy case) — callers then
+    fall back to the closure-bound check. A file that IS present but
+    cannot name an open session for the anchor (empty, truncated
+    before the anchor, or stale) is a :class:`QlibBinBuilderError`
+    (codex #412 r7): that is unusable EVIDENCE, and silently
+    reclassifying it as legacy would re-open the very heuristic path
+    this evidence exists to eliminate. A malformed file likewise.
+    """
+    path = tushare_dir / "trade_cal.parquet"
+    if not path.is_file():
+        return None
+    try:
+        cal = pd.read_parquet(path)
+        # STRUCTURAL completeness first (codex #412 r9), via the SAME
+        # shared equation the fetcher validates before persisting —
+        # one row per calendar day, so row count must equal the day
+        # span. The fetcher never writes a frame that fails it, but
+        # the on-disk file can be damaged or hand-edited afterwards
+        # (the threat model every guard in this change answers), and a
+        # frame with its interior missing would otherwise derive the
+        # first row AFTER the gap as the "expected" session. Real
+        # non-dates (19901340) are caught here too, as a defect
+        # report rather than a bounds-arithmetic crash (r9 P2).
+        defect = calendar_frame_defect(cal)
+        if defect is not None:
+            raise QlibBinBuilderError(
+                f"trade_cal.parquet in {tushare_dir} is unusable: "
+                f"{defect}; re-fetch the trade_cal endpoint; refusing "
+                "to derive an expected session from damaged "
+                "evidence.")
+        anchor = coverage_start_iso.replace("-", "")
+        # The calendar itself must COVER the anchor (codex #412 r8): a
+        # leading-truncated file that still has open rows AFTER the
+        # anchor (e.g. beginning 2015-10-09 for a 2015-10-01 anchor)
+        # would otherwise derive its own first row as the "expected"
+        # session — and a bundle truncated to the same date then
+        # passes the exact-match check. A calendar whose earliest row
+        # (open or closed) is after the anchor cannot prove there was
+        # no session in between; that is unusable evidence, not
+        # legacy.
+        all_dates = cal["cal_date"].astype(str)
+        if cal.empty or all_dates.min() > anchor:
+            raise QlibBinBuilderError(
+                f"trade_cal.parquet in {tushare_dir} does not cover "
+                f"the anchor {coverage_start_iso}: its earliest row is "
+                + (repr(all_dates.min()) if len(cal) else "absent")
+                + " - the exchange calendar is truncated at the "
+                "leading edge; re-fetch the trade_cal endpoint; "
+                "refusing to derive an expected session from evidence "
+                "that begins after the anchor.")
+        opens = cal[(cal["is_open"] == 1) & (all_dates >= anchor)]
+        if opens.empty:
+            raise QlibBinBuilderError(
+                f"trade_cal.parquet in {tushare_dir} has no open "
+                f"session at or after {coverage_start_iso} "
+                f"({len(cal)} rows"
+                + (f", tail {cal['cal_date'].astype(str).max()}"
+                   if len(cal) else "")
+                + ") - the exchange calendar is empty, truncated or "
+                "stale; re-fetch the trade_cal endpoint; refusing to "
+                "fall back to the gap heuristic on unusable "
+                "evidence.")
+        first = str(opens["cal_date"].astype(str).min())
+    except QlibBinBuilderError:
+        raise
+    except (KeyError, ValueError, OSError) as exc:
+        raise QlibBinBuilderError(
+            f"trade_cal.parquet in {tushare_dir} is unreadable or "
+            f"malformed ({exc}) - re-fetch the trade_cal endpoint; "
+            "refusing to reconcile coverage against a corrupt "
+            "exchange calendar.") from exc
+    if not re.fullmatch(r"\d{8}", first):
+        raise QlibBinBuilderError(
+            f"trade_cal.parquet cal_date {first!r} is not YYYYMMDD - "
+            "the exchange calendar is corrupt; re-fetch it.")
+    return f"{first[0:4]}-{first[4:6]}-{first[6:8]}"
+
+
 @dataclass(frozen=True)
 class QlibBinBuilderResult:
     output_dir: Path
@@ -167,6 +267,14 @@ class QlibBinBuilder:
         self._tushare_dir = tushare_dir
         self._delisted_registry_path = delisted_registry_path
         self._output_dir = output_dir
+        # codex #412 r14: per-ticker adjustment-head violations,
+        # collected by _apply_adjustment as the main loop reads each
+        # ticker anyway (zero extra IO) and adjudicated before the
+        # coverage stamp is written. A single global minimum let ONE
+        # old file's row certify the whole endpoint while every other
+        # ticker's missing head still took the silent fillna(1.0)
+        # path. Each entry: (ts_code, daily_first, adj_first_or_None).
+        self._adj_head_violations: list[tuple[str, str, str | None]] = []
         # P3-4c Layer 1: when False (default), build() refuses a holey / missing
         # fetch_manifest. True (operator's --allow-holey-fetch) builds a partial
         # research bundle anyway, stamped built-from-holey-fetch.
@@ -177,6 +285,13 @@ class QlibBinBuilder:
     # ------------------------------------------------------------------
 
     def build(self) -> QlibBinBuilderResult:
+        # Per-RUN state (codex #412 r15): the violation list is
+        # appended by _apply_adjustment during THIS build's main loop,
+        # so a reused instance (build() is documented idempotent)
+        # must not carry a prior run's entries — a holey build
+        # followed by a repaired, clean build would otherwise be
+        # falsely refused at the stamp adjudication.
+        self._adj_head_violations.clear()
         # P3-4c Layer 1: gate on the P3-4b fetch manifest BEFORE doing any work.
         # A holey (some endpoint failed) OR missing (cannot confirm) manifest means
         # the raw tushare dump is incomplete; building from it would bake a
@@ -314,11 +429,147 @@ class QlibBinBuilder:
                 calendar_start=calendar[0],
                 calendar_end=calendar[-1],
             )
+            # codex #412 r2: stamp the authoritative coverage start so
+            # run-time guards compare overall_start against what the
+            # FETCH established, not against calendar-gap guesses. Max
+            # across required endpoints = the date from which ALL are
+            # complete. Only a clean build may stamp it - a holey fetch
+            # cannot vouch for its own coverage.
+            data_coverage_start: str | None = None
+            expected_first_session: str | None = None
+            # Only DATE-SCOPED endpoints participate: stock_basic is a
+            # SNAPSHOT (full listing pull) whose manifest coverage
+            # records the run's window PARAMETER, not what the listing
+            # covers - folding it into the max stamped 2018-01-01 onto
+            # a bundle whose price history genuinely starts 2015-10-01
+            # (caught end-to-end on the real rebuilt bundle before this
+            # ever shipped).
+            _dated = [ep for ep in BUNDLE_REQUIRED_ENDPOINTS
+                      if ep in _DATE_SCOPED_ENDPOINTS]
+            if manifest is not None and not built_from_holey_fetch:
+                starts = [
+                    manifest.endpoints[ep].coverage_start_date
+                    for ep in _dated
+                    if ep in manifest.endpoints
+                    and manifest.endpoints[ep].coverage_start_date
+                ]
+                if starts and len(starts) == len(_dated):
+                    raw_d = max(starts)
+                    # Validate BEFORE slicing into a stamp (codex #412
+                    # r5 P2): read_manifest accepts any string here,
+                    # and an unvalidated value would surface as a raw
+                    # ValueError the build CLI does not catch - the
+                    # corrupt-manifest refusal must stay actionable.
+                    if not re.fullmatch(r"\d{8}", raw_d):
+                        raise QlibBinBuilderError(
+                            f"fetch manifest coverage_start_date "
+                            f"{raw_d!r} is not YYYYMMDD - the manifest "
+                            "is corrupt; re-fetch to regenerate it.")
+                    data_coverage_start = (
+                        f"{raw_d[0:4]}-{raw_d[4:6]}-{raw_d[6:8]}")
+                    try:
+                        date.fromisoformat(data_coverage_start)
+                    except ValueError as exc:
+                        raise QlibBinBuilderError(
+                            f"fetch manifest coverage_start_date "
+                            f"{raw_d!r} is not a valid calendar date - "
+                            "the manifest is corrupt; re-fetch to "
+                            "regenerate it.") from exc
+                    # codex #412 r4: the manifest coverage is the run's
+                    # REQUESTED window - build_manifest records it
+                    # before files are verified, and the fetcher's
+                    # freshness rule validates each file's MAX date
+                    # only. If leading raw files are missing/truncated,
+                    # the calendar built from the actual data starts
+                    # late while the stamp would still claim the
+                    # requested start - and the stamp is exactly what
+                    # DOWNSTREAM guards trust. Cross-check against the
+                    # calendar we just built: a gap beyond the longest
+                    # exchange closure means the fetch's claim is not
+                    # honoured by the data, and stamping it would
+                    # launder missing history into an authoritative
+                    # assertion. Refuse the build (fail-loud) - this is
+                    # corrupt input, not a partial-build opt-in.
+                    # ANCHOR-SPECIFIC evidence first (codex #412 r6):
+                    # a fetched exchange calendar names the exact first
+                    # session at or after the anchor, so the built
+                    # calendar must start EXACTLY there - zero gap
+                    # tolerance. Every global gap threshold K leaves a
+                    # hiding place of size K (lowering 7 to 6 only
+                    # moved it from 10-12 to 10-09); only the
+                    # exchange's own calendar closes the family.
+                    expected_first_session = derive_expected_first_session(
+                        self._tushare_dir, data_coverage_start)
+                    if expected_first_session is not None:
+                        if calendar[0] != expected_first_session:
+                            raise QlibBinBuilderError(
+                                f"fetch manifest claims coverage from "
+                                f"{data_coverage_start}; the exchange "
+                                f"calendar (trade_cal.parquet) says "
+                                f"the first session at or after it is "
+                                f"{expected_first_session}, but the "
+                                f"calendar built from the actual data "
+                                f"starts {calendar[0]}. Leading raw "
+                                "files are missing or truncated; "
+                                "re-fetch before building.")
+                    else:
+                        # LEGACY dump without trade_cal.parquet: the
+                        # closure-bound reconciliation still guards.
+                        _cov = date.fromisoformat(data_coverage_start)
+                        _first = date.fromisoformat(calendar[0])
+                        _gap = missing_weekdays_between(_cov, _first)
+                        if _gap > MAX_EXCHANGE_CLOSURE_WEEKDAYS:
+                            raise QlibBinBuilderError(
+                                f"fetch manifest claims coverage from "
+                                f"{data_coverage_start} but the "
+                                f"calendar built from the actual data "
+                                f"starts {calendar[0]} - {_gap} "
+                                "weekdays of claimed history are "
+                                "missing (longest exchange closure "
+                                "spans "
+                                f"{MAX_EXCHANGE_CLOSURE_WEEKDAYS}). "
+                                "Leading raw files are missing or "
+                                "truncated; re-fetch before building.")
+                    # adj_factor leading coverage, PER TICKER (codex
+                    # #412 r13, tightened in r14): the calendar above
+                    # is the union of DAILY rows alone, so a
+                    # leading-truncated adj_factor dump passes every
+                    # daily-based check while _apply_adjustment
+                    # silently fills the missing head with factor 1.0
+                    # — unadjusted prices stamped as covered. A single
+                    # market-wide minimum is NOT enough (r14): one old
+                    # file's surviving row would certify the endpoint
+                    # while every other ticker's missing head still
+                    # took the 1.0 path. The main loop already read
+                    # each ticker's adj source, recording every ticker
+                    # whose adjustment head fails to reach its daily
+                    # head; any violation refuses the stamp. (daily
+                    # needs no separate check — the calendar IS its
+                    # union; daily_basic is optional and not vouched
+                    # for by this stamp.)
+                    if self._adj_head_violations:
+                        sample = ", ".join(
+                            f"{t} (daily from {d}, adj "
+                            + (f"from {a}" if a else "MISSING") + ")"
+                            for t, d, a in
+                            self._adj_head_violations[:3])
+                        raise QlibBinBuilderError(
+                            "fetch manifest claims coverage from "
+                            f"{data_coverage_start}, but "
+                            f"{len(self._adj_head_violations)} "
+                            "ticker(s) have adj_factor data that "
+                            "does not reach their daily head - e.g. "
+                            f"{sample}. Adjustment would silently "
+                            "fall back to factor 1.0 (unadjusted "
+                            "prices) for those heads; re-fetch "
+                            "adj_factor before building.")
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,
                 holes=fetch_holes,
                 identity=bundle_identity,
+                data_coverage_start=data_coverage_start,
+                expected_first_session=expected_first_session,
             )
             # Promote staging to final location
             if self._output_dir.exists():
@@ -482,6 +733,25 @@ class QlibBinBuilder:
         """
         adj = self._load_adj_factor(tushare_code)
         out = daily.copy()
+        # Record head violations for the coverage-stamp adjudication
+        # (codex #412 r14): the CONVERSION here stays tolerant (1.0
+        # fallback, backward-compatible for research/holey builds),
+        # but a bundle may only be STAMPED as covered when every
+        # ticker's adjustment head reaches its daily head — tushare
+        # publishes a factor for every session a listed name has, so
+        # in a healthy dump min(adj) <= min(daily) holds PER TICKER
+        # (the independent audit verified exactly this, 0 violations).
+        daily_first = (str(daily["trade_date"].astype(str).min())
+                       if len(daily) else None)
+        if daily_first is not None:
+            if adj is None or adj.empty:
+                self._adj_head_violations.append(
+                    (tushare_code, daily_first, None))
+            else:
+                adj_first = str(adj["trade_date"].astype(str).min())
+                if adj_first > daily_first:
+                    self._adj_head_violations.append(
+                        (tushare_code, daily_first, adj_first))
         if adj is None or adj.empty:
             # No adjustment data at all — keep raw prices (factor 1.0).
             out["adj_factor"] = 1.0

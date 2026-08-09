@@ -45,6 +45,11 @@ def _write_active(path: Path, tickers: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
     # P3-4c: build() gates on a COMPLETE fetch manifest (no holes AND the required
+    # endpoints present). Coverage starts 2020-01-01 to match the
+    # synthetic data: the builder now cross-checks the stamped
+    # coverage against the built calendar (codex #412 r4), and a
+    # manifest claiming 2000 coverage over 2020-only fixtures is
+    # exactly the dishonest-claim shape that check refuses.
     # endpoints present). These tests exercise builder LOGIC (not the gate — that
     # has dedicated tests), so seed a hole-free manifest covering the required
     # endpoints alongside the raw dump.
@@ -52,7 +57,7 @@ def _write_active(path: Path, tickers: list[str]) -> None:
         path.parent / MANIFEST_FILENAME,
         build_manifest(
             [TushareFetchResult(e, 1, 0, 0) for e in ("stock_basic", "daily", "adj_factor")],
-            (), "20000101", "20251231",
+            (), "20200101", "20251231",
         ),
     )
 
@@ -75,7 +80,8 @@ def _write_registry(path: Path, rows: list[dict]) -> None:
 
 
 def _write_daily_year(tushare_dir: Path, year: int, ts_code: str,
-                     trade_dates: list[str], close: float = 10.0) -> None:
+                     trade_dates: list[str], close: float = 10.0,
+                     with_adj: bool = True) -> None:
     df = pd.DataFrame({
         "ts_code": [ts_code] * len(trade_dates),
         "trade_date": trade_dates,
@@ -89,6 +95,18 @@ def _write_daily_year(tushare_dir: Path, year: int, ts_code: str,
     path = tushare_dir / "daily" / str(year) / f"{ts_code}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
+    # An HONEST dump by default (codex #412 r13): the builder now
+    # verifies adj_factor's market-wide leading coverage before
+    # stamping, and a fixture that claims a complete fetch while
+    # carrying daily-only data is exactly the dishonest-claim shape it
+    # refuses. factor=1.0 keeps every price assertion unchanged.
+    # Tests that SPECIFICALLY exercise a ticker without adj data pass
+    # with_adj=False (and keep at least one other ticker WITH factors,
+    # since per-ticker absence is legal while market-wide absence is
+    # a refused truncation).
+    if with_adj:
+        _write_adj_factor_year(tushare_dir, year, ts_code, trade_dates,
+                               factor=1.0)
 
 
 def _write_adj_factor_year(tushare_dir: Path, year: int, ts_code: str,
@@ -137,7 +155,7 @@ def _write_holey_manifest(tushare_dir: Path) -> None:
                 endpoint="daily", unit="ts_code=600519.SH year=2020",
                 reason_class="transient", attempts=5, last_error="rate limit",
             ),),
-            "20000101", "20251231",
+            "20200101", "20251231",
         ),
     )
 
@@ -227,7 +245,7 @@ class FetchGateTests(unittest.TestCase):
                 tmp_path / MANIFEST_FILENAME,
                 build_manifest(
                     [TushareFetchResult("stock_basic", 2, 0, 0)],  # daily/adj_factor absent
-                    (), "20000101", "20251231",
+                    (), "20200101", "20251231",
                 ),
             )
             _write_registry(tmp_path / "registry.parquet", [])
@@ -252,7 +270,7 @@ class FetchGateTests(unittest.TestCase):
                         TushareFetchResult("daily", 0, 0, 0),        # skipped => empty cov
                         TushareFetchResult("adj_factor", 0, 0, 0),   # skipped => empty cov
                     ],
-                    (), "20000101", "20251231",
+                    (), "20200101", "20251231",
                 ),
             )
             _write_registry(tmp_path / "registry.parquet", [])
@@ -385,27 +403,90 @@ class HappyPathTests(unittest.TestCase):
             self.assertFalse(np.isnan(valid).any())
 
     def test_no_adj_factor_falls_back_to_raw_prices(self) -> None:
-        """When no adj_factor parquet exists for a ticker, the builder
-        defaults to factor=1.0 and writes raw close prices unchanged."""
+        """When no adj_factor parquet exists for a ticker, the
+        CONVERSION defaults to factor=1.0 and writes raw close prices
+        unchanged — on the HOLEY/research path only.
+
+        Since codex #412 r13/r14 a COVERAGE-STAMPED build refuses any
+        ticker whose adjustment head misses its daily head (a
+        per-ticker absence hiding behind another ticker's factors was
+        exactly the r14 escape), so the tolerant-1.0 world can only
+        exist as an ``--allow-holey-fetch`` research build whose
+        manifest does not claim adj_factor and which gets no coverage
+        stamp. That is also the honest framing: an "older snapshot
+        without adj data" is a degraded bundle, not a certified one.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
             _write_registry(tmp_path / "registry.parquet", [])
             dates = ["20200102"]
-            _write_daily_year(tmp_path, 2020, "600519.SH", dates, close=42.0)
-            # No adj_factor parquet written
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates,
+                              close=42.0, with_adj=False)
+            # No adj_factor parquet written; the manifest claims only
+            # what the dump carries, making the fetch holey for the
+            # bundle-required endpoint set.
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [TushareFetchResult(e, 1, 0, 0)
+                     for e in ("stock_basic", "daily")],
+                    (), "20200101", "20251231",
+                ),
+            )
 
             out = tmp_path / "provider"
             QlibBinBuilder(
                 tushare_dir=tmp_path,
                 delisted_registry_path=tmp_path / "registry.parquet",
                 output_dir=out,
+                allow_holey_fetch=True,
             ).build()
 
             cal = (out / "calendars" / "day.txt").read_text(encoding="utf-8").splitlines()
             _, close = _read_bin_values(out, "SH600519", "close", cal)
             # Raw close, no adjustment
             self.assertAlmostEqual(float(close[0]), 42.0, places=3)
+
+    def test_reused_builder_forgets_prior_run_violations(self) -> None:
+        # codex #412 r15: build() is documented idempotent, so a
+        # reused instance must not carry a holey run's adjustment
+        # violations into a later, repaired build — the clean build
+        # would be falsely refused at the stamp adjudication.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
+            _write_registry(tmp_path / "registry.parquet", [])
+            dates = ["20200102"]
+            # First: a dump whose ticker has NO adj file, built as an
+            # allowed-holey research bundle (records a violation).
+            _write_daily_year(tmp_path, 2020, "600519.SH", dates,
+                              close=42.0, with_adj=False)
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [TushareFetchResult(e, 1, 0, 0)
+                     for e in ("stock_basic", "daily")],
+                    (), "20200101", "20251231"))
+            builder = QlibBinBuilder(
+                tushare_dir=tmp_path,
+                delisted_registry_path=tmp_path / "registry.parquet",
+                output_dir=tmp_path / "provider",
+                allow_holey_fetch=True,
+            )
+            builder.build()
+            # Repair: add the adj file and a complete manifest, then
+            # build AGAIN with the same instance — must succeed and
+            # stamp cleanly, not trip over the stale violation.
+            _write_adj_factor_year(tmp_path, 2020, "600519.SH", dates)
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [TushareFetchResult(e, 1, 0, 0)
+                     for e in ("stock_basic", "daily", "adj_factor")],
+                    (), "20200101", "20251231"))
+            builder.build()  # would raise before the r15 fix
+            self.assertEqual([], builder._adj_head_violations)
 
     def test_multi_year_concat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
