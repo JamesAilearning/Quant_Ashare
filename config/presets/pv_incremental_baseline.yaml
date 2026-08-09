@@ -53,11 +53,17 @@ slippage_bps: 5.0
 # 限。tushare 回补 2015-10-01..2017-12-31(52,866 单元,零 hole,独立审计含实
 # 调 API 逐值比对)后,bundle 日历 2082 -> 2631 天,新增 549 天恰等于该区间的
 # 交易日数。跑本档需 QUANT_PROVIDER_URI 指向含 2015 数据的 bundle;指向旧
-# bundle 会得到更少的折,而不是静默的错误覆盖。
+# bundle(或任何覆盖不足的 bundle)时 walk-forward 的覆盖守卫**拒绝启动**
+# (WalkForwardError,codex #412 r2/r6)——不会静默给出更少的折,更不会用被裁剪
+# 的窗口训练。恢复方式是换到 2015 数据的 bundle,不是接受缩水的跑。
 #
-# 冻结协议(docs/prereg/pv_incremental.yaml `fitness.baseline`)钉的是 model /
-# ensemble_window / overall_end,**未**钉 overall_start,故本项不违反冻结;但
-# 它改变基线定义,须记入战役台账。
+# 本项是**决策①-rev1**(操作人重签,change 2026-08-08-pv-baseline-full-is-
+# coverage):原决策①(冻结件 is_coverage_policy 注文)明确签过"基线保持生产折
+# 几何、首个样本外日晚于 IS 窗起点、不缩短 train 窗造更早基线",部分 IS 覆盖
+# 是**签署过的语义**而非漏钉的疏忽——故前移 overall_start 属改已签决策,须走
+# 重签通道(本 change 的合并即签署),并记入战役台账(rev1 条目)。冻结件该注文
+# 处已追加 rev1 状态说明。任何再次改动本值同样须走 decision-first 重签,
+# 不得以"某键未被字面冻结"为由绕过。
 overall_start: "2015-10-01"
 overall_end: "2024-12-31"
 output_dir: "output/walk_forward/pv_incremental_baseline"
