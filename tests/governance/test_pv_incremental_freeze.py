@@ -362,6 +362,22 @@ class PvIncrementalFreezePins(unittest.TestCase):
             cfg, calendar=cal_full, data_coverage_start="2015-10-01")
         self.assertGreater(len(wins_cov), 19)
 
+        # ADDITIVE, not a replacement (codex #412 r4): the manifest
+        # coverage is the fetch's REQUESTED window, so a stamp can
+        # claim 2015-10-01 while leading raw files are missing and the
+        # built calendar starts years later. The calendar-gap refusal
+        # must still fire even though a stamp exists and equals
+        # overall_start - the previous revision disabled it whenever a
+        # stamp was present, which let exactly this case through.
+        cal_2018 = [date(2018, 1, 2) + timedelta(days=i)
+                    for i in range(2600)]
+        with self.assertRaises(WalkForwardError) as ctx_add:
+            WalkForwardEngine._generate_windows(
+                cfg, calendar=cal_2018,
+                data_coverage_start="2015-10-01")
+        self.assertIn("weekdays of history missing",
+                      str(ctx_add.exception))
+
         # LEGACY branch (no stamp): the weekday tolerance stays as the
         # fallback (codex #412 r1) — a partially built bundle starting
         # 2015-10-20 sits only 19 calendar days after overall_start,
@@ -444,6 +460,36 @@ class PvIncrementalFreezePins(unittest.TestCase):
                 # And the engine-side reader translates, not crashes.
                 with self.assertRaises(WalkForwardError, msg=bad):
                     _read_data_coverage_start(d)
+
+    def test_builder_cross_checks_stamp_against_built_calendar(self) -> None:
+        # codex #412 r4: the builder must not stamp a coverage claim
+        # the data does not honour. Shared-helper behaviour plus a
+        # source pin that the builder actually calls it before
+        # stamping (the full build path needs a real fixture tree; the
+        # helper carries the logic, the pin carries the wiring).
+        import inspect
+        from datetime import date
+
+        from src.data.pit import qlib_bin_builder
+        from src.data.pit.bundle_integrity import (
+            MAX_EXCHANGE_CLOSURE_WEEKDAYS,
+            missing_weekdays_between,
+        )
+        self.assertEqual(7, MAX_EXCHANGE_CLOSURE_WEEKDAYS)
+        # Holiday-sized gap (National Day 2015): 5 weekdays - stampable.
+        self.assertEqual(5, missing_weekdays_between(
+            date(2015, 10, 1), date(2015, 10, 8)))
+        # Missing leading files: far beyond any closure.
+        self.assertEqual(13, missing_weekdays_between(
+            date(2015, 10, 1), date(2015, 10, 20)))
+        self.assertEqual(0, missing_weekdays_between(
+            date(2015, 10, 8), date(2015, 10, 8)))
+        src = inspect.getsource(qlib_bin_builder)
+        self.assertIn("missing_weekdays_between(_cov, _first)", src)
+        self.assertIn("> MAX_EXCHANGE_CLOSURE_WEEKDAYS", src)
+        # And the refusal precedes the stamp write.
+        self.assertLess(src.index("weekdays of "),
+                        src.index("write_bundle_integrity("))
 
     def test_universe_and_scope(self) -> None:
         self.assertEqual("csi800", _PLAN["universe"]["instruments"])

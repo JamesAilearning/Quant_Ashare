@@ -66,7 +66,7 @@ def _write_active(path: Path, tickers: list[str]) -> None:
         path.parent / MANIFEST_FILENAME,
         build_manifest(
             [TushareFetchResult(e, 1, 0, 0) for e in ("stock_basic", "daily", "adj_factor")],
-            (), "20000101", "20251231",
+            (), "20200101", "20251231",
         ),
     )
 

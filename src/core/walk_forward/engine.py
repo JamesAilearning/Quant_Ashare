@@ -10,7 +10,7 @@ import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -612,14 +612,24 @@ class WalkForwardEngine:
                     "be silently clipped. Point QUANT_PROVIDER_URI at "
                     "a bundle whose fetch covers the requested "
                     "history, or move overall_start; refusing.")
-        _MAX_EXCHANGE_CLOSURE_WEEKDAYS = 7
-        missing_weekdays = 0
-        if cal and cal[0] > overall_start_date:
-            missing_weekdays = sum(
-                1 for i in range((cal[0] - overall_start_date).days)
-                if (overall_start_date + timedelta(days=i)).weekday() < 5)
-        if (coverage_start is None and cal
-                and missing_weekdays > _MAX_EXCHANGE_CLOSURE_WEEKDAYS):
+        # The stamp check is ADDITIVE, never a replacement (codex #412
+        # r4): the manifest coverage is the fetch's REQUESTED window,
+        # recorded before files are verified, and the fetcher's
+        # freshness rule validates tails only - so a stamp can claim
+        # 2015-10-01 while leading raw files are missing and the built
+        # calendar starts years later. Disabling the calendar-gap
+        # refusal whenever a stamp exists would let exactly that case
+        # through. Both guards therefore ALWAYS run: the stamp catches
+        # truncation hidden inside the closure window (10-12 case),
+        # the calendar gap catches a stamp the data does not honour.
+        from src.data.pit.bundle_integrity import (
+            MAX_EXCHANGE_CLOSURE_WEEKDAYS,
+            missing_weekdays_between,
+        )
+        missing_weekdays = (
+            missing_weekdays_between(overall_start_date, cal[0])
+            if cal else 0)
+        if cal and missing_weekdays > MAX_EXCHANGE_CLOSURE_WEEKDAYS:
             raise WalkForwardError(
                 f"overall_start {config.overall_start} predates the "
                 f"bound data calendar (first day {cal[0].isoformat()}, "

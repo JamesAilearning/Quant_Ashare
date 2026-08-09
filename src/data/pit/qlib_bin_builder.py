@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -84,7 +85,12 @@ import pandas as pd
 
 from src.core.logger import get_logger
 from src.data.bundle_manifest import compute_bundle_content_hash
-from src.data.pit.bundle_integrity import BundleIdentity, write_bundle_integrity
+from src.data.pit.bundle_integrity import (
+    MAX_EXCHANGE_CLOSURE_WEEKDAYS,
+    BundleIdentity,
+    missing_weekdays_between,
+    write_bundle_integrity,
+)
 from src.data.tushare.fetch_manifest import (
     _DATE_SCOPED_ENDPOINTS,
     MANIFEST_FILENAME,
@@ -342,6 +348,35 @@ class QlibBinBuilder:
                     raw_d = max(starts)
                     data_coverage_start = (
                         f"{raw_d[0:4]}-{raw_d[4:6]}-{raw_d[6:8]}")
+                    # codex #412 r4: the manifest coverage is the run's
+                    # REQUESTED window - build_manifest records it
+                    # before files are verified, and the fetcher's
+                    # freshness rule validates each file's MAX date
+                    # only. If leading raw files are missing/truncated,
+                    # the calendar built from the actual data starts
+                    # late while the stamp would still claim the
+                    # requested start - and the stamp is exactly what
+                    # DOWNSTREAM guards trust. Cross-check against the
+                    # calendar we just built: a gap beyond the longest
+                    # exchange closure means the fetch's claim is not
+                    # honoured by the data, and stamping it would
+                    # launder missing history into an authoritative
+                    # assertion. Refuse the build (fail-loud) - this is
+                    # corrupt input, not a partial-build opt-in.
+                    _cov = date.fromisoformat(data_coverage_start)
+                    _first = date.fromisoformat(calendar[0])
+                    _gap = missing_weekdays_between(_cov, _first)
+                    if _gap > MAX_EXCHANGE_CLOSURE_WEEKDAYS:
+                        raise QlibBinBuilderError(
+                            f"fetch manifest claims coverage from "
+                            f"{data_coverage_start} but the calendar "
+                            f"built from the actual data starts "
+                            f"{calendar[0]} - {_gap} weekdays of "
+                            "claimed history are missing (longest "
+                            "exchange closure spans "
+                            f"{MAX_EXCHANGE_CLOSURE_WEEKDAYS}). "
+                            "Leading raw files are missing or "
+                            "truncated; re-fetch before building.")
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,

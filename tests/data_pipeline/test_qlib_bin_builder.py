@@ -45,6 +45,11 @@ def _write_active(path: Path, tickers: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
     # P3-4c: build() gates on a COMPLETE fetch manifest (no holes AND the required
+    # endpoints present). Coverage starts 2020-01-01 to match the
+    # synthetic data: the builder now cross-checks the stamped
+    # coverage against the built calendar (codex #412 r4), and a
+    # manifest claiming 2000 coverage over 2020-only fixtures is
+    # exactly the dishonest-claim shape that check refuses.
     # endpoints present). These tests exercise builder LOGIC (not the gate — that
     # has dedicated tests), so seed a hole-free manifest covering the required
     # endpoints alongside the raw dump.
@@ -52,7 +57,7 @@ def _write_active(path: Path, tickers: list[str]) -> None:
         path.parent / MANIFEST_FILENAME,
         build_manifest(
             [TushareFetchResult(e, 1, 0, 0) for e in ("stock_basic", "daily", "adj_factor")],
-            (), "20000101", "20251231",
+            (), "20200101", "20251231",
         ),
     )
 
@@ -137,7 +142,7 @@ def _write_holey_manifest(tushare_dir: Path) -> None:
                 endpoint="daily", unit="ts_code=600519.SH year=2020",
                 reason_class="transient", attempts=5, last_error="rate limit",
             ),),
-            "20000101", "20251231",
+            "20200101", "20251231",
         ),
     )
 
@@ -227,7 +232,7 @@ class FetchGateTests(unittest.TestCase):
                 tmp_path / MANIFEST_FILENAME,
                 build_manifest(
                     [TushareFetchResult("stock_basic", 2, 0, 0)],  # daily/adj_factor absent
-                    (), "20000101", "20251231",
+                    (), "20200101", "20251231",
                 ),
             )
             _write_registry(tmp_path / "registry.parquet", [])
@@ -252,7 +257,7 @@ class FetchGateTests(unittest.TestCase):
                         TushareFetchResult("daily", 0, 0, 0),        # skipped => empty cov
                         TushareFetchResult("adj_factor", 0, 0, 0),   # skipped => empty cov
                     ],
-                    (), "20000101", "20251231",
+                    (), "20200101", "20251231",
                 ),
             )
             _write_registry(tmp_path / "registry.parquet", [])

@@ -20,7 +20,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,25 @@ class BundleIntegrity:
     # included) keep working; consumers fall back to their
     # weekday-tolerance guard.
     data_coverage_start: str | None = None
+
+
+MAX_EXCHANGE_CLOSURE_WEEKDAYS = 7
+"""Longest run of weekdays the A-share exchange has EVER been closed.
+
+Spring Festival 2020 (extended) and National Day + Mid-Autumn runs both
+span 6 weekdays; 7 leaves one day of slack. A gap of missing weekdays
+beyond this cannot be a closure - it is missing data. Sessions are a
+subset of Mon-Fri, so every missing session costs a weekday."""
+
+
+def missing_weekdays_between(start: date, first_present: date) -> int:
+    """Weekdays in [start, first_present) - the coverage-gap metric
+    shared by the builder's stamp cross-check and the walk-forward
+    calendar guard, so the two ends cannot drift apart."""
+    if first_present <= start:
+        return 0
+    return sum(1 for i in range((first_present - start).days)
+               if (start + timedelta(days=i)).weekday() < 5)
 
 
 def write_bundle_integrity(
