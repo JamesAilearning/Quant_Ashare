@@ -240,39 +240,6 @@ def derive_expected_first_session(
     return f"{first[0:4]}-{first[4:6]}-{first[6:8]}"
 
 
-def earliest_endpoint_date(tushare_dir: Path, endpoint: str) -> str | None:
-    """The market-wide earliest ``trade_date`` a per-ticker endpoint
-    dump carries, ISO-formatted, or ``None`` when it has no rows.
-
-    Anchor evidence for the coverage stamp (codex #412 r13): the
-    bundle calendar is the union of DAILY rows alone, so a
-    leading-truncated ``adj_factor`` dump passes every daily-based
-    reconciliation while ``_apply_adjustment`` silently fills the
-    missing head with factor 1.0 — UNADJUSTED prices stamped as
-    covered. In a healthy dump adj_factor coverage is a superset of
-    daily's (tushare publishes a factor for every session a listed
-    name has, traded or suspended — the independent audit confirmed
-    zero traded days without a factor), so market-wide
-    ``min(adj) <= min(daily)`` must hold; scanning only the earliest
-    populated year keeps this a few seconds on a real dump.
-    """
-    root = tushare_dir / endpoint
-    if not root.is_dir():
-        return None
-    for year_dir in sorted(d for d in root.iterdir()
-                           if d.is_dir() and re.fullmatch(r"\d{4}", d.name)):
-        best: str | None = None
-        for f in year_dir.glob("*.parquet"):
-            frame = pd.read_parquet(f, columns=["trade_date"])
-            if len(frame):
-                m = str(frame["trade_date"].astype(str).min())
-                if best is None or m < best:
-                    best = m
-        if best is not None:
-            return f"{best[0:4]}-{best[4:6]}-{best[6:8]}"
-    return None
-
-
 @dataclass(frozen=True)
 class QlibBinBuilderResult:
     output_dir: Path
@@ -300,6 +267,14 @@ class QlibBinBuilder:
         self._tushare_dir = tushare_dir
         self._delisted_registry_path = delisted_registry_path
         self._output_dir = output_dir
+        # codex #412 r14: per-ticker adjustment-head violations,
+        # collected by _apply_adjustment as the main loop reads each
+        # ticker anyway (zero extra IO) and adjudicated before the
+        # coverage stamp is written. A single global minimum let ONE
+        # old file's row certify the whole endpoint while every other
+        # ticker's missing head still took the silent fillna(1.0)
+        # path. Each entry: (ts_code, daily_first, adj_first_or_None).
+        self._adj_head_violations: list[tuple[str, str, str | None]] = []
         # P3-4c Layer 1: when False (default), build() refuses a holey / missing
         # fetch_manifest. True (operator's --allow-holey-fetch) builds a partial
         # research bundle anyway, stamped built-from-holey-fetch.
@@ -548,34 +523,39 @@ class QlibBinBuilder:
                                 f"{MAX_EXCHANGE_CLOSURE_WEEKDAYS}). "
                                 "Leading raw files are missing or "
                                 "truncated; re-fetch before building.")
-                    # adj_factor leading coverage, INDEPENDENTLY (codex
-                    # #412 r13): the calendar above is the union of
-                    # DAILY rows alone, so a leading-truncated
-                    # adj_factor dump passes every daily-based check
-                    # while _apply_adjustment silently fills the
-                    # missing head with factor 1.0 — unadjusted prices
-                    # would then be stamped as covered. Healthy
-                    # adj_factor coverage is a superset of daily's, so
-                    # its market-wide earliest date must not be later
-                    # than the calendar's first day. (daily needs no
-                    # separate check — the calendar IS its earliest;
-                    # daily_basic is optional and not vouched for by
-                    # this stamp.)
-                    _adj_earliest = earliest_endpoint_date(
-                        self._tushare_dir, "adj_factor")
-                    if _adj_earliest is None or _adj_earliest > calendar[0]:
+                    # adj_factor leading coverage, PER TICKER (codex
+                    # #412 r13, tightened in r14): the calendar above
+                    # is the union of DAILY rows alone, so a
+                    # leading-truncated adj_factor dump passes every
+                    # daily-based check while _apply_adjustment
+                    # silently fills the missing head with factor 1.0
+                    # — unadjusted prices stamped as covered. A single
+                    # market-wide minimum is NOT enough (r14): one old
+                    # file's surviving row would certify the endpoint
+                    # while every other ticker's missing head still
+                    # took the 1.0 path. The main loop already read
+                    # each ticker's adj source, recording every ticker
+                    # whose adjustment head fails to reach its daily
+                    # head; any violation refuses the stamp. (daily
+                    # needs no separate check — the calendar IS its
+                    # union; daily_basic is optional and not vouched
+                    # for by this stamp.)
+                    if self._adj_head_violations:
+                        sample = ", ".join(
+                            f"{t} (daily from {d}, adj "
+                            + (f"from {a}" if a else "MISSING") + ")"
+                            for t, d, a in
+                            self._adj_head_violations[:3])
                         raise QlibBinBuilderError(
                             "fetch manifest claims coverage from "
-                            f"{data_coverage_start}, and daily data "
-                            f"honours it (calendar starts "
-                            f"{calendar[0]}), but adj_factor's "
-                            "market-wide earliest row is "
-                            f"{_adj_earliest!r} - its leading files "
-                            "are missing or truncated, and "
-                            "adjustment would silently fall back to "
-                            "factor 1.0 (unadjusted prices) for the "
-                            "missing head; re-fetch adj_factor "
-                            "before building.")
+                            f"{data_coverage_start}, but "
+                            f"{len(self._adj_head_violations)} "
+                            "ticker(s) have adj_factor data that "
+                            "does not reach their daily head - e.g. "
+                            f"{sample}. Adjustment would silently "
+                            "fall back to factor 1.0 (unadjusted "
+                            "prices) for those heads; re-fetch "
+                            "adj_factor before building.")
             write_bundle_integrity(
                 staging,
                 built_from_holey_fetch=built_from_holey_fetch,
@@ -746,6 +726,25 @@ class QlibBinBuilder:
         """
         adj = self._load_adj_factor(tushare_code)
         out = daily.copy()
+        # Record head violations for the coverage-stamp adjudication
+        # (codex #412 r14): the CONVERSION here stays tolerant (1.0
+        # fallback, backward-compatible for research/holey builds),
+        # but a bundle may only be STAMPED as covered when every
+        # ticker's adjustment head reaches its daily head — tushare
+        # publishes a factor for every session a listed name has, so
+        # in a healthy dump min(adj) <= min(daily) holds PER TICKER
+        # (the independent audit verified exactly this, 0 violations).
+        daily_first = (str(daily["trade_date"].astype(str).min())
+                       if len(daily) else None)
+        if daily_first is not None:
+            if adj is None or adj.empty:
+                self._adj_head_violations.append(
+                    (tushare_code, daily_first, None))
+            else:
+                adj_first = str(adj["trade_date"].astype(str).min())
+                if adj_first > daily_first:
+                    self._adj_head_violations.append(
+                        (tushare_code, daily_first, adj_first))
         if adj is None or adj.empty:
             # No adjustment data at all — keep raw prices (factor 1.0).
             out["adj_factor"] = 1.0

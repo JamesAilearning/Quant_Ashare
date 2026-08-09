@@ -625,51 +625,74 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertLess(src.index("calendar[0] != expected_first_session"),
                         src.index("write_bundle_integrity("))
 
-    def test_adj_factor_leading_coverage_is_verified(self) -> None:
-        # codex #412 r13: the bundle calendar is the union of DAILY
-        # rows alone, so a leading-truncated adj_factor dump passes
-        # every daily-based reconciliation while _apply_adjustment
-        # silently fills the missing head with factor 1.0 — UNADJUSTED
-        # prices stamped as covered. The builder must verify
-        # adj_factor's market-wide earliest date independently, before
-        # stamping.
+    def test_adj_factor_leading_coverage_is_verified_per_ticker(self) -> None:
+        # codex #412 r13/r14: the bundle calendar is the union of
+        # DAILY rows alone, so a leading-truncated adj_factor dump
+        # passes every daily-based reconciliation while
+        # _apply_adjustment silently fills the missing head with
+        # factor 1.0 — UNADJUSTED prices stamped as covered. And a
+        # single market-wide minimum is not enough (r14): one old
+        # file's surviving row would certify the endpoint while every
+        # other ticker's missing head still took the 1.0 path. The
+        # adjudication is therefore PER TICKER, recorded by the main
+        # loop as it reads each ticker anyway.
         import inspect
         import tempfile
 
-        import pandas as pd_
-
         from src.data.pit import qlib_bin_builder
-        from src.data.pit.qlib_bin_builder import earliest_endpoint_date
+        from src.data.pit.qlib_bin_builder import QlibBinBuilder
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # Missing endpoint dir: no evidence.
-            self.assertIsNone(earliest_endpoint_date(root, "adj_factor"))
-            # Empty placeholder year is skipped; the earliest
-            # POPULATED year wins, and the earliest row inside it.
+            builder = QlibBinBuilder(
+                tushare_dir=root,
+                delisted_registry_path=root / "registry.parquet",
+                output_dir=root / "provider")
+            daily = _PD.DataFrame({
+                "ts_code": ["X"] * 3,
+                "trade_date": ["20151008", "20151009", "20151012"],
+                "open": [1.0] * 3, "high": [1.0] * 3,
+                "low": [1.0] * 3, "close": [1.0] * 3,
+                "vol": [1.0] * 3, "amount": [1.0] * 3,
+            })
+            # Case 1: adj head truncated to AFTER the daily head — the
+            # exact r14 shape — is recorded as a violation even though
+            # the conversion itself stays tolerant.
             (root / "adj_factor" / "2015").mkdir(parents=True)
-            (root / "adj_factor" / "2016").mkdir(parents=True)
-            pd_.DataFrame({"ts_code": [], "trade_date": [],
-                           "adj_factor": []}).to_parquet(
-                root / "adj_factor" / "2015" / "A.parquet", index=False)
-            pd_.DataFrame({"ts_code": ["X", "X"],
-                           "trade_date": ["20160105", "20160104"],
-                           "adj_factor": [1.0, 1.0]}).to_parquet(
-                root / "adj_factor" / "2016" / "X.parquet", index=False)
-            self.assertEqual("2016-01-04",
-                             earliest_endpoint_date(root, "adj_factor"))
-            # A populated earlier year takes precedence.
-            pd_.DataFrame({"ts_code": ["Y"],
-                           "trade_date": ["20151008"],
-                           "adj_factor": [1.0]}).to_parquet(
-                root / "adj_factor" / "2015" / "Y.parquet", index=False)
-            self.assertEqual("2015-10-08",
-                             earliest_endpoint_date(root, "adj_factor"))
-        # Wiring: the adj_factor check runs before the stamp is
-        # written, refusing with the silent-1.0 rationale spelled out.
+            _PD.DataFrame({
+                "ts_code": ["X.SH"],
+                "trade_date": ["20151009"],
+                "adj_factor": [1.0],
+            }).to_parquet(root / "adj_factor" / "2015" / "X.SH.parquet",
+                          index=False)
+            builder._apply_adjustment(daily, "X.SH")
+            self.assertEqual(
+                [("X.SH", "20151008", "20151009")],
+                builder._adj_head_violations)
+            # Case 2: adj file entirely missing is a violation too —
+            # r14's escape was precisely that per-ticker absence hid
+            # behind another ticker's surviving old row.
+            builder._adj_head_violations.clear()
+            builder._apply_adjustment(daily, "Y.SH")
+            self.assertEqual(
+                [("Y.SH", "20151008", None)],
+                builder._adj_head_violations)
+            # Case 3: a head that reaches the daily head records
+            # nothing.
+            builder._adj_head_violations.clear()
+            _PD.DataFrame({
+                "ts_code": ["Z.SH"] * 3,
+                "trade_date": ["20151008", "20151009", "20151012"],
+                "adj_factor": [1.0] * 3,
+            }).to_parquet(root / "adj_factor" / "2015" / "Z.SH.parquet",
+                          index=False)
+            builder._apply_adjustment(daily, "Z.SH")
+            self.assertEqual([], builder._adj_head_violations)
+        # Wiring: the per-ticker adjudication refuses BEFORE the stamp
+        # is written, with the silent-1.0 rationale spelled out.
         src = inspect.getsource(qlib_bin_builder)
-        self.assertIn("_adj_earliest", src)
-        self.assertLess(src.index("_adj_earliest is None or"),
+        self.assertIn("_adj_head_violations", src)
+        self.assertLess(src.index("if self._adj_head_violations:"),
                         src.index("write_bundle_integrity("))
 
     def test_universe_and_scope(self) -> None:

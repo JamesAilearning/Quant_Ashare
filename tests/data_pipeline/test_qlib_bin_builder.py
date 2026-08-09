@@ -403,33 +403,44 @@ class HappyPathTests(unittest.TestCase):
             self.assertFalse(np.isnan(valid).any())
 
     def test_no_adj_factor_falls_back_to_raw_prices(self) -> None:
-        """When no adj_factor parquet exists FOR A TICKER, the builder
-        defaults to factor=1.0 and writes raw close prices unchanged.
+        """When no adj_factor parquet exists for a ticker, the
+        CONVERSION defaults to factor=1.0 and writes raw close prices
+        unchanged — on the HOLEY/research path only.
 
-        Per-ticker absence stays legal (a newly listed name may lack a
-        factor file) — while MARKET-WIDE absence is a refused
-        truncation since codex #412 r13, so a second ticker carries a
-        factor file to keep the dump's market-wide leading coverage
-        honest. The assertion below is about the factor-less ticker.
+        Since codex #412 r13/r14 a COVERAGE-STAMPED build refuses any
+        ticker whose adjustment head misses its daily head (a
+        per-ticker absence hiding behind another ticker's factors was
+        exactly the r14 escape), so the tolerant-1.0 world can only
+        exist as an ``--allow-holey-fetch`` research build whose
+        manifest does not claim adj_factor and which gets no coverage
+        stamp. That is also the honest framing: an "older snapshot
+        without adj data" is a degraded bundle, not a certified one.
         """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            _write_active(tmp_path / "active_stocks.parquet",
-                          ["600519.SH", "000001.SZ"])
+            _write_active(tmp_path / "active_stocks.parquet", ["600519.SH"])
             _write_registry(tmp_path / "registry.parquet", [])
             dates = ["20200102"]
             _write_daily_year(tmp_path, 2020, "600519.SH", dates,
                               close=42.0, with_adj=False)
-            # No adj_factor parquet for 600519.SH — the branch under
-            # test. 000001.SZ provides the market-wide adj coverage.
-            _write_daily_year(tmp_path, 2020, "000001.SZ", dates,
-                              close=10.0)
+            # No adj_factor parquet written; the manifest claims only
+            # what the dump carries, making the fetch holey for the
+            # bundle-required endpoint set.
+            write_manifest(
+                tmp_path / MANIFEST_FILENAME,
+                build_manifest(
+                    [TushareFetchResult(e, 1, 0, 0)
+                     for e in ("stock_basic", "daily")],
+                    (), "20200101", "20251231",
+                ),
+            )
 
             out = tmp_path / "provider"
             QlibBinBuilder(
                 tushare_dir=tmp_path,
                 delisted_registry_path=tmp_path / "registry.parquet",
                 output_dir=out,
+                allow_holey_fetch=True,
             ).build()
 
             cal = (out / "calendars" / "day.txt").read_text(encoding="utf-8").splitlines()
