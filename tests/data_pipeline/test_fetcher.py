@@ -2192,14 +2192,39 @@ class TradeCalEndpointTests(unittest.TestCase):
                           "lacks column")
 
     def test_malformed_dates_are_a_hole(self) -> None:
-        # Both a non-numeric string AND an eight-digit non-date
-        # (codex #412 r9 P2: 19901340 passes a lexical regex, then
-        # crashes bounds arithmetic — it must be a defect report).
-        for bad in ("nope", "19901340"):
-            self._assert_hole(
-                pd.DataFrame({"exchange": ["SSE"], "cal_date": [bad],
-                              "is_open": [1]}),
-                "not a real calendar date")
+        # Two distinct layers (codex #412 r9 P2 + r10): a non-numeric
+        # string fails the lexical eight-digit check, while an
+        # eight-digit NON-DATE (19901340) passes it and must then be
+        # caught by calendar-validity parsing — as a defect report,
+        # never a bounds-arithmetic crash.
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["nope"],
+                          "is_open": [1]}),
+            "not exactly eight digits")
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["19901340"],
+                          "is_open": [1]}),
+            "not a real calendar date")
+
+    def test_seven_digit_date_is_a_hole(self) -> None:
+        # codex #412 r10: pandas' strptime is lenient — "2019012"
+        # parses as 2019-01-02 — while downstream compares these as
+        # STRINGS, where "2019012" sorts before "20190102". The
+        # lexical eight-digit layer must fire before parsing.
+        self._assert_hole(
+            pd.DataFrame({"exchange": ["SSE"], "cal_date": ["2019012"],
+                          "is_open": [1]}),
+            "not exactly eight digits")
+
+    def test_non_binary_is_open_is_a_hole(self) -> None:
+        # codex #412 r10: a damaged marker (2 / NaN) on the true first
+        # session would read as closed, deriving a later session as
+        # "expected" — every value must be a non-null 0/1.
+        base = _contiguous_cal("20190102", "20190104")
+        for bad in (2, float("nan")):
+            df = base.copy()
+            df.loc[0, "is_open"] = bad
+            self._assert_hole(df, "not a binary 0/1 marker")
 
     def test_all_closed_is_a_hole(self) -> None:
         self._assert_hole(

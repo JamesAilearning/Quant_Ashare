@@ -42,6 +42,19 @@ def calendar_frame_defect(df: Any) -> str | None:
     if missing:
         return f"trade_cal frame lacks column(s) {sorted(missing)}"
     dates_str = df["cal_date"].astype(str)
+    # LEXICAL representation first (codex #412 r10): pandas' strptime
+    # is lenient — "2019012" parses as 2019-01-02 and "199012" as
+    # 1990-01-02 (verified empirically) — while every downstream
+    # consumer compares these values as STRINGS, where "2019012" sorts
+    # before "20190102" and corrupts min/anchor comparisons. Exactly
+    # eight ASCII digits, then calendar validity. (The same lesson
+    # bundle_integrity learned in r5 for its stamp dates; dropping the
+    # lexical layer when this logic moved into the shared module was a
+    # regression r10 caught.)
+    if not dates_str.str.fullmatch(r"\d{8}").all():
+        bad = dates_str[~dates_str.str.fullmatch(r"\d{8}")].iloc[0]
+        return (f"trade_cal cal_date {bad!r} is not exactly eight "
+                "digits (YYYYMMDD)")
     parsed = pd.to_datetime(dates_str, format="%Y%m%d", errors="coerce")
     if parsed.isna().any():
         bad = dates_str[parsed.isna()].iloc[0]
@@ -50,6 +63,16 @@ def calendar_frame_defect(df: Any) -> str | None:
     if parsed.duplicated().any():
         dup = dates_str[parsed.duplicated()].iloc[0]
         return f"trade_cal frame has duplicate cal_date {dup!r}"
+    # is_open is a NON-NULL binary marker (codex #412 r10): a damaged
+    # value (2, NaN, "1") on the TRUE first session would read as
+    # closed, deriving a later session as "expected" and letting a
+    # bundle missing the real first session pass the exact-match
+    # guard. isin() is strict about type and NaN-false, so string
+    # spellings and nulls are defects too.
+    if not df["is_open"].isin([0, 1]).all():
+        bad_open = df["is_open"][~df["is_open"].isin([0, 1])].iloc[0]
+        return (f"trade_cal is_open {bad_open!r} is not a binary 0/1 "
+                "marker")
     # The completeness EQUATION: one row per calendar day means the
     # row count must equal the day span exactly. Any interior gap
     # breaks this, whatever its shape or position.
