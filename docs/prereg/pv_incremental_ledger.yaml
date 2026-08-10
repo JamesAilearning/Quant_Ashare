@@ -109,6 +109,12 @@ entries:
       - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet#sha256=a254832cc103056894e08b40dff2519c49fff5993ff9edd959e68332fd802ed8"
       - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet.provenance.json"
       - "run: output/walk_forward/pv_incremental_baseline (commit a83276a, git_dirty=False)"
+    provenance:
+      # 冻结件 provenance_required 条款：run_config_sha256/source_git 全绿入 ledger
+      run_config_sha256: "2161a7af505ce9395e65e7e4b30ee6cb9b89039f371c0906433f80fe6b918ba5"
+      run_config_sha256_kind: resolved_walk_forward_config
+      source_git: "a83276a131af58a9c79a1ad29e57b71d723c4031"
+      source_git_dirty: false
     numbers:
       folds: 28
       shape: "1699 x 1308"
