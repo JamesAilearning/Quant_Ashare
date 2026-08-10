@@ -70,6 +70,17 @@ _ENV_IGNORING_FLAGS = frozenset({"E", "I"})
 # for another flag cluster, and so a later script argument spelled ``utf8``
 # is not mistaken for the option's value.
 _VALUE_TAKING_FLAGS = frozenset({"X", "W"})
+# The ONLY ``-X`` options that turn UTF-8 mode ON, spelled exactly as CPython
+# accepts them. Verified against the interpreter, because two neighbouring
+# spellings silently do NOT repair an env-ignoring child (codex P2 r10 on
+# #410 for the first, found while checking the class for the second):
+#   ``-X utf8=0``  -> UTF-8 mode DISABLED, child emits cp936;
+#   ``-X UTF8``    -> ignored, child emits cp936 (``-X`` names are
+#                     case-SENSITIVE, so no case folding here);
+#   ``-X utf8=2`` / ``utf8=on`` -> the interpreter refuses to start.
+# Matching the option NAME and ignoring its value is exactly the class of
+# looseness this gate keeps being caught by; this set is compared whole.
+_UTF8_MODE_ENABLING_X = frozenset({"utf8", "utf8=1"})
 # Spellings CPython's codec registry normalizes to UTF-8 (aliases differ only
 # by case and by '-'/'_' separators).
 _UTF8_SPELLINGS = frozenset({"utf8", "utf_8", "u8", "utf"})
@@ -284,7 +295,7 @@ def _child_ignores_env(call: ast.Call) -> bool:
     letters, x_values = _interpreter_options(argv)
     if not letters & _ENV_IGNORING_FLAGS:
         return False
-    return not any(v.split("=")[0].lower() == "utf8" for v in x_values)
+    return not any(v in _UTF8_MODE_ENABLING_X for v in x_values)
 
 
 def _python_child(call: ast.Call) -> bool | None:
@@ -621,6 +632,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, -X utf8=1 accepted",
      'subprocess.run([sys.executable, "-E", "-X", "utf8=1", "x"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
+    # ``-X utf8[=0|1]``: the VALUE decides, and the option name is
+    # case-SENSITIVE — both spellings below leave the child on cp936
+    # (verified against the interpreter).
+    ("python child, -X utf8=0 disables UTF-8 mode",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=0", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -X UTF8 is not the option name",
+     'subprocess.run([sys.executable, "-E", "-X", "UTF8", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -Xutf8=0 attached form",
+     'subprocess.run([sys.executable, "-I", "-Xutf8=0", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
     # a competing / fallback import re-binds the sanctioned name
     ("python child, sanctioned name also imported elsewhere",
      "from fallback import utf8_child_env\n"
