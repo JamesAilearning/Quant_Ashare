@@ -10,6 +10,13 @@
 # `pit_provider_uri` or `delisted_registry_path` are empty strings.
 
 data:
+  # EXPLICIT real-PIT mode. Without this line the code default is
+  # "synthetic": an operator who filled in the two paths below per the
+  # user guide would silently mine on a random synthetic panel, and the
+  # empty-path fail-closed check (which lives on the PIT branch) would
+  # never even run (external finding, 2026-08-10). smoke.yaml is the
+  # explicit synthetic example.
+  mode: pit
   pit_provider_uri: ""                # OPERATOR-FILL — see inventory.md §F.3
   delisted_registry_path: ""          # OPERATOR-FILL — see inventory.md §F.3
   universe_name: "csi300"
