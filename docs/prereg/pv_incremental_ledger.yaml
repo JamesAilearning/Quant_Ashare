@@ -25,6 +25,56 @@ entries:
       git_commit=null，导出器直接拒）；tree 必须干净（git_dirty=True 拒）。
     artifacts: []
     numbers: null
+  - id: E002
+    when: "2026-08-10"
+    kind: decision
+    what: >-
+      决策①-rev1（重签通道，change 2026-08-08-pv-baseline-full-is-coverage，
+      PR #412 合并即签署）：基线 overall_start 由父配置的 2018-01-01 前移至
+      2015-10-01，使首个样本外 test 窗恰落在冻结 IS 起点（2018-01-01），
+      IS 基线覆盖由 670/1215 天（55%）升至 1215/1215 天（100%）。原决策①
+      "折几何保生产同源、IS 前段无覆盖不罚且如实披露"的机制不变
+      （penalize_covered_days_only 保留），其"首个样本外日晚于 IS 起点"的
+      前提自本修订起为历史陈述。train 窗保持 24m；OOS 折分毫不动；
+      overall_end=2024-12-31 圣规不变。数据前提：tushare 回补
+      2015-10-01..2017-12-31（52,866 单元、零 hole、独立审计六道含实调 API
+      逐值比对），新 bundle my_cn_data_pit_2015（生产 bundle 未触碰）。
+      随行守卫（同 PR）：训练覆盖 fail-loud 链——交易所日历落盘
+      （trade_cal，锚点专属预期首日精确匹配）、覆盖戳、逐票 adj_factor
+      头部裁决（防静默 1.0 复权）、共享结构等式校验。
+    artifacts:
+      - "openspec/changes/2026-08-08-pv-baseline-full-is-coverage/ (merged #412)"
+      - "bundle D:/qlib_data/my_cn_data_pit_2015 content_hash=sha256:12c62cf58ff5789d7f6a81b0bb82c5a1a89872c8fe937d4bfa07dd70b32a3137"
+    numbers:
+      folds: "19 -> 28"
+      is_days_covered: "670 -> 1215 (of 1215)"
+  - id: E003
+    when: "2026-08-10"
+    kind: result
+    what: >-
+      E001 所预登记的基线预测生成 run 的结果（按决策①-rev1 口径执行）。
+      单次不间断调用 walk-forward（第三次点火成功；前两次分别因新 bundle
+      缺 instruments/csi800.txt+benchmark——已跑 03/07 管道步骤补齐——与
+      宿主机死机中断，均未产生可复用工件、已清除后从头重跑），随后导出。
+      28/28 折全成，零失败折。metric_status=predictions_only_non_canonical
+      （决策口径：风险约束 warn_and_clip + metrics_purpose=predictions_only，
+      收益率非 canonical，产物仅为样本外预测）。
+    artifacts:
+      - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet#sha256=a254832cc103056894e08b40dff2519c49fff5993ff9edd959e68332fd802ed8"
+      - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet.provenance.json"
+      - "run: output/walk_forward/pv_incremental_baseline (commit 984aebc, git_dirty=False)"
+    numbers:
+      folds: 28
+      shape: "1699 x 1308"
+      span: "2018-01-02..2024-12-31"
+      is_days_covered: 1215
+      oos_days_covered: 484
+      mean_ic_1d: 0.0191
+      std_ic_1d: 0.0273
+      mean_ic_5d: 0.0261
+      mean_annualized_return_non_canonical: 0.0159
+      worst_drawdown_non_canonical: -0.1292
+      duration_seconds: 1311
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>
