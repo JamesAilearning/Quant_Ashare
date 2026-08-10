@@ -379,10 +379,24 @@ def offending_lines(source: str) -> list[int]:
     (``run(..., text=False, encoding="cp936")`` really does return ``str``),
     so the codec keywords are judged first.
 
-    A text flag whose value is not a literal (``text=want_str``) is SKIPPED
-    rather than guessed: the call may legitimately be binary, and the
-    emitted advice would then be wrong. Everything else that cannot be
-    resolved — opaque ``**kwargs``, a non-literal argv — FAILS CLOSED.
+    THE INVARIANT, and the reason this function keeps its shape: every path
+    that ACCEPTS a call must be provably safe, and everything else fails
+    closed. Exactly four acceptances exist —
+
+    1. the call is not a subprocess spawn at all;
+    2. provably binary: no codec keyword with a truthy value, no unpacking,
+       and every text flag a falsy LITERAL;
+    3. a proven non-python child (``git``) with a UTF-8 literal encoding —
+       git emits UTF-8 whatever the locale;
+    4. a proven PYTHON child with a UTF-8 literal encoding, the sanctioned
+       ``env=utf8_child_env()``, and no ``-E`` / ``-I`` to ignore it.
+
+    Everything else — an opaque ``**kwargs``, a non-literal argv or an
+    unknown program, a dynamic text flag, a non-literal encoding, a
+    hand-rolled env, a shadowed sanctioned name — is REFUSED. Two of these
+    used to be exceptions ("skip the dynamic flag", "let the env repair an
+    unresolved child") and both turned into holes, so the rule is now
+    uniform: unresolvable means refused, never assumed.
     """
     try:
         tree = ast.parse(source)
@@ -451,7 +465,15 @@ def offending_lines(source: str) -> list[int]:
         else:
             flags = [kwargs[f] for f in _TEXT_FLAGS if f in kwargs]
             if any(not isinstance(v, ast.Constant) for v in flags):
-                continue  # dynamic text flag — cannot judge (see docstring)
+                # A DYNAMIC text flag cannot be proven binary, and if it is
+                # true at runtime the call decodes with the locale — the
+                # very bug. Skipping it was the one place this gate failed
+                # OPEN (codex P2 r11 on #410); it now fails closed like
+                # every other unresolvable input. The remedy is a literal
+                # flag, not an added encoding (that would flip a genuinely
+                # binary call to text) — see the failure message.
+                hits.append(node.lineno)
+                continue
             text_mode = any(bool(v.value) for v in flags)  # type: ignore[union-attr]
         if not text_mode:
             continue  # bytes: no codec kwarg, no unpacking, no text flag
@@ -463,8 +485,17 @@ def offending_lines(source: str) -> list[int]:
             continue
 
         # Parent side is right; now the child's own encoder.
-        if _python_child(node) is False:
+        child = _python_child(node)
+        if child is False:
             continue  # git & friends emit UTF-8 regardless of locale
+        if child is None:
+            # UNRESOLVED child (a non-literal argv, ``shell=True``, an
+            # unknown program): PYTHONIOENCODING cannot control a native
+            # child's encoder, so the env helper does not repair it and
+            # must not be accepted as if it did (codex P2 r11 on #410).
+            # Only a PROVEN python child is repairable.
+            hits.append(node.lineno)
+            continue
         env = kwargs.get("env")
         if env is None or not _env_is_sanctioned(
             env, sanctioned_bare, sanctioned_modules,
@@ -551,7 +582,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git"], encoding=None, errors=None)', False),
     ("encoding=None with text=True",
      'subprocess.run(["git"], text=True, encoding=None)', True),
-    ("dynamic text flag", 'subprocess.run(["git"], text=want)', False),
+    # A dynamic flag cannot be proven binary; if it is true at runtime the
+    # call decodes with the locale, so it is refused rather than skipped.
+    ("dynamic text flag", 'subprocess.run(["git"], text=want)', True),
+    ("dynamic universal_newlines",
+     'subprocess.run(["git"], universal_newlines=want)', True),
     ("non-literal encoding",
      'subprocess.run(["git"], text=True, encoding=ENC)', True),
     ("alias U8", 'subprocess.run(["git"], text=True, encoding="U8")', False),
@@ -666,6 +701,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      True),
     ("unknown program",
      'subprocess.run(["node", "s.js"], text=True, encoding="utf-8")', True),
+    # PYTHONIOENCODING cannot control a NATIVE child's encoder, so the env
+    # helper does not repair an unresolved child and must not excuse it.
+    ("unknown program even with the sanctioned env",
+     'subprocess.run(["node", "s.js"], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    ("shell=True command with the sanctioned env",
+     'subprocess.run("git log", shell=True, text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    ("variable argv even with the sanctioned env",
+     "argv = [sys.executable, 'x']\n"
+     'subprocess.run(argv, text=True, encoding="utf-8", env=utf8_child_env())',
+     True),
     ("unresolvable argv expression",
      'subprocess.run(build(), text=True, encoding="utf-8")', True),
     ("argv from a variable is unresolvable",

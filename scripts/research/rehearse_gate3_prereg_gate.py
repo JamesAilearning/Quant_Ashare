@@ -93,12 +93,15 @@ FINAL_PARENT_REL = "config/presets/quality_gate3_final_adjudication.yaml"
 
 
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
-    argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
+    args = [str(repo / GATE), "--repo-root", str(repo),
             "--store-dir", str(store), *extra]
     if "--run-config" not in extra:
-        argv += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
-    out = subprocess.run(argv, capture_output=True, text=True,
-                         encoding="utf-8", env=utf8_child_env())
+        args += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
+    # The interpreter stays VISIBLE at the call: the encoding gate can only
+    # prove a child is python (and therefore repairable by the env pin) when
+    # argv[0] is literal here, not hidden behind a name.
+    out = subprocess.run([sys.executable, *args], capture_output=True,
+                         text=True, encoding="utf-8", env=utf8_child_env())
     return out.returncode, out.stdout + out.stderr
 
 
