@@ -42,6 +42,13 @@ entries:
       随行守卫（同 PR）：训练覆盖 fail-loud 链——交易所日历落盘
       （trade_cal，锚点专属预期首日精确匹配）、覆盖戳、逐票 adj_factor
       头部裁决（防静默 1.0 复权）、共享结构等式校验。
+      【程序偏差披露】proposal 台账义务要求本条目于"签署后、点火前"
+      提交入档；实际时序为 #412 合并（签署）→ 点火（E003 run）→ 本条目
+      提交——本条目系追溯登记，非合规预登记。实质预登记内容（决策文本、
+      preset 全参、折几何、bundle 哈希）已于点火前经 #412 合并入 main，
+      本条目未新增任何自由度；但时序违反台账义务是事实。是否要求洁净
+      重跑归操作人裁决；操作人合并本条目所在 PR 前须先对此作出裁决，
+      裁决结论随 E003 一并入档。
     artifacts:
       - "openspec/changes/2026-08-08-pv-baseline-full-is-coverage/ (merged #412)"
       - "bundle D:/qlib_data/my_cn_data_pit_2015 content_hash=sha256:12c62cf58ff5789d7f6a81b0bb82c5a1a89872c8fe937d4bfa07dd70b32a3137"
@@ -58,7 +65,10 @@ entries:
       宿主机死机中断，均未产生可复用工件、已清除后从头重跑），随后导出。
       28/28 折全成，零失败折。metric_status=predictions_only_non_canonical
       （决策口径：风险约束 warn_and_clip + metrics_purpose=predictions_only，
-      收益率非 canonical，产物仅为样本外预测）。
+      收益率非 canonical，产物仅为样本外预测）。本 run 发生于 E002 台账
+      条目提交之前（时序偏差，详见 E002 披露）；本条目效力以操作人对该
+      偏差的裁决为准（接受→本条目即为有效结果；要求重跑→本条目作废留档、
+      重跑结果另行追加登记，FAIL/作废条目照例不删除）。
     artifacts:
       - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet#sha256=a254832cc103056894e08b40dff2519c49fff5993ff9edd959e68332fd802ed8"
       - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet.provenance.json"
