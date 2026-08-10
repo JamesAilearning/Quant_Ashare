@@ -214,10 +214,30 @@ def _env_is_sanctioned(
     )
 
 
-def _program_is_python(head: ast.expr) -> bool | None:
+def _sys_module_names(tree: ast.Module) -> set[str]:
+    """Names bound to the ``sys`` MODULE by import.
+
+    ``X.executable`` proves a python child only when ``X`` really is the
+    ``sys`` module — any object can expose an ``executable`` attribute
+    naming a native binary (codex P2 r12 on #410). Same target-resolution
+    rule as the spawner and env-helper checks: resolved through an import,
+    never by the attribute's spelling.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    names.add(alias.asname or "sys")
+    return names
+
+
+def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
     """True / False / None (unresolvable) for the spawned program."""
     if isinstance(head, ast.Attribute) and head.attr == "executable":
-        return True  # sys.executable
+        if isinstance(head.value, ast.Name) and head.value.id in sys_names:
+            return True  # a resolved sys.executable
+        return None  # someone ELSE's .executable — fail closed
     if isinstance(head, ast.Constant) and isinstance(head.value, str):
         stem = Path(head.value).stem.lower()
         if stem in _NON_PYTHON_PROGRAMS:
@@ -298,7 +318,7 @@ def _child_ignores_env(call: ast.Call) -> bool:
     return not any(v in _UTF8_MODE_ENABLING_X for v in x_values)
 
 
-def _python_child(call: ast.Call) -> bool | None:
+def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
     """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
 
     Only a LITERAL argv is judged. Name resolution was tried and removed:
@@ -311,7 +331,7 @@ def _python_child(call: ast.Call) -> bool | None:
     argv = call.args[0]
     if not isinstance(argv, ast.List) or not argv.elts:
         return None
-    return _program_is_python(argv.elts[0])
+    return _program_is_python(argv.elts[0], sys_names)
 
 
 def _subprocess_names(
@@ -412,6 +432,9 @@ def offending_lines(source: str) -> list[int]:
     counts = _binding_counts(tree)
     sanctioned_bare = {n for n in sanctioned_bare if counts[n] == 1}
     sanctioned_modules = {n for n in sanctioned_modules if counts[n] == 1}
+    # Same exactly-once rule for the sys module itself: a shadowed ``sys``
+    # cannot prove ``sys.executable`` is a python interpreter.
+    sys_names = {n for n in _sys_module_names(tree) if counts[n] == 1}
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -485,7 +508,7 @@ def offending_lines(source: str) -> list[int]:
             continue
 
         # Parent side is right; now the child's own encoder.
-        child = _python_child(node)
+        child = _python_child(node, sys_names)
         if child is False:
             continue  # git & friends emit UTF-8 regardless of locale
         if child is None:
@@ -694,6 +717,19 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'from subprocess import getoutput\ngetoutput("git log")', True),
     ("git child needs no env",
      'subprocess.run(["git", "log"], text=True, encoding="utf-8")', False),
+    # ``X.executable`` proves python only when X is the imported sys module
+    # — any object can expose an .executable naming a native binary.
+    ("someone else's .executable even fully pinned",
+     'subprocess.run([native_tool.executable, "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("aliased sys module still proves python",
+     "import sys as _s\n"
+     'subprocess.run([_s.executable, "x"], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", False),
+    ("shadowed sys cannot prove python",
+     "def f(sys):\n    "
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
     # --- interpreter naming / unknown programs fail closed ---
     ("py launcher", 'subprocess.run(["py", "s.py"], text=True, encoding="utf-8")',
      True),
