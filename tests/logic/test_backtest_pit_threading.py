@@ -73,6 +73,52 @@ class CanonicalCallersThreadProviderTests(unittest.TestCase):
             "scripts/regen/replay_frozen_baseline_regen2.py")
 
 
+def _call_blocks(source: str, needle: str) -> list[str]:
+    """Every ``<needle>(`` call block (to its closing paren)."""
+    blocks: list[str] = []
+    for m in re.finditer(re.escape(needle) + r"\(", source):
+        depth, i = 0, m.end() - 1
+        while i < len(source):
+            if source[i] == "(":
+                depth += 1
+            elif source[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        blocks.append(source[m.start():i + 1])
+    return blocks
+
+
+class AnalyzersThreadProviderTests(unittest.TestCase):
+    """External finding #4 (2026-08-10): FactorAnalyzer.analyze was the LAST
+    analyzer in Pipeline.run still reading close prices through bare qlib —
+    signal analysis and the backtest in the SAME run already took the
+    provider, so the factor IC / decay report could consume stale
+    post-delist prices the run's other legs mask. Pin every analyzer call
+    in the pipeline, so the next analyzer added cannot repeat the miss."""
+
+    _ANALYZERS = ("FactorAnalyzer.analyze", "SignalAnalyzer.analyze")
+
+    def test_pipeline_analyzer_calls_thread_provider(self) -> None:
+        source = (PROJECT_ROOT / "src/core/pipeline.py").read_text(
+            encoding="utf-8")
+        for needle in self._ANALYZERS:
+            blocks = _call_blocks(source, needle)
+            self.assertTrue(blocks, f"pipeline.py: no {needle} call found")
+            for block in blocks:
+                self.assertIn(
+                    "pit_provider=pit_provider", block,
+                    msg=(
+                        f"pipeline.py: a {needle} call does not thread the "
+                        "run-level PIT provider — its close-panel fetch "
+                        "would silently take the bare-qlib WARN fallback "
+                        "while the same run's other legs apply the §4.3.2 "
+                        "post-delist mask:\n" + block[:400]
+                    ),
+                )
+
+
 class ReplayFoldThreadingTests(unittest.TestCase):
     """REAL threading through the replay fold: the SAME provider instance the
     caller holds reaches BacktestRunner.run (and SignalAnalyzer.analyze)."""

@@ -579,6 +579,15 @@ class Pipeline:
                         max_decay_lag=config.factor_max_decay_lag,
                     ),
                     dataset=feature_result.dataset,
+                    # Audit P2 tail (P0-6 follow-up, external finding #4):
+                    # this was the LAST analyzer in the run still reading
+                    # close prices through bare qlib. Signal analysis and
+                    # the backtest already take the run-level provider, so
+                    # without it the factor IC / decay report could consume
+                    # stale post-delist prices in the SAME run whose other
+                    # legs mask them. None (empty delisted_registry_path)
+                    # preserves the legacy WARN path bit-for-bit.
+                    pit_provider=pit_provider,
                 )
                 FactorAnalyzer.print_report(factor_result)
             except Exception as exc:  # noqa: BLE001
