@@ -8,14 +8,16 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.factor_mining.expression import parse_expression
 from src.factor_mining.factor_pool import FactorPool, PoolEntry
+from src.factor_mining.miner import DataConfig
 from src.factor_mining.promote import (
     PromotionConfig,
-    PromotionDataConfig,
     PromotionError,
     _load_config,
+    _load_run_data_config,
     promote_run,
 )
 from src.factor_mining.promote import (
@@ -27,9 +29,23 @@ from src.factor_mining.validator import ValidationCriteria
 # Fixtures
 # ---------------------------------------------------------------------------
 
+_RUN_DATA = {
+    "mode": "synthetic",
+    "synthetic_n_tickers": 8,
+    "synthetic_n_dates": 120,
+    "synthetic_seed": 7,
+}
 
-def _seed_run_dir(tmp_path: Path, n_factors: int = 3) -> Path:
-    """Build a small Phase 3 run directory under ``tmp_path``."""
+
+def _seed_run_dir(
+    tmp_path: Path, n_factors: int = 3, *,
+    data: dict | None = None, write_config: bool = True,
+) -> Path:
+    """Build a small Phase 3 run directory under ``tmp_path``.
+
+    Mirrors the miner's on-disk contract: a factor pool plus the resolved
+    ``config.yaml`` whose ``data:`` section promotion binds to.
+    """
     run_dir = tmp_path / "runs" / "test-run"
     run_dir.mkdir(parents=True)
     pool = FactorPool()
@@ -48,6 +64,12 @@ def _seed_run_dir(tmp_path: Path, n_factors: int = 3) -> Path:
             expr_size=2, expr_hash=hash(expr),
         ))
     pool.save(run_dir)
+    if write_config:
+        (run_dir / "config.yaml").write_text(
+            yaml.safe_dump({"run_id": "test-run",
+                            "data": dict(data or _RUN_DATA)}),
+            encoding="utf-8",
+        )
     return run_dir
 
 
@@ -68,12 +90,8 @@ def _promotion_config(tmp_path: Path, run_dir: Path, version: str) -> PromotionC
         production_dir=tmp_path / "production",
         version=version,
         criteria=_criteria_loose(),
-        data=PromotionDataConfig(
-            mode="synthetic",
-            synthetic_n_tickers=8,
-            synthetic_n_dates=120,
-            synthetic_seed=7,
-        ),
+        data=DataConfig(**_RUN_DATA),
+        data_definition_sha256="test-sha",
     )
 
 
@@ -133,7 +151,8 @@ def test_missing_run_dir_raises(tmp_path):
         production_dir=tmp_path / "production",
         version="v1",
         criteria=_criteria_loose(),
-        data=PromotionDataConfig(),
+        data=DataConfig(**_RUN_DATA),
+        data_definition_sha256="test-sha",
     )
     with pytest.raises(PromotionError, match="does not exist"):
         promote_run(cfg, dry_run=True)
@@ -175,10 +194,7 @@ def test_load_config_reads_yaml_criteria(tmp_path):
         "criteria:\n"
         "  is_oos_split_date: '2024-06-15'\n"
         "  min_oos_ir: 0.5\n"
-        "  min_obs_per_segment: 15\n"
-        "data:\n"
-        "  mode: synthetic\n"
-        "  synthetic_n_dates: 200\n",
+        "  min_obs_per_segment: 15\n",
         encoding="utf-8",
     )
     cfg = _load_config(
@@ -189,7 +205,112 @@ def test_load_config_reads_yaml_criteria(tmp_path):
     )
     assert cfg.criteria.min_oos_ir == 0.5
     assert cfg.criteria.is_oos_split_date == "2024-06-15"
-    assert cfg.data.synthetic_n_dates == 200
+
+
+# ---------------------------------------------------------------------------
+# Data-definition binding (external finding, 2026-08-10): promotion must
+# re-validate on EXACTLY the data definition the run was mined with.
+# ---------------------------------------------------------------------------
+
+
+def test_data_comes_from_run_config_not_defaults(tmp_path):
+    # The run's config.yaml is authoritative — its knobs (not any default)
+    # must land in the parsed DataConfig.
+    run_dir = _seed_run_dir(
+        tmp_path,
+        data={**_RUN_DATA, "synthetic_n_dates": 77, "synthetic_seed": 99},
+    )
+    cfg = _load_config(None, run_dir, tmp_path / "production", "v1")
+    assert cfg.data.synthetic_n_dates == 77
+    assert cfg.data.synthetic_seed == 99
+    assert cfg.data_definition_sha256
+
+
+def test_operator_config_with_data_section_is_refused(tmp_path):
+    run_dir = _seed_run_dir(tmp_path)
+    config_path = tmp_path / "promote.yaml"
+    config_path.write_text(
+        "criteria:\n  is_oos_split_date: '2024-06-15'\n"
+        "data:\n  mode: synthetic\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PromotionError, match="bound to the mined run"):
+        _load_config(config_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_run_dir_without_config_yaml_is_refused(tmp_path):
+    run_dir = _seed_run_dir(tmp_path, write_config=False)
+    with pytest.raises(PromotionError, match="no resolved config.yaml"):
+        _load_config(None, run_dir, tmp_path / "production", "v1")
+
+
+def test_campaign_shaped_data_section_parses(tmp_path):
+    # The exact regression: a pv_incremental_v1-shaped data section (fields
+    # + forward_return_price) used to raise TypeError against the promotion
+    # mirror dataclass. It must round-trip into the miner's own DataConfig.
+    campaign_data = {
+        "mode": "pit",
+        "pit_provider_uri": "D:/qlib_data/my_cn_data_pit",
+        "delisted_registry_path": "D:/data/delisted.parquet",
+        "universe_name": "csi300",
+        "start_date": "2019-01-01",
+        "end_date": "2024-12-31",
+        "forward_horizon": 1,
+        "fields": ["open", "close", "high", "low", "volume", "money", "vwap"],
+        "forward_return_price": "close",
+    }
+    run_dir = _seed_run_dir(tmp_path, data=campaign_data)
+    data, sha = _load_run_data_config(run_dir)
+    assert data.mode == "pit"
+    assert data.forward_return_price == "close"
+    assert tuple(data.fields) == tuple(campaign_data["fields"])
+    assert len(sha) == 64
+
+
+def test_pit_mode_requires_explicit_oos_split(tmp_path):
+    # Deriving an OOS boundary from synthetic defaults would silently
+    # adjudicate a real-data run on an arbitrary date — refused.
+    run_dir = _seed_run_dir(
+        tmp_path,
+        data={"mode": "pit", "pit_provider_uri": "x",
+              "delisted_registry_path": "y"},
+    )
+    with pytest.raises(PromotionError, match="is_oos_split_date"):
+        _load_config(None, run_dir, tmp_path / "production", "v1")
+    # ...and passes once the split date is explicit.
+    config_path = tmp_path / "promote.yaml"
+    config_path.write_text(
+        "criteria:\n  is_oos_split_date: '2023-06-30'\n", encoding="utf-8",
+    )
+    cfg = _load_config(config_path, run_dir, tmp_path / "production", "v1")
+    assert cfg.criteria.is_oos_split_date == "2023-06-30"
+
+
+def test_malformed_run_data_section_is_refused(tmp_path):
+    run_dir = _seed_run_dir(
+        tmp_path, data={**_RUN_DATA, "no_such_knob": 1},
+    )
+    with pytest.raises(PromotionError, match="does not parse"):
+        _load_run_data_config(run_dir)
+
+
+def test_promotion_report_records_data_definition(tmp_path):
+    run_dir = _seed_run_dir(tmp_path)
+    cfg = _load_config(None, run_dir, tmp_path / "production", "v1")
+    # Loosen criteria so the synthetic factors survive to a written report.
+    cfg = PromotionConfig(
+        run_dir=cfg.run_dir, production_dir=cfg.production_dir,
+        version=cfg.version, criteria=_criteria_loose(),
+        data=cfg.data, data_definition_sha256=cfg.data_definition_sha256,
+    )
+    promote_run(cfg, dry_run=False)
+    rep = json.loads(
+        (cfg.production_dir / "v1" / "promotion_report.json")
+        .read_text(encoding="utf-8")
+    )
+    assert rep["data"]["synthetic_n_dates"] == _RUN_DATA["synthetic_n_dates"]
+    assert rep["data_definition_sha256"] == cfg.data_definition_sha256
+    assert rep["data_source"] == "run_dir/config.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -207,12 +328,7 @@ def test_cli_dry_run_exits_zero(tmp_path):
         "  min_oos_ir: 0.0\n"
         "  min_oos_rank_ic_mean: 0.0\n"
         "  max_pool_correlation: 0.99\n"
-        "  min_obs_per_segment: 10\n"
-        "data:\n"
-        "  mode: synthetic\n"
-        "  synthetic_n_dates: 120\n"
-        "  synthetic_n_tickers: 8\n"
-        "  synthetic_seed: 7\n",
+        "  min_obs_per_segment: 10\n",
         encoding="utf-8",
     )
     rc = promote_main(
@@ -238,12 +354,7 @@ def test_cli_full_run_writes_files(tmp_path):
         "  min_oos_ir: 0.0\n"
         "  min_oos_rank_ic_mean: 0.0\n"
         "  max_pool_correlation: 0.99\n"
-        "  min_obs_per_segment: 10\n"
-        "data:\n"
-        "  mode: synthetic\n"
-        "  synthetic_n_dates: 120\n"
-        "  synthetic_n_tickers: 8\n"
-        "  synthetic_seed: 7\n",
+        "  min_obs_per_segment: 10\n",
         encoding="utf-8",
     )
     rc = promote_main(
@@ -282,12 +393,7 @@ def test_cli_subprocess_smoke(tmp_path):
         "  min_oos_ir: 0.0\n"
         "  min_oos_rank_ic_mean: 0.0\n"
         "  max_pool_correlation: 0.99\n"
-        "  min_obs_per_segment: 10\n"
-        "data:\n"
-        "  mode: synthetic\n"
-        "  synthetic_n_dates: 120\n"
-        "  synthetic_n_tickers: 8\n"
-        "  synthetic_seed: 7\n",
+        "  min_obs_per_segment: 10\n",
         encoding="utf-8",
     )
     result = subprocess.run(

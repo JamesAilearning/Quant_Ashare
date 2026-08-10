@@ -61,14 +61,25 @@ bundle built per [`inventory.md`](inventory.md) §F.3:
    python -m src.factor_mining.miner config/factor_mining/default.yaml
    ```
 
-4. **Promote.** Same as the quickstart, but supply a config with
-   `data.mode: pit`:
+4. **Promote.** The data definition (mode, fields, forward-return
+   price, window, universe) is read from the run's own resolved
+   `config.yaml` — promotion always re-validates on exactly the panel
+   the factors were mined on, so there is nothing data-related to
+   configure (a `--config` carrying a `data:` section is refused). For
+   a PIT run you MUST supply the OOS split date explicitly; promotion
+   refuses to invent one:
+
+   ```yaml
+   # promote_criteria.yaml
+   criteria:
+     is_oos_split_date: "2024-01-01"   # experiment-design choice, yours
+   ```
 
    ```bash
    python -m src.factor_mining.promote \
        --run research/mined_factors/runs/<run_id> \
        --to v1 \
-       --config config/factor_mining/default.yaml
+       --config promote_criteria.yaml
    ```
 
 5. **Bind into a training pipeline.** Pass the PIT paths to the

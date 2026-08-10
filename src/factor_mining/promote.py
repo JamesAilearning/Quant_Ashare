@@ -16,6 +16,7 @@ No qlib import, no ``src.pit`` import. PIT-mode data flows through
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import asdict, dataclass, field
@@ -26,6 +27,7 @@ import pandas as pd
 import yaml
 
 from .factor_pool import FactorPool
+from .miner import DataConfig, build_panel_for_data
 from .validator import (
     FactorValidationResult,
     ValidationCriteria,
@@ -36,22 +38,16 @@ from .validator import (
 # ---------------------------------------------------------------------------
 # Config types
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class PromotionDataConfig:
-    """Mirror of ``miner.DataConfig`` so promote can use the same panels."""
-
-    mode: str = "synthetic"
-    synthetic_n_tickers: int = 30
-    synthetic_n_dates: int = 200
-    synthetic_seed: int = 7
-    pit_provider_uri: str = ""
-    delisted_registry_path: str = ""
-    universe_name: str = "csi300"
-    start_date: str = "2018-01-01"
-    end_date: str = "2025-12-31"
-    forward_horizon: int = 1
+#
+# There is deliberately NO promotion-side data config. The data definition
+# (mode, fields, forward-return price, window, universe) is READ from the
+# candidate run's resolved ``config.yaml`` and re-used verbatim, so the OOS
+# validation runs on exactly the panel the factors were mined on. The
+# previous ``PromotionDataConfig`` "mirror" had already drifted (it lacked
+# ``fields`` and ``forward_return_price``): a campaign config raised
+# ``TypeError`` when handed to promote, and a hand-written one would have
+# re-validated on the full V1 terminal set and the open→open label — a
+# different experiment wearing the run's name (external finding, 2026-08-10).
 
 
 @dataclass(frozen=True)
@@ -60,7 +56,11 @@ class PromotionConfig:
     production_dir: Path
     version: str
     criteria: ValidationCriteria
-    data: PromotionDataConfig
+    data: DataConfig
+    # sha256 of the canonical JSON of ``data`` — recorded in the promotion
+    # report so downstream consumers (qlib handler bridge, audits) can
+    # verify which data definition the survivors were validated under.
+    data_definition_sha256: str
 
 
 @dataclass(frozen=True)
@@ -76,58 +76,6 @@ class PromotionReport:
 
 class PromotionError(RuntimeError):
     """Raised on bad config, missing run dir, or overwrite refusal."""
-
-
-# ---------------------------------------------------------------------------
-# Panel building (mirrors miner.build_panel for synthetic / PIT modes)
-# ---------------------------------------------------------------------------
-
-
-# Consolidated into ``src.factor_mining._synthetic_panel`` (bug.md
-# P2-5). Identical implementation previously lived in this file and
-# ``miner.py`` (including the qlib LABEL_LOOKAHEAD_DAYS=2 comment
-# added in #165's P1-6 clarification, which now lives at the
-# canonical implementation site). Both now share one source so any
-# change to the panel shape happens in one place.
-from src.factor_mining._synthetic_panel import (  # noqa: E402
-    build_synthetic_panel as _build_synthetic_panel,
-)
-
-
-def _build_pit_panel(config: PromotionDataConfig):
-    if not config.pit_provider_uri or not config.delisted_registry_path:
-        raise PromotionError(
-            "data.mode == 'pit' requires both pit_provider_uri and "
-            "delisted_registry_path; see docs/factor_mining/inventory.md §F.3 "
-            "for PIT-bundle build instructions."
-        )
-    from src.pit.query import PITDataProvider  # noqa: PLC0415
-
-    from .pit_adapter import FactorMiningDataView  # noqa: PLC0415
-
-    provider = PITDataProvider(
-        provider_uri=config.pit_provider_uri,
-        delisted_registry_path=config.delisted_registry_path,
-    )
-    view = FactorMiningDataView(
-        provider,
-        start=config.start_date,
-        end=config.end_date,
-        universe_name=config.universe_name,
-    )
-    return view.load_panel(), view.forward_return(horizon=config.forward_horizon)
-
-
-def _build_panel(data: PromotionDataConfig):
-    if data.mode == "synthetic":
-        return _build_synthetic_panel(
-            data.synthetic_n_tickers, data.synthetic_n_dates, data.synthetic_seed,
-        )
-    if data.mode == "pit":
-        return _build_pit_panel(data)
-    raise PromotionError(
-        f"Unknown data.mode {data.mode!r}; expected 'synthetic' or 'pit'"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +97,10 @@ def promote_run(
         )
 
     pool = FactorPool.load(config.run_dir)
-    panel, fwd = _build_panel(config.data)
+    try:
+        panel, fwd = build_panel_for_data(config.data)
+    except ValueError as exc:
+        raise PromotionError(str(exc)) from exc
 
     results = validate_pool(pool, panel, fwd, config.criteria)
     n_passed_individual = sum(1 for r in results if r.passes)
@@ -177,6 +128,12 @@ def promote_run(
             "n_passed_individual": n_passed_individual,
             "n_kept_after_correlation": n_kept,
             "criteria": asdict(config.criteria),
+            # The data definition the survivors were validated under — read
+            # from the run's own resolved config.yaml, never operator-supplied
+            # — plus its canonical hash for downstream verification.
+            "data": asdict(config.data),
+            "data_definition_sha256": config.data_definition_sha256,
+            "data_source": "run_dir/config.yaml",
             "results": [
                 {
                     "expr_hash_hex": format(r.expr_hash & 0xFFFFFFFFFFFFFFFF, "016x"),
@@ -222,6 +179,42 @@ def _json_safe(x: float) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
+    """The data definition the run was MINED with, plus its canonical hash.
+
+    Read from the resolved ``config.yaml`` the miner dumps into every run
+    directory — the single source of truth for mode / fields /
+    forward-return price / window / universe. A run without it (or without
+    a ``data:`` section) cannot prove what it was mined on and is refused.
+    """
+    config_path = run_dir / "config.yaml"
+    if not config_path.exists():
+        raise PromotionError(
+            f"run_dir has no resolved config.yaml: {config_path!r}. The "
+            "miner writes one into every run directory; a run that cannot "
+            "prove its data definition cannot be promoted."
+        )
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    data_section = raw.get("data")
+    if not isinstance(data_section, dict) or not data_section:
+        raise PromotionError(
+            f"run_dir config.yaml has no data section: {config_path!r} — "
+            "cannot bind the promotion to the mined data definition."
+        )
+    try:
+        data = DataConfig(**data_section)
+    except TypeError as exc:
+        raise PromotionError(
+            f"run_dir config.yaml data section does not parse as the "
+            f"miner's DataConfig ({exc}) — the run predates or diverges "
+            "from the current data schema; re-mine before promoting."
+        ) from exc
+    digest = hashlib.sha256(
+        json.dumps(asdict(data), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return data, digest
+
+
 def _load_config(
     config_path: Path | None,
     run_dir: Path,
@@ -232,11 +225,27 @@ def _load_config(
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     else:
         raw = {}
-    data = PromotionDataConfig(**(raw.get("data") or {}))
+    if "data" in raw:
+        raise PromotionError(
+            "the promotion config must not carry a data: section — the data "
+            "definition is bound to the mined run (read from "
+            "run_dir/config.yaml) so the OOS validation runs on exactly the "
+            "panel the factors were mined on. Remove the data: section; the "
+            "operator config supplies criteria only."
+        )
+    data, data_sha = _load_run_data_config(run_dir)
     crit_kwargs = dict(raw.get("criteria") or {})
     if "is_oos_split_date" not in crit_kwargs:
-        # Compute a sensible default from synthetic panel dates.
-        # 80 / 20 split: dates 0..n*0.8-1 are IS, the rest OOS.
+        if data.mode == "pit":
+            # A real-data split date is an EXPERIMENT DESIGN choice; deriving
+            # one from synthetic defaults would silently adjudicate OOS on an
+            # arbitrary boundary (external finding, 2026-08-10).
+            raise PromotionError(
+                "criteria.is_oos_split_date is required for a PIT-mode run — "
+                "promotion refuses to infer an OOS boundary. Set it "
+                "explicitly in the promotion config (criteria section)."
+            )
+        # Synthetic smoke path: 80/20 split over the synthetic date range.
         n = data.synthetic_n_dates
         split_idx = int(0.8 * n)
         dates = pd.date_range("2024-01-01", periods=n, freq="D")
@@ -248,6 +257,7 @@ def _load_config(
         version=version,
         criteria=criteria,
         data=data,
+        data_definition_sha256=data_sha,
     )
 
 

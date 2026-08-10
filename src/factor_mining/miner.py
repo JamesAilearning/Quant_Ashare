@@ -315,18 +315,32 @@ def load_baseline_predictions(config: MinerConfig):
     return frame
 
 
-def build_panel(config: MinerConfig):
-    if config.data.mode == "synthetic":
+def build_panel_for_data(data: DataConfig):
+    """Build (panel, forward_returns) for a ``DataConfig``.
+
+    Public seam shared with ``promote``: the promotion CLI re-validates a
+    mined pool on the SAME data definition the run was mined with (fields,
+    forward-return price, window, universe), so both entry points must
+    dispatch through one function — a hand-maintained mirror is exactly
+    what drifted (external finding: ``PromotionDataConfig`` lacked
+    ``fields`` / ``forward_return_price`` and silently re-validated on the
+    open→open label).
+    """
+    if data.mode == "synthetic":
         return _build_synthetic_panel(
-            n_tickers=config.data.synthetic_n_tickers,
-            n_dates=config.data.synthetic_n_dates,
-            seed=config.data.synthetic_seed,
+            n_tickers=data.synthetic_n_tickers,
+            n_dates=data.synthetic_n_dates,
+            seed=data.synthetic_seed,
         )
-    if config.data.mode == "pit":
-        return _build_pit_panel(config.data)
+    if data.mode == "pit":
+        return _build_pit_panel(data)
     raise ValueError(
-        f"Unknown data.mode {config.data.mode!r}; expected 'synthetic' or 'pit'"
+        f"Unknown data.mode {data.mode!r}; expected 'synthetic' or 'pit'"
     )
+
+
+def build_panel(config: MinerConfig):
+    return build_panel_for_data(config.data)
 
 
 def build_universe_mask(config: MinerConfig):
