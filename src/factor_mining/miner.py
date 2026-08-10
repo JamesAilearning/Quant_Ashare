@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import sys
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -365,7 +366,14 @@ def build_universe_mask(config: MinerConfig):
 
 
 def _autogenerate_run_id(seed: int) -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + f"-{seed}"
+    # Timestamp + seed alone is NOT unique: two same-seed launches in one
+    # second (or a same-second retry) collided and, with the old
+    # exist_ok=True mkdir, silently OVERWROTE the earlier run's pool /
+    # history / config — replaceable provenance for whatever later got
+    # promoted (external finding #3, 2026-08-10). The random suffix makes
+    # every invocation's directory unique by construction.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return f"{stamp}-{seed}-{uuid.uuid4().hex[:8]}"
 
 
 def _truncate_pool_to_top_k(pool: FactorPool, k: int) -> FactorPool:
@@ -404,7 +412,15 @@ def run_mining(config: MinerConfig) -> RunResult:
 
     run_id = config.run_id or _autogenerate_run_id(config.gp.seed)
     run_dir = Path(config.output_dir) / "runs" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        raise RuntimeError(
+            f"run directory already exists: {run_dir} — refusing to "
+            "overwrite an existing run's pool / history / config (the "
+            "promotion chain treats them as provenance). Pick a fresh "
+            "run_id (or leave run_id null to autogenerate a unique one)."
+        ) from None
     pool.save(run_dir)
 
     # GP history
