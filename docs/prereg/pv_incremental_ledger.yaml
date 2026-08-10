@@ -90,6 +90,44 @@ entries:
       mean_annualized_return_non_canonical: 0.0159
       worst_drawdown_non_canonical: -0.1292
       duration_seconds: 1311
+  - id: E004
+    when: "2026-08-10"
+    kind: result
+    what: >-
+      E001 所预登记基线 run 的合规重跑结果（执行 E002 所记裁决 B——
+      洁净重跑，时序即规则）。合规时序可由 run 指纹验证：本 run 的
+      git_commit=a83276a131af 即 #413 合并 commit（E002/E003 台账条目
+      在其内）——台账先行于点火，点火由操作人明确下达。单次不间断
+      nohup 调用（--no-resume），28/28 折全成、零失败折，验收八项全过
+      （折数/预测齐全/逐折盖章/首折 test=2018-01-01/末折 2024Q4/
+      metric_status/purpose/git clean）。metric_status=
+      predictions_only_non_canonical（收益率非 canonical，产物仅为
+      样本外预测）。导出 file_sha256 与作废条目 E003 的导出逐字节一致
+      ——确定性复现实证；E003 数字与本条目一致系同一确定性 run 的
+      档案对照，E003 仍维持作废状态，GP 基线依据以本条目为准。
+    artifacts:
+      - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet#sha256=a254832cc103056894e08b40dff2519c49fff5993ff9edd959e68332fd802ed8"
+      - "output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet.provenance.json"
+      - "run: output/walk_forward/pv_incremental_baseline (commit a83276a, git_dirty=False)"
+    provenance:
+      # 冻结件 provenance_required 条款：run_config_sha256/source_git 全绿入 ledger
+      run_config_sha256: "2161a7af505ce9395e65e7e4b30ee6cb9b89039f371c0906433f80fe6b918ba5"
+      run_config_sha256_kind: resolved_walk_forward_config
+      source_git: "a83276a131af58a9c79a1ad29e57b71d723c4031"
+      source_git_dirty: false
+    numbers:
+      folds: 28
+      shape: "1699 x 1308"
+      span: "2018-01-02..2024-12-31"
+      is_days_covered: 1215
+      oos_days_covered: 484
+      mean_ic_1d: 0.019126
+      std_ic_1d: 0.027286
+      mean_ic_5d: 0.026131
+      mean_annualized_return_non_canonical: 0.015855
+      worst_drawdown_non_canonical: -0.129213
+      mean_information_ratio_non_canonical: -0.026797
+      duration_seconds: 1285
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>
