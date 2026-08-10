@@ -85,13 +85,16 @@ def _criteria_loose() -> ValidationCriteria:
 
 
 def _promotion_config(tmp_path: Path, run_dir: Path, version: str) -> PromotionConfig:
+    # The data/hash pair must be the run's own snapshot: promote_run
+    # re-loads and verifies it at the production-writing boundary.
+    data, sha = _load_run_data_config(run_dir)
     return PromotionConfig(
         run_dir=run_dir,
         production_dir=tmp_path / "production",
         version=version,
         criteria=_criteria_loose(),
-        data=DataConfig(**_RUN_DATA),
-        data_definition_sha256="test-sha",
+        data=data,
+        data_definition_sha256=sha,
     )
 
 
@@ -156,6 +159,30 @@ def test_missing_run_dir_raises(tmp_path):
     )
     with pytest.raises(PromotionError, match="does not exist"):
         promote_run(cfg, dry_run=True)
+
+
+def test_promote_run_verifies_binding_at_the_boundary(tmp_path):
+    # codex P1 #415: a programmatic caller that constructs PromotionConfig
+    # directly must not be able to validate on a DIFFERENT panel while the
+    # report claims data_source = run_dir/config.yaml. promote_run re-loads
+    # the run snapshot and refuses a mismatch — data or hash.
+    run_dir = _seed_run_dir(tmp_path)
+    good_data, good_sha = _load_run_data_config(run_dir)
+    tampered_data = DataConfig(**{**_RUN_DATA, "synthetic_seed": 12345})
+    cfg = PromotionConfig(
+        run_dir=run_dir, production_dir=tmp_path / "production",
+        version="v1", criteria=_criteria_loose(),
+        data=tampered_data, data_definition_sha256=good_sha,
+    )
+    with pytest.raises(PromotionError, match="does not match the run"):
+        promote_run(cfg, dry_run=True)
+    cfg2 = PromotionConfig(
+        run_dir=run_dir, production_dir=tmp_path / "production",
+        version="v1", criteria=_criteria_loose(),
+        data=good_data, data_definition_sha256="forged-sha",
+    )
+    with pytest.raises(PromotionError, match="does not match the run"):
+        promote_run(cfg2, dry_run=True)
 
 
 def test_survivor_pool_has_only_passing_factors(tmp_path):

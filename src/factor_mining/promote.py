@@ -96,6 +96,23 @@ def promote_run(
             "Choose a new version label or remove the existing one manually."
         )
 
+    # Verify the run binding HERE, at the production-writing boundary — not
+    # only in _load_config (codex P1 on #415): a programmatic caller that
+    # constructs PromotionConfig directly could otherwise validate on a
+    # different panel while the report still claims data_source =
+    # run_dir/config.yaml. The run snapshot is re-loaded and must match the
+    # caller's config verbatim, hash included, so the report's claim is
+    # true by construction for every entry path.
+    run_data, run_sha = _load_run_data_config(config.run_dir)
+    if config.data != run_data or config.data_definition_sha256 != run_sha:
+        raise PromotionError(
+            "PromotionConfig.data does not match the run's own resolved "
+            f"config.yaml (caller sha {config.data_definition_sha256!r}, "
+            f"run sha {run_sha!r}) — promotion validates on exactly the "
+            "panel the factors were mined on. Build the config via "
+            "promote._load_config, or pass the run snapshot verbatim."
+        )
+
     pool = FactorPool.load(config.run_dir)
     try:
         panel, fwd = build_panel_for_data(config.data)
