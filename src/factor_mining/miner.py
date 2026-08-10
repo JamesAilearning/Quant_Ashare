@@ -399,17 +399,9 @@ def run_mining(config: MinerConfig) -> RunResult:
     inspecting ``result.pool`` see the same entries that downstream
     consumers (handler, walk-forward) will load.
     """
-    panel, fwd = build_panel(config)
-    universe_mask = build_universe_mask(config)
-    baseline = load_baseline_predictions(config)
-    engine = GPEngine(config.gp, config.fitness)
-    pool = engine.run(panel, fwd, universe_mask=universe_mask,
-                      baseline=baseline)
-
-    full_pool_size = len(pool)
-    if config.pool_top_k is not None and full_pool_size > config.pool_top_k:
-        pool = _truncate_pool_to_top_k(pool, config.pool_top_k)
-
+    # Reserve the run directory FIRST (codex P2 on #418): a duplicate
+    # pinned run_id must be refused before the expensive part — panel
+    # build, baseline load and the full GP run — not after burning it.
     run_id = config.run_id or _autogenerate_run_id(config.gp.seed)
     run_dir = Path(config.output_dir) / "runs" / run_id
     try:
@@ -421,6 +413,29 @@ def run_mining(config: MinerConfig) -> RunResult:
             "promotion chain treats them as provenance). Pick a fresh "
             "run_id (or leave run_id null to autogenerate a unique one)."
         ) from None
+
+    try:
+        panel, fwd = build_panel(config)
+        universe_mask = build_universe_mask(config)
+        baseline = load_baseline_predictions(config)
+        engine = GPEngine(config.gp, config.fitness)
+        pool = engine.run(panel, fwd, universe_mask=universe_mask,
+                          baseline=baseline)
+    except BaseException:
+        # Release the reservation on failure — rmdir only removes an
+        # EMPTY directory, so if anything ever lands in run_dir before
+        # this point it is deliberately kept for post-mortem.
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass  # fallback-ok: cleanup of an empty reservation is
+            # best-effort; the mining error below is the real signal.
+        raise
+
+    full_pool_size = len(pool)
+    if config.pool_top_k is not None and full_pool_size > config.pool_top_k:
+        pool = _truncate_pool_to_top_k(pool, config.pool_top_k)
+
     pool.save(run_dir)
 
     # GP history
