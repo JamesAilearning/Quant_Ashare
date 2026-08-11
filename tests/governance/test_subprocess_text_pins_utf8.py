@@ -329,8 +329,16 @@ def _interpreter_options(
                     if letter == "X":
                         x_values.append(attached)
                 elif i + 1 < len(argv):
+                    nxt = argv[i + 1]
+                    if nxt is None:
+                        # A DYNAMIC value for a value-taking option (-X
+                        # mode): the option cannot be known — unresolvable,
+                        # not a crash (codex P2 r15).
+                        unresolvable = True
+                        i = len(argv)
+                        break
                     if letter == "X":
-                        x_values.append(argv[i + 1])
+                        x_values.append(nxt)
                     i += 1
                 break  # the rest of the cluster was this option's value
             letters.add(letter)
@@ -534,8 +542,12 @@ def offending_lines(source: str) -> list[int]:
         # the interpreter). A non-literal codec value is unresolvable and
         # therefore still counts as text mode (fail closed).
         codecs = [kwargs[k] for k in ("encoding", "errors") if k in kwargs]
+        # TRUTHINESS, not is-not-None (codex P2 r15; verified): CPython's
+        # ``encoding or errors or text or ...`` treats EVERY falsy literal
+        # as binary — encoding="" and errors="" return bytes just like
+        # None. A non-literal stays unresolvable (counts as text mode).
         codec_enables_text = any(
-            not isinstance(v, ast.Constant) or v.value is not None
+            not isinstance(v, ast.Constant) or bool(v.value)
             for v in codecs
         )
         if codec_enables_text:
@@ -658,6 +670,13 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # an encoding and flip the call from bytes to str.
     ("encoding=None alone", 'subprocess.run(["git"], encoding=None)', False),
     ("errors=None alone", 'subprocess.run(["git"], errors=None)', False),
+    # EVERY falsy literal is binary (verified: encoding="" returns bytes),
+    # so flagging it would flip the return type — same rule as None.
+    ("encoding empty-string alone",
+     'subprocess.run(["git"], encoding="")', False),
+    ("errors empty-string alone", 'subprocess.run(["git"], errors="")', False),
+    ("text=True with empty encoding",
+     'subprocess.run(["git"], text=True, encoding="")', True),
     ("both codecs None",
      'subprocess.run(["git"], encoding=None, errors=None)', False),
     ("encoding=None with text=True",
@@ -788,6 +807,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, starred args past the script boundary",
      'subprocess.run([sys.executable, str(script), *args], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
+    # A DYNAMIC value for a value-taking option: the option set cannot be
+    # known — unresolvable and refused, never an AttributeError crash.
+    ("python child, dynamic separated -X value",
+     'subprocess.run([sys.executable, "-E", "-X", mode, "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
     # executable= OVERRIDES the program: argv[0] becomes display only.
     ("python argv but executable=node",
      'subprocess.run([sys.executable, "x"], executable="node", text=True,'
