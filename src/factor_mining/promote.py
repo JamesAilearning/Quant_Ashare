@@ -16,10 +16,9 @@ No qlib import, no ``src.pit`` import. PIT-mode data flows through
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +26,7 @@ import pandas as pd
 import yaml
 
 from .factor_pool import FactorPool
-from .miner import DataConfig, build_panel_for_data
+from .miner import DataConfig, build_panel_for_data, data_definition_sha256
 from .validator import (
     FactorValidationResult,
     ValidationCriteria,
@@ -56,11 +55,23 @@ class PromotionConfig:
     production_dir: Path
     version: str
     criteria: ValidationCriteria
+    # The EFFECTIVE data definition the validation panel is built from:
+    # the run's own snapshot, with at most ``end_date`` extended to
+    # ``validation_end_date`` (the one governed deviation — see below).
     data: DataConfig
-    # sha256 of the canonical JSON of ``data`` — recorded in the promotion
-    # report so downstream consumers (qlib handler bridge, audits) can
-    # verify which data definition the survivors were validated under.
+    # sha256 the MINER recorded for the run's data definition — verified
+    # against the run snapshot at the production-writing boundary and
+    # written into the promotion report for downstream verification.
     data_definition_sha256: str
+    # Governed OOS window (codex P1 on #415): a PIT campaign's mining
+    # panel deliberately ENDS at the IS cutoff (pv_incremental_v1 stops at
+    # 2022-12-31 to keep OOS unseen), so a fully-bound panel could never
+    # contain genuine OOS data — a 2023+ split yields zero OOS
+    # observations, an earlier one "validates" on data the GP already saw.
+    # The ONLY permitted deviation from the mined definition is extending
+    # ``end_date`` forward, explicitly, to this value. None = no extension
+    # (the synthetic path).
+    validation_end_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,12 +115,23 @@ def promote_run(
     # caller's config verbatim, hash included, so the report's claim is
     # true by construction for every entry path.
     run_data, run_sha = _load_run_data_config(config.run_dir)
-    if config.data != run_data or config.data_definition_sha256 != run_sha:
+    expected = run_data
+    if config.validation_end_date is not None:
+        if config.validation_end_date <= run_data.end_date:
+            raise PromotionError(
+                f"validation_end_date {config.validation_end_date!r} must "
+                f"lie strictly AFTER the mined end_date "
+                f"{run_data.end_date!r} — the governed deviation is an OOS "
+                "extension, never a rewrite of the mined window."
+            )
+        expected = replace(run_data, end_date=config.validation_end_date)
+    if config.data != expected or config.data_definition_sha256 != run_sha:
         raise PromotionError(
             "PromotionConfig.data does not match the run's own resolved "
             f"config.yaml (caller sha {config.data_definition_sha256!r}, "
             f"run sha {run_sha!r}) — promotion validates on exactly the "
-            "panel the factors were mined on. Build the config via "
+            "panel the factors were mined on (plus at most the governed "
+            "validation_end_date extension). Build the config via "
             "promote._load_config, or pass the run snapshot verbatim."
         )
 
@@ -151,6 +173,10 @@ def promote_run(
             "data": asdict(config.data),
             "data_definition_sha256": config.data_definition_sha256,
             "data_source": "run_dir/config.yaml",
+            # The governed deviation, spelled out: how far the validation
+            # panel extends beyond the mined window (null = no extension).
+            "mined_end_date": run_data.end_date,
+            "validation_end_date": config.validation_end_date,
             "results": [
                 {
                     "expr_hash_hex": format(r.expr_hash & 0xFFFFFFFFFFFFFFFF, "016x"),
@@ -203,6 +229,12 @@ def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
     directory — the single source of truth for mode / fields /
     forward-return price / window / universe. A run without it (or without
     a ``data:`` section) cannot prove what it was mined on and is refused.
+
+    The digest is not merely recomputed: the miner RECORDS it at mining
+    time (``data_definition_sha256`` in the same file), and a mismatch
+    between the recorded value and the recomputation over today's data
+    section means the snapshot was edited after mining — refused (codex P1
+    on #415; recomputing alone would happily hash the edited values).
     """
     config_path = run_dir / "config.yaml"
     if not config_path.exists():
@@ -226,10 +258,23 @@ def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
             f"miner's DataConfig ({exc}) — the run predates or diverges "
             "from the current data schema; re-mine before promoting."
         ) from exc
-    digest = hashlib.sha256(
-        json.dumps(asdict(data), sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    return data, digest
+    recorded = raw.get("data_definition_sha256")
+    if not recorded:
+        raise PromotionError(
+            f"run_dir config.yaml carries no data_definition_sha256: "
+            f"{config_path!r} — the run predates mining-time digest "
+            "recording and its data definition cannot be verified; re-mine "
+            "before promoting."
+        )
+    recomputed = data_definition_sha256(data)
+    if recorded != recomputed:
+        raise PromotionError(
+            "run_dir config.yaml data section does not match the digest "
+            f"recorded at mining time (recorded {recorded!r}, recomputed "
+            f"{recomputed!r}) — the snapshot was edited after mining; the "
+            "pool cannot be re-bound to a panel it was not mined on."
+        )
+    return data, recorded
 
 
 def _load_config(
@@ -252,21 +297,66 @@ def _load_config(
         )
     data, data_sha = _load_run_data_config(run_dir)
     crit_kwargs = dict(raw.get("criteria") or {})
-    if "is_oos_split_date" not in crit_kwargs:
-        if data.mode == "pit":
-            # A real-data split date is an EXPERIMENT DESIGN choice; deriving
-            # one from synthetic defaults would silently adjudicate OOS on an
-            # arbitrary boundary (external finding, 2026-08-10).
+    validation_raw = raw.get("validation") or {}
+    unknown = set(validation_raw) - {"end_date"}
+    if unknown:
+        raise PromotionError(
+            f"unknown validation key(s) {sorted(unknown)} — the governed "
+            "deviation is validation.end_date only."
+        )
+    validation_end = validation_raw.get("end_date")
+
+    if data.mode == "pit":
+        # A PIT campaign's mining panel deliberately ENDS at the IS cutoff
+        # (codex P1 on #415): genuine OOS only exists BEYOND it, so the
+        # extension and the split are both experiment-design choices the
+        # operator must state — and the split must land inside the
+        # extension, so OOS is entirely data the GP never saw.
+        split = crit_kwargs.get("is_oos_split_date")
+        if not split:
             raise PromotionError(
                 "criteria.is_oos_split_date is required for a PIT-mode run — "
                 "promotion refuses to infer an OOS boundary. Set it "
                 "explicitly in the promotion config (criteria section)."
             )
-        # Synthetic smoke path: 80/20 split over the synthetic date range.
-        n = data.synthetic_n_dates
-        split_idx = int(0.8 * n)
-        dates = pd.date_range("2024-01-01", periods=n, freq="D")
-        crit_kwargs["is_oos_split_date"] = dates[split_idx].strftime("%Y-%m-%d")
+        if not validation_end:
+            raise PromotionError(
+                "validation.end_date is required for a PIT-mode run: the "
+                f"mining panel ends at {data.end_date!r} (the IS cutoff), "
+                "so without a governed extension the OOS segment would be "
+                "empty — or, worse, carved out of data the GP already saw. "
+                "Set validation.end_date beyond the mined end_date."
+            )
+        if str(validation_end) <= data.end_date:
+            raise PromotionError(
+                f"validation.end_date {validation_end!r} must lie strictly "
+                f"AFTER the mined end_date {data.end_date!r} — the governed "
+                "deviation is an OOS extension, never a rewrite."
+            )
+        if not (data.end_date <= str(split) < str(validation_end)):
+            raise PromotionError(
+                f"criteria.is_oos_split_date {split!r} must lie within "
+                f"[mined end_date {data.end_date!r}, validation.end_date "
+                f"{validation_end!r}) — a split before the mining cutoff "
+                "would grade GP-visible data as OOS; one at/after the "
+                "extension leaves no OOS observations at all."
+            )
+        data = replace(data, end_date=str(validation_end))
+    else:
+        if validation_end:
+            raise PromotionError(
+                "validation.end_date applies to PIT-mode runs only — the "
+                "synthetic panel is generated from synthetic_n_dates and "
+                "ignores calendar dates, so an extension would be a no-op "
+                "pretending to be governance."
+            )
+        if "is_oos_split_date" not in crit_kwargs:
+            # Synthetic smoke path: 80/20 split over the synthetic range.
+            n = data.synthetic_n_dates
+            split_idx = int(0.8 * n)
+            dates = pd.date_range("2024-01-01", periods=n, freq="D")
+            crit_kwargs["is_oos_split_date"] = (
+                dates[split_idx].strftime("%Y-%m-%d"))
     criteria = ValidationCriteria(**crit_kwargs)
     return PromotionConfig(
         run_dir=run_dir,
@@ -275,6 +365,7 @@ def _load_config(
         criteria=criteria,
         data=data,
         data_definition_sha256=data_sha,
+        validation_end_date=str(validation_end) if validation_end else None,
     )
 
 

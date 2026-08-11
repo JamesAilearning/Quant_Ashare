@@ -69,10 +69,17 @@ bundle built per [`inventory.md`](inventory.md) §F.3:
    a PIT run you MUST supply the OOS split date explicitly; promotion
    refuses to invent one:
 
+   For PIT runs the mining panel deliberately ends at the IS cutoff, so
+   you must also state how far the validation panel extends beyond it —
+   the split must land inside that extension, making the OOS segment
+   entirely data the GP never saw:
+
    ```yaml
    # promote_criteria.yaml
    criteria:
-     is_oos_split_date: "2024-01-01"   # experiment-design choice, yours
+     is_oos_split_date: "2022-12-31"   # >= the mined end_date
+   validation:
+     end_date: "2024-12-31"            # the governed OOS extension
    ```
 
    ```bash

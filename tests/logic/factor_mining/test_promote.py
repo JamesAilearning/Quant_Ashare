@@ -12,7 +12,7 @@ import yaml
 
 from src.factor_mining.expression import parse_expression
 from src.factor_mining.factor_pool import FactorPool, PoolEntry
-from src.factor_mining.miner import DataConfig
+from src.factor_mining.miner import DataConfig, data_definition_sha256
 from src.factor_mining.promote import (
     PromotionConfig,
     PromotionError,
@@ -65,10 +65,19 @@ def _seed_run_dir(
         ))
     pool.save(run_dir)
     if write_config:
+        payload = dict(data or _RUN_DATA)
+        dump = {"run_id": "test-run", "data": payload}
+        # Mirror the miner: record the digest AT MINING TIME so promote can
+        # detect post-mining edits of the snapshot (codex P1 #415). A
+        # deliberately malformed payload (schema-divergence tests) gets a
+        # placeholder — the DataConfig parse refusal fires first anyway.
+        try:
+            dump["data_definition_sha256"] = data_definition_sha256(
+                DataConfig(**payload))
+        except TypeError:
+            dump["data_definition_sha256"] = "unverifiable"
         (run_dir / "config.yaml").write_text(
-            yaml.safe_dump({"run_id": "test-run",
-                            "data": dict(data or _RUN_DATA)}),
-            encoding="utf-8",
+            yaml.safe_dump(dump), encoding="utf-8",
         )
     return run_dir
 
@@ -294,23 +303,119 @@ def test_campaign_shaped_data_section_parses(tmp_path):
     assert len(sha) == 64
 
 
+_PIT_RUN_DATA = {
+    "mode": "pit", "pit_provider_uri": "x", "delisted_registry_path": "y",
+    "start_date": "2019-01-01", "end_date": "2022-12-31",
+}
+
+
+def _write_promote_yaml(tmp_path: Path, body: str) -> Path:
+    config_path = tmp_path / "promote.yaml"
+    config_path.write_text(body, encoding="utf-8")
+    return config_path
+
+
 def test_pit_mode_requires_explicit_oos_split(tmp_path):
     # Deriving an OOS boundary from synthetic defaults would silently
     # adjudicate a real-data run on an arbitrary date — refused.
-    run_dir = _seed_run_dir(
-        tmp_path,
-        data={"mode": "pit", "pit_provider_uri": "x",
-              "delisted_registry_path": "y"},
-    )
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
     with pytest.raises(PromotionError, match="is_oos_split_date"):
         _load_config(None, run_dir, tmp_path / "production", "v1")
-    # ...and passes once the split date is explicit.
-    config_path = tmp_path / "promote.yaml"
-    config_path.write_text(
-        "criteria:\n  is_oos_split_date: '2023-06-30'\n", encoding="utf-8",
+
+
+def test_pit_mode_requires_governed_validation_window(tmp_path):
+    # codex P1 #415 (window): the mining panel deliberately ends at the IS
+    # cutoff, so a split alone cannot produce genuine OOS data — the
+    # governed extension is mandatory for PIT promotion.
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    cfg_path = _write_promote_yaml(
+        tmp_path, "criteria:\n  is_oos_split_date: '2023-06-30'\n")
+    with pytest.raises(PromotionError, match="validation.end_date"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_pit_governed_window_extends_the_panel(tmp_path):
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2022-12-31'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
     )
-    cfg = _load_config(config_path, run_dir, tmp_path / "production", "v1")
-    assert cfg.criteria.is_oos_split_date == "2023-06-30"
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    # The effective panel extends; everything else stays the mined snapshot.
+    assert cfg.data.end_date == "2024-12-31"
+    assert cfg.validation_end_date == "2024-12-31"
+    assert cfg.data.start_date == _PIT_RUN_DATA["start_date"]
+    # ...and the boundary check accepts the extension: promote_run gets
+    # PAST the binding verification and fails only deeper, at panel build
+    # (which needs a real PIT bundle this test does not have).
+    with pytest.raises(Exception) as excinfo:
+        promote_run(cfg, dry_run=True)
+    assert "does not match" not in str(excinfo.value)
+    assert "delisted registry" in str(excinfo.value)
+
+
+def test_pit_split_must_lie_inside_the_extension(tmp_path):
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    # split BEFORE the mining cutoff -> would grade GP-visible data as OOS
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2021-06-30'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    with pytest.raises(PromotionError, match="GP-visible"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    # split AT/BEYOND the extension -> zero OOS observations
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2024-12-31'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    with pytest.raises(PromotionError, match="no OOS observations"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_pit_extension_must_be_beyond_the_mined_end(tmp_path):
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2022-06-30'\n"
+        "validation:\n  end_date: '2022-12-31'\n",  # == mined end
+    )
+    with pytest.raises(PromotionError, match="strictly AFTER"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_synthetic_mode_refuses_validation_window(tmp_path):
+    # The synthetic panel ignores calendar dates — an "extension" there
+    # would be a no-op pretending to be governance.
+    run_dir = _seed_run_dir(tmp_path)
+    cfg_path = _write_promote_yaml(
+        tmp_path, "validation:\n  end_date: '2024-12-31'\n")
+    with pytest.raises(PromotionError, match="PIT-mode runs only"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_edited_snapshot_is_detected_by_recorded_digest(tmp_path):
+    # codex P1 #415 (digest): editing run_dir/config.yaml after mining must
+    # be caught — the recorded mining-time digest no longer matches.
+    run_dir = _seed_run_dir(tmp_path)
+    config_path = run_dir / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["data"]["synthetic_seed"] = 4242  # the post-mining hand edit
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(PromotionError, match="edited after mining"):
+        _load_run_data_config(run_dir)
+
+
+def test_run_without_recorded_digest_is_refused(tmp_path):
+    run_dir = _seed_run_dir(tmp_path)
+    config_path = run_dir / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    del raw["data_definition_sha256"]
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(PromotionError, match="no data_definition_sha256"):
+        _load_run_data_config(run_dir)
 
 
 def test_malformed_run_data_section_is_refused(tmp_path):

@@ -16,6 +16,7 @@ strict gate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -315,6 +316,19 @@ def load_baseline_predictions(config: MinerConfig):
     return frame
 
 
+def data_definition_sha256(data: DataConfig) -> str:
+    """Canonical digest of a data definition — ONE implementation.
+
+    Written into every run's ``config.yaml`` at mining time and recomputed
+    by ``promote`` at validation time; keeping both sides on this single
+    function is what makes the comparison meaningful (a second hand-rolled
+    canonicalization is exactly what would drift).
+    """
+    return hashlib.sha256(
+        json.dumps(asdict(data), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 def build_panel_for_data(data: DataConfig):
     """Build (panel, forward_returns) for a ``DataConfig``.
 
@@ -467,6 +481,12 @@ def run_mining(config: MinerConfig) -> RunResult:
         "full_pool_size_pre_truncation": full_pool_size,
         "saved_pool_size": len(pool),
         "data": asdict(config.data),
+        # Recorded AT MINING TIME (codex P1 on #415): promotion recomputes
+        # the digest from the data section and refuses a mismatch, so a
+        # post-mining hand-edit of this snapshot (that does not also forge
+        # the hash) is caught instead of silently re-binding the pool to a
+        # panel it was never mined on.
+        "data_definition_sha256": data_definition_sha256(config.data),
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }
