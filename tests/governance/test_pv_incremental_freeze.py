@@ -132,6 +132,73 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # |0.05| − 0.002×10 − 2.0×(0.40−0.30); no IR/turnover/novelty.
         self.assertAlmostEqual(0.05 - 0.02 - 0.2, score)
 
+    def test_campaign_engine_does_not_read_or_compute_novelty(self) -> None:
+        # 2026-08-11 batch abort (ledger E005): FitnessConfig.w_corr
+        # defaults to 0.8 and the engine's novelty short-circuit keyed
+        # on w_corr alone, so the campaign burned ~31h computing
+        # O(pop²) pairwise correlations compute_fitness then discarded
+        # (protocol-compliant score, pathological runtime). Pin, via
+        # the REAL CLI loader, that the campaign's effective fitness
+        # does not read novelty — fitness_uses_novelty is the single
+        # source of truth both engine guards consume.
+        from src.factor_mining.fitness import fitness_uses_novelty
+        from src.factor_mining.miner import load_config
+        cfg = load_config(
+            _PROJECT_ROOT / "config" / "factor_mining"
+            / "pv_incremental_v1.yaml")
+        self.assertEqual("abs_rank_ic", cfg.fitness.ic_term)
+        self.assertFalse(fitness_uses_novelty(cfg.fitness))
+
+    def test_abs_rank_ic_is_invariant_to_every_v1_only_field(self) -> None:
+        # Coverage-matrix sweep of the lurking-default CLASS (the
+        # w_corr lesson generalised): every FitnessConfig field the
+        # frozen three-term formula does not mention must be provably
+        # inert in abs_rank_ic mode — poison each and require the
+        # score to be bit-identical, so no default can steer selection
+        # without a red pin.
+        import dataclasses
+
+        from src.factor_mining.evaluator import EvaluationResult
+        from src.factor_mining.fitness import FitnessConfig, compute_fitness
+        result = EvaluationResult(
+            factor_values=_PD.DataFrame(
+                {"a": [1.0], "b": [2.0]},
+                index=_PD.DatetimeIndex(["2023-01-02"])),
+            ic_mean=0.9, ic_std=0.1, ir=5.0, rank_ic_mean=0.05,
+            rank_ic_std=0.1, rank_ir=0.5, turnover_daily=0.9,
+            coverage=1.0, n_obs_per_day_min=2)
+        base_cfg = FitnessConfig(
+            ic_term="abs_rank_ic", w_complexity=0.002,
+            w_orthogonality=2.0, orthogonality_band=0.30)
+        base = compute_fitness(result, expr_size=10, novelty_penalty=0.9,
+                               config=base_cfg, baseline_mean_abs_rho=0.40)
+        for field in ("w_ic", "w_ir", "w_rankic", "w_turnover",
+                      "w_corr", "cost_rate"):
+            with self.subTest(field=field):
+                poisoned = dataclasses.replace(base_cfg, **{field: 9.0})
+                self.assertEqual(base, compute_fitness(
+                    result, expr_size=10, novelty_penalty=0.9,
+                    config=poisoned, baseline_mean_abs_rho=0.40))
+
+    def test_campaign_validity_filters_are_pinned(self) -> None:
+        # The §5.2 validity gates DO participate in abs_rank_ic mode
+        # (hard −inf filters shape selection in both formula shapes),
+        # yet the frozen plan does not spell them out — their authority
+        # is the audited implementation PRs. Pin the effective values
+        # through the REAL loader so a default drift (the w_corr
+        # lesson's other half) turns red instead of silently changing
+        # which factors survive breeding.
+        from src.factor_mining.miner import load_config
+        fit = load_config(
+            _PROJECT_ROOT / "config" / "factor_mining"
+            / "pv_incremental_v1.yaml").fitness
+        self.assertEqual(0.8, fit.coverage_min)
+        self.assertEqual(0.7, fit.variance_days_frac_min)
+        self.assertEqual(1e-6, fit.variance_min)
+        self.assertEqual(0.05, fit.extreme_outlier_frac_max)
+        self.assertEqual(1e8, fit.extreme_outlier_magnitude)
+        self.assertEqual(300, fit.min_names_per_day)
+
     def test_campaign_miner_config_matches_the_frozen_plan(self) -> None:
         # codex #401 r9: without a campaign miner config the only
         # available path loads all twelve V1 terminals and the

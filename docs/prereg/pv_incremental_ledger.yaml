@@ -128,6 +128,32 @@ entries:
       worst_drawdown_non_canonical: -0.129213
       mean_information_ratio_non_canonical: -0.026797
       duration_seconds: 1285
+  - id: E005
+    when: "2026-08-11"
+    kind: result
+    what: >-
+      【中止照录】首次 GP 批次点火（2026-08-10 12:41 操作人点火，
+      pop 500 x 50 代，seed 42，CPU 单核）于约 31h 后经操作人裁决中止
+      （方案 A：杀掉+修复+重点火；无任何产物落盘，中止日志留档）。
+      py-spy 活体栈显示 CPU 烧在 _within_generation_novelty：
+      FitnessConfig.w_corr 默认 0.8，而引擎的 novelty 短路只看 w_corr
+      不看公式形状，导致每代 O(种群^2) 的 pairwise 相关被计算后又被
+      abs_rank_ic 分支丢弃。诊断更正（如实入档）：呈裁决时曾误判为
+      "适应度协议偏离"；复核 compute_fitness 证实 abs_rank_ic 分支
+      从不读 novelty 项——被中止 run 的选择信号自始至终是冻结三项式，
+      协议完好，真实缺陷是纯运行时浪费（照该速度完成尚需数日）。
+      seed 固定且 novelty 不入分，修复后重跑走同一搜索轨迹——中止
+      仅损失墙钟，不损失结果唯一性。修复（同 PR，合并即生效）：
+      fitness_uses_novelty 单一事实源 + 引擎双守卫改键公式形状；
+      治理新钉三条（真实 loader 断言不读 novelty / 六个 v1 专属
+      字段逐一投毒不变式 / 有效性过滤器逐值锁定）；每代进度日志
+      补齐（31h 进度不可见的教训）。双向突变验证均咬住。
+    artifacts:
+      - "output/pv_gp_batch_aborted_wcorr.log"
+    numbers:
+      wall_hours_at_abort: 31
+      cpu_seconds_at_abort: 110235
+      generations_completed_visible: null
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>

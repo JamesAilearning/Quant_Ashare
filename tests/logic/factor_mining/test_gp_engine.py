@@ -1067,6 +1067,62 @@ def test_evaluate_individual_passes_method_normal_to_pool_entry():
 
 
 # ---------------------------------------------------------------------------
+# Novelty short-circuit follows the FORMULA, not w_corr alone
+# (2026-08-11 campaign batch abort, ledger E005)
+# ---------------------------------------------------------------------------
+
+
+def _abs_rank_ic_fitness():
+    return FitnessConfig(
+        ic_term="abs_rank_ic", w_complexity=0.002,
+        w_orthogonality=2.0, orthogonality_band=0.30,
+    )
+
+
+def _peer_frame():
+    dates = pd.date_range("2024-01-01", periods=10, freq="D")
+    return pd.DataFrame(
+        np.arange(30, dtype=float).reshape(10, 3),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(["T0", "T1", "T2"], name="instrument"),
+    )
+
+
+def test_novelty_short_circuits_in_abs_rank_ic_mode():
+    # DEFAULT w_corr (0.8) + a seeded identical peer: a live novelty
+    # path would return corr 1.0. The abs_rank_ic formula discards the
+    # term, so the engine must not compute it at all.
+    engine = GPEngine(GPConfig(seed=42), _abs_rank_ic_fitness())
+    peer = _peer_frame()
+    engine._per_generation_values[123] = peer
+    assert engine._within_generation_novelty(peer.copy()) == 0.0
+
+
+def test_novelty_still_computes_in_v1_composite_mode():
+    # Guard must not over-block: the v1 recipe DOES read the term.
+    engine = GPEngine(GPConfig(seed=42), FitnessConfig())
+    peer = _peer_frame()
+    engine._per_generation_values[123] = peer
+    assert engine._within_generation_novelty(peer.copy()) == pytest.approx(1.0)
+
+
+def test_abs_rank_ic_evaluation_skips_novelty_cache_write():
+    # Real evaluate path: the per-generation cache stays empty in
+    # abs_rank_ic mode (no O(pop × panel) heap for a discarded term)
+    # and still fills under the v1 recipe.
+    panel, fwd = _make_panel()
+    expr = Terminal("$close")
+    engine = GPEngine(GPConfig(seed=42), _abs_rank_ic_fitness())
+    score, _ = engine.evaluate_individual(expr, panel, fwd)
+    assert score > float("-inf")
+    assert engine._per_generation_values == {}
+    engine_v1 = GPEngine(GPConfig(seed=42), FitnessConfig())
+    score_v1, _ = engine_v1.evaluate_individual(expr, panel, fwd)
+    assert score_v1 > float("-inf")
+    assert engine_v1._per_generation_values != {}
+
+
+# ---------------------------------------------------------------------------
 # D5 strict gate
 # ---------------------------------------------------------------------------
 
