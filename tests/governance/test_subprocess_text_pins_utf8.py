@@ -432,6 +432,12 @@ def _subprocess_names(
     keeps an unrelated ``renderer.run(text=True)`` or a locally defined
     ``run(text=True)`` from being reported as an unpinned subprocess and
     "fixed" with an ``encoding`` kwarg the API does not accept.
+
+    Import bindings are the roots; plain ``Name = Name`` assignments then
+    propagate them to a fixpoint (codex P2 r19 on #410: ``sp =
+    subprocess`` followed by ``sp.run(...)`` spawned unseen). Rebinding
+    an alias later does not un-flag it — the gate is a refuse-list, so
+    over-approximating aliases only ever fails closed.
     """
     modules: set[str] = set()
     bare: set[str] = set()
@@ -447,6 +453,21 @@ def _subprocess_names(
                     bare.add(alias.asname or alias.name)
                 elif alias.name in _TEXT_ONLY_HELPERS:
                     helpers.add(alias.asname or alias.name)
+    grew = True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            value = getattr(node, "value", None)
+            if not (isinstance(node, (ast.Assign, ast.AnnAssign))
+                    and isinstance(value, ast.Name)):
+                continue
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            names = {t.id for t in targets if isinstance(t, ast.Name)}
+            for pool in (modules, bare, helpers):
+                if value.id in pool and not names <= pool:
+                    pool.update(names)
+                    grew = True
     return modules, bare, helpers
 
 
@@ -525,6 +546,32 @@ def offending_lines(source: str) -> list[int]:
     # cannot prove ``sys.executable`` is a python interpreter.
     sys_names = {n for n in _sys_module_names(tree) if counts[n] == 1}
     hits: list[int] = []
+    # A module reference FORWARDED anywhere else — a call argument, an
+    # attribute/subscript target, a container literal, a return value —
+    # escapes this file-local analysis entirely: the receiver can spawn
+    # through it unseen (codex P2 r19 on #410). Exactly two uses are
+    # resolvable: the base of an attribute access (``subprocess.run``,
+    # ``subprocess.PIPE``) and a plain Name-to-Name alias (tracked in
+    # ``_subprocess_names``). Everything else fails closed.
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and node.id in modules
+                and isinstance(node.ctx, ast.Load)):
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            continue
+        if (isinstance(parent, ast.Assign) and parent.value is node
+                and len(parent.targets) == 1
+                and isinstance(parent.targets[0], ast.Name)):
+            continue
+        if (isinstance(parent, ast.AnnAssign) and parent.value is node
+                and isinstance(parent.target, ast.Name)):
+            continue
+        hits.append(node.lineno)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -973,6 +1020,25 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("argv from a variable is unresolvable",
      'argv = ["git", "log"]\nsubprocess.run(argv, text=True, encoding="utf-8")',
      True),
+    # an ordinary assignment alias must not launder the module reference
+    ("assigned alias spawns are recognized",
+     "sp = subprocess\n"
+     'sp.run(["git"], text=True)', True),
+    ("alias-of-alias spawns are recognized",
+     "sp = subprocess\nsp2 = sp\n"
+     'sp2.run(["git"], text=True)', True),
+    ("aliased spawn accepted when properly pinned",
+     "sp = subprocess\n"
+     'sp.run(["git", "log"], text=True, encoding="utf-8")', False),
+    # ...and a module reference forwarded OUT of the file-local analysis
+    # (call argument, attribute target) fails closed at the forwarding.
+    ("module forwarded as a call argument fails closed",
+     "helper(subprocess)", True),
+    ("module stored onto an attribute fails closed",
+     "obj.sp = subprocess", True),
+    ("module attribute constants stay usable",
+     'subprocess.run(["git", "log"], stdout=subprocess.PIPE, text=True,'
+     ' encoding="utf-8")', False),
 )
 
 
