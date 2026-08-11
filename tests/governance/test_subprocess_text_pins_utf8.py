@@ -70,6 +70,11 @@ _ENV_IGNORING_FLAGS = frozenset({"E", "I"})
 # for another flag cluster, and so a later script argument spelled ``utf8``
 # is not mistaken for the option's value.
 _VALUE_TAKING_FLAGS = frozenset({"X", "W"})
+# Long options that CONSUME the next argv element. Without this, the value
+# ("always") is mistaken for the script name and option parsing stops
+# BEFORE a later -E/-I (codex P2 r13 on #410; verified:
+# ``--check-hash-based-pycs always -E`` reports ignore_environment=1).
+_VALUE_TAKING_LONG_OPTS = frozenset({"--check-hash-based-pycs"})
 # The ONLY ``-X`` options that turn UTF-8 mode ON, spelled exactly as CPython
 # accepts them. Verified against the interpreter, because two neighbouring
 # spellings silently do NOT repair an env-ignoring child (codex P2 r10 on
@@ -187,6 +192,14 @@ def _binding_counts(tree: ast.Module) -> Counter[str]:
             _add_target(node.optional_vars)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             counts[node.name] += 1
+        # Structural pattern matching binds names too (codex P2 r13):
+        # ``case {"env": utf8_child_env}:`` captures into that name, so a
+        # sanctioned import shadowed by a match capture must lose its
+        # exactly-once status like any other rebinding.
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            counts[node.name] += 1
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            counts[node.rest] += 1
     return counts
 
 
@@ -280,7 +293,13 @@ def _interpreter_options(argv: list[str]) -> tuple[set[str], list[str]]:
         if arg in ("-c", "-m"):
             break  # everything after belongs to the command / module
         if arg.startswith("--"):
-            i += 1
+            # A value-taking long option consumes the NEXT element too —
+            # otherwise its value is mistaken for the script name and
+            # parsing stops before a later -E/-I (codex P2 r13).
+            if arg in _VALUE_TAKING_LONG_OPTS:
+                i += 2
+            else:
+                i += 1
             continue
         cluster = arg[1:]
         for pos, letter in enumerate(cluster):
@@ -315,7 +334,14 @@ def _child_ignores_env(call: ast.Call) -> bool:
     letters, x_values = _interpreter_options(argv)
     if not letters & _ENV_IGNORING_FLAGS:
         return False
-    return not any(v in _UTF8_MODE_ENABLING_X for v in x_values)
+    # Repeated ``-X utf8`` options: CPython honors the FIRST occurrence
+    # (verified: ``-X utf8=0 -X utf8=1`` -> utf8_mode=0, and the reverse
+    # -> 1), so ``any()`` over the values was wrong (codex P2 r13). Only
+    # the first utf8-named option decides.
+    for value in x_values:
+        if value == "utf8" or value.startswith("utf8="):
+            return value not in _UTF8_MODE_ENABLING_X
+    return True  # env-ignoring flag with no utf8 option at all
 
 
 def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
@@ -702,6 +728,22 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, -Xutf8=0 attached form",
      'subprocess.run([sys.executable, "-I", "-Xutf8=0", "x"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
+    # Repeated -X utf8: CPython honors the FIRST occurrence (verified).
+    ("python child, -X utf8=0 then utf8=1 stays disabled",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=0", "-X", "utf8=1",'
+     ' "x"], text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -X utf8=1 then utf8=0 stays enabled",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=1", "-X", "utf8=0",'
+     ' "x"], text=True, encoding="utf-8", env=utf8_child_env())', False),
+    # A value-taking LONG option must not end option parsing (its value is
+    # not the script name): the -E after it still ignores the env.
+    ("python child, long option value before -E",
+     'subprocess.run([sys.executable, "--check-hash-based-pycs", "always",'
+     ' "-E", "x"], text=True, encoding="utf-8", env=utf8_child_env())', True),
+    # A match-pattern capture shadows the sanctioned name (3.10+).
+    ("python child, sanctioned name captured by a match pattern",
+     "match cfg:\n    case {\"env\": utf8_child_env}:\n        pass\n"
+     + _PY.format(extra=", env=utf8_child_env()"), True),
     # a competing / fallback import re-binds the sanctioned name
     ("python child, sanctioned name also imported elsewhere",
      "from fallback import utf8_child_env\n"
