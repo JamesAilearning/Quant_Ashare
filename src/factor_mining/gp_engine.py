@@ -786,9 +786,14 @@ class GPEngine:
                 evaluated.append((expr, score))
             stats = self._compute_stats(self.current_gen, evaluated)
             self.history.append(stats)
+            # Denominator is the LOOP's boundary, not config.n_generations:
+            # run(n_generations=...) overrides the configured count (the
+            # checkpoint/resume path), so the configured total would show
+            # a phantom early stop on a partial run and 5/4-style overrun
+            # on a resumed engine (codex #419 r2).
             _log.info(
                 "generation %d/%d done: best=%.6f mean=%.6f unique=%d invalid=%d",
-                self.current_gen + 1, self.config.n_generations,
+                self.current_gen + 1, target_final_gen,
                 stats.best_fitness, stats.mean_fitness,
                 stats.n_unique, stats.n_invalid,
             )

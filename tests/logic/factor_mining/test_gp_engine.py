@@ -1106,6 +1106,45 @@ def test_novelty_still_computes_in_v1_composite_mode():
     assert engine._within_generation_novelty(peer.copy()) == pytest.approx(1.0)
 
 
+def test_generation_log_reports_the_actual_run_target():
+    # codex #419 r2: run(n_generations=...) overrides the configured
+    # count (checkpoint/resume path). The progress feed must report the
+    # loop's real boundary: a fresh engine configured for 4 but run for
+    # 2 emits 1/2, 2/2 (config's 4 would read as a phantom early stop),
+    # and the follow-on run(2) emits 3/4, 4/4 (never 5/4-style overrun).
+    import logging
+
+    panel, fwd = _make_panel()
+    engine = _engine(population_size=6, n_generations=4)
+
+    class _Capture(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.INFO)
+            self.messages = []
+
+        def emit(self, record):
+            self.messages.append(record.getMessage())
+
+    log = logging.getLogger("src.factor_mining.gp_engine")
+    handler = _Capture()
+    old_level = log.level
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        engine.run(panel, fwd, n_generations=2)
+        first = [m for m in handler.messages if "generation" in m]
+        assert any("generation 1/2 done" in m for m in first)
+        assert any("generation 2/2 done" in m for m in first)
+        handler.messages.clear()
+        engine.run(panel, fwd, n_generations=2)
+        second = [m for m in handler.messages if "generation" in m]
+        assert any("generation 3/4 done" in m for m in second)
+        assert any("generation 4/4 done" in m for m in second)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(old_level)
+
+
 def test_abs_rank_ic_evaluation_skips_novelty_cache_write():
     # Real evaluate path: the per-generation cache stays empty in
     # abs_rank_ic mode (no O(pop × panel) heap for a discarded term)
