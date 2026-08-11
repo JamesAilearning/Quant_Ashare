@@ -557,6 +557,20 @@ def offending_lines(source: str) -> list[int]:
 
         kwargs, opaque_unpacking = _collect_kwargs(node)
 
+        # Popen's optional parameters can arrive POSITIONALLY too — env is
+        # position 10 and universal_newlines position 11 (codex P2 r17 on
+        # #410: a positional universal_newlines=True with no text keyword
+        # made the call look provably binary and skipped the gate). The
+        # keyword-based analysis below models nothing past ``executable``
+        # (position 2), and a call-level ``*splat`` can smuggle any number
+        # of positions — both make the call unresolvable, so they fail
+        # closed BEFORE the binary-mode conclusion, not after it.
+        if len(node.args) > 3 or any(
+            isinstance(arg, ast.Starred) for arg in node.args
+        ):
+            hits.append(node.lineno)
+            continue
+
         # A codec keyword enables text mode only when its VALUE is truthy:
         # CPython evaluates ``encoding or errors or text or
         # universal_newlines``, so an explicit ``encoding=None`` leaves the
@@ -858,6 +872,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("positions past executable are unmodeled",
      'subprocess.Popen([sys.executable, "x"], -1, None, None, text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
+    # ...even with NO text keyword at all: universal_newlines is position
+    # 11 and env position 10, so a long positional call is never provably
+    # binary (codex P2 r17 on #410).
+    ("positional universal_newlines with positional env",
+     "subprocess.Popen([sys.executable, \"x\"], -1, None, None, None,"
+     " None, None, True, False, None, utf8_child_env(), True)", True),
+    ("four positionals look binary but fail closed",
+     "subprocess.Popen([sys.executable, \"x\"], -1, None, None)", True),
+    ("call-level splat can smuggle positional text flags",
+     "subprocess.run(*cmd)", True),
+    ("three positionals with no text keyword stay provably binary",
+     'subprocess.Popen(["git", "log"], -1, None)', False),
     # a truthy shell= makes argv a shell command line, not a program vector
     ("list argv with shell=True even fully pinned",
      'subprocess.run([sys.executable, "x"], shell=True, text=True,'
