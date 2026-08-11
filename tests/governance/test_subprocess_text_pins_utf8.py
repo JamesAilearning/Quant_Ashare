@@ -42,6 +42,7 @@ shipped code path.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import unittest
 from collections import Counter
@@ -95,9 +96,15 @@ _CHILD_ENV_FUNC = "utf8_child_env"
 
 # Program names known NOT to be a python interpreter. Anything else
 # unrecognized stays UNRESOLVED and fails closed, so a launcher this list
-# does not know (``py``, ``python3.12``, a venv shim) is never waved through.
+# does not know (a venv shim, a tool wrapper) is never waved through.
 _NON_PYTHON_PROGRAMS = frozenset({"git"})
-_PYTHON_PROGRAM_PREFIXES = ("python", "py")
+# Interpreter names are matched EXACTLY, never by prefix (codex P1 r16 on
+# #410): ``startswith(("python", "py"))`` also accepted pyright, pytest,
+# pyinstaller — native/tool children whose decoding PYTHONIOENCODING does
+# not govern. The Windows launcher has exactly two spellings; a CPython
+# binary is ``python`` + optional version digits + optional ``w``.
+_PY_LAUNCHER_NAMES = frozenset({"py", "pyw"})
+_PYTHON_STEM_RE = re.compile(r"python\d*(\.\d+)*w?")
 
 
 def _is_utf8_literal(node: ast.expr) -> bool:
@@ -255,8 +262,8 @@ def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
         stem = Path(head.value).stem.lower()
         if stem in _NON_PYTHON_PROGRAMS:
             return False
-        if stem.startswith(_PYTHON_PROGRAM_PREFIXES):
-            return True  # python, python3, pythonw, py (Windows launcher)
+        if stem in _PY_LAUNCHER_NAMES or _PYTHON_STEM_RE.fullmatch(stem):
+            return True  # python / python3.12 / pythonw / py|pyw launcher
     return None
 
 
@@ -382,15 +389,31 @@ def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
     the same losing game as the env analysis, and a wrong answer here is a
     wrong verdict. An argv the gate cannot read literally fails closed.
 
-    An ``executable=`` keyword OVERRIDES the program (Popen executes it and
-    argv[0] becomes mere display), so when present it — not argv[0] — is
-    what gets judged (codex P2 r14 on #410:
-    ``run([sys.executable, ...], executable="node")`` spawns a native
-    child that PYTHONIOENCODING cannot control).
+    An ``executable=`` OVERRIDES the program (Popen executes it and argv[0]
+    becomes mere display), so when present it — not argv[0] — is what gets
+    judged (codex P2 r14 on #410), and it counts however it arrives:
+    keyword or Popen's THIRD positional argument (codex r16). A literal
+    ``executable=None`` is CPython's own no-override spelling and falls
+    through to argv[0]. Under a truthy (or unresolvable) ``shell=`` the
+    argv is a shell command line, not a program vector — nothing about the
+    child is provable. And more than three positional arguments would let
+    later Popen parameters (``shell`` among them, at position nine) arrive
+    positionally unmodeled — fail closed rather than model them.
     """
     for kw in call.keywords:
+        if kw.arg == "shell":
+            if not (isinstance(kw.value, ast.Constant) and not kw.value.value):
+                return None  # truthy or unresolvable shell — fail closed
+    if len(call.args) > 3:
+        return None  # positions past executable are unmodeled — fail closed
+    executable: ast.expr | None = call.args[2] if len(call.args) == 3 else None
+    for kw in call.keywords:
         if kw.arg == "executable":
-            return _program_is_python(kw.value, sys_names)
+            executable = kw.value
+    if executable is not None and not (
+        isinstance(executable, ast.Constant) and executable.value is None
+    ):
+        return _program_is_python(executable, sys_names)
     if not call.args:
         return None
     argv = call.args[0]
@@ -822,6 +845,42 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("executable from a variable is unresolvable",
      'subprocess.run([sys.executable, "x"], executable=exe, text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
+    # executable can arrive as Popen's THIRD positional just as well.
+    ("positional executable overrides a python argv",
+     'subprocess.Popen([sys.executable, "x"], -1, "node", text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("positional executable=sys.executable proves python",
+     'subprocess.Popen(["node", "x"], -1, sys.executable, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("literal executable=None is no override",
+     'subprocess.run([sys.executable, "x"], executable=None, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("positions past executable are unmodeled",
+     'subprocess.Popen([sys.executable, "x"], -1, None, None, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # a truthy shell= makes argv a shell command line, not a program vector
+    ("list argv with shell=True even fully pinned",
+     'subprocess.run([sys.executable, "x"], shell=True, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("shell from a variable is unresolvable",
+     'subprocess.run([sys.executable, "x"], shell=flag, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("shell=False stays a program vector",
+     'subprocess.run([sys.executable, "x"], shell=False, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # interpreter names match exactly — "py" the prefix proves nothing
+    ("py-prefixed native tool even fully pinned",
+     'subprocess.run(["pyright", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("pytest is not an interpreter either",
+     'subprocess.run(["pytest", "-q"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("versioned windows interpreter still proves python",
+     'subprocess.run(["python3.12", "s.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("pyw launcher still proves python",
+     'subprocess.run(["pyw", "s.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
     # a competing / fallback import re-binds the sanctioned name
     ("python child, sanctioned name also imported elsewhere",
      "from fallback import utf8_child_env\n"
