@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -441,8 +442,17 @@ def test_promotion_report_records_data_definition(tmp_path):
         .read_text(encoding="utf-8")
     )
     assert rep["data"]["synthetic_n_dates"] == _RUN_DATA["synthetic_n_dates"]
-    assert rep["data_definition_sha256"] == cfg.data_definition_sha256
-    assert rep["data_source"] == "run_dir/config.yaml"
+    # Each digest verifies over the dict RIGHT BESIDE it (codex P2 #415 r2)
+    # via the shared canonicalization — downstream recomputation must agree.
+    assert rep["mined_data_sha256"] == cfg.data_definition_sha256
+    assert rep["mined_data_sha256"] == data_definition_sha256(
+        DataConfig(**rep["mined_data"]))
+    assert rep["data_sha256"] == data_definition_sha256(
+        DataConfig(**rep["data"]))
+    assert rep["mined_data_source"] == "run_dir/config.yaml"
+    assert rep["validation_end_date"] is None
+    # No extension on the synthetic path: the two pairs coincide.
+    assert rep["data"] == rep["mined_data"]
 
 
 # ---------------------------------------------------------------------------
@@ -569,3 +579,30 @@ def test_promote_does_not_import_qlib_or_pit():
             s.startswith("from src.pit") or s.startswith("import src.pit")
         ):
             pytest.fail(f"Top-level src.pit import in promote.py: {line!r}")
+
+
+def test_promote_run_enforces_pit_window_for_programmatic_callers(tmp_path):
+    # codex P1 #415 r2: constructing PromotionConfig directly with a PIT
+    # run and NO extension (or a split outside it) must be refused at the
+    # production-writing boundary, not only in _load_config.
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    data, sha = _load_run_data_config(run_dir)
+    no_extension = PromotionConfig(
+        run_dir=run_dir, production_dir=tmp_path / "production",
+        version="v1",
+        criteria=ValidationCriteria(is_oos_split_date="2023-06-30"),
+        data=data, data_definition_sha256=sha,
+        validation_end_date=None,
+    )
+    with pytest.raises(PromotionError, match="validation.end_date"):
+        promote_run(no_extension, dry_run=True)
+    bad_split = PromotionConfig(
+        run_dir=run_dir, production_dir=tmp_path / "production",
+        version="v1",
+        criteria=ValidationCriteria(is_oos_split_date="2021-06-30"),
+        data=replace(data, end_date="2024-12-31"),
+        data_definition_sha256=sha,
+        validation_end_date="2024-12-31",
+    )
+    with pytest.raises(PromotionError, match="GP-visible"):
+        promote_run(bad_split, dry_run=True)

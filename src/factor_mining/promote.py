@@ -89,6 +89,49 @@ class PromotionError(RuntimeError):
     """Raised on bad config, missing run dir, or overwrite refusal."""
 
 
+def _check_pit_window(
+    mined_end_date: str,
+    validation_end: str | None,
+    split: str | None,
+) -> None:
+    """The PIT OOS invariants — ONE implementation for both entry paths.
+
+    ``_load_config`` enforces these for the CLI, and ``promote_run``
+    re-enforces them at the production-writing boundary (codex P1 on #415
+    r2): a programmatic caller constructing ``PromotionConfig`` directly
+    must not be able to reach ``validate_pool`` with no extension, or with
+    a split that grades GP-visible data as OOS.
+    """
+    if not split:
+        raise PromotionError(
+            "criteria.is_oos_split_date is required for a PIT-mode run — "
+            "promotion refuses to infer an OOS boundary. Set it "
+            "explicitly in the promotion config (criteria section)."
+        )
+    if not validation_end:
+        raise PromotionError(
+            "validation.end_date is required for a PIT-mode run: the "
+            f"mining panel ends at {mined_end_date!r} (the IS cutoff), "
+            "so without a governed extension the OOS segment would be "
+            "empty — or, worse, carved out of data the GP already saw. "
+            "Set validation.end_date beyond the mined end_date."
+        )
+    if str(validation_end) <= mined_end_date:
+        raise PromotionError(
+            f"validation.end_date {validation_end!r} must lie strictly "
+            f"AFTER the mined end_date {mined_end_date!r} — the governed "
+            "deviation is an OOS extension, never a rewrite."
+        )
+    if not (mined_end_date <= str(split) < str(validation_end)):
+        raise PromotionError(
+            f"criteria.is_oos_split_date {split!r} must lie within "
+            f"[mined end_date {mined_end_date!r}, validation.end_date "
+            f"{validation_end!r}) — a split before the mining cutoff "
+            "would grade GP-visible data as OOS; one at/after the "
+            "extension leaves no OOS observations at all."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Promote
 # ---------------------------------------------------------------------------
@@ -116,6 +159,15 @@ def promote_run(
     # true by construction for every entry path.
     run_data, run_sha = _load_run_data_config(config.run_dir)
     expected = run_data
+    if run_data.mode == "pit":
+        # Re-enforce the PIT OOS invariants HERE (codex P1 on #415 r2) —
+        # _load_config alone cannot bind a programmatic caller, and a pit
+        # config with no extension (or a split outside the extension)
+        # would otherwise reach validate_pool grading GP-visible data.
+        _check_pit_window(
+            run_data.end_date, config.validation_end_date,
+            config.criteria.is_oos_split_date,
+        )
     if config.validation_end_date is not None:
         if config.validation_end_date <= run_data.end_date:
             raise PromotionError(
@@ -167,15 +219,20 @@ def promote_run(
             "n_passed_individual": n_passed_individual,
             "n_kept_after_correlation": n_kept,
             "criteria": asdict(config.criteria),
-            # The data definition the survivors were validated under — read
-            # from the run's own resolved config.yaml, never operator-supplied
-            # — plus its canonical hash for downstream verification.
+            # Two SELF-CONSISTENT provenance pairs (codex P2 on #415 r2 —
+            # one digest next to a different definition defeats downstream
+            # recomputation). Each sha256 verifies over the dict beside it,
+            # via the same miner.data_definition_sha256 canonicalization:
+            #   * mined_data / mined_data_sha256 — the run's own snapshot
+            #     (read from run_dir/config.yaml, recorded at mining time);
+            #   * data / data_sha256 — the EFFECTIVE definition the
+            #     validation panel was built from: identical to mined_data
+            #     except for the governed validation_end_date extension.
+            "mined_data": asdict(run_data),
+            "mined_data_sha256": config.data_definition_sha256,
+            "mined_data_source": "run_dir/config.yaml",
             "data": asdict(config.data),
-            "data_definition_sha256": config.data_definition_sha256,
-            "data_source": "run_dir/config.yaml",
-            # The governed deviation, spelled out: how far the validation
-            # panel extends beyond the mined window (null = no extension).
-            "mined_end_date": run_data.end_date,
+            "data_sha256": data_definition_sha256(config.data),
             "validation_end_date": config.validation_end_date,
             "results": [
                 {
@@ -312,35 +369,10 @@ def _load_config(
         # extension and the split are both experiment-design choices the
         # operator must state — and the split must land inside the
         # extension, so OOS is entirely data the GP never saw.
-        split = crit_kwargs.get("is_oos_split_date")
-        if not split:
-            raise PromotionError(
-                "criteria.is_oos_split_date is required for a PIT-mode run — "
-                "promotion refuses to infer an OOS boundary. Set it "
-                "explicitly in the promotion config (criteria section)."
-            )
-        if not validation_end:
-            raise PromotionError(
-                "validation.end_date is required for a PIT-mode run: the "
-                f"mining panel ends at {data.end_date!r} (the IS cutoff), "
-                "so without a governed extension the OOS segment would be "
-                "empty — or, worse, carved out of data the GP already saw. "
-                "Set validation.end_date beyond the mined end_date."
-            )
-        if str(validation_end) <= data.end_date:
-            raise PromotionError(
-                f"validation.end_date {validation_end!r} must lie strictly "
-                f"AFTER the mined end_date {data.end_date!r} — the governed "
-                "deviation is an OOS extension, never a rewrite."
-            )
-        if not (data.end_date <= str(split) < str(validation_end)):
-            raise PromotionError(
-                f"criteria.is_oos_split_date {split!r} must lie within "
-                f"[mined end_date {data.end_date!r}, validation.end_date "
-                f"{validation_end!r}) — a split before the mining cutoff "
-                "would grade GP-visible data as OOS; one at/after the "
-                "extension leaves no OOS observations at all."
-            )
+        _check_pit_window(
+            data.end_date, validation_end,
+            crit_kwargs.get("is_oos_split_date"),
+        )
         data = replace(data, end_date=str(validation_end))
     else:
         if validation_end:
