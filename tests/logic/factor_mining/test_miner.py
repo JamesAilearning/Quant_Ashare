@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 import subprocess
@@ -498,3 +499,69 @@ def test_cli_main_emits_generation_progress(tmp_path):
     assert proc.returncode == 0, proc.stderr[-600:]
     assert "generation 1/2 done" in proc.stderr
     assert "generation 2/2 done" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# PIT binding fingerprints (capture-before / verify-after)
+# ---------------------------------------------------------------------------
+
+
+def _fake_pit_data(tmp_path) -> DataConfig:
+    """Fingerprintable fake PIT inputs (no real panel is built on them —
+    the panel is monkeypatched to the synthetic builder)."""
+    bundle = tmp_path / "bundle"
+    for rel, content in (
+        ("calendars/day.txt", b"2019-01-02\n2019-01-03\n"),
+        ("instruments/all.txt", b"SH600000\t2019-01-02\t2019-01-03\n"),
+        ("features/sh600000/close.day.bin", b"\x01\x02\x03"),
+    ):
+        path = bundle / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    registry = tmp_path / "registry.parquet"
+    registry.write_bytes(b"registry-v1")
+    return DataConfig(mode="pit", pit_provider_uri=str(bundle),
+                      delisted_registry_path=str(registry))
+
+
+def test_run_mining_records_prebuild_pit_fingerprints(tmp_path, monkeypatch):
+    from src.factor_mining import miner as miner_mod
+
+    smoke = load_config(_smoke_config(tmp_path))
+    pit_data = _fake_pit_data(tmp_path)
+    cfg = dataclasses.replace(smoke, data=pit_data)
+    expected = miner_mod.pit_binding_fingerprints(pit_data)
+    synthetic = miner_mod.build_panel_for_data(smoke.data)
+    monkeypatch.setattr(miner_mod, "build_panel", lambda c: synthetic)
+    monkeypatch.setattr(miner_mod, "build_universe_mask", lambda c: None)
+    result = run_mining(cfg)
+    dump = yaml.safe_load(
+        (result.output_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert dump["pit_bundle_data_sha256"] == expected["pit_bundle_data_sha256"]
+    assert (dump["delisted_registry_sha256"]
+            == expected["delisted_registry_sha256"])
+
+
+def test_run_mining_aborts_when_pit_inputs_change_mid_run(
+        tmp_path, monkeypatch):
+    # External finding on #415 r5: fingerprints captured only at
+    # config-dump time would record the identity of a bundle refreshed
+    # DURING the run — for a pool mined on the old bytes. The run must
+    # abort instead, persisting nothing.
+    from src.factor_mining import miner as miner_mod
+
+    smoke = load_config(_smoke_config(tmp_path))
+    pit_data = _fake_pit_data(tmp_path)
+    cfg = dataclasses.replace(smoke, data=pit_data)
+    synthetic = miner_mod.build_panel_for_data(smoke.data)
+
+    def refresh_then_build(_config):
+        # Simulate an ingest refresh landing while the run is underway.
+        Path(pit_data.delisted_registry_path).write_bytes(b"registry-v2")
+        return synthetic
+
+    monkeypatch.setattr(miner_mod, "build_panel", refresh_then_build)
+    monkeypatch.setattr(miner_mod, "build_universe_mask", lambda c: None)
+    with pytest.raises(RuntimeError, match="changed while mining"):
+        run_mining(cfg)
+    assert not (Path(cfg.output_dir) / "runs" / "test-run").exists()

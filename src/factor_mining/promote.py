@@ -162,24 +162,30 @@ def _verify_pit_binding(run_dir: Path, run_data: DataConfig) -> None:
     predates fingerprint recording (re-mine; mining is cheap, unverifiable
     provenance is not).
     """
+    from src.data.bundle_manifest import BundleManifestError  # noqa: PLC0415
+
     from .miner import pit_binding_fingerprints  # noqa: PLC0415
 
     raw = yaml.safe_load(
         (run_dir / "config.yaml").read_text(encoding="utf-8")) or {}
     recorded = {
         key: raw.get(key)
-        for key in ("pit_bundle_content_hash", "delisted_registry_sha256")
+        for key in ("pit_bundle_data_sha256", "delisted_registry_sha256")
     }
     if not all(recorded.values()):
         raise PromotionError(
             "run_dir config.yaml carries no PIT content fingerprints "
-            "(pit_bundle_content_hash / delisted_registry_sha256) — the "
+            "(pit_bundle_data_sha256 / delisted_registry_sha256) — the "
             "run predates content binding and its inputs cannot be "
             "verified; re-mine before promoting."
         )
+    # BundleManifestError is a ValueError, not an OSError — the bundle
+    # fingerprint wraps its filesystem failures in it (codex P2 on #415
+    # r5); catching only OSError would let a missing calendar escape as a
+    # traceback instead of a controlled refusal.
     try:
         current = pit_binding_fingerprints(run_data)
-    except OSError as exc:
+    except (OSError, BundleManifestError) as exc:
         raise PromotionError(
             f"cannot fingerprint the PIT inputs ({exc}) — the bundle or "
             "registry the run was mined on is not readable at its recorded "

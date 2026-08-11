@@ -341,9 +341,14 @@ def test_pit_mode_requires_governed_validation_window(tmp_path):
 def _seed_pit_inputs(tmp_path: Path) -> dict:
     """Fake-but-fingerprintable PIT inputs + a data dict pointing at them."""
     bundle = tmp_path / "bundle"
-    (bundle / "calendars").mkdir(parents=True)
-    (bundle / "calendars" / "day.txt").write_text(
-        "2019-01-02\n2019-01-03\n", encoding="utf-8")
+    for rel, content in (
+        ("calendars/day.txt", b"2019-01-02\n2019-01-03\n"),
+        ("instruments/all.txt", b"SH600000\t2019-01-02\t2019-01-03\n"),
+        ("features/sh600000/close.day.bin", b"\x01\x02\x03"),
+    ):
+        path = bundle / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
     registry = tmp_path / "registry.parquet"
     registry.write_bytes(b"registry-bytes-v1")
     return {**_PIT_RUN_DATA,

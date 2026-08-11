@@ -85,10 +85,15 @@ bundle built per [`inventory.md`](inventory.md) §F.3:
    The split must be *strictly* after the mined `end_date`: the
    validator grades OOS as `date >= split`, so a split on the cutoff
    day itself would count a GP-visible day as out-of-sample. Promotion
-   also verifies the recorded PIT content fingerprints (bundle
-   calendar, delisted registry) still match what the run was mined on
-   — a run mined before fingerprint recording, or whose inputs were
-   refreshed in place, is refused; re-mine it.
+   also verifies the recorded PIT content fingerprints — a full digest
+   of the bundle's `calendars/` + `instruments/` + `features/` bytes,
+   plus the delisted registry's sha256, captured *before* the mining
+   panel was built — still match what the run was mined on. A run mined
+   before fingerprint recording, or whose inputs were refreshed in
+   place (even a single feature bin under an unchanged calendar), is
+   refused; re-mine it. The full bundle read costs on the order of a
+   minute — the price of promotion validating exactly the bytes the GP
+   saw.
 
    ```bash
    python -m src.factor_mining.promote \

@@ -325,17 +325,22 @@ def pit_binding_fingerprints(data: DataConfig) -> dict[str, str]:
     underneath (external finding on #415 r4). Recorded at mining time and
     re-verified by promote:
 
-    * the bundle's calendar-file content hash (the repo's standard bundle
-      identity — ``compute_bundle_content_hash``, cheap by design);
+    * the bundle's full data digest — every byte under ``calendars/``,
+      ``instruments/`` and ``features/``. The calendar-only bundle
+      identity is NOT enough here: prices, fundamentals, or membership
+      can be corrected in place under an unchanged calendar (external
+      finding on #415 r5). A full read costs on the order of a minute —
+      paid twice per multi-hour mining run and once per promotion,
+      nowhere else;
     * the delisted registry's file sha256.
     """
     from src.data.bundle_manifest import (  # noqa: PLC0415
-        compute_bundle_content_hash,
+        compute_bundle_data_sha256,
     )
     registry = Path(data.delisted_registry_path)
     return {
-        "pit_bundle_content_hash":
-            compute_bundle_content_hash(data.pit_provider_uri),
+        "pit_bundle_data_sha256":
+            compute_bundle_data_sha256(data.pit_provider_uri),
         "delisted_registry_sha256":
             hashlib.sha256(registry.read_bytes()).hexdigest(),
     }
@@ -468,12 +473,33 @@ def run_mining(config: MinerConfig) -> RunResult:
         ) from None
 
     try:
+        # Fingerprint the PIT inputs BEFORE anything reads them (external
+        # finding on #415 r5): captured after the panel build, an ingest
+        # refresh during the build would record the NEW identity for a
+        # pool mined on the OLD bytes.
+        fingerprints: dict[str, str] | None = None
+        if config.data.mode == "pit":
+            fingerprints = pit_binding_fingerprints(config.data)
+
         panel, fwd = build_panel(config)
         universe_mask = build_universe_mask(config)
         baseline = load_baseline_predictions(config)
         engine = GPEngine(config.gp, config.fitness)
         pool = engine.run(panel, fwd, universe_mask=universe_mask,
                           baseline=baseline)
+
+        if fingerprints is not None and (
+            pit_binding_fingerprints(config.data) != fingerprints
+        ):
+            # Re-verified AFTER mining, before ANY artifact is persisted:
+            # a refresh mid-run means the pool was mined on bytes that no
+            # longer exist, so recording either identity would be a lie.
+            raise RuntimeError(
+                "PIT inputs changed while mining was running — the bundle "
+                "or delisted registry was refreshed mid-run, so the mined "
+                "pool no longer corresponds to any on-disk data identity. "
+                "Re-run mining against stable inputs."
+            )
     except BaseException:
         # Release the reservation on failure — rmdir only removes an
         # EMPTY directory, so if anything ever lands in run_dir before
@@ -515,10 +541,11 @@ def run_mining(config: MinerConfig) -> RunResult:
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }
-    if config.data.mode == "pit":
+    if fingerprints is not None:
         # Bind the run to the CONTENT of its PIT inputs, not just their
         # paths (external finding on #415 r4) — promote re-verifies these.
-        config_dump.update(pit_binding_fingerprints(config.data))
+        # These are the PRE-BUILD values, already re-verified above.
+        config_dump.update(fingerprints)
     if baseline is not None:
         # Operator decision A: the baseline keeps the production
         # walk-forward fold geometry, whose first out-of-fold date is
