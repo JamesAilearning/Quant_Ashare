@@ -260,20 +260,34 @@ def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
     return None
 
 
-def _argv_strings(call: ast.Call) -> list[str] | None:
-    """The call's argv as string literals, or ``None`` if not fully literal."""
+def _argv_strings(call: ast.Call) -> list[str | None] | None:
+    """The call's argv elements, classified for option scanning.
+
+    Per element: a literal string stays itself; a STARRED element or a
+    bare NAME becomes ``None`` — a ``*args`` splice can contain any number
+    of flags and a variable can hold one, so in the option region they are
+    unresolvable and must fail closed (codex P2 r14 on #410:
+    ``args = ["-E", ...]; run([sys.executable, *args], ...)`` hid the
+    env-ignoring flag entirely); any other single expression (a
+    ``str(path)`` call, an attribute) becomes ``""`` — one opaque VALUE,
+    which ends the option region exactly like a script name.
+    """
     if not call.args or not isinstance(call.args[0], ast.List):
         return None
-    out: list[str] = []
+    out: list[str | None] = []
     for elt in call.args[0].elts:
         if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
             out.append(elt.value)
+        elif isinstance(elt, (ast.Starred, ast.Name)):
+            out.append(None)  # could be / contain flags — unresolvable
         else:
-            out.append("")  # sys.executable and friends: not a flag
+            out.append("")  # one opaque value: the script boundary
     return out
 
 
-def _interpreter_options(argv: list[str]) -> tuple[set[str], list[str]]:
+def _interpreter_options(
+    argv: list[str | None],
+) -> tuple[set[str], list[str], bool]:
     """(short option letters, ``-X`` option values) of a python argv.
 
     Parsed the way CPython parses: options end at ``-c`` / ``-m`` / ``--``
@@ -285,9 +299,15 @@ def _interpreter_options(argv: list[str]) -> tuple[set[str], list[str]]:
     """
     letters: set[str] = set()
     x_values: list[str] = []
+    unresolvable = False
     i = 1  # argv[0] is the interpreter itself
     while i < len(argv):
         arg = argv[i]
+        if arg is None:
+            # A *splice or a variable in the OPTION REGION: it can contain
+            # -E / -I, so the options cannot be known (codex P2 r14).
+            unresolvable = True
+            break
         if not arg.startswith("-") or arg in ("-", "--"):
             break  # the script name (or an explicit end of options)
         if arg in ("-c", "-m"):
@@ -315,7 +335,7 @@ def _interpreter_options(argv: list[str]) -> tuple[set[str], list[str]]:
                 break  # the rest of the cluster was this option's value
             letters.add(letter)
         i += 1
-    return letters, x_values
+    return letters, x_values, unresolvable
 
 
 def _child_ignores_env(call: ast.Call) -> bool:
@@ -331,7 +351,9 @@ def _child_ignores_env(call: ast.Call) -> bool:
     argv = _argv_strings(call)
     if argv is None:
         return False  # unresolvable argv already fails closed elsewhere
-    letters, x_values = _interpreter_options(argv)
+    letters, x_values, unresolvable = _interpreter_options(argv)
+    if unresolvable:
+        return True  # hidden flags possible — fail closed
     if not letters & _ENV_IGNORING_FLAGS:
         return False
     # Repeated ``-X utf8`` options: CPython honors the FIRST occurrence
@@ -351,7 +373,16 @@ def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
     binding a name to its value across scopes, positions and parameters is
     the same losing game as the env analysis, and a wrong answer here is a
     wrong verdict. An argv the gate cannot read literally fails closed.
+
+    An ``executable=`` keyword OVERRIDES the program (Popen executes it and
+    argv[0] becomes mere display), so when present it — not argv[0] — is
+    what gets judged (codex P2 r14 on #410:
+    ``run([sys.executable, ...], executable="node")`` spawns a native
+    child that PYTHONIOENCODING cannot control).
     """
+    for kw in call.keywords:
+        if kw.arg == "executable":
+            return _program_is_python(kw.value, sys_names)
     if not call.args:
         return None
     argv = call.args[0]
@@ -744,6 +775,29 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, sanctioned name captured by a match pattern",
      "match cfg:\n    case {\"env\": utf8_child_env}:\n        pass\n"
      + _PY.format(extra=", env=utf8_child_env()"), True),
+    # A *splice or a variable in the OPTION REGION can hide -E/-I — the
+    # options cannot be known, so the call fails closed; past the script
+    # boundary (an opaque single value like str(path)) it is harmless.
+    ("python child, starred args in the option region",
+     'args = ["-E", "x.py"]\n'
+     'subprocess.run([sys.executable, *args], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    ("python child, variable in the option region",
+     'subprocess.run([sys.executable, flag, "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, starred args past the script boundary",
+     'subprocess.run([sys.executable, str(script), *args], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # executable= OVERRIDES the program: argv[0] becomes display only.
+    ("python argv but executable=node",
+     'subprocess.run([sys.executable, "x"], executable="node", text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("node argv but executable=sys.executable",
+     'subprocess.run(["node", "x"], executable=sys.executable, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("executable from a variable is unresolvable",
+     'subprocess.run([sys.executable, "x"], executable=exe, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
     # a competing / fallback import re-binds the sanctioned name
     ("python child, sanctioned name also imported elsewhere",
      "from fallback import utf8_child_env\n"
