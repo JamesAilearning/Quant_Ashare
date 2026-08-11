@@ -398,3 +398,32 @@ def test_miner_imports_pit_only_inside_pit_branch():
     assert "qlib.init" not in src
     # PIT import lives only in _build_pit_panel
     assert "from src.pit.query import PITDataProvider" in src
+
+
+# ---------------------------------------------------------------------------
+# CLI logging (codex #419)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_main_emits_generation_progress(tmp_path):
+    # codex #419: the documented `python -m src.factor_mining.miner`
+    # entry configured no logging, so Python's WARNING default
+    # swallowed the engine's per-generation INFO feed — an unattended
+    # campaign still ran invisible (the 31h abort's lesson, ledger
+    # E005). A REAL subprocess pins the CLI-level observable (and only
+    # that: an in-process main() call inherits whatever handlers other
+    # tests leaked onto intermediate loggers, so it can green without
+    # basicConfig and red with it depending on suite order).
+    import os
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    repo_root = Path(__file__).resolve().parents[3]
+    proc = subprocess.run(
+        [sys.executable, "-m", "src.factor_mining.miner",
+         str(_smoke_config(tmp_path))],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=str(repo_root), env=env, timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-600:]
+    assert "generation 1/2 done" in proc.stderr
+    assert "generation 2/2 done" in proc.stderr
