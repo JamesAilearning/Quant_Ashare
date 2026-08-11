@@ -77,10 +77,18 @@ bundle built per [`inventory.md`](inventory.md) §F.3:
    ```yaml
    # promote_criteria.yaml
    criteria:
-     is_oos_split_date: "2022-12-31"   # >= the mined end_date
+     is_oos_split_date: "2023-01-03"   # strictly AFTER the mined end_date
    validation:
      end_date: "2024-12-31"            # the governed OOS extension
    ```
+
+   The split must be *strictly* after the mined `end_date`: the
+   validator grades OOS as `date >= split`, so a split on the cutoff
+   day itself would count a GP-visible day as out-of-sample. Promotion
+   also verifies the recorded PIT content fingerprints (bundle
+   calendar, delisted registry) still match what the run was mined on
+   — a run mined before fingerprint recording, or whose inputs were
+   refreshed in place, is refused; re-mine it.
 
    ```bash
    python -m src.factor_mining.promote \

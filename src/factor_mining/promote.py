@@ -116,20 +116,84 @@ def _check_pit_window(
             "empty — or, worse, carved out of data the GP already saw. "
             "Set validation.end_date beyond the mined end_date."
         )
-    if str(validation_end) <= mined_end_date:
+    # Compare PARSED dates, not strings (codex P2 on #415 r4): a valid
+    # but non-zero-padded "2022-9-30" orders lexically after "2022-12-31",
+    # so string comparison would wave GP-visible dates through. Malformed
+    # dates fail loud here instead of mis-ordering silently.
+    def _parse(label: str, value: str) -> pd.Timestamp:
+        try:
+            return pd.Timestamp(str(value))
+        except (ValueError, TypeError) as exc:
+            raise PromotionError(
+                f"{label} {value!r} is not a parseable date."
+            ) from exc
+
+    mined_ts = _parse("mined end_date", mined_end_date)
+    validation_ts = _parse("validation.end_date", str(validation_end))
+    split_ts = _parse("criteria.is_oos_split_date", str(split))
+    if validation_ts <= mined_ts:
         raise PromotionError(
             f"validation.end_date {validation_end!r} must lie strictly "
             f"AFTER the mined end_date {mined_end_date!r} — the governed "
             "deviation is an OOS extension, never a rewrite."
         )
-    if not (mined_end_date <= str(split) < str(validation_end)):
+    # STRICTLY after the cutoff (codex P1 on #415 r4): the validator's OOS
+    # is ``date >= split``, so a split ON the mined end_date would grade
+    # that day — which the GP saw — as out-of-sample.
+    if not (mined_ts < split_ts < validation_ts):
         raise PromotionError(
             f"criteria.is_oos_split_date {split!r} must lie within "
-            f"[mined end_date {mined_end_date!r}, validation.end_date "
-            f"{validation_end!r}) — a split before the mining cutoff "
-            "would grade GP-visible data as OOS; one at/after the "
-            "extension leaves no OOS observations at all."
+            f"(mined end_date {mined_end_date!r}, validation.end_date "
+            f"{validation_end!r}) — OOS is date >= split, so a split at or "
+            "before the mining cutoff grades GP-visible data as OOS, and "
+            "one at/after the extension leaves no OOS observations."
         )
+
+
+def _verify_pit_binding(run_dir: Path, run_data: DataConfig) -> None:
+    """The PIT inputs' CONTENT must still be what the run was mined on.
+
+    The data-definition digest covers config values (paths included), so an
+    in-place refresh of the bundle or the registry between mining and
+    promotion passes every config check while the panel bytes change
+    underneath (codex P1 on #415 r4). The miner records content
+    fingerprints at mining time; this recomputes them from the paths as
+    they are NOW and refuses any drift — and refuses a PIT run that
+    predates fingerprint recording (re-mine; mining is cheap, unverifiable
+    provenance is not).
+    """
+    from .miner import pit_binding_fingerprints  # noqa: PLC0415
+
+    raw = yaml.safe_load(
+        (run_dir / "config.yaml").read_text(encoding="utf-8")) or {}
+    recorded = {
+        key: raw.get(key)
+        for key in ("pit_bundle_content_hash", "delisted_registry_sha256")
+    }
+    if not all(recorded.values()):
+        raise PromotionError(
+            "run_dir config.yaml carries no PIT content fingerprints "
+            "(pit_bundle_content_hash / delisted_registry_sha256) — the "
+            "run predates content binding and its inputs cannot be "
+            "verified; re-mine before promoting."
+        )
+    try:
+        current = pit_binding_fingerprints(run_data)
+    except OSError as exc:
+        raise PromotionError(
+            f"cannot fingerprint the PIT inputs ({exc}) — the bundle or "
+            "registry the run was mined on is not readable at its recorded "
+            "path."
+        ) from exc
+    for key, recorded_value in recorded.items():
+        if current[key] != recorded_value:
+            raise PromotionError(
+                f"{key} mismatch: recorded {recorded_value!r} at mining "
+                f"time, but the path now yields {current[key]!r} — the "
+                "bundle/registry was refreshed in place after mining, so "
+                "the pool would be validated on data it was not mined on. "
+                "Re-mine against the current inputs."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +231,17 @@ def promote_run(
         _check_pit_window(
             run_data.end_date, config.validation_end_date,
             config.criteria.is_oos_split_date,
+        )
+        _verify_pit_binding(config.run_dir, run_data)
+    elif config.validation_end_date is not None:
+        # _load_config refuses this for the CLI; the boundary must refuse
+        # it for programmatic callers too (codex P2 on #415 r4) — the
+        # synthetic panel ignores calendar dates, so an "extension" here
+        # would decorate the report without affecting the validated panel.
+        raise PromotionError(
+            "validation_end_date applies to PIT-mode runs only — the "
+            "synthetic panel ignores calendar dates, so an extension "
+            "would be a no-op pretending to be governance."
         )
     if config.validation_end_date is not None:
         if config.validation_end_date <= run_data.end_date:

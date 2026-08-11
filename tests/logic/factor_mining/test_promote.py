@@ -41,6 +41,7 @@ _RUN_DATA = {
 def _seed_run_dir(
     tmp_path: Path, n_factors: int = 3, *,
     data: dict | None = None, write_config: bool = True,
+    extra_config: dict | None = None,
 ) -> Path:
     """Build a small Phase 3 run directory under ``tmp_path``.
 
@@ -77,6 +78,8 @@ def _seed_run_dir(
                 DataConfig(**payload))
         except TypeError:
             dump["data_definition_sha256"] = "unverifiable"
+        if extra_config:
+            dump.update(extra_config)
         (run_dir / "config.yaml").write_text(
             yaml.safe_dump(dump), encoding="utf-8",
         )
@@ -335,11 +338,29 @@ def test_pit_mode_requires_governed_validation_window(tmp_path):
         _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
 
 
+def _seed_pit_inputs(tmp_path: Path) -> dict:
+    """Fake-but-fingerprintable PIT inputs + a data dict pointing at them."""
+    bundle = tmp_path / "bundle"
+    (bundle / "calendars").mkdir(parents=True)
+    (bundle / "calendars" / "day.txt").write_text(
+        "2019-01-02\n2019-01-03\n", encoding="utf-8")
+    registry = tmp_path / "registry.parquet"
+    registry.write_bytes(b"registry-bytes-v1")
+    return {**_PIT_RUN_DATA,
+            "pit_provider_uri": str(bundle),
+            "delisted_registry_path": str(registry)}
+
+
 def test_pit_governed_window_extends_the_panel(tmp_path):
-    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    from src.factor_mining.miner import pit_binding_fingerprints
+
+    pit_data = _seed_pit_inputs(tmp_path)
+    fingerprints = pit_binding_fingerprints(DataConfig(**pit_data))
+    run_dir = _seed_run_dir(tmp_path, data=pit_data,
+                            extra_config=fingerprints)
     cfg_path = _write_promote_yaml(
         tmp_path,
-        "criteria:\n  is_oos_split_date: '2022-12-31'\n"
+        "criteria:\n  is_oos_split_date: '2023-06-30'\n"
         "validation:\n  end_date: '2024-12-31'\n",
     )
     cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
@@ -347,13 +368,100 @@ def test_pit_governed_window_extends_the_panel(tmp_path):
     assert cfg.data.end_date == "2024-12-31"
     assert cfg.validation_end_date == "2024-12-31"
     assert cfg.data.start_date == _PIT_RUN_DATA["start_date"]
-    # ...and the boundary check accepts the extension: promote_run gets
-    # PAST the binding verification and fails only deeper, at panel build
-    # (which needs a real PIT bundle this test does not have).
+    # ...and the boundary checks (window, fingerprints) all accept:
+    # promote_run gets PAST them and fails only deeper, at real panel
+    # build against the fake bundle.
     with pytest.raises(Exception) as excinfo:
         promote_run(cfg, dry_run=True)
-    assert "does not match" not in str(excinfo.value)
-    assert "delisted registry" in str(excinfo.value)
+    msg = str(excinfo.value)
+    assert "does not match" not in msg
+    assert "fingerprint" not in msg
+
+
+def test_pit_split_on_the_cutoff_day_is_refused(tmp_path):
+    # codex P1 #415 r4: the validator grades OOS as date >= split, so a
+    # split ON the mined end_date grades that GP-visible day as OOS.
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2022-12-31'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    with pytest.raises(PromotionError, match="GP-visible"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_pit_window_dates_are_parsed_not_string_compared(tmp_path):
+    # codex P2 #415 r4: '2022-9-30' orders lexically AFTER '2022-12-31';
+    # parsed comparison must refuse it as inside the GP-visible period.
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2022-9-30'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    with pytest.raises(PromotionError, match="GP-visible"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    # ...and garbage fails loud as unparseable, not as mis-ordered.
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: 'not-a-date'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    with pytest.raises(PromotionError, match="not a parseable date"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_refreshed_pit_inputs_are_detected(tmp_path):
+    # codex P1 #415 r4: an in-place refresh of the bundle/registry between
+    # mining and promotion changes the panel bytes while every config
+    # value (and thus the data-definition digest) stays identical — the
+    # recorded CONTENT fingerprints catch it.
+    from src.factor_mining.miner import pit_binding_fingerprints
+
+    pit_data = _seed_pit_inputs(tmp_path)
+    fingerprints = pit_binding_fingerprints(DataConfig(**pit_data))
+    run_dir = _seed_run_dir(tmp_path, data=pit_data,
+                            extra_config=fingerprints)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2023-06-30'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    # Refresh the registry in place — same path, different bytes.
+    Path(pit_data["delisted_registry_path"]).write_bytes(b"registry-v2")
+    with pytest.raises(PromotionError, match="refreshed in place"):
+        promote_run(cfg, dry_run=True)
+
+
+def test_pit_run_without_fingerprints_is_refused(tmp_path):
+    pit_data = _seed_pit_inputs(tmp_path)
+    run_dir = _seed_run_dir(tmp_path, data=pit_data)  # no fingerprints
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2023-06-30'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    with pytest.raises(PromotionError, match="no PIT content fingerprints"):
+        promote_run(cfg, dry_run=True)
+
+
+def test_boundary_refuses_synthetic_extension(tmp_path):
+    # codex P2 #415 r4: _load_config refuses this for the CLI; the
+    # production-writing boundary must refuse the programmatic version.
+    run_dir = _seed_run_dir(tmp_path)
+    data, sha = _load_run_data_config(run_dir)
+    cfg = PromotionConfig(
+        run_dir=run_dir, production_dir=tmp_path / "production",
+        version="v1", criteria=_criteria_loose(),
+        data=replace(data, end_date="2099-12-31"),
+        data_definition_sha256=sha,
+        validation_end_date="2099-12-31",
+    )
+    with pytest.raises(PromotionError, match="PIT-mode runs only"):
+        promote_run(cfg, dry_run=True)
 
 
 def test_pit_split_must_lie_inside_the_extension(tmp_path):

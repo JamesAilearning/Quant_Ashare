@@ -316,6 +316,31 @@ def load_baseline_predictions(config: MinerConfig):
     return frame
 
 
+def pit_binding_fingerprints(data: DataConfig) -> dict[str, str]:
+    """Content fingerprints of the PIT inputs a run was actually mined on.
+
+    The data-definition digest hashes CONFIG VALUES (paths included), so an
+    in-place refresh of the bundle or the registry between mining and
+    promotion would pass every config check while the panel bytes changed
+    underneath (external finding on #415 r4). Recorded at mining time and
+    re-verified by promote:
+
+    * the bundle's calendar-file content hash (the repo's standard bundle
+      identity — ``compute_bundle_content_hash``, cheap by design);
+    * the delisted registry's file sha256.
+    """
+    from src.data.bundle_manifest import (  # noqa: PLC0415
+        compute_bundle_content_hash,
+    )
+    registry = Path(data.delisted_registry_path)
+    return {
+        "pit_bundle_content_hash":
+            compute_bundle_content_hash(data.pit_provider_uri),
+        "delisted_registry_sha256":
+            hashlib.sha256(registry.read_bytes()).hexdigest(),
+    }
+
+
 def data_definition_sha256(data: DataConfig) -> str:
     """Canonical digest of a data definition — ONE implementation.
 
@@ -490,6 +515,10 @@ def run_mining(config: MinerConfig) -> RunResult:
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }
+    if config.data.mode == "pit":
+        # Bind the run to the CONTENT of its PIT inputs, not just their
+        # paths (external finding on #415 r4) — promote re-verifies these.
+        config_dump.update(pit_binding_fingerprints(config.data))
     if baseline is not None:
         # Operator decision A: the baseline keeps the production
         # walk-forward fold geometry, whose first out-of-fold date is
