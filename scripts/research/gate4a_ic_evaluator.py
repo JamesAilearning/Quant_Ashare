@@ -650,7 +650,7 @@ CANDIDATE_FORMULAS = {
 def run_gate(repo: Path, candidate: str, store_dir: Path,
              run_config_rel: str) -> str:
     proc = subprocess.run(
-        [sys.executable, str(repo / GATE), "--repo-root", str(repo),
+        [sys.executable, "--", str(repo / GATE), "--repo-root", str(repo),
          "--candidate", candidate, "--store-dir", str(store_dir),
          "--run-config", str(repo / run_config_rel)],
         capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),

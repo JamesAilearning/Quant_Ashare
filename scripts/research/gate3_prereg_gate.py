@@ -471,7 +471,8 @@ def main(argv: list[str] | None = None) -> int:
     # 5. manifest verification (re-hash the store against the FROZEN manifest)
     manifest_path = repo / MANIFEST_REL
     verify = subprocess.run(
-        [sys.executable, str(repo / "scripts/research/gate3_store_manifest.py"),
+        [sys.executable, "--",
+         str(repo / "scripts/research/gate3_store_manifest.py"),
          "--store-dir", str(args.store_dir), "--verify", str(manifest_path)],
         capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
     )

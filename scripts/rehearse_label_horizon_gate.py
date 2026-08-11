@@ -108,7 +108,7 @@ def _compare(a: Path, b: Path, variant: str) -> tuple[int, str]:
     # would then fail on perfectly correct CLI output. The child's half is
     # src.core.child_env's job (one implementation, behaviorally tested).
     proc = subprocess.run(
-        [sys.executable, str(CLI), str(a), str(b),
+        [sys.executable, "--", str(CLI), str(a), str(b),
          "--prereg-plan", PLAN, "--variant", variant],
         cwd=PROJECT_ROOT, capture_output=True, encoding="utf-8",
         errors="replace", timeout=300, env=utf8_child_env(),

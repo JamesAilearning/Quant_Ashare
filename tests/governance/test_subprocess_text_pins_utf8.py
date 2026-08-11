@@ -270,26 +270,27 @@ def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
 def _argv_strings(call: ast.Call) -> list[str | None] | None:
     """The call's argv elements, classified for option scanning.
 
-    Per element: a literal string stays itself; a STARRED element or a
-    bare NAME becomes ``None`` — a ``*args`` splice can contain any number
-    of flags and a variable can hold one, so in the option region they are
-    unresolvable and must fail closed (codex P2 r14 on #410:
-    ``args = ["-E", ...]; run([sys.executable, *args], ...)`` hid the
-    env-ignoring flag entirely); any other single expression (a
-    ``str(path)`` call, an attribute) becomes ``""`` — one opaque VALUE,
-    which ends the option region exactly like a script name.
+    Per element: a literal string stays itself; EVERYTHING else becomes
+    ``None`` — unresolvable. A ``*args`` splice can carry any number of
+    flags and a bare name can hold one (codex P2 r14 on #410), but so
+    can ANY other single expression: with ``flag = "-E"``, the call
+    ``[sys.executable, str(flag), "x.py"]`` hands CPython the
+    env-ignoring option itself, so the old "one opaque value ends the
+    option region like a script name" rule was an accept built on an
+    unprovable claim (codex P2 r18). Only a literal non-option element
+    or an explicit ``--`` proves the boundary — spell a dynamic script
+    path as ``[sys.executable, "--", str(path), ...]`` (verified: ``--``
+    ends CPython option parsing; ``python -- -E`` opens a FILE named
+    ``-E``, while ``-E`` before ``--`` stays active).
     """
     if not call.args or not isinstance(call.args[0], ast.List):
         return None
-    out: list[str | None] = []
-    for elt in call.args[0].elts:
-        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-            out.append(elt.value)
-        elif isinstance(elt, (ast.Starred, ast.Name)):
-            out.append(None)  # could be / contain flags — unresolvable
-        else:
-            out.append("")  # one opaque value: the script boundary
-    return out
+    return [
+        elt.value
+        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        else None
+        for elt in call.args[0].elts
+    ]
 
 
 def _interpreter_options(
@@ -841,8 +842,21 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("python child, variable in the option region",
      'subprocess.run([sys.executable, flag, "x.py"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
-    ("python child, starred args past the script boundary",
+    # An OPAQUE expression is no script boundary: str(flag) can evaluate
+    # to "-E" just as well as to a path (codex P2 r18) — only a literal
+    # non-option or an explicit "--" proves where options end.
+    ("opaque expression in the option region fails closed",
      'subprocess.run([sys.executable, str(script), *args], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("opaque value can BE the env-ignoring flag",
+     'flag = "-E"\n'
+     'subprocess.run([sys.executable, str(flag), "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("explicit -- proves the boundary for a dynamic script",
+     'subprocess.run([sys.executable, "--", str(script), *args],'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', False),
+    ("literal script boundary keeps later opaque args harmless",
+     'subprocess.run([sys.executable, "x.py", str(arg)], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
     # A DYNAMIC value for a value-taking option: the option set cannot be
     # known — unresolvable and refused, never an AttributeError crash.
