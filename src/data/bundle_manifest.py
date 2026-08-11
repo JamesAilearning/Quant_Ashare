@@ -276,8 +276,32 @@ def compute_bundle_data_sha256(provider_uri: str | Path) -> str:
                 "isn't a qlib provider, or the directory was deleted "
                 "out-of-band."
             )
+        if base.is_symlink():
+            raise BundleManifestError(
+                f"compute_bundle_data_sha256: {base} is a symlinked "
+                "directory — the no-directory-links rule is uniform so "
+                "the digest always binds bytes inside the bundle tree. "
+                "Materialize the bundle before fingerprinting."
+            )
         entries = []
-        for dirpath, _dirnames, filenames in os.walk(base):
+        for dirpath, dirnames, filenames in os.walk(base):
+            # os.walk(followlinks=False) lists a SYMLINKED directory but
+            # never descends into it, while qlib follows the same path
+            # and reads the target bins normally — its contents would be
+            # invisible to this digest (external finding on #415 r6).
+            # Refuse rather than follow: following would need cycle
+            # protection and would bind the digest to bytes outside the
+            # bundle tree. Materialize the bundle instead.
+            for name in dirnames:
+                child = Path(dirpath) / name
+                if child.is_symlink():
+                    raise BundleManifestError(
+                        f"compute_bundle_data_sha256: {child} is a "
+                        "symlinked directory — its target files would be "
+                        "read by qlib but invisible to this fingerprint. "
+                        "Materialize the bundle (no directory links) "
+                        "before fingerprinting."
+                    )
             for name in filenames:
                 path = Path(dirpath) / name
                 entries.append((path.relative_to(root).as_posix(), path))

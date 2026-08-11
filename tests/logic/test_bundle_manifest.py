@@ -350,6 +350,43 @@ class ComputeBundleDataSha256Tests(unittest.TestCase):
             with self.assertRaises(BundleManifestError):
                 compute_bundle_data_sha256(tmp)
 
+    def test_symlinked_feature_directory_is_refused(self):
+        # External finding on #415 r6: os.walk(followlinks=False) lists a
+        # symlinked directory but never descends, so its target bins
+        # would be read by qlib yet invisible to the digest. Refused
+        # explicitly rather than followed (cycle risk, out-of-tree bytes).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            target = root / "elsewhere"
+            target.mkdir()
+            (target / "close.day.bin").write_bytes(b"\x0a")
+            try:
+                os.symlink(target, root / "features" / "sh600002",
+                           target_is_directory=True)
+            except OSError:
+                self.skipTest("symlink creation not permitted on this box")
+            with self.assertRaises(BundleManifestError) as ctx:
+                compute_bundle_data_sha256(tmp)
+            self.assertIn("symlinked directory", str(ctx.exception))
+
+    def test_symlinked_top_level_data_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            import shutil
+
+            materialized = root / "_features_real"
+            shutil.move(str(root / "features"), str(materialized))
+            try:
+                os.symlink(materialized, root / "features",
+                           target_is_directory=True)
+            except OSError:
+                self.skipTest("symlink creation not permitted on this box")
+            with self.assertRaises(BundleManifestError) as ctx:
+                compute_bundle_data_sha256(tmp)
+            self.assertIn("symlinked", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
