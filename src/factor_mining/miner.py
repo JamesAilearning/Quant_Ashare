@@ -502,6 +502,16 @@ def _parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
+    # The documented CLI runs unattended for hours; without an explicit
+    # logging config Python's WARNING default swallows the engine's
+    # per-generation INFO progress — the operator's only feed (codex
+    # #419; the 31h invisible batch would have survived its own fix).
+    # force=True so an import-time handler cannot demote it.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        force=True,
+    )
     config = load_config(args.config)
     result = run_mining(config)
     if config.pool_top_k is not None:

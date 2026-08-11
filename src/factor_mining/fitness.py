@@ -83,6 +83,21 @@ class FitnessConfig:
     orthogonality_band: float = 0.0
 
 
+def fitness_uses_novelty(config: FitnessConfig) -> bool:
+    """Whether the configured formula READS the novelty term.
+
+    Single source of truth for engines deciding whether to spend
+    O(population²) computing within-generation novelty: the
+    ``abs_rank_ic`` shape discards ``novelty_penalty`` entirely, so
+    keying the engine's short-circuit on ``w_corr`` alone lets the
+    default 0.8 burn per-generation pairwise correlations that
+    ``compute_fitness`` then throws away (the 2026-08-11 campaign
+    batch abort, ledger E005). ``v1_composite`` reads the term only
+    when ``w_corr`` is non-zero.
+    """
+    return config.ic_term != "abs_rank_ic" and config.w_corr != 0.0
+
+
 def _variance_days_frac(result: EvaluationResult, variance_min: float) -> float:
     """Fraction of dates whose cross-sectional std > ``variance_min``."""
     if result.factor_values.empty:

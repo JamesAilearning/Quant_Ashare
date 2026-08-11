@@ -26,7 +26,12 @@ import pandas as pd
 from .evaluator import EvaluationResult, evaluate_factor, max_abs_corr
 from .expression import Expression, OperatorCall, Terminal
 from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
-from .fitness import FitnessConfig, compute_fitness, expression_size
+from .fitness import (
+    FitnessConfig,
+    compute_fitness,
+    expression_size,
+    fitness_uses_novelty,
+)
 from .grammar import (
     WINDOW_LITERALS,
     ExprType,
@@ -333,14 +338,17 @@ class GPEngine:
         )
         self.fitness_cache[h] = score
         if score > float("-inf"):
-            # Skip novelty-cache write when w_corr=0 — the cache is read
+            # Skip novelty-cache write whenever the FORMULA discards the
+            # novelty term (fitness_uses_novelty is the single source of
+            # truth: abs_rank_ic mode, or w_corr=0) — the cache is read
             # only by _within_generation_novelty which short-circuits to
-            # 0.0 in that case. Saves O(pop_size × date × ticker) of peak
-            # heap per generation, important on 12-feature panels where
-            # pandas's MultiIndex stack pushed Windows into MemoryError
-            # at modest pop sizes (see empirical_results_b_std.md
-            # "Iteration 5: 12-feature universe").
-            if self.fitness_config.w_corr != 0.0:
+            # 0.0 in exactly those cases. Saves O(pop_size × date ×
+            # ticker) of peak heap per generation (12-feature panels
+            # pushed Windows into MemoryError, empirical_results_b_std.md
+            # "Iteration 5"), and — keyed on w_corr alone — let the
+            # default 0.8 burn O(pop²) discarded correlations in an
+            # abs_rank_ic campaign (2026-08-11 abort, ledger E005).
+            if fitness_uses_novelty(self.fitness_config):
                 self._per_generation_values[h] = result.factor_values
             self._all_evaluated[h] = PoolEntry.from_result(
                 expr=expr,
@@ -434,15 +442,18 @@ class GPEngine:
         is invariant to long-history cache state (which would break
         determinism across checkpoint resume).
 
-        Short-circuit: when ``fitness_config.w_corr == 0`` the novelty
-        term contributes nothing to the score (``compute_fitness`` does
-        ``- w_corr * novelty_penalty``), so we skip the expensive
-        per-other-factor stack/join. On the B-std 12-feature universe
-        the per-iteration novelty allocation pattern blew Python's
-        pandas heap; users opting out of novelty pressure (the soft
-        fitness recipe) get the GP search budget for free.
+        Short-circuit: when the configured formula does not read the
+        novelty term (``fitness_uses_novelty`` — abs_rank_ic mode, or
+        ``w_corr == 0``) we skip the expensive per-other-factor
+        stack/join entirely. On the B-std 12-feature universe the
+        per-iteration novelty allocation pattern blew Python's pandas
+        heap; and keying this guard on ``w_corr`` alone let the default
+        0.8 spend most of an abs_rank_ic campaign's CPU on pairwise
+        correlations ``compute_fitness`` discarded (2026-08-11 abort,
+        ledger E005). Formula-shape decisions belong to fitness.py —
+        this engine must never re-derive them.
         """
-        if self.fitness_config.w_corr == 0.0:
+        if not fitness_uses_novelty(self.fitness_config):
             return 0.0
         if not self._per_generation_values or factor_values.empty:
             return 0.0
@@ -773,7 +784,19 @@ class GPEngine:
             for expr in self.population:
                 score, _ = self.evaluate_individual(expr, panel, fwd_ret)
                 evaluated.append((expr, score))
-            self.history.append(self._compute_stats(self.current_gen, evaluated))
+            stats = self._compute_stats(self.current_gen, evaluated)
+            self.history.append(stats)
+            # Denominator is the LOOP's boundary, not config.n_generations:
+            # run(n_generations=...) overrides the configured count (the
+            # checkpoint/resume path), so the configured total would show
+            # a phantom early stop on a partial run and 5/4-style overrun
+            # on a resumed engine (codex #419 r2).
+            _log.info(
+                "generation %d/%d done: best=%.6f mean=%.6f unique=%d invalid=%d",
+                self.current_gen + 1, target_final_gen,
+                stats.best_fitness, stats.mean_fitness,
+                stats.n_unique, stats.n_invalid,
+            )
             self.current_gen += 1
             # Always advance population so checkpoint + resume == continuous.
             # The cost of computing the post-loop "next gen" is minimal and

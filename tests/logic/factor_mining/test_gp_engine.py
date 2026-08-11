@@ -1067,6 +1067,101 @@ def test_evaluate_individual_passes_method_normal_to_pool_entry():
 
 
 # ---------------------------------------------------------------------------
+# Novelty short-circuit follows the FORMULA, not w_corr alone
+# (2026-08-11 campaign batch abort, ledger E005)
+# ---------------------------------------------------------------------------
+
+
+def _abs_rank_ic_fitness():
+    return FitnessConfig(
+        ic_term="abs_rank_ic", w_complexity=0.002,
+        w_orthogonality=2.0, orthogonality_band=0.30,
+    )
+
+
+def _peer_frame():
+    dates = pd.date_range("2024-01-01", periods=10, freq="D")
+    return pd.DataFrame(
+        np.arange(30, dtype=float).reshape(10, 3),
+        index=pd.Index(dates, name="datetime"),
+        columns=pd.Index(["T0", "T1", "T2"], name="instrument"),
+    )
+
+
+def test_novelty_short_circuits_in_abs_rank_ic_mode():
+    # DEFAULT w_corr (0.8) + a seeded identical peer: a live novelty
+    # path would return corr 1.0. The abs_rank_ic formula discards the
+    # term, so the engine must not compute it at all.
+    engine = GPEngine(GPConfig(seed=42), _abs_rank_ic_fitness())
+    peer = _peer_frame()
+    engine._per_generation_values[123] = peer
+    assert engine._within_generation_novelty(peer.copy()) == 0.0
+
+
+def test_novelty_still_computes_in_v1_composite_mode():
+    # Guard must not over-block: the v1 recipe DOES read the term.
+    engine = GPEngine(GPConfig(seed=42), FitnessConfig())
+    peer = _peer_frame()
+    engine._per_generation_values[123] = peer
+    assert engine._within_generation_novelty(peer.copy()) == pytest.approx(1.0)
+
+
+def test_generation_log_reports_the_actual_run_target():
+    # codex #419 r2: run(n_generations=...) overrides the configured
+    # count (checkpoint/resume path). The progress feed must report the
+    # loop's real boundary: a fresh engine configured for 4 but run for
+    # 2 emits 1/2, 2/2 (config's 4 would read as a phantom early stop),
+    # and the follow-on run(2) emits 3/4, 4/4 (never 5/4-style overrun).
+    import logging
+
+    panel, fwd = _make_panel()
+    engine = _engine(population_size=6, n_generations=4)
+
+    class _Capture(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.INFO)
+            self.messages = []
+
+        def emit(self, record):
+            self.messages.append(record.getMessage())
+
+    log = logging.getLogger("src.factor_mining.gp_engine")
+    handler = _Capture()
+    old_level = log.level
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        engine.run(panel, fwd, n_generations=2)
+        first = [m for m in handler.messages if "generation" in m]
+        assert any("generation 1/2 done" in m for m in first)
+        assert any("generation 2/2 done" in m for m in first)
+        handler.messages.clear()
+        engine.run(panel, fwd, n_generations=2)
+        second = [m for m in handler.messages if "generation" in m]
+        assert any("generation 3/4 done" in m for m in second)
+        assert any("generation 4/4 done" in m for m in second)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(old_level)
+
+
+def test_abs_rank_ic_evaluation_skips_novelty_cache_write():
+    # Real evaluate path: the per-generation cache stays empty in
+    # abs_rank_ic mode (no O(pop × panel) heap for a discarded term)
+    # and still fills under the v1 recipe.
+    panel, fwd = _make_panel()
+    expr = Terminal("$close")
+    engine = GPEngine(GPConfig(seed=42), _abs_rank_ic_fitness())
+    score, _ = engine.evaluate_individual(expr, panel, fwd)
+    assert score > float("-inf")
+    assert engine._per_generation_values == {}
+    engine_v1 = GPEngine(GPConfig(seed=42), FitnessConfig())
+    score_v1, _ = engine_v1.evaluate_individual(expr, panel, fwd)
+    assert score_v1 > float("-inf")
+    assert engine_v1._per_generation_values != {}
+
+
+# ---------------------------------------------------------------------------
 # D5 strict gate
 # ---------------------------------------------------------------------------
 
