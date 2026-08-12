@@ -46,7 +46,7 @@ import re
 import sys
 import unittest
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -253,17 +253,38 @@ def _sys_module_names(tree: ast.Module) -> set[str]:
 
 
 def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
-    """True / False / None (unresolvable) for the spawned program."""
+    """True / False / None (unresolvable) for the spawned program.
+
+    A literal is judged under BOTH path conventions (codex P2 r20 on
+    #410): this gate runs on Windows boxes and Linux CI alike, and
+    ``PosixPath`` treats backslashes as ordinary characters, so a pinned
+    spawn of ``r"C:\\...\\python.exe"`` would flip verdicts between
+    runners. ``PureWindowsPath`` splits both separators; the posix read
+    of a backslashed path is one opaque component (verdict None), and
+    None never overrides a definite verdict — but CONFLICTING definite
+    verdicts (one convention says python, the other a known non-python)
+    fail closed.
+    """
     if isinstance(head, ast.Attribute) and head.attr == "executable":
         if isinstance(head.value, ast.Name) and head.value.id in sys_names:
             return True  # a resolved sys.executable
         return None  # someone ELSE's .executable — fail closed
     if isinstance(head, ast.Constant) and isinstance(head.value, str):
-        stem = Path(head.value).stem.lower()
-        if stem in _NON_PYTHON_PROGRAMS:
+        verdicts = set()
+        for stem in {PurePosixPath(head.value).stem.lower(),
+                     PureWindowsPath(head.value).stem.lower()}:
+            if stem in _NON_PYTHON_PROGRAMS:
+                verdicts.add(False)
+            elif stem in _PY_LAUNCHER_NAMES or _PYTHON_STEM_RE.fullmatch(stem):
+                verdicts.add(True)  # python / python3.12 / pyw launcher
+            else:
+                verdicts.add(None)
+        if True in verdicts and False in verdicts:
+            return None  # the conventions disagree — fail closed
+        if True in verdicts:
+            return True
+        if False in verdicts:
             return False
-        if stem in _PY_LAUNCHER_NAMES or _PYTHON_STEM_RE.fullmatch(stem):
-            return True  # python / python3.12 / pythonw / py|pyw launcher
     return None
 
 
@@ -1032,6 +1053,17 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8",'
      " env=utf8_child_env())", True),
     # --- interpreter naming / unknown programs fail closed ---
+    # Path literals are judged under BOTH separator conventions, so the
+    # verdict is identical on Windows boxes and Linux CI (codex P2 r20).
+    ("windows absolute interpreter path fully pinned",
+     'subprocess.run([r"C:\\Python312\\python.exe", "s.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("windows absolute git path needs no env",
+     'subprocess.run([r"C:\\Program Files\\Git\\bin\\git.exe", "log"],'
+     ' text=True, encoding="utf-8")', False),
+    ("windows path to an unknown tool still fails closed",
+     'subprocess.run([r"C:\\tools\\node.exe", "s.js"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
     ("py launcher", 'subprocess.run(["py", "s.py"], text=True, encoding="utf-8")',
      True),
     ("python3", 'subprocess.run(["python3", "s.py"], text=True, encoding="utf-8")',
