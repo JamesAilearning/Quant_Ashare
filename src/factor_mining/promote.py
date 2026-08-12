@@ -163,11 +163,19 @@ def _check_pit_window(
                 f"{label} {value!r} is not a parseable date."
             ) from exc
         if ts.tzinfo is not None:
-            # A tz-aware value ("2024-12-31T00:00:00Z") cannot be compared
-            # with the naive mined date — pandas raises TypeError OUTSIDE
-            # this handler (codex P2 on #415 r8). Wall-clock date
-            # semantics are what the window governs, so drop the tz.
-            ts = ts.tz_localize(None)
+            # REFUSED outright, not normalized (codex P2 on #415 r9):
+            # dropping the tz here only fixed THIS comparison — the
+            # aware original stayed in the effective config, and
+            # validate_pool's reparse would hit the panel's naive
+            # DatetimeIndex with a TypeError. The window governs
+            # wall-clock dates, and an aware timestamp's wall date is
+            # genuinely ambiguous across zones — supply a plain date.
+            raise PromotionError(
+                f"{label} {value!r} is timezone-bearing — the governed "
+                "window is defined on wall-clock dates and a tz-aware "
+                "value would be reparsed downstream against a naive "
+                "panel index. Supply a plain date (YYYY-MM-DD)."
+            )
         return ts
 
     mined_ts = _parse("mined end_date", mined_end_date)
