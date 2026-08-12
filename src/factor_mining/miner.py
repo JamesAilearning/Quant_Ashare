@@ -144,9 +144,25 @@ def load_config(path: str | Path) -> MinerConfig:
         load_yaml_with_inheritance,
     )
     raw = load_yaml_with_inheritance(p)
-    data = DataConfig(**normalize_yaml_dates(raw.get("data") or {}))
-    gp = GPConfig(**(raw.get("gp") or {}))
-    fitness = FitnessConfig(**(raw.get("fitness") or {}))
+
+    def _section(name: str) -> dict:
+        # ``or {}`` would launder falsy non-mappings (``data: false``,
+        # ``gp: []``) into all-default sections and silently mine a
+        # different experiment (same class as codex P2 on #415 r8);
+        # only an ABSENT/null section legitimately means defaults.
+        section = raw.get(name)
+        if section is None:
+            return {}
+        if not isinstance(section, dict):
+            raise ValueError(
+                f"config section {name!r} must be a YAML mapping or "
+                f"absent, got {type(section).__name__}."
+            )
+        return section
+
+    data = DataConfig(**normalize_yaml_dates(_section("data")))
+    gp = GPConfig(**_section("gp"))
+    fitness = FitnessConfig(**_section("fitness"))
     out_dir = Path(raw.get("output_dir", "research/mined_factors"))
     run_id = raw.get("run_id")
     pool_top_k_raw = raw.get("pool_top_k")

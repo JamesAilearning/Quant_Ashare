@@ -572,6 +572,17 @@ def test_run_mining_aborts_when_pit_inputs_change_mid_run(
 # ---------------------------------------------------------------------------
 
 
+def test_load_config_refuses_falsy_non_mapping_sections(tmp_path):
+    # Same class as promote's r8 fix: `data: false` / `gp: []` would
+    # launder into all-default sections and silently mine a different
+    # experiment. Only an absent/null section means defaults.
+    for body in ("data: false\n", "gp: []\n", "fitness: 0\n"):
+        config_path = tmp_path / "bad.yaml"
+        config_path.write_text(body, encoding="utf-8")
+        with pytest.raises(ValueError, match="must be a YAML mapping"):
+            load_config(config_path)
+
+
 def test_load_config_normalizes_unquoted_yaml_dates(tmp_path):
     # Unquoted YAML dates parse into datetime.date; DataConfig must carry
     # ISO strings so the canonical digest never TypeErrors at dump time.

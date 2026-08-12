@@ -105,12 +105,17 @@ def _load_yaml_mapping(path: Path, what: str) -> dict:
     guard, used by every YAML read in this module.
     """
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise PromotionError(
             f"{what} {path} is not valid YAML ({exc}) — refusing to "
             "promote on an unreadable configuration."
         ) from exc
+    if raw is None:
+        return {}  # an empty document is the one legitimate empty case
+    # ``or {}`` here would launder falsy non-mappings — ``[]``, ``false``,
+    # ``0`` — into "no overrides" and promote on default criteria
+    # (codex P2 on #415 r8); only YAML null means empty.
     if not isinstance(raw, dict):
         raise PromotionError(
             f"{what} {path} must be a YAML mapping, got "
@@ -152,11 +157,18 @@ def _check_pit_window(
     # dates fail loud here instead of mis-ordering silently.
     def _parse(label: str, value: str) -> pd.Timestamp:
         try:
-            return pd.Timestamp(str(value))
+            ts = pd.Timestamp(str(value))
         except (ValueError, TypeError) as exc:
             raise PromotionError(
                 f"{label} {value!r} is not a parseable date."
             ) from exc
+        if ts.tzinfo is not None:
+            # A tz-aware value ("2024-12-31T00:00:00Z") cannot be compared
+            # with the naive mined date — pandas raises TypeError OUTSIDE
+            # this handler (codex P2 on #415 r8). Wall-clock date
+            # semantics are what the window governs, so drop the tz.
+            ts = ts.tz_localize(None)
+        return ts
 
     mined_ts = _parse("mined end_date", mined_end_date)
     validation_ts = _parse("validation.end_date", str(validation_end))

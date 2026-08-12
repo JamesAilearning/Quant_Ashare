@@ -496,6 +496,46 @@ def test_malformed_promotion_config_is_a_controlled_refusal(tmp_path):
         _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
 
 
+def test_falsy_non_mapping_documents_are_refused(tmp_path):
+    # codex P2 #415 r8: `or {}` laundered [], false, 0 into "no overrides"
+    # — a synthetic run would promote on DEFAULT criteria instead of
+    # refusing the malformed document. Only YAML null means empty.
+    run_dir = _seed_run_dir(tmp_path)
+    for body in ("[]\n", "false\n", "0\n"):
+        cfg_path = tmp_path / "promote.yaml"
+        cfg_path.write_text(body, encoding="utf-8")
+        with pytest.raises(PromotionError, match="must be a YAML mapping"):
+            _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    # ...while a genuinely empty document still means "defaults".
+    (tmp_path / "promote.yaml").write_text("", encoding="utf-8")
+    cfg = _load_config(
+        tmp_path / "promote.yaml", run_dir, tmp_path / "production", "v1")
+    assert cfg.validation_end_date is None
+
+
+def test_timezone_aware_dates_do_not_traceback(tmp_path):
+    # codex P2 #415 r8: "2024-12-31T00:00:00Z" parses tz-aware; comparing
+    # it with the naive mined date raised TypeError outside _parse's
+    # handler. Wall-clock semantics: the tz is dropped, ordering applies.
+    run_dir = _seed_run_dir(tmp_path, data=_PIT_RUN_DATA)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2023-06-30'\n"
+        "validation:\n  end_date: '2024-12-31T00:00:00Z'\n",
+    )
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    assert cfg.validation_end_date == "2024-12-31T00:00:00Z"
+    # ...and a tz-aware date that violates the window still refuses
+    # cleanly rather than crashing.
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2022-06-30'\n"
+        "validation:\n  end_date: '2024-12-31T00:00:00+08:00'\n",
+    )
+    with pytest.raises(PromotionError, match="GP-visible"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
 def test_scalar_config_sections_are_a_controlled_refusal(tmp_path):
     # codex P2 #415 r7: `validation: typo` / `criteria: 42` made dict()
     # raise ValueError/TypeError past the CLI's PromotionError branch.
