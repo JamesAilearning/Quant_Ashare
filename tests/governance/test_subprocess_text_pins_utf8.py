@@ -351,7 +351,16 @@ def _interpreter_options(
                 i += 1
             continue
         cluster = arg[1:]
+        done = False
         for pos, letter in enumerate(cluster):
+            if letter in ("c", "m"):
+                # Attached ``-cprint(1)`` / ``-mmod`` consume the REST of
+                # the argument and TERMINATE option parsing (verified:
+                # ``python -c<code> -E`` runs the code with "-E" as
+                # argv[1] and ignore_environment=0, while ``-Ec<code>``
+                # keeps the fused -E active) — codex P2 r22 on #410.
+                done = True
+                break
             if letter in _VALUE_TAKING_FLAGS:
                 attached = cluster[pos + 1:]
                 if attached:
@@ -371,6 +380,8 @@ def _interpreter_options(
                     i += 1
                 break  # the rest of the cluster was this option's value
             letters.add(letter)
+        if done:
+            break
         i += 1
     return letters, x_values, unresolvable
 
@@ -403,7 +414,9 @@ def _child_ignores_env(call: ast.Call) -> bool:
     return True  # env-ignoring flag with no utf8 option at all
 
 
-def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
+def _python_child(
+    call: ast.Call, sys_names: set[str], kwargs: dict[str, ast.expr],
+) -> bool | None:
     """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
 
     Only a LITERAL argv is judged. Name resolution was tried and removed:
@@ -414,7 +427,10 @@ def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
     An ``executable=`` OVERRIDES the program (Popen executes it and argv[0]
     becomes mere display), so when present it — not argv[0] — is what gets
     judged (codex P2 r14 on #410), and it counts however it arrives:
-    keyword or Popen's THIRD positional argument (codex r16). A literal
+    keyword or Popen's THIRD positional argument (codex r16) — read from
+    the NORMALIZED kwargs map, so a literal ``**{"shell": True}`` or
+    ``**{"executable": "node"}`` expansion carries the same override
+    power as the named spelling (codex P2 r22). A literal
     ``executable=None`` is CPython's own no-override spelling and falls
     through to argv[0]. Under a truthy (or unresolvable) ``shell=`` the
     argv is a shell command line, not a program vector — nothing about the
@@ -422,16 +438,16 @@ def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
     later Popen parameters (``shell`` among them, at position nine) arrive
     positionally unmodeled — fail closed rather than model them.
     """
-    for kw in call.keywords:
-        if kw.arg == "shell":
-            if not (isinstance(kw.value, ast.Constant) and not kw.value.value):
-                return None  # truthy or unresolvable shell — fail closed
+    shell = kwargs.get("shell")
+    if shell is not None and not (
+        isinstance(shell, ast.Constant) and not shell.value
+    ):
+        return None  # truthy or unresolvable shell — fail closed
     if len(call.args) > 3:
         return None  # positions past executable are unmodeled — fail closed
     executable: ast.expr | None = call.args[2] if len(call.args) == 3 else None
-    for kw in call.keywords:
-        if kw.arg == "executable":
-            executable = kw.value
+    if "executable" in kwargs:
+        executable = kwargs["executable"]
     if executable is not None and not (
         isinstance(executable, ast.Constant) and executable.value is None
     ):
@@ -724,7 +740,7 @@ def offending_lines(source: str) -> list[int]:
             continue
 
         # Parent side is right; now the child's own encoder.
-        child = _python_child(node, sys_names)
+        child = _python_child(node, sys_names, kwargs)
         if child is False:
             continue  # git & friends emit UTF-8 regardless of locale
         if child is None:
@@ -1151,6 +1167,30 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' encoding="utf-8", env=utf8_child_env())', False),
     ("tuple argv options are parsed too",
      'subprocess.run((sys.executable, "-E", "x"), text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # literal ** expansion carries the same override power as named
+    # keywords — the child classification reads the normalized map.
+    ("literal unpacking carries shell",
+     'subprocess.run([sys.executable, "x"], **{"text": True,'
+     ' "encoding": "utf-8", "env": utf8_child_env(), "shell": True})',
+     True),
+    ("literal unpacking carries executable",
+     'subprocess.run([sys.executable, "x"], **{"text": True,'
+     ' "encoding": "utf-8", "env": utf8_child_env(),'
+     ' "executable": "node"})', True),
+    ("literal unpacking without overrides stays judged normally",
+     'subprocess.run([sys.executable, "x"], **{"text": True,'
+     ' "encoding": "utf-8", "env": utf8_child_env()})', False),
+    # attached -c/-m consume the rest of the argument and END options:
+    # a later "-E" is script/command argv, not an interpreter flag.
+    ("attached -c ends the option region",
+     'subprocess.run([sys.executable, "-cprint(1)", "-E"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("attached -m ends the option region",
+     'subprocess.run([sys.executable, "-mjson.tool", "-E"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("-E fused before an attached -c still ignores env",
+     'subprocess.run([sys.executable, "-Ecprint(1)", "x"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
 )
 
