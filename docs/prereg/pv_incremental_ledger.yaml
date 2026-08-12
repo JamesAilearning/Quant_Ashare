@@ -196,7 +196,7 @@ entries:
       本条目仅照录机制输出。
     artifacts:
       - "output/factor_mining/pv_incremental_v1/oos_eval/ (50 artifacts, run_id=4a63dc2dc1a54098baf172442110646b)"
-      - "output/factor_mining/pv_incremental_v1/fwer_verdict.json"
+      - "output/factor_mining/pv_incremental_v1/fwer_verdict.json#sha256=195c21bc78f6f968e8d0ff7e7ac4a17aea5f039900e718036b8776579dd80b51（verdict 内嵌 50 工件逐一 sha,绑定此文件即传递闭合全部输入字节）"
       - "registration_manifest_sha256=8889f223a3501fc18bb353dd32c9ee9e5f7115a5ef23c2f07c3de3b54920b14e (与 E006 逐字一致)"
       - "plan_sha256(仓库规范字节,git blob LF,审计基准:git show <commit>:docs/prereg/pv_incremental.yaml | sha256sum)=84f9b79516fbf22b088caaa0f7e5d680da9f79dbe08958692e81d02e51ba669f"
       - "plan_sha256(工件 fwer_verdict.json 内记录值=Windows checkout CRLF 转码字节,非仓库可复算;工件照录不改)=746e871111f83acbba15accd3234ec35db4a8f9533d6d0931b73345860a47c5a"
