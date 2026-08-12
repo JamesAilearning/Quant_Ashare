@@ -155,7 +155,7 @@ entries:
       cpu_seconds_at_abort: 110235
       generations_completed_visible: null
   - id: E006
-      when: '2026-08-12'
+    when: '2026-08-12'
     kind: intent
     what: 候选注册（PV-DP-6）：GP run output\factor_mining\pv_incremental_v1\runs\20260811T140545-42-36e1f30a
       的池（200 条）按 fitness 取前 50 条注册为OOS 决策批次；注册后清单冻结，OOS 评估一次性消费。
