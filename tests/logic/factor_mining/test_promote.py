@@ -496,6 +496,17 @@ def test_malformed_promotion_config_is_a_controlled_refusal(tmp_path):
         _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
 
 
+def test_scalar_config_sections_are_a_controlled_refusal(tmp_path):
+    # codex P2 #415 r7: `validation: typo` / `criteria: 42` made dict()
+    # raise ValueError/TypeError past the CLI's PromotionError branch.
+    run_dir = _seed_run_dir(tmp_path)
+    for body in ("validation: typo\n", "criteria: 42\n",
+                 "validation:\n- a\n- b\n"):
+        cfg_path = _write_promote_yaml(tmp_path, body)
+        with pytest.raises(PromotionError, match="must be a YAML"):
+            _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
 def test_boundary_refuses_synthetic_extension(tmp_path):
     # codex P2 #415 r4: _load_config refuses this for the CLI; the
     # production-writing boundary must refuse the programmatic version.

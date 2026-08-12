@@ -464,8 +464,24 @@ def _load_config(
             "operator config supplies criteria only."
         )
     data, data_sha = _load_run_data_config(run_dir)
-    crit_kwargs = normalize_yaml_dates(dict(raw.get("criteria") or {}))
-    validation_raw = normalize_yaml_dates(dict(raw.get("validation") or {}))
+    def _mapping_section(name: str) -> dict:
+        # ``validation: typo`` / ``criteria: 42`` would make ``dict(...)``
+        # raise ValueError/TypeError past main()'s PromotionError branch
+        # (codex P2 on #415 r7) — same refusal shape as the file-level
+        # guard, one level down.
+        section = raw.get(name)
+        if section is None:
+            return {}
+        if not isinstance(section, dict):
+            raise PromotionError(
+                f"promotion config section {name!r} must be a YAML "
+                f"mapping, got {type(section).__name__} — refusing to "
+                "guess its meaning."
+            )
+        return dict(section)
+
+    crit_kwargs = normalize_yaml_dates(_mapping_section("criteria"))
+    validation_raw = normalize_yaml_dates(_mapping_section("validation"))
     unknown = set(validation_raw) - {"end_date"}
     if unknown:
         raise PromotionError(

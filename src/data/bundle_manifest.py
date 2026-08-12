@@ -283,8 +283,23 @@ def compute_bundle_data_sha256(provider_uri: str | Path) -> str:
                 "the digest always binds bytes inside the bundle tree. "
                 "Materialize the bundle before fingerprinting."
             )
+        def _traversal_failed(err: OSError, _base: Path = base) -> None:
+            # os.walk has NO default onerror: a subtree whose scandir
+            # fails (permissions, I/O error, concurrent removal) is
+            # silently SKIPPED, and the digest would claim to cover
+            # files it never read (codex P2 on #415 r7). Every-file
+            # binding means traversal failures are refusals.
+            raise BundleManifestError(
+                f"compute_bundle_data_sha256: cannot traverse "
+                f"{getattr(err, 'filename', None) or _base} "
+                f"({type(err).__name__}: {err}) — an unreadable subtree "
+                "would silently drop panel-producing files from the "
+                "digest."
+            ) from err
+
         entries = []
-        for dirpath, dirnames, filenames in os.walk(base):
+        for dirpath, dirnames, filenames in os.walk(
+                base, onerror=_traversal_failed):
             # os.walk(followlinks=False) lists a SYMLINKED directory but
             # never descends into it, while qlib follows the same path
             # and reads the target bins normally — its contents would be

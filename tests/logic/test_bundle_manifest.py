@@ -370,6 +370,27 @@ class ComputeBundleDataSha256Tests(unittest.TestCase):
                 compute_bundle_data_sha256(tmp)
             self.assertIn("symlinked directory", str(ctx.exception))
 
+    def test_unreadable_subtree_is_a_loud_failure(self):
+        # codex P2 #415 r7: os.walk has no default onerror and silently
+        # SKIPS subtrees whose scandir fails — the digest would omit
+        # panel-producing files while claiming success.
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            real_scandir = os.scandir
+
+            def failing_scandir(path=".", *args, **kwargs):
+                if os.path.basename(str(path)) == "sh600000":
+                    raise PermissionError(13, "denied", str(path))
+                return real_scandir(path, *args, **kwargs)
+
+            with mock.patch("os.scandir", side_effect=failing_scandir):
+                with self.assertRaises(BundleManifestError) as ctx:
+                    compute_bundle_data_sha256(tmp)
+            self.assertIn("cannot traverse", str(ctx.exception))
+
     def test_symlinked_top_level_data_directory_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
