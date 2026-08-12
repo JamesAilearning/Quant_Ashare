@@ -154,6 +154,29 @@ entries:
       wall_hours_at_abort: 31
       cpu_seconds_at_abort: 110235
       generations_completed_visible: null
+  - id: E006
+    when: '2026-08-12'
+    kind: intent
+    what: 候选注册（PV-DP-6）：GP run output\factor_mining\pv_incremental_v1\runs\20260811T140545-42-36e1f30a
+      的池（200 条）按 fitness 取前 50 条注册为OOS 决策批次；注册后清单冻结，OOS 评估一次性消费。
+    artifacts:
+    - output\factor_mining\pv_incremental_v1\registration\candidates.json#sha256=8889f223a3501fc18bb353dd32c9ee9e5f7115a5ef23c2f07c3de3b54920b14e
+    gp_provenance:
+      gp_run_dir: output\factor_mining\pv_incremental_v1\runs\20260811T140545-42-36e1f30a
+      gp_config_sha256: 2f4c0b50ace36fdba4c3276d571aeca2c87b53aa4712ed9ce48343b370ea7f98
+      gp_baseline_preds_path: output/factor_mining/pv_incremental_v1/baseline/baseline_preds.parquet
+      gp_run_id: 20260811T140545-42-36e1f30a
+      gp_input_sha256:
+        factor_pool.parquet: f569d4a02921945abc8c205c5e8f74792ccab2422c51c1e261cdddac55764dbf
+        factor_expressions.json: 24d97e68e387d142419209c8ffd3f8c4ef6f995ed4e0a059ae037f92d385c87e
+        baseline_preds.parquet: a254832cc103056894e08b40dff2519c49fff5993ff9edd959e68332fd802ed8
+      protocol_id: pv_incremental_v1
+      manifest_sha256: 8889f223a3501fc18bb353dd32c9ee9e5f7115a5ef23c2f07c3de3b54920b14e
+      pool_size: 200
+      registered: 50
+    numbers:
+      pool_size: 200
+      registered: 50
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>

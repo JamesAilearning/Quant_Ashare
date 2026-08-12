@@ -132,6 +132,27 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # |0.05| − 0.002×10 − 2.0×(0.40−0.30); no IR/turnover/novelty.
         self.assertAlmostEqual(0.05 - 0.02 - 0.2, score)
 
+    def test_ledger_parses_and_entry_ids_are_sequential(self) -> None:
+        # 2026-08-12: an E006 append with a mis-indented `when` key made
+        # the ledger UNPARSEABLE — and the governance layer stayed green,
+        # because nothing asserted the campaign's registration record is
+        # even readable. The ledger is what binds every decision-grade
+        # run; a ledger that yaml refuses to load is a silently broken
+        # audit chain. Parse it, and require append-only id discipline
+        # (E001..E00n, unique, sequential).
+        ledger = yaml.safe_load(
+            (_PROJECT_ROOT / "docs" / "prereg"
+             / "pv_incremental_ledger.yaml").read_text(encoding="utf-8"))
+        self.assertEqual("pv_incremental_v1", ledger["protocol_id"])
+        ids = [e["id"] for e in ledger["entries"]]
+        self.assertEqual(len(ids), len(set(ids)), f"duplicate ids: {ids}")
+        expected = [f"E{n:03d}" for n in range(1, len(ids) + 1)]
+        self.assertEqual(expected, ids)
+        for entry in ledger["entries"]:
+            self.assertIn("when", entry)
+            self.assertIn("kind", entry)
+            self.assertIn(entry["kind"], {"intent", "result", "decision"})
+
     def test_campaign_engine_does_not_read_or_compute_novelty(self) -> None:
         # 2026-08-11 batch abort (ledger E005): FitnessConfig.w_corr
         # defaults to 0.8 and the engine's novelty short-circuit keyed
