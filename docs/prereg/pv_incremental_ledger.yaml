@@ -196,7 +196,8 @@ entries:
       本条目仅照录机制输出。
     artifacts:
       - "output/factor_mining/pv_incremental_v1/oos_eval/ (50 artifacts, run_id=4a63dc2dc1a54098baf172442110646b)"
-      - "output/factor_mining/pv_incremental_v1/fwer_verdict.json#sha256=195c21bc78f6f968e8d0ff7e7ac4a17aea5f039900e718036b8776579dd80b51（verdict 内嵌 50 工件逐一 sha,绑定此文件即传递闭合全部输入字节）"
+      - "output/factor_mining/pv_incremental_v1/fwer_verdict.json#sha256=195c21bc78f6f968e8d0ff7e7ac4a17aea5f039900e718036b8776579dd80b51（verdict 内嵌 50 候选工件逐一 sha + manifest sha,绑定此文件即闭合候选输入字节;完成章不在其 input_sha256 内,故单列于下）"
+      - "output/factor_mining/pv_incremental_v1/oos_eval/_batch_complete.json#sha256=9a58b6eb86541de46dcaa1ce266dcb0c7207e2d0024b81f39198a013b7b51ca0（完成章:绑 run_id/候选名单/基线 sha/注册封印,adjudicator 校验其内容但其自身字节不入 verdict.input_sha256——此处单独绑定）"
       - "registration_manifest_sha256=8889f223a3501fc18bb353dd32c9ee9e5f7115a5ef23c2f07c3de3b54920b14e (与 E006 逐字一致)"
       - "plan_sha256(仓库规范字节,git blob LF,审计基准:git show <commit>:docs/prereg/pv_incremental.yaml | sha256sum)=84f9b79516fbf22b088caaa0f7e5d680da9f79dbe08958692e81d02e51ba669f"
       - "plan_sha256(工件 fwer_verdict.json 内记录值=Windows checkout CRLF 转码字节,非仓库可复算;工件照录不改)=746e871111f83acbba15accd3234ec35db4a8f9533d6d0931b73345860a47c5a"
@@ -213,6 +214,16 @@ entries:
       binding_threshold: 2.85
       survivors: 50
       verdict: survivors
+    provenance:
+      # 执行 OOS 评估与 FWER 裁决的代码版本（E004 同款义务）：两 run 均在
+      # #420 合并 commit 的干净树上执行，期间 main 无提交、两脚本工作树
+      # 字节与该 commit 无 diff。脚本摘要为仓库规范字节（git blob LF，
+      # 复算：git show <commit>:<path> | sha256sum）。
+      source_git: "ff73e31acd9545763aec12f99009123bc598f42f"
+      source_git_dirty: false
+      script_sha256_git_blob:
+        pv_incremental_eval.py: "93ac47b850e6cb1811b2f4c467759f450b0654b29f3dc86a6ed5373b24ef97b9"
+        pv_incremental_fwer_adjudication.py: "6f9745d35d41f2a21568ab360c84428f5a8f6442eb809af25ba4bc1d2f001770"
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>
