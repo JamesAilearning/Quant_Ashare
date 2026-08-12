@@ -457,16 +457,29 @@ def _subprocess_names(
     while grew:
         grew = False
         for node in ast.walk(tree):
-            value = getattr(node, "value", None)
-            if not (isinstance(node, (ast.Assign, ast.AnnAssign))
-                    and isinstance(value, ast.Name)):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                 continue
+            value = node.value
             targets = (node.targets if isinstance(node, ast.Assign)
                        else [node.target])
             names = {t.id for t in targets if isinstance(t, ast.Name)}
-            for pool in (modules, bare, helpers):
-                if value.id in pool and not names <= pool:
-                    pool.update(names)
+            if isinstance(value, ast.Name):
+                for pool in (modules, bare, helpers):
+                    if value.id in pool and not names <= pool:
+                        pool.update(names)
+                        grew = True
+            elif (isinstance(value, ast.Attribute)
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id in modules):
+                # ``runner = subprocess.run`` stores the METHOD (codex P2
+                # r19 follow-up) — the alias spawns exactly like the
+                # from-imported bare name, so it joins the same pool.
+                if value.attr in _SPAWNERS and not names <= bare:
+                    bare.update(names)
+                    grew = True
+                elif (value.attr in _TEXT_ONLY_HELPERS
+                        and not names <= helpers):
+                    helpers.update(names)
                     grew = True
     return modules, bare, helpers
 
@@ -546,32 +559,54 @@ def offending_lines(source: str) -> list[int]:
     # cannot prove ``sys.executable`` is a python interpreter.
     sys_names = {n for n in _sys_module_names(tree) if counts[n] == 1}
     hits: list[int] = []
-    # A module reference FORWARDED anywhere else — a call argument, an
-    # attribute/subscript target, a container literal, a return value —
-    # escapes this file-local analysis entirely: the receiver can spawn
-    # through it unseen (codex P2 r19 on #410). Exactly two uses are
-    # resolvable: the base of an attribute access (``subprocess.run``,
-    # ``subprocess.PIPE``) and a plain Name-to-Name alias (tracked in
-    # ``_subprocess_names``). Everything else fails closed.
+    # A module OR SPAWNER reference FORWARDED anywhere else — a call
+    # argument, an attribute/subscript target, a container literal, a
+    # return value — escapes this file-local analysis entirely: the
+    # receiver can spawn through it unseen (codex P2 r19 on #410, both
+    # rounds). Resolvable uses only: a direct call (judged by the main
+    # loop below), a plain-Name alias (tracked in ``_subprocess_names``),
+    # and non-spawning module attributes (``subprocess.PIPE``, exception
+    # classes) — those cannot spawn, so they stay free.
     parents: dict[ast.AST, ast.AST] = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
             parents[child] = parent
+
+    def _is_plain_alias(parent: ast.AST | None, value: ast.expr) -> bool:
+        if isinstance(parent, ast.Assign):
+            return (parent.value is value and len(parent.targets) == 1
+                    and isinstance(parent.targets[0], ast.Name))
+        if isinstance(parent, ast.AnnAssign):
+            return (parent.value is value
+                    and isinstance(parent.target, ast.Name))
+        return False
+
+    spawn_attrs = _SPAWNERS | _TEXT_ONLY_HELPERS
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Name) and node.id in modules
+        if not (isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)):
             continue
         parent = parents.get(node)
-        if isinstance(parent, ast.Attribute) and parent.value is node:
-            continue
-        if (isinstance(parent, ast.Assign) and parent.value is node
-                and len(parent.targets) == 1
-                and isinstance(parent.targets[0], ast.Name)):
-            continue
-        if (isinstance(parent, ast.AnnAssign) and parent.value is node
-                and isinstance(parent.target, ast.Name)):
-            continue
-        hits.append(node.lineno)
+        if node.id in modules:
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                if parent.attr not in spawn_attrs:
+                    continue  # PIPE / DEVNULL / exceptions: cannot spawn
+                grand = parents.get(parent)
+                if isinstance(grand, ast.Call) and grand.func is parent:
+                    continue  # direct spawn call — judged below
+                if _is_plain_alias(grand, parent):
+                    continue  # tracked method alias
+                hits.append(node.lineno)
+                continue
+            if _is_plain_alias(parent, node):
+                continue  # tracked module alias
+            hits.append(node.lineno)
+        elif node.id in bare or node.id in text_helpers:
+            if isinstance(parent, ast.Call) and parent.func is node:
+                continue  # direct spawn call — judged below
+            if _is_plain_alias(parent, node):
+                continue  # tracked alias
+            hits.append(node.lineno)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -1039,6 +1074,27 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("module attribute constants stay usable",
      'subprocess.run(["git", "log"], stdout=subprocess.PIPE, text=True,'
      ' encoding="utf-8")', False),
+    # ...and a stored METHOD spawns exactly like the module alias did
+    # (codex P2 r19 follow-up): tracked when it is a plain-Name alias,
+    # failed closed when forwarded anywhere else.
+    ("method alias spawns are recognized",
+     "runner = subprocess.run\n"
+     'runner(["git"], text=True)', True),
+    ("method alias accepted when properly pinned",
+     "runner = subprocess.run\n"
+     'runner(["git", "log"], text=True, encoding="utf-8")', False),
+    ("method alias of a text-only helper is recognized",
+     "go = subprocess.getoutput\n"
+     'go("git log")', True),
+    ("spawner method forwarded as an argument fails closed",
+     "helper(subprocess.run)", True),
+    ("bare spawner forwarded as an argument fails closed",
+     "from subprocess import run\nhelper(run)", True),
+    ("exception classes stay usable",
+     "try:\n"
+     '    subprocess.run(["git", "log"], text=True, encoding="utf-8")\n'
+     "except subprocess.CalledProcessError:\n"
+     "    pass", False),
 )
 
 
