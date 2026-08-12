@@ -304,8 +304,8 @@ def _argv_strings(call: ast.Call) -> list[str | None] | None:
     ends CPython option parsing; ``python -- -E`` opens a FILE named
     ``-E``, while ``-E`` before ``--`` stays active).
     """
-    if not call.args or not isinstance(call.args[0], ast.List):
-        return None
+    if not call.args or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+        return None  # a literal tuple argv is as provable as a list
     return [
         elt.value
         if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
@@ -439,8 +439,8 @@ def _python_child(call: ast.Call, sys_names: set[str]) -> bool | None:
     if not call.args:
         return None
     argv = call.args[0]
-    if not isinstance(argv, ast.List) or not argv.elts:
-        return None
+    if not isinstance(argv, (ast.List, ast.Tuple)) or not argv.elts:
+        return None  # tuple argv is judged exactly like a list (codex r21)
     return _program_is_python(argv.elts[0], sys_names)
 
 
@@ -470,7 +470,13 @@ def _subprocess_names(
                     modules.add(alias.asname or "subprocess")
         elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
             for alias in node.names:
-                if alias.name in _SPAWNERS:
+                if alias.name == "*":
+                    # ``from subprocess import *`` exports every spawning
+                    # API unaliased (codex P2 r21 on #410: the "*" alias
+                    # matched nothing and the whole file went unseen).
+                    bare.update(_SPAWNERS)
+                    helpers.update(_TEXT_ONLY_HELPERS)
+                elif alias.name in _SPAWNERS:
                     bare.add(alias.asname or alias.name)
                 elif alias.name in _TEXT_ONLY_HELPERS:
                     helpers.add(alias.asname or alias.name)
@@ -1127,6 +1133,25 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      '    subprocess.run(["git", "log"], text=True, encoding="utf-8")\n'
      "except subprocess.CalledProcessError:\n"
      "    pass", False),
+    # a star-import exports the whole spawning surface unaliased
+    ("star-import spawns are recognized",
+     "from subprocess import *\n"
+     'run(["git"], text=True)', True),
+    ("star-import text helpers are recognized",
+     "from subprocess import *\n"
+     'getoutput("git log")', True),
+    ("star-import spawn accepted when properly pinned",
+     "from subprocess import *\n"
+     'run(["git", "log"], text=True, encoding="utf-8")', False),
+    # a literal tuple argv is as provable as a list
+    ("tuple argv git child pinned",
+     'subprocess.run(("git", "log"), text=True, encoding="utf-8")', False),
+    ("tuple argv python child fully pinned",
+     'subprocess.run((sys.executable, "x"), text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("tuple argv options are parsed too",
+     'subprocess.run((sys.executable, "-E", "x"), text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
 )
 
 
