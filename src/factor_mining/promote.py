@@ -26,7 +26,12 @@ import pandas as pd
 import yaml
 
 from .factor_pool import FactorPool
-from .miner import DataConfig, build_panel_for_data, data_definition_sha256
+from .miner import (
+    DataConfig,
+    build_panel_for_data,
+    data_definition_sha256,
+    normalize_yaml_dates,
+)
 from .validator import (
     FactorValidationResult,
     ValidationCriteria,
@@ -87,6 +92,31 @@ class PromotionReport:
 
 class PromotionError(RuntimeError):
     """Raised on bad config, missing run dir, or overwrite refusal."""
+
+
+def _load_yaml_mapping(path: Path, what: str) -> dict:
+    """Read ``path`` as a YAML MAPPING, refusing everything else loudly.
+
+    A truncated file raises ``yaml.YAMLError`` and a top-level list makes
+    the subsequent ``.get`` raise ``AttributeError`` — neither is caught
+    by the CLI's ``PromotionError`` / ``FileNotFoundError`` branches, so a
+    malformed run snapshot surfaced as a traceback instead of the
+    controlled refusal this module promises (codex P2 on #415 r5). One
+    guard, used by every YAML read in this module.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise PromotionError(
+            f"{what} {path} is not valid YAML ({exc}) — refusing to "
+            "promote on an unreadable configuration."
+        ) from exc
+    if not isinstance(raw, dict):
+        raise PromotionError(
+            f"{what} {path} must be a YAML mapping, got "
+            f"{type(raw).__name__} — refusing to guess its meaning."
+        )
+    return raw
 
 
 def _check_pit_window(
@@ -166,8 +196,7 @@ def _verify_pit_binding(run_dir: Path, run_data: DataConfig) -> None:
 
     from .miner import pit_binding_fingerprints  # noqa: PLC0415
 
-    raw = yaml.safe_load(
-        (run_dir / "config.yaml").read_text(encoding="utf-8")) or {}
+    raw = _load_yaml_mapping(run_dir / "config.yaml", "run snapshot")
     recorded = {
         key: raw.get(key)
         for key in ("pit_bundle_data_sha256", "delisted_registry_sha256")
@@ -250,13 +279,11 @@ def promote_run(
             "would be a no-op pretending to be governance."
         )
     if config.validation_end_date is not None:
-        if config.validation_end_date <= run_data.end_date:
-            raise PromotionError(
-                f"validation_end_date {config.validation_end_date!r} must "
-                f"lie strictly AFTER the mined end_date "
-                f"{run_data.end_date!r} — the governed deviation is an OOS "
-                "extension, never a rewrite of the mined window."
-            )
+        # Ordering was already enforced — PARSED — by _check_pit_window
+        # above (validation_end_date is refused outright for non-PIT
+        # runs). A second lexical comparison here contradicted it on
+        # valid unpadded dates ("2022-9-30" orders after "2022-12-31");
+        # one implementation, no duplicate (codex P2 on #415 r5).
         expected = replace(run_data, end_date=config.validation_end_date)
     if config.data != expected or config.data_definition_sha256 != run_sha:
         raise PromotionError(
@@ -381,7 +408,7 @@ def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
             "miner writes one into every run directory; a run that cannot "
             "prove its data definition cannot be promoted."
         )
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    raw = _load_yaml_mapping(config_path, "run snapshot")
     data_section = raw.get("data")
     if not isinstance(data_section, dict) or not data_section:
         raise PromotionError(
@@ -389,7 +416,10 @@ def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
             "cannot bind the promotion to the mined data definition."
         )
     try:
-        data = DataConfig(**data_section)
+        # Unquoted YAML dates arrive as datetime.date — normalized here
+        # exactly like the miner's own loader (codex P1 on #415 r6), so
+        # digest recomputation and dataclass equality both see strings.
+        data = DataConfig(**normalize_yaml_dates(data_section))
     except TypeError as exc:
         raise PromotionError(
             f"run_dir config.yaml data section does not parse as the "
@@ -422,7 +452,7 @@ def _load_config(
     version: str,
 ) -> PromotionConfig:
     if config_path is not None and config_path.exists():
-        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        raw = _load_yaml_mapping(config_path, "promotion config")
     else:
         raw = {}
     if "data" in raw:
@@ -434,8 +464,8 @@ def _load_config(
             "operator config supplies criteria only."
         )
     data, data_sha = _load_run_data_config(run_dir)
-    crit_kwargs = dict(raw.get("criteria") or {})
-    validation_raw = raw.get("validation") or {}
+    crit_kwargs = normalize_yaml_dates(dict(raw.get("criteria") or {}))
+    validation_raw = normalize_yaml_dates(dict(raw.get("validation") or {}))
     unknown = set(validation_raw) - {"end_date"}
     if unknown:
         raise PromotionError(

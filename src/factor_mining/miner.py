@@ -22,7 +22,7 @@ import logging
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -110,6 +110,23 @@ class RunResult:
 # ---------------------------------------------------------------------------
 
 
+def normalize_yaml_dates(payload: dict) -> dict:
+    """ISO-stringify YAML date/datetime values in a config section.
+
+    Unquoted YAML dates (``end_date: 2022-12-31``) parse into
+    ``datetime.date`` objects, which ``DataConfig`` happily carries until
+    ``data_definition_sha256``'s ``json.dumps`` raises ``TypeError`` — at
+    config-dump time, AFTER a potentially multi-hour GP run (codex P1 on
+    #415 r6). Normalized at every yaml→config boundary (miner and
+    promote), so construction is the guarantee, not the dump.
+    """
+    return {
+        key: value.isoformat() if isinstance(value, (date, datetime))
+        else value
+        for key, value in payload.items()
+    }
+
+
 def load_config(path: str | Path) -> MinerConfig:
     """Parse a YAML config into a typed ``MinerConfig``.
 
@@ -127,7 +144,7 @@ def load_config(path: str | Path) -> MinerConfig:
         load_yaml_with_inheritance,
     )
     raw = load_yaml_with_inheritance(p)
-    data = DataConfig(**(raw.get("data") or {}))
+    data = DataConfig(**normalize_yaml_dates(raw.get("data") or {}))
     gp = GPConfig(**(raw.get("gp") or {}))
     fitness = FitnessConfig(**(raw.get("fitness") or {}))
     out_dir = Path(raw.get("output_dir", "research/mined_factors"))
@@ -473,6 +490,14 @@ def run_mining(config: MinerConfig) -> RunResult:
         ) from None
 
     try:
+        # Compute the canonical digest BEFORE mining (codex P1 on #415
+        # r6): a data definition the canonical serializer cannot hash
+        # (e.g. a programmatic caller passing datetime.date objects)
+        # must fail in seconds — with the reservation released — not at
+        # config-dump time after the GP burn, stranding a run directory
+        # with artifacts but no config.yaml.
+        definition_sha = data_definition_sha256(config.data)
+
         # Fingerprint the PIT inputs BEFORE anything reads them (external
         # finding on #415 r5): captured after the panel build, an ingest
         # refresh during the build would record the NEW identity for a
@@ -537,7 +562,7 @@ def run_mining(config: MinerConfig) -> RunResult:
         # post-mining hand-edit of this snapshot (that does not also forge
         # the hash) is caught instead of silently re-binding the pool to a
         # panel it was never mined on.
-        "data_definition_sha256": data_definition_sha256(config.data),
+        "data_definition_sha256": definition_sha,
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }

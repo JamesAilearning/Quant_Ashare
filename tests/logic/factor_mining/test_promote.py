@@ -453,6 +453,49 @@ def test_pit_run_without_fingerprints_is_refused(tmp_path):
         promote_run(cfg, dry_run=True)
 
 
+def test_unquoted_yaml_dates_are_normalized_everywhere(tmp_path):
+    # codex P1 #415 r6: unquoted YAML dates parse into datetime.date. The
+    # criteria/validation sections and the run snapshot's data section
+    # must all normalize to ISO strings, or digest recomputation and
+    # dataclass equality silently disagree with the miner's own strings.
+    pit_data = _seed_pit_inputs(tmp_path)
+    run_dir = _seed_run_dir(tmp_path, data=pit_data)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: 2023-06-30\n"
+        "validation:\n  end_date: 2024-12-31\n",  # unquoted on purpose
+    )
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    assert cfg.validation_end_date == "2024-12-31"
+    assert isinstance(cfg.validation_end_date, str)
+    assert cfg.data.end_date == "2024-12-31"
+    assert isinstance(cfg.data.end_date, str)
+
+
+def test_malformed_run_snapshot_is_a_controlled_refusal(tmp_path):
+    # codex P2 #415 r5: a truncated config.yaml raised yaml.YAMLError and
+    # a top-level list raised AttributeError — tracebacks, not the
+    # PromotionError refusal the CLI promises.
+    run_dir = _seed_run_dir(tmp_path)
+    cfg_path = _write_promote_yaml(tmp_path, "criteria: {}\n")
+    (run_dir / "config.yaml").write_text(
+        "data: [unclosed", encoding="utf-8")
+    with pytest.raises(PromotionError, match="not valid YAML"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    (run_dir / "config.yaml").write_text(
+        "- item1\n- item2\n", encoding="utf-8")
+    with pytest.raises(PromotionError, match="must be a YAML mapping"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
+def test_malformed_promotion_config_is_a_controlled_refusal(tmp_path):
+    run_dir = _seed_run_dir(tmp_path)
+    cfg_path = tmp_path / "promote.yaml"
+    cfg_path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
+    with pytest.raises(PromotionError, match="must be a YAML mapping"):
+        _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+
+
 def test_boundary_refuses_synthetic_extension(tmp_path):
     # codex P2 #415 r4: _load_config refuses this for the CLI; the
     # production-writing boundary must refuse the programmatic version.

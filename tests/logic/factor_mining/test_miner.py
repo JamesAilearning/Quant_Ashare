@@ -565,3 +565,57 @@ def test_run_mining_aborts_when_pit_inputs_change_mid_run(
     with pytest.raises(RuntimeError, match="changed while mining"):
         run_mining(cfg)
     assert not (Path(cfg.output_dir) / "runs" / "test-run").exists()
+
+
+# ---------------------------------------------------------------------------
+# YAML date normalization (codex P1 #415 r6)
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_normalizes_unquoted_yaml_dates(tmp_path):
+    # Unquoted YAML dates parse into datetime.date; DataConfig must carry
+    # ISO strings so the canonical digest never TypeErrors at dump time.
+    config_path = tmp_path / "dates.yaml"
+    config_path.write_text(
+        "run_id: date-run\n"
+        f"output_dir: {(tmp_path / 'mined').as_posix()}\n"
+        "data:\n"
+        "  mode: pit\n"
+        "  pit_provider_uri: bundle\n"
+        "  delisted_registry_path: registry.parquet\n"
+        "  start_date: 2018-01-01\n"
+        "  end_date: 2022-12-31\n"
+        "gp:\n  seed: 42\n"
+        "fitness: {}\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
+    assert cfg.data.start_date == "2018-01-01"
+    assert cfg.data.end_date == "2022-12-31"
+    assert isinstance(cfg.data.start_date, str)
+    assert isinstance(cfg.data.end_date, str)
+    # ...and the canonical digest is computable, not a TypeError.
+    from src.factor_mining.miner import data_definition_sha256
+
+    assert len(data_definition_sha256(cfg.data)) == 64
+
+
+def test_run_mining_unhashable_data_definition_fails_before_mining(
+        tmp_path, monkeypatch):
+    # A programmatic caller can still hand DataConfig a datetime.date;
+    # the digest must fail in seconds — reservation released — not at
+    # config-dump time after the GP burn (codex P1 #415 r6).
+    import datetime as _dt
+
+    from src.factor_mining import miner as miner_mod
+
+    smoke = load_config(_smoke_config(tmp_path))
+    bad_data = dataclasses.replace(
+        smoke.data, end_date=_dt.date(2022, 12, 31))  # type: ignore[arg-type]
+    cfg = dataclasses.replace(smoke, data=bad_data)
+    monkeypatch.setattr(
+        miner_mod, "build_panel",
+        lambda c: (_ for _ in ()).throw(AssertionError("mining started")))
+    with pytest.raises(TypeError):
+        run_mining(cfg)
+    assert not (Path(cfg.output_dir) / "runs" / "test-run").exists()
