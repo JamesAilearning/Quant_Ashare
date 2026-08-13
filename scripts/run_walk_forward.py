@@ -164,6 +164,15 @@ def _load_config(
             "Refusing to run with potentially-typo'd keys."
         )
 
+    if "mined_factor_pool_identity" in raw:
+        # Runner-stamped provenance, not an operator knob: a YAML that
+        # could set it would let a run CLAIM a promoted bundle it never
+        # bound (codex #422 r2).
+        raise ValueError(
+            f"Config {config_path} sets mined_factor_pool_identity, which is "
+            "stamped by the runner from the bound bundle's promotion "
+            "provenance and must not be declared in YAML."
+        )
     filtered = {k: v for k, v in raw.items() if k in valid_fields}
     wf_config = WalkForwardConfig(**filtered)
     provider_uri = raw.get("provider_uri")
@@ -371,6 +380,36 @@ def main(argv: list[str] | None = None) -> None:
 
     _logger.info("Initialising qlib runtime (provider_uri=%s)", qlib_config.provider_uri)
     init_qlib_canonical(qlib_config)
+
+    if mined_factor_bundle is not None and (
+            wf_config.feature_handler == ALPHA158_PLUS_MINED_HANDLER_NAME):
+        # The promotion comparison's treatment arm may only bind a pool
+        # the campaign ledger authorised, and the run report must NAME
+        # that pool: the ruler issues a decision-grade verdict for the
+        # registered variant, so "some valid FactorPool was on disk"
+        # cannot be the whole provenance (codex #422 r2). Verify before
+        # qlib touches anything, and stamp the identity into the config
+        # that gets serialised into walk_forward_report.json.
+        import dataclasses
+
+        from src.factor_mining.promotion_binding import (
+            PROMOTION_LEDGER_ENTRY,
+            pool_identity_string,
+            verify_promoted_bundle,
+        )
+        identity = verify_promoted_bundle(
+            mined_factor_bundle.pool_dir,
+            PROJECT_ROOT / "docs" / "prereg" / "pv_incremental_ledger.yaml",
+            entry_id=PROMOTION_LEDGER_ENTRY,
+        )
+        wf_config = dataclasses.replace(
+            wf_config,
+            mined_factor_pool_identity=pool_identity_string(identity),
+        )
+        _logger.info(
+            "Promoted bundle verified against ledger %s: %s",
+            PROMOTION_LEDGER_ENTRY, identity["candidate_id"],
+        )
 
     if mined_factor_bundle is not None:
         _logger.info(

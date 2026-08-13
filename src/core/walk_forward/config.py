@@ -47,6 +47,13 @@ class WalkForwardConfig:
     # Universe & features
     instruments: str = "csi300"
     feature_handler: str = "Alpha158"
+    # Identity of the promoted factor bundle a mined-pool handler is bound
+    # to, stamped by the runner (never set in YAML). Without it the run
+    # report would say only ``feature_handler: "Alpha158PlusMined"`` while
+    # the pool that actually produced the features stayed unnamed — and a
+    # decision-grade paired verdict would rest on an unprovable input
+    # (codex #422 r2). Empty for every non-mined handler.
+    mined_factor_pool_identity: str = ""
     # Holding horizon H in trading days (buy T+1 close, sell T+1+H close).
     # H=1 = today's 2-day Alpha158 label, byte-identical (REGEN-2 anchor).
     # Threaded to the feature dataset (label expression + cache key), the

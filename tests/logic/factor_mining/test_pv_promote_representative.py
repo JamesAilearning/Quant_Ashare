@@ -44,6 +44,26 @@ def _sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _ledger(tmp_path: Path, digest: str) -> Path:
+    """A stand-in campaign ledger vouching for ``digest``.
+
+    ``load_verdict`` consults the COMMITTED ledger by default (codex
+    #422 r2); tests supply their own so they pin the mechanism rather
+    than the repository's current E007 value.
+    """
+    import yaml
+
+    p = tmp_path / "ledger.yaml"
+    p.write_text(yaml.safe_dump({
+        "protocol_id": "pv_incremental_v1",
+        "entries": [{
+            "id": "E007", "when": "2026-08-12", "kind": "result", "what": "x",
+            "artifacts": [f"output/x/fwer_verdict.json#sha256={digest}"],
+        }],
+    }), encoding="utf-8")
+    return p
+
+
 def _write_json(path: Path, payload) -> Path:
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -94,31 +114,31 @@ def _pool_dir(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_verdict_digest_mismatch_refuses(tmp_path):
+def test_verdict_not_recorded_by_the_ledger_refuses(tmp_path):
     path = _verdict(tmp_path)
-    with pytest.raises(PVPromoteError, match="ledger records"):
-        load_verdict(path, "0" * 64)
+    with pytest.raises(PVPromoteError, match="not the adjudication"):
+        load_verdict(path, None, ledger_path=_ledger(tmp_path, "0" * 64))
 
 
 def test_non_survivors_verdict_refuses(tmp_path):
     path = _verdict(tmp_path, verdict="clean_negative", survivors=[])
     with pytest.raises(PVPromoteError, match="not 'survivors'"):
-        load_verdict(path, _sha256_of(path))
+        load_verdict(path, None, ledger_path=_ledger(tmp_path, _sha256_of(path)))
 
 
-def test_unpinned_verdict_refuses(tmp_path):
-    # codex #422 r1: output/ is gitignored, so an OPTIONAL digest pin is
-    # no pin — a locally regenerated verdict could authorize the bundle
-    # and then supply its own digest as the provenance.
+def test_self_supplied_digest_is_not_authority(tmp_path):
+    # codex #422 r2: passing a verdict file together with its own freshly
+    # computed sha proves nothing — the LEDGER has to record that digest.
     path = _verdict(tmp_path)
-    for absent in (None, "", "not-a-digest"):
-        with pytest.raises(PVPromoteError, match="64-hex sha256"):
-            load_verdict(path, absent)
+    with pytest.raises(PVPromoteError, match="not the adjudication"):
+        load_verdict(path, _sha256_of(path),
+                     ledger_path=_ledger(tmp_path, "1" * 64))
 
 
-def test_survivors_verdict_loads(tmp_path):
+def test_survivors_verdict_vouched_by_the_ledger_loads(tmp_path):
     path = _verdict(tmp_path)
-    loaded = load_verdict(path, _sha256_of(path))
+    loaded = load_verdict(path, _sha256_of(path),
+                          ledger_path=_ledger(tmp_path, _sha256_of(path)))
     assert loaded["survivors"] == [_SURVIVOR_ID]
     assert loaded["_actual_sha256"] == _sha256_of(path)
 

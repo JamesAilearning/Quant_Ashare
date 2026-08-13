@@ -26,9 +26,12 @@ Identity discipline (why the matching works the way it does):
   ``candidate_id_for`` and must reproduce the manifest's id, so a
   hand-edited manifest cannot smuggle a different expression under a
   surviving id;
-* the verdict file's own sha256 must match ``--expect-verdict-sha256``
-  (the value the ledger records) when that flag is given, so a
-  locally-regenerated verdict cannot silently redirect the promotion.
+* the verdict file's own sha256 must match the digest the COMMITTED
+  ledger records for E007 — the authority is the ledger, never a value
+  handed over by the same invocation that uses it, so a locally
+  regenerated verdict (plus its own freshly computed sha) cannot
+  authorize a promotion. ``--expect-verdict-sha256`` remains available
+  as a cross-check and is verified against the ledger too.
 
 Ignition (operator): after the FWER verdict is adjudicated and its
 ledger entry is merged. Not auto-run.
@@ -39,7 +42,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -52,6 +54,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 PROTOCOL_ID = "pv_incremental_v1"
 PLAN_PATH = _REPO_ROOT / "docs" / "prereg" / "pv_incremental.yaml"
+LEDGER_PATH = _REPO_ROOT / "docs" / "prereg" / "pv_incremental_ledger.yaml"
+# The ledger entry whose recorded verdict digest authorises promotion.
+VERDICT_LEDGER_ENTRY = "E007"
 
 
 class PVPromoteError(RuntimeError):
@@ -82,30 +87,28 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_verdict(path: Path, expect_sha256: str) -> dict[str, Any]:
-    """Load the FWER verdict, pinned to the ledger's recorded digest.
+def load_verdict(path: Path, expect_sha256: str | None,
+                 *, ledger_path: Path = LEDGER_PATH,
+                 entry_id: str = VERDICT_LEDGER_ENTRY) -> dict[str, Any]:
+    """Load the FWER verdict, anchored to the COMMITTED ledger.
 
-    The pin is MANDATORY (codex #422 r1). ``output/`` is gitignored, so
-    a locally regenerated verdict — one that names the protocol, says
-    ``survivors`` and lists the candidate — would otherwise authorize a
-    promotion bundle and get its own digest recorded as provenance,
-    with nothing tying it to the signed E007 artifact. An optional
-    binding is not a binding.
+    The authority is the ledger entry's recorded digest, never a value
+    from this invocation (codex #422 r2): an operator could otherwise
+    regenerate an arbitrary ``survivors`` JSON, compute its own sha,
+    pass both, and authorize the bundle exactly as before the pin
+    existed. ``expect_sha256`` is still accepted and still checked —
+    as a cross-check against the ledger, not as the source of truth.
     """
-    if not path.is_file():
-        raise PVPromoteError(f"verdict file not found: {path}; refusing.")
-    actual = _sha256_file(path)
-    want = (expect_sha256 or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", want):
-        raise PVPromoteError(
-            f"--expect-verdict-sha256 {expect_sha256!r} is not a "
-            "64-hex sha256 — pass the digest the ledger records for the "
-            "signed verdict; refusing.")
-    if actual != want:
-        raise PVPromoteError(
-            f"verdict {path} digests to {actual} but the ledger "
-            f"records {want} — the adjudication artifact changed "
-            "after it was entered in the ledger; refusing.")
+    from src.factor_mining.promotion_binding import (  # noqa: PLC0415
+        PromotionBindingError,
+        verify_verdict_against_ledger,
+    )
+    try:
+        actual = verify_verdict_against_ledger(
+            path, ledger_path, entry_id=entry_id,
+            expect_sha256=expect_sha256)
+    except PromotionBindingError as exc:
+        raise PVPromoteError(str(exc)) from exc
     verdict = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(verdict, dict):
         raise PVPromoteError(f"{path} is not a JSON object; refusing.")
@@ -271,10 +274,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="The FWER adjudication verdict json.")
     p.add_argument("--candidate-id", required=True,
                    help="Operator-chosen representative (must be a survivor).")
-    p.add_argument("--expect-verdict-sha256", required=True,
-                   help="The verdict digest the LEDGER records (E007). "
-                        "Required: output/ is gitignored, so an unpinned "
-                        "verdict file is not evidence of anything.")
+    p.add_argument("--expect-verdict-sha256", default=None,
+                   help="Optional CROSS-CHECK against the ledger's recorded "
+                        "digest. The authority is the committed ledger entry "
+                        f"({VERDICT_LEDGER_ENTRY}), which is consulted "
+                        "whether or not this is passed.")
     p.add_argument("--out-dir", required=True,
                    help="Destination for the single-entry promotion bundle.")
     args = p.parse_args(argv)

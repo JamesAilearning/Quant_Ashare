@@ -56,6 +56,64 @@ class PairedPresetPins(unittest.TestCase):
         src = inspect.getsource(runner)
         self.assertIn("register_alpha158_plus_mined_handler(", src)
 
+    def test_runner_verifies_and_stamps_the_promoted_bundle(self) -> None:
+        # codex #422 r2: any valid FactorPool on disk used to be enough —
+        # the run report recorded only the generic handler name, so the
+        # ruler could issue a decision-grade verdict for the registered
+        # variant over unprovable inputs. The runner must verify the
+        # bundle against the ledger AND stamp its identity into the
+        # config that gets serialised into walk_forward_report.json.
+        import scripts.run_walk_forward as runner
+        from src.core.walk_forward import WalkForwardConfig
+
+        src = inspect.getsource(runner)
+        self.assertIn("verify_promoted_bundle(", src)
+        self.assertIn("pool_identity_string(", src)
+        self.assertIn("mined_factor_pool_identity", src)
+        # The stamp must be a real config field (that is what puts it in
+        # the report), and must default to empty for every other handler.
+        self.assertIn("mined_factor_pool_identity",
+                      WalkForwardConfig.__dataclass_fields__)
+        self.assertEqual(
+            "", WalkForwardConfig.__dataclass_fields__[
+                "mined_factor_pool_identity"].default)
+
+    def test_pool_identity_is_not_operator_settable(self) -> None:
+        # A YAML that could set the stamp would let a run CLAIM a
+        # promotion it never bound.
+        import scripts.run_walk_forward as runner
+
+        with self.assertRaises(ValueError) as ctx:
+            runner._load_config(
+                str(_BASELINE_PRESET),
+                {**_load(_BASELINE_PRESET),
+                 "provider_uri": "D:/qlib_data/x",
+                 "mined_factor_pool_identity": "forged"},
+            )
+        self.assertIn("mined_factor_pool_identity", str(ctx.exception))
+
+    def test_combined_handler_resolves_the_universe_before_loading(self) -> None:
+        # codex #422 r2: DataHandler.setup_data forwards the universe
+        # NAME to every nested loader, and StaticDataLoader reads a
+        # string as a literal ticker filter — it raises KeyError, which
+        # NestedDataLoader swallows and retries with instruments=None.
+        # Measured behaviour: no crash, but every instrument gets
+        # materialised on the mined side and the left join quietly
+        # discards them. Correct by accident, on a third-party exception
+        # path. The handler must resolve the universe up front instead.
+        from src.data import mined_factor_handler as mod
+
+        src = inspect.getsource(mod._make_alpha158_plus_mined_qlib_handler)
+        self.assertIn("D.list_instruments(", src)
+        self.assertIn("instruments=instruments", src)
+
+    def test_promotion_tool_anchors_authority_in_the_ledger(self) -> None:
+        # The digest may not come from the same invocation that uses it.
+        import scripts.research.pv_incremental_promote_representative as mod
+
+        src = inspect.getsource(mod.load_verdict)
+        self.assertIn("verify_verdict_against_ledger(", src)
+
     def test_treatment_preset_binds_a_pool_without_local_paths(self) -> None:
         # The runner REQUIRES these two keys for a mined-pool handler and
         # raises without them; tracked config must not hardcode machine

@@ -447,6 +447,7 @@ def _make_alpha158_plus_mined_qlib_handler(
       baseline arm does not carry cannot enter through the mined side.
     """
     from qlib.contrib.data.handler import Alpha158  # noqa: PLC0415
+    from qlib.data import D  # noqa: PLC0415
     from qlib.data.dataset.loader import (  # noqa: PLC0415
         NestedDataLoader,
         StaticDataLoader,
@@ -456,8 +457,26 @@ def _make_alpha158_plus_mined_qlib_handler(
         alpha158_label_expression,
     )
 
+    # Resolve a universe NAME to concrete tickers first, exactly as
+    # ``_make_qlib_handler`` does. ``DataHandler.setup_data`` forwards
+    # ``self.instruments`` to every nested loader, and StaticDataLoader
+    # reads a string as a literal ticker filter: it raises KeyError,
+    # which NestedDataLoader SWALLOWS and retries with instruments=None
+    # (codex #422 r2). The run would not crash — it would silently
+    # materialise every instrument in the mined frame and lean on the
+    # left join to discard them. Correct by accident, on a third-party
+    # exception path, at full panel cost. Resolve up front instead.
+    instruments = config.instruments
+    if isinstance(instruments, str):
+        instruments = D.list_instruments(
+            D.instruments(instruments),
+            start_time=config.train_start,
+            end_time=config.test_end,
+            as_list=True,
+        )
+
     handler = Alpha158(
-        instruments=config.instruments,
+        instruments=instruments,
         start_time=config.train_start,
         end_time=config.test_end,
         fit_start_time=config.train_start,
