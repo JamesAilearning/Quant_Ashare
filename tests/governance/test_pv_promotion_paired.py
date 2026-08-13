@@ -30,19 +30,88 @@ def _load(path: Path) -> dict:
 
 
 class PairedPresetPins(unittest.TestCase):
+    def test_treatment_handler_is_wired_into_the_real_runner(self) -> None:
+        # codex #422 r1 (P1): the preset's documented command could not
+        # reach a single treatment fold — the runner only recognised
+        # "MinedFactor", so Alpha158PlusMined never entered the registry
+        # and FeatureDatasetBuilder rejected it. Pin the REAL runner
+        # path: bundle extraction must accept the handler, and the
+        # PIT-runtime set must carry it (those two frozensets living
+        # apart is exactly how this slipped through).
+        import scripts.run_walk_forward as runner
+        from src.core.walk_forward.config import _PIT_FEATURE_HANDLERS
+        from src.data.mined_factor_handler import (
+            ALPHA158_PLUS_MINED_HANDLER_NAME,
+        )
+
+        self.assertIn(ALPHA158_PLUS_MINED_HANDLER_NAME,
+                      runner._MINED_POOL_HANDLERS)
+        self.assertIn(ALPHA158_PLUS_MINED_HANDLER_NAME,
+                      _PIT_FEATURE_HANDLERS)
+        # Every mined-pool handler resolves factors through
+        # PITDataProvider, so each one must also be in the set that
+        # forces the post-adjusted runtime.
+        self.assertTrue(runner._MINED_POOL_HANDLERS <= _PIT_FEATURE_HANDLERS)
+        # And the runner must actually call the combined registrar.
+        src = inspect.getsource(runner)
+        self.assertIn("register_alpha158_plus_mined_handler(", src)
+
+    def test_treatment_preset_binds_a_pool_without_local_paths(self) -> None:
+        # The runner REQUIRES these two keys for a mined-pool handler and
+        # raises without them; tracked config must not hardcode machine
+        # paths, so they come through env-var substitution.
+        treat = _load(_TREATMENT_PRESET)
+        raw = _TREATMENT_PRESET.read_text(encoding="utf-8")
+        self.assertIn("mined_factor_pool_dir", treat)
+        self.assertIn("mined_factor_delisted_registry_path", treat)
+        self.assertIn("${PV_PROMO_POOL_DIR}", raw)
+        for value in (treat["mined_factor_pool_dir"],
+                      treat["mined_factor_delisted_registry_path"]):
+            self.assertTrue(str(value).startswith("${"),
+                            f"{value!r} must be env-substituted")
+
+    def test_both_arms_share_the_post_adjusted_runtime(self) -> None:
+        # PITDataProvider pins the canonical runtime to post_adjusted, so
+        # the treatment arm cannot run in the parent's pre_adjusted
+        # default. The BASELINE arm must then declare the same mode by
+        # hand — otherwise fixing the treatment arm silently introduces a
+        # SECOND difference between the arms and the pairing is void.
+        base, treat = _load(_BASELINE_PRESET), _load(_TREATMENT_PRESET)
+        self.assertEqual("post_adjusted", base["adjust_mode"])
+        self.assertEqual("post_adjusted", treat["adjust_mode"])
+
     def test_arms_differ_only_in_feature_handler(self) -> None:
         # The whole point of a paired comparison: one difference. A
         # second drifted key (a different universe, benchmark, slippage,
-        # window) would make the verdict measure something other than
-        # the registered hypothesis.
+        # window, price-adjust mode) would make the verdict measure
+        # something other than the registered hypothesis.
+        #
+        # The allowance is an explicit WHITELIST, never a prefix rule:
+        # the two mined_factor_* keys below are how the single
+        # registered difference (the added factor column) is bound, and
+        # output_dir must differ or the arms would overwrite each other.
+        # `mined_factor_universe_name_override` is deliberately NOT
+        # whitelisted — it would evaluate the factor on a different
+        # universe than the arm trades, i.e. a real second difference.
+        allowed = {
+            "feature_handler", "output_dir",
+            "mined_factor_pool_dir",
+            "mined_factor_delisted_registry_path",
+        }
         base, treat = _load(_BASELINE_PRESET), _load(_TREATMENT_PRESET)
         differing = {
             k for k in set(base) | set(treat)
             if base.get(k) != treat.get(k)
         }
-        self.assertEqual({"feature_handler", "output_dir"}, differing)
+        self.assertEqual(allowed, differing)
         self.assertEqual("Alpha158", base["feature_handler"])
         self.assertEqual("Alpha158PlusMined", treat["feature_handler"])
+        # The baseline arm must not carry ANY mined binding key, and the
+        # treatment arm must not carry one outside the whitelist.
+        self.assertEqual([], [k for k in base if k.startswith("mined_factor_")])
+        self.assertEqual(
+            [], [k for k in treat
+                 if k.startswith("mined_factor_") and k not in allowed])
 
     def test_decision_window_is_oos_dev_only(self) -> None:
         # overall_start + train + valid MUST land the first test window

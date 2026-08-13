@@ -38,6 +38,12 @@ _EXPR_STR = _EXPR.to_qlib_string()
 _SURVIVOR_ID = candidate_id_for(1, _EXPR_STR)
 
 
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _write_json(path: Path, payload) -> Path:
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -97,13 +103,24 @@ def test_verdict_digest_mismatch_refuses(tmp_path):
 def test_non_survivors_verdict_refuses(tmp_path):
     path = _verdict(tmp_path, verdict="clean_negative", survivors=[])
     with pytest.raises(PVPromoteError, match="not 'survivors'"):
-        load_verdict(path, None)
+        load_verdict(path, _sha256_of(path))
+
+
+def test_unpinned_verdict_refuses(tmp_path):
+    # codex #422 r1: output/ is gitignored, so an OPTIONAL digest pin is
+    # no pin — a locally regenerated verdict could authorize the bundle
+    # and then supply its own digest as the provenance.
+    path = _verdict(tmp_path)
+    for absent in (None, "", "not-a-digest"):
+        with pytest.raises(PVPromoteError, match="64-hex sha256"):
+            load_verdict(path, absent)
 
 
 def test_survivors_verdict_loads(tmp_path):
-    loaded = load_verdict(_verdict(tmp_path), None)
+    path = _verdict(tmp_path)
+    loaded = load_verdict(path, _sha256_of(path))
     assert loaded["survivors"] == [_SURVIVOR_ID]
-    assert len(loaded["_actual_sha256"]) == 64
+    assert loaded["_actual_sha256"] == _sha256_of(path)
 
 
 # ---------------------------------------------------------------------------

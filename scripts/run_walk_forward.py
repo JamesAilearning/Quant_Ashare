@@ -58,7 +58,9 @@ from src.data.bundle_manifest import (  # noqa: E402
     validate_test_end_against_bundle,
 )
 from src.data.mined_factor_handler import (  # noqa: E402
+    ALPHA158_PLUS_MINED_HANDLER_NAME,
     MinedFactorBundle,
+    register_alpha158_plus_mined_handler,
     register_mined_factor_handler,
 )
 
@@ -179,35 +181,53 @@ def _load_config(
     return wf_config, qlib_cfg
 
 
+# Feature handlers whose factors come out of a mined pool: both take the
+# same ``mined_factor_*`` YAML keys and the same bundle. Kept in sync with
+# ``src.core.walk_forward.config._PIT_FEATURE_HANDLERS`` (which enforces the
+# post-adjusted runtime they all require) by a governance pin — a handler
+# that reaches PITDataProvider but is missing from EITHER set fails at
+# ignition, not at review.
+_MINED_POOL_HANDLERS = frozenset({
+    "MinedFactor", ALPHA158_PLUS_MINED_HANDLER_NAME,
+})
+
+
 def _maybe_build_mined_factor_bundle(
     raw: dict[str, Any],
     wf_config: WalkForwardConfig,
     provider_uri: str,
 ) -> MinedFactorBundle | None:
     """Extract a ``MinedFactorBundle`` from the raw YAML when the
-    handler is ``"MinedFactor"``; else return ``None``.
+    handler is one of the mined-pool-backed ones; else return ``None``.
 
-    Raises ``ValueError`` when ``feature_handler == "MinedFactor"``
-    and one of the two required keys (``mined_factor_pool_dir``,
+    Both ``"MinedFactor"`` (mined columns alone) and
+    ``"Alpha158PlusMined"`` (Alpha158 + mined columns, the promotion
+    comparison's treatment arm) resolve their factors through the same
+    bundle, so they take the same YAML keys and the same validation.
+
+    Raises ``ValueError`` when such a handler is configured and one of
+    the two required keys (``mined_factor_pool_dir``,
     ``mined_factor_delisted_registry_path``) is missing or empty.
     Logs a WARNING when ``mined_factor_pit_provider_uri`` is set to a
     value distinct from the top-level ``provider_uri``.
     """
-    if wf_config.feature_handler != "MinedFactor":
+    if wf_config.feature_handler not in _MINED_POOL_HANDLERS:
         return None
     pool_dir = str(raw.get("mined_factor_pool_dir") or "").strip()
     registry_path = str(raw.get("mined_factor_delisted_registry_path") or "").strip()
     if not pool_dir:
         raise ValueError(
-            "feature_handler='MinedFactor' requires the YAML to set "
-            "mined_factor_pool_dir to the directory of a promoted factor "
+            f"feature_handler={wf_config.feature_handler!r} requires the "
+            "YAML to set mined_factor_pool_dir to the directory of a "
+            "promoted factor "
             "pool (e.g. research/mined_factors/production/v1). See "
             "docs/factor_mining/user_guide.md for the bind workflow."
         )
     if not registry_path:
         raise ValueError(
-            "feature_handler='MinedFactor' requires the YAML to set "
-            "mined_factor_delisted_registry_path to the PIT delisted "
+            f"feature_handler={wf_config.feature_handler!r} requires the "
+            "YAML to set mined_factor_delisted_registry_path to the PIT "
+            "delisted "
             "registry parquet. See docs/factor_mining/user_guide.md."
         )
     pit_uri_raw = str(raw.get("mined_factor_pit_provider_uri") or "").strip()
@@ -354,15 +374,19 @@ def main(argv: list[str] | None = None) -> None:
 
     if mined_factor_bundle is not None:
         _logger.info(
-            "Binding MinedFactor handler (pool_dir=%s)",
-            mined_factor_bundle.pool_dir,
+            "Binding %s handler (pool_dir=%s)",
+            wf_config.feature_handler, mined_factor_bundle.pool_dir,
         )
         # replace=True so re-runs in the same Python process re-bind
         # the registry slot to the new bundle without raising
         # "already registered". The spec
         # v2-feature-handler-registry's "registered via explicit bind"
         # requirement names this script as an authorised bind site.
-        register_mined_factor_handler(mined_factor_bundle, replace=True)
+        if wf_config.feature_handler == ALPHA158_PLUS_MINED_HANDLER_NAME:
+            register_alpha158_plus_mined_handler(
+                mined_factor_bundle, replace=True)
+        else:
+            register_mined_factor_handler(mined_factor_bundle, replace=True)
 
     result = WalkForwardEngine.run(wf_config, resume_mode=resume_mode)
 

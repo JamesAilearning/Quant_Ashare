@@ -35,6 +35,14 @@ attribution_sleeve_grouping: true
 risk_constraints_enabled: true
 risk_constraints_calibration: "campaign_v1"
 slippage_bps: 5.0
+# **两臂同时声明**（codex #422 r1）：treatment 臂的因子经 PITDataProvider
+# 求值，该 provider 把 canonical 运行时钉在 post_adjusted，故 walk-forward
+# 必须同模式（否则每折以 QlibRuntimeInitError 死）。基线臂本可用父配置的
+# pre_adjusted 缺省——但那会让两臂多出**第二处差异**，配对比较的前提当场
+# 破掉。故基线臂在此显式跟随：判定的是"加因子"这一个变量，价格口径两边
+# 同为 post_adjusted。绝对数字因此与生产 pre_adjusted 口径不可直接比，
+# 本步判据是两臂之差，不是任一臂的绝对值。
+adjust_mode: "post_adjusted"
 feature_handler: "Alpha158"
 overall_start: "2020-10-01"
 overall_end: "2024-12-31"

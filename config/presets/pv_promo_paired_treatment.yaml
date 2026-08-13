@@ -5,13 +5,17 @@
 # 因子列（pv001_2789e60e，cs_demean(abs($turnover_rate))）。
 # 判定窗、口径、圣规、run discipline 见基线臂档头，此处不复述。
 #
-# **handler 绑定不在 YAML 里**：Alpha158PlusMined 需要一个
-# MinedFactorBundle（晋升 bundle 目录 + PIT 路径），由点火脚本在
-# 进程启动时调用
-# src.data.mined_factor_handler.register_alpha158_plus_mined_handler
-# 完成注册。这样做的原因是 bundle 路径是本机绝对路径（tracked config
-# 不得硬编码本机路径），而 bundle 的内容指纹已进 feature-dataset
-# cache identity——绑错池不会静默复用另一池的特征。
+# **handler 绑定走 runner 的既有 bind 站点**（codex #422 r1 修正）：
+# scripts/run_walk_forward.py 认 mined_factor_* 键并在 qlib 初始化后
+# 注册 Alpha158PlusMined。路径经环境变量注入——tracked config 不得
+# 硬编码本机路径；未设 PV_PROMO_POOL_DIR 时 YAML 加载器 fail-loud
+# （YamlEnvVarError），不会静默跑成别的池。bundle 内容指纹已进
+# feature-dataset cache identity，绑错池不会静默复用另一池的特征。
+#
+# 点火（两臂顺序无关，各一次不间断调用）：
+#     export QUANT_PROVIDER_URI=D:/qlib_data/my_cn_data_pit_2015
+#     export PV_PROMO_POOL_DIR=<晋升 bundle 目录>
+#     python scripts/run_walk_forward.py config/presets/pv_promo_paired_treatment.yaml
 #
 # 晋升代表的来源与授权（provenance 在 bundle 目录的
 # promotion_provenance.json）：E007 FWER 裁决 survivors 名单；
@@ -25,7 +29,12 @@ attribution_sleeve_grouping: true
 risk_constraints_enabled: true
 risk_constraints_calibration: "campaign_v1"
 slippage_bps: 5.0
+# 见基线臂同名键的注释：两臂同为 post_adjusted，PIT 因子求值与
+# canonical 运行时同模式，且配对差异仍只有 feature_handler。
+adjust_mode: "post_adjusted"
 feature_handler: "Alpha158PlusMined"
+mined_factor_pool_dir: "${PV_PROMO_POOL_DIR}"
+mined_factor_delisted_registry_path: "${QUANT_DELISTED_REGISTRY:-D:/qlib_data/tushare_raw/delisted_registry.parquet}"
 overall_start: "2020-10-01"
 overall_end: "2024-12-31"
 output_dir: "output/walk_forward/pv_promo_paired_treatment"

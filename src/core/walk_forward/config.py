@@ -37,7 +37,7 @@ class WalkForwardError(RuntimeError):
 # ``adjust_mode == post_adjusted`` — enforced in ``__post_init__`` (see
 # v2-canonical-runtime-orchestration). A ``frozenset`` is deliberately the
 # right size: do NOT grow this into a dynamic "provider declares its mode".
-_PIT_FEATURE_HANDLERS = frozenset({"MinedFactor"})
+_PIT_FEATURE_HANDLERS = frozenset({"MinedFactor", "Alpha158PlusMined"})
 
 
 @dataclass(frozen=True)

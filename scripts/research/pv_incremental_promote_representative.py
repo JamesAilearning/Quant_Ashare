@@ -82,22 +82,30 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_verdict(path: Path, expect_sha256: str | None) -> dict[str, Any]:
-    """Load the FWER verdict, optionally pinned to the ledger's digest."""
+def load_verdict(path: Path, expect_sha256: str) -> dict[str, Any]:
+    """Load the FWER verdict, pinned to the ledger's recorded digest.
+
+    The pin is MANDATORY (codex #422 r1). ``output/`` is gitignored, so
+    a locally regenerated verdict — one that names the protocol, says
+    ``survivors`` and lists the candidate — would otherwise authorize a
+    promotion bundle and get its own digest recorded as provenance,
+    with nothing tying it to the signed E007 artifact. An optional
+    binding is not a binding.
+    """
     if not path.is_file():
         raise PVPromoteError(f"verdict file not found: {path}; refusing.")
     actual = _sha256_file(path)
-    if expect_sha256 is not None:
-        want = expect_sha256.strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", want):
-            raise PVPromoteError(
-                f"--expect-verdict-sha256 {expect_sha256!r} is not a "
-                "64-hex sha256; refusing.")
-        if actual != want:
-            raise PVPromoteError(
-                f"verdict {path} digests to {actual} but the ledger "
-                f"records {want} — the adjudication artifact changed "
-                "after it was entered in the ledger; refusing.")
+    want = (expect_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", want):
+        raise PVPromoteError(
+            f"--expect-verdict-sha256 {expect_sha256!r} is not a "
+            "64-hex sha256 — pass the digest the ledger records for the "
+            "signed verdict; refusing.")
+    if actual != want:
+        raise PVPromoteError(
+            f"verdict {path} digests to {actual} but the ledger "
+            f"records {want} — the adjudication artifact changed "
+            "after it was entered in the ledger; refusing.")
     verdict = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(verdict, dict):
         raise PVPromoteError(f"{path} is not a JSON object; refusing.")
@@ -263,9 +271,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="The FWER adjudication verdict json.")
     p.add_argument("--candidate-id", required=True,
                    help="Operator-chosen representative (must be a survivor).")
-    p.add_argument("--expect-verdict-sha256", default=None,
-                   help="The verdict digest the ledger records; when given, "
-                        "a mismatch refuses.")
+    p.add_argument("--expect-verdict-sha256", required=True,
+                   help="The verdict digest the LEDGER records (E007). "
+                        "Required: output/ is gitignored, so an unpinned "
+                        "verdict file is not evidence of anything.")
     p.add_argument("--out-dir", required=True,
                    help="Destination for the single-entry promotion bundle.")
     args = p.parse_args(argv)

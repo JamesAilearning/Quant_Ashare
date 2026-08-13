@@ -255,12 +255,21 @@ entries:
       单向揭盲终裁）；INCONCLUSIVE/BASELINE_BETTER → 照录不晋升。
       2025 holdout 保持盲态。点火在操作人；两臂各一次不间断调用、
       干净树；本条目入 main 先于点火（台账先行，E002 教训）。
+      【r1 修订，签署前】codex #422 三条 P1 修复带来两处语义补记：
+      ① 两臂均显式 adjust_mode=post_adjusted——treatment 的因子经
+      PITDataProvider 求值，该 provider 把 canonical 运行时钉在
+      post_adjusted；若只改 treatment，两臂会多出第二处差异而配对
+      失效，故基线臂同步声明。绝对数字因此与生产 pre_adjusted 口径
+      不可直接比，本步判据是两臂之差。② 晋升 bundle 由 runner 既有
+      bind 站点注册（mined_factor_* 键经环境变量注入，未设则
+      fail-loud），--expect-verdict-sha256 由可选改为必需（output/
+      不入 git，可选的绑定不是绑定）。
       结果另行登记为 E009。
     artifacts:
       - "openspec/changes/2026-08-12-pv-promotion-paired-run/"
       - "docs/prereg/pv_promotion_paired.yaml#sha256(仓库规范字节,LF)=326408e28e7c02442a439a23b01b5063f2dc84d643ee8459cccdedd5819c1861"
-      - "config/presets/pv_promo_paired_baseline.yaml#sha256(LF)=9263643a7c54542a228d378a14d14fade27dcb7b429c2c379fc512f40ac56814"
-      - "config/presets/pv_promo_paired_treatment.yaml#sha256(LF)=031ad346e3a39f0f53e93cf39b2df7b42249bc12770787e0446014dde1ef46f4"
+      - "config/presets/pv_promo_paired_baseline.yaml#sha256(LF)=4b9e582f1ed7d1786d898663281a89c0668258d3fb674e6d4482497a755c47a3"
+      - "config/presets/pv_promo_paired_treatment.yaml#sha256(LF)=d09c94422aeb50eda8745f7abb5cff01c132cd380e2458355d2a19cfa627d71d"
       - "晋升 bundle 由 scripts/research/pv_incremental_promote_representative.py 生成（--expect-verdict-sha256 绑 E007 的 195c21bc…）;其 promotion_provenance.json 与 pool sha 随 E009 照录"
     numbers:
       representative: pv001_2789e60e
@@ -268,6 +277,7 @@ entries:
       decision_window: "2023-01-01..2024-12-31"
       expected_folds: 8
       arms: 2
+      adjust_mode_both_arms: post_adjusted
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>
