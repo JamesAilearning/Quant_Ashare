@@ -598,8 +598,15 @@ def _git_output_safe(call: ast.Call) -> bool:
                         return False  # explicit non-UTF-8 codec
                     pin_seen = True
                 elif key.startswith(_GIT_INCLUDE_KEY_PREFIXES):
-                    # The included file may redefine the codec.
+                    # The included file is expanded AT THIS POSITION and
+                    # may redefine ANY key this scan is tracking — the
+                    # codec and the fsmonitor alike (codex P2 r35 on
+                    # #410; verified: an include after the kill switch
+                    # makes git spawn the hook again, while the same
+                    # include before it stays suppressed). Both states
+                    # reset; a later literal -c re-establishes them.
                     pin_seen = False
+                    fsmonitor_off = False
                 elif key == _GIT_FSMONITOR_KEY:
                     fsmonitor_off = (raw_value.strip().lower()
                                      in _GIT_FSMONITOR_OFF_VALUES)
@@ -1572,10 +1579,24 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "-c", "i18n.logOutputEncoding=utf-8", "-c", "include.path=x.cfg",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
-    ("an include BEFORE the pin is overridden by it",
+    ("an include BEFORE both switches is overridden by them",
+     'subprocess.run(["git", "-c", "include.path=x.cfg",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "core.fsmonitor=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
+     ' encoding="utf-8")', False),
+    ("...but a switch before the include does not survive it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "include.path=x.cfg", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an include AFTER the fsmonitor kill switch invalidates it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "include.path=x.cfg", "status"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an include BEFORE the kill switch is overridden by it",
+     'subprocess.run(["git", "-c", "include.path=x.cfg",'
+     ' "-c", "core.fsmonitor=false", "status"], text=True,'
      ' encoding="utf-8")', False),
     ("includeIf counts the same",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
