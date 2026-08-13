@@ -505,3 +505,117 @@ def test_module_source_has_no_top_level_qlib_import():
                 f"Top-level `from {module} import ...` found in "
                 "mined_factor_handler.py — qlib must be imported lazily"
             )
+
+
+# ---------------------------------------------------------------------------
+# Alpha158PlusMined — the paired-comparison treatment arm (PV-DP-7 step 2)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_qlib_loader(frame):
+    """Stand-in for Alpha158's QlibDataLoader in the composition test.
+
+    Subclasses qlib's own ``DataLoader``: ``NestedDataLoader`` accepts a
+    ready instance ONLY when it passes that isinstance check, otherwise
+    it tries to build one from a config dict. The production path hands
+    it a real ``QlibDataLoader``, so the double must be a real
+    ``DataLoader`` too or the test would exercise a path production
+    never takes.
+    """
+    from qlib.data.dataset.loader import DataLoader
+
+    class _FakeQlibLoader(DataLoader):
+        def load(self, instruments=None, start_time=None, end_time=None):
+            return frame
+
+    return _FakeQlibLoader()
+
+
+def _alpha158_like_frame(dates, tickers):
+    """A two-level-column frame shaped like Alpha158's loader output."""
+    index = pd.MultiIndex.from_product(
+        [pd.DatetimeIndex(dates), tickers], names=["datetime", "instrument"]
+    )
+    n = len(index)
+    return pd.DataFrame(
+        {
+            ("feature", "KMID"): np.linspace(0, 1, n),
+            ("feature", "KLEN"): np.linspace(1, 2, n),
+            ("label", "LABEL0"): np.linspace(-1, 1, n),
+        },
+        index=index,
+    ).sort_index(axis=1)
+
+
+def test_combined_loader_adds_mined_columns_keeping_alpha158_rows_and_label():
+    # The composition contract, exercised through qlib's real
+    # NestedDataLoader: mined columns join on, the baseline arm's rows
+    # and its LABEL0 values survive untouched, and a mined row the
+    # baseline lacks cannot widen the frame (join="left").
+    NestedDataLoader = pytest.importorskip(
+        "qlib.data.dataset.loader"
+    ).NestedDataLoader
+    StaticDataLoader = pytest.importorskip(
+        "qlib.data.dataset.loader"
+    ).StaticDataLoader
+
+    dates = pd.date_range("2024-01-01", periods=3, freq="D")
+    tickers = ["T000", "T001"]
+    alpha = _alpha158_like_frame(dates, tickers)
+
+    mined_index = pd.MultiIndex.from_product(
+        # One EXTRA date the baseline arm does not carry.
+        [pd.date_range("2024-01-01", periods=4, freq="D"), tickers],
+        names=["datetime", "instrument"],
+    )
+    mined = pd.DataFrame(
+        {"mf_deadbeefdeadbeef": np.arange(len(mined_index), dtype=float)},
+        index=mined_index,
+    )
+
+    nested = NestedDataLoader(
+        dataloader_l=[
+            _make_fake_qlib_loader(alpha),
+            StaticDataLoader(config={"feature": mined}),
+        ],
+        join="left",
+    )
+    out = nested.load()
+
+    assert out.index.equals(alpha.index), "baseline row set must be preserved"
+    assert ("feature", "mf_deadbeefdeadbeef") in out.columns
+    assert ("feature", "KMID") in out.columns
+    pd.testing.assert_series_equal(
+        out[("label", "LABEL0")], alpha[("label", "LABEL0")],
+    )
+
+
+def test_combined_handler_registers_with_composite_cache_identity(tmp_path):
+    from src.data.feature_dataset_builder import (
+        get_feature_handler_cache_identity,
+    )
+    from src.data.mined_factor_handler import (
+        ALPHA158_PLUS_MINED_HANDLER_NAME,
+        register_alpha158_plus_mined_handler,
+    )
+
+    _seed_pool(tmp_path / "pool")
+    bundle = MinedFactorBundle(pool_dir=tmp_path / "pool")
+    try:
+        register_alpha158_plus_mined_handler(bundle)
+        assert ALPHA158_PLUS_MINED_HANDLER_NAME in list_supported_feature_handlers()
+        identity = get_feature_handler_cache_identity(
+            ALPHA158_PLUS_MINED_HANDLER_NAME)
+        # Composite: neither a bare Alpha158 dataset nor a differently
+        # bound pool's dataset can be served under this name.
+        assert identity.startswith("alpha158_default+")
+        assert "mined_factor:" in identity
+
+        # Re-binding to a DIFFERENT pool must change the identity.
+        _seed_pool(tmp_path / "pool2", fitnesses=(3.0, 1.0, 0.5))
+        register_alpha158_plus_mined_handler(
+            MinedFactorBundle(pool_dir=tmp_path / "pool2"), replace=True)
+        assert get_feature_handler_cache_identity(
+            ALPHA158_PLUS_MINED_HANDLER_NAME) != identity
+    finally:
+        _reset_feature_handler_registry_to_defaults()

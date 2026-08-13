@@ -1,0 +1,31 @@
+# pv_incremental_v1 晋升门配对比较 —— **处理臂 B**（PV-DP-7 步 3/4）。
+#
+# 与基线臂（pv_promo_paired_baseline.yaml）**逐键相同，唯一差异 =
+# feature_handler**：Alpha158PlusMined = Alpha158 全特征 + 晋升代表
+# 因子列（pv001_2789e60e，cs_demean(abs($turnover_rate))）。
+# 判定窗、口径、圣规、run discipline 见基线臂档头，此处不复述。
+#
+# **handler 绑定不在 YAML 里**：Alpha158PlusMined 需要一个
+# MinedFactorBundle（晋升 bundle 目录 + PIT 路径），由点火脚本在
+# 进程启动时调用
+# src.data.mined_factor_handler.register_alpha158_plus_mined_handler
+# 完成注册。这样做的原因是 bundle 路径是本机绝对路径（tracked config
+# 不得硬编码本机路径），而 bundle 的内容指纹已进 feature-dataset
+# cache identity——绑错池不会静默复用另一池的特征。
+#
+# 晋升代表的来源与授权（provenance 在 bundle 目录的
+# promotion_provenance.json）：E007 FWER 裁决 survivors 名单；
+# orientation −1 **仅照录不施加**——树模型分裂方向自适应，翻转不改变
+# 可学信息；评估侧（E007）的 IS 符号规范化是另一套语义，两者不混用。
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 5.0
+feature_handler: "Alpha158PlusMined"
+overall_start: "2020-10-01"
+overall_end: "2024-12-31"
+output_dir: "output/walk_forward/pv_promo_paired_treatment"

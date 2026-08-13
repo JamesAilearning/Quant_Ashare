@@ -411,3 +411,118 @@ def register_mined_factor_handler(
     register_feature_handler(
         name, factory, replace=replace, cache_identity=_identity,
     )
+
+
+# ---------------------------------------------------------------------------
+# Alpha158PlusMined — the paired-comparison treatment arm (PV-DP-7 step 2)
+# ---------------------------------------------------------------------------
+
+ALPHA158_PLUS_MINED_HANDLER_NAME = "Alpha158PlusMined"
+
+
+def _make_alpha158_plus_mined_qlib_handler(
+    mined_features: pd.DataFrame,
+    config: FeatureDatasetConfig,
+) -> Any:
+    """Alpha158's own handler with the mined columns merged in.
+
+    The treatment arm of a paired comparison may differ from the
+    baseline arm in EXACTLY ONE respect: the extra feature columns.
+    So this does not rebuild Alpha158's semantics — it defers
+    Alpha158's own data load (``init_data=False``), wraps its own
+    loader in qlib's ``NestedDataLoader`` alongside a
+    ``StaticDataLoader`` carrying the mined columns, and lets the
+    handler load. Alpha158's label expression, its default
+    processors, and its row set therefore come from Alpha158 itself
+    rather than from a re-derivation here:
+
+    * label — built by Alpha158's loader from the same expression the
+      baseline arm uses (``alpha158_label_expression``, passed
+      explicitly so the horizon override applies identically to both
+      arms);
+    * processors — untouched, because the handler instance IS an
+      ``Alpha158``;
+    * rows — ``NestedDataLoader``'s ``join="left"`` keeps the FIRST
+      loader's index, i.e. Alpha158's, so an instrument-date the
+      baseline arm does not carry cannot enter through the mined side.
+    """
+    from qlib.contrib.data.handler import Alpha158  # noqa: PLC0415
+    from qlib.data.dataset.loader import (  # noqa: PLC0415
+        NestedDataLoader,
+        StaticDataLoader,
+    )
+
+    from src.data.feature_dataset_builder import (  # noqa: PLC0415
+        alpha158_label_expression,
+    )
+
+    handler = Alpha158(
+        instruments=config.instruments,
+        start_time=config.train_start,
+        end_time=config.test_end,
+        fit_start_time=config.train_start,
+        fit_end_time=config.train_end,
+        label=(
+            [alpha158_label_expression(config.label_horizon_days)],
+            ["LABEL0"],
+        ),
+        # Defer the load so the loader can be composed first; without
+        # this the handler would load Alpha158 alone and then have to
+        # be re-loaded, paying the qlib expression pass twice.
+        init_data=False,
+    )
+    handler.data_loader = NestedDataLoader(
+        dataloader_l=[
+            handler.data_loader,
+            StaticDataLoader(config={"feature": mined_features}),
+        ],
+        join="left",
+    )
+    handler.setup_data()
+    return handler
+
+
+def _make_alpha158_plus_mined_factory(
+    bundle: MinedFactorBundle,
+) -> Callable[[FeatureDatasetConfig], Any]:
+    """Closure-style factory for the combined handler."""
+
+    def _factory(config: FeatureDatasetConfig) -> Any:
+        # Same ordering discipline as the MinedFactor factory: validate
+        # the pool before paying the PIT load.
+        pool = _load_pool_or_raise(bundle)
+        panel, _ = _resolve_panel(bundle, config)
+        mined = _materialise_features(pool, panel)
+        return _make_alpha158_plus_mined_qlib_handler(mined, config)
+
+    _factory.__doc__ = (
+        f"Alpha158PlusMined handler factory bound to "
+        f"pool_dir={bundle.pool_dir!r}"
+    )
+    return _factory
+
+
+def register_alpha158_plus_mined_handler(
+    bundle: MinedFactorBundle,
+    *,
+    name: str = ALPHA158_PLUS_MINED_HANDLER_NAME,
+    replace: bool = False,
+) -> None:
+    """Register the Alpha158 + mined-factor combined handler.
+
+    The cache identity composes Alpha158's constant identity with the
+    bundle fingerprint, so the feature-dataset cache can never serve a
+    plain-Alpha158 dataset (or a differently-bound pool's dataset)
+    under this name.
+    """
+    factory = _make_alpha158_plus_mined_factory(bundle)
+
+    def _identity() -> str:
+        return (
+            "alpha158_default+"
+            + _compute_bundle_cache_identity(bundle)
+        )
+
+    register_feature_handler(
+        name, factory, replace=replace, cache_identity=_identity,
+    )

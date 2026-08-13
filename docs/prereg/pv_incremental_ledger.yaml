@@ -224,6 +224,50 @@ entries:
       script_sha256_git_blob:
         pv_incremental_eval.py: "93ac47b850e6cb1811b2f4c467759f450b0654b29f3dc86a6ed5373b24ef97b9"
         pv_incremental_fwer_adjudication.py: "6f9745d35d41f2a21568ab360c84428f5a8f6442eb809af25ba4bc1d2f001770"
+  - id: E008
+    when: "2026-08-12"
+    kind: intent
+    what: >-
+      晋升门配对比较预登记（PV-DP-7 步 2-4，change
+      2026-08-12-pv-promotion-paired-run，操作人合并即签署）。
+      代表（操作人裁决）：pv001_2789e60e = cs_demean(abs($turnover_rate))，
+      E007 幸存 50 名单内；50 幸存者系同一 family，按单 family 晋升
+      单代表。orientation −1 仅照录不施加于特征值（树模型分裂方向
+      自适应；E007 评估侧的 IS 符号规范化是另一套语义，两者不混用）。
+      两臂配对 walk-forward：baseline=Alpha158，treatment=
+      Alpha158PlusMined（Alpha158 全特征 + 该因子列，qlib
+      NestedDataLoader join=left 保基线行集，label 与处理器取自
+      Alpha158 本身）；两 preset 逐键差异仅 feature_handler 与
+      output_dir（治理钉锁死）。
+      **判定窗独占 OOS dev**：overall_start 2020-10-01 + 24m train +
+      3m valid ⇒ 首个 test 窗恰为 2023-01-01，8 个季度折全落
+      2023-2024。GP 见过 IS 窗（2018-2022），故判定几何直接不生成
+      IS test 折（非事后剔除）。train 窗保持 24m 生产同源。
+      **canonical 口径**：两臂均不设 risk_constraints_mode /
+      metrics_purpose（默认 raise/official）——净基差判据需 RAISE
+      校验过的真实净收益，E004 的 predictions_only 口径不可充当
+      对照臂。RAISE 折失败风险预告：任一臂折失败会收窄裁尺配对
+      重叠，重叠不足时裁尺拒出 verdict（fail-loud 呈操作人），
+      不得放宽门槛续跑；失败折数照录 E009。
+      **判据 = 裁尺三态 verdict 原样**（--prereg-plan 决策级路径，
+      paired moving-block-bootstrap CI on daily net excess），不另设
+      第二判据或数字门槛：TREATMENT_BETTER → 进操作人签字步（含是否
+      单向揭盲终裁）；INCONCLUSIVE/BASELINE_BETTER → 照录不晋升。
+      2025 holdout 保持盲态。点火在操作人；两臂各一次不间断调用、
+      干净树；本条目入 main 先于点火（台账先行，E002 教训）。
+      结果另行登记为 E009。
+    artifacts:
+      - "openspec/changes/2026-08-12-pv-promotion-paired-run/"
+      - "docs/prereg/pv_promotion_paired.yaml#sha256(仓库规范字节,LF)=326408e28e7c02442a439a23b01b5063f2dc84d643ee8459cccdedd5819c1861"
+      - "config/presets/pv_promo_paired_baseline.yaml#sha256(LF)=9263643a7c54542a228d378a14d14fade27dcb7b429c2c379fc512f40ac56814"
+      - "config/presets/pv_promo_paired_treatment.yaml#sha256(LF)=031ad346e3a39f0f53e93cf39b2df7b42249bc12770787e0446014dde1ef46f4"
+      - "晋升 bundle 由 scripts/research/pv_incremental_promote_representative.py 生成（--expect-verdict-sha256 绑 E007 的 195c21bc…）;其 promotion_provenance.json 与 pool sha 随 E009 照录"
+    numbers:
+      representative: pv001_2789e60e
+      family_treated_as: 1
+      decision_window: "2023-01-01..2024-12-31"
+      expected_folds: 8
+      arms: 2
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>
