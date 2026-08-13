@@ -60,7 +60,7 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
     """Run git, returning stripped stdout; PreregistrationError on any failure."""
     try:
         completed = subprocess.run(
-            ["git", *args], cwd=str(cwd),
+            ["git", "-c", "i18n.logOutputEncoding=utf-8", *args], cwd=str(cwd),
             capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:

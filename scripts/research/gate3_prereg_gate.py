@@ -96,7 +96,8 @@ def _refuse(reason: str) -> int:
 
 def _git(repo: Path, *args: str) -> str:
     out = subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-c", "i18n.logOutputEncoding=utf-8",
+         "-C", str(repo), *args],
         capture_output=True, text=True, encoding="utf-8", check=True,
     )
     return out.stdout.strip()

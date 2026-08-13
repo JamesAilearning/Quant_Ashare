@@ -98,6 +98,27 @@ _CHILD_ENV_FUNC = "utf8_child_env"
 # unrecognized stays UNRESOLVED and fails closed, so a launcher this list
 # does not know (a venv shim, a tool wrapper) is never waved through.
 _NON_PYTHON_PROGRAMS = frozenset({"git"})
+# Git subcommands whose output includes COMMIT TEXT, which git re-encodes
+# per ``i18n.logOutputEncoding`` (codex P2 r24 on #410; verified:
+# ``git -c i18n.logOutputEncoding=GBK log --format=%B`` emits bytes a
+# UTF-8 parent cannot decode, while the utf-8 pin restores raw UTF-8).
+# Blob/plumbing output (rev-parse, status --porcelain, show REF:PATH's
+# content...) is not re-encoded — but ``show`` can print either, so it
+# stays in the risky set and carries the pin.
+_GIT_LOG_FAMILY = frozenset({
+    "log", "show", "whatchanged", "shortlog", "blame", "annotate",
+    "format-patch", "rev-list",
+})
+# git GLOBAL options (pre-subcommand). Value-taking ones consume the next
+# element; the value itself may be opaque (a path) without harm.
+_GIT_GLOBAL_VALUE_OPTS = frozenset({"-c", "-C", "--git-dir", "--work-tree",
+                                    "--namespace", "--exec-path"})
+_GIT_GLOBAL_FLAG_OPTS = frozenset({"-p", "--paginate", "--no-pager",
+                                   "--bare", "--no-replace-objects",
+                                   "--literal-pathspecs",
+                                   "--no-optional-locks"})
+_GIT_ENCODING_PIN_KEY = "i18n.logoutputencoding"
+_GIT_ENCODING_PIN_VALUES = frozenset({"utf-8", "utf8"})
 # Interpreter names are matched EXACTLY, never by prefix (codex P1 r16 on
 # #410): ``startswith(("python", "py"))`` also accepted pyright, pytest,
 # pyinstaller — native/tool children whose decoding PYTHONIOENCODING does
@@ -467,6 +488,59 @@ def _python_child(
     return _program_is_python(argv.elts[0], sys_names)
 
 
+def _git_output_safe(call: ast.Call) -> bool:
+    """Is a PROVEN git child's output locale-independent?
+
+    ``i18n.logOutputEncoding`` re-encodes commit text in the log family,
+    so "git emits UTF-8 regardless of locale" is only true outside it —
+    or when the invocation pins the config itself (codex P2 r24 on
+    #410). Config overrides are parsed by git ONLY before the
+    subcommand (verified: a post-subcommand ``-c`` is the subcommand's
+    own flag), so a literal pin in the argv prefix cannot be overridden
+    by anything after it — which is what makes the parameterized
+    ``["git", "-c", PIN, "-C", path, *args]`` helpers provable. Without
+    the pin, the subcommand must be resolvable and outside the log
+    family; every unknown/unresolvable shape fails closed.
+    """
+    argv = _argv_strings(call)
+    if argv is None:
+        return False
+    pin_seen = False
+    i = 1
+    while i < len(argv):
+        el = argv[i]
+        if el is None:
+            # A splice/name in the PRE-subcommand region: could carry
+            # global options or the subcommand itself. Safe only if the
+            # pin is already proven (nothing later can override it).
+            return pin_seen
+        if el in _GIT_GLOBAL_VALUE_OPTS:
+            value = argv[i + 1] if i + 1 < len(argv) else None
+            if el == "-c":
+                if value is None:
+                    return False  # an opaque config could BE the codec
+                key, _, raw_value = value.partition("=")
+                if key.strip().lower() == _GIT_ENCODING_PIN_KEY:
+                    if (raw_value.strip().lower()
+                            not in _GIT_ENCODING_PIN_VALUES):
+                        return False  # explicit non-UTF-8 codec
+                    pin_seen = True
+            i += 2
+            continue
+        if el in _GIT_GLOBAL_FLAG_OPTS:
+            i += 1
+            continue
+        if el.startswith("--git-dir=") or el.startswith("--work-tree=") \
+                or el.startswith("--namespace=") \
+                or el.startswith("--exec-path="):
+            i += 1
+            continue
+        if el.startswith("-"):
+            return False  # unknown global option — fail closed
+        return pin_seen or el not in _GIT_LOG_FAMILY  # el = the subcommand
+    return False  # options only, no subcommand — not a real invocation
+
+
 def _subprocess_names(
     tree: ast.Module,
 ) -> tuple[set[str], set[str], set[str]]:
@@ -749,7 +823,13 @@ def offending_lines(source: str) -> list[int]:
         # Parent side is right; now the child's own encoder.
         child = _python_child(node, sys_names, kwargs)
         if child is False:
-            continue  # git & friends emit UTF-8 regardless of locale
+            # "git emits UTF-8 regardless of locale" holds only outside
+            # the log family, whose commit text is re-encoded per
+            # i18n.logOutputEncoding (codex P2 r24) — the exemption now
+            # requires plumbing OR the literal config pin.
+            if not _git_output_safe(node):
+                hits.append(node.lineno)
+            continue
         if child is None:
             # UNRESOLVED child (a non-literal argv, ``shell=True``, an
             # unknown program): PYTHONIOENCODING cannot control a native
@@ -822,44 +902,44 @@ _CP936_PIN = ', env={**os.environ, "PYTHONIOENCODING": "cp936"}'
 # construction rather than by ever-longer AST rules.
 _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # --- codec keyword semantics (values, not just names) ---
-    ("text bare", 'subprocess.run(["git"], text=True)', True),
-    ("text + utf-8", 'subprocess.run(["git"], text=True, encoding="utf-8")', False),
-    ("text + cp936", 'subprocess.run(["git"], text=True, encoding="cp936")', True),
-    ("text + None", 'subprocess.run(["git"], text=True, encoding=None)', True),
+    ("text bare", 'subprocess.run(["git", "status"], text=True)', True),
+    ("text + utf-8", 'subprocess.run(["git", "status"], text=True, encoding="utf-8")', False),
+    ("text + cp936", 'subprocess.run(["git", "status"], text=True, encoding="cp936")', True),
+    ("text + None", 'subprocess.run(["git", "status"], text=True, encoding=None)', True),
     ("binary", 'subprocess.run(["git"])', False),
-    ("text=False", 'subprocess.run(["git"], text=False)', False),
+    ("text=False", 'subprocess.run(["git", "status"], text=False)', False),
     ("text=False + cp936",
-     'subprocess.run(["git"], text=False, encoding="cp936")', True),
+     'subprocess.run(["git", "status"], text=False, encoding="cp936")', True),
     ("text=False + utf-8",
-     'subprocess.run(["git"], text=False, encoding="utf-8")', False),
-    ("errors alone", 'subprocess.run(["git"], errors="replace")', True),
+     'subprocess.run(["git", "status"], text=False, encoding="utf-8")', False),
+    ("errors alone", 'subprocess.run(["git", "status"], errors="replace")', True),
     ("errors + utf-8",
-     'subprocess.run(["git"], errors="replace", encoding="utf-8")', False),
+     'subprocess.run(["git", "status"], errors="replace", encoding="utf-8")', False),
     # A codec keyword set to None does NOT enable text mode (verified
     # against the interpreter): flagging it would push the author to add
     # an encoding and flip the call from bytes to str.
-    ("encoding=None alone", 'subprocess.run(["git"], encoding=None)', False),
-    ("errors=None alone", 'subprocess.run(["git"], errors=None)', False),
+    ("encoding=None alone", 'subprocess.run(["git", "status"], encoding=None)', False),
+    ("errors=None alone", 'subprocess.run(["git", "status"], errors=None)', False),
     # EVERY falsy literal is binary (verified: encoding="" returns bytes),
     # so flagging it would flip the return type — same rule as None.
     ("encoding empty-string alone",
-     'subprocess.run(["git"], encoding="")', False),
-    ("errors empty-string alone", 'subprocess.run(["git"], errors="")', False),
+     'subprocess.run(["git", "status"], encoding="")', False),
+    ("errors empty-string alone", 'subprocess.run(["git", "status"], errors="")', False),
     ("text=True with empty encoding",
-     'subprocess.run(["git"], text=True, encoding="")', True),
+     'subprocess.run(["git", "status"], text=True, encoding="")', True),
     ("both codecs None",
-     'subprocess.run(["git"], encoding=None, errors=None)', False),
+     'subprocess.run(["git", "status"], encoding=None, errors=None)', False),
     ("encoding=None with text=True",
-     'subprocess.run(["git"], text=True, encoding=None)', True),
+     'subprocess.run(["git", "status"], text=True, encoding=None)', True),
     # A dynamic flag cannot be proven binary; if it is true at runtime the
     # call decodes with the locale, so it is refused rather than skipped.
-    ("dynamic text flag", 'subprocess.run(["git"], text=want)', True),
+    ("dynamic text flag", 'subprocess.run(["git", "status"], text=want)', True),
     ("dynamic universal_newlines",
-     'subprocess.run(["git"], universal_newlines=want)', True),
+     'subprocess.run(["git", "status"], universal_newlines=want)', True),
     ("non-literal encoding",
-     'subprocess.run(["git"], text=True, encoding=ENC)', True),
-    ("alias U8", 'subprocess.run(["git"], text=True, encoding="U8")', False),
-    ("alias utf_8", 'subprocess.run(["git"], text=True, encoding="utf_8")', False),
+     'subprocess.run(["git", "status"], text=True, encoding=ENC)', True),
+    ("alias U8", 'subprocess.run(["git", "status"], text=True, encoding="U8")', False),
+    ("alias utf_8", 'subprocess.run(["git", "status"], text=True, encoding="utf_8")', False),
     # --- call-target resolution ---
     ("unrelated .run()", "renderer.run(text=True)", False),
     ("locally defined run()",
@@ -867,13 +947,13 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("aliased module", 'import subprocess as sp\nsp.run(["git"], text=True)', True),
     ("from-import", 'from subprocess import run\nrun(["git"], text=True)', True),
     # --- ** unpacking: it can itself supply text=True ---
-    ("opaque ** in text mode", 'subprocess.run(["git"], text=True, **o)', True),
-    ("opaque ** looking binary", 'subprocess.run(["git"], check=True, **o)', True),
-    ("literal ** supplying text", 'subprocess.run(["git"], **{"text": True})', True),
+    ("opaque ** in text mode", 'subprocess.run(["git", "status"], text=True, **o)', True),
+    ("opaque ** looking binary", 'subprocess.run(["git", "status"], check=True, **o)', True),
+    ("literal ** supplying text", 'subprocess.run(["git", "status"], **{"text": True})', True),
     ("literal ** supplying text + utf-8",
-     'subprocess.run(["git"], **{"text": True, "encoding": "utf-8"})', False),
+     'subprocess.run(["git", "status"], **{"text": True, "encoding": "utf-8"})', False),
     ("literal ** supplying cp936",
-     'subprocess.run(["git"], **{"text": True, "encoding": "cp936"})', True),
+     'subprocess.run(["git", "status"], **{"text": True, "encoding": "cp936"})', True),
     # --- the child encoder: the sanctioned constructor, nothing else ---
     ("python child, no env", _PY.format(extra=""), True),
     ("python child, sanctioned env",
@@ -1029,7 +1109,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("call-level splat can smuggle positional text flags",
      "subprocess.run(*cmd)", True),
     ("three positionals with no text keyword stay provably binary",
-     'subprocess.Popen(["git", "log"], -1, None)', False),
+     'subprocess.Popen(["git", "status"], -1, None)', False),
     # a truthy shell= makes argv a shell command line, not a program vector
     ("list argv with shell=True even fully pinned",
      'subprocess.run([sys.executable, "x"], shell=True, text=True,'
@@ -1067,7 +1147,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("getoutput via from-import",
      'from subprocess import getoutput\ngetoutput("git log")', True),
     ("git child needs no env",
-     'subprocess.run(["git", "log"], text=True, encoding="utf-8")', False),
+     'subprocess.run(["git", "status"], text=True, encoding="utf-8")', False),
     # ``X.executable`` proves python only when X is the imported sys module
     # — any object can expose an .executable naming a native binary.
     ("someone else's .executable even fully pinned",
@@ -1088,7 +1168,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run([r"C:\\Python312\\python.exe", "s.py"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
     ("windows absolute git path needs no env",
-     'subprocess.run([r"C:\\Program Files\\Git\\bin\\git.exe", "log"],'
+     'subprocess.run([r"C:\\Program Files\\Git\\bin\\git.exe", "status"],'
      ' text=True, encoding="utf-8")', False),
     ("windows path to an unknown tool still fails closed",
      'subprocess.run([r"C:\\tools\\node.exe", "s.js"], text=True,'
@@ -1114,7 +1194,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("unresolvable argv expression",
      'subprocess.run(build(), text=True, encoding="utf-8")', True),
     ("argv from a variable is unresolvable",
-     'argv = ["git", "log"]\nsubprocess.run(argv, text=True, encoding="utf-8")',
+     'argv = ["git", "status"]\nsubprocess.run(argv, text=True, encoding="utf-8")',
      True),
     # an ordinary assignment alias must not launder the module reference
     ("assigned alias spawns are recognized",
@@ -1125,7 +1205,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'sp2.run(["git"], text=True)', True),
     ("aliased spawn accepted when properly pinned",
      "sp = subprocess\n"
-     'sp.run(["git", "log"], text=True, encoding="utf-8")', False),
+     'sp.run(["git", "status"], text=True, encoding="utf-8")', False),
     # ...and a module reference forwarded OUT of the file-local analysis
     # (call argument, attribute target) fails closed at the forwarding.
     ("module forwarded as a call argument fails closed",
@@ -1133,7 +1213,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("module stored onto an attribute fails closed",
      "obj.sp = subprocess", True),
     ("module attribute constants stay usable",
-     'subprocess.run(["git", "log"], stdout=subprocess.PIPE, text=True,'
+     'subprocess.run(["git", "status"], stdout=subprocess.PIPE, text=True,'
      ' encoding="utf-8")', False),
     # ...and a stored METHOD spawns exactly like the module alias did
     # (codex P2 r19 follow-up): tracked when it is a plain-Name alias,
@@ -1143,7 +1223,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'runner(["git"], text=True)', True),
     ("method alias accepted when properly pinned",
      "runner = subprocess.run\n"
-     'runner(["git", "log"], text=True, encoding="utf-8")', False),
+     'runner(["git", "status"], text=True, encoding="utf-8")', False),
     ("method alias of a text-only helper is recognized",
      "go = subprocess.getoutput\n"
      'go("git log")', True),
@@ -1153,9 +1233,39 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      "from subprocess import run\nhelper(run)", True),
     ("exception classes stay usable",
      "try:\n"
-     '    subprocess.run(["git", "log"], text=True, encoding="utf-8")\n'
+     '    subprocess.run(["git", "status"], text=True, encoding="utf-8")\n'
      "except subprocess.CalledProcessError:\n"
      "    pass", False),
+    # the git exemption is NOT unconditional: the log family re-encodes
+    # commit text per i18n.logOutputEncoding (verified with GBK), so it
+    # needs the literal config pin; plumbing does not.
+    ("git log without the encoding pin is refused",
+     'subprocess.run(["git", "log", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("git log with the literal pin accepted",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "log", "-1"], text=True, encoding="utf-8")', False),
+    ("git log with a non-utf8 pin is refused",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=GBK",'
+     ' "log", "-1"], text=True, encoding="utf-8")', True),
+    ("git show stays in the risky set",
+     'subprocess.run(["git", "show", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("git plumbing needs no pin",
+     'subprocess.run(["git", "rev-parse", "HEAD"], text=True,'
+     ' encoding="utf-8")', False),
+    # config overrides parse only BEFORE the subcommand (verified: a
+    # post-subcommand -c is the subcommand's own flag), so a literal
+    # pinned prefix makes even a spliced call provable...
+    ("pinned prefix makes a spliced git call provable",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-C", str(repo), *args], text=True, encoding="utf-8")', False),
+    ("unpinned spliced git call fails closed",
+     'subprocess.run(["git", "-C", str(repo), *args], text=True,'
+     ' encoding="utf-8")', True),
+    ("unknown git global option fails closed",
+     'subprocess.run(["git", "--weird", "status"], text=True,'
+     ' encoding="utf-8")', True),
     # a star-import exports the whole spawning surface unaliased
     ("star-import spawns are recognized",
      "from subprocess import *\n"
@@ -1165,10 +1275,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'getoutput("git log")', True),
     ("star-import spawn accepted when properly pinned",
      "from subprocess import *\n"
-     'run(["git", "log"], text=True, encoding="utf-8")', False),
+     'run(["git", "status"], text=True, encoding="utf-8")', False),
     # a literal tuple argv is as provable as a list
     ("tuple argv git child pinned",
-     'subprocess.run(("git", "log"), text=True, encoding="utf-8")', False),
+     'subprocess.run(("git", "status"), text=True, encoding="utf-8")', False),
     ("tuple argv python child fully pinned",
      'subprocess.run((sys.executable, "x"), text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
