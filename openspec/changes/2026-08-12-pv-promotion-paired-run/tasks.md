@@ -46,3 +46,36 @@
 - [ ] 全量快速套件绿；ruff/mypy CI 对齐命令绿
 - [ ] 关键守卫双向突变验证（W1 判据、W3 preset diff 钉、W2 label 钉）
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge（= 签署）
+
+## Backlog（操作人裁决推迟，2026-08-13；不阻塞本 change）
+
+codex 在 #422 第 5/6 轮提出两条加固，操作人裁决**两条均入 backlog**。
+两条都属"把绑定再深一层"的方向（路径 → 日历哈希 → 全量特征字节 →
+报告签名），每加一层都能再问一次"那这层怎么保证"；本 change 的证据链
+在**非伪造威胁模型**下已闭合，故到此为止。
+
+### B1 — 裁尺按注册值校验戳记分量（而非仅要求分量非空）
+
+现状：`arm_requirements` 的 `components` 只要求每个分量存在且非空，
+故手工编辑的 report 可写 `verdict_sha256=x|ledger=x` 蒙混。
+
+不做的理由：这防的是**手工伪造的 report JSON**，而现有 gate 的每一项
+（`git_commit` 祖先链、ST content hash）同样不防伪造 report——能改
+stamp 的人也能把 `git_commit` 写成一个真 commit。对伪造 report 的正解
+是**报告签名**，属另案。
+
+若将来要做，**干净路径**（不碰共享基础设施、不让通用 gate 耦合战役台账）：
+把 `components` 由"名单"升级为"名 → 期望值"映射，期望值写进 **plan**
+——plan 本身就是 git 提交的注册件，gate 只需比对注册值。
+
+### B2 — bundle 内容身份只覆盖日历
+
+现状：`src/data/bundle_manifest.py:164` `compute_bundle_content_hash`
+**明文只哈希** `calendars/day.txt`，docstring 声明 mid-bin 数值漂移
+"out of scope"（理由：bins 可达数十 GB）。故 bundle 就地重灌但日历不变
+时，特征值可变而身份不变。
+
+不做的理由：这是**仓库级既定设计**，所有战役的 bundle 身份都依赖它。
+要"绑定实际服务的特征数据"须新造不可变快照身份机制并改
+`bundle_manifest` 语义——波及全仓，远超本 change（PV-DP-7 步 2-4
+执行细则）范围。若要做，应作为独立 change 走设计通道。
