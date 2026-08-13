@@ -218,11 +218,30 @@ class PairedPresetPins(unittest.TestCase):
                        "treatment_pool_identity")]
         self.assertTrue(results, "no ledger entry records a treatment "
                                  "identity stamp — this pin would be vacuous")
-        req = _load(_PLAN)["arm_requirements"]["treatment"][
-            "mined_factor_pool_identity"]
         for entry in results:
-            stamp = entry["provenance"]["treatment_pool_identity"]
+            prov = entry["provenance"]
+            stamp = prov["treatment_pool_identity"]
+            # Each result is judged against ITS OWN registration, never
+            # against whichever plan this test file happens to import
+            # (codex #424 r1): the ledger is append-only, so a later
+            # campaign's entry — different candidate, different plan —
+            # would otherwise fail governance merely for not being
+            # pv001. Recording the plan is mandatory: an entry that
+            # names no registration cannot be checked at all, and
+            # skipping it silently is the hole this pin exists to close.
             with self.subTest(entry=entry["id"]):
+                plan_rel = prov.get("prereg_plan")
+                self.assertTrue(
+                    plan_rel,
+                    f"{entry['id']} records a treatment identity stamp but "
+                    "no prereg_plan — the registration it must be judged "
+                    "against is unidentifiable.")
+                plan_path = _PROJECT_ROOT / str(plan_rel)
+                self.assertTrue(
+                    plan_path.is_file(),
+                    f"{entry['id']}: prereg_plan {plan_rel} does not exist.")
+                req = _load(plan_path)["arm_requirements"]["treatment"][
+                    "mined_factor_pool_identity"]
                 self.assertTrue(
                     stamp.startswith(req["prefix"]),
                     f"{entry['id']}: recorded stamp does not carry the "

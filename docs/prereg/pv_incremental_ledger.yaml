@@ -320,6 +320,10 @@ entries:
       - "run(treatment): output/walk_forward/pv_promo_paired_treatment (commit 8a598438f4da, git_dirty=False)"
       - "晋升 bundle: output/factor_mining/pv_incremental_v1/promotion/pv001/factor_pool.parquet#sha256=334428512b4151986a1ffec696b06e1f71b6112f9d49e188b7e9429612bf18bd"
     provenance:
+      # 本条目所对的注册件（路径 + 其 last-touched commit）。治理钉据此
+      # 逐条目加载**它自己的** plan 校验戳记，故将来别的战役条目不会被
+      # 拿去对 pv001 的 plan 断言（codex #424 r1）。
+      prereg_plan: "docs/prereg/pv_promotion_paired.yaml"
       prereg_plan_commit: "ab75cbf2c3ae1b363f3cefef337026a80c49d450"
       source_git: "8a598438f4da"
       source_git_dirty: false
