@@ -180,7 +180,11 @@ _GIT_RAW_VALUE_SUBCOMMANDS = frozenset({"config"})
 # their option region must be fully literal — an opaque element could be
 # the ``-z``.
 _GIT_PATH_PRODUCING = frozenset({"ls-files", "ls-tree", "check-ignore"})
-_GIT_RAW_PATH_OPTS = frozenset({"-z", "--null"})
+# ``-z`` also rides inside a short-option CLUSTER (codex P2 r39 on
+# #410; verified: ``ls-files -cz`` emits NUL-separated raw bytes), so
+# clusters are parsed letter-by-letter rather than compared whole.
+_GIT_RAW_PATH_LONG_OPTS = frozenset({"--null"})
+_GIT_RAW_PATH_LETTER = "z"
 _GIT_QUOTEPATH_KEY = "core.quotepath"
 _GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on", ""})
 _GIT_DIFF_CAPABLE = frozenset({
@@ -705,8 +709,11 @@ def _git_output_safe(call: ast.Call) -> bool:
             for later in argv[i + 1:]:
                 if later in ("--", "--end-of-options"):
                     break  # options end; pathspecs cannot be -z
-                if later is None or later in _GIT_RAW_PATH_OPTS:
+                if later is None or later in _GIT_RAW_PATH_LONG_OPTS:
                     return False  # raw output, or an opaque option
+                if (later.startswith("-") and not later.startswith("--")
+                        and _GIT_RAW_PATH_LETTER in later[1:]):
+                    return False  # -z, or bundled as in -rz / -cz
         known_text_free = el in _GIT_COMMIT_TEXT_FREE
         if not known_text_free and el not in _GIT_DIFF_CAPABLE:
             return False  # unknown subcommand: may be a shell alias
@@ -1710,6 +1717,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("...but -z emits raw bytes anyway",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "-z"],'
      ' text=True, encoding="utf-8")', True),
+    ("a bundled z is the same option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "ls-files", "-cz"], text=True, encoding="utf-8")', True),
+    ("...and in ls-tree too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "ls-tree", "-rz", "HEAD"], text=True, encoding="utf-8")', True),
+    ("a cluster without z stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "ls-tree", "-r", "HEAD"], text=True, encoding="utf-8")', False),
     ("--null is the same option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-tree", "--null", "HEAD"],'
      ' text=True, encoding="utf-8")', True),
