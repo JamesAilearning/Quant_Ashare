@@ -57,12 +57,47 @@ class PreregPlan:
 
 
 def _git(args: list[str], *, cwd: str | Path) -> str:
-    """Run git, returning stripped stdout; PreregistrationError on any failure."""
+    """Run git, returning stripped stdout; PreregistrationError on any failure.
+
+    The subcommand is dispatched to a LITERAL spawn site rather than
+    spliced in. git honours the LAST ``-c``, so a spliced pre-subcommand
+    region could carry ``-c i18n.logOutputEncoding=GBK`` and override
+    the UTF-8 pin this call depends on — the parent decodes as UTF-8 and
+    a non-ASCII commit message would then raise UnicodeDecodeError. With
+    the subcommand literal, everything after it is the subcommand's own
+    argv (a post-subcommand ``-c`` is its flag, not config), so the pin
+    is unoverridable. See ``tests/governance/
+    test_subprocess_text_pins_utf8.py`` (#410 r25).
+    """
+    sub, rest = args[0], args[1:]
     try:
-        completed = subprocess.run(
-            ["git", "-c", "i18n.logOutputEncoding=utf-8", *args], cwd=str(cwd),
-            capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
-        )
+        if sub == "rev-parse":
+            completed = subprocess.run(
+                ["git", "-c", "i18n.logOutputEncoding=utf-8",
+                 "rev-parse", *rest], cwd=str(cwd),
+                capture_output=True, text=True, encoding="utf-8",
+                timeout=10, check=False,
+            )
+        elif sub == "status":
+            completed = subprocess.run(
+                ["git", "-c", "i18n.logOutputEncoding=utf-8",
+                 "status", *rest], cwd=str(cwd),
+                capture_output=True, text=True, encoding="utf-8",
+                timeout=10, check=False,
+            )
+        elif sub == "log":
+            completed = subprocess.run(
+                ["git", "-c", "i18n.logOutputEncoding=utf-8",
+                 "log", *rest], cwd=str(cwd),
+                capture_output=True, text=True, encoding="utf-8",
+                timeout=10, check=False,
+            )
+        else:
+            raise PreregistrationError(
+                f"unsupported git subcommand {sub!r} — each subcommand "
+                "needs its own literal spawn site so the UTF-8 output "
+                "pin cannot be overridden; add one."
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreregistrationError(
             f"git {' '.join(args)} failed to execute ({exc!r}) — the gate needs a "

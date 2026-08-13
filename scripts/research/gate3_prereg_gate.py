@@ -95,11 +95,39 @@ def _refuse(reason: str) -> int:
 
 
 def _git(repo: Path, *args: str) -> str:
-    out = subprocess.run(
-        ["git", "-c", "i18n.logOutputEncoding=utf-8",
-         "-C", str(repo), *args],
-        capture_output=True, text=True, encoding="utf-8", check=True,
-    )
+    """Run git in ``repo``, dispatching the subcommand to a LITERAL spawn.
+
+    git honours the LAST ``-c``, so a spliced pre-subcommand region could
+    carry ``-c i18n.logOutputEncoding=GBK`` and override the UTF-8 pin
+    the parent decoder depends on (#410 r25). With the subcommand
+    literal, everything after it is the subcommand's own argv and the
+    pin is unoverridable.
+    """
+    sub, rest = args[0], args[1:]
+    if sub == "log":
+        out = subprocess.run(
+            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+             "-C", str(repo), "log", *rest],
+            capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+    elif sub == "status":
+        out = subprocess.run(
+            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+             "-C", str(repo), "status", *rest],
+            capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+    elif sub == "ls-files":
+        out = subprocess.run(
+            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+             "-C", str(repo), "ls-files", *rest],
+            capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+    else:
+        raise SystemExit(
+            f"REFUSE: unsupported git subcommand {sub!r} — each needs its "
+            "own literal spawn site so the UTF-8 output pin cannot be "
+            "overridden; add one."
+        )
     return out.stdout.strip()
 
 

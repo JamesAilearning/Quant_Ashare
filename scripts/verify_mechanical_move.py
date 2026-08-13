@@ -318,9 +318,30 @@ def find_split_destinations(old_text: str | Counter[str],
 
 
 def _git(*args: str) -> str:
-    out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
-                          "-C", str(_REPO), *args],
-                         capture_output=True, text=True, encoding="utf-8", check=True)
+    """Run git, dispatching the subcommand to a LITERAL spawn site.
+
+    git honours the LAST ``-c``, so a spliced pre-subcommand region
+    could override the UTF-8 output pin this tool's decoder depends on
+    (#410 r25) — the very crash that motivated the gate. Literal
+    subcommand => everything after it is the subcommand's own argv.
+    """
+    sub, rest = args[0], args[1:]
+    if sub == "show":
+        out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
+                              "-C", str(_REPO), "show", *rest],
+                             capture_output=True, text=True,
+                             encoding="utf-8", check=True)
+    elif sub == "diff":
+        out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
+                              "-C", str(_REPO), "diff", *rest],
+                             capture_output=True, text=True,
+                             encoding="utf-8", check=True)
+    else:
+        raise SystemExit(
+            f"unsupported git subcommand {sub!r} — each needs its own "
+            "literal spawn site so the UTF-8 output pin cannot be "
+            "overridden; add one."
+        )
     return out.stdout
 
 

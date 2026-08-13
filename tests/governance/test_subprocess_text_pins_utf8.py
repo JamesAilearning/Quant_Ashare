@@ -494,13 +494,15 @@ def _git_output_safe(call: ast.Call) -> bool:
     ``i18n.logOutputEncoding`` re-encodes commit text in the log family,
     so "git emits UTF-8 regardless of locale" is only true outside it —
     or when the invocation pins the config itself (codex P2 r24 on
-    #410). Config overrides are parsed by git ONLY before the
-    subcommand (verified: a post-subcommand ``-c`` is the subcommand's
-    own flag), so a literal pin in the argv prefix cannot be overridden
-    by anything after it — which is what makes the parameterized
-    ``["git", "-c", PIN, "-C", path, *args]`` helpers provable. Without
-    the pin, the subcommand must be resolvable and outside the log
-    family; every unknown/unresolvable shape fails closed.
+    #410). The pre-subcommand region must therefore be FULLY literal:
+    git honours the LAST ``-c`` (verified: ``-c x=a -c x=b`` yields
+    ``b``), so an opaque splice can override an earlier pin, and git
+    has no top-level end-of-options marker to close the region with
+    (verified: ``--end-of-options`` is not a git global option) —
+    codex P2 r25. Past the literal subcommand anything goes: a
+    post-subcommand ``-c`` is the subcommand's own flag, not config.
+    Opaque VALUES of non-``-c`` options (``-C str(repo)``) stay fine —
+    a value cannot be re-read as an option.
     """
     argv = _argv_strings(call)
     if argv is None:
@@ -510,10 +512,10 @@ def _git_output_safe(call: ast.Call) -> bool:
     while i < len(argv):
         el = argv[i]
         if el is None:
-            # A splice/name in the PRE-subcommand region: could carry
-            # global options or the subcommand itself. Safe only if the
-            # pin is already proven (nothing later can override it).
-            return pin_seen
+            # A splice/name in the PRE-subcommand region can carry a
+            # later -c that overrides any pin seen so far, or BE the
+            # subcommand. Unprovable either way.
+            return False
         if el in _GIT_GLOBAL_VALUE_OPTS:
             value = argv[i + 1] if i + 1 < len(argv) else None
             if el == "-c":
@@ -1254,14 +1256,30 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("git plumbing needs no pin",
      'subprocess.run(["git", "rev-parse", "HEAD"], text=True,'
      ' encoding="utf-8")', False),
-    # config overrides parse only BEFORE the subcommand (verified: a
-    # post-subcommand -c is the subcommand's own flag), so a literal
-    # pinned prefix makes even a spliced call provable...
-    ("pinned prefix makes a spliced git call provable",
+    # git honours the LAST -c, so a pinned prefix does NOT survive an
+    # opaque splice (verified: -c x=a -c x=b -> b; and git has no
+    # top-level --end-of-options to close the region with). The whole
+    # pre-subcommand region must be literal.
+    ("pinned prefix does not rescue a spliced git call",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
-     ' "-C", str(repo), *args], text=True, encoding="utf-8")', False),
+     ' "-C", str(repo), *args], text=True, encoding="utf-8")', True),
     ("unpinned spliced git call fails closed",
      'subprocess.run(["git", "-C", str(repo), *args], text=True,'
+     ' encoding="utf-8")', True),
+    # ...but a literal subcommand closes the region: everything after it
+    # is the subcommand's own argv, so a splice there is harmless.
+    ("literal subcommand makes a trailing splice safe",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-C", str(repo), "log", *args], text=True, encoding="utf-8")',
+     False),
+    ("literal plumbing subcommand with a trailing splice",
+     'subprocess.run(["git", "-C", str(repo), "rev-parse", *args],'
+     ' text=True, encoding="utf-8")', False),
+    ("opaque -C value is fine, it cannot be re-read as an option",
+     'subprocess.run(["git", "-C", str(repo), "status"], text=True,'
+     ' encoding="utf-8")', False),
+    ("opaque -c value fails closed",
+     'subprocess.run(["git", "-c", cfg, "status"], text=True,'
      ' encoding="utf-8")', True),
     ("unknown git global option fails closed",
      'subprocess.run(["git", "--weird", "status"], text=True,'
