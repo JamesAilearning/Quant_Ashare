@@ -77,14 +77,20 @@ bundle built per [`inventory.md`](inventory.md) §F.3:
    ```yaml
    # promote_criteria.yaml
    criteria:
-     is_oos_split_date: "2023-01-03"   # strictly AFTER the mined end_date
+     is_oos_split_date: "2023-01-05"   # clears the H+1 trading-day embargo
    validation:
      end_date: "2024-12-31"            # the governed OOS extension
    ```
 
-   The split must be *strictly* after the mined `end_date`: the
-   validator grades OOS as `date >= split`, so a split on the cutoff
-   day itself would count a GP-visible day as out-of-sample. Promotion
+   The split must clear the **label-lookahead embargo**, not merely the
+   calendar `end_date`: `forward_return` labels date T with prices at
+   T+1 … T+H+1 *trading days*, so the last mined labels consume prices
+   H+1 trading days past the cutoff (for the H=1 campaign mined through
+   2022-12-31, the 2022-12-30 label consumes the 2023-01-03 and
+   2023-01-04 prices — a 2023-01-03 split would grade GP-consumed
+   prices as OOS). Promotion enforces this on the panel's own trading
+   calendar and its refusal message names the earliest valid split
+   date. Promotion
    also verifies the recorded PIT content fingerprints — a full digest
    of the bundle's `calendars/` + `instruments/` + `features/` bytes,
    plus the delisted registry's sha256, captured *before* the mining

@@ -8,6 +8,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -537,6 +538,59 @@ def test_timezone_bearing_dates_are_refused(tmp_path):
     )
     cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
     assert cfg.validation_end_date == "2024-12-31 00:00:00"
+
+
+def test_pit_embargo_clears_label_lookahead(tmp_path):
+    # codex P1 #415 r11: forward_return labels T with prices at
+    # T+1..T+H+1 TRADING days, so the last mined labels consume prices
+    # past the calendar cutoff — a split merely after end_date can still
+    # grade GP-consumed prices as OOS.
+    from src.factor_mining.promote import _check_pit_embargo
+
+    # Trading days mirroring the real 2022→2023 turn: 12-29, 12-30 are
+    # the last mined days; 01-03, 01-04, 01-05, 01-06 follow.
+    idx = pd.DatetimeIndex([
+        "2022-12-29", "2022-12-30", "2023-01-03", "2023-01-04",
+        "2023-01-05", "2023-01-06", "2023-01-09",
+    ])
+    # H=1: the 12-30 label consumes 01-03 and 01-04 → first clean 01-05.
+    with pytest.raises(PromotionError, match="label-lookahead embargo"):
+        _check_pit_embargo(idx, "2022-12-31", "2023-01-03", 1)
+    with pytest.raises(PromotionError, match="Move the split to 2023-01-05"):
+        _check_pit_embargo(idx, "2022-12-31", "2023-01-04", 1)
+    _check_pit_embargo(idx, "2022-12-31", "2023-01-05", 1)  # clean
+    # H=2 widens the embargo by one trading day.
+    with pytest.raises(PromotionError, match="embargo"):
+        _check_pit_embargo(idx, "2022-12-31", "2023-01-05", 2)
+    _check_pit_embargo(idx, "2022-12-31", "2023-01-06", 2)
+    # An extension too short to clear the embargo at all is refused.
+    with pytest.raises(PromotionError, match="no trading day beyond"):
+        _check_pit_embargo(idx[:4], "2022-12-31", "2023-01-04", 1)
+
+
+def test_promote_run_enforces_the_embargo_on_the_panel(tmp_path, monkeypatch):
+    # The boundary actually calls the embargo check on the BUILT panel's
+    # index — proven by stubbing the panel builder with a real trading
+    # calendar and asserting the refusal fires from promote_run.
+    import src.factor_mining.promote as promote_mod
+    from src.factor_mining.miner import pit_binding_fingerprints
+
+    pit_data = _seed_pit_inputs(tmp_path)
+    fingerprints = pit_binding_fingerprints(DataConfig(**pit_data))
+    run_dir = _seed_run_dir(tmp_path, data=pit_data,
+                            extra_config=fingerprints)
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "criteria:\n  is_oos_split_date: '2023-01-03'\n"
+        "validation:\n  end_date: '2024-12-31'\n",
+    )
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    idx = pd.bdate_range("2022-12-01", "2023-03-31")
+    frame = pd.DataFrame(0.0, index=idx, columns=["SH600000"])
+    monkeypatch.setattr(promote_mod, "build_panel_for_data",
+                        lambda data: ({"$close": frame}, frame))
+    with pytest.raises(PromotionError, match="label-lookahead embargo"):
+        promote_run(cfg, dry_run=True)
 
 
 def test_falsy_date_overrides_are_refused_not_defaulted(tmp_path):

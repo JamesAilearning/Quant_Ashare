@@ -200,6 +200,62 @@ def _check_pit_window(
         )
 
 
+def _check_pit_embargo(
+    trading_index: pd.DatetimeIndex,
+    mined_end_date: str,
+    split: str,
+    horizon: int,
+) -> None:
+    """The split must clear the label-lookahead embargo, in TRADING days.
+
+    ``forward_return`` labels date T with prices at T+1 .. T+horizon+1
+    (``Ref(price, -horizon-1)/Ref(price, -1)`` — both price modes), so
+    the labels of the last mined days consume prices horizon+1 trading
+    days PAST the mining cutoff. A split merely after the calendar
+    ``end_date`` can therefore still grade GP-consumed prices as OOS
+    (codex P1 on #415 r11: with the H=1 campaign mined through
+    2022-12-31, the 2022-12-30 label consumes the 2023-01-03 and
+    2023-01-04 prices — a 2023-01-03 split is contaminated). Calendar
+    arithmetic cannot see trading days; only the panel's own index can,
+    so this check lives at the panel boundary in ``promote_run`` — the
+    coarse calendar ordering in ``_check_pit_window`` stays as the
+    early, panel-free screen.
+
+    The first clean OOS day is the one strictly AFTER the last price a
+    mining label consumed: position(last mined day) + horizon + 2.
+    """
+    mined_ts = pd.Timestamp(str(mined_end_date))
+    split_ts = pd.Timestamp(str(split))
+    last_mined_pos = int(trading_index.searchsorted(mined_ts, side="right")) - 1
+    if last_mined_pos < 0:
+        raise PromotionError(
+            f"mined end_date {mined_end_date!r} lies before the panel's "
+            "first trading day — the run snapshot and the panel disagree."
+        )
+    first_clean_pos = last_mined_pos + horizon + 2
+    if first_clean_pos >= len(trading_index):
+        raise PromotionError(
+            f"the governed extension ends before the label-lookahead "
+            f"embargo clears: mining labels consume prices through "
+            f"{horizon + 1} trading day(s) past the mined end_date "
+            f"{mined_end_date!r}, and the extended panel has no trading "
+            "day beyond that. Extend validation.end_date further."
+        )
+    first_oos_pos = int(trading_index.searchsorted(split_ts, side="left"))
+    if first_oos_pos < first_clean_pos:
+        first_clean = trading_index[first_clean_pos].date().isoformat()
+        raise PromotionError(
+            f"criteria.is_oos_split_date {split!r} violates the "
+            f"label-lookahead embargo: labels of the mined panel consume "
+            f"prices through "
+            f"{trading_index[last_mined_pos + horizon + 1].date().isoformat()} "
+            f"(horizon {horizon} → {horizon + 1} trading days past the "
+            f"cutoff), so OOS days before {first_clean} would be graded "
+            "on prices the GP already consumed. Move the split to "
+            f"{first_clean} or later."
+        )
+
+
 def _verify_pit_binding(run_dir: Path, run_data: DataConfig) -> None:
     """The PIT inputs' CONTENT must still be what the run was mined on.
 
@@ -320,6 +376,12 @@ def promote_run(
         panel, fwd = build_panel_for_data(config.data)
     except ValueError as exc:
         raise PromotionError(str(exc)) from exc
+
+    if run_data.mode == "pit":
+        _check_pit_embargo(
+            fwd.index, run_data.end_date,
+            config.criteria.is_oos_split_date, run_data.forward_horizon,
+        )
 
     results = validate_pool(pool, panel, fwd, config.criteria)
     n_passed_individual = sum(1 for r in results if r.passes)
