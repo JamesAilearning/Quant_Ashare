@@ -124,10 +124,25 @@ _NON_PYTHON_PROGRAMS = frozenset({"git"})
 # ``cat-file``) is raw bytes git never re-encodes; a non-UTF-8 tracked
 # FILE is a different problem this gate does not claim to solve.
 _GIT_COMMIT_TEXT_FREE = frozenset({
-    "rev-parse", "status", "ls-files", "ls-tree", "merge-base", "diff",
+    "rev-parse", "status", "ls-files", "ls-tree", "merge-base",
     "worktree", "cat-file", "hash-object", "symbolic-ref",
-    "check-ignore", "update-index", "config",
+    "check-ignore", "update-index", "config", "diff",
 })
+# Subcommands that GENERATE A DIFF, whose content git hands to an
+# operator-configured external driver (``diff.external``) or textconv
+# filter — neither of which the encoding pin governs (codex P2 r27 on
+# #410; verified: a diff.external helper writing CP936 makes plain
+# ``git diff`` emit those bytes, ``--no-ext-diff`` restores the builtin
+# diff, and a gitattributes textconv filter needs ``--no-textconv``).
+# ``diff`` therefore leaves the no-pin whitelist entirely, and any
+# diff-capable (or unknown, hence possibly diff-capable) subcommand must
+# carry BOTH literal flags.
+_GIT_DIFF_CAPABLE = frozenset({
+    "diff", "show", "log", "whatchanged", "format-patch", "rev-list",
+    "blame", "annotate", "range-diff", "diff-tree", "diff-index",
+    "diff-files", "stash",
+})
+_GIT_DIFF_DRIVER_OFF = ("--no-ext-diff", "--no-textconv")
 # git GLOBAL options (pre-subcommand). Value-taking ones consume the next
 # element; the value itself may be opaque (a path) without harm.
 _GIT_GLOBAL_VALUE_OPTS = frozenset({"-c", "-C", "--git-dir", "--work-tree",
@@ -558,10 +573,18 @@ def _git_output_safe(call: ast.Call) -> bool:
             continue
         if el.startswith("-"):
             return False  # unknown global option — fail closed
-        # el = the subcommand. The pin covers ANY subcommand (verified:
-        # it fixes an alias-to-log too); without it, only a built-in
-        # whose output carries no commit text is provable.
-        return pin_seen or el in _GIT_COMMIT_TEXT_FREE
+        # el = the subcommand. Two independent hazards, two conditions:
+        # commit text (git re-encodes it; the pin fixes that, aliases
+        # included) and diff content (an operator's external driver or
+        # textconv filter owns those bytes; only the literal flags turn
+        # them off). An UNKNOWN subcommand may be an alias for either,
+        # so it needs both.
+        known_text_free = el in _GIT_COMMIT_TEXT_FREE
+        if not known_text_free and not pin_seen:
+            return False
+        if el in _GIT_DIFF_CAPABLE or not known_text_free:
+            return all(flag in argv for flag in _GIT_DIFF_DRIVER_OFF)
+        return True
     return False  # options only, no subcommand — not a real invocation
 
 
@@ -1275,9 +1298,13 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("git log without the encoding pin is refused",
      'subprocess.run(["git", "log", "-1"], text=True, encoding="utf-8")',
      True),
-    ("git log with the literal pin accepted",
+    ("git log pinned but with diff drivers live is refused",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
-     ' "log", "-1"], text=True, encoding="utf-8")', False),
+     ' "log", "-1"], text=True, encoding="utf-8")', True),
+    ("git log pinned with the drivers off is accepted",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
+     ' encoding="utf-8")', False),
     ("git log with a non-utf8 pin is refused",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=GBK",'
      ' "log", "-1"], text=True, encoding="utf-8")', True),
@@ -1301,8 +1328,8 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # is the subcommand's own argv, so a splice there is harmless.
     ("literal subcommand makes a trailing splice safe",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
-     ' "-C", str(repo), "log", *args], text=True, encoding="utf-8")',
-     False),
+     ' "-C", str(repo), "log", "--no-ext-diff", "--no-textconv", *args],'
+     ' text=True, encoding="utf-8")', False),
     ("literal plumbing subcommand with a trailing splice",
      'subprocess.run(["git", "-C", str(repo), "rev-parse", *args],'
      ' text=True, encoding="utf-8")', False),
@@ -1317,9 +1344,22 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("unknown git subcommand fails closed",
      'subprocess.run(["git", "lg", "-1"], text=True, encoding="utf-8")',
      True),
-    ("...unless the pin covers it — the pin fixes aliases too",
+    ("...unless the pin AND the driver-off flags cover it",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
-     ' "lg", "-1"], text=True, encoding="utf-8")', False),
+     ' "lg", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
+     ' encoding="utf-8")', False),
+    # an operator-configured diff.external / textconv driver writes
+    # whatever bytes it likes, and the encoding pin does NOT govern it
+    # (verified: a CP936 helper makes plain `git diff` emit CP936).
+    ("plain git diff is refused — an external driver may own its output",
+     'subprocess.run(["git", "diff", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    ("git diff with both driver-off flags is accepted",
+     'subprocess.run(["git", "diff", "--no-ext-diff", "--no-textconv",'
+     ' "--name-status"], text=True, encoding="utf-8")', False),
+    ("--no-ext-diff alone is not enough (textconv remains)",
+     'subprocess.run(["git", "diff", "--no-ext-diff"], text=True,'
+     ' encoding="utf-8")', True),
     # reflective access reaches the spawners without naming them
     ("__dict__ access to a spawner fails closed",
      'subprocess.__dict__["run"](["git", "status"], text=True)', True),

@@ -328,12 +328,14 @@ def _git(*args: str) -> str:
     sub, rest = args[0], args[1:]
     if sub == "show":
         out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
-                              "-C", str(_REPO), "show", *rest],
+                              "-C", str(_REPO), "show",
+                              "--no-ext-diff", "--no-textconv", *rest],
                              capture_output=True, text=True,
                              encoding="utf-8", check=True)
     elif sub == "diff":
         out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
-                              "-C", str(_REPO), "diff", *rest],
+                              "-C", str(_REPO), "diff",
+                              "--no-ext-diff", "--no-textconv", *rest],
                              capture_output=True, text=True,
                              encoding="utf-8", check=True)
     else:

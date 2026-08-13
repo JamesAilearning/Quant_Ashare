@@ -88,7 +88,8 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
         elif sub == "log":
             completed = subprocess.run(
                 ["git", "-c", "i18n.logOutputEncoding=utf-8",
-                 "log", *rest], cwd=str(cwd),
+                 "log", "--no-ext-diff", "--no-textconv", *rest],
+                cwd=str(cwd),
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10, check=False,
             )

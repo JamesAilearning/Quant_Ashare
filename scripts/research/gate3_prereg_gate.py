@@ -107,7 +107,8 @@ def _git(repo: Path, *args: str) -> str:
     if sub == "log":
         out = subprocess.run(
             ["git", "-c", "i18n.logOutputEncoding=utf-8",
-             "-C", str(repo), "log", *rest],
+             "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
+             *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     elif sub == "status":
