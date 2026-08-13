@@ -1,5 +1,6 @@
-"""Gate-3 Step-A — canonical as-of coverage report over the full CSI300-ever
-financial PIT store (research-only, NO factor).
+"""Gate-3 Step-A — canonical as-of coverage report over a full *-ever financial
+PIT store (research-only, NO factor). The universe comes from
+``--instruments-file`` and its floor bundle from ``--floors-universe``.
 
 Generates ``docs/research/gate3_step_a_pit_coverage_report.md`` from the
 ingested store, measuring what :class:`FinancialPITDataView` ACTUALLY SERVES
@@ -13,20 +14,28 @@ Usage:
     python scripts/research/gate3_step_a_coverage_report.py \\
         --store-dir D:/qlib_data/financial_pit_raw \\
         --instruments-file D:/qlib_data/my_cn_data_pit/instruments/csi300.txt \\
+        --floors-universe csi300 \\
         --calendar D:/qlib_data/my_cn_data_pit/calendars/day.txt \\
         --out docs/research/gate3_step_a_pit_coverage_report.md
 
+``--floors-universe`` is REQUIRED and selects which per-universe coverage-floor
+bundle to enforce (``csi300`` / ``csi800``); it must match the universe of
+``--instruments-file`` (an obvious mismatch is refused).
+
 Outputs (all in ONE markdown report):
   1. per-field as-of coverage by year (primary: ex-financial PIT members at
-     each quarterly as-of date; appendix: CSI300-ever incl. financials for
-     Gate-1 comparability), incl. the adv_receipts∪contract_liab coalesce;
-  2. ex-financial CSI300-ever breadth by year;
+     each quarterly as-of date; appendix: the run's universe incl. financials —
+     the Δ vs Gate-1 pooled column is emitted ONLY for csi300, since Gate-1's
+     pooled table is a CSI300-ever measurement), incl. the
+     adv_receipts∪contract_liab coalesce;
+  2. ex-financial breadth by year for the run's universe;
   3. earliest reliable availability per candidate (C1/C2/C3), incl. an
      rd_exp year×quarter drill-down (the C2 window question);
   4. full-universe version_collapse_residual per endpoint;
-  5. canonical coverage-floor check (``COVERAGE_FLOORS``) — enforced against
-     EVERY yearly mean in the 2019-2025 floor window AND the latest as-of
-     snapshot when floors are populated (a historical regression fails loud).
+  5. canonical coverage-floor check — the floor bundle SELECTED by
+     ``--floors-universe`` (floors are per-universe), enforced against EVERY
+     yearly mean in the 2019-2025 floor window AND the latest as-of snapshot
+     when populated (a historical regression fails loud).
 """
 from __future__ import annotations
 
@@ -59,6 +68,9 @@ from src.data.tushare.financial_statements import DATA_FIELDS  # noqa: E402
 from src.research.financial_pit_coverage_floors import (  # noqa: E402
     ADV_CONTRACT_COALESCE_FLOOR,
     COVERAGE_FLOORS,
+    CSI800_ADV_CONTRACT_COALESCE_FLOOR,
+    CSI800_COVERAGE_FLOORS,
+    CSI800_FLOOR_PROVENANCE,
     FLOOR_PROVENANCE,
 )
 from src.research.financial_pit_view import (  # noqa: E402
@@ -106,6 +118,48 @@ CANDIDATE_FIELDS: dict[str, tuple[str, ...]] = {
 
 class ReportError(RuntimeError):
     """Fail-loud: the report must abort rather than print optimistic numbers."""
+
+
+# universe -> (field floors, coalesce floor, provenance). Floors are PER-UNIVERSE
+# (coverage is a property of the universe's issuer mix), so the report must
+# enforce the bundle matching the universe it is measuring: the CSI300 bundle
+# applied to CSI800 REJECTS valid coverage where CSI800's calibrated floor is
+# lower (contract_liab 0.21 vs 0.12) and SILENTLY ACCEPTS a regression where it
+# is higher (oper_cost 0.97 vs 0.98).
+_FLOOR_BUNDLES: dict[str, tuple[dict[str, float], float, str]] = {
+    "csi300": (dict(COVERAGE_FLOORS), ADV_CONTRACT_COALESCE_FLOOR,
+               FLOOR_PROVENANCE),
+    "csi800": (dict(CSI800_COVERAGE_FLOORS), CSI800_ADV_CONTRACT_COALESCE_FLOOR,
+               CSI800_FLOOR_PROVENANCE),
+}
+
+
+def resolve_floor_bundle(
+    universe: str, instruments_file: Path | str,
+) -> tuple[dict[str, float], float, str]:
+    """Pick the floor bundle for ``universe``, refusing an obvious mismatch.
+
+    The universe is an EXPLICIT required choice (never inferred, never
+    defaulted) — a silently-defaulted bundle is how the wrong floors get
+    enforced. As a second line, an instruments filename naming a DIFFERENT
+    known universe is refused: passing the flag but pointing it at the other
+    universe's members is the same misconfiguration one step later.
+    """
+    if universe not in _FLOOR_BUNDLES:
+        raise ReportError(
+            f"unknown floors universe {universe!r}; known: "
+            f"{sorted(_FLOOR_BUNDLES)}"
+        )
+    stem = Path(instruments_file).stem.lower()
+    for other in _FLOOR_BUNDLES:
+        if other != universe and other in stem:
+            raise ReportError(
+                f"--floors-universe={universe} but the instruments file "
+                f"({Path(instruments_file).name}) names {other} — floors are "
+                "per-universe; a mismatched bundle rejects valid coverage or "
+                "silently accepts a regression."
+            )
+    return _FLOOR_BUNDLES[universe]
 
 
 def parse_membership(path: Path) -> list[tuple[str, str, str]]:
@@ -330,7 +384,9 @@ def build_report(args: argparse.Namespace) -> str:
         for d in quarterly_dates(year):
             members = members_on(intervals, d)
             if not members:
-                raise ReportError(f"CSI300 membership empty at {d} — bad file?")
+                raise ReportError(
+                    f"membership empty at {d} for {args.instruments_file} "
+                    "— bad file?")
             members_by_date[d] = members
             n_fin = sum(1 for ts in members if ts in fin_issuers)
             m_tot.append(len(members))
@@ -350,17 +406,22 @@ def build_report(args: argparse.Namespace) -> str:
     residuals = residual_tables(store_dir, cal, ever)
 
     # -- canonical floor check ---------------------------------------------
-    # Floors are defined over the 2019-2025 window (FLOOR_PROVENANCE), so they
-    # must be enforced against EVERY measured year in that window, not just the
-    # latest snapshot — otherwise a re-ingest that corrupts 2019-2024 history
+    # Floors are defined over the 2019-2025 window (the bundle's provenance), so
+    # they must be enforced against EVERY measured year in that window, not just
+    # the latest snapshot — otherwise a re-ingest that corrupts 2019-2024 history
     # while the latest snapshot stays healthy would still print PASS
     # (codex #347). The latest-snapshot assert_coverage_floor call additionally
     # exercises the live enforcement mechanism itself.
+    # The bundle is the one matching THIS run's universe (codex #425 P1): the
+    # constants exist per universe, so the report must select, not hardcode.
+    floors, coalesce_floor, floor_provenance = resolve_floor_bundle(
+        args.floors_universe, args.instruments_file,
+    )
     last_snap = date(YEARS[-1], 12, 31)
     floor_years = [y for y in YEARS if y >= 2019]
-    if COVERAGE_FLOORS:
+    if floors:
         violations: dict[str, list[tuple[int, float, float]]] = {}
-        for field, floor in COVERAGE_FLOORS.items():
+        for field, floor in floors.items():
             if field not in cov_exfin:
                 raise ReportError(
                     f"floor field {field!r} was not measured — floors and the "
@@ -373,38 +434,44 @@ def build_report(args: argparse.Namespace) -> str:
         # floors are regime tripwires only, so a collapsed union with healthy
         # components must still fail loud (codex #347).
         for y in floor_years:
-            if coal_exfin[y] < ADV_CONTRACT_COALESCE_FLOOR:
+            if coal_exfin[y] < coalesce_floor:
                 violations.setdefault("adv∪contract (coalesce)", []).append(
-                    (y, coal_exfin[y], ADV_CONTRACT_COALESCE_FLOOR))
+                    (y, coal_exfin[y], coalesce_floor))
         if violations:
             raise ReportError(
                 "coverage below the canonical floor in the measured window "
-                f"(field -> [(year, actual, floor)]): {violations} — a "
-                "historical regression must be investigated, never tolerated.")
+                f"(universe={args.floors_universe}; field -> [(year, actual, "
+                f"floor)]): {violations} — a historical regression must be "
+                "investigated, never tolerated.")
         view_exfin.assert_coverage_floor(
-            dict(COVERAGE_FLOORS), members_by_date[last_snap], last_snap)
+            dict(floors), members_by_date[last_snap], last_snap)
         snap_coalesce = coalesce_coverage(
             view_exfin, members_by_date[last_snap], last_snap)
-        if snap_coalesce < ADV_CONTRACT_COALESCE_FLOOR:
+        if snap_coalesce < coalesce_floor:
             raise ReportError(
                 f"adv∪contract coalesce {snap_coalesce:.4f} below its floor "
-                f"{ADV_CONTRACT_COALESCE_FLOOR} on the {last_snap} snapshot.")
-        floor_note = (f"PASS — enforced on EVERY {floor_years[0]}-"
-                      f"{floor_years[-1]} yearly mean AND the {last_snap} "
-                      f"ex-financial member snapshot, incl. the adv∪contract "
-                      f"coalesce floor {ADV_CONTRACT_COALESCE_FLOOR} "
-                      f"({FLOOR_PROVENANCE})")
+                f"{coalesce_floor} on the {last_snap} snapshot.")
+        floor_note = (f"PASS (universe={args.floors_universe}) — enforced on "
+                      f"EVERY {floor_years[0]}-{floor_years[-1]} yearly mean "
+                      f"AND the {last_snap} ex-financial member snapshot, incl. "
+                      f"the adv∪contract coalesce floor {coalesce_floor} "
+                      f"({floor_provenance})")
     else:
-        floor_note = ("NOT ENFORCED — COVERAGE_FLOORS is empty (fill it from "
-                      "this report's measured minima, then re-run)")
+        floor_note = (f"NOT ENFORCED — the {args.floors_universe} floors are "
+                      "empty (fill them from this report's measured minima, "
+                      "then re-run)")
 
     # -- render ---------------------------------------------------------------
     lines: list[str] = []
     a = lines.append
-    a("# Gate-3 Step-A · canonical as-of 覆盖率报告(全量 CSI300-ever 财报 PIT store)")
+    # The universe label follows the run's actual universe — a report that
+    # hardcodes one universe's name while measuring another's members is a
+    # factual error in the artifact itself (codex #425 P1 follow-through).
+    universe_label = f"{args.floors_universe.upper()}-ever"
+    a(f"# Gate-3 Step-A · canonical as-of 覆盖率报告(全量 {universe_label} 财报 PIT store)")
     a("")
     a("> 生成: `scripts/research/gate3_step_a_coverage_report.py`(fail-loud,可复现)。")
-    a(f"> Store: `{store_dir}`;universe: CSI300-ever n={len(ever)};金融排除 n={len(fin_issuers)}({basic_note})。")
+    a(f"> Store: `{store_dir}`;universe: {universe_label} n={len(ever)};金融排除 n={len(fin_issuers)}({basic_note})。")
     a("> 口径: **view 实际服务值**(修正后 disclosure-of-record serve-rule 的 as-of 横截面),每年 4 个季度末快照取均值 —— 不是 ingest 行级非空率。")
     a(f"> Coverage-floor 检查: {floor_note}。")
     a("")
@@ -444,22 +511,37 @@ def build_report(args: argparse.Namespace) -> str:
           f"{res.overall_differing_fraction():.4%} | "
           f"{len(res.differing)} |")
     a("")
-    a("## 5. 附表:Gate-1 可比口径(CSI300-ever 含金融,分母=当期 anchor 有披露的名字)+ Δ vs Gate-1 pooled")
+    a(f"## 5. 附表:Gate-1 可比口径({universe_label} 含金融,分母=当期 anchor 有披露的名字)"
+      + ("+ Δ vs Gate-1 pooled" if args.floors_universe == "csi300" else ""))
     a("")
     a("anchor: income→revenue / balancesheet→total_assets / cashflow→n_cashflow_act"
-      "(anchor 自身行恒 100%,仅作分母定义)。Gate-1 §4 是行级 pooled,本表是 as-of"
-      "横截面 — Δ 为方向参考,预期 as-of ≤ pooled。")
+      "(anchor 自身行恒 100%,仅作分母定义)。")
+    if args.floors_universe == "csi300":
+        a("Gate-1 §4 是行级 pooled,本表是 as-of 横截面 — Δ 为方向参考,预期 as-of ≤ pooled。")
+    else:
+        # GATE1_POOLED is a CSI300-ever measurement; differencing another
+        # universe against it compares different issuer sets and would read as
+        # a coverage delta when it is a universe delta.
+        a(f"**Δ 列不适用**: Gate-1 §4 pooled 是 CSI300-ever 口径,本报告宇宙为 "
+          f"{universe_label} —— 两者 issuer 集合不同,相减得到的是宇宙差异而非覆盖差异,"
+          "故本表只列本宇宙的 as-of 值,不做 Δ 对比。")
     a("")
-    a("| field | " + " | ".join(str(y) for y in YEARS) + " | Δ vs Gate-1 (mean) |")
-    a("|---" * (len(YEARS) + 2) + "|")
+    gate1_comparable = args.floors_universe == "csi300"
+    a("| field | " + " | ".join(str(y) for y in YEARS)
+      + (" | Δ vs Gate-1 (mean) |" if gate1_comparable else " |"))
+    a("|---" * (len(YEARS) + (2 if gate1_comparable else 1)) + "|")
     for f in all_fields:
         row = " | ".join(pct(cov_cmp[f][y]) for y in YEARS)
+        anchor_mark = " *(anchor)*" if f in _ENDPOINT_ANCHOR.values() else ""
+        if not gate1_comparable:
+            # no Δ column off the CSI300 universe — see the note above
+            a(f"| {f}{anchor_mark} | {row} |")
+            continue
         if f in GATE1_POOLED:
             deltas = [cov_cmp[f][y] - GATE1_POOLED[f][y] for y in YEARS]
             dnote = f"{100.0 * sum(deltas) / len(deltas):+.1f}pp"
         else:
             dnote = "n/a"
-        anchor_mark = " *(anchor)*" if f in _ENDPOINT_ANCHOR.values() else ""
         a(f"| {f}{anchor_mark} | {row} | {dnote} |")
     a("")
     a("## 6. 候选最早可靠可用期(规则化推导)")
@@ -521,9 +603,9 @@ def build_report(args: argparse.Namespace) -> str:
     a("5. **其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
       "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
     fin_counts = [fin for _, _, fin, _ in breadth_rows]
-    a(f"6. **金融排除规模**: 行业名单法(stock_basic)在 CSI300-ever 上排除 "
+    a(f"6. **金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
       f"{len(fin_issuers)} 名,逐年在册金融 {min(fin_counts)}-{max(fin_counts)} 名"
-      "(§2)—— 高于早前 ~35-42 的粗估,以本表为准。")
+      "(§2)—— 以本表为准。")
     a("")
     a("## 8. ingest holes(缺 store 文件的名字 — 显式列出,绝不静默)")
     a("")
@@ -544,6 +626,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store-dir", required=True)
     p.add_argument("--instruments-file", required=True)
     p.add_argument("--calendar", required=True)
+    # REQUIRED, never defaulted: floors are per-universe, and a silently
+    # defaulted bundle enforces the wrong floors (codex #425 P1).
+    p.add_argument("--floors-universe", required=True,
+                   choices=sorted(_FLOOR_BUNDLES),
+                   help="which coverage-floor bundle to enforce; must match "
+                        "the universe of --instruments-file")
     p.add_argument("--out", default=None,
                    help="write the markdown report here (default: stdout)")
     args = p.parse_args(argv)
