@@ -619,3 +619,51 @@ def test_combined_handler_registers_with_composite_cache_identity(tmp_path):
             ALPHA158_PLUS_MINED_HANDLER_NAME) != identity
     finally:
         _reset_feature_handler_registry_to_defaults()
+
+
+def test_combined_cache_identity_tracks_mined_input_contents(tmp_path):
+    """codex #422 r6: a registry updated IN PLACE (same path) must change
+    the cache key — otherwise FeatureDatasetBuilder serves treatment
+    features built from the old inputs while the run report stamps the
+    new identity: stale features under fresh provenance."""
+    from src.data.feature_dataset_builder import (
+        get_feature_handler_cache_identity,
+    )
+    from src.data.mined_factor_handler import (
+        ALPHA158_PLUS_MINED_HANDLER_NAME,
+        register_alpha158_plus_mined_handler,
+    )
+
+    _seed_pool(tmp_path / "pool")
+    bundle_dir = tmp_path / "bundle"
+    (bundle_dir / "calendars").mkdir(parents=True)
+    (bundle_dir / "calendars" / "day.txt").write_text(
+        "2024-01-01" + chr(10), encoding="utf-8")
+    registry = tmp_path / "registry.parquet"
+    registry.write_bytes(b"v1")
+
+    bundle = MinedFactorBundle(
+        pool_dir=tmp_path / "pool",
+        pit_provider_uri=str(bundle_dir),
+        delisted_registry_path=str(registry),
+    )
+    try:
+        register_alpha158_plus_mined_handler(bundle)
+        first = get_feature_handler_cache_identity(
+            ALPHA158_PLUS_MINED_HANDLER_NAME)
+
+        # Same PATH, new CONTENT.
+        registry.write_bytes(b"v2")
+        assert get_feature_handler_cache_identity(
+            ALPHA158_PLUS_MINED_HANDLER_NAME) != first
+
+        # Same for the bundle's own content.
+        registry.write_bytes(b"v1")
+        assert get_feature_handler_cache_identity(
+            ALPHA158_PLUS_MINED_HANDLER_NAME) == first
+        (bundle_dir / "calendars" / "day.txt").write_text(
+            "2024-01-02" + chr(10), encoding="utf-8")
+        assert get_feature_handler_cache_identity(
+            ALPHA158_PLUS_MINED_HANDLER_NAME) != first
+    finally:
+        _reset_feature_handler_registry_to_defaults()

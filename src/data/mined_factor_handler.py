@@ -558,10 +558,31 @@ def register_alpha158_plus_mined_handler(
     factory = _make_alpha158_plus_mined_factory(bundle)
 
     def _identity() -> str:
-        return (
-            "alpha158_default+"
-            + _compute_bundle_cache_identity(bundle)
-        )
+        # The bundle identity alone hashes the mined PIT/registry PATHS
+        # and the pool bytes, but not the registry's CONTENT — so a
+        # registry updated in place (or a distinct
+        # mined_factor_pit_provider_uri refreshed in place) would reuse
+        # a cached dataset built from the OLD inputs while the run
+        # report stamped the NEW identity: stale treatment features
+        # under fresh provenance (codex #422 r6). Fold the same input
+        # identity the run stamp carries into the cache key.
+        #
+        # The plain MinedFactor handler's identity is deliberately left
+        # as it shipped: changing it would invalidate every existing
+        # cached dataset for a path this PR does not introduce.
+        parts = ["alpha158_default", _compute_bundle_cache_identity(bundle)]
+        if bundle.pit_provider_uri and bundle.delisted_registry_path:
+            from src.factor_mining.promotion_binding import (  # noqa: PLC0415
+                mined_input_identity,
+            )
+
+            inputs = mined_input_identity(
+                pit_provider_uri=bundle.pit_provider_uri,
+                delisted_registry_path=bundle.delisted_registry_path,
+            )
+            parts.append(inputs["pit_bundle_content_hash"])
+            parts.append(f"registry:{inputs['delisted_registry_sha256']}")
+        return "+".join(parts)
 
     register_feature_handler(
         name, factory, replace=replace, cache_identity=_identity,
