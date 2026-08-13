@@ -59,6 +59,21 @@ _SPAWNERS = frozenset({"run", "check_output", "Popen", "call", "check_call"})
 # with the locale, which is the whole bug. There is no pinning spelling to
 # recommend, so any use is rejected outright (codex P2 r8 on #410).
 _TEXT_ONLY_HELPERS = frozenset({"getoutput", "getstatusoutput"})
+# Module attributes that CANNOT spawn: constants, exception classes, and
+# the pure-string helper. Everything else on the module — a reflective
+# ``__dict__`` / ``__getattribute__``, or an attribute added by a future
+# Python — is treated as forwarding and fails closed (codex P2 r26 on
+# #410). Extending this set is a deliberate, reviewable act.
+_SUBPROCESS_INERT_ATTRS = frozenset({
+    "PIPE", "DEVNULL", "STDOUT", "SubprocessError", "CalledProcessError",
+    "TimeoutExpired", "CompletedProcess", "list2cmdline",
+    "STARTUPINFO", "STARTF_USESHOWWINDOW", "SW_HIDE",
+    "CREATE_NEW_CONSOLE", "CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW",
+    "DETACHED_PROCESS", "ABOVE_NORMAL_PRIORITY_CLASS",
+    "BELOW_NORMAL_PRIORITY_CLASS", "HIGH_PRIORITY_CLASS",
+    "IDLE_PRIORITY_CLASS", "NORMAL_PRIORITY_CLASS",
+    "REALTIME_PRIORITY_CLASS",
+})
 _TEXT_FLAGS = frozenset({"text", "universal_newlines"})
 
 # Interpreter flags that make a python child IGNORE ``PYTHON*`` env vars —
@@ -98,16 +113,20 @@ _CHILD_ENV_FUNC = "utf8_child_env"
 # unrecognized stays UNRESOLVED and fails closed, so a launcher this list
 # does not know (a venv shim, a tool wrapper) is never waved through.
 _NON_PYTHON_PROGRAMS = frozenset({"git"})
-# Git subcommands whose output includes COMMIT TEXT, which git re-encodes
-# per ``i18n.logOutputEncoding`` (codex P2 r24 on #410; verified:
-# ``git -c i18n.logOutputEncoding=GBK log --format=%B`` emits bytes a
-# UTF-8 parent cannot decode, while the utf-8 pin restores raw UTF-8).
-# Blob/plumbing output (rev-parse, status --porcelain, show REF:PATH's
-# content...) is not re-encoded — but ``show`` can print either, so it
-# stays in the risky set and carries the pin.
-_GIT_LOG_FAMILY = frozenset({
-    "log", "show", "whatchanged", "shortlog", "blame", "annotate",
-    "format-patch", "rev-list",
+# Git subcommands whose output carries NO commit text — the only ones
+# safe without the encoding pin. A WHITELIST, not a log-family
+# blacklist (codex P2 r26 on #410): an unknown subcommand can be a
+# user ALIAS for log (verified in a scratch repo: ``alias.lg=log`` under
+# ``i18n.logOutputEncoding=GBK`` emits GBK bytes), so "not in the log
+# family" proved nothing. Aliases cannot shadow BUILT-INS (verified:
+# ``alias.status=log -1`` leaves ``git status`` running the builtin),
+# which is what makes this list airtight. Blob content (``diff``,
+# ``cat-file``) is raw bytes git never re-encodes; a non-UTF-8 tracked
+# FILE is a different problem this gate does not claim to solve.
+_GIT_COMMIT_TEXT_FREE = frozenset({
+    "rev-parse", "status", "ls-files", "ls-tree", "merge-base", "diff",
+    "worktree", "cat-file", "hash-object", "symbolic-ref",
+    "check-ignore", "update-index", "config",
 })
 # git GLOBAL options (pre-subcommand). Value-taking ones consume the next
 # element; the value itself may be opaque (a path) without harm.
@@ -539,7 +558,10 @@ def _git_output_safe(call: ast.Call) -> bool:
             continue
         if el.startswith("-"):
             return False  # unknown global option — fail closed
-        return pin_seen or el not in _GIT_LOG_FAMILY  # el = the subcommand
+        # el = the subcommand. The pin covers ANY subcommand (verified:
+        # it fixes an alias-to-log too); without it, only a built-in
+        # whose output carries no commit text is provable.
+        return pin_seen or el in _GIT_COMMIT_TEXT_FREE
     return False  # options only, no subcommand — not a real invocation
 
 
@@ -715,8 +737,17 @@ def offending_lines(source: str) -> list[int]:
         parent = parents.get(node)
         if node.id in modules:
             if isinstance(parent, ast.Attribute) and parent.value is node:
-                if parent.attr not in spawn_attrs:
+                if parent.attr in _SUBPROCESS_INERT_ATTRS:
                     continue  # PIPE / DEVNULL / exceptions: cannot spawn
+                if parent.attr not in spawn_attrs:
+                    # NOT a blanket exemption (codex P2 r26 on #410):
+                    # ``subprocess.__dict__["run"]`` and
+                    # ``subprocess.__getattribute__("run")`` reach the
+                    # spawners reflectively. Anything that is neither a
+                    # known-inert constant nor a recognized spawner is
+                    # unresolvable forwarding.
+                    hits.append(node.lineno)
+                    continue
                 grand = parents.get(parent)
                 if isinstance(grand, ast.Call) and grand.func is parent:
                     continue  # direct spawn call — judged below
@@ -1281,6 +1312,24 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("opaque -c value fails closed",
      'subprocess.run(["git", "-c", cfg, "status"], text=True,'
      ' encoding="utf-8")', True),
+    # an UNKNOWN subcommand may be a user alias for log (verified in a
+    # scratch repo), so the safe set is a built-in whitelist...
+    ("unknown git subcommand fails closed",
+     'subprocess.run(["git", "lg", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("...unless the pin covers it — the pin fixes aliases too",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "lg", "-1"], text=True, encoding="utf-8")', False),
+    # reflective access reaches the spawners without naming them
+    ("__dict__ access to a spawner fails closed",
+     'subprocess.__dict__["run"](["git", "status"], text=True)', True),
+    ("__getattribute__ access to a spawner fails closed",
+     'subprocess.__getattribute__("run")(["git", "status"], text=True)',
+     True),
+    ("getattr on the module fails closed",
+     'getattr(subprocess, "run")(["git", "status"], text=True)', True),
+    ("an unknown module attribute fails closed",
+     "handler = subprocess.some_future_helper", True),
     ("unknown git global option fails closed",
      'subprocess.run(["git", "--weird", "status"], text=True,'
      ' encoding="utf-8")', True),
