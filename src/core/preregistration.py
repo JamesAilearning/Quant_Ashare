@@ -79,11 +79,19 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
                 timeout=10, check=False,
             )
         elif sub == "status":
-            completed = subprocess.run(
-                ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
+            # BINARY + explicit decode (#410 r37): a clean filter's
+            # stderr rides along whenever git has to compare content,
+            # and must not be able to raise out of this helper.
+            raw = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null",
                  "status", *rest], cwd=str(cwd),
-                capture_output=True, text=True, encoding="utf-8",
-                timeout=10, check=False,
+                capture_output=True, timeout=10, check=False,
+            )
+            completed = subprocess.CompletedProcess(
+                raw.args, raw.returncode,
+                raw.stdout.decode("utf-8", errors="replace"),
+                raw.stderr.decode("utf-8", errors="replace"),
             )
         elif sub == "log-last-commit":
             # Every OPTION is literal here and the caller supplies only a

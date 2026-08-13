@@ -130,8 +130,8 @@ _NON_PYTHON_PROGRAMS = frozenset({"git"})
 # hook, so text-mode worktree calls fail closed — the repo's own
 # worktree calls are binary-mode and unaffected.
 _GIT_COMMIT_TEXT_FREE = frozenset({
-    "rev-parse", "status", "ls-files", "ls-tree", "merge-base",
-    "symbolic-ref", "check-ignore", "config",
+    "rev-parse", "ls-files", "ls-tree", "merge-base", "symbolic-ref",
+    "check-ignore",
 })
 # Deliberately ABSENT, each verified to run an external program whose
 # bytes no git setting normalizes (codex P2 r36 on #410):
@@ -161,7 +161,17 @@ _GIT_COMMIT_TEXT_FREE = frozenset({
 _GIT_FILTER_CAPABLE = frozenset({
     "diff", "update-index", "hash-object", "cat-file", "add", "checkout",
     "stash", "apply", "restore",
+    # ``status`` too (codex P2 r37 on #410; reproduced): when stat info
+    # cannot settle a comparison — same size, racy mtime — git compares
+    # CONTENT, which runs the clean filter and puts its stderr in the
+    # captured stream.
+    "status",
 })
+# ``config`` is refused for a different reason: config VALUES are stored
+# as raw bytes and ``--get`` emits them unchanged, so any non-UTF-8 value
+# breaks a UTF-8 parent (verified with a GBK value in .git/config). No
+# git setting re-encodes them.
+_GIT_RAW_VALUE_SUBCOMMANDS = frozenset({"config"})
 _GIT_DIFF_CAPABLE = frozenset({
     "diff", "show", "log", "whatchanged", "format-patch", "rev-list",
     "blame", "annotate", "range-diff", "diff-tree", "diff-index",
@@ -661,8 +671,8 @@ def _git_output_safe(call: ast.Call) -> bool:
         # textconv filter owns those bytes; only the literal flags turn
         # them off). An UNKNOWN subcommand may be an alias for either,
         # so it needs both.
-        if el in _GIT_FILTER_CAPABLE:
-            return False  # attribute filters: no provable suppression
+        if el in _GIT_FILTER_CAPABLE or el in _GIT_RAW_VALUE_SUBCOMMANDS:
+            return False  # filters / raw stored bytes: no suppression
         if not hooks_off:
             # A hook writes arbitrary bytes into the captured streams;
             # ``core.hooksPath`` aimed at a non-directory is the one
@@ -1155,44 +1165,44 @@ _CP936_PIN = ', env={**os.environ, "PYTHONIOENCODING": "cp936"}'
 # construction rather than by ever-longer AST rules.
 _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # --- codec keyword semantics (values, not just names) ---
-    ("text bare", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)', True),
-    ("text + utf-8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")', False),
-    ("text + cp936", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="cp936")', True),
-    ("text + None", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding=None)', True),
+    ("text bare", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("text + utf-8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+    ("text + cp936", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="cp936")', True),
+    ("text + None", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=None)', True),
     ("binary", 'subprocess.run(["git"])', False),
-    ("text=False", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=False)', False),
+    ("text=False", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False)', False),
     ("text=False + cp936",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=False, encoding="cp936")', True),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="cp936")', True),
     ("text=False + utf-8",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=False, encoding="utf-8")', False),
-    ("errors alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], errors="replace")', True),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="utf-8")', False),
+    ("errors alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace")', True),
     ("errors + utf-8",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], errors="replace", encoding="utf-8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace", encoding="utf-8")', False),
     # A codec keyword set to None does NOT enable text mode (verified
     # against the interpreter): flagging it would push the author to add
     # an encoding and flip the call from bytes to str.
-    ("encoding=None alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], encoding=None)', False),
-    ("errors=None alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], errors=None)', False),
+    ("encoding=None alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], encoding=None)', False),
+    ("errors=None alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors=None)', False),
     # EVERY falsy literal is binary (verified: encoding="" returns bytes),
     # so flagging it would flip the return type — same rule as None.
     ("encoding empty-string alone",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], encoding="")', False),
-    ("errors empty-string alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], errors="")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], encoding="")', False),
+    ("errors empty-string alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="")', False),
     ("text=True with empty encoding",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="")', True),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="")', True),
     ("both codecs None",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], encoding=None, errors=None)', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], encoding=None, errors=None)', False),
     ("encoding=None with text=True",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding=None)', True),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=None)', True),
     # A dynamic flag cannot be proven binary; if it is true at runtime the
     # call decodes with the locale, so it is refused rather than skipped.
-    ("dynamic text flag", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=want)', True),
+    ("dynamic text flag", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=want)', True),
     ("dynamic universal_newlines",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], universal_newlines=want)', True),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], universal_newlines=want)', True),
     ("non-literal encoding",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding=ENC)', True),
-    ("alias U8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="U8")', False),
-    ("alias utf_8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf_8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=ENC)', True),
+    ("alias U8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="U8")', False),
+    ("alias utf_8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf_8")', False),
     # --- call-target resolution ---
     ("unrelated .run()", "renderer.run(text=True)", False),
     ("locally defined run()",
@@ -1200,13 +1210,13 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("aliased module", 'import subprocess as sp\nsp.run(["git"], text=True)', True),
     ("from-import", 'from subprocess import run\nrun(["git"], text=True)', True),
     # --- ** unpacking: it can itself supply text=True ---
-    ("opaque ** in text mode", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, **o)', True),
-    ("opaque ** looking binary", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], check=True, **o)', True),
-    ("literal ** supplying text", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], **{"text": True})', True),
+    ("opaque ** in text mode", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, **o)', True),
+    ("opaque ** looking binary", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], check=True, **o)', True),
+    ("literal ** supplying text", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True})', True),
     ("literal ** supplying text + utf-8",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], **{"text": True, "encoding": "utf-8"})', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "utf-8"})', False),
     ("literal ** supplying cp936",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], **{"text": True, "encoding": "cp936"})', True),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "cp936"})', True),
     # --- the child encoder: the sanctioned constructor, nothing else ---
     ("python child, no env", _PY.format(extra=""), True),
     ("python child, sanctioned env",
@@ -1362,7 +1372,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("call-level splat can smuggle positional text flags",
      "subprocess.run(*cmd)", True),
     ("three positionals with no text keyword stay provably binary",
-     'subprocess.Popen(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], -1, None)', False),
+     'subprocess.Popen(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], -1, None)', False),
     # a truthy shell= makes argv a shell command line, not a program vector
     ("list argv with shell=True even fully pinned",
      'subprocess.run([sys.executable, "x"], shell=True, text=True,'
@@ -1400,7 +1410,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("getoutput via from-import",
      'from subprocess import getoutput\ngetoutput("git log")', True),
     ("git child needs no env",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
     # ``X.executable`` proves python only when X is the imported sys module
     # — any object can expose an .executable naming a native binary.
     ("someone else's .executable even fully pinned",
@@ -1422,7 +1432,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' encoding="utf-8", env=utf8_child_env())', False),
     ("windows absolute git path needs no env",
      'subprocess.run([r"C:\\Program Files\\Git\\bin\\git.exe",'
-     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"],'
+     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
      ' text=True, encoding="utf-8")', False),
     ("windows path to an unknown tool still fails closed",
      'subprocess.run([r"C:\\tools\\node.exe", "s.js"], text=True,'
@@ -1448,7 +1458,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("unresolvable argv expression",
      'subprocess.run(build(), text=True, encoding="utf-8")', True),
     ("argv from a variable is unresolvable",
-     'argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"]\nsubprocess.run(argv, text=True, encoding="utf-8")',
+     'argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"]\nsubprocess.run(argv, text=True, encoding="utf-8")',
      True),
     # an ordinary assignment alias must not launder the module reference
     ("assigned alias spawns are recognized",
@@ -1459,7 +1469,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'sp2.run(["git"], text=True)', True),
     ("aliased spawn accepted when properly pinned",
      "sp = subprocess\n"
-     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")', False),
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
     # ...and a module reference forwarded OUT of the file-local analysis
     # (call argument, attribute target) fails closed at the forwarding.
     ("module forwarded as a call argument fails closed",
@@ -1467,7 +1477,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("module stored onto an attribute fails closed",
      "obj.sp = subprocess", True),
     ("module attribute constants stay usable",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], stdout=subprocess.PIPE, text=True,'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], stdout=subprocess.PIPE, text=True,'
      ' encoding="utf-8")', False),
     # ...and a stored METHOD spawns exactly like the module alias did
     # (codex P2 r19 follow-up): tracked when it is a plain-Name alias,
@@ -1477,7 +1487,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'runner(["git"], text=True)', True),
     ("method alias accepted when properly pinned",
      "runner = subprocess.run\n"
-     'runner(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")', False),
+     'runner(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
     ("method alias of a text-only helper is recognized",
      "go = subprocess.getoutput\n"
      'go("git log")', True),
@@ -1487,7 +1497,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      "from subprocess import run\nhelper(run)", True),
     ("exception classes stay usable",
      "try:\n"
-     '    subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")\n'
+     '    subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")\n'
      "except subprocess.CalledProcessError:\n"
      "    pass", False),
     # the git exemption is NOT unconditional: the log family re-encodes
@@ -1544,10 +1554,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", *args],'
      ' text=True, encoding="utf-8")', False),
     ("opaque -C value is fine, it cannot be re-read as an option",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "status"], text=True,'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse"], text=True,'
      ' encoding="utf-8")', False),
     ("opaque -c value fails closed",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", cfg, "status"], text=True,'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", cfg, "rev-parse"], text=True,'
      ' encoding="utf-8")', True),
     # an UNKNOWN subcommand may be a user alias for log (verified in a
     # scratch repo), so the safe set is a built-in whitelist...
@@ -1568,28 +1578,28 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # a LITERAL dynamic import hands back the module with no import
     # binding for name-based discovery to find.
     ("__import__ chain spawns are recognized",
-     '__import__("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)', True),
+     '__import__("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
     ("__import__ alias spawns are recognized",
      'sp = __import__("subprocess")\n'
-     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)', True),
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
     ("importlib.import_module chain is recognized",
      "import importlib\n"
-     'importlib.import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"],'
+     'importlib.import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
      " text=True)", True),
     ("from-imported import_module is recognized",
      "from importlib import import_module\n"
-     'import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)', True),
+     'import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
     ("a dynamically imported module forwarded fails closed",
      'helper(__import__("subprocess"))', True),
     ("a properly pinned dynamic-import spawn passes",
      'sp = __import__("subprocess")\n'
-     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")', False),
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
     ("keyword-form import_module is recognized",
      "import importlib\n"
-     'importlib.import_module(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"],'
+     'importlib.import_module(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
      " text=True)", True),
     ("keyword-form __import__ is recognized",
-     '__import__(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)',
+     '__import__(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)',
      True),
     # `git worktree add` runs the post-checkout hook, whose bytes no pin
     # or flag governs (verified: a hook emitting 0xff lands in stdout).
@@ -1603,14 +1613,14 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # on any index-refreshing command (verified: 0xff on stderr breaks a
     # UTF-8 `git status`), and only the literal kill switch stops it.
     ("git status without the fsmonitor kill switch is refused",
-     'subprocess.run(["git", "status", "--porcelain"], text=True,'
+     'subprocess.run(["git", "rev-parse", "--porcelain"], text=True,'
      ' encoding="utf-8")', True),
     ("an explicit fsmonitor path is refused",
      'subprocess.run(["git", "-c", "core.fsmonitor=/hooks/fsm",'
-     ' "status"], text=True, encoding="utf-8")', True),
+     ' "rev-parse"], text=True, encoding="utf-8")', True),
     ("a later fsmonitor re-enable wins",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
-     ' "-c", "core.fsmonitor=/hooks/fsm", "status"], text=True,'
+     ' "-c", "core.fsmonitor=/hooks/fsm", "rev-parse"], text=True,'
      ' encoding="utf-8")', True),
     # `-c include.path=<file>` is expanded immediately and can redefine
     # the codec from a file this gate cannot read (verified both orders).
@@ -1632,11 +1642,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' encoding="utf-8")', True),
     ("an include AFTER the fsmonitor kill switch invalidates it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
-     ' "-c", "include.path=x.cfg", "status"], text=True,'
+     ' "-c", "include.path=x.cfg", "rev-parse"], text=True,'
      ' encoding="utf-8")', True),
     ("an include BEFORE the kill switch is overridden by it",
      'subprocess.run(["git", "-c", "include.path=x.cfg",'
-     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True,'
+     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True,'
      ' encoding="utf-8")', False),
     ("includeIf counts the same",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
@@ -1664,6 +1674,20 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
+    # status runs the clean filter when stat info cannot settle a
+    # comparison (reproduced: same-size edit -> filter stderr), and
+    # config emits stored bytes verbatim (reproduced with a GBK value).
+    ("text-mode git status is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "status", "--porcelain"],'
+     ' text=True, encoding="utf-8")', True),
+    ("...while a binary status is untouched",
+     'subprocess.run(["git", "status", "--porcelain"],'
+     " capture_output=True)", False),
+    ("text-mode git config --get is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "config", "--get", "user.name"],'
+     ' text=True, encoding="utf-8")', True),
     # update-index / hash-object run the post-index-change hook and the
     # attributes clean filter respectively (both verified with 0xff).
     ("text-mode git update-index is refused",
@@ -1676,12 +1700,12 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--", path], text=True, encoding="utf-8")', True),
     # the hooks kill switch is required, and last-one-wins like the rest
     ("git status without the hooks kill switch is refused",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "status"],'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "rev-parse"],'
      ' text=True, encoding="utf-8")', True),
     ("a later hooksPath pointing at a directory wins",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "core.hooksPath=/dev/null", "-c", "core.hooksPath=/hooks",'
-     ' "status"], text=True, encoding="utf-8")', True),
+     ' "rev-parse"], text=True, encoding="utf-8")', True),
     ("...while a binary diff is untouched",
      'subprocess.run(["git", "diff", "--name-status"],'
      " capture_output=True)", False),
@@ -1712,16 +1736,16 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', False),
     # reflective access reaches the spawners without naming them
     ("__dict__ access to a spawner fails closed",
-     'subprocess.__dict__["run"](["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)', True),
+     'subprocess.__dict__["run"](["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
     ("__getattribute__ access to a spawner fails closed",
-     'subprocess.__getattribute__("run")(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)',
+     'subprocess.__getattribute__("run")(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)',
      True),
     ("getattr on the module fails closed",
-     'getattr(subprocess, "run")(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True)', True),
+     'getattr(subprocess, "run")(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
     ("an unknown module attribute fails closed",
      "handler = subprocess.some_future_helper", True),
     ("unknown git global option fails closed",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--weird", "status"], text=True,'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--weird", "rev-parse"], text=True,'
      ' encoding="utf-8")', True),
     # a star-import exports the whole spawning surface unaliased
     ("star-import spawns are recognized",
@@ -1732,10 +1756,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'getoutput("git log")', True),
     ("star-import spawn accepted when properly pinned",
      "from subprocess import *\n"
-     'run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"], text=True, encoding="utf-8")', False),
+     'run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
     # a literal tuple argv is as provable as a list
     ("tuple argv git child pinned",
-     'subprocess.run(("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "status"),'
+     'subprocess.run(("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"),'
      ' text=True, encoding="utf-8")', False),
     ("tuple argv python child fully pinned",
      'subprocess.run((sys.executable, "x"), text=True,'

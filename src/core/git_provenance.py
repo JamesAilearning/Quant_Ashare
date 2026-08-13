@@ -40,10 +40,16 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
     except (OSError, subprocess.SubprocessError):
         return {"commit": None, "dirty": None}
     try:
+        # BINARY + explicit decode: an attributes ``clean`` filter runs
+        # when stat info cannot settle a comparison, and its stderr
+        # lands in the captured stream — decoding that as UTF-8 would
+        # raise past this function's never-raise contract (#410 r37).
         status = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(_REPO_ROOT), "status", "--porcelain"],
-            capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
-        ).stdout
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "-C", str(_REPO_ROOT), "status", "--porcelain"],
+            capture_output=True, timeout=5, check=True,
+        ).stdout.decode("utf-8", errors="replace")
         dirty: bool | None = bool(status.strip())
     except (OSError, subprocess.SubprocessError):
         dirty = None

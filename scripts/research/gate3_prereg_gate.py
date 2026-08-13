@@ -122,11 +122,15 @@ def _git(repo: Path, *args: str) -> str:
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     elif sub == "status":
-        out = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
+        # BINARY + explicit decode (#410 r37): a clean filter writes to
+        # stderr whenever git compares content instead of stat info.
+        raw = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
              "-C", str(repo), "status", *rest],
-            capture_output=True, text=True, encoding="utf-8", check=True,
+            capture_output=True, check=True,
         )
+        return raw.stdout.decode("utf-8", errors="replace").strip()
     elif sub == "ls-files":
         out = subprocess.run(
             ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
