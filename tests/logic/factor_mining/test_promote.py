@@ -539,6 +539,32 @@ def test_timezone_bearing_dates_are_refused(tmp_path):
     assert cfg.validation_end_date == "2024-12-31 00:00:00"
 
 
+def test_falsy_date_overrides_are_refused_not_defaulted(tmp_path):
+    # codex P2 #415 r10: `validation: {end_date: false}` (or 0, [], {})
+    # failed the truthiness check and was treated as if the key were
+    # ABSENT — a malformed operator override silently fell back to the
+    # default behavior instead of refusing.
+    run_dir = _seed_run_dir(tmp_path)
+    for body in ("validation:\n  end_date: false\n",
+                 "validation:\n  end_date: 0\n",
+                 "validation:\n  end_date: []\n",
+                 "validation:\n  end_date: {}\n",
+                 "criteria:\n  is_oos_split_date: false\n"):
+        cfg_path = _write_promote_yaml(tmp_path, body)
+        with pytest.raises(PromotionError, match="not a usable date"):
+            _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    # ...while explicit null keeps meaning "as if absent": the synthetic
+    # auto-split still applies and no extension is recorded.
+    cfg_path = _write_promote_yaml(
+        tmp_path,
+        "validation:\n  end_date: null\n"
+        "criteria:\n  is_oos_split_date: null\n",
+    )
+    cfg = _load_config(cfg_path, run_dir, tmp_path / "production", "v1")
+    assert cfg.validation_end_date is None
+    assert cfg.criteria.is_oos_split_date is not None  # auto 80/20 split
+
+
 def test_scalar_config_sections_are_a_controlled_refusal(tmp_path):
     # codex P2 #415 r7: `validation: typo` / `criteria: 42` made dict()
     # raise ValueError/TypeError past the CLI's PromotionError branch.

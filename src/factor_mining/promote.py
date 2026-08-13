@@ -508,7 +508,29 @@ def _load_config(
             f"unknown validation key(s) {sorted(unknown)} — the governed "
             "deviation is validation.end_date only."
         )
-    validation_end = validation_raw.get("end_date")
+    def _date_override(section: dict, key: str, where: str) -> str | None:
+        # Truthiness would let an explicitly malformed override — false,
+        # 0, [], {} — silently fall back to the default behavior (codex
+        # P2 on #415 r10). A PRESENT key must carry a date string;
+        # explicit null means "as if absent".
+        value = section.get(key)
+        if key in section and value is not None and (
+            not isinstance(value, str) or not value.strip()
+        ):
+            raise PromotionError(
+                f"{where}.{key} {value!r} is not a usable date — an "
+                "explicit override must be a date string; use null or "
+                "omit the key for the default behavior."
+            )
+        return value
+
+    validation_end = _date_override(validation_raw, "end_date", "validation")
+    _date_override(crit_kwargs, "is_oos_split_date", "criteria")
+    if ("is_oos_split_date" in crit_kwargs
+            and crit_kwargs["is_oos_split_date"] is None):
+        # An explicit null split means "absent" — including for the
+        # synthetic auto-split below, which keys off key presence.
+        del crit_kwargs["is_oos_split_date"]
 
     if data.mode == "pit":
         # A PIT campaign's mining panel deliberately ENDS at the IS cutoff
