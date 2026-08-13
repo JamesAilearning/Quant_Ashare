@@ -213,14 +213,30 @@ class PairedPresetPins(unittest.TestCase):
         ledger = yaml.safe_load(
             (_PROJECT_ROOT / "docs" / "prereg"
              / "pv_incremental_ledger.yaml").read_text(encoding="utf-8"))
-        results = [e for e in ledger["entries"]
-                   if (e.get("provenance") or {}).get(
-                       "treatment_pool_identity")]
-        self.assertTrue(results, "no ledger entry records a treatment "
-                                 "identity stamp — this pin would be vacuous")
+        # Select on EITHER marker, then require BOTH (codex #424 r2):
+        # selecting on the stamp alone lets an entry that records its
+        # plan but omits the stamp slip past unchecked — the very
+        # absence this pin exists to catch — while the vacuity guard
+        # below stays satisfied by E009. Intent entries are excluded:
+        # a stamp only exists once the run has happened.
+        results = [
+            e for e in ledger["entries"]
+            if e.get("kind") == "result"
+            and ((e.get("provenance") or {}).get("prereg_plan")
+                 or (e.get("provenance") or {}).get("treatment_pool_identity"))
+        ]
+        self.assertTrue(results, "no paired-promotion result entry found — "
+                                 "this pin would be vacuous")
         for entry in results:
             prov = entry["provenance"]
-            stamp = prov["treatment_pool_identity"]
+            stamp = prov.get("treatment_pool_identity")
+            with self.subTest(entry=entry["id"], field="stamp_present"):
+                self.assertTrue(
+                    str(stamp or "").strip(),
+                    f"{entry['id']} is a registered paired-promotion result "
+                    "but records no treatment_pool_identity — the run "
+                    "reports live under gitignored output/, so this stamp "
+                    "is the only committed evidence of the identity gate.")
             # Each result is judged against ITS OWN registration, never
             # against whichever plan this test file happens to import
             # (codex #424 r1): the ledger is append-only, so a later
