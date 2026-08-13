@@ -235,6 +235,112 @@ def compute_bundle_content_hash(provider_uri: str | Path) -> str:
     return f"{CONTENT_HASH_PREFIX}{digest.hexdigest()}"
 
 
+# Every directory of a qlib bundle that panel construction reads from:
+# the date axis, universe membership, and the feature bins themselves.
+_BUNDLE_DATA_DIRS: tuple[str, ...] = ("calendars", "instruments", "features")
+
+
+def compute_bundle_data_sha256(provider_uri: str | Path) -> str:
+    """SHA-256 over EVERY panel-producing file of a bundle.
+
+    :func:`compute_bundle_content_hash` is a cheap bundle-VERSION key
+    (calendar bytes only) and stays that way for its hot-path callers —
+    but as a binding fingerprint it is blind to in-place corrections of
+    prices, fundamentals, or membership that leave the calendar
+    untouched (external finding on #415 r5). This digest covers the
+    relative path and content bytes of every file under ``calendars/``,
+    ``instruments/`` and ``features/``, in sorted path order, so ANY
+    byte that can reach a panel moves it.
+
+    This is a full read of the bundle — seconds to minutes depending on
+    size. Callers are boundaries that already pay a panel build (a
+    factor-mining run, a promotion), never per-load hot paths.
+
+    Raises
+    ------
+    BundleManifestError
+        If the bundle or any of the three data directories is missing,
+        or any file becomes unreadable mid-walk — one exception type for
+        the whole bundle-integrity surface, same contract as
+        :func:`compute_bundle_content_hash`.
+    """
+    root = Path(provider_uri)
+    digest = hashlib.sha256()
+    for sub in _BUNDLE_DATA_DIRS:
+        base = root / sub
+        if not base.is_dir():
+            raise BundleManifestError(
+                f"compute_bundle_data_sha256: cannot fingerprint "
+                f"{provider_uri} — {base} is missing. All of "
+                f"{_BUNDLE_DATA_DIRS} are required; this bundle either "
+                "isn't a qlib provider, or the directory was deleted "
+                "out-of-band."
+            )
+        if base.is_symlink():
+            raise BundleManifestError(
+                f"compute_bundle_data_sha256: {base} is a symlinked "
+                "directory — the no-directory-links rule is uniform so "
+                "the digest always binds bytes inside the bundle tree. "
+                "Materialize the bundle before fingerprinting."
+            )
+        def _traversal_failed(err: OSError, _base: Path = base) -> None:
+            # os.walk has NO default onerror: a subtree whose scandir
+            # fails (permissions, I/O error, concurrent removal) is
+            # silently SKIPPED, and the digest would claim to cover
+            # files it never read (codex P2 on #415 r7). Every-file
+            # binding means traversal failures are refusals.
+            raise BundleManifestError(
+                f"compute_bundle_data_sha256: cannot traverse "
+                f"{getattr(err, 'filename', None) or _base} "
+                f"({type(err).__name__}: {err}) — an unreadable subtree "
+                "would silently drop panel-producing files from the "
+                "digest."
+            ) from err
+
+        entries = []
+        for dirpath, dirnames, filenames in os.walk(
+                base, onerror=_traversal_failed):
+            # os.walk(followlinks=False) lists a SYMLINKED directory but
+            # never descends into it, while qlib follows the same path
+            # and reads the target bins normally — its contents would be
+            # invisible to this digest (external finding on #415 r6).
+            # Refuse rather than follow: following would need cycle
+            # protection and would bind the digest to bytes outside the
+            # bundle tree. Materialize the bundle instead.
+            for name in dirnames:
+                child = Path(dirpath) / name
+                if child.is_symlink():
+                    raise BundleManifestError(
+                        f"compute_bundle_data_sha256: {child} is a "
+                        "symlinked directory — its target files would be "
+                        "read by qlib but invisible to this fingerprint. "
+                        "Materialize the bundle (no directory links) "
+                        "before fingerprinting."
+                    )
+            for name in filenames:
+                path = Path(dirpath) / name
+                entries.append((path.relative_to(root).as_posix(), path))
+        # Sorted relative paths make the digest independent of os.walk
+        # order; the NUL separators make (path, content) framing
+        # unambiguous (paths cannot contain NUL).
+        for rel, path in sorted(entries):
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            try:
+                with path.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        digest.update(chunk)
+            except OSError as exc:
+                raise BundleManifestError(
+                    f"compute_bundle_data_sha256: cannot read {path} "
+                    f"({type(exc).__name__}: {exc}) — the bundle is "
+                    "present but not fully readable; investigate "
+                    "permissions, disk errors, or a concurrent refresh."
+                ) from exc
+            digest.update(b"\0")
+    return f"{CONTENT_HASH_PREFIX}{digest.hexdigest()}"
+
+
 def _validate_content_hash_shape(value: object, *, where: str) -> None:
     """Validate a content_hash's shape: ``sha256:`` + 64 lowercase hex.
 

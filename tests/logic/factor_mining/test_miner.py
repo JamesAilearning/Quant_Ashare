@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 import subprocess
@@ -498,3 +499,134 @@ def test_cli_main_emits_generation_progress(tmp_path):
     assert proc.returncode == 0, proc.stderr[-600:]
     assert "generation 1/2 done" in proc.stderr
     assert "generation 2/2 done" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# PIT binding fingerprints (capture-before / verify-after)
+# ---------------------------------------------------------------------------
+
+
+def _fake_pit_data(tmp_path) -> DataConfig:
+    """Fingerprintable fake PIT inputs (no real panel is built on them —
+    the panel is monkeypatched to the synthetic builder)."""
+    bundle = tmp_path / "bundle"
+    for rel, content in (
+        ("calendars/day.txt", b"2019-01-02\n2019-01-03\n"),
+        ("instruments/all.txt", b"SH600000\t2019-01-02\t2019-01-03\n"),
+        ("features/sh600000/close.day.bin", b"\x01\x02\x03"),
+    ):
+        path = bundle / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    registry = tmp_path / "registry.parquet"
+    registry.write_bytes(b"registry-v1")
+    return DataConfig(mode="pit", pit_provider_uri=str(bundle),
+                      delisted_registry_path=str(registry))
+
+
+def test_run_mining_records_prebuild_pit_fingerprints(tmp_path, monkeypatch):
+    from src.factor_mining import miner as miner_mod
+
+    smoke = load_config(_smoke_config(tmp_path))
+    pit_data = _fake_pit_data(tmp_path)
+    cfg = dataclasses.replace(smoke, data=pit_data)
+    expected = miner_mod.pit_binding_fingerprints(pit_data)
+    synthetic = miner_mod.build_panel_for_data(smoke.data)
+    monkeypatch.setattr(miner_mod, "build_panel", lambda c: synthetic)
+    monkeypatch.setattr(miner_mod, "build_universe_mask", lambda c: None)
+    result = run_mining(cfg)
+    dump = yaml.safe_load(
+        (result.output_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert dump["pit_bundle_data_sha256"] == expected["pit_bundle_data_sha256"]
+    assert (dump["delisted_registry_sha256"]
+            == expected["delisted_registry_sha256"])
+
+
+def test_run_mining_aborts_when_pit_inputs_change_mid_run(
+        tmp_path, monkeypatch):
+    # External finding on #415 r5: fingerprints captured only at
+    # config-dump time would record the identity of a bundle refreshed
+    # DURING the run — for a pool mined on the old bytes. The run must
+    # abort instead, persisting nothing.
+    from src.factor_mining import miner as miner_mod
+
+    smoke = load_config(_smoke_config(tmp_path))
+    pit_data = _fake_pit_data(tmp_path)
+    cfg = dataclasses.replace(smoke, data=pit_data)
+    synthetic = miner_mod.build_panel_for_data(smoke.data)
+
+    def refresh_then_build(_config):
+        # Simulate an ingest refresh landing while the run is underway.
+        Path(pit_data.delisted_registry_path).write_bytes(b"registry-v2")
+        return synthetic
+
+    monkeypatch.setattr(miner_mod, "build_panel", refresh_then_build)
+    monkeypatch.setattr(miner_mod, "build_universe_mask", lambda c: None)
+    with pytest.raises(RuntimeError, match="changed while mining"):
+        run_mining(cfg)
+    assert not (Path(cfg.output_dir) / "runs" / "test-run").exists()
+
+
+# ---------------------------------------------------------------------------
+# YAML date normalization (codex P1 #415 r6)
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_refuses_falsy_non_mapping_sections(tmp_path):
+    # Same class as promote's r8 fix: `data: false` / `gp: []` would
+    # launder into all-default sections and silently mine a different
+    # experiment. Only an absent/null section means defaults.
+    for body in ("data: false\n", "gp: []\n", "fitness: 0\n"):
+        config_path = tmp_path / "bad.yaml"
+        config_path.write_text(body, encoding="utf-8")
+        with pytest.raises(ValueError, match="must be a YAML mapping"):
+            load_config(config_path)
+
+
+def test_load_config_normalizes_unquoted_yaml_dates(tmp_path):
+    # Unquoted YAML dates parse into datetime.date; DataConfig must carry
+    # ISO strings so the canonical digest never TypeErrors at dump time.
+    config_path = tmp_path / "dates.yaml"
+    config_path.write_text(
+        "run_id: date-run\n"
+        f"output_dir: {(tmp_path / 'mined').as_posix()}\n"
+        "data:\n"
+        "  mode: pit\n"
+        "  pit_provider_uri: bundle\n"
+        "  delisted_registry_path: registry.parquet\n"
+        "  start_date: 2018-01-01\n"
+        "  end_date: 2022-12-31\n"
+        "gp:\n  seed: 42\n"
+        "fitness: {}\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
+    assert cfg.data.start_date == "2018-01-01"
+    assert cfg.data.end_date == "2022-12-31"
+    assert isinstance(cfg.data.start_date, str)
+    assert isinstance(cfg.data.end_date, str)
+    # ...and the canonical digest is computable, not a TypeError.
+    from src.factor_mining.miner import data_definition_sha256
+
+    assert len(data_definition_sha256(cfg.data)) == 64
+
+
+def test_run_mining_unhashable_data_definition_fails_before_mining(
+        tmp_path, monkeypatch):
+    # A programmatic caller can still hand DataConfig a datetime.date;
+    # the digest must fail in seconds — reservation released — not at
+    # config-dump time after the GP burn (codex P1 #415 r6).
+    import datetime as _dt
+
+    from src.factor_mining import miner as miner_mod
+
+    smoke = load_config(_smoke_config(tmp_path))
+    bad_data = dataclasses.replace(
+        smoke.data, end_date=_dt.date(2022, 12, 31))  # type: ignore[arg-type]
+    cfg = dataclasses.replace(smoke, data=bad_data)
+    monkeypatch.setattr(
+        miner_mod, "build_panel",
+        lambda c: (_ for _ in ()).throw(AssertionError("mining started")))
+    with pytest.raises(TypeError):
+        run_mining(cfg)
+    assert not (Path(cfg.output_dir) / "runs" / "test-run").exists()

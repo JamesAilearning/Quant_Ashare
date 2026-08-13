@@ -16,12 +16,13 @@ strict gate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -109,6 +110,23 @@ class RunResult:
 # ---------------------------------------------------------------------------
 
 
+def normalize_yaml_dates(payload: dict) -> dict:
+    """ISO-stringify YAML date/datetime values in a config section.
+
+    Unquoted YAML dates (``end_date: 2022-12-31``) parse into
+    ``datetime.date`` objects, which ``DataConfig`` happily carries until
+    ``data_definition_sha256``'s ``json.dumps`` raises ``TypeError`` — at
+    config-dump time, AFTER a potentially multi-hour GP run (codex P1 on
+    #415 r6). Normalized at every yaml→config boundary (miner and
+    promote), so construction is the guarantee, not the dump.
+    """
+    return {
+        key: value.isoformat() if isinstance(value, (date, datetime))
+        else value
+        for key, value in payload.items()
+    }
+
+
 def load_config(path: str | Path) -> MinerConfig:
     """Parse a YAML config into a typed ``MinerConfig``.
 
@@ -126,9 +144,25 @@ def load_config(path: str | Path) -> MinerConfig:
         load_yaml_with_inheritance,
     )
     raw = load_yaml_with_inheritance(p)
-    data = DataConfig(**(raw.get("data") or {}))
-    gp = GPConfig(**(raw.get("gp") or {}))
-    fitness = FitnessConfig(**(raw.get("fitness") or {}))
+
+    def _section(name: str) -> dict:
+        # ``or {}`` would launder falsy non-mappings (``data: false``,
+        # ``gp: []``) into all-default sections and silently mine a
+        # different experiment (same class as codex P2 on #415 r8);
+        # only an ABSENT/null section legitimately means defaults.
+        section = raw.get(name)
+        if section is None:
+            return {}
+        if not isinstance(section, dict):
+            raise ValueError(
+                f"config section {name!r} must be a YAML mapping or "
+                f"absent, got {type(section).__name__}."
+            )
+        return section
+
+    data = DataConfig(**normalize_yaml_dates(_section("data")))
+    gp = GPConfig(**_section("gp"))
+    fitness = FitnessConfig(**_section("fitness"))
     out_dir = Path(raw.get("output_dir", "research/mined_factors"))
     run_id = raw.get("run_id")
     pool_top_k_raw = raw.get("pool_top_k")
@@ -315,18 +349,75 @@ def load_baseline_predictions(config: MinerConfig):
     return frame
 
 
-def build_panel(config: MinerConfig):
-    if config.data.mode == "synthetic":
-        return _build_synthetic_panel(
-            n_tickers=config.data.synthetic_n_tickers,
-            n_dates=config.data.synthetic_n_dates,
-            seed=config.data.synthetic_seed,
-        )
-    if config.data.mode == "pit":
-        return _build_pit_panel(config.data)
-    raise ValueError(
-        f"Unknown data.mode {config.data.mode!r}; expected 'synthetic' or 'pit'"
+def pit_binding_fingerprints(data: DataConfig) -> dict[str, str]:
+    """Content fingerprints of the PIT inputs a run was actually mined on.
+
+    The data-definition digest hashes CONFIG VALUES (paths included), so an
+    in-place refresh of the bundle or the registry between mining and
+    promotion would pass every config check while the panel bytes changed
+    underneath (external finding on #415 r4). Recorded at mining time and
+    re-verified by promote:
+
+    * the bundle's full data digest — every byte under ``calendars/``,
+      ``instruments/`` and ``features/``. The calendar-only bundle
+      identity is NOT enough here: prices, fundamentals, or membership
+      can be corrected in place under an unchanged calendar (external
+      finding on #415 r5). A full read costs on the order of a minute —
+      paid twice per multi-hour mining run and once per promotion,
+      nowhere else;
+    * the delisted registry's file sha256.
+    """
+    from src.data.bundle_manifest import (  # noqa: PLC0415
+        compute_bundle_data_sha256,
     )
+    registry = Path(data.delisted_registry_path)
+    return {
+        "pit_bundle_data_sha256":
+            compute_bundle_data_sha256(data.pit_provider_uri),
+        "delisted_registry_sha256":
+            hashlib.sha256(registry.read_bytes()).hexdigest(),
+    }
+
+
+def data_definition_sha256(data: DataConfig) -> str:
+    """Canonical digest of a data definition — ONE implementation.
+
+    Written into every run's ``config.yaml`` at mining time and recomputed
+    by ``promote`` at validation time; keeping both sides on this single
+    function is what makes the comparison meaningful (a second hand-rolled
+    canonicalization is exactly what would drift).
+    """
+    return hashlib.sha256(
+        json.dumps(asdict(data), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def build_panel_for_data(data: DataConfig):
+    """Build (panel, forward_returns) for a ``DataConfig``.
+
+    Public seam shared with ``promote``: the promotion CLI re-validates a
+    mined pool on the SAME data definition the run was mined with (fields,
+    forward-return price, window, universe), so both entry points must
+    dispatch through one function — a hand-maintained mirror is exactly
+    what drifted (external finding: ``PromotionDataConfig`` lacked
+    ``fields`` / ``forward_return_price`` and silently re-validated on the
+    open→open label).
+    """
+    if data.mode == "synthetic":
+        return _build_synthetic_panel(
+            n_tickers=data.synthetic_n_tickers,
+            n_dates=data.synthetic_n_dates,
+            seed=data.synthetic_seed,
+        )
+    if data.mode == "pit":
+        return _build_pit_panel(data)
+    raise ValueError(
+        f"Unknown data.mode {data.mode!r}; expected 'synthetic' or 'pit'"
+    )
+
+
+def build_panel(config: MinerConfig):
+    return build_panel_for_data(config.data)
 
 
 def build_universe_mask(config: MinerConfig):
@@ -415,12 +506,41 @@ def run_mining(config: MinerConfig) -> RunResult:
         ) from None
 
     try:
+        # Compute the canonical digest BEFORE mining (codex P1 on #415
+        # r6): a data definition the canonical serializer cannot hash
+        # (e.g. a programmatic caller passing datetime.date objects)
+        # must fail in seconds — with the reservation released — not at
+        # config-dump time after the GP burn, stranding a run directory
+        # with artifacts but no config.yaml.
+        definition_sha = data_definition_sha256(config.data)
+
+        # Fingerprint the PIT inputs BEFORE anything reads them (external
+        # finding on #415 r5): captured after the panel build, an ingest
+        # refresh during the build would record the NEW identity for a
+        # pool mined on the OLD bytes.
+        fingerprints: dict[str, str] | None = None
+        if config.data.mode == "pit":
+            fingerprints = pit_binding_fingerprints(config.data)
+
         panel, fwd = build_panel(config)
         universe_mask = build_universe_mask(config)
         baseline = load_baseline_predictions(config)
         engine = GPEngine(config.gp, config.fitness)
         pool = engine.run(panel, fwd, universe_mask=universe_mask,
                           baseline=baseline)
+
+        if fingerprints is not None and (
+            pit_binding_fingerprints(config.data) != fingerprints
+        ):
+            # Re-verified AFTER mining, before ANY artifact is persisted:
+            # a refresh mid-run means the pool was mined on bytes that no
+            # longer exist, so recording either identity would be a lie.
+            raise RuntimeError(
+                "PIT inputs changed while mining was running — the bundle "
+                "or delisted registry was refreshed mid-run, so the mined "
+                "pool no longer corresponds to any on-disk data identity. "
+                "Re-run mining against stable inputs."
+            )
     except BaseException:
         # Release the reservation on failure — rmdir only removes an
         # EMPTY directory, so if anything ever lands in run_dir before
@@ -453,9 +573,20 @@ def run_mining(config: MinerConfig) -> RunResult:
         "full_pool_size_pre_truncation": full_pool_size,
         "saved_pool_size": len(pool),
         "data": asdict(config.data),
+        # Recorded AT MINING TIME (codex P1 on #415): promotion recomputes
+        # the digest from the data section and refuses a mismatch, so a
+        # post-mining hand-edit of this snapshot (that does not also forge
+        # the hash) is caught instead of silently re-binding the pool to a
+        # panel it was never mined on.
+        "data_definition_sha256": definition_sha,
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
     }
+    if fingerprints is not None:
+        # Bind the run to the CONTENT of its PIT inputs, not just their
+        # paths (external finding on #415 r4) — promote re-verifies these.
+        # These are the PRE-BUILD values, already re-verified above.
+        config_dump.update(fingerprints)
     if baseline is not None:
         # Operator decision A: the baseline keeps the production
         # walk-forward fold geometry, whose first out-of-fold date is

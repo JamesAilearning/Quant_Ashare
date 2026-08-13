@@ -37,6 +37,8 @@ from src.data.bundle_manifest import (  # noqa: E402
     BundleManifest,
     BundleManifestError,
     BundleStaleError,
+    compute_bundle_content_hash,
+    compute_bundle_data_sha256,
     load_manifest,
     validate_test_end_against_bundle,
 )
@@ -283,6 +285,128 @@ class ValidateTestEndTests(unittest.TestCase):
             _write_manifest(Path(tmp), "{not valid")
             with self.assertRaises(BundleManifestError):
                 validate_test_end_against_bundle(tmp, "2026-02-28")
+
+
+def _seed_bundle_data(root: Path) -> None:
+    for rel, content in (
+        ("calendars/day.txt", b"2019-01-02\n2019-01-03\n"),
+        ("instruments/all.txt", b"SH600000\t2019-01-02\t2019-01-03\n"),
+        ("features/sh600000/close.day.bin", b"\x01\x02\x03"),
+        ("features/sh600000/open.day.bin", b"\x04\x05\x06"),
+    ):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
+class ComputeBundleDataSha256Tests(unittest.TestCase):
+    """The FULL-data digest: every panel-producing byte moves it."""
+
+    def test_deterministic_across_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _seed_bundle_data(Path(tmp))
+            self.assertEqual(
+                compute_bundle_data_sha256(tmp), compute_bundle_data_sha256(tmp))
+            self.assertTrue(compute_bundle_data_sha256(tmp).startswith("sha256:"))
+
+    def test_feature_bin_edit_moves_digest_calendar_hash_does_not(self):
+        # The reason this digest exists: an in-place price correction is
+        # invisible to the calendar-only bundle identity.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            before_data = compute_bundle_data_sha256(tmp)
+            before_cal = compute_bundle_content_hash(tmp)
+            (root / "features/sh600000/close.day.bin").write_bytes(b"\xff\x02\x03")
+            self.assertNotEqual(compute_bundle_data_sha256(tmp), before_data)
+            self.assertEqual(compute_bundle_content_hash(tmp), before_cal)
+
+    def test_membership_edit_moves_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            before = compute_bundle_data_sha256(tmp)
+            (root / "instruments/all.txt").write_bytes(
+                b"SH600000\t2019-01-02\t2019-01-03\n"
+                b"SH600001\t2019-01-02\t2019-01-03\n")
+            self.assertNotEqual(compute_bundle_data_sha256(tmp), before)
+
+    def test_added_feature_file_moves_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            before = compute_bundle_data_sha256(tmp)
+            (root / "features/sh600001").mkdir()
+            (root / "features/sh600001/close.day.bin").write_bytes(b"\x09")
+            self.assertNotEqual(compute_bundle_data_sha256(tmp), before)
+
+    def test_missing_data_directory_raises(self):
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            shutil.rmtree(root / "features")
+            with self.assertRaises(BundleManifestError):
+                compute_bundle_data_sha256(tmp)
+
+    def test_symlinked_feature_directory_is_refused(self):
+        # External finding on #415 r6: os.walk(followlinks=False) lists a
+        # symlinked directory but never descends, so its target bins
+        # would be read by qlib yet invisible to the digest. Refused
+        # explicitly rather than followed (cycle risk, out-of-tree bytes).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            target = root / "elsewhere"
+            target.mkdir()
+            (target / "close.day.bin").write_bytes(b"\x0a")
+            try:
+                os.symlink(target, root / "features" / "sh600002",
+                           target_is_directory=True)
+            except OSError:
+                self.skipTest("symlink creation not permitted on this box")
+            with self.assertRaises(BundleManifestError) as ctx:
+                compute_bundle_data_sha256(tmp)
+            self.assertIn("symlinked directory", str(ctx.exception))
+
+    def test_unreadable_subtree_is_a_loud_failure(self):
+        # codex P2 #415 r7: os.walk has no default onerror and silently
+        # SKIPS subtrees whose scandir fails — the digest would omit
+        # panel-producing files while claiming success.
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            real_scandir = os.scandir
+
+            def failing_scandir(path=".", *args, **kwargs):
+                if os.path.basename(str(path)) == "sh600000":
+                    raise PermissionError(13, "denied", str(path))
+                return real_scandir(path, *args, **kwargs)
+
+            with mock.patch("os.scandir", side_effect=failing_scandir):
+                with self.assertRaises(BundleManifestError) as ctx:
+                    compute_bundle_data_sha256(tmp)
+            self.assertIn("cannot traverse", str(ctx.exception))
+
+    def test_symlinked_top_level_data_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_bundle_data(root)
+            import shutil
+
+            materialized = root / "_features_real"
+            shutil.move(str(root / "features"), str(materialized))
+            try:
+                os.symlink(materialized, root / "features",
+                           target_is_directory=True)
+            except OSError:
+                self.skipTest("symlink creation not permitted on this box")
+            with self.assertRaises(BundleManifestError) as ctx:
+                compute_bundle_data_sha256(tmp)
+            self.assertIn("symlinked", str(ctx.exception))
 
 
 if __name__ == "__main__":

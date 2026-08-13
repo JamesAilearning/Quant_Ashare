@@ -61,14 +61,51 @@ bundle built per [`inventory.md`](inventory.md) §F.3:
    python -m src.factor_mining.miner config/factor_mining/default.yaml
    ```
 
-4. **Promote.** Same as the quickstart, but supply a config with
-   `data.mode: pit`:
+4. **Promote.** The data definition (mode, fields, forward-return
+   price, window, universe) is read from the run's own resolved
+   `config.yaml` — promotion always re-validates on exactly the panel
+   the factors were mined on, so there is nothing data-related to
+   configure (a `--config` carrying a `data:` section is refused). For
+   a PIT run you MUST supply the OOS split date explicitly; promotion
+   refuses to invent one:
+
+   For PIT runs the mining panel deliberately ends at the IS cutoff, so
+   you must also state how far the validation panel extends beyond it —
+   the split must land inside that extension, making the OOS segment
+   entirely data the GP never saw:
+
+   ```yaml
+   # promote_criteria.yaml
+   criteria:
+     is_oos_split_date: "2023-01-05"   # clears the H+1 trading-day embargo
+   validation:
+     end_date: "2024-12-31"            # the governed OOS extension
+   ```
+
+   The split must clear the **label-lookahead embargo**, not merely the
+   calendar `end_date`: `forward_return` labels date T with prices at
+   T+1 … T+H+1 *trading days*, so the last mined labels consume prices
+   H+1 trading days past the cutoff (for the H=1 campaign mined through
+   2022-12-31, the 2022-12-30 label consumes the 2023-01-03 and
+   2023-01-04 prices — a 2023-01-03 split would grade GP-consumed
+   prices as OOS). Promotion enforces this on the panel's own trading
+   calendar and its refusal message names the earliest valid split
+   date. Promotion
+   also verifies the recorded PIT content fingerprints — a full digest
+   of the bundle's `calendars/` + `instruments/` + `features/` bytes,
+   plus the delisted registry's sha256, captured *before* the mining
+   panel was built — still match what the run was mined on. A run mined
+   before fingerprint recording, or whose inputs were refreshed in
+   place (even a single feature bin under an unchanged calendar), is
+   refused; re-mine it. The full bundle read costs on the order of a
+   minute — the price of promotion validating exactly the bytes the GP
+   saw.
 
    ```bash
    python -m src.factor_mining.promote \
        --run research/mined_factors/runs/<run_id> \
        --to v1 \
-       --config config/factor_mining/default.yaml
+       --config promote_criteria.yaml
    ```
 
 5. **Bind into a training pipeline.** Pass the PIT paths to the
