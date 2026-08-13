@@ -92,6 +92,30 @@ class PairedPresetPins(unittest.TestCase):
             )
         self.assertIn("mined_factor_pool_identity", str(ctx.exception))
 
+    def test_both_engines_carry_the_identity_key(self) -> None:
+        # AGENTS.md "Two engines, one schema": adding the stamp to
+        # WalkForwardConfig alone would make walk_forward_report.json and
+        # pipeline_report.json disagree on their config keys. The shared
+        # parity test deliberately does not inspect config-BLOCK keys
+        # (each field is spot-pinned by its own consumers), so this is
+        # that spot-pin (codex #422 r5).
+        from src.core.pipeline import PipelineConfig
+        from src.core.walk_forward import WalkForwardConfig
+
+        for cls in (PipelineConfig, WalkForwardConfig):
+            with self.subTest(engine=cls.__name__):
+                self.assertIn("mined_factor_pool_identity",
+                              cls.__dataclass_fields__)
+                self.assertEqual(
+                    "", cls.__dataclass_fields__[
+                        "mined_factor_pool_identity"].default)
+        # ...and the single-fold report must actually PROJECT it (the
+        # walk-forward side gets it free via asdict(config)).
+        import src.core.pipeline as pipeline_mod
+
+        self.assertIn('"mined_factor_pool_identity": config.',
+                      inspect.getsource(pipeline_mod))
+
     def test_ledger_pre_registers_the_bound_representative(self) -> None:
         # codex #422 r3: E007 lists 50 eligible survivors; the paired
         # comparison registers ONE. Without a machine-readable

@@ -116,12 +116,25 @@ def _parse_arm_requirements(
                 "non-empty mapping of config field -> requirement.")
         for key, want in reqs.items():
             if isinstance(want, Mapping):
-                if set(want) != {"prefix"} or not str(
+                if set(want) - {"prefix", "components"} or not want:
+                    raise PreregistrationError(
+                        f"Plan {plan_path}: arm_requirements[{label!r}]"
+                        f"[{key!r}] mapping form supports 'prefix' and/or "
+                        "'components'.")
+                if "prefix" in want and not str(
                         want.get("prefix") or "").strip():
                     raise PreregistrationError(
                         f"Plan {plan_path}: arm_requirements[{label!r}]"
-                        f"[{key!r}] mapping form supports exactly "
-                        "{'prefix': <non-empty str>}.")
+                        f"[{key!r}]['prefix'] must be a non-empty string.")
+                comps = want.get("components")
+                if "components" in want and (
+                        not isinstance(comps, list) or not comps
+                        or not all(isinstance(c, str) and c.strip()
+                                   for c in comps)):
+                    raise PreregistrationError(
+                        f"Plan {plan_path}: arm_requirements[{label!r}]"
+                        f"[{key!r}]['components'] must be a non-empty list "
+                        "of required component names.")
             elif not isinstance(want, str) or not want.strip():
                 raise PreregistrationError(
                     f"Plan {plan_path}: arm_requirements[{label!r}][{key!r}] "
@@ -146,14 +159,31 @@ def _check_arm_requirements(
     for key, want in reqs.items():
         got = config.get(key)
         if isinstance(want, Mapping):
-            prefix = str(want["prefix"])
-            if not isinstance(got, str) or not got.startswith(prefix):
+            prefix = str(want.get("prefix") or "")
+            if prefix and (not isinstance(got, str)
+                           or not got.startswith(prefix)):
                 raise PreregistrationError(
                     f"The {label} run's config.{key} is {got!r}, which does "
                     f"not start with the registered {prefix!r}. The plan "
                     "registers WHAT was to be compared; a run that does not "
                     "carry it cannot receive this registration's "
                     "decision-grade verdict.")
+            # Structural completeness: a prefix alone would accept "the
+            # registered prefix followed by invented text", i.e. a stamp
+            # carrying none of the digests that make it evidence (codex
+            # #422 r5). Each declared component must appear as a
+            # ``name=<non-empty>`` field of the pipe-delimited stamp.
+            for comp in want.get("components") or []:
+                fields = {
+                    part.split("=", 1)[0]: part.split("=", 1)[1]
+                    for part in str(got or "").split("|") if "=" in part
+                }
+                if not str(fields.get(comp, "")).strip():
+                    raise PreregistrationError(
+                        f"The {label} run's config.{key} carries no non-empty "
+                        f"{comp!r} component ({got!r}). The registration "
+                        "requires the complete runner-produced identity, not "
+                        "a fragment of it.")
         elif got != want:
             raise PreregistrationError(
                 f"The {label} run's config.{key} is {got!r} but the plan "

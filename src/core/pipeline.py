@@ -108,6 +108,14 @@ class PipelineConfig:
     # Empty = legacy WARN path (identity-preserving); non-empty = ONE
     # PITDataProvider built at run start, missing registry fails loud.
     delisted_registry_path: str = ""
+    # Two engines, one schema: same field/semantics as
+    # WalkForwardConfig.mined_factor_pool_identity — the identity of the
+    # promoted factor bundle a mined-pool handler was bound to, stamped
+    # by the runner (never set by the operator). Empty for every
+    # non-mined handler. The single-fold engine has no mined bind site
+    # today, so it always reports the empty default; the FIELD exists so
+    # both engines' report schemas stay identical (AGENTS.md).
+    mined_factor_pool_identity: str = ""
     train_start: str = "2022-01-01"
     train_end: str = "2024-12-31"
     valid_start: str = "2025-01-01"
@@ -957,6 +965,11 @@ class Pipeline:
                 # attribution used the PIT post-delist mask; null = legacy WARN
                 # path. Walk-forward reports carry this via asdict(config).
                 "delisted_registry_path": config.delisted_registry_path or None,
+                # Two engines, one schema: walk_forward_report.json carries
+                # this via asdict(config). Empty here until the single-fold
+                # engine grows a mined bind site — but PRESENT, so a consumer
+                # reading either report finds the same key.
+                "mined_factor_pool_identity": config.mined_factor_pool_identity,
                 "train_period": f"{config.train_start} ~ {config.train_end}",
                 "valid_period": f"{config.valid_start} ~ {config.valid_end}",
                 "test_period": f"{config.test_start} ~ {config.test_end}",

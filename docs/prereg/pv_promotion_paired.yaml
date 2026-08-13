@@ -34,3 +34,13 @@ arm_requirements:
     # 其后还串着池/表达式/verdict/台账/PIT 输入的摘要。
     mined_factor_pool_identity:
       prefix: "pv001_2789e60e|expr=cs_demean(abs($turnover_rate))"
+      # 仅有前缀 = "注册前缀 + 任意编造文本"也能过；这些分量必须逐项
+      # 存在且非空，戳记才是证据而非标签（codex #422 r5）。
+      components:
+        - pool_sha256
+        - expressions_sha256
+        - verdict_sha256
+        - ledger
+        - pit
+        - pit_content_hash
+        - registry_sha256

@@ -63,6 +63,20 @@ def _fake_ledger(tmp_path: Path, digest: str, *, entry_id: str = "E007",
     return p
 
 
+def _write_real_pool(pool_dir: Path, expression: str) -> None:
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.factor_pool import FactorPool, PoolEntry
+
+    expr = parse_expression(expression)
+    pool = FactorPool()
+    pool.add(PoolEntry(
+        expr=expr, fitness=0.02, ic_mean=0.01, ic_std=0.1, ir=0.1,
+        rank_ic_mean=0.03, rank_ic_std=0.1, rank_ir=0.2,
+        turnover_daily=0.1, coverage=0.9, n_obs_per_day_min=300,
+        expr_size=3, expr_hash=hash(expr), orientation=-1))
+    pool.save(pool_dir)
+
+
 def _verdict_file(tmp_path: Path, payload=None) -> Path:
     p = tmp_path / "fwer_verdict.json"
     p.write_text(json.dumps(payload or {"verdict": "survivors"}),
@@ -76,10 +90,12 @@ def _bundle(tmp_path: Path, *, verdict_sha: str, pool_sha: str | None = None,
             expression: str = _REGISTERED_EXPR) -> Path:
     d = tmp_path / "bundle"
     d.mkdir()
-    (d / "factor_pool.parquet").write_bytes(b"pool-bytes")
-    (d / "factor_expressions.json").write_bytes(b"expr-bytes")
-    actual_pool = hashlib.sha256(b"pool-bytes").hexdigest()
-    actual_expr = hashlib.sha256(b"expr-bytes").hexdigest()
+    # A REAL single-entry pool: verification loads what the handler would
+    # execute (codex #422 r5), so opaque bytes no longer pass.
+    _write_real_pool(d, expression)
+    actual_pool = hashlib.sha256((d / "factor_pool.parquet").read_bytes()).hexdigest()
+    actual_expr = hashlib.sha256(
+        (d / "factor_expressions.json").read_bytes()).hexdigest()
     (d / "promotion_provenance.json").write_text(json.dumps({
         "candidate_id": candidate_id,
         "expression": expression,
@@ -165,10 +181,42 @@ def _with_inputs(identity, tmp_path):
 
     registry = tmp_path / "registry.parquet"
     registry.write_bytes(b"registry-bytes")
+    bundle = tmp_path / "fake_bundle"
+    (bundle / "calendars").mkdir(parents=True, exist_ok=True)
+    (bundle / "calendars" / "day.txt").write_text(
+        "2024-01-01" + chr(10), encoding="utf-8")
     identity.update(mined_input_identity(
-        pit_provider_uri="D:/qlib_data/bundle",
+        pit_provider_uri=str(bundle),
         delisted_registry_path=str(registry)))
     return identity
+
+
+def test_unhashable_pit_bundle_refuses(tmp_path):
+    # codex #422 r5: a path is reusable provenance. If the bundle cannot
+    # even be hashed, the treatment features are tied to no vintage at
+    # all — that must refuse, not record "unknown".
+    from src.factor_mining.promotion_binding import mined_input_identity
+
+    with pytest.raises(PromotionBindingError, match="content hash"):
+        mined_input_identity(pit_provider_uri=str(tmp_path / "nope"),
+                             delisted_registry_path=str(tmp_path / "r.parquet"))
+
+
+def test_bundle_executing_another_expression_refuses(tmp_path):
+    # The three bundle files can be fabricated TOGETHER and satisfy every
+    # digest, because all the claimed digests come from the same sidecar.
+    # The check that cannot be gamed that way: what the pool will execute.
+    d = _bundle(tmp_path, verdict_sha="a" * 64)
+    _write_real_pool(d, "cs_rank($volume)")   # swap the executable AST
+    prov = json.loads((d / "promotion_provenance.json").read_text(encoding="utf-8"))
+    prov["promoted_pool_sha256"] = hashlib.sha256(
+        (d / "factor_pool.parquet").read_bytes()).hexdigest()
+    prov["promoted_expressions_sha256"] = hashlib.sha256(
+        (d / "factor_expressions.json").read_bytes()).hexdigest()
+    (d / "promotion_provenance.json").write_text(json.dumps(prov), encoding="utf-8")
+    ledger = _fake_ledger(tmp_path, "a" * 64)
+    with pytest.raises(PromotionBindingError, match="would execute"):
+        verify_promoted_bundle(d, ledger, entry_id="E007")
 
 
 def test_stamp_refuses_when_the_pit_inputs_were_not_merged(tmp_path):
@@ -246,3 +294,6 @@ def test_identity_string_carries_both_digests(tmp_path):
     assert "E007+E008" in text
     assert "registry_sha256=" in text
     assert "|pit=" in text
+    # The bundle's CONTENT identity, not just its path: a re-ingested
+    # bundle must change the stamp (codex #422 r5).
+    assert "pit_content_hash=sha256:" in text

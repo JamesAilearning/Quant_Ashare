@@ -157,6 +157,33 @@ def load_promotion_provenance(pool_dir: Path) -> dict[str, Any]:
     return data
 
 
+def _assert_executable_pool_is(pool_dir: Path, expression: str) -> None:
+    """Load the pool and require exactly the registered expression.
+
+    Digest checks prove "these bytes are the bytes the sidecar names";
+    they cannot prove the sidecar names the right thing, because the
+    sidecar is part of the same mutable bundle. This loads what
+    ``FactorPool.load`` will hand the handler — the AST that actually
+    evaluates — and compares its serialization to the expression the
+    LEDGER registered.
+    """
+    from src.factor_mining.factor_pool import FactorPool  # noqa: PLC0415
+
+    try:
+        pool = FactorPool.load(pool_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise PromotionBindingError(
+            f"the bundle at {pool_dir} cannot be loaded as a FactorPool "
+            f"({type(exc).__name__}: {exc}); refusing.") from exc
+    served = [e.expr.to_qlib_string() for e in pool.all_entries()]
+    if served != [expression]:
+        raise PromotionBindingError(
+            f"the bundle at {pool_dir} would execute {served!r} but the "
+            f"registered representative is [{expression!r}] — a promotion "
+            "bundle carries exactly the registered factor and nothing else; "
+            "refusing.")
+
+
 def verify_promoted_bundle(
     pool_dir: Path, ledger_path: Path, *, entry_id: str,
     representative_entry_id: str = REPRESENTATIVE_LEDGER_ENTRY,
@@ -213,6 +240,12 @@ def verify_promoted_bundle(
             f"{pool_dir / PROMOTION_PROVENANCE_FILENAME} records no "
             "candidate_id/expression — the bound factor cannot be named in "
             "run provenance; refusing.")
+    # Every digest above comes from the SAME mutable sidecar, so a bundle
+    # whose three files were fabricated or replaced TOGETHER satisfies
+    # them all (codex #422 r5). The check that cannot be satisfied that
+    # way: load the pool the handler will actually execute and require
+    # its one expression to be the LEDGER-registered one.
+    _assert_executable_pool_is(pool_dir, expression)
     # E007 says who MAY be promoted (any of 50 survivors); the
     # pre-registration says who WAS registered as this comparison's
     # treatment. The ruler judges the plan's single variant name, so a
@@ -254,15 +287,33 @@ def mined_input_identity(
     identity, and the paired verdict would attribute a data-input
     change to the factor (codex #422 r4).
 
-    The registry file is digested when reachable (its CONTENT decides
-    which tickers are excluded); the bundle URI is recorded as its
-    resolved path — bundles are directories, and the walk-forward
-    report already carries the run's own provider identity.
+    Both inputs are bound by CONTENT, not by path (codex #422 r5): a
+    path is reusable, so a bundle re-ingested in place between the
+    paired runs — or before an audit — would change the mined feature
+    values while the stamp stayed identical. The registry is digested
+    directly; the bundle contributes its calendar-derived content hash,
+    the same identity ``bundle_manifest`` uses elsewhere.
     """
     registry = Path(delisted_registry_path)
     registry_sha = _sha256_file(registry) if registry.is_file() else "unreadable"
+    try:
+        from src.data.bundle_manifest import (  # noqa: PLC0415
+            compute_bundle_content_hash,
+        )
+        bundle_hash = compute_bundle_content_hash(pit_provider_uri)
+    except Exception as exc:
+        # Fail loud: an unhashable bundle means the treatment features
+        # cannot be tied to a data vintage at all, and a run whose
+        # provenance says "unknown" must not be adjudicated as decision
+        # grade.
+        raise PromotionBindingError(
+            f"cannot compute the content hash of the mined PIT bundle at "
+            f"{pit_provider_uri!r} ({type(exc).__name__}: {exc}) — the "
+            "treatment features could not be tied to a data vintage; "
+            "refusing.") from exc
     return {
         "pit_provider_uri": str(Path(pit_provider_uri)),
+        "pit_bundle_content_hash": bundle_hash,
         "delisted_registry_path": str(registry),
         "delisted_registry_sha256": registry_sha,
     }
@@ -280,7 +331,8 @@ def pool_identity_string(identity: dict[str, str]) -> str:
         k for k in ("candidate_id", "expression", "pool_sha256",
                     "expressions_sha256", "fwer_verdict_sha256",
                     "ledger_entry", "representative_ledger_entry",
-                    "pit_provider_uri", "delisted_registry_sha256")
+                    "pit_provider_uri", "pit_bundle_content_hash",
+                    "delisted_registry_sha256")
         if not identity.get(k))
     if missing:
         # A stamp that silently omits a field is worse than no stamp:
@@ -300,5 +352,6 @@ def pool_identity_string(identity: dict[str, str]) -> str:
         f"|ledger={identity['ledger_entry']}"
         f"+{identity['representative_ledger_entry']}"
         f"|pit={identity['pit_provider_uri']}"
+        f"|pit_content_hash={identity['pit_bundle_content_hash']}"
         f"|registry_sha256={identity['delisted_registry_sha256']}"
     )

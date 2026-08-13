@@ -644,3 +644,70 @@ class ArmRequirementTests(unittest.TestCase):
         with self.assertRaises(PreregistrationError) as cm:
             self._fixture(bad)
         self.assertIn("unknown arm", str(cm.exception))
+
+
+class ArmComponentRequirementTests(unittest.TestCase):
+    """codex #422 r5: a prefix alone accepts "registered prefix +
+    invented text" — a stamp carrying none of the digests that make it
+    evidence. Declared components must each be present and non-empty."""
+
+    _YAML = """\
+hypothesis: h
+expected_direction: treatment_better
+baseline: base
+treatments: ["v1"]
+arm_requirements:
+  treatment:
+    mined_factor_pool_identity:
+      prefix: "pv001_"
+      components: ["pool_sha256", "verdict_sha256"]
+"""
+
+    def setUp(self) -> None:
+        self._td = TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        repo = _init_repo(Path(self._td.name) / "r")
+        plan_path = _write_plan(repo, self._YAML)
+        self._commit = _commit_all(repo, "register plan")
+        self._plan = load_plan(plan_path)
+
+    def _pair(self, stamp: str):
+        base = _report(self._commit, st_mask_mode="off_experiment",
+                       namechange_path=None)
+        treat = _report(self._commit, st_mask_mode="off_experiment",
+                        namechange_path=None)
+        cfg = dict(treat["config"])  # type: ignore[arg-type]
+        cfg["mined_factor_pool_identity"] = stamp
+        treat["config"] = cfg
+        return base, treat
+
+    def test_prefix_plus_invented_text_refuses(self) -> None:
+        base, treat = self._pair("pv001_2789e60e|whatever=nonsense")
+        with self.assertRaises(PreregistrationError) as cm:
+            gate_comparison(self._plan, baseline_report=base,
+                            treatment_report=treat, variant="v1")
+        self.assertIn("pool_sha256", str(cm.exception))
+
+    def test_empty_component_value_refuses(self) -> None:
+        base, treat = self._pair("pv001_x|pool_sha256=|verdict_sha256=abc")
+        with self.assertRaises(PreregistrationError):
+            gate_comparison(self._plan, baseline_report=base,
+                            treatment_report=treat, variant="v1")
+
+    def test_complete_stamp_passes(self) -> None:
+        base, treat = self._pair(
+            "pv001_x|pool_sha256=aaa|verdict_sha256=bbb|extra=ccc")
+        self.assertEqual([], gate_comparison(
+            self._plan, baseline_report=base, treatment_report=treat,
+            variant="v1"))
+
+    def test_malformed_components_refuse_at_load(self) -> None:
+        bad = self._YAML.replace(
+            '      components: ["pool_sha256", "verdict_sha256"]',
+            "      components: []")
+        repo = Path(self._td.name) / "r"
+        path = _write_plan(repo, bad, name="bad.yaml")
+        _commit_all(repo, "bad")
+        with self.assertRaises(PreregistrationError) as cm:
+            load_plan(path)
+        self.assertIn("components", str(cm.exception))
