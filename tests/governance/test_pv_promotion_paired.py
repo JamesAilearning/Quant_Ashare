@@ -107,45 +107,73 @@ class PairedPresetPins(unittest.TestCase):
         ledger_path = (_PROJECT_ROOT / "docs" / "prereg"
                        / "pv_incremental_ledger.yaml")
         ledger = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
-        # Artifact strings look like "<path>#sha256(...)=<hex>" — the
-        # parenthetical notes the byte convention (repo-canonical LF).
-        pattern = re.compile(
-            r"(?P<path>[\w./-]+\.(?:yaml|yml|json|py))"
-            r"#sha256[^=]*=(?P<digest>[0-9a-f]{64})")
-        # TRACKED files only. Generated artifacts under output/ are
-        # gitignored and record their RAW bytes (they cannot be
-        # reproduced from a clean checkout at all), so the LF-canonical
-        # convention — the one an auditor applies to repo files, per
-        # #421 — does not apply to them.
+        # Match a repo PATH and a digest ANYWHERE in the same artifact
+        # string, not one blessed template (codex #423): the ledger
+        # carries at least two shapes —
+        #   "<path>#sha256(...)=<hex>"                        (E008)
+        #   "plan_sha256(...:<path> | sha256sum)=<hex>"       (E007)
+        # — and a template-shaped matcher silently skipped the second,
+        # leaving that tracked plan's fingerprint unchecked while the
+        # test still reported success.
+        path_re = re.compile(r"(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.[\w]+)")
+        digest_re = re.compile(r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])")
+        # A path is out of scope only when git IGNORES it — generated
+        # artifacts under output/ record their RAW bytes and cannot be
+        # reproduced from a clean checkout at all, so the LF-canonical
+        # convention (what an auditor applies to repo files, per #421)
+        # does not apply to them. Everything else is a repository path
+        # the ledger claims to fingerprint, so a MISSING one is a
+        # failure, not a skip (codex #423): deleting or renaming such a
+        # file would otherwise drop it out of `git ls-files` and leave
+        # the signed entry pointing at nothing, silently.
         import subprocess
 
-        tracked = set(subprocess.run(
-            ["git", "-C", str(_PROJECT_ROOT), "ls-files"],
-            capture_output=True, text=True, check=True,
-        ).stdout.split())
+        def _git_ignored(rel: str) -> bool:
+            return subprocess.run(
+                ["git", "-C", str(_PROJECT_ROOT), "check-ignore", "-q", rel],
+            ).returncode == 0
+
         checked = 0
         for entry in ledger["entries"]:
             for artifact in entry.get("artifacts") or []:
-                for m in pattern.finditer(str(artifact)):
-                    if m.group("path") not in tracked:
-                        continue
-                    path = _PROJECT_ROOT / m.group("path")
-                    if not path.is_file():
-                        continue
-                    with self.subTest(entry=entry["id"], file=m.group("path")):
-                        # Repo-canonical bytes (LF): a Windows checkout
-                        # stores CRLF, and hashing that would record a
-                        # digest no auditor can reproduce from git.
-                        raw = path.read_bytes().replace(b"\r\n", b"\n")
-                        self.assertEqual(
-                            hashlib.sha256(raw).hexdigest(),
-                            m.group("digest"),
-                            f"{entry['id']} records a stale digest for "
-                            f"{m.group('path')} — the file changed after "
-                            "the digest was recorded; recompute it.")
-                        checked += 1
-        self.assertGreater(checked, 0, "no in-repo ledger digests found — "
-                                       "the pin would be vacuous")
+                text = str(artifact)
+                digests = digest_re.findall(text)
+                if not digests:
+                    continue
+                paths = [p for p in path_re.findall(text)
+                         if not _git_ignored(p)]
+                if not paths:
+                    continue  # digest of a generated artifact only
+                self.assertEqual(
+                    1, len(paths) * len(digests),
+                    f"{entry['id']}: artifact names {len(paths)} repo paths "
+                    f"and {len(digests)} digests — this pin cannot tell "
+                    f"which binds which; split the artifact string. ({text})")
+                rel, digest = paths[0], digests[0]
+                with self.subTest(entry=entry["id"], file=rel):
+                    path = _PROJECT_ROOT / rel
+                    self.assertTrue(
+                        path.is_file(),
+                        f"{entry['id']} records a digest for {rel}, which "
+                        "does not exist in the repository — a signed entry "
+                        "must not point at a deleted or renamed file.")
+                    # Repo-canonical bytes (LF): a Windows checkout
+                    # stores CRLF, and hashing that would record a
+                    # digest no auditor can reproduce from git.
+                    raw = path.read_bytes().replace(b"\r\n", b"\n")
+                    self.assertEqual(
+                        hashlib.sha256(raw).hexdigest(), digest,
+                        f"{entry['id']} records a stale digest for {rel} — "
+                        "the file changed after the digest was recorded; "
+                        "recompute it.")
+                    checked += 1
+        # Every in-repo fingerprint the ledger carries today. A drop
+        # here means an artifact stopped being parsed, not that the
+        # ledger shrank — the ledger is append-only.
+        self.assertGreaterEqual(
+            checked, 4,
+            "fewer in-repo ledger fingerprints were validated than the "
+            "ledger carries — the matcher stopped recognising one.")
 
     def test_both_engines_carry_the_identity_key(self) -> None:
         # AGENTS.md "Two engines, one schema": adding the stamp to
