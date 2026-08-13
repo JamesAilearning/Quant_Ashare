@@ -323,6 +323,23 @@ entries:
       # 本条目所对的注册件（路径 + 其 last-touched commit）。治理钉据此
       # 逐条目加载**它自己的** plan 校验戳记，故将来别的战役条目不会被
       # 拿去对 pv001 的 plan 断言（codex #424 r1）。
+      # 本条目所对的注册件（路径 + 其 last-touched commit）。治理钉据此
+      # 逐条目加载**它自己的** plan 校验戳记，故将来别的战役条目不会被
+      # 拿去对 pv001 的 plan 断言（codex #424 r1）。
+      #
+      # 钉按**工作树**的 plan 字节校验，而非 prereg_plan_commit 处的
+      # 字节（codex #424 r3 提出改按 commit 取）。操作人裁决
+      # （2026-08-13）：就此收，理由如下并入档——
+      # ① 该 plan 的冻结字节已由 E008 的指纹绑定，且台账指纹实时性钉
+      #    （#423）会把"plan 被改动"直接判红；故"plan 事后被改、旧
+      #    E009 被判为满足新要求"这条路径第一步就撞红，非静默漂移。
+      #    要绕过它须同时改写 E008 的历史指纹——append-only 明令禁止。
+      # ② 改按 commit 取字节需主测试矩阵改用 fetch-depth: 0（现为
+      #    深度 1 浅克隆，git show 历史 commit 必失败），那是共享 CI
+      #    配置、影响所有战役的每条矩阵腿。为一个已被①覆盖的风险付
+      #    该代价不划算。
+      # 若将来本 plan 确需修订：正解是新开 plan 文件 + 新 E 条目，
+      # 而不是原地改字节（原地改会同时撞红 ①的两道钉，这是设计意图）。
       prereg_plan: "docs/prereg/pv_promotion_paired.yaml"
       prereg_plan_commit: "ab75cbf2c3ae1b363f3cefef337026a80c49d450"
       source_git: "8a598438f4da"
