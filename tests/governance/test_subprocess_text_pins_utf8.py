@@ -123,9 +123,15 @@ _NON_PYTHON_PROGRAMS = frozenset({"git"})
 # which is what makes this list airtight. Blob content (``diff``,
 # ``cat-file``) is raw bytes git never re-encodes; a non-UTF-8 tracked
 # FILE is a different problem this gate does not claim to solve.
+# ``worktree`` is deliberately ABSENT (codex P2 r33 on #410): ``git
+# worktree add`` runs the post-checkout hook unless ``--no-checkout``,
+# and an operator hook writes whatever bytes it likes (verified: a hook
+# emitting 0xff lands in the captured stdout). No pin or flag governs a
+# hook, so text-mode worktree calls fail closed — the repo's own
+# worktree calls are binary-mode and unaffected.
 _GIT_COMMIT_TEXT_FREE = frozenset({
     "rev-parse", "status", "ls-files", "ls-tree", "merge-base",
-    "worktree", "cat-file", "hash-object", "symbolic-ref",
+    "cat-file", "hash-object", "symbolic-ref",
     "check-ignore", "update-index", "config", "diff",
 })
 # Subcommands that GENERATE A DIFF, whose content git hands to an
@@ -650,10 +656,19 @@ def _dynamic_subprocess_calls(tree: ast.Module) -> set[int]:
                     importlib_bare.add(alias.asname or alias.name)
     found: set[int] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
-        first = node.args[0]
-        if not (isinstance(first, ast.Constant) and first.value == "subprocess"):
+        # The module name may arrive as the first positional OR as
+        # ``name="subprocess"`` — both spellings return the real module
+        # (codex P2 r33 on #410; verified for import_module and for the
+        # __import__ builtin).
+        named = next((kw.value for kw in node.keywords if kw.arg == "name"),
+                     None)
+        first = node.args[0] if node.args else named
+        if named is not None and not node.args:
+            first = named
+        if not (isinstance(first, ast.Constant)
+                and first.value == "subprocess"):
             continue
         func = node.func
         if isinstance(func, ast.Name) and func.id in ({"__import__"}
@@ -1493,6 +1508,21 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("a properly pinned dynamic-import spawn passes",
      'sp = __import__("subprocess")\n'
      'sp.run(["git", "status"], text=True, encoding="utf-8")', False),
+    ("keyword-form import_module is recognized",
+     "import importlib\n"
+     'importlib.import_module(name="subprocess").run(["git", "status"],'
+     " text=True)", True),
+    ("keyword-form __import__ is recognized",
+     '__import__(name="subprocess").run(["git", "status"], text=True)',
+     True),
+    # `git worktree add` runs the post-checkout hook, whose bytes no pin
+    # or flag governs (verified: a hook emitting 0xff lands in stdout).
+    ("git worktree in text mode fails closed",
+     'subprocess.run(["git", "worktree", "add", "--detach", str(wt),'
+     ' rev], text=True, encoding="utf-8")', True),
+    ("...while a binary worktree call is untouched",
+     'subprocess.run(["git", "worktree", "prune"], capture_output=True)',
+     False),
     ("a dynamic import of another module is untouched",
      '__import__("json").dumps({})', False),
     ("a known built-in with the same shape still passes",
