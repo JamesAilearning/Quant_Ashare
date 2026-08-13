@@ -92,6 +92,61 @@ class PairedPresetPins(unittest.TestCase):
             )
         self.assertIn("mined_factor_pool_identity", str(ctx.exception))
 
+    def test_ledger_recorded_digests_match_the_files(self) -> None:
+        # 2026-08-13 (codex #422 r6): E008 recorded the plan's digest at
+        # r1, then r4/r5 EDITED the plan (arm_requirements, components)
+        # and the digest was never recomputed — a signature-grade entry
+        # whose fingerprint did not bind the file the ruler would load.
+        # An auditor hashing the committed bytes got an immediate
+        # mismatch. Pin every ledger-recorded digest of an IN-REPO file
+        # against that file's current bytes, so the drift is red rather
+        # than discovered at audit.
+        import hashlib
+        import re
+
+        ledger_path = (_PROJECT_ROOT / "docs" / "prereg"
+                       / "pv_incremental_ledger.yaml")
+        ledger = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+        # Artifact strings look like "<path>#sha256(...)=<hex>" — the
+        # parenthetical notes the byte convention (repo-canonical LF).
+        pattern = re.compile(
+            r"(?P<path>[\w./-]+\.(?:yaml|yml|json|py))"
+            r"#sha256[^=]*=(?P<digest>[0-9a-f]{64})")
+        # TRACKED files only. Generated artifacts under output/ are
+        # gitignored and record their RAW bytes (they cannot be
+        # reproduced from a clean checkout at all), so the LF-canonical
+        # convention — the one an auditor applies to repo files, per
+        # #421 — does not apply to them.
+        import subprocess
+
+        tracked = set(subprocess.run(
+            ["git", "-C", str(_PROJECT_ROOT), "ls-files"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split())
+        checked = 0
+        for entry in ledger["entries"]:
+            for artifact in entry.get("artifacts") or []:
+                for m in pattern.finditer(str(artifact)):
+                    if m.group("path") not in tracked:
+                        continue
+                    path = _PROJECT_ROOT / m.group("path")
+                    if not path.is_file():
+                        continue
+                    with self.subTest(entry=entry["id"], file=m.group("path")):
+                        # Repo-canonical bytes (LF): a Windows checkout
+                        # stores CRLF, and hashing that would record a
+                        # digest no auditor can reproduce from git.
+                        raw = path.read_bytes().replace(b"\r\n", b"\n")
+                        self.assertEqual(
+                            hashlib.sha256(raw).hexdigest(),
+                            m.group("digest"),
+                            f"{entry['id']} records a stale digest for "
+                            f"{m.group('path')} — the file changed after "
+                            "the digest was recorded; recompute it.")
+                        checked += 1
+        self.assertGreater(checked, 0, "no in-repo ledger digests found — "
+                                       "the pin would be vacuous")
+
     def test_both_engines_carry_the_identity_key(self) -> None:
         # AGENTS.md "Two engines, one schema": adding the stamp to
         # WalkForwardConfig alone would make walk_forward_report.json and
