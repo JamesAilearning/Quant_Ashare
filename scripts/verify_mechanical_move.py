@@ -327,15 +327,24 @@ def _git(*args: str) -> str:
     """
     sub, rest = args[0], args[1:]
     if sub == "show":
+        # ``--end-of-options`` closes the option region BEFORE the
+        # caller's dynamic rev: without it an opaque element could be
+        # ``--ext-diff`` and revive an external driver whose bytes the
+        # UTF-8 pin does not govern (#410 r30; verified: git rejects a
+        # late ``--ext-diff`` as "must come before non-option
+        # arguments").
         out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
                               "-C", str(_REPO), "show",
-                              "--no-ext-diff", "--no-textconv", *rest],
+                              "--no-ext-diff", "--no-textconv",
+                              "--end-of-options", *rest],
                              capture_output=True, text=True,
                              encoding="utf-8", check=True)
-    elif sub == "diff":
+    elif sub == "diff-name-status":
         out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
                               "-C", str(_REPO), "diff",
-                              "--no-ext-diff", "--no-textconv", *rest],
+                              "--no-ext-diff", "--no-textconv",
+                              "--name-status", "-M50%",
+                              "--end-of-options", *rest],
                              capture_output=True, text=True,
                              encoding="utf-8", check=True)
     else:
@@ -355,7 +364,7 @@ def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
     ``M existing.py``) must be matched too (codex #364 r4 P2) — and the
     two kinds are kept apart so each MODIFIED destination gets its own
     base version subtracted during verification (codex #364 r6 P1)."""
-    raw = _git("diff", "--name-status", "-M50%", base, "HEAD")
+    raw = _git("diff-name-status", base, "HEAD")
     pairs: list[tuple[str, str]] = []
     deleted: list[str] = []
     added: list[str] = []

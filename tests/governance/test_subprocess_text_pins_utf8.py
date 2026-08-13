@@ -598,8 +598,16 @@ def _git_output_safe(call: ast.Call) -> bool:
             # or at the first opaque element, which could BE one.
             disabled = {"ext": False, "textconv": False}
             for later in argv[i + 1:]:
-                if later is None or later == "--":
-                    break
+                if later in ("--", "--end-of-options"):
+                    break  # options end here; the rest cannot re-enable
+                if later is None:
+                    # An opaque element INSIDE the option region can be
+                    # ``--ext-diff`` and revive the driver (codex P2 r30
+                    # on #410) — unprovable, so refuse. Put dynamic revs
+                    # and paths after ``--end-of-options`` / ``--``
+                    # (verified: git then rejects a late ``--ext-diff``
+                    # as "must come before non-option arguments").
+                    return False
                 toggle = _GIT_DRIVER_TOGGLES.get(later)
                 if toggle is not None:
                     driver, off = toggle
@@ -1347,10 +1355,22 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' encoding="utf-8")', True),
     # ...but a literal subcommand closes the region: everything after it
     # is the subcommand's own argv, so a splice there is harmless.
-    ("literal subcommand makes a trailing splice safe",
+    ("a splice inside the option region can re-enable the driver",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-C", str(repo), "log", "--no-ext-diff", "--no-textconv", *args],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
+    ("--end-of-options closes the region for a dynamic rev",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-C", str(repo), "show", "--no-ext-diff", "--no-textconv",'
+     ' "--end-of-options", *args], text=True, encoding="utf-8")', False),
+    ("-- closes it for a dynamic pathspec",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H",'
+     ' "--", *args], text=True, encoding="utf-8")', False),
+    ("an opaque rev before the closer fails closed",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "show", "--no-ext-diff", "--no-textconv", ref], text=True,'
+     ' encoding="utf-8")', True),
     ("literal plumbing subcommand with a trailing splice",
      'subprocess.run(["git", "-C", str(repo), "rev-parse", *args],'
      ' text=True, encoding="utf-8")', False),

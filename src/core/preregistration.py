@@ -85,11 +85,16 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10, check=False,
             )
-        elif sub == "log":
+        elif sub == "log-last-commit":
+            # Every OPTION is literal here and the caller supplies only a
+            # pathspec, after ``--``: an opaque element inside the option
+            # region could be ``--ext-diff`` and revive an external diff
+            # driver whose output the UTF-8 pin does not govern (#410
+            # r30). ``rest`` is therefore the path, nothing else.
             completed = subprocess.run(
-                ["git", "-c", "i18n.logOutputEncoding=utf-8",
-                 "log", "--no-ext-diff", "--no-textconv", *rest],
-                cwd=str(cwd),
+                ["git", "-c", "i18n.logOutputEncoding=utf-8", "log",
+                 "--no-ext-diff", "--no-textconv", "-n", "1",
+                 "--format=%H", "--", *rest], cwd=str(cwd),
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10, check=False,
             )
@@ -171,7 +176,7 @@ def load_plan(path: str | Path) -> PreregPlan:
             f"Plan {p} has UNCOMMITTED changes ({porcelain.splitlines()[0]!r}). Commit "
             "the plan first — the registration is the committed content, nothing else."
         )
-    commit = _git(["log", "-n", "1", "--format=%H", "--", rel], cwd=repo_root)
+    commit = _git(["log-last-commit", rel], cwd=repo_root)
     if not commit:
         raise PreregistrationError(
             f"Plan {p} is not committed (no commit touches {rel!r}). Commit the plan "

@@ -104,11 +104,21 @@ def _git(repo: Path, *args: str) -> str:
     pin is unoverridable.
     """
     sub, rest = args[0], args[1:]
-    if sub == "log":
+    if sub == "log-hash":
+        # Literal options only; ``rest`` is a pathspec after ``--`` — an
+        # opaque element in the option region could be ``--ext-diff``
+        # and revive an external diff driver (#410 r30).
         out = subprocess.run(
             ["git", "-c", "i18n.logOutputEncoding=utf-8",
              "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
-             *rest],
+             "-1", "--format=%H", "--", *rest],
+            capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+    elif sub == "log-ctime":
+        out = subprocess.run(
+            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+             "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
+             "-1", "--format=%cI", "--", *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     elif sub == "status":
@@ -462,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
-    plan_commit = _git(repo, "log", "-1", "--format=%H", "--", PLAN_REL)
+    plan_commit = _git(repo, "log-hash", PLAN_REL)
     if not plan_commit:
         return _refuse(f"plan not committed: {PLAN_REL} has no git history "
                        "(freeze commit required before any run).")
@@ -473,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
             # so the timestamp alone would treat it as frozen (codex #352 r2)
             # — the whole package must EXIST at the gated checkout.
             return _refuse(f"frozen artifact missing from checkout: {rel}")
-        ts_raw = _git(repo, "log", "-1", "--format=%cI", "--", rel)
+        ts_raw = _git(repo, "log-ctime", rel)
         if not ts_raw:
             return _refuse(f"frozen artifact not committed: {rel}")
         ts = datetime.fromisoformat(ts_raw)
