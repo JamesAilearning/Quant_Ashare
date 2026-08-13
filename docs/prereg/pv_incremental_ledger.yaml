@@ -264,10 +264,15 @@ entries:
       bind 站点注册（mined_factor_* 键经环境变量注入，未设则
       fail-loud），--expect-verdict-sha256 由可选改为必需（output/
       不入 git，可选的绑定不是绑定）。
+      【r2 更正，签署前】本条目所记 plan 指纹在 #422 的 r4/r5 轮
+      （plan 增 arm_requirements 与 components）后未同步重算，codex 查出
+      与实际字节不符。已按最终 plan 字节重算（LF 规范字节 7c473d2c…）；
+      两处 preset 指纹经复核未受影响。同轮加治理钉：台账所记指纹
+      必须与仓库文件实时相符，防同类漂移复发。
       结果另行登记为 E009。
     artifacts:
       - "openspec/changes/2026-08-12-pv-promotion-paired-run/"
-      - "docs/prereg/pv_promotion_paired.yaml#sha256(仓库规范字节,LF)=326408e28e7c02442a439a23b01b5063f2dc84d643ee8459cccdedd5819c1861"
+      - "docs/prereg/pv_promotion_paired.yaml#sha256(仓库规范字节,LF)=7c473d2c48e6f9771b66985dc2058a2e6af4f98be9252d13f6f3826dfe9edb95"
       - "config/presets/pv_promo_paired_baseline.yaml#sha256(LF)=4b9e582f1ed7d1786d898663281a89c0668258d3fb674e6d4482497a755c47a3"
       - "config/presets/pv_promo_paired_treatment.yaml#sha256(LF)=d09c94422aeb50eda8745f7abb5cff01c132cd380e2458355d2a19cfa627d71d"
       - "晋升 bundle 由 scripts/research/pv_incremental_promote_representative.py 生成（--expect-verdict-sha256 绑 E007 的 195c21bc…）;其 promotion_provenance.json 与 pool sha 随 E009 照录"
