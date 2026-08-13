@@ -333,14 +333,14 @@ def _git(*args: str) -> str:
         # UTF-8 pin does not govern (#410 r30; verified: git rejects a
         # late ``--ext-diff`` as "must come before non-option
         # arguments").
-        out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
+        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
                               "-C", str(_REPO), "show",
                               "--no-ext-diff", "--no-textconv",
                               "--end-of-options", *rest],
                              capture_output=True, text=True,
                              encoding="utf-8", check=True)
     elif sub == "diff-name-status":
-        out = subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",
+        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
                               "-C", str(_REPO), "diff",
                               "--no-ext-diff", "--no-textconv",
                               "--name-status", "-M50%",

@@ -73,14 +73,14 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
     try:
         if sub == "rev-parse":
             completed = subprocess.run(
-                ["git", "-c", "i18n.logOutputEncoding=utf-8",
+                ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
                  "rev-parse", *rest], cwd=str(cwd),
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10, check=False,
             )
         elif sub == "status":
             completed = subprocess.run(
-                ["git", "-c", "i18n.logOutputEncoding=utf-8",
+                ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
                  "status", *rest], cwd=str(cwd),
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10, check=False,
@@ -92,7 +92,7 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
             # driver whose output the UTF-8 pin does not govern (#410
             # r30). ``rest`` is therefore the path, nothing else.
             completed = subprocess.run(
-                ["git", "-c", "i18n.logOutputEncoding=utf-8", "log",
+                ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8", "log",
                  "--no-ext-diff", "--no-textconv", "-n", "1",
                  "--format=%H", "--", *rest], cwd=str(cwd),
                 capture_output=True, text=True, encoding="utf-8",
@@ -214,7 +214,7 @@ def is_ancestor(ancestor: str, descendant: str, *, repo_root: str | Path) -> boo
     """True iff ``ancestor`` is an ancestor of (or equal to) ``descendant``."""
     try:
         completed = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            ["git", "-c", "core.fsmonitor=false", "merge-base", "--is-ancestor", ancestor, descendant],
             cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:

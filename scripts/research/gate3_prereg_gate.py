@@ -109,27 +109,27 @@ def _git(repo: Path, *args: str) -> str:
         # opaque element in the option region could be ``--ext-diff``
         # and revive an external diff driver (#410 r30).
         out = subprocess.run(
-            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+            ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
              "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
              "-1", "--format=%H", "--", *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     elif sub == "log-ctime":
         out = subprocess.run(
-            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+            ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
              "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
              "-1", "--format=%cI", "--", *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     elif sub == "status":
         out = subprocess.run(
-            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+            ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
              "-C", str(repo), "status", *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     elif sub == "ls-files":
         out = subprocess.run(
-            ["git", "-c", "i18n.logOutputEncoding=utf-8",
+            ["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
              "-C", str(repo), "ls-files", *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
