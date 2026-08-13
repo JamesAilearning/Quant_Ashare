@@ -287,6 +287,70 @@ entries:
       expected_folds: 8
       arms: 2
       adjust_mode_both_arms: post_adjusted
+  - id: E009
+    when: "2026-08-13"
+    kind: result
+    what: >-
+      晋升门配对比较结果（PV-DP-7 步 3-4，对 E008 意图闭环）。两臂各一次
+      不间断调用、干净树（两臂 git_commit 同为 8a598438f4da，
+      git_dirty=False，即 #423 合并 commit——E008 台账先行于点火）。
+      8/8 折全成、零失败折；metric_status=official（canonical 口径：
+      未声明 risk_constraints_mode/metrics_purpose，收益率是 RAISE
+      校验过的真净值）；判定窗 2023-01-01..2024-12-31 独占 OOS dev，
+      首折 test=2023-01-01、末折 2024-10-01..12-31。treatment 臂的
+      mined_factor_pool_identity 戳记七分量齐全且满足 plan 注册前缀
+      （runner 绑定校验：E007 授权 + E008 预注册代表 + 双 artifact 摘要
+      + 可执行 AST 恰等于台账注册表达式 + PIT 输入内容指纹）。
+      裁尺（决策级路径 --prereg-plan + --variant alpha158-plus-pv001）：
+      预注册门 PASSED（plan commit ab75cbf2c3ae 是两臂 run 的祖先），
+      VERDICT = INDISTINGUISHABLE（n_paired=484，overlap 100%）。
+      按冻结判据"仅 TREATMENT_BETTER 进签字步，其余照录不晋升"——
+      不晋升（操作人 2026-08-13 确认）。2025 holdout 全程未触：plan 的
+      单向揭盲只属签字步，本役未进入该步。
+      如实注记（比 headline 更有信息量）：treatment 的 IC 更高
+      （mean_ic_1d +0.0163 -> +0.0214）而毛 IR 反降（pooled gross
+      +0.318 -> +0.240）——不是成本故事，毛收益本身就掉了；即该因子
+      提升了全截面排序，却未转化到实际持仓的 top-50 那一头，而组合
+      收益只由那 50 只决定。另一面：treatment 最大回撤更浅
+      （-0.1011 -> -0.0653）。裁尺 NOTE 亦提示 indistinguishable 意为
+      "在此功效下不可分辨"，非"等价"。
+    artifacts:
+      - "output/factor_mining/pv_incremental_v1/promotion/ruler_verdict_pv001.txt#sha256=02b3ddc0fd2761068cb9e87039344fff429ad42eae87f853c94f1b4d780a61fa"
+      - "run(baseline): output/walk_forward/pv_promo_paired_baseline (commit 8a598438f4da, git_dirty=False)"
+      - "run(treatment): output/walk_forward/pv_promo_paired_treatment (commit 8a598438f4da, git_dirty=False)"
+      - "晋升 bundle: output/factor_mining/pv_incremental_v1/promotion/pv001/factor_pool.parquet#sha256=334428512b4151986a1ffec696b06e1f71b6112f9d49e188b7e9429612bf18bd"
+    provenance:
+      prereg_plan_commit: "ab75cbf2c3ae1b363f3cefef337026a80c49d450"
+      source_git: "8a598438f4da"
+      source_git_dirty: false
+      treatment_pool_identity: "pv001_2789e60e|expr=cs_demean(abs($turnover_rate))|pool_sha256=334428512b4151986a1ffec696b06e1f71b6112f9d49e188b7e9429612bf18bd|expressions_sha256=f49aa8340cb49e79f6231356d78918158c20694fcb77889697b8b063ce50c682|verdict_sha256=195c21bc78f6f968e8d0ff7e7ac4a17aea5f039900e718036b8776579dd80b51|ledger=E007+E008|pit_content_hash=sha256:12c62cf58ff5789d7f6a81b0bb82c5a1a89872c8fe937d4bfa07dd70b32a3137|registry_sha256=43b21cd85a3486f315eb1672009df79280e02d8ca1b13707f172963e9705fccd"
+    numbers:
+      verdict: INDISTINGUISHABLE
+      promoted: false
+      folds_per_arm: 8
+      n_paired_days: 484
+      overlap_pct: 100.0
+      paired_net_annualized_diff: -0.0103
+      paired_net_annualized_diff_ci: "[-0.0961, +0.0763]"
+      paired_net_annualized_diff_se: 0.0437
+      block_length_days: 1
+      n_boot: 10000
+      seed: 42
+      pooled_net_ir_baseline: -0.227
+      pooled_net_ir_treatment: -0.316
+      pooled_gross_ir_baseline: 0.318
+      pooled_gross_ir_treatment: 0.240
+      mean_ic_1d_baseline: 0.016300
+      mean_ic_1d_treatment: 0.021380
+      mean_ic_5d_baseline: 0.020510
+      mean_ic_5d_treatment: 0.030777
+      mean_annualized_return_baseline: -0.021577
+      mean_annualized_return_treatment: -0.032134
+      worst_drawdown_baseline: -0.101150
+      worst_drawdown_treatment: -0.065346
+      mean_information_ratio_baseline: -0.764148
+      mean_information_ratio_treatment: -0.820965
+      direction_vs_registered: "OPPOSITE (registered treatment_better; observed treatment<baseline)"
 # entry 形态（登记时按此结构追加）：
 #   - id: E001
 #     when: <ISO8601>
