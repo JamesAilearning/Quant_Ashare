@@ -583,7 +583,18 @@ def _git_output_safe(call: ast.Call) -> bool:
         if not known_text_free and not pin_seen:
             return False
         if el in _GIT_DIFF_CAPABLE or not known_text_free:
-            return all(flag in argv for flag in _GIT_DIFF_DRIVER_OFF)
+            # The flags count only in the subcommand's OPTION REGION
+            # (codex P2 r28 on #410): ``git diff -- --no-ext-diff`` is a
+            # PATHSPEC, not an option, so a repo file by that name would
+            # have satisfied a whole-argv membership test while the
+            # driver stayed live. The region ends at a literal ``--`` —
+            # or at the first opaque element, which could BE one.
+            options = []
+            for later in argv[i + 1:]:
+                if later is None or later == "--":
+                    break
+                options.append(later)
+            return all(flag in options for flag in _GIT_DIFF_DRIVER_OFF)
         return True
     return False  # options only, no subcommand — not a real invocation
 
@@ -1360,6 +1371,15 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("--no-ext-diff alone is not enough (textconv remains)",
      'subprocess.run(["git", "diff", "--no-ext-diff"], text=True,'
      ' encoding="utf-8")', True),
+    ("driver-off flags after -- are PATHSPECS, not options",
+     'subprocess.run(["git", "diff", "--", "--no-ext-diff",'
+     ' "--no-textconv"], text=True, encoding="utf-8")', True),
+    ("...and an opaque element could BE that separator",
+     'subprocess.run(["git", "diff", sep, "--no-ext-diff",'
+     ' "--no-textconv"], text=True, encoding="utf-8")', True),
+    ("flags before -- are real options",
+     'subprocess.run(["git", "diff", "--no-ext-diff", "--no-textconv",'
+     ' "--", path], text=True, encoding="utf-8")', False),
     # reflective access reaches the spawners without naming them
     ("__dict__ access to a spawner fails closed",
      'subprocess.__dict__["run"](["git", "status"], text=True)', True),
