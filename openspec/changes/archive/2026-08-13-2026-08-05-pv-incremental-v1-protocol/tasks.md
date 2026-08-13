@@ -4,11 +4,11 @@
 - [x] 操作人签 PV-DP-1..8（本提案 PR merge = 签署，签字后冻结）
 
 ## 1. 并后执行序（各自独立 PR/点火，录以为序）
-- [ ] 基线预测生成（csi800 Alpha158+LGB 逐折,IS+OOS,GPU 点火在
+- [x] 基线预测生成（csi800 Alpha158+LGB 逐折,IS+OOS,GPU 点火在  ← 台账 E004（IS 1215/1215 全覆盖，OOS 484 天）
       操作人,provenance 三件套+ledger）
 - [x] 协议三件套常量替换（evaluator/FWER/adjudication →
       pv_incremental_v1）+ 冻结件（算子白名单/简约系数/正交带/
       FWER 最小 n/候选注册表）
-- [ ] GP 搜索批次（点火在操作人）→ OOS 一次性评估 → FWER 裁决
+- [x] GP 搜索批次（点火在操作人）→ OOS 一次性评估 → FWER 裁决  ← 台账 E006 → E007（survivors 50/50，t≈5.11）
       → 数字 STOP（阴性照报）
-- [ ] 幸存者（若有）走 PV-DP-7 晋升门；否则干净阴性归档
+- [x] 幸存者（若有）走 PV-DP-7 晋升门；否则干净阴性归档  ← 台账 E008/E009：走了晋升门，判 INDISTINGUISHABLE → 不晋升

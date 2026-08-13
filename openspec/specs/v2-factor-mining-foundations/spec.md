@@ -572,3 +572,309 @@ For each pool entry the validator SHALL evaluate the factor against the OOS slic
 - **WHEN** `OperatorCall("ts_corr", (ts_mean($close, 20), ts_std($volume, 20), Terminal("20")))` is constructed
 - **THEN** no exception is raised
 
+### Requirement: pv_incremental_v1 战役 SHALL 以增量判据与冻结协议运行
+
+`pv_incremental_v1` 战役（csi800 价量增量因子）SHALL 满足全部下列协议义务，任何偏离 SHALL 以新提案重新签署而非事后修改：
+
+1. 表达式输入 SHALL 恰为七个价量字段（open/high/low/close/
+   volume/money/turnover_rate），估值/市值字段不得进入表达式；
+2. GP 适应度 SHALL 含对 Alpha158 基线预测的正交惩罚——候选以
+   **增量信息**为判据，独立显著不构成通过；基线预测生成 run 的
+   provenance SHALL 全绿并入 ledger；
+3. 窗口语义 SHALL 为 IS 2018-2022（GP 唯一可见）/ OOS dev
+   2023-2024（一次性评估）/ 2025 holdout 盲态（单向揭盲仅限晋升
+   终裁）/ 2026 段禁用；
+4. FWER SHALL 用块 bootstrap q95 + 2.85 硬地板双门槛，且冻结
+   per-trial 最小 n——n 低于下限的 trial 不入 family、单独如实
+   报告；三态规则 clean-negative = reject_iff；
+5. 切片 SHALL 在注册时冻结 stamp 几何/参数，注册前 SHALL 完成
+   零成本可行性 probe 且结果随注册入档；
+6. 三件套工装 SHALL 绑定 `protocol_id = pv_incremental_v1` 并
+   拒收异协议工件；D5 边界（factor_mining 不直触 qlib/pit）
+   SHALL 保持。
+
+#### Scenario: 独立显著但无增量的候选不通过
+
+- **WHEN** 候选在 OOS 独立 rank-IC 显著但对基线正交性检验显示
+  信息高度重合（超冻结带）
+- **THEN** 该候选不构成 FWER 幸存者语义下的晋升入场券——增量
+  判据是通过的必要条件
+
+#### Scenario: 2025 holdout 在无幸存者时保持盲态
+
+- **WHEN** OOS 评估 + FWER 裁决产出干净阴性（无幸存者）
+- **THEN** 2025 holdout 不揭盲，`holdout_unblinded=false` 状态
+  保持，战役以有效排除归档
+
+#### Scenario: 稀疏 trial 不污染 FWER family
+
+- **WHEN** 某注册 trial 的有效样本 n 低于冻结下限
+- **THEN** 该 trial 不进入 bootstrap family，其数字单独如实报告
+  且不参与裁决——稀疏重采导致的 null 重尾不得抬高全族门槛
+
+### Requirement: pv_incremental_v1 的增量判据 SHALL 在 GP 繁殖期生效且基线 SHALL provenance 绑定
+
+GP 搜索 SHALL 以对 Alpha158 基线预测的正交惩罚参与适应度，且基线
+SHALL 经 provenance 绑定后方可参与评分：
+
+1. 正交罚 SHALL 为 banded hinge（`权重 × max(0, 日截面 Spearman
+   平均 |ρ| − 冻结带)`），带与权重 SHALL 取自冻结件；未开启该权重时
+   既有 v1 适应度公式 SHALL 逐字不变；
+2. 相关度 SHALL 以**日截面** Spearman 计（与冻结件/OOS 评估器同语义）；
+3. 基线未覆盖的交易日 SHALL NOT 产生惩罚，且未覆盖计数 SHALL 入 run
+   记录如实披露（IS 前段无基线是折几何的必然结果，不得静默吸收）；
+4. 缓存/checkpoint SHALL 携基线指纹，跨基线（含无基线↔有基线）复用
+   SHALL 使既有分数失效重算；
+5. 基线装载 SHALL 强制 provenance sidecar 绑定（模型名恰等、
+   file_sha256 绑盘上文件、run_config_sha256 与 source_git 非空），
+   任一不满足 SHALL 拒绝运行；
+6. 基线导出 SHALL 逐折校验预测工件 sha256、SHALL 拒绝任何触及盲态
+   holdout 年或禁用期的折、SHALL 要求单一干净 commit，且 SHALL NOT
+   覆盖既有导出；
+7. D5 边界 SHALL 保持：基线通路 SHALL NOT 直接 import qlib 或
+   `src.pit`。
+
+#### Scenario: 带内相关不罚、超带线性罚
+
+- **GIVEN** 冻结带 0.30、权重 2.0
+- **WHEN** 候选对基线的日截面平均 |ρ| 为 0.30 / 0.50
+- **THEN** 罚项分别为 0.0 / 0.4
+
+#### Scenario: 基线未覆盖窗段不罚且披露
+
+- **GIVEN** 候选的因子值日期与基线无交集
+- **WHEN** 计算正交罚
+- **THEN** 罚项为 0，且该表达式计入 run 记录的未覆盖计数
+
+#### Scenario: 未绑定基线拒绝运行
+
+- **GIVEN** 基线 parquet 缺 provenance sidecar 或 sidecar 与盘上文件
+  的 sha256 不符
+- **WHEN** miner 装载基线
+- **THEN** 运行拒绝，不产生任何评分
+
+#### Scenario: 触及 holdout 的折拒绝导出
+
+- **GIVEN** 某折 test 窗落在盲态 holdout 年
+- **WHEN** 运行基线导出器
+- **THEN** 导出拒绝并点名该折，不写出任何工件
+
+### Requirement: 候选注册 SHALL 由工具从 GP 池生成并自证可被消费
+
+pv_incremental_v1 的 OOS 决策批次 SHALL 由注册工具从 GP 池生成，且：
+
+1. 注册 SHALL 拒绝非本协议的 GP run——run 的解析后配置与冻结件在
+   宇宙、IS 窗、字段集、前瞻收益价格、ic_term、薄日门、简约系数与
+   正交带权上任一不等即拒；未绑定基线预测的 run SHALL 拒（其候选
+   未经增量判据选择）；
+2. 候选 id SHALL 为安全文件名 slug、批内唯一，且 SHALL NOT 由进程
+   随机的 `expr_hash` 派生；
+3. 表达式 SHALL 以冻结文法可解析的形态逐字登记；
+4. 每个候选 SHALL 携带池记录的 IS 方向（+1/-1）；
+5. 适应度非有限的池条目 SHALL NOT 进入注册；
+6. 注册器 SHALL 在写盘前以**评估器自身的** preflight 验证清单，任一
+   拒绝即中止；
+7. 已存在的注册 SHALL NOT 被覆盖。
+
+#### Scenario: 异协议 GP run 拒绝注册
+
+- **GIVEN** GP run 的配置在 ic_term / 窗口 / 宇宙 / 字段集任一项上
+  偏离冻结件
+- **WHEN** 运行注册器
+- **THEN** 注册拒绝并点名漂移项，不产生清单
+
+#### Scenario: 清单自证可被消费
+
+- **GIVEN** 池中候选含禁用终端或非 CSF/PURE 根
+- **WHEN** 运行注册器
+- **THEN** 在写盘前以评估器 preflight 判定拒绝
+
+#### Scenario: 方向逐行随表达式带出
+
+- **GIVEN** 池中某候选的 IS 方向为 -1
+- **WHEN** 生成清单
+- **THEN** 该表达式所在行的 orientation 为 -1
+
+### Requirement: OOS 消费方 SHALL 强制注册绑定
+
+pv_incremental_v1 的 OOS 评估器与 FWER 裁决器 SHALL 在消费候选清单前
+加载其注册 provenance，且：
+
+1. 缺注册 sidecar 的清单 SHALL 拒绝评估与裁决（未注册的清单不是批次）；
+2. 清单当前字节的 sha256 SHALL 等于注册时记录的摘要，不等即拒（独占
+   创建只防并发注册，不防事后修改）；
+3. 评估器所用基线的 sha256 SHALL 等于注册记录的挖掘基线摘要，不等即拒
+   （同一冻结模型的多份合法导出必须按摘要区分）；
+4. 判决工件 SHALL 记录所绑定的注册摘要；
+5. 授权 SHALL 优先锚定于**受信引用**（缺省远端跟踪引用，可经
+   `PV_TRUSTED_LEDGER_REF` 指定）：该引用不可得时方可回退本地 HEAD，
+   且 SHALL 显式披露"此次授权未被证明经过审阅"；该环境变量被设为空
+   SHALL 拒绝（不得隐式回退）。绑定强度 SHALL 记为流程性保证而非
+   密码学保证；
+6. 注册的真实性 SHALL 以**已提交的** append-only 战役 ledger 为权威：
+   manifest 摘要 SHALL 已被 ledger 条目记录，ledger 的工作树内容与其
+   HEAD 提交内容不一致、ledger 未提交、不在仓库内、或协议不符 SHALL
+   一律拒绝（旁置 sidecar 与清单同等可写，二者自洽不构成认证）；
+7. 消费方所用的 provenance SHALL 取自该 ledger 条目；旁置 sidecar 的
+   输入摘要 SHALL 与 ledger 条目**完整相等**（缺键、多键、改值、类型
+   不符一律拒）；
+8. 上述校验 SHALL NOT 提供关闭开关。
+
+#### Scenario: 注册后被修改的清单拒绝
+
+- **GIVEN** 已注册的 candidates.json 在注册后被编辑（含语义等价的重排）
+- **WHEN** 评估器或裁决器消费它
+- **THEN** 拒绝并指出字节与注册摘要不符
+
+#### Scenario: 异基线拒绝
+
+- **GIVEN** 所传基线的摘要不等于注册记录的挖掘基线摘要
+- **WHEN** 评估器运行
+- **THEN** 拒绝并指出候选是对另一基线繁殖的
+
+#### Scenario: 受信引用回退须披露
+
+- **GIVEN** 受信引用不可得（新克隆 / 分离检出）
+- **WHEN** 消费方授权注册
+- **THEN** 回退本地 HEAD 并显式披露该次授权未被证明经过审阅
+
+#### Scenario: 空的受信引用覆盖拒绝
+
+- **GIVEN** `PV_TRUSTED_LEDGER_REF` 被设为空串
+- **WHEN** 消费方运行
+- **THEN** 拒绝，而非隐式回退本地 HEAD
+
+#### Scenario: 仅工作树修改的 ledger 不构成注册
+
+- **GIVEN** ledger 在工作树被追加了某清单摘要但未提交
+- **WHEN** 任一消费方运行
+- **THEN** 拒绝并指出与已提交内容不一致
+
+#### Scenario: 篡改的 sidecar 输入摘要拒绝
+
+- **GIVEN** 清单已被 ledger 合法记录，但旁置 sidecar 的基线摘要被改
+- **WHEN** 任一消费方运行
+- **THEN** 拒绝并指出 sidecar 与已提交 ledger 条目不一致
+
+#### Scenario: 未注册清单拒绝
+
+- **GIVEN** 清单旁没有注册 sidecar
+- **WHEN** 任一消费方运行
+- **THEN** 拒绝并指向注册器
+
+### Requirement: 基线 SHALL 覆盖完整的冻结 IS 窗（决策①-rev1）
+
+pv_incremental_v1 的基线 walk-forward SHALL 配置为其**首个样本外
+test 窗恰好始于冻结 IS 窗起点**（2018-01-01），使正交惩罚在全部 IS
+交易日上有约束力。该要求 SHALL 由折几何推导（overall_start +
+train_months + valid_months == is_start）而非字面日期断言，使 train/
+valid 月数的任何变更重新推导要求而非使钉子失效。
+
+train 窗长度 SHALL 保持生产同源（24 个月）——本修订解除的是数据边界，
+SHALL NOT 以缩短 train 窗的方式取得更早覆盖（原决策①禁令保留）。
+
+折网格 SHALL 与原 19 折对齐（起点前移量为 step 的整数倍）：原有折的
+test 窗原样保留，OOS（2023-2024）折 SHALL 分毫不动。
+
+#### Scenario: 首个 test 窗对齐 IS 起点
+
+- **GIVEN** 基线 preset 与父配置的折几何参数
+- **WHEN** 由 overall_start + train + valid 推导首个 test 窗
+- **THEN** 它等于冻结 IS 起点 2018-01-01，且 overall_end 仍为
+  2024-12-31
+
+#### Scenario: OOS 折不受影响
+
+- **GIVEN** 修订前后的两份折清单
+- **WHEN** 比对 test 窗落在 2023-01-01..2024-12-31 的折
+- **THEN** 两份完全一致（8 折，窗口逐一相同）
+
+### Requirement: 训练窗 SHALL 被数据日历完整覆盖（fail-loud）
+
+walk-forward 引擎 SHALL 校验所绑 bundle 日历覆盖自 overall_start 起
+的完整训练历史，不满足时 SHALL fail-loud 拒绝该 run（而非静默用被裁
+剪的数据训练并在 manifest 中记录声明窗口）。
+
+"预期首个交易日"的最终权威 SHALL 是**交易所自己的日历**（codex #412
+r6）：fetcher SHALL 将 tushare `trade_cal`（全历史，非窗口裁剪）落盘为
+dump 的一部分；构建器 SHALL 据此推导锚点专属的预期首日（首个
+`is_open` 且 ≥ 覆盖起点的交易日），要求构建出的日历首日**恰等于**它
+（零空缺容忍——任何全局空缺阈值 K 都给恰为 K 的截断留藏身处：7→6 只是
+把藏身处从 10-12 挪到 10-09），并把该值写入完整性戳
+`expected_first_session`；引擎在戳含该字段时 SHALL 同样要求日历首日恰
+等于它。
+
+次级权威是 bundle 完整性戳的 `data_coverage_start`（codex #412 r2）——构建器自 fetch manifest 的必需
+端点覆盖复制（取其 coverage_start_date 之最大者；仅零 hole 的完整
+fetch 可盖此戳）。零 hole 完整 fetch 自 X 日起的语义即"X 起每个交易日
+的数据都在"，故日历首日就是 ≥X 的第一个真实交易日：`coverage_start >
+overall_start` 即 SHALL 拒，**与空缺大小无关**——任何按空缺尺寸的启发
+式都会放行藏在假期窗口内的截断 bundle（例：起于 2015-10-12 者仅缺 7
+个工作日，却缺失 10-08/10-09 两个真实交易日）。
+
+戳校验 SHALL 是**叠加**而非替代（codex #412 r4）：manifest 覆盖是
+fetch 的**请求窗口**，在文件校验之前记录，且 fetcher 的新鲜度规则只验
+各文件的尾端——头部原始文件缺失时戳仍会声称请求起点，而实际构建出的日
+历起于多年之后。故日历空缺守卫 SHALL 无条件执行（工作日容差：A 股史
+上最长连续闭市恰 6 个工作日，超 6 即拒——上界取史实精确值，任何+1 缓冲正是截断可藏身之处，codex #412 r5），戳存在时**另加**"覆盖起点晚
+于 overall_start 即拒"一道。构建器 SHALL 在盖戳前将声称的覆盖起点与
+实际构建出的日历对账，空缺超过闭市容差即拒绝构建（fail-loud——这是损
+坏输入，不是部分构建的选择）。
+
+戳无该字段时（早于本字段的 bundle，含生产 bundle；与 identity 字段同
+一 schema-v1 可选姿态）仅日历空缺守卫生效（例：起于 2015-10-20 者缺
+13 个工作日，拒）。
+
+基线导出器 SHALL 将 overall_start 纳入 run-config 绑定，使一个用错误
+起点跑出的 run 无法被认证为本战役的基线。
+
+#### Scenario: 一个交易日的截断也拒（锚点专属精确匹配）
+
+- **GIVEN** 完整性戳 expected_first_session=2015-10-08（交易所日历所
+  载），而 bundle 日历起于 2015-10-09（仅缺一个交易日——任何全局阈值
+  都无法捕捉）
+- **WHEN** 启动 walk-forward
+- **THEN** run 拒绝启动并指出数据未兑现所盖的覆盖
+
+#### Scenario: 戳内覆盖起点晚于 overall_start 即拒（与空缺大小无关）
+
+- **GIVEN** 完整性戳 data_coverage_start=2015-10-12 的 bundle（仅缺 7
+  个工作日，任何闭市容差都会放行）
+- **WHEN** 启动 walk-forward（overall_start=2015-10-01）
+- **THEN** run 拒绝启动并指出 fetch 从未建立该日前的历史
+
+#### Scenario: 戳声称的覆盖未被日历兑现即拒（叠加不替代）
+
+- **GIVEN** 完整性戳 data_coverage_start=2015-10-01（等于 overall_start，
+  权威检查通过），但头部原始文件缺失使构建出的日历起于 2018-01-02
+- **WHEN** 启动 walk-forward
+- **THEN** 日历空缺守卫仍然拒绝 —— 戳的存在不得关闭它
+
+#### Scenario: 构建器拒绝盖未兑现的戳
+
+- **GIVEN** fetch manifest 声称覆盖自 2015-10-01，而实际数据构建出的
+  日历起于 2018-01-02（588 个工作日的声称历史缺失）
+- **WHEN** 构建 bundle
+- **THEN** 构建 fail-loud 拒绝，指出头部原始文件缺失须重新 fetch
+
+#### Scenario: 无戳（legacy）bundle 回退工作日容差
+
+- **GIVEN** 一个无 data_coverage_start 戳、起于 2015-10-20 的部分构建
+  bundle（距 overall_start 仅 19 个日历天，但缺 13 个工作日）
+- **WHEN** 启动 walk-forward
+- **THEN** run 拒绝启动 —— 固定日历天容差不得放行它
+
+#### Scenario: 旧 bundle 上声明 2015 起点即拒
+
+- **GIVEN** QUANT_PROVIDER_URI 指向首日为 2018-01-02 的 bundle，preset
+  声明 overall_start 2015-10-01
+- **WHEN** 启动 walk-forward
+- **THEN** run 拒绝启动并指出日历首日晚于所需 train_start —— 而非静默
+  训练出 3 个月数据的"24 个月模型"
+
+#### Scenario: 导出器拒绑错误起点
+
+- **GIVEN** 一个 overall_start 与本战役 preset 不符的已完成 run
+- **WHEN** 基线导出器消费它
+- **THEN** 拒绝导出并指出 overall_start 漂移
+
