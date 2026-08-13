@@ -398,7 +398,14 @@ def _child_ignores_env(call: ast.Call) -> bool:
     """
     argv = _argv_strings(call)
     if argv is None:
-        return False  # unresolvable argv already fails closed elsewhere
+        # The child can be PROVEN python by the executable= override
+        # while the argv stays opaque — and an opaque argv can carry
+        # -E/-I where this scan cannot see them (codex P2 r23 on #410:
+        # ``run(argv, executable=sys.executable, ...)``). Unresolvable
+        # options fail closed like every other unresolvable input; on
+        # the argv[0]-proof path this line is unreachable (that proof
+        # requires a literal argv).
+        return True
     letters, x_values, unresolvable = _interpreter_options(argv)
     if unresolvable:
         return True  # hidden flags possible — fail closed
@@ -1192,6 +1199,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("-E fused before an attached -c still ignores env",
      'subprocess.run([sys.executable, "-Ecprint(1)", "x"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
+    # executable= proves the child is python, but an OPAQUE argv can
+    # still smuggle -E/-I where the option scan cannot see them.
+    ("opaque argv with executable override fails closed",
+     'argv = ["display", "-E", "-c", code]\n'
+     "subprocess.run(argv, executable=sys.executable, text=True,"
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("literal argv options are scanned under the override",
+     'subprocess.run(["display", "-E", "x"], executable=sys.executable,'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("literal argv without flags accepted under the override",
+     'subprocess.run(["display", "x.py"], executable=sys.executable,'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', False),
 )
 
 
