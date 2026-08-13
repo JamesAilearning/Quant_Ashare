@@ -333,20 +333,27 @@ def _git(*args: str) -> str:
         # UTF-8 pin does not govern (#410 r30; verified: git rejects a
         # late ``--ext-diff`` as "must come before non-option
         # arguments").
-        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
+        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
                               "-C", str(_REPO), "show",
                               "--no-ext-diff", "--no-textconv",
                               "--end-of-options", *rest],
                              capture_output=True, text=True,
                              encoding="utf-8", check=True)
     elif sub == "diff-name-status":
-        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "i18n.logOutputEncoding=utf-8",
+        # BINARY + explicit decode: an attributes ``clean`` filter is an
+        # external program that writes to stderr on a worktree diff, and
+        # no git switch disables filters wholesale (#410 r36). Decoding
+        # here keeps the tool's own bytes (git-generated, quoted paths)
+        # strict while a filter's diagnostics cannot crash the parse.
+        raw = subprocess.run(["git", "-c", "core.fsmonitor=false",
+                              "-c", "core.hooksPath=/dev/null",
+                              "-c", "i18n.logOutputEncoding=utf-8",
                               "-C", str(_REPO), "diff",
                               "--no-ext-diff", "--no-textconv",
                               "--name-status", "-M50%",
                               "--end-of-options", *rest],
-                             capture_output=True, text=True,
-                             encoding="utf-8", check=True)
+                             capture_output=True, check=True)
+        return raw.stdout.decode("utf-8")
     else:
         raise SystemExit(
             f"unsupported git subcommand {sub!r} — each needs its own "

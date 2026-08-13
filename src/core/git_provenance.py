@@ -34,14 +34,14 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
     on PATH, a timeout on rev-parse itself)."""
     try:
         commit: str | None = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
         ).stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return {"commit": None, "dirty": None}
     try:
         status = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-C", str(_REPO_ROOT), "status", "--porcelain"],
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(_REPO_ROOT), "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
         ).stdout
         dirty: bool | None = bool(status.strip())
