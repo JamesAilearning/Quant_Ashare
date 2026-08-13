@@ -1,7 +1,7 @@
 # Tasks: 2026-08-08-pv-baseline-full-is-coverage
 
 ## 0. 签署（操作人，本 PR 合并即视为签署）
-- [ ] 决策①-rev1：批准将基线 overall_start 退至 2015-10-01
+- [x] 决策①-rev1：批准将基线 overall_start 退至 2015-10-01  ← 操作人签署 = PR #412 合并
       （train 窗保持 24m；OOS 折分毫不动；理由与影响见 proposal）
 
 ## 1. 实现（本 PR）
@@ -16,10 +16,10 @@
       修订，见台账 E00x"）
 
 ## 2. 台账（签署后、点火前）
-- [ ] 追加决策①-rev1 条目：引用本 change、新旧 overall_start、
+- [x] 追加决策①-rev1 条目：引用本 change、新旧 overall_start、  ← 台账 E002（含程序偏差披露与裁决 B）
       折数 19→28、新 bundle content_hash（append-only，E001 不改写）
 
 ## 3. 点火序（并后，操作人裁决节点不变）
-- [ ] QUANT_PROVIDER_URI=my_cn_data_pit_2015 重跑基线（28 折）
-- [ ] 验收：IS 覆盖 670 → ~1215 天；OOS 8 折 test 窗与旧配置逐一相同
-- [ ] 重新导出 + E002 结果条目
+- [x] QUANT_PROVIDER_URI=my_cn_data_pit_2015 重跑基线（28 折）  ← 台账 E004（28/28 折）
+- [x] 验收：IS 覆盖 670 → ~1215 天；OOS 8 折 test 窗与旧配置逐一相同  ← 归档时实测：IS 670→1215 天；OOS 8 折 test 窗与旧配置逐一相同（已核）
+- [x] 重新导出 + E002 结果条目  ← 台账 E004（导出 sha a254832c…；条目编号为 E004）

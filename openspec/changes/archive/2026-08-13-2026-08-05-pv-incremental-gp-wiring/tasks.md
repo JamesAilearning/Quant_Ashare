@@ -16,8 +16,8 @@
       （含 campaign 配置逐字对齐冻结件）
 
 ## 2. 点火（并后，操作人）
-- [ ] 基线 walk-forward run（单次不间断，GPU 约 1-2 小时）
-- [ ] 导出器 → 宽表 + sidecar → ledger E002 result 登记（数字原样）
-- [ ] GP 搜索批次（点火在操作人；先把导出器产出的 baseline 路径填入
+- [x] 基线 walk-forward run（单次不间断，GPU 约 1-2 小时）  ← 台账 E004（28/28 折，commit a83276a，git_dirty=False）
+- [x] 导出器 → 宽表 + sidecar → ledger E002 result 登记（数字原样）  ← 台账 E004（sha a254832c…；条目编号实际为 E004，非草案时预估的 E002）
+- [x] GP 搜索批次（点火在操作人；先把导出器产出的 baseline 路径填入  ← 台账 E005（首批中止照录）+ E006（重跑后注册 top-50）
       config/factor_mining/pv_incremental_v1.yaml 的
       data.baseline_preds_path）→ 候选 manifest 注册
