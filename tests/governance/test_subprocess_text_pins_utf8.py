@@ -186,7 +186,7 @@ _GIT_PATH_PRODUCING = frozenset({"ls-files", "ls-tree", "check-ignore"})
 _GIT_RAW_PATH_LONG_OPTS = frozenset({"--null"})
 _GIT_RAW_PATH_LETTER = "z"
 _GIT_QUOTEPATH_KEY = "core.quotepath"
-_GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on", ""})
+_GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
 _GIT_DIFF_CAPABLE = frozenset({
     "diff", "show", "log", "whatchanged", "format-patch", "rev-list",
     "blame", "annotate", "range-diff", "diff-tree", "diff-index",
@@ -645,12 +645,17 @@ def _git_output_safe(call: ast.Call) -> bool:
             if el == "-c":
                 if value is None:
                     return False  # an opaque config could BE the codec
-                key, _, raw_value = value.partition("=")
+                key, eq, raw_value = value.partition("=")
                 key = key.strip().lower()
+                # ``-c key`` with NO ``=`` is boolean TRUE, while
+                # ``-c key=`` (empty) is boolean FALSE — verified against
+                # ``config --type=bool`` (codex P2 r40 on #410). Folding
+                # the two together made a valueless ``core.fsmonitor``
+                # read as "disabled". ``None`` means "true, no value".
+                val = raw_value.strip().lower() if eq else None
                 if key == _GIT_ENCODING_PIN_KEY:
-                    if (raw_value.strip().lower()
-                            not in _GIT_ENCODING_PIN_VALUES):
-                        return False  # explicit non-UTF-8 codec
+                    if val not in _GIT_ENCODING_PIN_VALUES:
+                        return False  # non-UTF-8 codec, or valueless
                     pin_seen = True
                 elif key.startswith(_GIT_INCLUDE_KEY_PREFIXES):
                     # The included file is expanded AT THIS POSITION and
@@ -665,14 +670,13 @@ def _git_output_safe(call: ast.Call) -> bool:
                     hooks_off = False
                     quotepath_on = False
                 elif key == _GIT_FSMONITOR_KEY:
-                    fsmonitor_off = (raw_value.strip().lower()
-                                     in _GIT_FSMONITOR_OFF_VALUES)
+                    fsmonitor_off = val in _GIT_FSMONITOR_OFF_VALUES
                 elif key == _GIT_HOOKS_KEY:
-                    hooks_off = (raw_value.strip().lower()
-                                 in _GIT_HOOKS_OFF_VALUES)
+                    hooks_off = val in _GIT_HOOKS_OFF_VALUES
                 elif key == _GIT_QUOTEPATH_KEY:
-                    quotepath_on = (raw_value.strip().lower()
-                                    in _GIT_QUOTEPATH_ON_VALUES)
+                    # Boolean TRUE — the valueless form — is quoting ON.
+                    quotepath_on = (val is None
+                                    or val in _GIT_QUOTEPATH_ON_VALUES)
             i += 2
             continue
         if el in _GIT_GLOBAL_FLAG_OPTS:
@@ -1705,6 +1709,27 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
+    # ``-c key`` (no =) is boolean TRUE and ``-c key=`` is FALSE —
+    # verified with ``config --type=bool``; folding them together read a
+    # valueless core.fsmonitor as "disabled".
+    ("a valueless core.fsmonitor is boolean TRUE, so refused",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor",'
+     ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', True),
+    ("the explicit empty form is boolean FALSE, so accepted",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=",'
+     ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', False),
+    ("a valueless core.quotePath is TRUE, so quoting stays on",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.quotePath", "ls-files"], text=True,'
+     ' encoding="utf-8")', False),
+    ("...while core.quotePath= is FALSE and refuses",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.quotePath=", "ls-files"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a valueless encoding pin proves no codec",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
+     ' "-c", "i18n.logOutputEncoding", "log", "--no-ext-diff",'
+     ' "--no-textconv", "-1"], text=True, encoding="utf-8")', True),
     # path-producing commands are ASCII-safe only while git QUOTES
     # unusual bytes: -z and core.quotePath=false both emit them raw
     # (verified against an index entry with a non-ASCII byte).
