@@ -1,0 +1,49 @@
+# pv_incremental_v1 晋升门配对比较 —— **基线臂 A**（PV-DP-7 步 3/4）。
+#
+# 与 treatment 臂（pv_promo_paired_treatment.yaml）逐键相同，唯一差异
+# = feature_handler。治理测试 test_pv_promotion_paired_presets.py 钉死
+# 这条"唯一差异"，任何第二处漂移都会让配对比较测的不是注册假设。
+#
+# **判定窗独占 OOS dev**：overall_start 2020-10-01 + 24m train + 3m
+# valid → 首个 test 窗恰为 2023-01-01，8 个季度折全部落在 OOS dev
+# （2023-01-01..2024-12-31）。GP 在 IS 窗（2018-2022）见过数据，
+# treatment 臂在 IS 段的任何优势都是样本内泄漏，故判定几何**直接不
+# 生成 IS test 折**——不是事后剔除，是根本不产生。train 窗保持 24m
+# 生产同源（"不缩短 train 窗"的冻结禁令延续）。
+#
+# **圣规防线**：overall_end 2024-12-31（父配置缺省 2025-12-31 会训练
+# 进入并预测 2025 holdout 年）。单向揭盲仅限操作人终裁步骤。
+#
+# **canonical 口径**：本档刻意**不设** risk_constraints_mode /
+# metrics_purpose——取引擎默认 raise / official。净基差改善是本步的
+# 判据，需要 RAISE 校验过的真实净收益；E004 基线的
+# predictions_only_non_canonical 口径（warn_and_clip）不可充当对照臂。
+# 代价如实预告：持仓被动漂移越限会判死该折，两臂任一折失败都会让
+# 裁尺的配对重叠收窄；重叠不足时裁尺拒出 verdict（fail-loud 呈操作
+# 人），不得放宽门槛续跑。
+#
+# Run discipline（裁尺祖先链门要求）：预注册 plan
+# docs/prereg/pv_promotion_paired.yaml 必须先入 main；两臂各一次不
+# 间断调用，干净工作树：
+#     QUANT_PROVIDER_URI=D:/qlib_data/my_cn_data_pit_2015 \
+#     python scripts/run_walk_forward.py config/presets/pv_promo_paired_baseline.yaml
+extends: ../../config_walk.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+slippage_bps: 5.0
+# **两臂同时声明**（codex #422 r1）：treatment 臂的因子经 PITDataProvider
+# 求值，该 provider 把 canonical 运行时钉在 post_adjusted，故 walk-forward
+# 必须同模式（否则每折以 QlibRuntimeInitError 死）。基线臂本可用父配置的
+# pre_adjusted 缺省——但那会让两臂多出**第二处差异**，配对比较的前提当场
+# 破掉。故基线臂在此显式跟随：判定的是"加因子"这一个变量，价格口径两边
+# 同为 post_adjusted。绝对数字因此与生产 pre_adjusted 口径不可直接比，
+# 本步判据是两臂之差，不是任一臂的绝对值。
+adjust_mode: "post_adjusted"
+feature_handler: "Alpha158"
+overall_start: "2020-10-01"
+overall_end: "2024-12-31"
+output_dir: "output/walk_forward/pv_promo_paired_baseline"

@@ -1,0 +1,46 @@
+# 晋升门配对比较的预注册 plan（run-comparison ruler 的决策级门）。
+#
+# 注册即本文件的**已提交内容**；两臂 run 必须产生于本文件最后一次
+# 改动的 commit 之后（裁尺的祖先链门会机器校验）。事后编辑本文件会
+# 把它的 last-touched commit 推到 run 之后 —— 那正是这道门要抓的
+# post-hoc 修改。
+#
+# treatments 是设计时的多重比较控制：单变体，冻结于此，事后增补
+# 变体会被裁尺标记为 UNREGISTERED MULTIPLE COMPARISON。
+#
+# 判据 = 裁尺三态 verdict 原样（paired moving-block-bootstrap CI on
+# daily net excess）。不另设第二判据、不设额外数字门槛：
+#   TREATMENT_BETTER      -> 进操作人签字步（含是否单向揭盲终裁）
+#   INCONCLUSIVE / BASELINE_BETTER -> 照录台账，不晋升
+hypothesis: "csi800 生产模型族加入晋升代表因子 pv001（低换手，
+  cs_demean(abs($turnover_rate))，E007 FWER 幸存）后，2023-2024
+  判定窗的日净超额改善"
+expected_direction: treatment_better
+baseline: alpha158-canonical-8fold
+treatments: ["alpha158-plus-pv001"]
+
+# 本注册对**两臂本身**的要求（裁尺在出 verdict 前强制；未声明则该门
+# 不存在，既有战役行为逐字不变）。没有这一段，两个 plain-Alpha158 的
+# 干净 run 也能以 --variant alpha158-plus-pv001 领到决策级判决——裁尺
+# 原本只查祖先链、ST 一致性与调用者自报的变体名（codex #422 r4）。
+arm_requirements:
+  baseline:
+    feature_handler: Alpha158
+    adjust_mode: post_adjusted
+  treatment:
+    feature_handler: Alpha158PlusMined
+    adjust_mode: post_adjusted
+    # runner 从晋升 bundle 的 provenance 盖的戳，前缀即预注册代表；
+    # 其后还串着池/表达式/verdict/台账/PIT 输入的摘要。
+    mined_factor_pool_identity:
+      prefix: "pv001_2789e60e|expr=cs_demean(abs($turnover_rate))"
+      # 仅有前缀 = "注册前缀 + 任意编造文本"也能过；这些分量必须逐项
+      # 存在且非空，戳记才是证据而非标签（codex #422 r5）。
+      components:
+        - pool_sha256
+        - expressions_sha256
+        - verdict_sha256
+        - ledger
+        - pit
+        - pit_content_hash
+        - registry_sha256

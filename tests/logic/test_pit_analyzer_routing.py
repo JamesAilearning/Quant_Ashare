@@ -427,6 +427,7 @@ class ReportRecordsRegistryTests(unittest.TestCase):
         config = SimpleNamespace(
             instruments="csi300", feature_handler="Alpha158",
             label_horizon_days=1, delisted_registry_path=registry,
+            mined_factor_pool_identity="",
             train_start="2022-01-01", train_end="2022-12-31",
             valid_start="2023-01-01", valid_end="2023-03-31",
             test_start="2023-04-01", test_end="2023-06-30",

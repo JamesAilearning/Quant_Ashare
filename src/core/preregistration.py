@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -54,6 +54,14 @@ class PreregPlan:
     expected_direction: str      # one of EXPECTED_DIRECTIONS
     baseline: str                # human-readable baseline identifier
     treatments: tuple[str, ...]  # the REGISTERED variant set
+    # OPTIONAL per-arm config requirements, keyed by run label
+    # ("baseline"/"treatment"). Each maps a walk-forward config field to
+    # what the registration requires of it: a string means "equals", and
+    # a ``{"prefix": ...}`` mapping means "starts with" (for identity
+    # stamps that carry digests). A plan that declares none behaves
+    # exactly as before — every existing campaign is untouched.
+    arm_requirements: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict)
 
 
 def _git(args: list[str], *, cwd: str | Path) -> str:
@@ -74,6 +82,114 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
             f"{completed.stderr.strip() or completed.stdout.strip()}. Refusing."
         )
     return completed.stdout.strip()
+
+
+_ARM_LABELS = ("baseline", "treatment")
+
+
+def _parse_arm_requirements(
+    raw: Mapping[str, Any], plan_path: Path,
+) -> dict[str, dict[str, Any]]:
+    """Parse the OPTIONAL ``arm_requirements`` block.
+
+    Absent → empty, and the gate behaves exactly as it did before this
+    existed. Present but malformed → refuse: a requirement that cannot
+    be parsed would silently not be enforced, which is worse than not
+    declaring one.
+    """
+    block = raw.get("arm_requirements")
+    if block is None:
+        return {}
+    if not isinstance(block, Mapping):
+        raise PreregistrationError(
+            f"Plan {plan_path}: 'arm_requirements' must be a mapping of "
+            f"{list(_ARM_LABELS)} to config requirements.")
+    parsed: dict[str, dict[str, Any]] = {}
+    for label, reqs in block.items():
+        if label not in _ARM_LABELS:
+            raise PreregistrationError(
+                f"Plan {plan_path}: unknown arm {label!r} in "
+                f"'arm_requirements' (expected one of {list(_ARM_LABELS)}).")
+        if not isinstance(reqs, Mapping) or not reqs:
+            raise PreregistrationError(
+                f"Plan {plan_path}: arm_requirements[{label!r}] must be a "
+                "non-empty mapping of config field -> requirement.")
+        for key, want in reqs.items():
+            if isinstance(want, Mapping):
+                if set(want) - {"prefix", "components"} or not want:
+                    raise PreregistrationError(
+                        f"Plan {plan_path}: arm_requirements[{label!r}]"
+                        f"[{key!r}] mapping form supports 'prefix' and/or "
+                        "'components'.")
+                if "prefix" in want and not str(
+                        want.get("prefix") or "").strip():
+                    raise PreregistrationError(
+                        f"Plan {plan_path}: arm_requirements[{label!r}]"
+                        f"[{key!r}]['prefix'] must be a non-empty string.")
+                comps = want.get("components")
+                if "components" in want and (
+                        not isinstance(comps, list) or not comps
+                        or not all(isinstance(c, str) and c.strip()
+                                   for c in comps)):
+                    raise PreregistrationError(
+                        f"Plan {plan_path}: arm_requirements[{label!r}]"
+                        f"[{key!r}]['components'] must be a non-empty list "
+                        "of required component names.")
+            elif not isinstance(want, str) or not want.strip():
+                raise PreregistrationError(
+                    f"Plan {plan_path}: arm_requirements[{label!r}][{key!r}] "
+                    "must be a non-empty string or {'prefix': ...}.")
+        parsed[str(label)] = dict(reqs)
+    return parsed
+
+
+def _check_arm_requirements(
+    plan: PreregPlan, label: str, report: Mapping[str, Any],
+) -> None:
+    """Enforce the plan's declared requirements on one arm's report."""
+    reqs = plan.arm_requirements.get(label)
+    if not reqs:
+        return
+    config = report.get("config")
+    if not isinstance(config, Mapping):
+        raise PreregistrationError(
+            f"The {label} run's report embeds no config block, so the plan's "
+            f"registered requirements for it ({sorted(reqs)}) cannot be "
+            "verified. Re-run on the current engine.")
+    for key, want in reqs.items():
+        got = config.get(key)
+        if isinstance(want, Mapping):
+            prefix = str(want.get("prefix") or "")
+            if prefix and (not isinstance(got, str)
+                           or not got.startswith(prefix)):
+                raise PreregistrationError(
+                    f"The {label} run's config.{key} is {got!r}, which does "
+                    f"not start with the registered {prefix!r}. The plan "
+                    "registers WHAT was to be compared; a run that does not "
+                    "carry it cannot receive this registration's "
+                    "decision-grade verdict.")
+            # Structural completeness: a prefix alone would accept "the
+            # registered prefix followed by invented text", i.e. a stamp
+            # carrying none of the digests that make it evidence (codex
+            # #422 r5). Each declared component must appear as a
+            # ``name=<non-empty>`` field of the pipe-delimited stamp.
+            for comp in want.get("components") or []:
+                fields = {
+                    part.split("=", 1)[0]: part.split("=", 1)[1]
+                    for part in str(got or "").split("|") if "=" in part
+                }
+                if not str(fields.get(comp, "")).strip():
+                    raise PreregistrationError(
+                        f"The {label} run's config.{key} carries no non-empty "
+                        f"{comp!r} component ({got!r}). The registration "
+                        "requires the complete runner-produced identity, not "
+                        "a fragment of it.")
+        elif got != want:
+            raise PreregistrationError(
+                f"The {label} run's config.{key} is {got!r} but the plan "
+                f"registers {want!r}. The plan registers WHAT was to be "
+                "compared; a run that does not carry it cannot receive this "
+                "registration's decision-grade verdict.")
 
 
 def load_plan(path: str | Path) -> PreregPlan:
@@ -141,9 +257,11 @@ def load_plan(path: str | Path) -> PreregPlan:
             f"Plan {p} is not committed (no commit touches {rel!r}). Commit the plan "
             "BEFORE producing the runs it registers."
         )
+    arm_requirements = _parse_arm_requirements(raw, p)
     return PreregPlan(
         path=str(p), repo_root=repo_root, commit=commit, hypothesis=hypothesis,
         expected_direction=direction, baseline=baseline, treatments=treatments,
+        arm_requirements=arm_requirements,
     )
 
 
@@ -385,6 +503,13 @@ def gate_comparison(
             "sides exclude DIFFERENT ST sets. Re-run one side against the "
             "other's exact snapshot."
         )
+    # What the plan registered about the ARMS THEMSELVES. Without this a
+    # clean pair of plain-Alpha158 runs could be handed in under a
+    # variant name that claims an added factor, and the gate — checking
+    # only ancestry, ST parity and the caller-supplied variant string —
+    # would issue a decision-grade verdict for it (codex #422 r4).
+    _check_arm_requirements(plan, "baseline", baseline_report)
+    _check_arm_requirements(plan, "treatment", treatment_report)
     flags: list[str] = []
     if variant not in plan.treatments:
         flags.append(

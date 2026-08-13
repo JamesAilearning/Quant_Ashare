@@ -345,6 +345,7 @@ class ReportsRecordHorizonTests(unittest.TestCase):
             risk_constraints_mode="raise",
             metrics_purpose="official",
             delisted_registry_path="",
+        mined_factor_pool_identity="",
         )
         feature_result = SimpleNamespace(
             train_shape=(10, 5), valid_shape=(5, 5), test_shape=(5, 5),

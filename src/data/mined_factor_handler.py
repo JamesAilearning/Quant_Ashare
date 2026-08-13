@@ -411,3 +411,179 @@ def register_mined_factor_handler(
     register_feature_handler(
         name, factory, replace=replace, cache_identity=_identity,
     )
+
+
+# ---------------------------------------------------------------------------
+# Alpha158PlusMined — the paired-comparison treatment arm (PV-DP-7 step 2)
+# ---------------------------------------------------------------------------
+
+ALPHA158_PLUS_MINED_HANDLER_NAME = "Alpha158PlusMined"
+
+
+def _make_alpha158_plus_mined_qlib_handler(
+    mined_features: pd.DataFrame,
+    config: FeatureDatasetConfig,
+) -> Any:
+    """Alpha158's own handler with the mined columns merged in.
+
+    The treatment arm of a paired comparison may differ from the
+    baseline arm in EXACTLY ONE respect: the extra feature columns.
+    So this does not rebuild Alpha158's semantics — it defers
+    Alpha158's own data load (``init_data=False``), wraps its own
+    loader in qlib's ``NestedDataLoader`` alongside a
+    ``StaticDataLoader`` carrying the mined columns, and lets the
+    handler load. Alpha158's label expression, its default
+    processors, and its row set therefore come from Alpha158 itself
+    rather than from a re-derivation here:
+
+    * label — built by Alpha158's loader from the same expression the
+      baseline arm uses (``alpha158_label_expression``, passed
+      explicitly so the horizon override applies identically to both
+      arms);
+    * processors — untouched, because the handler instance IS an
+      ``Alpha158``;
+    * rows — ``NestedDataLoader``'s ``join="left"`` keeps the FIRST
+      loader's index, i.e. Alpha158's, so an instrument-date the
+      baseline arm does not carry cannot enter through the mined side.
+    """
+    from qlib.contrib.data.handler import Alpha158  # noqa: PLC0415
+    from qlib.data.dataset.loader import (  # noqa: PLC0415
+        DataLoader,
+        NestedDataLoader,
+        StaticDataLoader,
+    )
+
+    from src.data.feature_dataset_builder import (  # noqa: PLC0415
+        alpha158_label_expression,
+    )
+
+    class _InstrumentAgnosticLoader(DataLoader):  # type: ignore[misc] # noqa: PLC0415
+        """Serve the mined frame whole; let the join select the rows.
+
+        ``DataHandler.setup_data`` forwards ``self.instruments`` — the
+        dynamic universe NAME — to every nested loader, and
+        ``StaticDataLoader`` reads a string as a literal ticker filter:
+        it raises ``KeyError``, which ``NestedDataLoader`` swallows
+        before retrying with ``instruments=None``. Relying on a
+        third-party exception path for correct behaviour is not a
+        design, so the delegation is made explicit here.
+
+        Row selection is NOT lost by ignoring the argument: the outer
+        join is ``how="left"`` onto Alpha158's index, which is what
+        carries point-in-time membership. Whatever the mined frame
+        holds outside that index is dropped by the join.
+        """
+
+        def __init__(self, inner: Any) -> None:
+            super().__init__()
+            self._inner = inner
+
+        def load(
+            self,
+            instruments: Any = None,
+            start_time: Any = None,
+            end_time: Any = None,
+        ) -> pd.DataFrame:
+            return self._inner.load(
+                instruments=None, start_time=start_time, end_time=end_time)
+
+    handler = Alpha158(
+        # The DYNAMIC universe spec, exactly as the baseline arm passes
+        # it. Flattening ``csi800`` to a ticker list here (r2's first
+        # attempt) loads former and future constituents outside their
+        # membership periods, so the treatment arm's index would be
+        # wider than the baseline's and the pair would differ in
+        # universe rows as well as features (codex #422 r3). Only the
+        # static mined loader — which cannot read a universe name —
+        # gets special handling, below.
+        instruments=config.instruments,
+        start_time=config.train_start,
+        end_time=config.test_end,
+        fit_start_time=config.train_start,
+        fit_end_time=config.train_end,
+        label=(
+            [alpha158_label_expression(config.label_horizon_days)],
+            ["LABEL0"],
+        ),
+        # Defer the load so the loader can be composed first; without
+        # this the handler would load Alpha158 alone and then have to
+        # be re-loaded, paying the qlib expression pass twice.
+        init_data=False,
+    )
+    handler.data_loader = NestedDataLoader(
+        dataloader_l=[
+            handler.data_loader,
+            _InstrumentAgnosticLoader(
+                StaticDataLoader(config={"feature": mined_features})),
+        ],
+        join="left",
+    )
+    handler.setup_data()
+    return handler
+
+
+def _make_alpha158_plus_mined_factory(
+    bundle: MinedFactorBundle,
+) -> Callable[[FeatureDatasetConfig], Any]:
+    """Closure-style factory for the combined handler."""
+
+    def _factory(config: FeatureDatasetConfig) -> Any:
+        # Same ordering discipline as the MinedFactor factory: validate
+        # the pool before paying the PIT load.
+        pool = _load_pool_or_raise(bundle)
+        panel, _ = _resolve_panel(bundle, config)
+        mined = _materialise_features(pool, panel)
+        return _make_alpha158_plus_mined_qlib_handler(mined, config)
+
+    _factory.__doc__ = (
+        f"Alpha158PlusMined handler factory bound to "
+        f"pool_dir={bundle.pool_dir!r}"
+    )
+    return _factory
+
+
+def register_alpha158_plus_mined_handler(
+    bundle: MinedFactorBundle,
+    *,
+    name: str = ALPHA158_PLUS_MINED_HANDLER_NAME,
+    replace: bool = False,
+) -> None:
+    """Register the Alpha158 + mined-factor combined handler.
+
+    The cache identity composes Alpha158's constant identity with the
+    bundle fingerprint, so the feature-dataset cache can never serve a
+    plain-Alpha158 dataset (or a differently-bound pool's dataset)
+    under this name.
+    """
+    factory = _make_alpha158_plus_mined_factory(bundle)
+
+    def _identity() -> str:
+        # The bundle identity alone hashes the mined PIT/registry PATHS
+        # and the pool bytes, but not the registry's CONTENT — so a
+        # registry updated in place (or a distinct
+        # mined_factor_pit_provider_uri refreshed in place) would reuse
+        # a cached dataset built from the OLD inputs while the run
+        # report stamped the NEW identity: stale treatment features
+        # under fresh provenance (codex #422 r6). Fold the same input
+        # identity the run stamp carries into the cache key.
+        #
+        # The plain MinedFactor handler's identity is deliberately left
+        # as it shipped: changing it would invalidate every existing
+        # cached dataset for a path this PR does not introduce.
+        parts = ["alpha158_default", _compute_bundle_cache_identity(bundle)]
+        if bundle.pit_provider_uri and bundle.delisted_registry_path:
+            from src.factor_mining.promotion_binding import (  # noqa: PLC0415
+                mined_input_identity,
+            )
+
+            inputs = mined_input_identity(
+                pit_provider_uri=bundle.pit_provider_uri,
+                delisted_registry_path=bundle.delisted_registry_path,
+            )
+            parts.append(inputs["pit_bundle_content_hash"])
+            parts.append(f"registry:{inputs['delisted_registry_sha256']}")
+        return "+".join(parts)
+
+    register_feature_handler(
+        name, factory, replace=replace, cache_identity=_identity,
+    )
