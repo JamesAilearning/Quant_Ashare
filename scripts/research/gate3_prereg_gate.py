@@ -132,9 +132,16 @@ def _git(repo: Path, *args: str) -> str:
         )
         return raw.stdout.decode("utf-8", errors="replace").strip()
     elif sub == "ls-files":
+        # ``core.quotePath=true`` keeps unusual path bytes ESCAPED (a
+        # repo can set it false globally), and the literal ``--`` closes
+        # the option region so the caller's pathspec cannot be read as
+        # ``-z``, which would emit raw bytes (#410 r38).
         out = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
-             "-C", str(repo), "ls-files", *rest],
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "-c", "core.quotePath=true",
+             "-c", "i18n.logOutputEncoding=utf-8",
+             "-C", str(repo), "ls-files", "--", *rest],
             capture_output=True, text=True, encoding="utf-8", check=True,
         )
     else:
@@ -289,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
                        f"repository {repo_resolved} — the gated config must "
                        "be repo-tracked and git-provable.")
     cfg_rel = cfg_resolved.relative_to(repo_resolved).as_posix()
-    tracked = _git(repo, "ls-files", "--", cfg_rel)
+    tracked = _git(repo, "ls-files", cfg_rel)
     if not tracked:
         return _refuse(f"run config {cfg_rel} is not git-tracked — an "
                        "untracked config is not git-provable; commit it "

@@ -172,6 +172,17 @@ _GIT_FILTER_CAPABLE = frozenset({
 # breaks a UTF-8 parent (verified with a GBK value in .git/config). No
 # git setting re-encodes them.
 _GIT_RAW_VALUE_SUBCOMMANDS = frozenset({"config"})
+# Path-producing commands are ASCII-safe only while git QUOTES unusual
+# bytes: ``-z``/``--null`` emit paths verbatim, and ``core.quotePath=
+# false`` does the same without any option (codex P2 r38 on #410; both
+# verified against an index entry whose name carries a non-ASCII byte).
+# So these need the literal quoting pin AND no raw-output option, and
+# their option region must be fully literal — an opaque element could be
+# the ``-z``.
+_GIT_PATH_PRODUCING = frozenset({"ls-files", "ls-tree", "check-ignore"})
+_GIT_RAW_PATH_OPTS = frozenset({"-z", "--null"})
+_GIT_QUOTEPATH_KEY = "core.quotepath"
+_GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on", ""})
 _GIT_DIFF_CAPABLE = frozenset({
     "diff", "show", "log", "whatchanged", "format-patch", "rev-list",
     "blame", "annotate", "range-diff", "diff-tree", "diff-index",
@@ -616,6 +627,7 @@ def _git_output_safe(call: ast.Call) -> bool:
     pin_seen = False
     fsmonitor_off = False
     hooks_off = False
+    quotepath_on = False
     i = 1
     while i < len(argv):
         el = argv[i]
@@ -647,12 +659,16 @@ def _git_output_safe(call: ast.Call) -> bool:
                     pin_seen = False
                     fsmonitor_off = False
                     hooks_off = False
+                    quotepath_on = False
                 elif key == _GIT_FSMONITOR_KEY:
                     fsmonitor_off = (raw_value.strip().lower()
                                      in _GIT_FSMONITOR_OFF_VALUES)
                 elif key == _GIT_HOOKS_KEY:
                     hooks_off = (raw_value.strip().lower()
                                  in _GIT_HOOKS_OFF_VALUES)
+                elif key == _GIT_QUOTEPATH_KEY:
+                    quotepath_on = (raw_value.strip().lower()
+                                    in _GIT_QUOTEPATH_ON_VALUES)
             i += 2
             continue
         if el in _GIT_GLOBAL_FLAG_OPTS:
@@ -683,6 +699,14 @@ def _git_output_safe(call: ast.Call) -> bool:
             # any command that refreshes the index; the literal
             # ``-c core.fsmonitor=false`` is the one uniform cure.
             return False
+        if el in _GIT_PATH_PRODUCING:
+            if not quotepath_on:
+                return False  # unquoted paths can be any bytes
+            for later in argv[i + 1:]:
+                if later in ("--", "--end-of-options"):
+                    break  # options end; pathspecs cannot be -z
+                if later is None or later in _GIT_RAW_PATH_OPTS:
+                    return False  # raw output, or an opaque option
         known_text_free = el in _GIT_COMMIT_TEXT_FREE
         if not known_text_free and el not in _GIT_DIFF_CAPABLE:
             return False  # unknown subcommand: may be a shell alias
@@ -1674,6 +1698,30 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
+    # path-producing commands are ASCII-safe only while git QUOTES
+    # unusual bytes: -z and core.quotePath=false both emit them raw
+    # (verified against an index entry with a non-ASCII byte).
+    ("ls-files without the quoting pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "ls-files"],'
+     ' text=True, encoding="utf-8")', True),
+    ("ls-files with the quoting pin is accepted",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files"],'
+     ' text=True, encoding="utf-8")', False),
+    ("...but -z emits raw bytes anyway",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "-z"],'
+     ' text=True, encoding="utf-8")', True),
+    ("--null is the same option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-tree", "--null", "HEAD"],'
+     ' text=True, encoding="utf-8")', True),
+    ("an explicit quotePath=false is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "ls-files"],'
+     ' text=True, encoding="utf-8")', True),
+    ("an opaque option could be the -z",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("...while a pathspec past -- is harmless",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--", *args],'
+     ' text=True, encoding="utf-8")', False),
     # status runs the clean filter when stat info cannot settle a
     # comparison (reproduced: same-size edit -> filter stderr), and
     # config emits stored bytes verbatim (reproduced with a GBK value).
