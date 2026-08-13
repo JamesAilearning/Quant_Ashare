@@ -92,6 +92,116 @@ class PairedPresetPins(unittest.TestCase):
             )
         self.assertIn("mined_factor_pool_identity", str(ctx.exception))
 
+    def test_ledger_recorded_digests_match_the_files(self) -> None:
+        # 2026-08-13 (codex #422 r6): E008 recorded the plan's digest at
+        # r1, then r4/r5 EDITED the plan (arm_requirements, components)
+        # and the digest was never recomputed — a signature-grade entry
+        # whose fingerprint did not bind the file the ruler would load.
+        # An auditor hashing the committed bytes got an immediate
+        # mismatch. Pin every ledger-recorded digest of an IN-REPO file
+        # against that file's current bytes, so the drift is red rather
+        # than discovered at audit.
+        import hashlib
+        import re
+
+        ledger_path = (_PROJECT_ROOT / "docs" / "prereg"
+                       / "pv_incremental_ledger.yaml")
+        ledger = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+        # EXPLICIT bindings only. The ledger carries at least two
+        # shapes for "this path hashes to this digest" —
+        #   "<path>#sha256(...)=<hex>"                        (E008)
+        #   "plan_sha256(...:<path> | sha256sum)=<hex>"       (E007)
+        # — so a single blessed template silently skipped the second
+        # (codex #423 r1). Matching "any path and any digest in the
+        # same string" fixed that but could MIS-bind a prose artifact
+        # that merely mentions a script and a digest of something else
+        # (codex #423 r2 — its stated failure does not reproduce, the
+        # digest there is elided to 8 chars, but the fragility is
+        # real). So: recognise the binding FORMS, and fail loudly on
+        # any artifact that carries both a repo path and a full digest
+        # yet matches no form — silence is what let E007 go unchecked.
+        binding_res = (
+            # "<path>#sha256<anything-but-=>=<hex>"
+            re.compile(r"(?P<path>(?:[\w.-]+/)+[\w.-]+\.[\w]+)"
+                       r"#sha256[^=]*=(?P<digest>[0-9a-f]{64})"),
+            # "<label>_sha256(... <path> ...)=<hex>"
+            re.compile(r"_sha256\([^)]*?(?P<path>(?:[\w.-]+/)+[\w.-]+\.[\w]+)"
+                       r"[^)]*\)=(?P<digest>[0-9a-f]{64})"),
+        )
+        path_re = re.compile(r"(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.[\w]+)")
+        digest_re = re.compile(r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])")
+        # A path is out of scope only when git IGNORES it — generated
+        # artifacts under output/ record their RAW bytes and cannot be
+        # reproduced from a clean checkout at all, so the LF-canonical
+        # convention (what an auditor applies to repo files, per #421)
+        # does not apply to them. Everything else is a repository path
+        # the ledger claims to fingerprint, so a MISSING one is a
+        # failure, not a skip (codex #423): deleting or renaming such a
+        # file would otherwise drop it out of `git ls-files` and leave
+        # the signed entry pointing at nothing, silently.
+        import subprocess
+
+        def _git_ignored(rel: str) -> bool:
+            return subprocess.run(
+                ["git", "-C", str(_PROJECT_ROOT), "check-ignore", "-q", rel],
+            ).returncode == 0
+
+        checked = 0
+        for entry in ledger["entries"]:
+            for artifact in entry.get("artifacts") or []:
+                text = str(artifact)
+                bindings = [
+                    (m.group("path"), m.group("digest"))
+                    for rx in binding_res for m in rx.finditer(text)
+                ]
+                repo_bindings = [(p, d) for p, d in bindings
+                                 if not _git_ignored(p)]
+                if not repo_bindings:
+                    # Nothing bound here — but if the string carries a
+                    # repo path AND a full digest anyway, the binding
+                    # form is one this pin does not know, and skipping
+                    # is exactly the silent hole that let E007 rot.
+                    stray_paths = [p for p in path_re.findall(text)
+                                   if not _git_ignored(p)]
+                    if stray_paths and digest_re.search(text):
+                        self.fail(
+                            f"{entry['id']}: artifact mentions repo path(s) "
+                            f"{stray_paths} and a full sha256, but in no "
+                            "recognised binding form — this pin would skip "
+                            f"it silently. Use '<path>#sha256...=<hex>'. "
+                            f"({text})")
+                    continue
+                self.assertEqual(
+                    1, len(repo_bindings),
+                    f"{entry['id']}: artifact binds {len(repo_bindings)} repo "
+                    "paths; split it so each fingerprint stands alone. "
+                    f"({text})")
+                rel, digest = repo_bindings[0]
+                with self.subTest(entry=entry["id"], file=rel):
+                    path = _PROJECT_ROOT / rel
+                    self.assertTrue(
+                        path.is_file(),
+                        f"{entry['id']} records a digest for {rel}, which "
+                        "does not exist in the repository — a signed entry "
+                        "must not point at a deleted or renamed file.")
+                    # Repo-canonical bytes (LF): a Windows checkout
+                    # stores CRLF, and hashing that would record a
+                    # digest no auditor can reproduce from git.
+                    raw = path.read_bytes().replace(b"\r\n", b"\n")
+                    self.assertEqual(
+                        hashlib.sha256(raw).hexdigest(), digest,
+                        f"{entry['id']} records a stale digest for {rel} — "
+                        "the file changed after the digest was recorded; "
+                        "recompute it.")
+                    checked += 1
+        # Every in-repo fingerprint the ledger carries today. A drop
+        # here means an artifact stopped being parsed, not that the
+        # ledger shrank — the ledger is append-only.
+        self.assertGreaterEqual(
+            checked, 4,
+            "fewer in-repo ledger fingerprints were validated than the "
+            "ledger carries — the matcher stopped recognising one.")
+
     def test_both_engines_carry_the_identity_key(self) -> None:
         # AGENTS.md "Two engines, one schema": adding the stamp to
         # WalkForwardConfig alone would make walk_forward_report.json and
