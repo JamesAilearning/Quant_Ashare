@@ -128,6 +128,33 @@ class PairedPresetPins(unittest.TestCase):
         self.assertNotIn("D.list_instruments(", src)
         self.assertIn("_InstrumentAgnosticLoader(", src)
 
+    def test_plan_requires_the_arms_it_registers(self) -> None:
+        # codex #422 r4: the stamp is worthless if nothing reads it. The
+        # plan must register the handlers AND the identity prefix, so the
+        # ruler refuses a pair of plain-Alpha158 runs handed in under
+        # this variant name.
+        plan = _load(_PLAN)
+        reqs = plan["arm_requirements"]
+        self.assertEqual("Alpha158", reqs["baseline"]["feature_handler"])
+        self.assertEqual("Alpha158PlusMined",
+                         reqs["treatment"]["feature_handler"])
+        for arm in ("baseline", "treatment"):
+            self.assertEqual("post_adjusted", reqs[arm]["adjust_mode"])
+        prefix = reqs["treatment"]["mined_factor_pool_identity"]["prefix"]
+        # The registered prefix must be the one the runner actually
+        # stamps — a prefix nobody can satisfy would refuse every run,
+        # and one that is too loose would accept the wrong candidate.
+        from src.factor_mining.promotion_binding import (
+            REPRESENTATIVE_LEDGER_ENTRY,
+            ledger_representative,
+        )
+
+        reg = ledger_representative(
+            _PROJECT_ROOT / "docs" / "prereg" / "pv_incremental_ledger.yaml",
+            entry_id=REPRESENTATIVE_LEDGER_ENTRY)
+        self.assertEqual(
+            f"{reg['candidate_id']}|expr={reg['expression']}", prefix)
+
     def test_promotion_tool_anchors_authority_in_the_ledger(self) -> None:
         # The digest may not come from the same invocation that uses it.
         import scripts.research.pv_incremental_promote_representative as mod

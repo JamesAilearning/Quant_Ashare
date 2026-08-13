@@ -18,3 +18,19 @@ hypothesis: "csi800 生产模型族加入晋升代表因子 pv001（低换手，
 expected_direction: treatment_better
 baseline: alpha158-canonical-8fold
 treatments: ["alpha158-plus-pv001"]
+
+# 本注册对**两臂本身**的要求（裁尺在出 verdict 前强制；未声明则该门
+# 不存在，既有战役行为逐字不变）。没有这一段，两个 plain-Alpha158 的
+# 干净 run 也能以 --variant alpha158-plus-pv001 领到决策级判决——裁尺
+# 原本只查祖先链、ST 一致性与调用者自报的变体名（codex #422 r4）。
+arm_requirements:
+  baseline:
+    feature_handler: Alpha158
+    adjust_mode: post_adjusted
+  treatment:
+    feature_handler: Alpha158PlusMined
+    adjust_mode: post_adjusted
+    # runner 从晋升 bundle 的 provenance 盖的戳，前缀即预注册代表；
+    # 其后还串着池/表达式/verdict/台账/PIT 输入的摘要。
+    mined_factor_pool_identity:
+      prefix: "pv001_2789e60e|expr=cs_demean(abs($turnover_rate))"

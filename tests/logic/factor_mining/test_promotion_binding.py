@@ -159,10 +159,34 @@ def test_bundle_whose_pool_changed_after_promotion_refuses(tmp_path):
         verify_promoted_bundle(d, ledger, entry_id="E007")
 
 
-def test_verified_bundle_yields_a_stampable_identity(tmp_path):
+def _with_inputs(identity, tmp_path):
+    """Merge the PIT-input identity, as the runner does."""
+    from src.factor_mining.promotion_binding import mined_input_identity
+
+    registry = tmp_path / "registry.parquet"
+    registry.write_bytes(b"registry-bytes")
+    identity.update(mined_input_identity(
+        pit_provider_uri="D:/qlib_data/bundle",
+        delisted_registry_path=str(registry)))
+    return identity
+
+
+def test_stamp_refuses_when_the_pit_inputs_were_not_merged(tmp_path):
+    # codex #422 r4: the PIT inputs decide the feature values. A stamp
+    # missing them would still satisfy the gate's prefix check while the
+    # data vintage went unrecorded, so building one must refuse.
     d = _bundle(tmp_path, verdict_sha="a" * 64)
     ledger = _fake_ledger(tmp_path, "a" * 64)
     identity = verify_promoted_bundle(d, ledger, entry_id="E007")
+    with pytest.raises(PromotionBindingError, match="pit_provider_uri"):
+        pool_identity_string(identity)
+
+
+def test_verified_bundle_yields_a_stampable_identity(tmp_path):
+    d = _bundle(tmp_path, verdict_sha="a" * 64)
+    ledger = _fake_ledger(tmp_path, "a" * 64)
+    identity = _with_inputs(
+        verify_promoted_bundle(d, ledger, entry_id="E007"), tmp_path)
     text = pool_identity_string(identity)
     assert "pv001_2789e60e" in text
     assert "cs_demean(abs($turnover_rate))" in text
@@ -216,7 +240,9 @@ def test_another_survivor_cannot_bind_as_the_registered_variant(tmp_path):
 def test_identity_string_carries_both_digests(tmp_path):
     d = _bundle(tmp_path, verdict_sha="a" * 64)
     ledger = _fake_ledger(tmp_path, "a" * 64)
-    text = pool_identity_string(
-        verify_promoted_bundle(d, ledger, entry_id="E007"))
+    text = pool_identity_string(_with_inputs(
+        verify_promoted_bundle(d, ledger, entry_id="E007"), tmp_path))
     assert "expressions_sha256=" in text
     assert "E007+E008" in text
+    assert "registry_sha256=" in text
+    assert "|pit=" in text

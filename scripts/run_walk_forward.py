@@ -394,6 +394,7 @@ def main(argv: list[str] | None = None) -> None:
 
         from src.factor_mining.promotion_binding import (
             PROMOTION_LEDGER_ENTRY,
+            mined_input_identity,
             pool_identity_string,
             verify_promoted_bundle,
         )
@@ -402,6 +403,15 @@ def main(argv: list[str] | None = None) -> None:
             PROJECT_ROOT / "docs" / "prereg" / "pv_incremental_ledger.yaml",
             entry_id=PROMOTION_LEDGER_ENTRY,
         )
+        # The mined PIT inputs decide the feature VALUES but are filtered
+        # out of the serialised config, and a differing mined vintage is
+        # only WARNED about — so they belong in the stamp too, or a data
+        # change could be attributed to the factor (codex #422 r4).
+        identity.update(mined_input_identity(
+            pit_provider_uri=mined_factor_bundle.pit_provider_uri,
+            delisted_registry_path=(
+                mined_factor_bundle.delisted_registry_path),
+        ))
         wf_config = dataclasses.replace(
             wf_config,
             mined_factor_pool_identity=pool_identity_string(identity),

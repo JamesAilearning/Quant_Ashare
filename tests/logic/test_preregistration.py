@@ -550,3 +550,97 @@ class GateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_ARM_PLAN_YAML = """\
+hypothesis: "treatment adds the registered factor"
+expected_direction: treatment_better
+baseline: base
+treatments: ["v1"]
+arm_requirements:
+  baseline:
+    feature_handler: Alpha158
+  treatment:
+    feature_handler: Alpha158PlusMined
+    mined_factor_pool_identity:
+      prefix: "pv001_"
+"""
+
+
+class ArmRequirementTests(unittest.TestCase):
+    """codex #422 r4: the gate checked ancestry, ST parity and the
+    caller-supplied variant string — nothing about the ARMS. A clean
+    pair of plain-Alpha158 runs could therefore collect a decision-grade
+    verdict under a variant name claiming an added factor."""
+
+    def _fixture(self, plan_yaml: str):
+        repo = _init_repo(Path(self._td.name) / "r")
+        plan_path = _write_plan(repo, plan_yaml)
+        plan_commit = _commit_all(repo, "register plan")
+        return repo, load_plan(plan_path), plan_commit
+
+    def setUp(self) -> None:
+        self._td = TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+
+    def _reports(self, commit: str, *, treatment_cfg=None):
+        # ST-off on both sides: this class exercises the ARM checks, and
+        # ST parity has its own tests. (ST-on would demand per-fold
+        # provenance the fixture does not carry.)
+        base = _report(commit, st_mask_mode="off_experiment",
+                       namechange_path=None)
+        treat = _report(commit, st_mask_mode="off_experiment",
+                        namechange_path=None)
+        cfg = dict(treat["config"])  # type: ignore[arg-type]
+        cfg.update(treatment_cfg or {})
+        treat["config"] = cfg
+        return base, treat
+
+    def test_absent_block_leaves_the_gate_unchanged(self) -> None:
+        _repo, plan, commit = self._fixture(_PLAN_YAML)
+        self.assertEqual({}, dict(plan.arm_requirements))
+        base, treat = self._reports(commit)
+        self.assertEqual([], gate_comparison(
+            plan, baseline_report=base, treatment_report=treat, variant="5d"))
+
+    def test_missing_registered_handler_refuses(self) -> None:
+        _repo, plan, commit = self._fixture(_ARM_PLAN_YAML)
+        base, treat = self._reports(commit)  # treatment has no handler key
+        with self.assertRaises(PreregistrationError) as cm:
+            gate_comparison(plan, baseline_report=base,
+                            treatment_report=treat, variant="v1")
+        self.assertIn("feature_handler", str(cm.exception))
+
+    def test_empty_identity_stamp_refuses(self) -> None:
+        _repo, plan, commit = self._fixture(_ARM_PLAN_YAML)
+        base, treat = self._reports(commit, treatment_cfg={
+            "feature_handler": "Alpha158PlusMined"})
+        base["config"]["feature_handler"] = "Alpha158"  # type: ignore[index]
+        with self.assertRaises(PreregistrationError) as cm:
+            gate_comparison(plan, baseline_report=base,
+                            treatment_report=treat, variant="v1")
+        self.assertIn("does not start with", str(cm.exception))
+
+    def test_fully_conforming_arms_pass(self) -> None:
+        _repo, plan, commit = self._fixture(_ARM_PLAN_YAML)
+        base, treat = self._reports(commit, treatment_cfg={
+            "feature_handler": "Alpha158PlusMined",
+            "mined_factor_pool_identity": "pv001_2789e60e|expr=x|pool_sha256=y",
+        })
+        base["config"]["feature_handler"] = "Alpha158"  # type: ignore[index]
+        self.assertEqual([], gate_comparison(
+            plan, baseline_report=base, treatment_report=treat, variant="v1"))
+
+    def test_malformed_requirement_refuses_at_load(self) -> None:
+        bad = _ARM_PLAN_YAML.replace(
+            '    mined_factor_pool_identity:\n      prefix: "pv001_"\n',
+            "    mined_factor_pool_identity:\n      bogus: 1\n")
+        with self.assertRaises(PreregistrationError) as cm:
+            self._fixture(bad)
+        self.assertIn("prefix", str(cm.exception))
+
+    def test_unknown_arm_label_refuses_at_load(self) -> None:
+        bad = _ARM_PLAN_YAML.replace("  baseline:\n", "  control:\n")
+        with self.assertRaises(PreregistrationError) as cm:
+            self._fixture(bad)
+        self.assertIn("unknown arm", str(cm.exception))

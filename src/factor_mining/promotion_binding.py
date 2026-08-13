@@ -240,6 +240,34 @@ def verify_promoted_bundle(
     }
 
 
+def mined_input_identity(
+    *, pit_provider_uri: str, delisted_registry_path: str,
+) -> dict[str, str]:
+    """Identity of the PIT inputs the mined features are built from.
+
+    These determine the materialised treatment feature VALUES, yet they
+    live in ``mined_factor_*`` YAML keys that are filtered out before
+    the walk-forward config is serialised — and the runner explicitly
+    tolerates a mined PIT vintage differing from the run's own with
+    nothing but a warning. Unstamped, a treatment arm could be built on
+    another data vintage while reporting an identical promotion
+    identity, and the paired verdict would attribute a data-input
+    change to the factor (codex #422 r4).
+
+    The registry file is digested when reachable (its CONTENT decides
+    which tickers are excluded); the bundle URI is recorded as its
+    resolved path — bundles are directories, and the walk-forward
+    report already carries the run's own provider identity.
+    """
+    registry = Path(delisted_registry_path)
+    registry_sha = _sha256_file(registry) if registry.is_file() else "unreadable"
+    return {
+        "pit_provider_uri": str(Path(pit_provider_uri)),
+        "delisted_registry_path": str(registry),
+        "delisted_registry_sha256": registry_sha,
+    }
+
+
 def pool_identity_string(identity: dict[str, str]) -> str:
     """Compact, greppable identity for the walk-forward run report.
 
@@ -248,6 +276,21 @@ def pool_identity_string(identity: dict[str, str]) -> str:
     "Alpha158PlusMined"`` and a decision-grade verdict could be issued
     for an unprovable input (codex #422 r2).
     """
+    missing = sorted(
+        k for k in ("candidate_id", "expression", "pool_sha256",
+                    "expressions_sha256", "fwer_verdict_sha256",
+                    "ledger_entry", "representative_ledger_entry",
+                    "pit_provider_uri", "delisted_registry_sha256")
+        if not identity.get(k))
+    if missing:
+        # A stamp that silently omits a field is worse than no stamp:
+        # the gate's prefix check would still pass while the run's data
+        # inputs went unrecorded. Callers must merge
+        # ``mined_input_identity`` in before stamping.
+        raise PromotionBindingError(
+            f"cannot build the run identity stamp — missing {missing}; "
+            "merge mined_input_identity() into the verified identity "
+            "before stamping.")
     return (
         f"{identity['candidate_id']}"
         f"|expr={identity['expression']}"
@@ -256,4 +299,6 @@ def pool_identity_string(identity: dict[str, str]) -> str:
         f"|verdict_sha256={identity['fwer_verdict_sha256']}"
         f"|ledger={identity['ledger_entry']}"
         f"+{identity['representative_ledger_entry']}"
+        f"|pit={identity['pit_provider_uri']}"
+        f"|registry_sha256={identity['delisted_registry_sha256']}"
     )
