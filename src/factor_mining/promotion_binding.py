@@ -33,6 +33,12 @@ PROMOTION_PROVENANCE_FILENAME = "promotion_provenance.json"
 # The ledger entry whose recorded verdict authorises the promotion the
 # paired treatment arm binds. One name, imported by both consumers.
 PROMOTION_LEDGER_ENTRY = "E007"
+# The ledger entry that PRE-REGISTERS which survivor the paired
+# comparison binds. E007 says who MAY be promoted (50 survivors); this
+# says who WAS registered as the treatment variant — the ruler judges
+# the plan's single variant name, so binding any other survivor would
+# earn a decision-grade verdict under someone else's identity.
+REPRESENTATIVE_LEDGER_ENTRY = "E008"
 _VERDICT_ARTIFACT_RE = re.compile(
     r"fwer_verdict\.json#sha256=([0-9a-f]{64})")
 
@@ -74,6 +80,32 @@ def ledger_verdict_sha256(ledger_path: Path, *, entry_id: str) -> str:
             "adjudication this promotion claims cannot be identified; "
             "refusing.")
     return digests.pop()
+
+
+def ledger_representative(
+    ledger_path: Path, *, entry_id: str = REPRESENTATIVE_LEDGER_ENTRY,
+) -> dict[str, str]:
+    """The candidate id + expression the ledger pre-registered."""
+    if not ledger_path.is_file():
+        raise PromotionBindingError(
+            f"campaign ledger not found: {ledger_path}; refusing.")
+    ledger = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
+    entries = (ledger or {}).get("entries") or []
+    matches = [e for e in entries
+               if isinstance(e, dict) and e.get("id") == entry_id]
+    if len(matches) != 1:
+        raise PromotionBindingError(
+            f"ledger {ledger_path} carries {len(matches)} entries with id "
+            f"{entry_id!r} (expected exactly 1); refusing.")
+    numbers = matches[0].get("numbers") or {}
+    candidate_id = str(numbers.get("representative") or "")
+    expression = str(numbers.get("representative_expression") or "")
+    if not candidate_id or not expression:
+        raise PromotionBindingError(
+            f"ledger entry {entry_id} records no representative / "
+            "representative_expression — the registered treatment cannot be "
+            "identified, so no bundle can be shown to BE it; refusing.")
+    return {"candidate_id": candidate_id, "expression": expression}
 
 
 def verify_verdict_against_ledger(
@@ -127,13 +159,16 @@ def load_promotion_provenance(pool_dir: Path) -> dict[str, Any]:
 
 def verify_promoted_bundle(
     pool_dir: Path, ledger_path: Path, *, entry_id: str,
+    representative_entry_id: str = REPRESENTATIVE_LEDGER_ENTRY,
 ) -> dict[str, str]:
-    """Verify a bound pool IS the ledger-authorised promotion.
+    """Verify a bound pool IS the ledger-authorised, PRE-REGISTERED one.
 
     Checks, in order: the sidecar exists; the verdict it claims is the
-    one the ledger records; the pool bytes on disk are the ones the
-    sidecar was written for. Returns the identity fields worth stamping
-    into run provenance so adjudication can fail closed on them.
+    one the ledger records; BOTH pool artifacts on disk are the bytes
+    the sidecar was written for; and the candidate it carries is the
+    representative the ledger pre-registered as the treatment variant.
+    Returns the identity fields worth stamping into run provenance so
+    adjudication can fail closed on them.
     """
     pool_dir = Path(pool_dir)
     prov = load_promotion_provenance(pool_dir)
@@ -145,16 +180,32 @@ def verify_promoted_bundle(
             f"{claimed_verdict or '<none>'} but ledger entry {entry_id} "
             f"records {recorded} — binding it would let an unadjudicated "
             "pool be reported as the registered variant; refusing.")
-    parquet = pool_dir / "factor_pool.parquet"
-    if not parquet.is_file():
-        raise PromotionBindingError(
-            f"{parquet} not found — the bundle is incomplete; refusing.")
-    actual_pool = _sha256_file(parquet)
-    claimed_pool = str(prov.get("promoted_pool_sha256") or "")
-    if claimed_pool and actual_pool != claimed_pool:
-        raise PromotionBindingError(
-            f"{parquet} digests to {actual_pool} but its provenance records "
-            f"{claimed_pool} — the pool changed after promotion; refusing.")
+    # BOTH artifacts, not just the parquet (codex #422 r3): FactorPool
+    # takes its EXECUTABLE ast from factor_expressions.json and does not
+    # cross-check it against the persisted (randomised) expr_hash, so a
+    # swapped JSON alone would evaluate a different expression while the
+    # parquet digest and the stamped provenance still looked right.
+    digests: dict[str, str] = {}
+    for filename, claimed_key in (
+            ("factor_pool.parquet", "promoted_pool_sha256"),
+            ("factor_expressions.json", "promoted_expressions_sha256")):
+        path = pool_dir / filename
+        if not path.is_file():
+            raise PromotionBindingError(
+                f"{path} not found — the bundle is incomplete; refusing.")
+        actual = _sha256_file(path)
+        claimed = str(prov.get(claimed_key) or "")
+        if not claimed:
+            raise PromotionBindingError(
+                f"{pool_dir / PROMOTION_PROVENANCE_FILENAME} records no "
+                f"{claimed_key} — {filename} cannot be shown to be the "
+                "promoted bytes; re-run the promotion tool; refusing.")
+        if actual != claimed:
+            raise PromotionBindingError(
+                f"{path} digests to {actual} but its provenance records "
+                f"{claimed} — the bundle changed after promotion; refusing.")
+        digests[filename] = actual
+    actual_pool = digests["factor_pool.parquet"]
     candidate_id = str(prov.get("candidate_id") or "")
     expression = str(prov.get("expression") or "")
     if not candidate_id or not expression:
@@ -162,12 +213,30 @@ def verify_promoted_bundle(
             f"{pool_dir / PROMOTION_PROVENANCE_FILENAME} records no "
             "candidate_id/expression — the bound factor cannot be named in "
             "run provenance; refusing.")
+    # E007 says who MAY be promoted (any of 50 survivors); the
+    # pre-registration says who WAS registered as this comparison's
+    # treatment. The ruler judges the plan's single variant name, so a
+    # different survivor would collect a decision-grade verdict under
+    # another candidate's registered identity (codex #422 r3).
+    registered = ledger_representative(
+        ledger_path, entry_id=representative_entry_id)
+    if (candidate_id, expression) != (registered["candidate_id"],
+                                      registered["expression"]):
+        raise PromotionBindingError(
+            f"the bundle at {pool_dir} carries {candidate_id} "
+            f"({expression!r}) but ledger entry {representative_entry_id} "
+            f"pre-registered {registered['candidate_id']} "
+            f"({registered['expression']!r}) as the treatment variant — "
+            "binding it would earn a decision-grade verdict under another "
+            "candidate's registered name; refusing.")
     return {
         "candidate_id": candidate_id,
         "expression": expression,
         "pool_sha256": actual_pool,
+        "expressions_sha256": digests["factor_expressions.json"],
         "fwer_verdict_sha256": recorded,
         "ledger_entry": entry_id,
+        "representative_ledger_entry": representative_entry_id,
     }
 
 
@@ -183,6 +252,8 @@ def pool_identity_string(identity: dict[str, str]) -> str:
         f"{identity['candidate_id']}"
         f"|expr={identity['expression']}"
         f"|pool_sha256={identity['pool_sha256']}"
+        f"|expressions_sha256={identity['expressions_sha256']}"
         f"|verdict_sha256={identity['fwer_verdict_sha256']}"
         f"|ledger={identity['ledger_entry']}"
+        f"+{identity['representative_ledger_entry']}"
     )

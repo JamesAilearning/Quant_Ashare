@@ -228,7 +228,8 @@ def locate_pool_entry(run_dir: Path, expression: str) -> Any:
 def build_provenance(*, plan: dict[str, Any], run_dir: Path,
                      verdict: dict[str, Any], verdict_path: Path,
                      selection: dict[str, Any], entry: Any,
-                     pool_sha256: str) -> dict[str, Any]:
+                     pool_sha256: str,
+                     expressions_sha256: str) -> dict[str, Any]:
     """Everything an auditor needs to rebuild this bundle's authority."""
     gp_inputs: dict[str, str] = {}
     for name in ("factor_pool.parquet", "factor_expressions.json"):
@@ -257,7 +258,11 @@ def build_provenance(*, plan: dict[str, Any], run_dir: Path,
         "gp_config_sha256": (
             _sha256_file(cfg_path) if cfg_path.is_file() else None),
         "gp_input_sha256": gp_inputs,
+        # BOTH promoted artifacts: FactorPool reads the executable AST
+        # from the JSON, so a parquet-only digest leaves the expression
+        # that actually runs unbound (codex #422 r3).
         "promoted_pool_sha256": pool_sha256,
+        "promoted_expressions_sha256": expressions_sha256,
         "plan_windows": plan["windows"],
     }
 
@@ -309,10 +314,11 @@ def main(argv: list[str] | None = None) -> int:
         bundle.add(entry)
         bundle.save(out_dir)
         pool_sha = _sha256_file(out_dir / "factor_pool.parquet")
+        expressions_sha = _sha256_file(out_dir / "factor_expressions.json")
         provenance = build_provenance(
             plan=plan, run_dir=run_dir, verdict=verdict,
             verdict_path=verdict_path, selection=selection, entry=entry,
-            pool_sha256=pool_sha)
+            pool_sha256=pool_sha, expressions_sha256=expressions_sha)
         (out_dir / "promotion_provenance.json").write_text(
             json.dumps(provenance, indent=2, ensure_ascii=False) + chr(10),
             encoding="utf-8", newline="")

@@ -20,7 +20,9 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.factor_mining.promotion_binding import (  # noqa: E402
     PROMOTION_LEDGER_ENTRY,
+    REPRESENTATIVE_LEDGER_ENTRY,
     PromotionBindingError,
+    ledger_representative,
     ledger_verdict_sha256,
     pool_identity_string,
     verify_promoted_bundle,
@@ -34,15 +36,29 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _fake_ledger(tmp_path: Path, digest: str, *, entry_id: str = "E007") -> Path:
+_REGISTERED_ID = "pv001_2789e60e"
+_REGISTERED_EXPR = "cs_demean(abs($turnover_rate))"
+
+
+def _fake_ledger(tmp_path: Path, digest: str, *, entry_id: str = "E007",
+                 representative: str = _REGISTERED_ID,
+                 expression: str = _REGISTERED_EXPR) -> Path:
     p = tmp_path / "ledger.yaml"
     p.write_text(yaml.safe_dump({
         "protocol_id": "pv_incremental_v1",
-        "entries": [{
-            "id": entry_id, "when": "2026-08-12", "kind": "result",
-            "what": "x",
-            "artifacts": [f"output/x/fwer_verdict.json#sha256={digest}"],
-        }],
+        "entries": [
+            {
+                "id": entry_id, "when": "2026-08-12", "kind": "result",
+                "what": "x",
+                "artifacts": [f"output/x/fwer_verdict.json#sha256={digest}"],
+            },
+            {
+                "id": "E008", "when": "2026-08-12", "kind": "intent",
+                "what": "y",
+                "numbers": {"representative": representative,
+                            "representative_expression": expression},
+            },
+        ],
     }), encoding="utf-8")
     return p
 
@@ -55,16 +71,22 @@ def _verdict_file(tmp_path: Path, payload=None) -> Path:
 
 
 def _bundle(tmp_path: Path, *, verdict_sha: str, pool_sha: str | None = None,
-            candidate_id: str = "pv001_2789e60e") -> Path:
+            expressions_sha: str | None = None,
+            candidate_id: str = _REGISTERED_ID,
+            expression: str = _REGISTERED_EXPR) -> Path:
     d = tmp_path / "bundle"
     d.mkdir()
     (d / "factor_pool.parquet").write_bytes(b"pool-bytes")
-    actual = hashlib.sha256(b"pool-bytes").hexdigest()
+    (d / "factor_expressions.json").write_bytes(b"expr-bytes")
+    actual_pool = hashlib.sha256(b"pool-bytes").hexdigest()
+    actual_expr = hashlib.sha256(b"expr-bytes").hexdigest()
     (d / "promotion_provenance.json").write_text(json.dumps({
         "candidate_id": candidate_id,
-        "expression": "cs_demean(abs($turnover_rate))",
+        "expression": expression,
         "fwer_verdict_sha256": verdict_sha,
-        "promoted_pool_sha256": pool_sha if pool_sha is not None else actual,
+        "promoted_pool_sha256": pool_sha if pool_sha is not None else actual_pool,
+        "promoted_expressions_sha256": (
+            expressions_sha if expressions_sha is not None else actual_expr),
     }), encoding="utf-8")
     return d
 
@@ -146,3 +168,55 @@ def test_verified_bundle_yields_a_stampable_identity(tmp_path):
     assert "cs_demean(abs($turnover_rate))" in text
     assert identity["pool_sha256"] in text
     assert "a" * 64 in text
+
+
+# --- r3: both artifacts, and the PRE-REGISTERED representative ------------
+
+
+def test_real_ledger_pre_registers_the_representative():
+    reg = ledger_representative(_LEDGER, entry_id=REPRESENTATIVE_LEDGER_ENTRY)
+    assert reg["candidate_id"]
+    assert reg["expression"]
+
+
+def test_swapped_expressions_json_refuses(tmp_path):
+    # codex #422 r3: FactorPool takes its EXECUTABLE ast from the JSON
+    # and never cross-checks it against the parquet's randomised
+    # expr_hash, so hashing the parquet alone leaves the expression that
+    # actually runs unbound.
+    d = _bundle(tmp_path, verdict_sha="a" * 64)
+    ledger = _fake_ledger(tmp_path, "a" * 64)
+    (d / "factor_expressions.json").write_bytes(b"swapped-bytes")
+    with pytest.raises(PromotionBindingError, match="changed after promotion"):
+        verify_promoted_bundle(d, ledger, entry_id="E007")
+
+
+def test_bundle_without_expressions_digest_refuses(tmp_path):
+    d = _bundle(tmp_path, verdict_sha="a" * 64)
+    prov = json.loads((d / "promotion_provenance.json").read_text(encoding="utf-8"))
+    del prov["promoted_expressions_sha256"]
+    (d / "promotion_provenance.json").write_text(json.dumps(prov), encoding="utf-8")
+    ledger = _fake_ledger(tmp_path, "a" * 64)
+    with pytest.raises(PromotionBindingError,
+                       match="promoted_expressions_sha256"):
+        verify_promoted_bundle(d, ledger, entry_id="E007")
+
+
+def test_another_survivor_cannot_bind_as_the_registered_variant(tmp_path):
+    # A pv002 bundle is a legitimate promotion (E007 lists 50 survivors)
+    # but it is NOT the registered treatment — binding it would earn a
+    # decision-grade "alpha158-plus-pv001" verdict.
+    d = _bundle(tmp_path, verdict_sha="a" * 64,
+                candidate_id="pv002_7bb41ced", expression="cs_rank($volume)")
+    ledger = _fake_ledger(tmp_path, "a" * 64)
+    with pytest.raises(PromotionBindingError, match="pre-registered"):
+        verify_promoted_bundle(d, ledger, entry_id="E007")
+
+
+def test_identity_string_carries_both_digests(tmp_path):
+    d = _bundle(tmp_path, verdict_sha="a" * 64)
+    ledger = _fake_ledger(tmp_path, "a" * 64)
+    text = pool_identity_string(
+        verify_promoted_bundle(d, ledger, entry_id="E007"))
+    assert "expressions_sha256=" in text
+    assert "E007+E008" in text

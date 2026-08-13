@@ -92,20 +92,41 @@ class PairedPresetPins(unittest.TestCase):
             )
         self.assertIn("mined_factor_pool_identity", str(ctx.exception))
 
-    def test_combined_handler_resolves_the_universe_before_loading(self) -> None:
-        # codex #422 r2: DataHandler.setup_data forwards the universe
-        # NAME to every nested loader, and StaticDataLoader reads a
-        # string as a literal ticker filter — it raises KeyError, which
-        # NestedDataLoader swallows and retries with instruments=None.
-        # Measured behaviour: no crash, but every instrument gets
-        # materialised on the mined side and the left join quietly
-        # discards them. Correct by accident, on a third-party exception
-        # path. The handler must resolve the universe up front instead.
+    def test_ledger_pre_registers_the_bound_representative(self) -> None:
+        # codex #422 r3: E007 lists 50 eligible survivors; the paired
+        # comparison registers ONE. Without a machine-readable
+        # registration, a pv002 bundle would bind fine and collect a
+        # decision-grade "alpha158-plus-pv001" verdict.
+        from src.factor_mining.promotion_binding import (
+            REPRESENTATIVE_LEDGER_ENTRY,
+            ledger_representative,
+        )
+
+        ledger = (_PROJECT_ROOT / "docs" / "prereg"
+                  / "pv_incremental_ledger.yaml")
+        reg = ledger_representative(
+            ledger, entry_id=REPRESENTATIVE_LEDGER_ENTRY)
+        self.assertTrue(reg["candidate_id"].startswith("pv"))
+        self.assertTrue(reg["expression"])
+        # And the plan's single variant names that same representative.
+        plan = _load(_PLAN)
+        variant = plan["treatments"][0]
+        self.assertIn(reg["candidate_id"].split("_")[0], variant)
+
+    def test_combined_handler_keeps_the_dynamic_universe(self) -> None:
+        # codex #422 r3, and a regression I introduced in r2: resolving
+        # the universe to a flat ticker list and handing THAT to
+        # Alpha158 loads former/future constituents outside their
+        # membership periods, so the treatment arm's row set would be
+        # wider than the baseline's — the pair would differ in universe
+        # rows as well as features. Only the static mined loader (which
+        # cannot read a universe name) is special-cased.
         from src.data import mined_factor_handler as mod
 
         src = inspect.getsource(mod._make_alpha158_plus_mined_qlib_handler)
-        self.assertIn("D.list_instruments(", src)
-        self.assertIn("instruments=instruments", src)
+        self.assertIn("instruments=config.instruments", src)
+        self.assertNotIn("D.list_instruments(", src)
+        self.assertIn("_InstrumentAgnosticLoader(", src)
 
     def test_promotion_tool_anchors_authority_in_the_ledger(self) -> None:
         # The digest may not come from the same invocation that uses it.

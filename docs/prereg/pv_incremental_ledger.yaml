@@ -273,6 +273,10 @@ entries:
       - "晋升 bundle 由 scripts/research/pv_incremental_promote_representative.py 生成（--expect-verdict-sha256 绑 E007 的 195c21bc…）;其 promotion_provenance.json 与 pool sha 随 E009 照录"
     numbers:
       representative: pv001_2789e60e
+      # 机器消费字段（promotion_binding.ledger_representative）：绑定校验
+      # 用它把 treatment 臂钉死为本条目预注册的这一个候选——E007 说"谁
+      # 有资格"（50 个幸存者），本条目说"注册的是谁"。
+      representative_expression: "cs_demean(abs($turnover_rate))"
       family_treated_as: 1
       decision_window: "2023-01-01..2024-12-31"
       expected_folds: 8

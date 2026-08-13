@@ -447,8 +447,8 @@ def _make_alpha158_plus_mined_qlib_handler(
       baseline arm does not carry cannot enter through the mined side.
     """
     from qlib.contrib.data.handler import Alpha158  # noqa: PLC0415
-    from qlib.data import D  # noqa: PLC0415
     from qlib.data.dataset.loader import (  # noqa: PLC0415
+        DataLoader,
         NestedDataLoader,
         StaticDataLoader,
     )
@@ -457,26 +457,46 @@ def _make_alpha158_plus_mined_qlib_handler(
         alpha158_label_expression,
     )
 
-    # Resolve a universe NAME to concrete tickers first, exactly as
-    # ``_make_qlib_handler`` does. ``DataHandler.setup_data`` forwards
-    # ``self.instruments`` to every nested loader, and StaticDataLoader
-    # reads a string as a literal ticker filter: it raises KeyError,
-    # which NestedDataLoader SWALLOWS and retries with instruments=None
-    # (codex #422 r2). The run would not crash — it would silently
-    # materialise every instrument in the mined frame and lean on the
-    # left join to discard them. Correct by accident, on a third-party
-    # exception path, at full panel cost. Resolve up front instead.
-    instruments = config.instruments
-    if isinstance(instruments, str):
-        instruments = D.list_instruments(
-            D.instruments(instruments),
-            start_time=config.train_start,
-            end_time=config.test_end,
-            as_list=True,
-        )
+    class _InstrumentAgnosticLoader(DataLoader):  # type: ignore[misc] # noqa: PLC0415
+        """Serve the mined frame whole; let the join select the rows.
+
+        ``DataHandler.setup_data`` forwards ``self.instruments`` — the
+        dynamic universe NAME — to every nested loader, and
+        ``StaticDataLoader`` reads a string as a literal ticker filter:
+        it raises ``KeyError``, which ``NestedDataLoader`` swallows
+        before retrying with ``instruments=None``. Relying on a
+        third-party exception path for correct behaviour is not a
+        design, so the delegation is made explicit here.
+
+        Row selection is NOT lost by ignoring the argument: the outer
+        join is ``how="left"`` onto Alpha158's index, which is what
+        carries point-in-time membership. Whatever the mined frame
+        holds outside that index is dropped by the join.
+        """
+
+        def __init__(self, inner: Any) -> None:
+            super().__init__()
+            self._inner = inner
+
+        def load(
+            self,
+            instruments: Any = None,
+            start_time: Any = None,
+            end_time: Any = None,
+        ) -> pd.DataFrame:
+            return self._inner.load(
+                instruments=None, start_time=start_time, end_time=end_time)
 
     handler = Alpha158(
-        instruments=instruments,
+        # The DYNAMIC universe spec, exactly as the baseline arm passes
+        # it. Flattening ``csi800`` to a ticker list here (r2's first
+        # attempt) loads former and future constituents outside their
+        # membership periods, so the treatment arm's index would be
+        # wider than the baseline's and the pair would differ in
+        # universe rows as well as features (codex #422 r3). Only the
+        # static mined loader — which cannot read a universe name —
+        # gets special handling, below.
+        instruments=config.instruments,
         start_time=config.train_start,
         end_time=config.test_end,
         fit_start_time=config.train_start,
@@ -493,7 +513,8 @@ def _make_alpha158_plus_mined_qlib_handler(
     handler.data_loader = NestedDataLoader(
         dataloader_l=[
             handler.data_loader,
-            StaticDataLoader(config={"feature": mined_features}),
+            _InstrumentAgnosticLoader(
+                StaticDataLoader(config={"feature": mined_features})),
         ],
         join="left",
     )
