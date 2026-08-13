@@ -107,14 +107,27 @@ class PairedPresetPins(unittest.TestCase):
         ledger_path = (_PROJECT_ROOT / "docs" / "prereg"
                        / "pv_incremental_ledger.yaml")
         ledger = yaml.safe_load(ledger_path.read_text(encoding="utf-8"))
-        # Match a repo PATH and a digest ANYWHERE in the same artifact
-        # string, not one blessed template (codex #423): the ledger
-        # carries at least two shapes —
+        # EXPLICIT bindings only. The ledger carries at least two
+        # shapes for "this path hashes to this digest" —
         #   "<path>#sha256(...)=<hex>"                        (E008)
         #   "plan_sha256(...:<path> | sha256sum)=<hex>"       (E007)
-        # — and a template-shaped matcher silently skipped the second,
-        # leaving that tracked plan's fingerprint unchecked while the
-        # test still reported success.
+        # — so a single blessed template silently skipped the second
+        # (codex #423 r1). Matching "any path and any digest in the
+        # same string" fixed that but could MIS-bind a prose artifact
+        # that merely mentions a script and a digest of something else
+        # (codex #423 r2 — its stated failure does not reproduce, the
+        # digest there is elided to 8 chars, but the fragility is
+        # real). So: recognise the binding FORMS, and fail loudly on
+        # any artifact that carries both a repo path and a full digest
+        # yet matches no form — silence is what let E007 go unchecked.
+        binding_res = (
+            # "<path>#sha256<anything-but-=>=<hex>"
+            re.compile(r"(?P<path>(?:[\w.-]+/)+[\w.-]+\.[\w]+)"
+                       r"#sha256[^=]*=(?P<digest>[0-9a-f]{64})"),
+            # "<label>_sha256(... <path> ...)=<hex>"
+            re.compile(r"_sha256\([^)]*?(?P<path>(?:[\w.-]+/)+[\w.-]+\.[\w]+)"
+                       r"[^)]*\)=(?P<digest>[0-9a-f]{64})"),
+        )
         path_re = re.compile(r"(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.[\w]+)")
         digest_re = re.compile(r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])")
         # A path is out of scope only when git IGNORES it — generated
@@ -137,19 +150,33 @@ class PairedPresetPins(unittest.TestCase):
         for entry in ledger["entries"]:
             for artifact in entry.get("artifacts") or []:
                 text = str(artifact)
-                digests = digest_re.findall(text)
-                if not digests:
+                bindings = [
+                    (m.group("path"), m.group("digest"))
+                    for rx in binding_res for m in rx.finditer(text)
+                ]
+                repo_bindings = [(p, d) for p, d in bindings
+                                 if not _git_ignored(p)]
+                if not repo_bindings:
+                    # Nothing bound here — but if the string carries a
+                    # repo path AND a full digest anyway, the binding
+                    # form is one this pin does not know, and skipping
+                    # is exactly the silent hole that let E007 rot.
+                    stray_paths = [p for p in path_re.findall(text)
+                                   if not _git_ignored(p)]
+                    if stray_paths and digest_re.search(text):
+                        self.fail(
+                            f"{entry['id']}: artifact mentions repo path(s) "
+                            f"{stray_paths} and a full sha256, but in no "
+                            "recognised binding form — this pin would skip "
+                            f"it silently. Use '<path>#sha256...=<hex>'. "
+                            f"({text})")
                     continue
-                paths = [p for p in path_re.findall(text)
-                         if not _git_ignored(p)]
-                if not paths:
-                    continue  # digest of a generated artifact only
                 self.assertEqual(
-                    1, len(paths) * len(digests),
-                    f"{entry['id']}: artifact names {len(paths)} repo paths "
-                    f"and {len(digests)} digests — this pin cannot tell "
-                    f"which binds which; split the artifact string. ({text})")
-                rel, digest = paths[0], digests[0]
+                    1, len(repo_bindings),
+                    f"{entry['id']}: artifact binds {len(repo_bindings)} repo "
+                    "paths; split it so each fingerprint stands alone. "
+                    f"({text})")
+                rel, digest = repo_bindings[0]
                 with self.subTest(entry=entry["id"], file=rel):
                     path = _PROJECT_ROOT / rel
                     self.assertTrue(
